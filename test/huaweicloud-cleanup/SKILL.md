@@ -1,6 +1,6 @@
 ---
 name: huaweicloud-cleanup
-description: "Clean up HuaweiCloud DevKit environment for fresh testing. Removes plugin files, skills, MCP server, KooCLI, and Codex plugin registration. Use when the user wants a clean test environment or to reset before reinstall."
+description: 'Clean up HuaweiCloud DevKit environment for fresh testing. Removes plugin files, skills, MCP server, KooCLI, and Codex plugin registration. Use when the user wants a clean test environment or to reset before reinstall.'
 version: 1
 ---
 
@@ -35,6 +35,7 @@ Remove-Item -Force $env:USERPROFILE\.config\opencode\commands\huaweicloud* -Erro
 ## Step 4: Remove MCP Config
 
 Remove `mcp.huaweicloud-devkit` entry from both:
+
 - `~\.config\opencode\opencode.json`
 - `~\.config\opencode\opencode.jsonc` (if exists)
 
@@ -76,6 +77,7 @@ Test-Path $env:USERPROFILE\.config\opencode\huaweicloud-plugins  # Should be Fal
 ```
 
 All checks should return errors or False. Then reinstall:
+
 ```bash
 npx --yes huaweicloud-devkit install
 ```

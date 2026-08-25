@@ -39,7 +39,7 @@ if (hasTags) {
 }
 
 let nextVersion;
-if (branch === 'next') {
+if (branch === 'dev') {
   const match = currentVersion.match(/^(\d+\.\d+\.\d+)-(next)\.(\d+)$/);
   if (match) {
     const [, base, label, counter] = match;

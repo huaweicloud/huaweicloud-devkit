@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { cpSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -12,8 +14,8 @@ function frame(message) {
   return `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
 }
 
-function createClient() {
-  const child = spawn(process.execPath, [serverPath], {
+function createClient(server = serverPath) {
+  const child = spawn(process.execPath, [server], {
     cwd: root,
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -107,6 +109,32 @@ test('MCP server initializes, lists tools, and plans CLI commands', async () => 
     assert.match(planned.result.content[0].text, /NovaListServers/);
   } finally {
     client.close();
+  }
+});
+
+test('MCP server reports version from plugin package.json in installed layout', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-version-'));
+  try {
+    const pluginRoot = join(dir, 'huaweicloud-plugins');
+    cpSync(join(root, 'plugins', 'huaweicloud-core', 'src'), join(pluginRoot, 'src'), { recursive: true });
+    cpSync(join(root, 'plugins', 'huaweicloud-core', 'safety'), join(pluginRoot, 'safety'), { recursive: true });
+    writeFileSync(
+      join(pluginRoot, 'package.json'),
+      JSON.stringify({ name: 'huaweicloud-plugins', version: '9.9.9-test' }),
+    );
+    const client = createClient(join(pluginRoot, 'src', 'mcp-server.mjs'));
+    try {
+      const initialized = await client.request('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test-client', version: '0.0.0' },
+      });
+      assert.equal(initialized.result.serverInfo.version, '9.9.9-test');
+    } finally {
+      client.close();
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

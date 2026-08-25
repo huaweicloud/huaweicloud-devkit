@@ -2,13 +2,10 @@
   "mcpServers": {
     "huaweicloud-devkit": {
       "command": "node",
-      "args": [
-        "./src/mcp-server.mjs"
-      ],
+      "args": ["./src/mcp-server.mjs"],
       "cwd": ".",
       "env": {
-        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local",
-        "HDKITSERVICE_ENDPOINT": ""
+        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local"
       }
     }
   }

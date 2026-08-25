@@ -13,15 +13,35 @@ function readJson(path) {
 
 test('Codex plugin manifest and marketplace are installable', () => {
   const manifest = readJson(join(pluginRoot, '.codex-plugin', 'plugin.json'));
-  assert.equal(manifest.name, 'huaweicloud-core');
+  assert.equal(manifest.name, 'huaweicloud-devkit');
   assert.equal(manifest.skills, './skills/');
   assert.equal(manifest.mcpServers, './.mcp.json');
   assert.ok(!Object.hasOwn(manifest, 'hooks'), 'Codex manifest keeps hooks out');
 
   const marketplace = readJson(join(root, '.agents', 'plugins', 'marketplace.json'));
   assert.equal(marketplace.name, 'huaweicloud-devkit');
-  assert.equal(marketplace.plugins[0].name, 'huaweicloud-core');
+  assert.equal(marketplace.plugins[0].name, 'huaweicloud-devkit');
   assert.equal(marketplace.plugins[0].source.path, './plugins/huaweicloud-core');
+});
+
+test('OpenClaw plugin manifest matches other agent manifests', () => {
+  const openclaw = readJson(join(pluginRoot, 'openclaw.plugin.json'));
+  assert.equal(openclaw.name, 'huaweicloud-devkit');
+  assert.equal(openclaw.family, 'bundle-plugin');
+  assert.equal(openclaw.bundleFormat, 'codex');
+  assert.ok(existsSync(join(pluginRoot, 'openclaw.plugin.json')));
+
+  // All plugin.json names must be consistent
+  const manifests = [
+    join(pluginRoot, '.codex-plugin', 'plugin.json'),
+    join(pluginRoot, '.claude-plugin', 'plugin.json'),
+    join(pluginRoot, '.cursor-plugin', 'plugin.json'),
+    join(pluginRoot, '.workbuddy-plugin', 'plugin.json'),
+    join(pluginRoot, '.hermes-plugin', 'plugin.json'),
+    join(pluginRoot, 'openclaw.plugin.json'),
+  ];
+  const names = new Set(manifests.map((p) => readJson(p).name));
+  assert.equal(names.size, 1, 'All plugin.json name fields must be identical');
 });
 
 test('OpenCode integration exposes skills, commands, and MCP config', () => {
@@ -32,9 +52,7 @@ test('OpenCode integration exposes skills, commands, and MCP config', () => {
 
 test('plugin skills are compact meta-skills instead of service encyclopedia entries', () => {
   const skillsDir = join(pluginRoot, 'skills');
-  const skillNames = readdirSync(skillsDir).filter((name) =>
-    existsSync(join(skillsDir, name, 'SKILL.md')),
-  );
+  const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
   const requiredMetaSkills = [
     'huaweicloud-api-and-sdk',
     'huaweicloud-capability-discovery',
@@ -62,7 +80,10 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   assert.match(cliSkill, /--server\.nics\.1\.subnet_id/);
   assert.match(cliSkill, /--param=value/);
 
-  const discoverySkill = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-capability-discovery', 'SKILL.md'), 'utf8');
+  const discoverySkill = readFileSync(
+    join(pluginRoot, 'skills', 'huaweicloud-capability-discovery', 'SKILL.md'),
+    'utf8',
+  );
   assert.match(discoverySkill, /hcloud <Service> --help/);
   assert.match(discoverySkill, /Singapore.*ap-southeast-3/s);
   assert.match(discoverySkill, /No blind all-region scans/);
@@ -79,9 +100,7 @@ test('skills document KooCLI installation, operation discovery, region intent, a
 
 test('skill SKILL.md files meet minimum content quality bar', () => {
   const skillsDir = join(pluginRoot, 'skills');
-  const skillNames = readdirSync(skillsDir).filter((name) =>
-    existsSync(join(skillsDir, name, 'SKILL.md')),
-  );
+  const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
 
   const exceptions = new Set([
     'huawei-cloud-find-skills',
@@ -104,9 +123,7 @@ test('skill SKILL.md files meet minimum content quality bar', () => {
 
 test('skills with references have non-empty reference files', () => {
   const skillsDir = join(pluginRoot, 'skills');
-  const skillNames = readdirSync(skillsDir).filter((name) =>
-    existsSync(join(skillsDir, name, 'SKILL.md')),
-  );
+  const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
 
   for (const name of skillNames) {
     const refDir = join(skillsDir, name, 'references');
@@ -120,11 +137,33 @@ test('skills with references have non-empty reference files', () => {
   }
 });
 
+test('web/static-site deployment intent offers target options with sandbox first, not OBS default', () => {
+  const core = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
+  assert.match(core, /Deployment Target Options/);
+  assert.match(core, /Sandbox \(DevStation\) — recommended/);
+  assert.match(core, /NEVER default to a single service such as OBS/);
+
+  const obs = readFileSync(join(pluginRoot, 'skills', 'huawei-obs', 'SKILL.md'), 'utf8');
+  assert.match(obs, /Routing Guard: Deploy vs Store/);
+  assert.match(obs, /do NOT default to OBS/);
+  assert.match(obs, /① huawei-sandbox \(recommended\)/);
+
+  const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  assert.match(sandbox, /present options, sandbox first/i);
+  assert.match(sandbox, /建议优先部署到沙箱/);
+
+  const discovery = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-capability-discovery', 'SKILL.md'), 'utf8');
+  assert.match(discovery, /Deployment Target Options/);
+  assert.match(discovery, /do NOT default to OBS/);
+});
+
 test('all plugin manifests are valid JSON', () => {
   const manifests = [
     join(pluginRoot, '.codex-plugin', 'plugin.json'),
     join(pluginRoot, '.claude-plugin', 'plugin.json'),
     join(pluginRoot, '.cursor-plugin', 'plugin.json'),
+    join(pluginRoot, '.workbuddy-plugin', 'plugin.json'),
+    join(pluginRoot, '.hermes-plugin', 'plugin.json'),
   ];
   for (const path of manifests) {
     const data = readJson(path);
@@ -200,7 +239,7 @@ test('.mcp.json is valid and references existing server script', () => {
 test('setup-cli.mjs supports the codearts target end to end', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
   // parseTarget accepts codearts
-  assert.match(setup, /if \(val === 'codearts'\) return 'codearts';/);
+  assert.match(setup, /'codearts'/);
   // install / uninstall / status functions exist
   assert.match(setup, /async function installCodeArts\(\)/);
   assert.match(setup, /function uninstallCodeArts\(\)/);
@@ -224,11 +263,17 @@ test('setup-cli.mjs supports the codearts target end to end', () => {
   const branches = setup.match(/target === 'codearts' \|\| target === 'all'/g);
   assert.ok(branches && branches.length >= 3, `codearts dispatch branches: ${branches?.length}`);
   // .installed marker goes to the codearts plugins dir
-  assert.match(setup, /const markerDir = target === 'codearts' \? codeartsPluginsDir\(\)\s+: target === 'workbuddy' \? workbuddyPluginsDir\(\)\s+: target === 'codex-desktop' \? codexDesktopPluginsDir\(\)\s+: opencodePluginsDir\(\);/);
+  assert.match(
+    setup,
+    /const markerDir =[\s\S]*?target === 'dsh'[\s\S]*?dshPluginsDir\(\)[\s\S]*?target === 'codearts'[\s\S]*?codeartsPluginsDir\(\)[\s\S]*?target === 'workbuddy'[\s\S]*?workbuddyPluginsDir\(\)[\s\S]*?target === 'codex-desktop'[\s\S]*?codexDesktopPluginsDir\(\)[\s\S]*?;/,
+  );
   // doctor checks the codearts skills dir alongside opencode
-  assert.match(setup, /const skillsOptions = \[opencodeSkillsDir\(\), codexDesktopSkillsDir\(\), codeartsSkillsDir\(\), workbuddySkillsDir\(\)\];/);
+  assert.match(
+    setup,
+    /const skillsOptions = \[[\s\S]*?opencodeSkillsDir\(\)[\s\S]*?codexDesktopSkillsDir\(\)[\s\S]*?codeartsSkillsDir\(\)[\s\S]*?workbuddySkillsDir\(\)[\s\S]*?dshSkillsDir\(\)[\s\S]*?\];/,
+  );
   // help text documents the target
-  assert.match(setup, /--target <opencode\|codex\|codearts\|workbuddy\|all>/);
+  assert.match(setup, /--target <opencode\|codex\|codearts\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|all>/);
   assert.match(setup, /install --target codearts/);
 });
 
@@ -236,7 +281,14 @@ test('tools.mjs resolves skills from the codearts directory', () => {
   const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
   assert.match(tools, /function codeartsSkillsDir\(\)/);
   assert.match(tools, /return join\(home, '\.codeartsdoer', 'skills'\);/);
-  assert.match(tools, /if \(existsSync\(codeartsSkillsDir\(\)\)\) return codeartsSkillsDir\(\);/);
+  // candidates only count when they contain at least one skill with SKILL.md
+  assert.match(tools, /export function findSkillsRoot/);
+  assert.match(tools, /export function listSkillDirs/);
+  assert.match(tools, /existsSync\(join\(root, d\.name, 'SKILL\.md'\)\)/);
+  assert.match(
+    tools,
+    /findSkillsRoot\(\[[\s\S]*?SKILLS_ROOT_DEV[\s\S]*?dshSkillsDir\(\)[\s\S]*?codeartsSkillsDir\(\)[\s\S]*?opencodeSkillsDir\(\)[\s\S]*?workbuddySkillsDir\(\)[\s\S]*?officeaceSkillsRoot\(\)[\s\S]*?\]\)/,
+  );
 });
 
 test('setup-cli.mjs handles KooCLI sandbox blockers and privacy agreement', () => {
@@ -260,4 +312,152 @@ test('setup-cli.mjs handles KooCLI sandbox blockers and privacy agreement', () =
   assert.match(setup, /if \(hcloudBin\) env\.HCLOUD_BIN = hcloudBin\.replace/);
   // doctor warns about sandbox mode
   assert.match(setup, /CodeArts sandbox mode active/);
+});
+
+test('setup-cli.mjs supports the dsh target end to end', () => {
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  // SUPPORTED_AGENT_TARGETS includes dsh and parseTarget uses it
+  assert.match(setup, /'dsh'/);
+  // DSH path helpers and managed patch constants exist
+  assert.match(setup, /function dshRoot\(\)/);
+  assert.match(setup, /function dshSkillsDir\(\)/);
+  assert.match(setup, /function dshProfileDir\(\)/);
+  assert.match(setup, /function dshPatchFile\(\)/);
+  assert.match(setup, /function dshPluginsDir\(\)/);
+  assert.match(setup, /const DSH_MCP_PATCH_START = '# HuaweiCloud DevKit DSH integration start';/);
+  assert.match(setup, /const DSH_MCP_PATCH_END = '# HuaweiCloud DevKit DSH integration end';/);
+  // install / update / uninstall / status functions exist
+  assert.match(setup, /async function installDsh\(\)/);
+  assert.match(setup, /async function updateDsh\(\)/);
+  assert.match(setup, /function uninstallDsh\(\)/);
+  assert.match(setup, /function dshStatus\(\)/);
+  // install copies skills/server/safety and registers MCP through cordis.patch.yml
+  assert.match(setup, /copyDir\(skillsSrc, dshSkillsDir\(\)\)/);
+  assert.match(setup, /copyDir\(srcDir, join\(pluginDest, 'src'\)\)/);
+  assert.match(setup, /copyDir\(safetyDir, join\(pluginDest, 'safety'\)\)/);
+  assert.match(setup, /ensureDshMcpPatch\(\)/);
+  assert.match(setup, /tryInstallDshMcpClient\(\)/);
+  // DSH MCP patch uses dsh-mcp-client with stdio local server mode
+  assert.match(setup, /name: '@deepseek-ai\/dsh-mcp-client'/);
+  assert.match(setup, /serverName: huaweicloud/);
+  assert.match(setup, /transport: stdio/);
+  assert.match(setup, /failOnStartupError: false/);
+  assert.match(setup, /HUAWEICLOUD_AGENT_TOOLKIT_MODE: local/);
+  assert.match(setup, /HDKITSERVICE_ENDPOINT: ''/);
+  // uninstall removes only the managed patch block
+  assert.match(setup, /removeDshMcpPatch\(\)/);
+  // command dispatch covers dsh for install / uninstall / status / update
+  const branches = setup.match(/target === 'dsh' \|\| target === 'all'/g);
+  assert.ok(branches && branches.length >= 4, `dsh dispatch branches: ${branches?.length}`);
+  // .installed marker goes to the dsh plugins dir
+  assert.match(setup, /target === 'dsh'\s+\?\s+dshPluginsDir\(\)/);
+  // doctor checks DSH plugin dir, patch, and skills dir
+  assert.match(setup, /const dshPluginDir = dshPluginsDir\(\);/);
+  assert.match(setup, /dshPatchConfigured\(\)/);
+  assert.match(setup, /dshSkillsDir\(\)/);
+  // help text documents the target
+  assert.match(setup, /--target <opencode\|codex\|codearts\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|all>/);
+  assert.match(setup, /install --target dsh/);
+});
+
+test('tools.mjs resolves skills from the dsh directory', () => {
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  assert.match(tools, /function dshSkillsDir\(\)/);
+  assert.match(tools, /process\.env\.DSH_HOME \|\| join\(homedir\(\), '\.dsh'\)/);
+  assert.match(tools, /return join\(home, 'skills'\);/);
+  // stale or empty dirs must not short-circuit the fallback chain
+  assert.match(tools, /resolveSkillsRoot[\s\S]*?findSkillsRoot\(\[/);
+  assert.match(tools, /\|\|\s*SKILLS_ROOT_DEV/);
+  assert.match(tools, /opencode, codex, codex-desktop, codearts, workbuddy, dsh, officeace, hermes, openclaw, or all/);
+});
+
+test('tools.mjs resolves skills from the officeace directory', () => {
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  assert.match(tools, /function officeaceSkillsRoot\(\)/);
+  assert.match(tools, /function readOfficeaceRegistryInstallDir\(\)/);
+  assert.match(tools, /office-claw/);
+  assert.match(tools, /capabilities\.json/);
+});
+
+test('setup-cli.mjs supports the officeace target end to end', () => {
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  assert.match(setup, /'officeace'/);
+  assert.match(setup, /async function installOfficeAce\(\)/);
+  assert.match(setup, /function uninstallOfficeAce\(\)/);
+  assert.match(setup, /function officeaceStatus\(\)/);
+  assert.match(setup, /async function updateOfficeAce\(\)/);
+  assert.match(setup, /function officeaceCapabilitiesDir\(\)/);
+  assert.match(setup, /function officeaceCapabilitiesFile\(\)/);
+  assert.match(setup, /function officeaceSkillsDir\(\)/);
+  assert.match(setup, /function officeacePluginsDir\(\)/);
+  assert.match(setup, /function readOfficeaceRegistryInstallDir\(\)/);
+  assert.match(setup, /function ensureOfficeaceMcpInSqlite\(\)/);
+  assert.match(setup, /function removeOfficeaceMcpFromSqlite\(\)/);
+  assert.match(setup, /function registerOfficeaceSkillEntries\(\)/);
+  assert.match(setup, /copyDir\(skillsSrc, officeaceSkillsDir\(\)\)/);
+  assert.match(setup, /ensureOfficeaceMcpInSqlite\(\)/);
+  assert.match(setup, /registerOfficeaceSkillEntries\(\)/);
+  assert.match(setup, /type.*skill.*source.*custom/s);
+  assert.match(setup, /mcpServer.*command.*node/s);
+  assert.match(setup, /capabilities\.json/);
+  const branches = setup.match(/target === 'officeace' \|\| target === 'all'/g);
+  assert.ok(branches && branches.length >= 3, `officeace dispatch branches: ${branches?.length}`);
+  assert.match(setup, /install --target officeace/);
+});
+
+test('setup-cli.mjs supports the hermes target end to end', () => {
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  assert.match(setup, /'hermes'/);
+  assert.match(setup, /async function installHermes\(\)/);
+  assert.match(setup, /function uninstallHermes\(\)/);
+  assert.match(setup, /function hermesStatus\(\)/);
+  assert.match(setup, /async function updateHermes\(\)/);
+  assert.match(setup, /function hermesHomeDir\(\)/);
+  assert.match(setup, /function hermesSkillsDir\(\)/);
+  assert.match(setup, /function hermesPluginsDir\(\)/);
+  assert.match(setup, /function hermesConfigFile\(\)/);
+  assert.match(setup, /function ensureHermesMcpConfig\(\)/);
+  assert.match(setup, /function removeHermesMcpConfigBlock\(\)/);
+  assert.match(setup, /copyDir\(skillsSrc, hermesSkillsDir\(\)\)/);
+  assert.match(setup, /ensureHermesMcpConfig\(\)/);
+  assert.match(setup, /mcp_servers:/);
+  assert.match(setup, /huaweicloud-devkit:/);
+  assert.match(setup, /HUAWEICLOUD_AGENT_TOOLKIT_MODE: "local"/);
+  const branches = setup.match(/target === 'hermes' \|\| target === 'all'/g);
+  assert.ok(branches && branches.length >= 3, `hermes dispatch branches: ${branches?.length}`);
+  assert.match(setup, /install --target hermes/);
+  assert.match(setup, /HERMES_HOME/);
+});
+
+test('tools.mjs resolves skills from the hermes directory', () => {
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  assert.match(tools, /function hermesSkillsDir\(\)/);
+  assert.match(tools, /process\.env\.HERMES_HOME/);
+  assert.match(tools, /LOCALAPPDATA/);
+  assert.match(tools, /return join\(home, '\.hermes', 'skills'\)/);
+  assert.match(tools, /hermesSkillsDir\(\)/);
+});
+
+test('official Huawei Cloud Icons library is integrated', () => {
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  assert.match(tools, /name: 'huaweicloud_get_service_icon'/);
+  assert.match(tools, /getServiceIcon\(args\.service/);
+
+  const snapshotPath = join(pluginRoot, 'src', 'data', 'icons-manifest.v1.json');
+  assert.ok(existsSync(snapshotPath), 'Missing icons-manifest.v1.json snapshot');
+  const manifest = readJson(snapshotPath);
+  assert.ok(Array.isArray(manifest.icons), 'icons must be an array');
+  assert.ok(manifest.icons.length >= 100, `Expected at least 100 icons, got ${manifest.icons.length}`);
+
+  const byId = new Map(manifest.icons.map((i) => [i.id, i]));
+  for (const id of ['ecs', 'obs', 'vpc', 'modelarts']) {
+    const icon = byId.get(id);
+    assert.ok(icon, `Missing icon: ${id}`);
+    assert.match(icon.logo.source_url, /^https:\/\//, `${id} logo source_url must be https`);
+    assert.equal(typeof icon.name, 'string');
+  }
+
+  const discovery = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-capability-discovery', 'SKILL.md'), 'utf8');
+  assert.match(discovery, /huaweicloud_get_service_icon/);
+  assert.match(discovery, /open\.huaweicloud\.com\/openplatform\/icons\.html/);
 });

@@ -4,16 +4,16 @@
 
 ## 错误码映射
 
-| 错误 | 根因 | 修复 |
-|------|------|------|
-| `Ecs.0005` flavor-image 不匹配 | 镜像虚拟化类型与规格不兼容 | 检查 image `__support_amd`/`__support_xen` 与 flavor `os_extra_specs`。BareMetal 镜像不兼容标准 ECS 规格 |
-| `[USE_ERROR]不正确的参数:imagetype` | 参数名错误 | KooCLI 使用双下划线前缀：`--__imagetype=gold`（不是 `--imagetype`） |
-| `[USE_ERROR]不正确的参数:chargingMode` | 参数路径错误 | 计费模式参数路径：`--server.extendparam.chargingMode=postPaid`。不传默认按需付费 |
-| `[USE_ERROR]不正确的参数:__support_amd` | 参数无效 | `IMS ListImages` 某些版本不支持此过滤。去掉该参数，使用 client-side 过滤 |
-| Cannot SSH | 安全组未开放22端口 或 未绑定EIP | 1) 添加入方向规则 tcp 22。2) `hcloud EIP BindPublicIp` |
-| Flavor unavailable | 区域不支持该规格 | `hcloud ECS ListFlavors --cli-region=<r>` 先查。不硬编码 s6/m6 等规格名 |
-| Insufficient resources | AZ 库存不足 | 换规格、换 AZ、或等待资源释放 |
-| AuthFailure | AK/SK 过期或无效 | `npx huaweicloud-devkit auth init` 重新配置统一凭据 |
+| 错误                                    | 根因                            | 修复                                                                                                     |
+| --------------------------------------- | ------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| `Ecs.0005` flavor-image 不匹配          | 镜像虚拟化类型与规格不兼容      | 检查 image `__support_amd`/`__support_xen` 与 flavor `os_extra_specs`。BareMetal 镜像不兼容标准 ECS 规格 |
+| `[USE_ERROR]不正确的参数:imagetype`     | 参数名错误                      | KooCLI 使用双下划线前缀：`--__imagetype=gold`（不是 `--imagetype`）                                      |
+| `[USE_ERROR]不正确的参数:chargingMode`  | 参数路径错误                    | 计费模式参数路径：`--server.extendparam.chargingMode=postPaid`。不传默认按需付费                         |
+| `[USE_ERROR]不正确的参数:__support_amd` | 参数无效                        | `IMS ListImages` 某些版本不支持此过滤。去掉该参数，使用 client-side 过滤                                 |
+| Cannot SSH                              | 安全组未开放22端口 或 未绑定EIP | 1) 添加入方向规则 tcp 22。2) `hcloud EIP BindPublicIp`                                                   |
+| Flavor unavailable                      | 区域不支持该规格                | `hcloud ECS ListFlavors --cli-region=<r>` 先查。不硬编码 s6/m6 等规格名                                  |
+| Insufficient resources                  | AZ 库存不足                     | 换规格、换 AZ、或等待资源释放                                                                            |
+| AuthFailure                             | AK/SK 过期或无效                | `npx huaweicloud-devkit auth init` 重新配置统一凭据                                                      |
 
 ## 创建失败诊断流程
 
@@ -38,10 +38,10 @@ hcloud IMS ListImages --cli-region=<r> --__imagetype=gold --__isregistered=true 
 
 ## 密钥对 vs 密码
 
-| 方式 | 安全 | 建议 |
-|------|------|------|
+| 方式                       | 安全  | 建议                                               |
+| -------------------------- | ----- | -------------------------------------------------- |
 | `--server.key_name=<name>` | ✅ 高 | **推荐**。先 `hcloud DEW CreateKeypair` 创建密钥对 |
-| `--server.adminPass=<pw>` | ❌ 低 | 密码明文进入 shell 历史。仅测试用 |
+| `--server.adminPass=<pw>`  | ❌ 低 | 密码明文进入 shell 历史。仅测试用                  |
 
 密码要求：8-26 字符，含大写 + 小写 + 数字 + 特殊字符。
 

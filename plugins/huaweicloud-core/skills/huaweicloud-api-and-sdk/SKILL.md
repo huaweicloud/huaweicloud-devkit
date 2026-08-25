@@ -11,12 +11,12 @@ Use this skill when the deliverable is application code, API integration, or pre
 
 ## Critical Warnings
 
-| Trap | Why |
-|------|-----|
-| `project_id` in path for most services | Many Huawei Cloud APIs require `project_id` in the URL path. Get it from IAM or KooCLI profile |
-| Pagination is not automatic | APIs return paginated results. Always check for `next_marker` or `page_info` to avoid partial data |
-| AK/SK signing algorithm | Huawei Cloud uses HMAC-SHA256 signing with specific header ordering. Use SDK, don't implement manually |
-| Endpoint varies by service and region | Always verify at https://developer.huaweicloud.com/endpoint |
+| Trap                                     | Why                                                                                                       |
+| ---------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `project_id` in path for most services   | Many Huawei Cloud APIs require `project_id` in the URL path. Get it from IAM or KooCLI profile            |
+| Pagination is not automatic              | APIs return paginated results. Always check for `next_marker` or `page_info` to avoid partial data        |
+| AK/SK signing algorithm                  | Huawei Cloud uses HMAC-SHA256 signing with specific header ordering. Use SDK, don't implement manually    |
+| Endpoint varies by service and region    | Always verify at https://developer.huaweicloud.com/endpoint                                               |
 | Error response in `body` not HTTP status | Many errors return HTTP 200 with error details in the JSON body. Check `error_code` or `error_msg` fields |
 
 ## API Workflow
@@ -38,13 +38,13 @@ Use this skill when the deliverable is application code, API integration, or pre
 
 ## Troubleshooting
 
-| Error | Root Cause -> Fix |
-|-------|-------------------|
-| Invalid project_id | Wrong or missing project_id in URL path. Use `hcloud IAM KeystoneListProjects` or KooCLI profile |
-| 401/AuthFailure | Expired AK/SK or wrong signing algorithm. Regenerate AK/SK or check SDK version |
-| 403/Forbidden | IAM permission missing. Check user/role has required action permissions |
-| Empty results | Pagination missing — add `limit` and check `marker` |
-| Endpoint not reachable | Wrong region/service endpoint. Verify at developer.huaweicloud.com/endpoint |
+| Error                  | Root Cause -> Fix                                                                                |
+| ---------------------- | ------------------------------------------------------------------------------------------------ |
+| Invalid project_id     | Wrong or missing project_id in URL path. Use `hcloud IAM KeystoneListProjects` or KooCLI profile |
+| 401/AuthFailure        | Expired AK/SK or wrong signing algorithm. Regenerate AK/SK or check SDK version                  |
+| 403/Forbidden          | IAM permission missing. Check user/role has required action permissions                          |
+| Empty results          | Pagination missing — add `limit` and check `marker`                                              |
+| Endpoint not reachable | Wrong region/service endpoint. Verify at developer.huaweicloud.com/endpoint                      |
 
 ## Terraform Priority
 

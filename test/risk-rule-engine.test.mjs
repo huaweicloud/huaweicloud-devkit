@@ -23,9 +23,7 @@ test('evaluateCommandRisk blocks public SSH exposure', () => {
 });
 
 test('evaluateCommandRisk warns on high-cost resource shape', () => {
-  const result = evaluateCommandRisk(
-    'hcloud CCE CreateCluster --node_pool.max_node_count=80 --node_pool.name=preview',
-  );
+  const result = evaluateCommandRisk('hcloud CCE CreateCluster --node_pool.max_node_count=80 --node_pool.name=preview');
   assert.equal(result.decision, 'warn');
   assert.equal(result.findings[0].ruleId, 'hwc-cost-unbounded-scale');
 });

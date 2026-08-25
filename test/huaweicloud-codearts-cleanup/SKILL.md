@@ -1,6 +1,6 @@
 ---
 name: huaweicloud-codearts-cleanup
-description: "Clean up HuaweiCloud DevKit from a CodeArts Agent (.codeartsdoer) environment for fresh testing. Removes codearts skills, MCP registration, plugin runtime dir, KooCLI (hcloud dirs + PATH entry), and restores the default sandbox mode. Use when the user wants to fully reset the CodeArts Agent environment before reinstalling huaweicloud-devkit --target codearts."
+description: 'Clean up HuaweiCloud DevKit from a CodeArts Agent (.codeartsdoer) environment for fresh testing. Removes codearts skills, MCP registration, plugin runtime dir, KooCLI (hcloud dirs + PATH entry), and restores the default sandbox mode. Use when the user wants to fully reset the CodeArts Agent environment before reinstalling huaweicloud-devkit --target codearts.'
 version: 1
 ---
 
@@ -11,6 +11,7 @@ version: 1
 完整清理码道（CodeArts Agent）环境中已安装的 huaweicloud-devkit 运行时产物，用于模拟新用户、重新测试安装流程。
 
 清理范围（A+B+C）：
+
 - **A. 插件产物**：用户级与项目级 skills、MCP 注册、插件运行目录
 - **B. KooCLI**：安装目录、配置目录、PATH 注册表项
 - **C. 还原码道沙箱**：`permission/config.json` 的 `bash_mode` 还原为 `sandbox`

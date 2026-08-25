@@ -29,9 +29,9 @@ This policy applies to the `huaweicloud-devkit` repository and its released npm 
 
 ## Supported Versions
 
-| Version | Supported |
-| ------- | --------- |
-| latest release | ✅ |
-| older releases | ❌ |
+| Version        | Supported |
+| -------------- | --------- |
+| latest release | ✅        |
+| older releases | ❌        |
 
 We recommend always using the latest release.

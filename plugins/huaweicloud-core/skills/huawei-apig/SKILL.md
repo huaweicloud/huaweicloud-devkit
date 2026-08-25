@@ -1,6 +1,6 @@
 ---
 name: huawei-apig
-description: "Use when creating or managing API Gateway (APIG). Covers API creation, throttling, auth (IAM/APP/basic), CORS, publishing, instance management. Triggers: APIG, API gateway, throttling, publish API. NOT for: FunctionGraph triggers (use huawei-functiongraph)."
+description: 'Use when creating or managing API Gateway (APIG). Covers API creation, throttling, auth (IAM/APP/basic), CORS, publishing, instance management. Triggers: APIG, API gateway, throttling, publish API. NOT for: FunctionGraph triggers (use huawei-functiongraph).'
 version: 1
 ---
 
@@ -16,16 +16,16 @@ Always discover parameters with `hcloud APIG <Operation> --help` before executin
 
 ## Critical Warnings
 
-| Trap | Why |
-|------|-----|
-| API group region-locked | Cannot move across regions |
-| Throttling per-API default | Use app-level quotas for per-user limits |
-| CORS must be explicit | OPTIONS preflight fails until configured |
-| `BASIC` spec has no public IP | Use `PROFESSIONAL` + `elb` provider for public access |
-| Instance creation takes 5-15min | Long-running async operation. State is **Running** (NOT "SUCCESS"). Poll with `ListInstancesV2`, wait for `status == "Running"` |
-| `sl_domain` is from API **Group** | NOT from Instance. Get it from `CreateApiGroupV2` or `ListApiGroupsV2` response |
-| API name must NOT have hyphens | `[a-zA-Z0-9_]+` only. Hyphens cause regex validation failure |
-| VPC params need prefix | `--vpc.name=<n>` / `--subnet.vpc_id=<id>` / `--security_group.name=<n>` with KooCLI 7.x |
+| Trap                              | Why                                                                                                                             |
+| --------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| API group region-locked           | Cannot move across regions                                                                                                      |
+| Throttling per-API default        | Use app-level quotas for per-user limits                                                                                        |
+| CORS must be explicit             | OPTIONS preflight fails until configured                                                                                        |
+| `BASIC` spec has no public IP     | Use `PROFESSIONAL` + `elb` provider for public access                                                                           |
+| Instance creation takes 5-15min   | Long-running async operation. State is **Running** (NOT "SUCCESS"). Poll with `ListInstancesV2`, wait for `status == "Running"` |
+| `sl_domain` is from API **Group** | NOT from Instance. Get it from `CreateApiGroupV2` or `ListApiGroupsV2` response                                                 |
+| API name must NOT have hyphens    | `[a-zA-Z0-9_]+` only. Hyphens cause regex validation failure                                                                    |
+| VPC params need prefix            | `--vpc.name=<n>` / `--subnet.vpc_id=<id>` / `--security_group.name=<n>` with KooCLI 7.x                                         |
 
 ## Instance Management
 
@@ -43,14 +43,14 @@ hcloud APIG CreateInstanceV2 --help
 
 Key gotchas when creating:
 
-| Param | Note |
-|-------|------|
-| `--spec_id` | `BASIC` (no public access), `PROFESSIONAL` (requires `--loadbalancer_provider`) |
-| `--loadbalancer_provider` | `elb` for public access (supports `AddIngressEipV2`), `lvs` for internal only (supports `AddEipV2`) |
-| `--enterprise_project_id` | **Required** for enterprise accounts. Use `"0"` for default project |
-| `--available_zone_ids` | Use AZ code like `ap-southeast-3a`, NOT UUID from `ListAvailableZonesV2` |
-| `--vpc_id`, `--subnet_id` | Must exist in the target region |
-| `--security_group_id` | **Required**. Create a security group first via `VPC CreateSecurityGroup` (VPC v3 API — no `vpc_id` param needed) |
+| Param                     | Note                                                                                                              |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `--spec_id`               | `BASIC` (no public access), `PROFESSIONAL` (requires `--loadbalancer_provider`)                                   |
+| `--loadbalancer_provider` | `elb` for public access (supports `AddIngressEipV2`), `lvs` for internal only (supports `AddEipV2`)               |
+| `--enterprise_project_id` | **Required** for enterprise accounts. Use `"0"` for default project                                               |
+| `--available_zone_ids`    | Use AZ code like `ap-southeast-3a`, NOT UUID from `ListAvailableZonesV2`                                          |
+| `--vpc_id`, `--subnet_id` | Must exist in the target region                                                                                   |
+| `--security_group_id`     | **Required**. Create a security group first via `VPC CreateSecurityGroup` (VPC v3 API — no `vpc_id` param needed) |
 
 ### Add Public Access (ELB Provider Only)
 
@@ -89,9 +89,9 @@ Wait for `eip_address` to show a valid IP (may take up to 2 minutes). If `eip_ad
 hcloud APIG CreateApiGroupV2 --instance_id=<id> --name=<n>
 ```
 
-| Param | Note |
-|-------|------|
-| `--name` | Group name (required) |
+| Param      | Note                   |
+| ---------- | ---------------------- |
+| `--name`   | Group name (required)  |
 | `--remark` | Description (optional) |
 
 ## API Management
@@ -120,18 +120,18 @@ hcloud APIG CreateThrottlingPolicyV2 --name=<n> --api_call_limits=1000
 
 ## Common Workflows
 
-| Task | Operation |
-|------|-----------|
-| List instances | `ListInstancesV2` |
-| Create instance | `CreateInstanceV2` |
-| Delete instance | `DeleteInstancesV2` |
-| Add public EIP | `AddIngressEipV2` |
-| Create API group | `CreateApiGroupV2` |
-| Create API | `CreateApiV2` |
-| Update API | `UpdateApiV2` — change auth mode, path, etc. |
-| List APIs | `ListApisV2` |
-| Publish | `BatchPublishOrOfflineApiV2` |
-| List APIs | `ListApisV2` |
+| Task             | Operation                                    |
+| ---------------- | -------------------------------------------- |
+| List instances   | `ListInstancesV2`                            |
+| Create instance  | `CreateInstanceV2`                           |
+| Delete instance  | `DeleteInstancesV2`                          |
+| Add public EIP   | `AddIngressEipV2`                            |
+| Create API group | `CreateApiGroupV2`                           |
+| Create API       | `CreateApiV2`                                |
+| Update API       | `UpdateApiV2` — change auth mode, path, etc. |
+| List APIs        | `ListApisV2`                                 |
+| Publish          | `BatchPublishOrOfflineApiV2`                 |
+| List APIs        | `ListApisV2`                                 |
 
 ## FunctionGraph Integration
 

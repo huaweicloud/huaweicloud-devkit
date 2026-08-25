@@ -38,7 +38,7 @@ npm run validate  # structural validation
 npm run lint      # markdown lint
 ```
 
-Requires Node.js >= 20.
+Requires Node.js >= 22.
 
 ## Code of Conduct
 
@@ -106,10 +106,10 @@ To request a release, trigger the appropriate workflow in GitHub Actions:
 
 Two channels, fully managed by GitHub Actions:
 
-| Channel | Branch | Workflow | dist-tag | Version |
-|---|---|---|---|---|
-| Test | `dev` | `Publish Dev (next)` | `next` | `0.1.x-dev.n` |
-| Stable | `main` | `Prepare Release` / `Publish Release` | `latest` | `0.1.x` |
+| Channel | Branch | Workflow                              | dist-tag | Version       |
+| ------- | ------ | ------------------------------------- | -------- | ------------- |
+| Test    | `dev`  | `Publish Dev (next)`                  | `next`   | `0.1.x-dev.n` |
+| Stable  | `main` | `Prepare Release` / `Publish Release` | `latest` | `0.1.x`       |
 
 ## Reporting Bugs
 

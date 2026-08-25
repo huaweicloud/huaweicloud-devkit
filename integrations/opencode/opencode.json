@@ -4,10 +4,7 @@
   "mcp": {
     "huaweicloud-devkit": {
       "type": "local",
-      "command": [
-        "node",
-        "<绝对路径>/plugins/huaweicloud-core/src/mcp-server.mjs"
-      ],
+      "command": ["node", "<绝对路径>/plugins/huaweicloud-core/src/mcp-server.mjs"],
       "enabled": true
     }
   }

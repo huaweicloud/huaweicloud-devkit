@@ -17,9 +17,13 @@ function regexFrom(pattern) {
 }
 
 function isSecretKeyName(key, policy = DEFAULT_POLICY) {
-  const normalized = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+  const normalized = String(key)
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
   if (
-    /access.*key|secret.*key|security.*token|xauth.*token|authorization|password|passwd|adminpass|credential|private.*key/.test(normalized)
+    /access.*key|secret.*key|security.*token|xauth.*token|authorization|password|passwd|adminpass|credential|private.*key/.test(
+      normalized,
+    )
   ) {
     return true;
   }
@@ -28,7 +32,10 @@ function isSecretKeyName(key, policy = DEFAULT_POLICY) {
 
 function redactString(text) {
   return String(text)
-    .replace(/((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|authorization|password|passwd|adminPass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>')
+    .replace(
+      /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|authorization|password|passwd|adminPass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      '$1<redacted>',
+    )
     .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>');
 }
 
@@ -78,15 +85,11 @@ function matchesAny(value, patterns) {
 
 function hasWritePrefix(operation, policy) {
   const normalized = String(operation);
-  return policy.writeOperationPrefixes.some((prefix) =>
-    new RegExp(`(^|[A-Za-z0-9])${prefix}`, 'i').test(normalized),
-  );
+  return policy.writeOperationPrefixes.some((prefix) => new RegExp(`(^|[A-Za-z0-9])${prefix}`, 'i').test(normalized));
 }
 
 function hasReadPrefix(operation, policy) {
-  return policy.readOperationPrefixes.some((prefix) =>
-    new RegExp(`^${prefix}`, 'i').test(operation),
-  );
+  return policy.readOperationPrefixes.some((prefix) => new RegExp(`^${prefix}`, 'i').test(operation));
 }
 
 function isLocalMetadataCommand(args) {
@@ -119,26 +122,31 @@ export function classifyHcloudArgs(args, options = {}) {
   }
 
   if (isLocalMetadataCommand(normalizedArgs)) {
-    return applyCommandRiskRules({
-      decision: 'allow',
-      risk: 'local_metadata',
-      reason: 'KooCLI local help and version commands are read-only and do not call Huawei Cloud resource APIs.',
-      service,
-      operation,
-      args: normalizedArgs,
-    }, normalizedArgs, options);
+    return applyCommandRiskRules(
+      {
+        decision: 'allow',
+        risk: 'local_metadata',
+        reason: 'KooCLI local help and version commands are read-only and do not call Huawei Cloud resource APIs.',
+        service,
+        operation,
+        args: normalizedArgs,
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   if (service.toLowerCase() === 'configure') {
     const subcommand = operation.toLowerCase();
     if (
-      policy.blockedConfigureSubcommands.map((cmd) => cmd.toLowerCase()).includes(subcommand)
-      && options.allowCredentialRead !== true
+      policy.blockedConfigureSubcommands.map((cmd) => cmd.toLowerCase()).includes(subcommand) &&
+      options.allowCredentialRead !== true
     ) {
       return {
         decision: 'deny',
         risk: 'credential',
-        reason: 'Direct hcloud configure inspection may expose profile credentials. Use the redacted toolkit tools instead.',
+        reason:
+          'Direct hcloud configure inspection may expose profile credentials. Use the redacted toolkit tools instead.',
       };
     }
   }
@@ -160,7 +168,8 @@ export function classifyHcloudArgs(args, options = {}) {
   }
 
   const readOnly = hasReadPrefix(operation, policy);
-  const executionOps = /(^|\.)(Invoke|SyncInvoke|AsyncInvoke|Send|Trigger|Execute|Start|Reboot|Restart|Stop|Publish|Deploy)/i;
+  const executionOps =
+    /(^|\.)(Invoke|SyncInvoke|AsyncInvoke|Send|Trigger|Execute|Start|Reboot|Restart|Stop|Publish|Deploy)/i;
   const isExecution = executionOps.test(operation) && !readOnly;
   const isWrite = !readOnly && hasWritePrefix(operation, policy);
 
@@ -176,11 +185,30 @@ export function classifyHcloudArgs(args, options = {}) {
     return {
       decision: 'deny',
       risk: 'write',
-      reason: 'Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval.',
+      reason:
+        'Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval.',
     };
   }
 
-  const obsutilWrites = ['mb', 'cp', 'mv', 'rm', 'delete', 'mkdir', 'sync', 'restore', 'chattri', 'bucketpolicy', 'lifecycle', 'cors', 'website', 'sign', 'share-add', 'share-update', 'share-rm'];
+  const obsutilWrites = [
+    'mb',
+    'cp',
+    'mv',
+    'rm',
+    'delete',
+    'mkdir',
+    'sync',
+    'restore',
+    'chattri',
+    'bucketpolicy',
+    'lifecycle',
+    'cors',
+    'website',
+    'sign',
+    'share-add',
+    'share-update',
+    'share-rm',
+  ];
   const obsutilReads = ['ls', 'stat', 'cat', 'help', 'version'];
   const isObs = service.toLowerCase() === 'obs' || service.toLowerCase() === 'hcloud obs';
   const isObsWrite = isObs && obsutilWrites.includes(operation);
@@ -193,64 +221,86 @@ export function classifyHcloudArgs(args, options = {}) {
     };
   }
   if (isObsRead) {
-    return applyCommandRiskRules({
-      decision: 'allow',
-      risk: 'read_only',
-      reason: 'OBS read-only operation.',
-      service,
-      operation,
-      args: normalizedArgs,
-    }, normalizedArgs, options);
+    return applyCommandRiskRules(
+      {
+        decision: 'allow',
+        risk: 'read_only',
+        reason: 'OBS read-only operation.',
+        service,
+        operation,
+        args: normalizedArgs,
+      },
+      normalizedArgs,
+      options,
+    );
   }
   if (isObsWrite && options.allowWrites) {
-    return applyCommandRiskRules({
-      decision: 'allow',
-      risk: 'write',
-      reason: 'OBS write operation approved by user.',
-      service,
-      operation,
-      args: normalizedArgs,
-    }, normalizedArgs, options);
+    return applyCommandRiskRules(
+      {
+        decision: 'allow',
+        risk: 'write',
+        reason: 'OBS write operation approved by user.',
+        service,
+        operation,
+        args: normalizedArgs,
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   if (isExecution && options.allowWrites) {
-    return applyCommandRiskRules({
-      decision: 'allow',
-      risk: 'execution',
-      reason: 'Huawei Cloud execution/trigger operation approved by user.',
-      service,
-      operation,
-      args: normalizedArgs,
-    }, normalizedArgs, options);
+    return applyCommandRiskRules(
+      {
+        decision: 'allow',
+        risk: 'execution',
+        reason: 'Huawei Cloud execution/trigger operation approved by user.',
+        service,
+        operation,
+        args: normalizedArgs,
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   if (isWrite && options.allowWrites) {
-    return applyCommandRiskRules({
+    return applyCommandRiskRules(
+      {
+        decision: 'allow',
+        risk: 'write',
+        reason: 'Huawei Cloud write operation approved by user.',
+        service,
+        operation,
+        args: normalizedArgs,
+      },
+      normalizedArgs,
+      options,
+    );
+  }
+
+  return applyCommandRiskRules(
+    {
       decision: 'allow',
-      risk: 'write',
-      reason: 'Huawei Cloud write operation approved by user.',
+      risk: readOnly ? 'read_only' : 'unknown_read',
+      reason: readOnly
+        ? 'Command appears to be a read-only Huawei Cloud operation.'
+        : 'Command does not match a known write or secret operation; treat output as untrusted and redact it.',
       service,
       operation,
       args: normalizedArgs,
-    }, normalizedArgs, options);
-  }
-
-  return applyCommandRiskRules({
-    decision: 'allow',
-    risk: readOnly ? 'read_only' : 'unknown_read',
-    reason: readOnly
-      ? 'Command appears to be a read-only Huawei Cloud operation.'
-      : 'Command does not match a known write or secret operation; treat output as untrusted and redact it.',
-    service,
-    operation,
-    args: normalizedArgs,
-  }, normalizedArgs, options);
+    },
+    normalizedArgs,
+    options,
+  );
 }
 
 function splitSimpleCommand(command) {
-  return String(command)
-    .match(/"[^"]*"|'[^']*'|\S+/g)
-    ?.map((part) => part.replace(/^['"]|['"]$/g, '')) || [];
+  return (
+    String(command)
+      .match(/"[^"]*"|'[^']*'|\S+/g)
+      ?.map((part) => part.replace(/^['"]|['"]$/g, '')) || []
+  );
 }
 
 export function classifyTextCommand(command, options = {}) {
@@ -261,11 +311,15 @@ export function classifyTextCommand(command, options = {}) {
     return {
       decision: 'deny',
       risk: 'credential',
-      reason: 'Reading Huawei Cloud credential or profile files is blocked. Use redacted profile inspection tools instead.',
+      reason:
+        'Reading Huawei Cloud credential or profile files is blocked. Use redacted profile inspection tools instead.',
     };
   }
 
-  if (/(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) && /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(text)) {
+  if (
+    /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) &&
+    /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(text)
+  ) {
     return {
       decision: 'deny',
       risk: 'credential',

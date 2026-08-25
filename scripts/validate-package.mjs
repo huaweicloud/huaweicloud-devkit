@@ -24,24 +24,29 @@ assertExists(join(pluginRoot, 'safety', 'rules', 'cloud-risk-rules.json'));
 assertExists(join(root, 'integrations', 'opencode', 'opencode.json'));
 
 const manifest = readJson(join(pluginRoot, '.codex-plugin', 'plugin.json'));
-assert.equal(manifest.name, 'huaweicloud-core');
+assert.equal(manifest.name, 'huaweicloud-devkit');
 assert.equal(manifest.skills, './skills/');
 assert.equal(manifest.mcpServers, './.mcp.json');
 assert.ok(!Object.hasOwn(manifest, 'hooks'), 'Codex manifest should not include hooks until supported by validator');
+
+const workbuddyManifest = readJson(join(pluginRoot, '.workbuddy-plugin', 'plugin.json'));
+assert.ok(
+  !Object.hasOwn(workbuddyManifest, 'hooks'),
+  'WorkBuddy manifest should not include hooks — hooks are Claude-specific and trigger manual trust prompts in WorkBuddy',
+);
 
 const pkg = readJson(join(root, 'package.json'));
 const pluginManifests = [
   join(pluginRoot, '.codex-plugin', 'plugin.json'),
   join(pluginRoot, '.claude-plugin', 'plugin.json'),
   join(pluginRoot, '.cursor-plugin', 'plugin.json'),
+  join(pluginRoot, '.workbuddy-plugin', 'plugin.json'),
+  join(pluginRoot, '.hermes-plugin', 'plugin.json'),
+  join(pluginRoot, 'openclaw.plugin.json'),
 ];
 for (const path of pluginManifests) {
   const manifest = readJson(path);
-  assert.equal(
-    pkg.version,
-    manifest.version,
-    `package.json version must match ${path}`,
-  );
+  assert.equal(pkg.version, manifest.version, `package.json version must match ${path}`);
 }
 
 const skills = readdirSync(join(pluginRoot, 'skills')).filter((name) =>
@@ -88,3 +93,20 @@ for (const rule of riskCatalog.rules) {
 }
 
 console.log(`Validated HuaweiCloud Devkit with ${skills.length} skills.`);
+
+const readmePaths = [join(root, 'README.md'), join(root, 'README.zh-CN.md')];
+
+readmePaths.forEach((path) => {
+  assert.ok(existsSync(path), `Missing README: ${path}`);
+});
+
+const readmes = readmePaths.map((p) => ({ path: p, text: readFileSync(p, 'utf8') }));
+
+readmes.forEach(({ path, text }) => {
+  if (!/huaweicloud-devkit-mcp/.test(text)) {
+    console.warn(`\x1b[33m[README]\x1b[0m ${path}: missing standard MCP npx config`);
+  }
+  if (!/Sandbox|DevStation/i.test(text)) {
+    console.warn(`\x1b[33m[README]\x1b[0m ${path}: missing sandbox/DevStation feature`);
+  }
+});

@@ -9,6 +9,8 @@ const manifestPaths = [
   join(pluginRoot, '.codex-plugin', 'plugin.json'),
   join(pluginRoot, '.claude-plugin', 'plugin.json'),
   join(pluginRoot, '.cursor-plugin', 'plugin.json'),
+  join(pluginRoot, '.workbuddy-plugin', 'plugin.json'),
+  join(pluginRoot, '.hermes-plugin', 'plugin.json'),
 ];
 
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));

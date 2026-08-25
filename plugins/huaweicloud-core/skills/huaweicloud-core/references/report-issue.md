@@ -12,9 +12,9 @@ Use when the user reports an issue with a previous routing decision.
 
 ## Common Corrections
 
-| Wrong Routing | Likely Correct |
-|---------------|---------------|
-| ECS for containers | CCE |
-| OBS for block storage | EVS (via huawei-ecs) |
-| RDS for cache | DCS (via huawei-dds-dcs) |
-| FunctionGraph for long-running tasks | ECS or CCE |
+| Wrong Routing                        | Likely Correct           |
+| ------------------------------------ | ------------------------ |
+| ECS for containers                   | CCE                      |
+| OBS for block storage                | EVS (via huawei-ecs)     |
+| RDS for cache                        | DCS (via huawei-dds-dcs) |
+| FunctionGraph for long-running tasks | ECS or CCE               |

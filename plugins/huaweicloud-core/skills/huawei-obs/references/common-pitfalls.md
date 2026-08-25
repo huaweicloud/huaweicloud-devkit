@@ -6,13 +6,13 @@
 
 OBS 使用 **obsutil-style** 子命令，不是 API-style 操作名：
 
-| 错误写法（API-style） | 正确写法（obsutil-style） |
-|----------------------|--------------------------|
-| `OBS --help` | `hcloud OBS help`（无 `--`，`help` 是子命令） |
-| `OBS CreateBucket` | `hcloud OBS mb obs://<bucket>` |
-| `OBS PutObject` | `hcloud OBS cp <file> obs://<bucket>/` |
-| `OBS DeleteBucket` | `hcloud OBS rm obs://<bucket> -r` |
-| `OBS ListBuckets` | `hcloud OBS ls` |
+| 错误写法（API-style） | 正确写法（obsutil-style）                     |
+| --------------------- | --------------------------------------------- |
+| `OBS --help`          | `hcloud OBS help`（无 `--`，`help` 是子命令） |
+| `OBS CreateBucket`    | `hcloud OBS mb obs://<bucket>`                |
+| `OBS PutObject`       | `hcloud OBS cp <file> obs://<bucket>/`        |
+| `OBS DeleteBucket`    | `hcloud OBS rm obs://<bucket> -r`             |
+| `OBS ListBuckets`     | `hcloud OBS ls`                               |
 
 ## 独立凭证配置
 
@@ -45,6 +45,7 @@ hcloud OBS config -i
 ```
 
 **规避方法**：
+
 1. 先 `-dryRun` 预览实际键名，再执行真实上传
 2. 或先将本地目录重命名为目标前缀名，如 `mv devkit/ root/` 后上传 `root/`
 3. 或使用 `-flat` 参数（如支持）
@@ -60,11 +61,11 @@ KooCLI OBS **不支持** `SetBucketWebsite` 命令。配置静态网站托管需
 
 ## 权限模型（三层）
 
-| 层级 | 作用域 | 优先级 |
-|------|--------|--------|
-| IAM Policy | 用户/用户组 | 最高 |
-| Bucket Policy | 桶级 | 中 |
-| ACL | 对象级 | 最低 |
+| 层级          | 作用域      | 优先级 |
+| ------------- | ----------- | ------ |
+| IAM Policy    | 用户/用户组 | 最高   |
+| Bucket Policy | 桶级        | 中     |
+| ACL           | 对象级      | 最低   |
 
 **关键规则**：三层中**最严格**的生效。Bucket Policy 设为 public-read，但 IAM deny 了 → 结果是 deny。
 

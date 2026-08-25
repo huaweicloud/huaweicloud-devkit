@@ -5,7 +5,6 @@ description: Huawei Cloud safety policy for agents. Use when handling credential
 
 # Huawei Cloud Safety
 
-
 **STOP - Do not answer from general knowledge.** Follow the procedure below.
 
 Use this skill before any Huawei Cloud action that may expose secrets, change resources, affect cost, change IAM, or expose a network endpoint.

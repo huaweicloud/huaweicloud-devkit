@@ -89,44 +89,24 @@ test('classifyHcloudArgs allows read-only list and show operations', () => {
 test('classifyHcloudArgs blocks obsutil write commands', () => {
   const writes = ['mb', 'cp', 'mv', 'rm', 'delete', 'mkdir', 'sync', 'chattri', 'bucketpolicy'];
   for (const op of writes) {
-    assert.equal(
-      classifyHcloudArgs(['obs', op, 'obs://bucket']).decision,
-      'deny',
-      `obs ${op} should be blocked`,
-    );
+    assert.equal(classifyHcloudArgs(['obs', op, 'obs://bucket']).decision, 'deny', `obs ${op} should be blocked`);
   }
 });
 
 test('classifyHcloudArgs allows obsutil read commands', () => {
   const reads = ['ls', 'stat', 'help', 'version'];
   for (const op of reads) {
-    assert.equal(
-      classifyHcloudArgs(['obs', op]).decision,
-      'allow',
-      `obs ${op} should be allowed`,
-    );
+    assert.equal(classifyHcloudArgs(['obs', op]).decision, 'allow', `obs ${op} should be allowed`);
   }
 });
 
 test('classifyHcloudArgs blocks execution operations (Invoke, Trigger, Deploy)', () => {
   const execs = ['InvokeFunction', 'SyncInvokeFunction', 'AsyncInvokeFunction', 'Send'];
   for (const op of execs) {
-    assert.equal(
-      classifyHcloudArgs(['FunctionGraph', op]).decision,
-      'deny',
-      `${op} should be blocked as execution`,
-    );
+    assert.equal(classifyHcloudArgs(['FunctionGraph', op]).decision, 'deny', `${op} should be blocked as execution`);
   }
-  assert.equal(
-    classifyHcloudArgs(['ECS', 'StartServers']).decision,
-    'deny',
-    'ECS StartServers should be blocked',
-  );
-  assert.equal(
-    classifyHcloudArgs(['ECS', 'RebootServers']).decision,
-    'deny',
-    'ECS RebootServers should be blocked',
-  );
+  assert.equal(classifyHcloudArgs(['ECS', 'StartServers']).decision, 'deny', 'ECS StartServers should be blocked');
+  assert.equal(classifyHcloudArgs(['ECS', 'RebootServers']).decision, 'deny', 'ECS RebootServers should be blocked');
 });
 
 test('classifyHcloudArgs blocks hcloud configure show without allowCredentialRead', () => {

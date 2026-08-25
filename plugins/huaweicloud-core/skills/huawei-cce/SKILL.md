@@ -1,6 +1,6 @@
 ---
 name: huawei-cce
-description: "Use when creating or managing CCE Kubernetes clusters. Covers cluster creation, node pools, SWR registry, autoscaling. Triggers: CCE, Kubernetes, K8s, cluster, node pool, container, SWR. NOT for: serverless functions (use huawei-functiongraph), serverless containers (use huawei-cce for CCI redirect)."
+description: 'Use when creating or managing CCE Kubernetes clusters. Covers cluster creation, node pools, SWR registry, autoscaling. Triggers: CCE, Kubernetes, K8s, cluster, node pool, container, SWR. NOT for: serverless functions (use huawei-functiongraph), serverless containers (use huawei-cce for CCI redirect).'
 version: 1
 ---
 
@@ -16,32 +16,33 @@ Domain expertise for CCE (Cloud Container Engine) and SWR (Software Repository f
 
 ## Critical Warnings
 
-| Trap | Why |
-|------|-----|
-| **KooCLI 7.x: CreateCluster/CreateNodePool broken** | OPENAPI_ERROR in KooCLI 7.2.12. Use `CreateAutopilotCluster` for serverless, or Python SDK for VM clusters |
-| Cluster type immutable | Cannot change hybrid/traditional after creation |
-| Master managed by Huawei | No SSH to master. Use kubectl or kubectl-cce |
-| Network model affects pod IP | VPC network gives pods VPC IPs |
-| Addon ops use UID not name | `ShowAddonInstance` returns `metadata.uid` for install/uninstall/update |
-| SWR enterprise instance costs | `postPaid` billing. One-time activation at console required |
+| Trap                                                    | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Huawei Cloud API returns errors one field at a time** | When creating clusters/services with multiple invalid fields, the API reports only the first error, not all errors at once. After fixing one field and resubmitting, the next call reveals the next error — iterating N times for N bad fields. This compounds with long cluster creation times (~10 min). To avoid this loop, run `hcloud CCE <Operation> --help` and validate every parameter with its constraints before the first call. Use `--cli-jsonInput` with a validated JSON file to reduce reformatting overhead between retries. |
+| **KooCLI 7.x: CreateCluster/CreateNodePool broken**     | OPENAPI_ERROR in KooCLI 7.2.12. Use `CreateAutopilotCluster` for serverless, or Python SDK for VM clusters                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| Cluster type immutable                                  | Cannot change hybrid/traditional after creation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Master managed by Huawei                                | No SSH to master. Use kubectl or kubectl-cce                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Network model affects pod IP                            | VPC network gives pods VPC IPs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| Addon ops use UID not name                              | `ShowAddonInstance` returns `metadata.uid` for install/uninstall/update                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| SWR enterprise instance costs                           | `postPaid` billing. One-time activation at console required                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ## Common Workflows
 
-| Task | Operation | Service |
-|------|-----------|---------|
-| List clusters | `ListClusters` | CCE |
-| Create cluster | `CreateCluster` | CCE |
-| Delete cluster | `DeleteCluster` | CCE |
-| Hibernate cluster | `HibernateCluster` | CCE |
-| List node pools | `ListNodePools` | CCE |
-| Create node pool | `CreateNodePool` | CCE |
-| List nodes | `ListNodes` | CCE |
-| Get kubeconfig | `CreateKubernetesClusterCert` | CCE |
-| List addons | `ListAddonInstances` | CCE |
-| Docker login (SWR) | `CreateAuthorizationToken` | SWR |
-| Create SWR org | `CreateNamespace` | SWR |
-| Create SWR repo | `CreateRepo` | SWR |
-| List repos | `ListReposDetails` | SWR |
+| Task               | Operation                     | Service |
+| ------------------ | ----------------------------- | ------- |
+| List clusters      | `ListClusters`                | CCE     |
+| Create cluster     | `CreateCluster`               | CCE     |
+| Delete cluster     | `DeleteCluster`               | CCE     |
+| Hibernate cluster  | `HibernateCluster`            | CCE     |
+| List node pools    | `ListNodePools`               | CCE     |
+| Create node pool   | `CreateNodePool`              | CCE     |
+| List nodes         | `ListNodes`                   | CCE     |
+| Get kubeconfig     | `CreateKubernetesClusterCert` | CCE     |
+| List addons        | `ListAddonInstances`          | CCE     |
+| Docker login (SWR) | `CreateAuthorizationToken`    | SWR     |
+| Create SWR org     | `CreateNamespace`             | SWR     |
+| Create SWR repo    | `CreateRepo`                  | SWR     |
+| List repos         | `ListReposDetails`            | SWR     |
 
 ## SWR Image Push Workflow
 
@@ -75,14 +76,15 @@ See `hcloud CCI --help` for full operation list.
 
 ## Troubleshooting
 
-| Error | Fix |
-|-------|-----|
-| kubectl connection refused | Verify cluster Running; use `kubectl cce` (no EIP needed) |
-| Node pool creation failed | Check VPC/subnet availability and flavor capacity |
-| Docker push 401 | Re-run `CreateAuthorizationToken` (token expired) |
-| SVCSTG.SWR.4030170 | Missing `sts::createServiceBearerToken` IAM permission. Grant SWR Admin role or add policy |
-| Addon install fails | Use `metadata.uid` from `ShowAddonInstance`, not name |
-| `kubectl cce` not found | Install plugin: `kubectl cce` uses AK/SK, no kubeconfig required |
+| Error                            | Fix                                                                                                                                                                                                                                                               |
+| -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| kubectl connection refused       | Verify cluster Running; use `kubectl cce` (no EIP needed)                                                                                                                                                                                                         |
+| Node pool creation failed        | Check VPC/subnet availability and flavor capacity                                                                                                                                                                                                                 |
+| Docker push 401                  | Re-run `CreateAuthorizationToken` (token expired)                                                                                                                                                                                                                 |
+| SVCSTG.SWR.4030170               | Missing `sts::createServiceBearerToken` IAM permission. Grant SWR Admin role or add policy                                                                                                                                                                        |
+| Addon install fails              | Use `metadata.uid` from `ShowAddonInstance`, not name                                                                                                                                                                                                             |
+| `kubectl cce` not found          | Install plugin: `kubectl cce` uses AK/SK, no kubeconfig required                                                                                                                                                                                                  |
+| Serial field-by-field API errors | The API reports errors one field at a time. Fix a field, retry, get the next error — each cycle ~10 min for cluster operations. Mitigation: validate all parameters against `--help` constraints before the first call; use `--cli-jsonInput` for faster retries. |
 
 ## Security Considerations
 

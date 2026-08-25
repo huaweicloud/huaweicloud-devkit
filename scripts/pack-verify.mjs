@@ -8,9 +8,8 @@ import { fileURLToPath } from 'node:url';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
-const quote = (arg) => `"${arg.replace(/"/g, '\\"')}"`;
-const runNpm = (args, options) =>
-  execSync([npm, ...args.map(quote)].join(' '), { stdio: 'ignore', ...options });
+const quote = (arg) => `"${arg.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+const runNpm = (args, options) => execSync([npm, ...args.map(quote)].join(' '), { stdio: 'ignore', ...options });
 
 const packed = JSON.parse(
   runNpm(['pack', '--json'], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }),

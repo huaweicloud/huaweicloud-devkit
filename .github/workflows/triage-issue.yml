@@ -1,110 +1,62 @@
 name: Issue Triage
 
 on:
-
   issues:
-
     types: [opened]
-
   issue_comment:
-
     types: [created]
 
 permissions:
-
   issues: write
-
   contents: read
 
 jobs:
-
   triage:
-
     runs-on: ubuntu-latest
-
     steps:
-
       - name: Checkout .github org repo
-
         uses: actions/checkout@v4
-
         with:
-
           repository: ${{ github.repository_owner }}/.github
-
           path: .github-repo
-
           ref: main
-
           token: ${{ secrets.BOT_TOKEN }}
 
       - name: Set up Python
-
         uses: actions/setup-python@v5
-
         with:
-
           python-version: '3.12'
 
       - name: Install dependencies
-
         run: pip install pyyaml
 
       - name: Run Issue Bot
-
         env:
-
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
           GITHUB_EVENT_PATH: ${{ github.event_path }}
-
           GITHUB_EVENT_NAME: ${{ github.event_name }}
-
           GITHUB_REPOSITORY: ${{ github.repository }}
-
         run: python3 .github-repo/actions/issue-bot/issue_bot.py
 
       - name: Mark as triaged
-
         if: github.event_name == 'issues'
-
         uses: actions/github-script@v7
-
         with:
-
           script: |
-
             const { data: issue } = await github.rest.issues.get({
-
               owner: context.repo.owner,
-
               repo: context.repo.repo,
-
               issue_number: context.issue.number
-
             });
-
             const currentLabels = issue.labels.map(l => l.name);
-
             if (currentLabels.includes('status/triaged') || currentLabels.includes('type/bug') || currentLabels.includes('type/feature')) {
-
               const newLabels = currentLabels
-
                 .filter(l => l !== 'status/pending')
-
                 .concat('status/triaged');
-
               await github.rest.issues.update({
-
                 owner: context.repo.owner,
-
                 repo: context.repo.repo,
-
                 issue_number: context.issue.number,
-
                 labels: [...new Set(newLabels)]
-
               });
-
             }
-

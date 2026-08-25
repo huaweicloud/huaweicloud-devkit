@@ -1,3 +1,12 @@
+/*
+ * This file contains code derived from hwlink.
+ *
+ * Source:
+ * https://gitcode.com/huawei-developers/hwlink
+ *
+ * Licensed under the ISC License.
+ */
+
 import {
   OpCode,
   ReserveSource,
@@ -54,13 +63,15 @@ class HwlinkTerminalChannel {
   onopen() {
     if (this.closed || this.opened) return;
     this.opened = true;
-    this.sendRaw(createPacket({
-      operation: OpCode.OpNewCmdTerminal,
-      reserve: ReserveSource.Web,
-      identifier: this.identifier,
-      source: this.mux ? this.mux.source : 0,
-      payload: encoder.encode(this.username),
-    }));
+    this.sendRaw(
+      createPacket({
+        operation: OpCode.OpNewCmdTerminal,
+        reserve: ReserveSource.Web,
+        identifier: this.identifier,
+        source: this.mux ? this.mux.source : 0,
+        payload: encoder.encode(this.username),
+      }),
+    );
     if (this.onReadyCb) this.onReadyCb();
   }
 
@@ -73,13 +84,15 @@ class HwlinkTerminalChannel {
     }
 
     if (isSubStreamPing(packet.operation)) {
-      this.sendRaw(createPacket({
-        operation: OpCode.OpCmdTerminalData | OpCode.OpSubStreamPong,
-        reserve: ReserveSource.Web,
-        identifier: this.identifier,
-        source: this.mux ? this.mux.source : 0,
-        payload: new Uint8Array(0),
-      }));
+      this.sendRaw(
+        createPacket({
+          operation: OpCode.OpCmdTerminalData | OpCode.OpSubStreamPong,
+          reserve: ReserveSource.Web,
+          identifier: this.identifier,
+          source: this.mux ? this.mux.source : 0,
+          payload: new Uint8Array(0),
+        }),
+      );
       return;
     }
 
@@ -105,13 +118,15 @@ class HwlinkTerminalChannel {
   }
 
   sendTerminalData(payload) {
-    this.sendRaw(createPacket({
-      operation: OpCode.OpCmdTerminalData | OpCode.OpSubStreamPong,
-      reserve: ReserveSource.Web,
-      identifier: this.identifier,
-      source: this.mux ? this.mux.source : 0,
-      payload,
-    }));
+    this.sendRaw(
+      createPacket({
+        operation: OpCode.OpCmdTerminalData | OpCode.OpSubStreamPong,
+        reserve: ReserveSource.Web,
+        identifier: this.identifier,
+        source: this.mux ? this.mux.source : 0,
+        payload,
+      }),
+    );
   }
 
   sendText(text) {
@@ -124,13 +139,15 @@ class HwlinkTerminalChannel {
     const view = new DataView(payload.buffer);
     view.setUint16(0, rows, false);
     view.setUint16(2, cols, false);
-    this.sendRaw(createPacket({
-      operation: OpCode.OpCmdTerminalResize,
-      reserve: ReserveSource.Web,
-      identifier: this.identifier,
-      source: this.mux ? this.mux.source : 0,
-      payload,
-    }));
+    this.sendRaw(
+      createPacket({
+        operation: OpCode.OpCmdTerminalResize,
+        reserve: ReserveSource.Web,
+        identifier: this.identifier,
+        source: this.mux ? this.mux.source : 0,
+        payload,
+      }),
+    );
   }
 
   sendRaw(data) {
@@ -153,6 +170,4 @@ class HwlinkTerminalChannel {
   }
 }
 
-export {
-  HwlinkTerminalChannel,
-};
+export { HwlinkTerminalChannel };

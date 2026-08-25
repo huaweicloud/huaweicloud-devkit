@@ -20,21 +20,23 @@ hcloud ECS ListFlavors --cli-region=<region> --cli-output=json \
 
 ## Step 2: Filter by scenario
 
-| Scenario | Look for | Preference |
-|----------|----------|------------|
-| Web app / microservices | General-purpose families (ac, s, sn) | 2-4 vCPU, 4-8 GB RAM |
-| Database / big data | Memory-optimized families (m, r) | 4-8 vCPU, 16-64 GB RAM |
-| AI inference / training | GPU families (g, p) | 8+ vCPU, 64+ GB RAM |
-| HPC / high throughput | High-IO families (h, ir, i) | 8+ vCPU, local SSD |
+| Scenario                | Look for                             | Preference             |
+| ----------------------- | ------------------------------------ | ---------------------- |
+| Web app / microservices | General-purpose families (ac, s, sn) | 2-4 vCPU, 4-8 GB RAM   |
+| Database / big data     | Memory-optimized families (m, r)     | 4-8 vCPU, 16-64 GB RAM |
+| AI inference / training | GPU families (g, p)                  | 8+ vCPU, 64+ GB RAM    |
+| HPC / high throughput   | High-IO families (h, ir, i)          | 8+ vCPU, local SSD     |
 
 ## Step 3: Match spec from ListFlavors output
 
 Common naming pattern: `<family><gen>.<type>x<ratio>`
+
 - `ac6.2xlarge.2` = ac6 family, 2xlarge (8 vCPU), ratio 2 (vCPU:RAM = 1:2 → 16 GB)
 
 ## Do Not Hardcode
 
 Flavor family names are region-dependent. Example discrepancies seen in testing:
+
 - cn-south-1: ac6/ac7/kc/r-c7e (s6/m6/g6 NOT available)
 - Other regions may have s6/m6/g6 families
 
@@ -44,10 +46,10 @@ Always run ListFlavors and pick from actual results.
 
 `ListFlavors` returns ALL specs including abandoned ones. Before selecting a spec, check the `os_extra_specs` field in the JSON response:
 
-| Field | Values | Meaning |
-|-------|--------|---------|
+| Field                                  | Values                         | Meaning                                                                              |
+| -------------------------------------- | ------------------------------ | ------------------------------------------------------------------------------------ |
 | `os_extra_specs.cond:operation:status` | `normal`, `abandon`, `sellout` | Only `normal` specs can be created. `abandon` = deprecated, `sellout` = out of stock |
-| `os_extra_specs.cond:operation:az` | e.g. `cn-north-4g(normal)` | Spec is available in this AZ. Multiple entries = multiple AZ support |
+| `os_extra_specs.cond:operation:az`     | e.g. `cn-north-4g(normal)`     | Spec is available in this AZ. Multiple entries = multiple AZ support                 |
 
 A flavor can be `normal` globally but `abandon` in specific AZs. Selecting an `abandon` or `sellout` spec will fail with **`Ecs.0019`** at creation time — there is no pre-flight validation in `ListFlavors`. If creation fails:
 

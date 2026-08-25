@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
-import { resolveCredentials } from '../auth/credentials.mjs';
+import { resolveCredentialsWithRuntime } from '../auth/credentials.mjs';
+import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 
 const BASE_URL = process.env.HWLINK_ENDPOINT || 'https://devstation.myhuaweicloud.com';
 
@@ -13,9 +14,7 @@ function hmacSha256(key, data) {
 
 function urlEncode(str) {
   const hex = (c) => '%' + (c < 16 ? '0' : '') + c.toString(16).toUpperCase();
-  const noEscape = new Set(
-    'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~'.split('')
-  );
+  const noEscape = new Set('ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.~'.split(''));
   let out = '';
   for (const ch of str) {
     const c = ch.codePointAt(0);
@@ -53,9 +52,7 @@ function signRequest(method, path, query, body, ak, sk, securitytoken) {
       .join('/') +
     '/';
 
-  const signedHeaders = securitytoken
-    ? 'host;x-sdk-date;x-security-token'
-    : 'host;x-sdk-date';
+  const signedHeaders = securitytoken ? 'host;x-sdk-date;x-security-token' : 'host;x-sdk-date';
   const canonicalHeaders = securitytoken
     ? `host:${host}\nx-sdk-date:${ts}\nx-security-token:${securitytoken}\n`
     : `host:${host}\nx-sdk-date:${ts}\n`;
@@ -63,14 +60,7 @@ function signRequest(method, path, query, body, ak, sk, securitytoken) {
   const bodyStr = body ? JSON.stringify(body) : '';
   const payloadHash = sha256Hex(bodyStr);
 
-  const canonicalRequest = [
-    method,
-    curi,
-    cqs,
-    canonicalHeaders,
-    signedHeaders,
-    payloadHash,
-  ].join('\n');
+  const canonicalRequest = [method, curi, cqs, canonicalHeaders, signedHeaders, payloadHash].join('\n');
 
   const stringToSign = `SDK-HMAC-SHA256\n${ts}\n${sha256Hex(canonicalRequest)}`;
   const signature = hmacSha256(sk, stringToSign);
@@ -87,7 +77,7 @@ function signRequest(method, path, query, body, ak, sk, securitytoken) {
 }
 
 export function getCredentials() {
-  const credentials = resolveCredentials();
+  const credentials = resolveCredentialsWithRuntime();
   return { ak: credentials.ak, sk: credentials.sk, securitytoken: credentials.securityToken };
 }
 
@@ -96,17 +86,35 @@ async function apiGet(path, query, ak, sk, securitytoken) {
   const qs = sortedQs(query);
   const fullPath = qs ? `${path}?${qs}` : path;
   const headers = signRequest('GET', path, query, undefined, ak, sk, securitytoken);
-  const resp = await fetch(`${BASE_URL}${fullPath}`, { headers });
+  const url = `${BASE_URL}${fullPath}`;
+  const dispatcher = await getProxyDispatcher(url);
+  const fetchOpts = { headers };
+  if (dispatcher) {
+    fetchOpts.dispatcher = dispatcher;
+    const { fetch: undiciFetch } = await import('undici');
+    const resp = await undiciFetch(url, fetchOpts);
+    return { status: resp.status, data: await resp.json() };
+  }
+  const resp = await fetch(url, fetchOpts);
   return { status: resp.status, data: await resp.json() };
 }
 
 async function apiPost(path, body, ak, sk, securitytoken) {
   const headers = signRequest('POST', path, {}, body, ak, sk, securitytoken);
-  const resp = await fetch(`${BASE_URL}${path}`, {
+  const url = `${BASE_URL}${path}`;
+  const dispatcher = await getProxyDispatcher(url);
+  const fetchOpts = {
     method: 'POST',
     headers: { ...headers, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
-  });
+  };
+  if (dispatcher) {
+    fetchOpts.dispatcher = dispatcher;
+    const { fetch: undiciFetch } = await import('undici');
+    const resp = await undiciFetch(url, fetchOpts);
+    return { status: resp.status, data: await resp.json() };
+  }
+  const resp = await fetch(url, fetchOpts);
   return { status: resp.status, data: await resp.json() };
 }
 
@@ -114,7 +122,9 @@ export async function createConnection(envId, ak, sk, securitytoken) {
   const { status, data } = await apiPost(
     `/open-api-public/v1/devenvs/${envId}/connections`,
     { source: 'CLI' },
-    ak, sk, securitytoken
+    ak,
+    sk,
+    securitytoken,
   );
 
   if (status !== 200 || data?.error_code !== '0000' || !data?.result?.connection_id) {
@@ -129,13 +139,12 @@ export async function createConnection(envId, ak, sk, securitytoken) {
     const { data: getData } = await apiGet(
       `/open-api-public/v1/devenvs/${envId}/connections/${connectionId}`,
       {},
-      ak, sk, securitytoken
+      ak,
+      sk,
+      securitytoken,
     );
 
-    if (
-      getData?.result?.connection_info?.url &&
-      getData.result.connection_info.extensions?.source != null
-    ) {
+    if (getData?.result?.connection_info?.url && getData.result.connection_info.extensions?.source != null) {
       const u = new URL(getData.result.connection_info.url);
       u.searchParams.set('source', String(getData.result.connection_info.extensions.source));
       process.stderr.write(`\rConnection ${connectionId} established (${i}s).\n`);
@@ -149,5 +158,3 @@ export async function createConnection(envId, ak, sk, securitytoken) {
 
   throw new Error(`Timed out waiting for connection ${connectionId}`);
 }
-
-

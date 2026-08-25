@@ -1,0 +1,24 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "release-type": "node",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "changelog-sections": [
+    { "type": "feat", "section": "Features", "hidden": false },
+    { "type": "fix", "section": "Bug Fixes", "hidden": false },
+    { "type": "docs", "section": "Documentation", "hidden": false },
+    { "type": "chore", "section": "Miscellaneous", "hidden": true },
+    { "type": "refactor", "section": "Miscellaneous", "hidden": true }
+  ],
+  "packages": {
+    ".": {
+      "package-name": "huaweicloud-devkit",
+      "extra-files": [
+        "plugins/huaweicloud-core/.codex-plugin/plugin.json",
+        "plugins/huaweicloud-core/.claude-plugin/plugin.json",
+        "plugins/huaweicloud-core/.cursor-plugin/plugin.json",
+        "plugins/huaweicloud-core/.workbuddy-plugin/plugin.json"
+      ]
+    }
+  }
+}

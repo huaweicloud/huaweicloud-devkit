@@ -2,14 +2,14 @@
 
 ## Runtime Options
 
-| Runtime | Handler Format | Example |
-|---------|---------------|---------|
-| Python3.9 | `index.handler` | `def handler(event, context): return {"statusCode": 200}` |
-| Python3.10 | `index.handler` | Same as 3.9 |
-| Node.js 18 | `index.handler` | `exports.handler = async (event, context) => ({statusCode: 200})` |
-| Java 8/11/17 | `com.example.Handler::handleRequest` | Java class method |
-| Go 1.x | `handler` | Go function name |
-| C# (.NET Core) | `CsharpDemo::CsharpDemo.Function::Handler` | Namespace.Class::Method |
+| Runtime        | Handler Format                             | Example                                                           |
+| -------------- | ------------------------------------------ | ----------------------------------------------------------------- |
+| Python3.9      | `index.handler`                            | `def handler(event, context): return {"statusCode": 200}`         |
+| Python3.10     | `index.handler`                            | Same as 3.9                                                       |
+| Node.js 18     | `index.handler`                            | `exports.handler = async (event, context) => ({statusCode: 200})` |
+| Java 8/11/17   | `com.example.Handler::handleRequest`       | Java class method                                                 |
+| Go 1.x         | `handler`                                  | Go function name                                                  |
+| C# (.NET Core) | `CsharpDemo::CsharpDemo.Function::Handler` | Namespace.Class::Method                                           |
 
 ## Create Function (inline)
 
@@ -26,13 +26,13 @@ hcloud FunctionGraph CreateFunction \
   --cli-region=<region>
 ```
 
-| Param | Required | Range/Default |
-|-------|----------|---------------|
-| `--func_name` | Yes | 1-60 chars |
-| `--runtime` | Yes | See runtime options above |
-| `--handler` | Yes | Per runtime |
-| `--memory_size` | No | 128-4096 MB, default 128 |
-| `--timeout` | No | 1-900s, default 3 |
+| Param           | Required | Range/Default             |
+| --------------- | -------- | ------------------------- |
+| `--func_name`   | Yes      | 1-60 chars                |
+| `--runtime`     | Yes      | See runtime options above |
+| `--handler`     | Yes      | Per runtime               |
+| `--memory_size` | No       | 128-4096 MB, default 128  |
+| `--timeout`     | No       | 1-900s, default 3         |
 
 ## ZIP Upload Warning
 
@@ -49,11 +49,11 @@ Grant `FunctionGraph FullAccess` role or custom policy.
 
 ## Error Codes
 
-| Error | Root Cause -> Fix |
-|-------|-------------------|
-| FSS.0400 | `:latest` suffix on URN. Strip it |
-| FSS.1417 | Missing DEDICATEDGATEWAY params |
-| FSS.0403 | Insufficient IAM permission |
+| Error    | Root Cause -> Fix                                                                                                                           |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| FSS.0400 | `:latest` suffix on URN. Strip it                                                                                                           |
+| FSS.1417 | Missing DEDICATEDGATEWAY params                                                                                                             |
+| FSS.0403 | Insufficient IAM permission                                                                                                                 |
 | FSS.1020 | Missing `--app_xrole` when binding VPC. Create IAM agency with `trust_domain_name=functiongraph`. See `huawei-iam` skill → Agencies section |
 
 ## VPC + Agency Configuration
@@ -68,4 +68,5 @@ hcloud IAM GrantRoleToAgency --agency_name=<name> --role_id=<role-id>
 # 3. Use in CreateFunction
 hcloud FunctionGraph CreateFunction --func_vpc.vpc_id=<vpc> --func_vpc.subnet_id=<subnet> --app_xrole=<name> ...
 ```
+
 | QuotaExceeded | Max 10 functions per project per region |

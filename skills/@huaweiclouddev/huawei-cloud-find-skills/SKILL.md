@@ -6,6 +6,7 @@ description: |
 
 > [!IMPORTANT]
 > **For any Huawei Cloud query or management task:**
+>
 > 1. **Search** — use this skill (`huawei-cloud-find-skills`) to find the relevant Skill.
 > 2. **Install** — install the matched Skill (see [Step 3](#step-3-install-skill)).
 > 3. **Execute** — follow the installed Skill's instructions to fulfill the request.
@@ -80,7 +81,6 @@ SKILLS_INDEX_URL=https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index
 SKILLS_CN_EN_MAP_URL=https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/cn-en-map.json?ref=main
 ```
 
-
 ## Core Workflow
 
 ### Step 1: Search Skills
@@ -106,6 +106,7 @@ python scripts/search-skills.py -c "<category>"
 → [scripts/search-skills.py](scripts/search-skills.py) (Python — cross-platform)
 
 **What the script does**:
+
 1. Fetches `index.json` and `cn-en-map.json` via HTTP GET from GitCode API v5 (auto-decodes base64 content)
 2. Expands keywords via `cn-en-map.json` (bidirectional CN↔EN, e.g., "ECS" → "ECS, 弹性云服务器, 云服务器")
 3. Scores each skill: name match **+10**, trigger match **+8**, description match **+5**, service match **+3**
@@ -145,19 +146,18 @@ If all installation attempts fail, report the error message to the user. Do NOT 
 
 ## Parameters
 
-| Parameter | Required/Optional | Description | Default |
-|-----------|-------------------|-------------|---------|
-| `Keyword` | Optional | Search keyword (matched against name, description, triggers, service) | None |
-| `Category` | Optional | Category code for filtering (e.g., "computing", "storage", "network") | None |
-| `skill-name` | Required (Step 3) | Exact skill name for installing | None |
-
+| Parameter    | Required/Optional | Description                                                           | Default |
+| ------------ | ----------------- | --------------------------------------------------------------------- | ------- |
+| `Keyword`    | Optional          | Search keyword (matched against name, description, triggers, service) | None    |
+| `Category`   | Optional          | Category code for filtering (e.g., "computing", "storage", "network") | None    |
+| `skill-name` | Required (Step 3) | Exact skill name for installing                                       | None    |
 
 ## Reference Documentation
 
-| Document | Description |
-|----------|-------------|
-| GitCode API v5 `index.json` | Skill index fetched via HTTP GET (base64 decoded) |
-| GitCode API v5 `cn-en-map.json` | Chinese-English keyword mapping fetched via HTTP GET (base64 decoded) |
+| Document                                             | Description                                                                           |
+| ---------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| GitCode API v5 `index.json`                          | Skill index fetched via HTTP GET (base64 decoded)                                     |
+| GitCode API v5 `cn-en-map.json`                      | Chinese-English keyword mapping fetched via HTTP GET (base64 decoded)                 |
 | [scripts/search-skills.py](scripts/search-skills.py) | Search script (Python) — fetches from GitCode API v5, expands keywords, scores, sorts |
 
 ## Search Heuristics
@@ -194,6 +194,7 @@ If all installation attempts fail, report the error message to the user. Do NOT 
 
 **Cause**: Keywords don't match any skill
 **Solution**:
+
 1. Try broader keywords
 2. Switch between Chinese and English keywords (e.g., "对象存储" → "obs")
 3. List all skills: `python scripts/search-skills.py -c "computing"`

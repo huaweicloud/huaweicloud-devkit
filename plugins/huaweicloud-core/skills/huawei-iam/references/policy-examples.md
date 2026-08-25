@@ -9,6 +9,7 @@ Huawei Cloud IAM uses a different action naming convention from AWS. Actions use
 ```
 
 Examples:
+
 - `ecs:servers:list` (NOT `ecs:ListInstances`)
 - `obs:bucket:GetBucket` (NOT `s3:GetBucket`)
 - `vpc:vpcs:list` (NOT `vpc:DescribeVpcs`)
@@ -18,77 +19,100 @@ Always verify exact action names via `https://support.huaweicloud.com/usermanual
 ## Read-Only Policies
 
 ### ECS Read-Only
+
 ```json
 {
   "Version": "1.1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["ecs:servers:list", "ecs:servers:get", "ecs:*:list", "ecs:*:get"],
-    "Resource": ["*"]
-  }]
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["ecs:servers:list", "ecs:servers:get", "ecs:*:list", "ecs:*:get"],
+      "Resource": ["*"]
+    }
+  ]
 }
 ```
 
 ### OBS Read-Only (scoped bucket)
+
 ```json
 {
   "Version": "1.1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["obs:bucket:Get*", "obs:bucket:List*", "obs:object:Get*"],
-    "Resource": ["obs:*:*:bucket:my-bucket", "obs:*:*:bucket:my-bucket/*"]
-  }]
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["obs:bucket:Get*", "obs:bucket:List*", "obs:object:Get*"],
+      "Resource": ["obs:*:*:bucket:my-bucket", "obs:*:*:bucket:my-bucket/*"]
+    }
+  ]
 }
 ```
 
 ### FunctionGraph Read-Only
+
 ```json
 {
   "Version": "1.1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["functiongraph:function:getConfig", "functiongraph:function:list", "functiongraph:function:invoke", "functiongraph:trigger:list"],
-    "Resource": ["*"]
-  }]
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "functiongraph:function:getConfig",
+        "functiongraph:function:list",
+        "functiongraph:function:invoke",
+        "functiongraph:trigger:list"
+      ],
+      "Resource": ["*"]
+    }
+  ]
 }
 ```
 
 ## Full-Access (Scoped)
 
 ### RDS Operator
+
 ```json
 {
   "Version": "1.1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["rds:*"],
-    "Resource": ["*"],
-    "Condition": {"StringEquals": {"g:ResourceTag/Environment": ["dev", "staging"]}}
-  }]
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["rds:*"],
+      "Resource": ["*"],
+      "Condition": { "StringEquals": { "g:ResourceTag/Environment": ["dev", "staging"] } }
+    }
+  ]
 }
 ```
 
 ### FunctionGraph Developer
+
 ```json
 {
   "Version": "1.1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["functiongraph:function:*", "functiongraph:trigger:*", "functiongraph:runtime:list"],
-    "Resource": ["*"]
-  }]
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["functiongraph:function:*", "functiongraph:trigger:*", "functiongraph:runtime:list"],
+      "Resource": ["*"]
+    }
+  ]
 }
 ```
 
 ### APIG Operator
+
 ```json
 {
   "Version": "1.1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["apig:instance:*", "apig:api:*", "apig:group:*", "apig:environment:*"],
-    "Resource": ["*"]
-  }]
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["apig:instance:*", "apig:api:*", "apig:group:*", "apig:environment:*"],
+      "Resource": ["*"]
+    }
+  ]
 }
 ```
 
@@ -104,15 +128,17 @@ Always verify exact action names via `https://support.huaweicloud.com/usermanual
 ```json
 {
   "Version": "1.1",
-  "Statement": [{
-    "Effect": "Allow",
-    "Action": ["ecs:*"],
-    "Resource": ["*"],
-    "Condition": {
-      "StringEquals": {"g:SourceAccount": "0123456789"},
-      "StringLike": {"g:SourceUrn": "urn:fss:*"}
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["ecs:*"],
+      "Resource": ["*"],
+      "Condition": {
+        "StringEquals": { "g:SourceAccount": "0123456789" },
+        "StringLike": { "g:SourceUrn": "urn:fss:*" }
+      }
     }
-  }]
+  ]
 }
 ```
 

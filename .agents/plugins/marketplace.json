@@ -1,20 +1,20 @@
 {
-    "name":  "huaweicloud-devkit",
-    "interface":  {
-                      "displayName":  "HuaweiCloud Devkit"
-                  },
-    "plugins":  [
-                    {
-                        "name":  "huaweicloud-core",
-                        "source":  {
-                                       "source":  "local",
-                                       "path":  "./plugins/huaweicloud-core"
-                                   },
-                        "policy":  {
-                                       "installation":  "AVAILABLE",
-                                       "authentication":  "ON_USE"
-                                   },
-                        "category":  "Cloud"
-                    }
-                ]
+  "name": "huaweicloud-devkit",
+  "interface": {
+    "displayName": "HuaweiCloud Devkit"
+  },
+  "plugins": [
+    {
+      "name": "huaweicloud-devkit",
+      "source": {
+        "source": "local",
+        "path": "./plugins/huaweicloud-core"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_USE"
+      },
+      "category": "Cloud"
+    }
+  ]
 }

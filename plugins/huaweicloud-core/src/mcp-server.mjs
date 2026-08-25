@@ -1,9 +1,22 @@
 #!/usr/bin/env node
 import { stdin, stdout } from 'node:process';
-import { rmSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { rmSync, existsSync, readFileSync } from 'node:fs';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
+
+try {
+  const { readProxyConfig } = await import('./proxy/proxy-config.mjs');
+  const proxyConfig = readProxyConfig();
+  if (proxyConfig) {
+    if (proxyConfig.https_proxy || proxyConfig.HTTPS_PROXY) {
+      process.env.HTTPS_PROXY = process.env.HTTPS_PROXY || proxyConfig.https_proxy || proxyConfig.HTTPS_PROXY;
+    }
+    if (proxyConfig.http_proxy || proxyConfig.HTTP_PROXY) {
+      process.env.HTTP_PROXY = process.env.HTTP_PROXY || proxyConfig.http_proxy || proxyConfig.HTTP_PROXY;
+    }
+  }
+} catch {}
 
 // The MCP server is now loaded by a live agent session. Clear the install marker
 // in this plugin dir so `doctor` no longer reports "restart needed".
@@ -12,6 +25,20 @@ try {
   const marker = resolve(pluginDir, '.installed');
   if (existsSync(marker)) rmSync(marker, { force: true });
 } catch {}
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pluginRoot = resolve(__dirname, '..');
+const packageRoot = resolve(pluginRoot, '..', '..');
+let pkgVersion = '0.0.0';
+for (const base of [pluginRoot, packageRoot]) {
+  try {
+    const version = JSON.parse(readFileSync(join(base, 'package.json'), 'utf8')).version;
+    if (version) {
+      pkgVersion = version;
+      break;
+    }
+  } catch {}
+}
 
 let buffer = Buffer.alloc(0);
 let useContentLengthFraming = true;
@@ -90,7 +117,7 @@ async function dispatch(method, params) {
       },
       serverInfo: {
         name: 'huaweicloud-devkit',
-        version: '0.1.0',
+        version: pkgVersion,
       },
     };
   }

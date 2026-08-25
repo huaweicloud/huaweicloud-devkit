@@ -5,7 +5,6 @@ description: Safe Huawei Cloud KooCLI usage and authentication guidance. Use whe
 
 # Huawei Cloud CLI And Auth
 
-
 **STOP - Do not answer from general knowledge.** Follow the procedure below.
 
 Use KooCLI `hcloud` for local inspection and reviewed operations. Never ask the user to paste AK/SK, SK, tokens, passwords, or credential files into chat.
@@ -15,16 +14,21 @@ Use KooCLI `hcloud` for local inspection and reviewed operations. Never ask the 
 Official guide: `https://support.huaweicloud.com/qs-hcli/hcli_02_003.html`.
 
 ### Windows
+
 1. Download and unzip: `https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-windows-amd64.zip`
 2. Extract to `%USERPROFILE%\hcloud`, add to user `PATH`
 3. Verify: `hcloud version`
 
 ### Linux (amd64 / arm64)
+
 One-liner (recommended):
+
 ```bash
 curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y
 ```
+
 Or manual download:
+
 ```bash
 # amd64
 curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-linux-amd64.tar.gz"
@@ -33,15 +37,20 @@ tar -zxvf huaweicloud-cli-linux-amd64.tar.gz
 curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-linux-arm64.tar.gz"
 tar -zxvf huaweicloud-cli-linux-arm64.tar.gz
 ```
+
 Move to PATH: `mv $(pwd)/hcloud ~/.local/bin/`
 Verify: `hcloud version`
 
 ### macOS (amd64 / arm64)
+
 One-liner (recommended):
+
 ```bash
 curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y
 ```
+
 Or manual download:
+
 ```bash
 # amd64
 curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-mac-amd64.tar.gz"
@@ -50,6 +59,7 @@ tar -zxvf huaweicloud-cli-mac-amd64.tar.gz
 curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-mac-arm64.tar.gz"
 tar -zxvf huaweicloud-cli-mac-arm64.tar.gz
 ```
+
 Move to PATH: `mv $(pwd)/hcloud /usr/local/bin/`
 Verify: `hcloud version`
 
@@ -111,8 +121,24 @@ hcloud <Service> <ListOp> --cli-output=json --cli-query "items[?status=='ACTIVE'
 hcloud <Service> <Op> --cli-debug=true
 ```
 
+## Credential Resolution Priority
+
+Credentials are resolved in this order (highest priority first):
+
+| Priority | Source                  | Mechanism                                                  | Persistence                     |
+| -------- | ----------------------- | ---------------------------------------------------------- | ------------------------------- |
+| 1        | Runtime credentials     | `huaweicloud_auth_init` tool                               | Memory (cleared on MCP restart) |
+| 2        | Environment variables   | `HW_ACCESS_KEY` / `HW_SECRET_KEY`                          | MCP process lifetime            |
+| 3        | CodeArts project config | `.codeartsdoer/mcp/mcp_settings.json` (project, then user) | File                            |
+| 4        | Global config file      | `~/.config/huaweicloud/credentials.json`                   | Permanent                       |
+| 5        | KooCLI profile          | `~/.hcloud/config.json` (KooCLI only)                      | Permanent                       |
+
+When switching accounts within the same Agent session, use `huaweicloud_auth_init` to set runtime credentials. This overrides all other sources for the current MCP process.
+
 ## Preferred Toolkit Tools
 
+- `huaweicloud_auth_init`
+- `huaweicloud_auth_status`
 - `huaweicloud_check_cli`
 - `huaweicloud_show_profile_redacted`
 - `huaweicloud_plan_cli_command`

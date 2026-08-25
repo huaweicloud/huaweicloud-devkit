@@ -1,6 +1,6 @@
 ---
 name: huawei-rds
-description: "Use when creating, configuring, managing, or troubleshooting RDS instances on Huawei Cloud. Covers MySQL, PostgreSQL, SQL Server. Triggers: RDS, MySQL, PostgreSQL, database instance, backup, read replica. NOT for: GaussDB (use huawei-gaussdb), DDS (use huawei-dds-dcs)."
+description: 'Use when creating, configuring, managing, or troubleshooting RDS instances on Huawei Cloud. Covers MySQL, PostgreSQL, SQL Server. Triggers: RDS, MySQL, PostgreSQL, database instance, backup, read replica. NOT for: GaussDB (use huawei-gaussdb), DDS (use huawei-dds-dcs).'
 version: 1
 ---
 
@@ -13,6 +13,7 @@ Always run `hcloud RDS <Operation> --help` before constructing commands to disco
 ## Prerequisites
 
 Before creating an RDS instance, you MUST have:
+
 - A VPC and subnet (see `huawei-vpc`)
 - A security group with database port open (MySQL=3306, PostgreSQL=5432, SQL Server=1433)
 - Run `hcloud RDS ListFlavors --database_name=<engine> --cli-region=<r>` to get spec codes
@@ -23,32 +24,33 @@ Before creating an RDS instance, you MUST have:
 hcloud RDS <Operation> --cli-region=<region> [--key=value ...]
 ```
 
-| Rule | Detail |
-|------|--------|
-| Service name | `RDS` (uppercase) |
-| Operation | PascalCase: `ListInstances`, `CreateManualBackup` |
-| Params | `--key=value` format. JSON params: `--key='{"k":"v"}'` |
-| Array params | 1-based: `--instance_ids.1=xxx` |
+| Rule           | Detail                                                                            |
+| -------------- | --------------------------------------------------------------------------------- |
+| Service name   | `RDS` (uppercase)                                                                 |
+| Operation      | PascalCase: `ListInstances`, `CreateManualBackup`                                 |
+| Params         | `--key=value` format. JSON params: `--key='{"k":"v"}'`                            |
+| Array params   | 1-based: `--instance_ids.1=xxx`                                                   |
 | Password param | Conflicts with KooCLI system param; use `--cli-jsonInput` (see Critical Warnings) |
 
 ## Critical Warnings
 
-| Trap | Why |
-|------|-----|
-| Engine version immutable | Cannot change MySQL to PostgreSQL in-place |
-| Automated backups use OBS | Backup storage incurs separate charges. Set retention period explicitly |
-| Storage auto-scaling off by default | Enable before storage runs out or instance goes read-only |
-| `--password` conflicts with KooCLI | Use `--cli-jsonInput=<file>` with JSON file (see `--cli-jsonInput` section below). The `printf "b\n"` workaround is broken in KooCLI 7.2.12+ |
-| Volume type must match flavor | General→CLOUDSSD; Dedicated→CLOUDSSD\|ESSD; ARM→ULTRAHIGH |
-| Flavor not in region | Always `ListFlavors` first. Spec codes vary by region |
-| `database_name` is case-sensitive | Use `MySQL` / `PostgreSQL` / `SQLServer` / `MariaDB` — NOT lower-case `mysql` |
-| Instance creation takes 3–8 min | Status: BUILD→MODIFYING→ACTIVE. Poll every 15s: `hcloud RDS ListInstances --cli-region=<r> --instance_id=<id> \| jq '.instances[0].status'` |
-| Body `--region` is required | CreateInstance body requires `--region=<r>` (same as `--cli-region`) or `DBS.280243` |
-| Restore creates new instance | No in-place restore. Verify target flavor before restoring |
+| Trap                                | Why                                                                                                                                          |
+| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engine version immutable            | Cannot change MySQL to PostgreSQL in-place                                                                                                   |
+| Automated backups use OBS           | Backup storage incurs separate charges. Set retention period explicitly                                                                      |
+| Storage auto-scaling off by default | Enable before storage runs out or instance goes read-only                                                                                    |
+| `--password` conflicts with KooCLI  | Use `--cli-jsonInput=<file>` with JSON file (see `--cli-jsonInput` section below). The `printf "b\n"` workaround is broken in KooCLI 7.2.12+ |
+| Volume type must match flavor       | General→CLOUDSSD; Dedicated→CLOUDSSD\|ESSD; ARM→ULTRAHIGH                                                                                    |
+| Flavor not in region                | Always `ListFlavors` first. Spec codes vary by region                                                                                        |
+| `database_name` is case-sensitive   | Use `MySQL` / `PostgreSQL` / `SQLServer` / `MariaDB` — NOT lower-case `mysql`                                                                |
+| Instance creation takes 3–8 min     | Status: BUILD→MODIFYING→ACTIVE. Poll every 15s: `hcloud RDS ListInstances --cli-region=<r> --instance_id=<id> \| jq '.instances[0].status'`  |
+| Body `--region` is required         | CreateInstance body requires `--region=<r>` (same as `--cli-region`) or `DBS.280243`                                                         |
+| Restore creates new instance        | No in-place restore. Verify target flavor before restoring                                                                                   |
 
 ## Instance Management
 
 ### List
+
 ```bash
 hcloud RDS ListInstances --cli-region=<r>
 hcloud RDS ListFlavors --database_name=<engine> --cli-region=<r>
@@ -57,6 +59,7 @@ hcloud RDS ListEngineFlavors --instance_id=<id> --cli-region=<r>
 ```
 
 ### Create Instance
+
 ```bash
 hcloud RDS CreateInstance --cli-region=<r> \
   --region=<r> \
@@ -101,21 +104,22 @@ hcloud RDS CreateInstance --cli-region=<r> \
 
 > Save as `rds-create.json` then: `hcloud RDS CreateInstance --cli-jsonInput=rds-create.json`. For `project_id`, run `hcloud IAM KeystoneListProjects`.
 
-| Param | Required | Note |
-|-------|----------|------|
-| `--name` | Yes | Instance name |
-| `--datastore` | Yes | `--datastore.type=<engine> --datastore.version=<version>` |
-| `--flavor_ref` | Yes | From `ListFlavors` output |
-| `--volume` | Yes | Type matching: General→CLOUDSSD, Dedicated→CLOUDSSD\|ESSD, ARM→ULTRAHIGH |
-| `--vpc_id` | Yes | Must exist in target region |
-| `--subnet_id` | Yes | Must exist in target region |
-| `--security_group_id` | Yes | Must have DB port open |
-| `--availability_zone` | Yes | Use AZ code from `NovaListAvailabilityZones` |
-| `--charge_info` | No | `--charge_info.charge_mode=<mode>`. Default postPaid (pay-per-use). Run `--help` for options |
-| `--password` | Yes | 8-32 chars, uppercase+lowercase+digit+special |
-| `--port` | No | Default 3306 (MySQL) / 5432 (PG) / 1433 (SQL Server) |
+| Param                 | Required | Note                                                                                         |
+| --------------------- | -------- | -------------------------------------------------------------------------------------------- |
+| `--name`              | Yes      | Instance name                                                                                |
+| `--datastore`         | Yes      | `--datastore.type=<engine> --datastore.version=<version>`                                    |
+| `--flavor_ref`        | Yes      | From `ListFlavors` output                                                                    |
+| `--volume`            | Yes      | Type matching: General→CLOUDSSD, Dedicated→CLOUDSSD\|ESSD, ARM→ULTRAHIGH                     |
+| `--vpc_id`            | Yes      | Must exist in target region                                                                  |
+| `--subnet_id`         | Yes      | Must exist in target region                                                                  |
+| `--security_group_id` | Yes      | Must have DB port open                                                                       |
+| `--availability_zone` | Yes      | Use AZ code from `NovaListAvailabilityZones`                                                 |
+| `--charge_info`       | No       | `--charge_info.charge_mode=<mode>`. Default postPaid (pay-per-use). Run `--help` for options |
+| `--password`          | Yes      | 8-32 chars, uppercase+lowercase+digit+special                                                |
+| `--port`              | No       | Default 3306 (MySQL) / 5432 (PG) / 1433 (SQL Server)                                         |
 
 ### Modify / Resize
+
 ```bash
 hcloud RDS StartInstanceRestartAction --instance_id=<id> --cli-region=<r>
 hcloud RDS StartResizeFlavorAction --instance_id=<id> --flavor_ref=<new-id> --cli-region=<r>
@@ -125,6 +129,7 @@ hcloud RDS UpdateInstanceAlias --instance_id=<id> --alias=<new-name> --cli-regio
 ```
 
 ### Delete
+
 ```bash
 hcloud RDS DeleteInstance --instance_id=<id> --cli-region=<r>
 ```
@@ -172,41 +177,41 @@ psql -h <private_ip> -p 5432 -U root -d postgres
 
 If a database client is not installed on the agent's machine, install one:
 
-| Platform | MySQL | PostgreSQL |
-|----------|-------|------------|
-| **Linux** | `apt install mysql-client` / `yum install mysql` | `apt install postgresql-client` |
-| **macOS** | `brew install mysql-client` | `brew install libpq` |
-| **Windows** | Download MySQL Workbench or `winget install Oracle.MySQL` | Download pgAdmin or `winget install PostgreSQL.PostgreSQL` |
+| Platform         | MySQL                                                        | PostgreSQL                                                     |
+| ---------------- | ------------------------------------------------------------ | -------------------------------------------------------------- |
+| **Linux**        | `apt install mysql-client` / `yum install mysql`             | `apt install postgresql-client`                                |
+| **macOS**        | `brew install mysql-client`                                  | `brew install libpq`                                           |
+| **Windows**      | Download MySQL Workbench or `winget install Oracle.MySQL`    | Download pgAdmin or `winget install PostgreSQL.PostgreSQL`     |
 | **Python (any)** | `pip install pymysql` then `python -c "import pymysql; ..."` | `pip install psycopg2` then `python -c "import psycopg2; ..."` |
-| **Docker (any)** | `docker run -it --rm mysql:8 mysql -h <ip> -u root -p` | `docker run -it --rm postgres:16 psql -h <ip> -U root` |
+| **Docker (any)** | `docker run -it --rm mysql:8 mysql -h <ip> -u root -p`       | `docker run -it --rm postgres:16 psql -h <ip> -U root`         |
 
 > If no client can be installed, use the Huawei Cloud **Data Studio** console: https://console.huaweicloud.com/dms/
 
 ## Mutating Operations (Require Approval)
 
-| Operation | Effect |
-|-----------|--------|
-| `CreateInstance` | New instance (billing starts) |
-| `DeleteInstance` | Irreversible data loss |
-| `StartResizeFlavorAction` | Brief interruption during switchover |
-| `StartInstanceEnlargeVolumeAction` | Online, but irreversible |
-| `StartFailover` | Primary-standby switchover |
-| `CreateRestoreInstance` | Creates new instance from backup |
-| `CreateManualBackup` | Incurs OBS storage charges |
-| `DeleteManualBackup` | Irreversible |
+| Operation                          | Effect                               |
+| ---------------------------------- | ------------------------------------ |
+| `CreateInstance`                   | New instance (billing starts)        |
+| `DeleteInstance`                   | Irreversible data loss               |
+| `StartResizeFlavorAction`          | Brief interruption during switchover |
+| `StartInstanceEnlargeVolumeAction` | Online, but irreversible             |
+| `StartFailover`                    | Primary-standby switchover           |
+| `CreateRestoreInstance`            | Creates new instance from backup     |
+| `CreateManualBackup`               | Incurs OBS storage charges           |
+| `DeleteManualBackup`               | Irreversible                         |
 
 ## Troubleshooting
 
-| Error | Root Cause -> Fix |
-|-------|-------------------|
-| Connection refused | SG missing DB port. Add ingress rule |
-| Storage full | Manual resize or enable auto-scaling |
-| DBS.280241 Invalid storage type | Volume type doesn't match flavor group |
-| DBS.280448 Sold out | Try different volume type or AZ |
-| Replication lag | Check `ShowReplicationStatus`. Consider read replica |
-| Instance stuck BUILDING | Check task status: `hcloud RDS ListTasks` |
-| SYS.0403 | SCP policy denies this operation (e.g. security group rules, EIP binding). See `huawei-vpc` troubleshooting |
-| EIP.7905 | EIP quota exceeded — cannot create new EIP for public access. See `huawei-vpc` troubleshooting |
+| Error                           | Root Cause -> Fix                                                                                           |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Connection refused              | SG missing DB port. Add ingress rule                                                                        |
+| Storage full                    | Manual resize or enable auto-scaling                                                                        |
+| DBS.280241 Invalid storage type | Volume type doesn't match flavor group                                                                      |
+| DBS.280448 Sold out             | Try different volume type or AZ                                                                             |
+| Replication lag                 | Check `ShowReplicationStatus`. Consider read replica                                                        |
+| Instance stuck BUILDING         | Check task status: `hcloud RDS ListTasks`                                                                   |
+| SYS.0403                        | SCP policy denies this operation (e.g. security group rules, EIP binding). See `huawei-vpc` troubleshooting |
+| EIP.7905                        | EIP quota exceeded — cannot create new EIP for public access. See `huawei-vpc` troubleshooting              |
 
 ## Security
 

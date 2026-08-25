@@ -26,7 +26,8 @@ test('python hook blocks public admin port through shared rules', () => {
   const result = runHook({
     tool_name: 'mcp__huaweicloud__create_security_group_rule',
     tool_input: {
-      command: 'hcloud VPC CreateSecurityGroupRule --security_group_rule.port_range_min=22 --security_group_rule.remote_ip_prefix=0.0.0.0/0',
+      command:
+        'hcloud VPC CreateSecurityGroupRule --security_group_rule.port_range_min=22 --security_group_rule.remote_ip_prefix=0.0.0.0/0',
     },
   });
   if (pythonUnavailable(result)) return;

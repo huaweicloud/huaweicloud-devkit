@@ -6,7 +6,7 @@ on:
   pull_request:
     branches: [main]
   schedule:
-    - cron: "23 14 * * 3"
+    - cron: '23 14 * * 3'
   workflow_dispatch: {}
 
 concurrency:
@@ -45,4 +45,4 @@ jobs:
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@5e7a52feb2a3dfb87f88be2af33b9e2275f48de6 # v4.32.2
         with:
-          category: "/language:${{ matrix.language }}"
+          category: '/language:${{ matrix.language }}'

@@ -1,3 +1,12 @@
+/*
+ * This file contains code derived from hwlink.
+ *
+ * Source:
+ * https://gitcode.com/huawei-developers/hwlink
+ *
+ * Licensed under the ISC License.
+ */
+
 import {
   DEFAULT_TIMEOUT_MS,
   WebSocketExecError,
@@ -93,9 +102,11 @@ function createHwlinkTerminal(options = {}) {
   }
 
   function handleClose() {
-    settleReady(new WebSocketExecError('hwlink terminal closed before ready', 1, {
-      phase: 'opening',
-    }));
+    settleReady(
+      new WebSocketExecError('hwlink terminal closed before ready', 1, {
+        phase: 'opening',
+      }),
+    );
     if (closed) return;
     closed = true;
     if (onClose) onClose();
@@ -177,10 +188,12 @@ class HwlinkTerminalExecSession {
     });
 
     this.readyTimeout = setTimeout(() => {
-      this.fail(new WebSocketExecError(`hwlink terminal ready timeout after ${this.timeoutMs}ms`, 124, {
-        partialOutput: this.readyBuffer,
-        phase: 'opening',
-      }));
+      this.fail(
+        new WebSocketExecError(`hwlink terminal ready timeout after ${this.timeoutMs}ms`, 124, {
+          partialOutput: this.readyBuffer,
+          phase: 'opening',
+        }),
+      );
     }, this.timeoutMs);
 
     try {
@@ -198,10 +211,12 @@ class HwlinkTerminalExecSession {
     this.term = new HwlinkTerminalChannel(username);
     this.term.onData((data) => this.handleTerminalData(data));
     this.term.onError((error) => {
-      this.fail(new WebSocketExecError(`hwlink terminal error: ${error.message}`, 1, {
-        cause: error,
-        phase: this.state,
-      }));
+      this.fail(
+        new WebSocketExecError(`hwlink terminal error: ${error.message}`, 1, {
+          cause: error,
+          phase: this.state,
+        }),
+      );
     });
     this.term.onReady(() => {
       if (Number.isFinite(this.initialCols) && Number.isFinite(this.initialRows)) {
@@ -211,24 +226,30 @@ class HwlinkTerminalExecSession {
     });
     this.term.onClose(() => {
       if (this.state !== 'closed') {
-        this.fail(new WebSocketExecError('hwlink terminal closed before completion marker', 1, {
-          phase: this.state,
-        }));
+        this.fail(
+          new WebSocketExecError('hwlink terminal closed before completion marker', 1, {
+            phase: this.state,
+          }),
+        );
       }
     });
     this.mux.onClose = () => {
       if (this.state !== 'closed') {
-        this.fail(new WebSocketExecError('hwlink websocket closed before completion marker', 1, {
-          phase: this.state,
-        }));
+        this.fail(
+          new WebSocketExecError('hwlink websocket closed before completion marker', 1, {
+            phase: this.state,
+          }),
+        );
       }
     };
     this.mux.onError = (error) => {
       if (this.state !== 'closed') {
-        this.fail(new WebSocketExecError(`hwlink websocket error: ${error.message}`, 1, {
-          cause: error,
-          phase: this.state,
-        }));
+        this.fail(
+          new WebSocketExecError(`hwlink websocket error: ${error.message}`, 1, {
+            cause: error,
+            phase: this.state,
+          }),
+        );
       }
     };
 
@@ -259,16 +280,20 @@ class HwlinkTerminalExecSession {
     this.pending = null;
 
     if (wasOpening) {
-      this.rejectReady(new WebSocketExecError('hwlink terminal session closed before ready', 1, {
-        phase: 'opening',
-      }));
+      this.rejectReady(
+        new WebSocketExecError('hwlink terminal session closed before ready', 1, {
+          phase: 'opening',
+        }),
+      );
     }
 
     if (pending) {
       clearTimeout(pending.timeout);
-      pending.reject(new WebSocketExecError('hwlink terminal session closed before completion marker', 1, {
-        phase: 'running',
-      }));
+      pending.reject(
+        new WebSocketExecError('hwlink terminal session closed before completion marker', 1, {
+          phase: 'running',
+        }),
+      );
     }
 
     this.term.close();
@@ -328,9 +353,11 @@ class HwlinkTerminalExecSession {
 
   runExec(command, options = {}) {
     if (this.state !== 'ready') {
-      return Promise.reject(new WebSocketExecError('hwlink terminal exec session is not ready', 1, {
-        phase: this.state,
-      }));
+      return Promise.reject(
+        new WebSocketExecError('hwlink terminal exec session is not ready', 1, {
+          phase: this.state,
+        }),
+      );
     }
 
     const shellCommand = normalizeCommand(command);
@@ -347,10 +374,12 @@ class HwlinkTerminalExecSession {
         reject,
         resolve,
         timeout: setTimeout(() => {
-          this.fail(new WebSocketExecError(`hwlink terminal exec timeout after ${timeoutMs}ms`, 124, {
-            partialOutput: this.pending ? this.pending.buffer : '',
-            phase: 'running',
-          }));
+          this.fail(
+            new WebSocketExecError(`hwlink terminal exec timeout after ${timeoutMs}ms`, 124, {
+              partialOutput: this.pending ? this.pending.buffer : '',
+              phase: 'running',
+            }),
+          );
         }, timeoutMs),
       };
 
@@ -363,10 +392,15 @@ class HwlinkTerminalExecSession {
     const pending = this.pending;
     if (!pending) return;
 
-    const doneMatch = pending.buffer.match(pending.markers.donePattern);
-    if (!doneMatch || doneMatch.index === undefined) return;
+    const doneMarker = pending.markers.doneMarker;
+    const markerIndex = pending.buffer.lastIndexOf(doneMarker);
+    if (markerIndex === -1) return;
 
-    const rawOutput = pending.buffer.slice(0, doneMatch.index);
+    const afterMarker = pending.buffer.slice(markerIndex + doneMarker.length);
+    const exitMatch = afterMarker.match(/^(\d+)/);
+    if (!exitMatch) return;
+
+    const rawOutput = pending.buffer.slice(0, markerIndex);
     const stdout = cleanCommandOutput(rawOutput, {
       inputEchoed: this.inputEchoed,
       command: pending.command,
@@ -377,7 +411,7 @@ class HwlinkTerminalExecSession {
     this.pending = null;
     pending.resolve({
       stdout,
-      exitCode: Number(doneMatch[1]),
+      exitCode: Number(exitMatch[1]),
       url: this.url,
       source: this.source,
       username: this.username,

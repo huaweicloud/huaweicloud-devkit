@@ -4,10 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import {
+  clearRuntimeCredentials,
   globalCredentialsPath,
   obsConfigPath,
   readGlobalCredentials,
   resolveCredentials,
+  resolveCredentialsWithRuntime,
+  setRuntimeCredentials,
   writeGlobalCredentials,
   writeObsConfig,
 } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
@@ -23,6 +26,7 @@ function withTempHome(fn) {
     HW_SECURITY_TOKEN: process.env.HW_SECURITY_TOKEN,
     HW_REGION: process.env.HW_REGION,
     HUAWEICLOUD_REGION: process.env.HUAWEICLOUD_REGION,
+    DSH_HOME: process.env.DSH_HOME,
   };
   process.env.HUAWEICLOUD_HOME = dir;
   delete process.env.HW_ACCESS_KEY;
@@ -30,6 +34,7 @@ function withTempHome(fn) {
   delete process.env.HW_SECURITY_TOKEN;
   delete process.env.HW_REGION;
   delete process.env.HUAWEICLOUD_REGION;
+  delete process.env.DSH_HOME;
   try {
     return fn(dir);
   } finally {
@@ -96,6 +101,7 @@ test('auth sync writes OBS and reports all agent registration targets', () => {
     assert.ok(sync.agents['codex-desktop'] !== undefined);
     assert.ok(sync.agents.codearts !== undefined);
     assert.ok(sync.agents.workbuddy !== undefined);
+    assert.ok(sync.agents.dsh !== undefined);
   });
 });
 
@@ -113,6 +119,162 @@ test('agent registration detects OpenCode MCP config', () => {
   });
 });
 
+test('agent registration detects DSH cordis patch config', () => {
+  withTempHome((home) => {
+    const profileDir = join(home, '.dsh', 'profiles', 'web');
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(
+      join(profileDir, 'cordis.patch.yml'),
+      [
+        '- insert:',
+        '    - id: mcp-huaweicloud',
+        "      name: '@deepseek-ai/dsh-mcp-client'",
+        '      config:',
+        '        serverName: huaweicloud',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
+    const status = getAgentRegistrationStatuses('dsh');
+    assert.equal(status.agents.dsh.configured, true);
+  });
+});
+
+test('agent registration detects DSH_HOME cordis patch config', () => {
+  withTempHome((home) => {
+    const previousDshHome = process.env.DSH_HOME;
+    const dshHome = join(home, 'custom-dsh');
+    try {
+      process.env.DSH_HOME = dshHome;
+      const profileDir = join(dshHome, 'profiles', 'web');
+      mkdirSync(profileDir, { recursive: true });
+      writeFileSync(
+        join(profileDir, 'cordis.patch.yml'),
+        "id: mcp-huaweicloud\nname: '@deepseek-ai/dsh-mcp-client'\nserverName: huaweicloud\n",
+        'utf8',
+      );
+      const status = getAgentRegistrationStatuses('dsh');
+      assert.equal(status.agents.dsh.configured, true);
+    } finally {
+      if (previousDshHome === undefined) delete process.env.DSH_HOME;
+      else process.env.DSH_HOME = previousDshHome;
+    }
+  });
+});
+
+test('resolveCredentialsWithRuntime prioritizes runtime > env > vault', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    writeGlobalCredentials({ ak: 'VAULT_AK', sk: 'VAULT_SK', region: 'cn-north-4' });
+
+    setRuntimeCredentials('RT_AK', 'RT_SK', '', 'cn-north-1');
+    const fromRuntime = resolveCredentialsWithRuntime();
+    assert.equal(fromRuntime.ak, 'RT_AK');
+    assert.equal(fromRuntime.sk, 'RT_SK');
+    assert.equal(fromRuntime.region, 'cn-north-1');
+
+    clearRuntimeCredentials();
+    process.env.HW_ACCESS_KEY = 'ENV_AK';
+    process.env.HW_SECRET_KEY = 'ENV_SK';
+    const fromEnv = resolveCredentialsWithRuntime();
+    assert.equal(fromEnv.ak, 'ENV_AK');
+    assert.equal(fromEnv.sk, 'ENV_SK');
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+
+    const fromVault = resolveCredentialsWithRuntime();
+    assert.equal(fromVault.ak, 'VAULT_AK');
+    assert.equal(fromVault.sk, 'VAULT_SK');
+  });
+});
+
+test('resolveCredentialsWithRuntime set and clear workflow', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    writeGlobalCredentials({ ak: 'VAULT_AK', sk: 'VAULT_SK' });
+
+    const before = resolveCredentialsWithRuntime();
+    assert.equal(before.ak, 'VAULT_AK');
+
+    setRuntimeCredentials('SWITCH_AK', 'SWITCH_SK');
+    const after = resolveCredentialsWithRuntime();
+    assert.equal(after.ak, 'SWITCH_AK');
+
+    clearRuntimeCredentials();
+    const reverted = resolveCredentialsWithRuntime();
+    assert.equal(reverted.ak, 'VAULT_AK');
+  });
+});
+
+test('resolveCredentials reads CodeArts project mcp_settings.json', () => {
+  withTempHome((_home) => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+
+    const codeartsDir = join(process.cwd(), '.codeartsdoer', 'mcp');
+    mkdirSync(codeartsDir, { recursive: true });
+    writeFileSync(
+      join(codeartsDir, 'mcp_settings.json'),
+      JSON.stringify({
+        mcpServers: {
+          'huaweicloud-devkit': {
+            env: {
+              HW_ACCESS_KEY: 'CODEARTS_AK',
+              HW_SECRET_KEY: 'CODEARTS_SK',
+              HW_REGION: 'cn-south-1',
+            },
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    try {
+      const creds = resolveCredentials();
+      assert.equal(creds.ak, 'CODEARTS_AK');
+      assert.equal(creds.sk, 'CODEARTS_SK');
+      assert.equal(creds.region, 'cn-south-1');
+    } finally {
+      rmSync(codeartsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('resolveCredentials uses env vars over CodeArts mcp_settings.json', () => {
+  withTempHome((_home) => {
+    clearRuntimeCredentials();
+    process.env.HW_ACCESS_KEY = 'ENV_AK';
+    process.env.HW_SECRET_KEY = 'ENV_SK';
+
+    const codeartsDir = join(process.cwd(), '.codeartsdoer', 'mcp');
+    mkdirSync(codeartsDir, { recursive: true });
+    writeFileSync(
+      join(codeartsDir, 'mcp_settings.json'),
+      JSON.stringify({
+        mcpServers: {
+          'huaweicloud-devkit': {
+            env: {
+              HW_ACCESS_KEY: 'CODEARTS_AK',
+              HW_SECRET_KEY: 'CODEARTS_SK',
+            },
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    try {
+      const creds = resolveCredentials();
+      assert.equal(creds.ak, 'ENV_AK');
+    } finally {
+      delete process.env.HW_ACCESS_KEY;
+      delete process.env.HW_SECRET_KEY;
+      rmSync(codeartsDir, { recursive: true, force: true });
+    }
+  });
+});
+
 test('auth status is redacted and reflects vault/OBS state', () => {
   withTempHome(() => {
     writeGlobalCredentials({ ak: 'STATUS_AK', sk: 'STATUS_SK', region: 'cn-north-4' });
@@ -121,6 +283,7 @@ test('auth status is redacted and reflects vault/OBS state', () => {
     assert.equal(status.credentialsConfigured, true);
     assert.equal(status.obsConfigured, true);
     assert.ok(status.agents.opencode !== undefined);
+    assert.ok(status.agents.dsh !== undefined);
     assert.doesNotMatch(JSON.stringify(status), /STATUS_AK|STATUS_SK/);
   });
 });

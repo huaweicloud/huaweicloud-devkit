@@ -37,12 +37,19 @@ if (lock.packages && lock.packages['']) {
 writeJson('package-lock.json', lock);
 
 const pluginRoot = 'plugins/huaweicloud-core';
-['.codex-plugin', '.claude-plugin', '.cursor-plugin', '.workbuddy-plugin'].forEach((dir) => {
+['.codex-plugin', '.claude-plugin', '.cursor-plugin', '.workbuddy-plugin', '.hermes-plugin'].forEach((dir) => {
   const p = join(pluginRoot, dir, 'plugin.json');
   const m = readJson(p);
   m.version = version;
   writeJson(p, m);
 });
+
+{
+  const p = join(pluginRoot, 'openclaw.plugin.json');
+  const m = readJson(p);
+  m.version = version;
+  writeJson(p, m);
+}
 
 let commits;
 try {
@@ -72,6 +79,20 @@ if (existsSync(join(root, '.version-override'))) {
   unlinkSync(join(root, '.version-override'));
 }
 
+const changedFiles = [
+  '.release-please-manifest.json',
+  'package.json',
+  'package-lock.json',
+  changelogPath,
+  `${pluginRoot}/.codex-plugin/plugin.json`,
+  `${pluginRoot}/.claude-plugin/plugin.json`,
+  `${pluginRoot}/.cursor-plugin/plugin.json`,
+  `${pluginRoot}/.workbuddy-plugin/plugin.json`,
+  `${pluginRoot}/.hermes-plugin/plugin.json`,
+  `${pluginRoot}/openclaw.plugin.json`,
+];
+execSync(`npx prettier --write ${changedFiles.join(' ')}`, { cwd: root, stdio: 'inherit' });
+
 const isPrerelease = version.includes('-');
 const prBranch = isPrerelease ? `release-${branch}-${version}` : `release-${version}`;
 run(`git checkout -b ${prBranch}`);
@@ -80,6 +101,8 @@ run(`git add ${pluginRoot}/.codex-plugin/plugin.json`);
 run(`git add ${pluginRoot}/.claude-plugin/plugin.json`);
 run(`git add ${pluginRoot}/.cursor-plugin/plugin.json`);
 run(`git add ${pluginRoot}/.workbuddy-plugin/plugin.json`);
+run(`git add ${pluginRoot}/.hermes-plugin/plugin.json`);
+run(`git add ${pluginRoot}/openclaw.plugin.json`);
 try {
   run('git add .version-override');
 } catch {

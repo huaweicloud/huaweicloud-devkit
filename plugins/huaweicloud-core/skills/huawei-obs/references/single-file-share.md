@@ -2,10 +2,10 @@
 
 Host one file and get a shareable link in seconds. Two options:
 
-| Option | Link type | Bucket/object visibility | Expiry |
-|--------|-----------|--------------------------|--------|
-| Presigned URL | Time-limited private link | Keep private | `-e=<seconds>`, max 7 days |
-| Public URL | Permanent public link | Set object `-acl=public-read` | None |
+| Option        | Link type                 | Bucket/object visibility      | Expiry                     |
+| ------------- | ------------------------- | ----------------------------- | -------------------------- |
+| Presigned URL | Time-limited private link | Keep private                  | `-e=<seconds>`, max 7 days |
+| Public URL    | Permanent public link     | Set object `-acl=public-read` | None                       |
 
 ## Option 1: Presigned URL (private, time-limited)
 

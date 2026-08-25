@@ -1,17 +1,47 @@
-#!/usr/bin/env node
 import { Buffer } from 'node:buffer';
 
-const INDEX_URL = 'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/index.json?ref=main';
-const CN_EN_MAP_URL = 'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/cn-en-map.json?ref=main';
+const INDEX_URL =
+  'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/index.json?ref=main';
+const CN_EN_MAP_URL =
+  'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/cn-en-map.json?ref=main';
 
 const GENERIC_KEYWORDS = new Set([
-  '华为云', 'huawei', 'huawei cloud', '云', 'cloud', '技能', 'skill', 'skills',
-  '所有', 'all', '全部', '有什么', '有哪些', '相关', '列表', 'list',
-  '查找', '搜索', '发现', '浏览', 'find', 'search', 'discover', 'browse',
-  'show', 'explore', 'agent', '市场', 'market', '类目', 'category', '安装', 'install',
+  '华为云',
+  'huawei',
+  'huawei cloud',
+  '云',
+  'cloud',
+  '技能',
+  'skill',
+  'skills',
+  '所有',
+  'all',
+  '全部',
+  '有什么',
+  '有哪些',
+  '相关',
+  '列表',
+  'list',
+  '查找',
+  '搜索',
+  '发现',
+  '浏览',
+  'find',
+  'search',
+  'discover',
+  'browse',
+  'show',
+  'explore',
+  'agent',
+  '市场',
+  'market',
+  '类目',
+  'category',
+  '安装',
+  'install',
 ]);
 
-async function fetchJson(url, label) {
+async function fetchJson(url, _label) {
   const resp = await fetch(url, { headers: { 'User-Agent': 'huaweicloud-devkit/1.0' } });
   const data = await resp.json();
   if (data?.encoding === 'base64' && data.content) {
@@ -56,7 +86,10 @@ function scoreSkill(skill, specificKws, genericKws) {
     else if (tl.some((t) => t.includes(k))) s += 8;
     else if (dl.includes(k)) s += 5;
     else if (sl.includes(k)) s += 3;
-    if (s > 0) { total += s; matched.push(kw); }
+    if (s > 0) {
+      total += s;
+      matched.push(kw);
+    }
   }
   for (const kw of genericKws) {
     const k = kw.toLowerCase();
@@ -65,7 +98,10 @@ function scoreSkill(skill, specificKws, genericKws) {
     else if (tl.some((t) => t.includes(k))) s += 4;
     else if (dl.includes(k)) s += 2;
     else if (sl.includes(k)) s += 1;
-    if (s > 0) { total += s; matched.push(kw); }
+    if (s > 0) {
+      total += s;
+      matched.push(kw);
+    }
   }
   if (!specificKws.length && total === 0) {
     total = 1;
@@ -76,15 +112,16 @@ function scoreSkill(skill, specificKws, genericKws) {
 }
 
 async function main() {
-  const keyword = process.argv.slice(2).filter((a) => !a.startsWith('-')).join(' ') || '';
+  const keyword =
+    process.argv
+      .slice(2)
+      .filter((a) => !a.startsWith('-'))
+      .join(' ') || '';
   const catIdx = process.argv.indexOf('-c');
   const category = catIdx >= 0 ? process.argv[catIdx + 1] || '' : '';
 
   try {
-    const [idx, cnEnMap] = await Promise.all([
-      fetchJson(INDEX_URL, 'index'),
-      fetchJson(CN_EN_MAP_URL, 'cn-en-map'),
-    ]);
+    const [idx, cnEnMap] = await Promise.all([fetchJson(INDEX_URL, 'index'), fetchJson(CN_EN_MAP_URL, 'cn-en-map')]);
 
     if (!keyword && !category) {
       console.log(`Categories: ${(idx.categories || []).join(', ')}`);
@@ -101,7 +138,15 @@ async function main() {
       const [score, matched] = scoreSkill(skill, specificKws, genericKws);
       if (hasSpecific && score === 0) continue;
       const desc = (skill.description || '').slice(0, 150);
-      results.push({ score, name: skill.name, category: skill.category, service: skill.service, description: desc + (skill.description?.length > 150 ? '...' : ''), triggers: (skill.triggers || []).slice(0, 5), matched });
+      results.push({
+        score,
+        name: skill.name,
+        category: skill.category,
+        service: skill.service,
+        description: desc + (skill.description?.length > 150 ? '...' : ''),
+        triggers: (skill.triggers || []).slice(0, 5),
+        matched,
+      });
     }
     results.sort((a, b) => b.score - a.score);
 
@@ -112,7 +157,9 @@ async function main() {
 
     console.log(`Found ${results.length} skill(s):`);
     for (const r of results) {
-      console.log(`  [${r.score}pts] ${r.name} (${r.category}/${r.service})${r.matched.length ? ' matched: ' + r.matched.join(',') : ''}`);
+      console.log(
+        `  [${r.score}pts] ${r.name} (${r.category}/${r.service})${r.matched.length ? ' matched: ' + r.matched.join(',') : ''}`,
+      );
       console.log(`    ${r.description}`);
     }
   } catch (e) {

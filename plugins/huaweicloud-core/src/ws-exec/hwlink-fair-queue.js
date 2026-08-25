@@ -1,3 +1,12 @@
+/*
+ * This file contains code derived from hwlink.
+ *
+ * Source:
+ * https://gitcode.com/huawei-developers/hwlink
+ *
+ * Licensed under the ISC License.
+ */
+
 const DEFAULT_HIGH_WATERMARK = 8 * 1024 * 1024;
 const DEFAULT_LOW_WATERMARK = 2 * 1024 * 1024;
 
@@ -125,8 +134,4 @@ class FairQueue {
   }
 }
 
-export {
-  DEFAULT_HIGH_WATERMARK,
-  DEFAULT_LOW_WATERMARK,
-  FairQueue,
-};
+export { DEFAULT_HIGH_WATERMARK, DEFAULT_LOW_WATERMARK, FairQueue };

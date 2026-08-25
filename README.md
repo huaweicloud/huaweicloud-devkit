@@ -20,45 +20,31 @@
 
 Help AI coding agents use Huawei Cloud safely and accurately — a single integration that gives agents cloud knowledge, CLI tooling, and safety guardrails.
 
-Supports OpenCode, Codex, CodeArts Agent, and WorkBuddy.
+Supports OpenCode, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), OfficeAce, and OpenClaw.
 
 ## Prerequisites
 
-- Node.js >= 20
+- Node.js >= 22
 
 ## Quick Start
+
+> If `--target` is omitted, the installer auto-detects agents on your machine. When multiple agents are detected, **all of them** will be installed. Specify `--target` to control which agent receives the install.
 
 ### OpenCode
 
 ```bash
-npx --yes huaweicloud-devkit install
+npx --yes huaweicloud-devkit install --target opencode
 ```
 
-Installs the DevKit into OpenCode automatically. **Restart the session** after installation.
+**Restart the session** after installation.
 
 ```bash
-npx --yes huaweicloud-devkit doctor    # self-check
-npx --yes huaweicloud-devkit status    # show status
-npx --yes huaweicloud-devkit update    # update
-npx --yes huaweicloud-devkit uninstall # uninstall
+npx --yes huaweicloud-devkit doctor --target opencode
+npx --yes huaweicloud-devkit status --target opencode
+npx --yes huaweicloud-devkit update --target opencode
+npx --yes huaweicloud-devkit uninstall --target opencode
+rm -rf ~/.npm/_npx/  # Linux/macOS only; Windows path TBD
 ```
-
-### Codex
-
-```bash
-npx --yes huaweicloud-devkit install --target codex
-```
-
-> The Codex CLI must be installed first.
-
-```bash
-npx --yes huaweicloud-devkit doctor                        # self-check
-npx --yes huaweicloud-devkit status --target codex
-npx --yes huaweicloud-devkit update --target codex         # update
-npx --yes huaweicloud-devkit uninstall --target codex
-```
-
-> **Codex Desktop** (Windows): use `--target codex-desktop` with the same commands.
 
 ### CodeArts Agent
 
@@ -69,16 +55,13 @@ npx --yes huaweicloud-devkit install --target codearts
 **Restart the session** after installation.
 
 ```bash
-npx --yes huaweicloud-devkit install-hcloud   # install KooCLI
-npx --yes huaweicloud-devkit doctor           # self-check
+npx --yes huaweicloud-devkit doctor --target codearts
 npx --yes huaweicloud-devkit status --target codearts
 npx --yes huaweicloud-devkit update --target codearts
 npx --yes huaweicloud-devkit uninstall --target codearts
 ```
 
-> **Sandbox mode**: CodeArts defaults to sandbox mode which blocks KooCLI. `install-hcloud` detects this and shows how to resolve it — install KooCLI outside the sandbox terminal, or disable sandbox mode in CodeArts settings (Settings → Permissions → Bash mode).
->
-> **Authentication**: Run `npx huaweicloud-devkit auth init` to configure unified AK/SK credentials for KooCLI, OBS, and sandbox APIs.
+> **Sandbox mode**: CodeArts defaults to sandbox mode which blocks KooCLI. `install-hcloud` detects this and shows how to resolve it — install KooCLI outside the sandbox terminal, or disable sandbox mode in CodeArts settings (Settings → Chats → Agents Terminal Command Running Mode → Auto Running).
 
 ### WorkBuddy
 
@@ -89,37 +72,110 @@ npx --yes huaweicloud-devkit install --target workbuddy
 **Restart the session** after installation.
 
 ```bash
-npx --yes huaweicloud-devkit doctor
+npx --yes huaweicloud-devkit doctor --target workbuddy
 npx --yes huaweicloud-devkit status --target workbuddy
-npx --yes huaweicloud-devkit update --target workbuddy   # update
+npx --yes huaweicloud-devkit update --target workbuddy
 npx --yes huaweicloud-devkit uninstall --target workbuddy
 ```
 
-> **Updating**: `update` is incremental per agent — it refreshes only the installed files and leaves your config untouched. Use `update --target all` to update every installed agent at once.
+### DeepSeek Harness (DSH)
+
+```bash
+npx --yes huaweicloud-devkit install --target dsh
+```
+
+**Restart the DSH session** after installation.
+
+```bash
+npx --yes huaweicloud-devkit doctor --target dsh
+npx --yes huaweicloud-devkit status --target dsh
+npx --yes huaweicloud-devkit update --target dsh
+npx --yes huaweicloud-devkit uninstall --target dsh
+```
+
+> DSH V1 reuses the existing MCP server through `@deepseek-ai/dsh-mcp-client`. If the installer reports that the client is not detected, run: `npx @deepseek-ai/dsh plugin --profile web add @deepseek-ai/dsh-mcp-client`.
+
+### OfficeAce
+
+```bash
+npx --yes huaweicloud-devkit install --target officeace
+```
+
+**Restart OfficeAce** after installation.
+
+```bash
+npx --yes huaweicloud-devkit doctor --target officeace
+npx --yes huaweicloud-devkit status --target officeace
+npx --yes huaweicloud-devkit update --target officeace
+npx --yes huaweicloud-devkit uninstall --target officeace
+```
+
+### OpenClaw
+
+```bash
+# Recommended (ClawHub)
+openclaw plugins install clawhub:huaweicloud-devkit
+openclaw plugins uninstall huaweicloud-devkit
+openclaw plugins update huaweicloud-devkit
+```
+
+**Restart OpenClaw** after installation. If prompted for security risk acknowledgment, add `--acknowledge-clawhub-risk`.
+
+```bash
+# Or via npx
+npx --yes huaweicloud-devkit install --target openclaw
+npx --yes huaweicloud-devkit status --target openclaw
+npx --yes huaweicloud-devkit update --target openclaw
+npx --yes huaweicloud-devkit uninstall --target openclaw
+rm -rf ~/.npm/_npx/  # Linux/macOS only; Windows path TBD
+```
 
 ### Other Agents
 
-For agents that support the Model Context Protocol (MCP):
+Any agent that supports MCP can use the standard config:
 
 ```json
 {
-  "mcp": {
+  "mcpServers": {
     "huaweicloud-devkit": {
-      "type": "local",
-      "command": ["node", "<path>/plugins/huaweicloud-core/src/mcp-server.mjs"],
-      "enabled": true
+      "command": "npx",
+      "args": ["-y", "-p", "huaweicloud-devkit", "huaweicloud-devkit-mcp"]
     }
   }
 }
 ```
 
-Then install:
+No installation required — `npx` handles everything.
+
+> Set `HW_ACCESS_KEY`/`HW_SECRET_KEY` in the MCP config `env` field for project-level credentials.
+
+### Install KooCLI
 
 ```bash
-npx --yes huaweicloud-devkit install
+npx --yes huaweicloud-devkit install-hcloud
 ```
 
-> **Prerequisite:** Node.js >= 20. Run `npx huaweicloud-devkit auth init` for unified credentials.
+### Configure Credentials
+
+```bash
+npx --yes huaweicloud-devkit auth init
+```
+
+Synchronizes AK/SK to KooCLI, OBS, and sandbox APIs in one step.
+
+### Install All Agents
+
+```bash
+npx --yes huaweicloud-devkit install --target all
+```
+
+### Update All Agents
+
+```bash
+npx --yes huaweicloud-devkit update --target all
+```
+
+`update` is incremental — it refreshes installed files without touching your config.
 
 ## What It Does
 
@@ -127,6 +183,7 @@ npx --yes huaweicloud-devkit install
 - **Safety-first execution** — all write operations require explicit user approval; credentials and secrets are automatically redacted from output
 - **Pre-execution risk checks** — public exposure, credential leaks, and destructive operations are caught before they run
 - **Regional awareness** — auto-discovers available regions and checks service availability before creating resources
+- **Sandbox (DevStation)** — temporary cloud runtime for web app deployment with instant public URL preview
 
 ## Supported Services
 
@@ -137,6 +194,7 @@ ECS, OBS, VPC, IAM, RDS, GaussDB, FunctionGraph, APIG, CCE, SMN/DMS, ModelArts, 
 - [Architecture](docs/architecture.md)
 - [Safety Model](docs/safety-model.md)
 - [Hook Rule Model](docs/hook-rule-model.md)
+- [DeepSeek Harness Integration](docs/dsh-integration.md)
 - [Changelog](docs/CHANGELOG.md)
 - [KooCLI official docs](https://support.huaweicloud.com/qs-hcli/hcli_02_003.html)
 

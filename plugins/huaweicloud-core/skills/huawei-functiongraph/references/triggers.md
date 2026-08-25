@@ -16,12 +16,12 @@ KooCLI uses **dotted key-value format**, NOT JSON strings:
 
 ## Trigger Types
 
-| Type | `--trigger_type_code` | Notes |
-|------|----------------------|-------|
-| APIG Dedicated | `DEDICATEDGATEWAY` | Use this, not `APIG` (deprecated). Requires APIG instance. |
-| Timer / Cron | `TIMER` | Simplest trigger for testing. No APIG dependency. |
-| OBS | `OBS` | Event when objects created/deleted in bucket |
-| SMN | `SMN` | Message notification trigger |
+| Type           | `--trigger_type_code` | Notes                                                      |
+| -------------- | --------------------- | ---------------------------------------------------------- |
+| APIG Dedicated | `DEDICATEDGATEWAY`    | Use this, not `APIG` (deprecated). Requires APIG instance. |
+| Timer / Cron   | `TIMER`               | Simplest trigger for testing. No APIG dependency.          |
+| OBS            | `OBS`                 | Event when objects created/deleted in bucket               |
+| SMN            | `SMN`                 | Message notification trigger                               |
 
 ## TIMER Trigger (Simple Testing)
 
@@ -46,22 +46,22 @@ hcloud FunctionGraph CreateFunctionTrigger \
 
 These are labeled optional by `--help` but are **required** for DEDICATEDGATEWAY:
 
-| Param | Note |
-|-------|------|
-| `--event_data.protocol` | `HTTPS` or `HTTP` or `BOTH` |
-| `--event_data.sl_domain` | Subdomain from APIG instance (e.g. `xxxx.apic.<region>.huaweicloudapis.com`) |
-| `--event_data.env_name` | API environment name (`RELEASE`) |
-| `--event_data.env_id` | API environment ID |
-| `--event_data.instance_id` | APIG dedicated instance ID |
-| `--event_data.group_id` | API group ID |
-| `--event_data.name` | API name — **hyphens (`-`) are DISALLOWED**. Use underscores (`_`) instead. |
+| Param                      | Note                                                                         |
+| -------------------------- | ---------------------------------------------------------------------------- |
+| `--event_data.protocol`    | `HTTPS` or `HTTP` or `BOTH`                                                  |
+| `--event_data.sl_domain`   | Subdomain from APIG instance (e.g. `xxxx.apic.<region>.huaweicloudapis.com`) |
+| `--event_data.env_name`    | API environment name (`RELEASE`)                                             |
+| `--event_data.env_id`      | API environment ID                                                           |
+| `--event_data.instance_id` | APIG dedicated instance ID                                                   |
+| `--event_data.group_id`    | API group ID                                                                 |
+| `--event_data.name`        | API name — **hyphens (`-`) are DISALLOWED**. Use underscores (`_`) instead.  |
 
 ### Error Mapping
 
-| Error | Root Cause → Fix |
-|-------|-----------------|
-| FSS.1417 | Missing `instance_id`, `group_id`, `protocol`, `env_name`, or `env_id`. These are labeled optional but REQUIRED. |
-| API name regex fail | Rename API — remove hyphens (`-`), use `[a-zA-Z0-9_]+` only. |
+| Error               | Root Cause → Fix                                                                                                 |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| FSS.1417            | Missing `instance_id`, `group_id`, `protocol`, `env_name`, or `env_id`. These are labeled optional but REQUIRED. |
+| API name regex fail | Rename API — remove hyphens (`-`), use `[a-zA-Z0-9_]+` only.                                                     |
 
 ### Example
 

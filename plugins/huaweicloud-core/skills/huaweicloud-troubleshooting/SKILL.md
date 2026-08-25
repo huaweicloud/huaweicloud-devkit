@@ -11,12 +11,12 @@ Use evidence before fixes. Do not guess service behavior when request IDs, regio
 
 ## Critical Warnings
 
-| Trap | Why |
-|------|-----|
-| Error in response body, not HTTP status | Many APIs return HTTP 200 with error in JSON body. Always check `error_code` and `error_msg` |
-| Missing `project_id` is common | New users often omit project_id from API path or CLI. Get it from `IAM KeystoneListProjects` |
-| Sandbox may block hcloud | OpenCode/Codex sandbox can block hcloud metadata files in `~/.hcloud/`. Use `dangerouslyDisableSandbox` or Bash tool |
-| KooCLI param prefix varies | VPC params need `--vpc.x`, ECS params need `--server.x`, ALWAYS check `--help` first |
+| Trap                                    | Why                                                                                                                  |
+| --------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Error in response body, not HTTP status | Many APIs return HTTP 200 with error in JSON body. Always check `error_code` and `error_msg`                         |
+| Missing `project_id` is common          | New users often omit project_id from API path or CLI. Get it from `IAM KeystoneListProjects`                         |
+| Sandbox may block hcloud                | OpenCode/Codex sandbox can block hcloud metadata files in `~/.hcloud/`. Use `dangerouslyDisableSandbox` or Bash tool |
+| KooCLI param prefix varies              | VPC params need `--vpc.x`, ECS params need `--server.x`, ALWAYS check `--help` first                                 |
 
 ## Workflow
 
@@ -36,42 +36,42 @@ Use evidence before fixes. Do not guess service behavior when request IDs, regio
 
 ## Common Checks
 
-| Check | Command |
-|-------|---------|
-| Authentication | `hcloud configure list` (redacted) |
-| Region | Match CLI region, endpoint, and resource region |
-| Project ID | `hcloud IAM KeystoneListProjects` |
-| Pagination | Add `--limit=100` and check `marker` |
-| Quota | Check service quotas in console or API |
+| Check          | Command                                                       |
+| -------------- | ------------------------------------------------------------- |
+| Authentication | `hcloud configure list` (redacted)                            |
+| Region         | Match CLI region, endpoint, and resource region               |
+| Project ID     | `hcloud IAM KeystoneListProjects`                             |
+| Pagination     | Add `--limit=100` and check `marker`                          |
+| Quota          | Check service quotas in console or API                        |
 | IAM Permission | Verify user/role has required action — see `huawei-iam` skill |
-| KooCLI version | `hcloud version` |
+| KooCLI version | `hcloud version`                                              |
 
 ## Common Error Codes
 
-| Error | Likely Cause | Fix |
-|-------|-------------|-----|
-| AuthFailure / 401 | AK/SK invalid or expired | Regenerate AK/SK, re-run `npx huaweicloud-devkit auth init` |
-| AccessDenied / 403 | IAM permission missing | Check `huawei-iam` skill, add required policy action |
-| NoSuchKey / 404 | Resource not found | Verify resource ID, region, and project_id |
-| QuotaExceeded | Account limit reached | Request quota increase in console |
-| [USE_ERROR] 不正确的参数 | Wrong param name | Run `--help`, check `--param=value` format and nested prefix |
-| Ecs.0005 | Flavor-image mismatch | Check image `__support_*` against flavor virtualization type |
-| FSS.0400 | FunctionGraph latest version error | Strip `:latest` from function URN |
-| FSS.1417 | DEDICATEDGATEWAY missing params | Add instance_id, group_id, protocol, env_name, env_id |
-| APIC.7201 | Missing security_group_id | Add `--security_group_id` param for APIG CreateInstanceV2 |
-| [NETWORK_ERROR] | Transient network failure | Retry with `maxRetries` param or wait and retry |
+| Error                    | Likely Cause                       | Fix                                                          |
+| ------------------------ | ---------------------------------- | ------------------------------------------------------------ |
+| AuthFailure / 401        | AK/SK invalid or expired           | Regenerate AK/SK, re-run `npx huaweicloud-devkit auth init`  |
+| AccessDenied / 403       | IAM permission missing             | Check `huawei-iam` skill, add required policy action         |
+| NoSuchKey / 404          | Resource not found                 | Verify resource ID, region, and project_id                   |
+| QuotaExceeded            | Account limit reached              | Request quota increase in console                            |
+| [USE_ERROR] 不正确的参数 | Wrong param name                   | Run `--help`, check `--param=value` format and nested prefix |
+| Ecs.0005                 | Flavor-image mismatch              | Check image `__support_*` against flavor virtualization type |
+| FSS.0400                 | FunctionGraph latest version error | Strip `:latest` from function URN                            |
+| FSS.1417                 | DEDICATEDGATEWAY missing params    | Add instance_id, group_id, protocol, env_name, env_id        |
+| APIC.7201                | Missing security_group_id          | Add `--security_group_id` param for APIG CreateInstanceV2    |
+| [NETWORK_ERROR]          | Transient network failure          | Retry with `maxRetries` param or wait and retry              |
 
 ## KooCLI Error Types
 
 KooCLI classifies errors into 5 types. The error type prefix in the message guides initial diagnosis:
 
-| Type | Meaning | First Check |
-|------|---------|-------------|
-| `[NETWORK_ERROR]` | HTTP request exception | Network connectivity, firewall, endpoint reachability |
-| `[CLI_ERROR]` | KooCLI internal error | Contact KooCLI support |
-| `[USE_ERROR]` | Incorrect command parameters | Run `--help`, check param names and format |
-| `[OPENAPI_ERROR]` | Cloud service API error | Check service docs, contact service support |
-| `[APIE_ERROR]` | API Explorer metadata error | Contact API Explorer support |
+| Type              | Meaning                      | First Check                                           |
+| ----------------- | ---------------------------- | ----------------------------------------------------- |
+| `[NETWORK_ERROR]` | HTTP request exception       | Network connectivity, firewall, endpoint reachability |
+| `[CLI_ERROR]`     | KooCLI internal error        | Contact KooCLI support                                |
+| `[USE_ERROR]`     | Incorrect command parameters | Run `--help`, check param names and format            |
+| `[OPENAPI_ERROR]` | Cloud service API error      | Check service docs, contact service support           |
+| `[APIE_ERROR]`    | API Explorer metadata error  | Contact API Explorer support                          |
 
 Enable debug with `--cli-debug=true` to see the underlying HTTP request/response and pinpoint network or endpoint issues.
 

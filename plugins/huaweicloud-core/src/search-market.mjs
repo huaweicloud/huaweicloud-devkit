@@ -1,15 +1,45 @@
-const INDEX_URL = 'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/index.json?ref=main';
-const CN_EN_MAP_URL = 'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/cn-en-map.json?ref=main';
+import { getProxyDispatcher } from './proxy/proxy-agent.mjs';
+
+const INDEX_URL =
+  'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/index.json?ref=main';
+const CN_EN_MAP_URL =
+  'https://gitcode.com/api/v5/repos/2501_91318609/skills-for-index/contents/skills-index/cn-en-map.json?ref=main';
 const HTTP_TIMEOUT_MS = 10000;
 
 const GENERIC_KEYWORDS = new Set([
-  '华为云', 'huawei', 'huawei cloud', '云', 'cloud',
-  '技能', 'skill', 'skills', '所有', 'all', '全部',
-  '有什么', '有哪些', '相关', '列表', 'list',
-  '查找', '搜索', '发现', '浏览', 'find', 'search',
-  'discover', 'browse', 'show', 'explore',
-  'agent', '市场', 'market', '类目', 'category',
-  '安装', 'install',
+  '华为云',
+  'huawei',
+  'huawei cloud',
+  '云',
+  'cloud',
+  '技能',
+  'skill',
+  'skills',
+  '所有',
+  'all',
+  '全部',
+  '有什么',
+  '有哪些',
+  '相关',
+  '列表',
+  'list',
+  '查找',
+  '搜索',
+  '发现',
+  '浏览',
+  'find',
+  'search',
+  'discover',
+  'browse',
+  'show',
+  'explore',
+  'agent',
+  '市场',
+  'market',
+  '类目',
+  'category',
+  '安装',
+  'install',
 ]);
 
 let cachedIndex = null;
@@ -19,10 +49,13 @@ async function fetchJson(url, label = '') {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
-    const resp = await fetch(url, {
+    const dispatcher = await getProxyDispatcher(url);
+    const fetchOpts = {
       headers: { 'User-Agent': 'huaweicloud-devkit/1.0' },
       signal: controller.signal,
-    });
+    };
+    if (dispatcher) fetchOpts.dispatcher = dispatcher;
+    const resp = await fetch(url, fetchOpts);
     const data = await resp.json();
     if (data && data.encoding === 'base64' && data.content) {
       const decoded = Buffer.from(data.content, 'base64').toString('utf8');
@@ -30,7 +63,7 @@ async function fetchJson(url, label = '') {
     }
     return data;
   } catch (e) {
-    throw new Error(`Failed to fetch ${label}: ${e.message}`);
+    throw new Error(`Failed to fetch ${label}: ${e.message}`, { cause: e });
   } finally {
     clearTimeout(timer);
   }
@@ -89,7 +122,10 @@ function scoreSkill(skill, specificKws, genericKws) {
     else if (triggers.some((t) => t.includes(k))) s += 8;
     else if (descLower.includes(k)) s += 5;
     else if (serviceLower.includes(k)) s += 3;
-    if (s > 0) { total += s; matched.push(kw); }
+    if (s > 0) {
+      total += s;
+      matched.push(kw);
+    }
   }
   for (const kw of genericKws) {
     const k = kw.toLowerCase();
@@ -98,7 +134,10 @@ function scoreSkill(skill, specificKws, genericKws) {
     else if (triggers.some((t) => t.includes(k))) s += 4;
     else if (descLower.includes(k)) s += 2;
     else if (serviceLower.includes(k)) s += 1;
-    if (s > 0) { total += s; matched.push(kw); }
+    if (s > 0) {
+      total += s;
+      matched.push(kw);
+    }
   }
   if (!specificKws.length && total === 0) {
     total = 1;

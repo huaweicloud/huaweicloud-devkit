@@ -42,7 +42,7 @@ export function syncAuth(target = 'all') {
     };
   }
 
-  let obs = null;
+  let obs;
   try {
     obs = writeObsConfig(credentials);
   } catch (error) {

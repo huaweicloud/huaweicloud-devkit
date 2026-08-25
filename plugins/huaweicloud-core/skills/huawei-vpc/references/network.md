@@ -4,15 +4,16 @@
 
 Subnets without DNS configuration will fail cloud-init. Use these DNS addresses:
 
-| Region | Primary DNS | Secondary DNS |
-|--------|------------|---------------|
-| cn-north-1 | 100.125.1.250 | 100.125.129.250 |
-| cn-north-4 | 100.125.1.250 | 100.125.129.250 |
-| cn-east-3 | 100.125.1.250 | 100.125.129.250 |
-| cn-south-1 | 100.125.1.250 | 100.125.129.250 |
+| Region         | Primary DNS   | Secondary DNS   |
+| -------------- | ------------- | --------------- |
+| cn-north-1     | 100.125.1.250 | 100.125.129.250 |
+| cn-north-4     | 100.125.1.250 | 100.125.129.250 |
+| cn-east-3      | 100.125.1.250 | 100.125.129.250 |
+| cn-south-1     | 100.125.1.250 | 100.125.129.250 |
 | ap-southeast-3 | 100.125.1.250 | 100.125.129.250 |
 
 **Subnet create with DNS**:
+
 ```bash
 hcloud VPC CreateSubnet \
   --subnet.name=<name> \
@@ -28,12 +29,12 @@ hcloud VPC CreateSubnet \
 
 KooCLI 7.x VPC API requires nested prefixes:
 
-| Resource | Create Param Prefix | Example |
-|----------|---------------------|---------|
-| VPC | `--vpc.` | `--vpc.name=my-vpc --vpc.cidr=192.168.0.0/16` |
-| Subnet | `--subnet.` | `--subnet.name=web --subnet.vpc_id=<id> --subnet.cidr=192.168.1.0/24` |
-| Security Group | `--security_group.` | `--security_group.name=sg-web` |
-| SG Rule | `--security_group_rule.` | `--security_group_rule.direction=ingress` |
+| Resource       | Create Param Prefix      | Example                                                               |
+| -------------- | ------------------------ | --------------------------------------------------------------------- |
+| VPC            | `--vpc.`                 | `--vpc.name=my-vpc --vpc.cidr=192.168.0.0/16`                         |
+| Subnet         | `--subnet.`              | `--subnet.name=web --subnet.vpc_id=<id> --subnet.cidr=192.168.1.0/24` |
+| Security Group | `--security_group.`      | `--security_group.name=sg-web`                                        |
+| SG Rule        | `--security_group_rule.` | `--security_group_rule.direction=ingress`                             |
 
 ## EIP Management
 

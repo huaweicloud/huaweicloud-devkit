@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
 import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
+import { getProxySettings } from './proxy/proxy-config.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
@@ -46,7 +47,7 @@ export async function runHcloud(args, options = {}) {
         attempts: attempt + 1,
       };
     }
-    await wait((options.retryBaseDelayMs ?? 500) * (2 ** attempt));
+    await wait((options.retryBaseDelayMs ?? 500) * 2 ** attempt);
   }
   throw new Error('Unreachable retry state.');
 }
@@ -59,12 +60,20 @@ function runHcloudOnce(plan, options) {
   const cwd = options.cwd || undefined;
 
   return new Promise((resolve) => {
+    const proxySettings = getProxySettings();
+    const proxyEnv = {};
+    if (proxySettings) {
+      if (proxySettings.https_proxy) proxyEnv.HTTPS_PROXY = proxySettings.https_proxy;
+      if (proxySettings.http_proxy) proxyEnv.HTTP_PROXY = proxySettings.http_proxy;
+      if (proxySettings.no_proxy) proxyEnv.NO_PROXY = proxySettings.no_proxy;
+    }
     const child = spawn(executable, [...executableArgs, ...plan.rawArgs], {
       shell: false,
       windowsHide: true,
       cwd,
       env: {
         ...process.env,
+        ...proxyEnv,
         ...options.env,
       },
     });
@@ -151,7 +160,10 @@ function runHcloudOnce(plan, options) {
         return;
       }
       finish({
-        ok: code === 0 || (code !== 0 && /successfully|succ?ess.*\[200\]|create bucket successfully|upload successfully/i.test(stdout + stderr)),
+        ok:
+          code === 0 ||
+          (code !== 0 &&
+            /successfully|succ?ess.*\[200\]|create bucket successfully|upload successfully/i.test(stdout + stderr)),
         exitCode: code,
         signal,
         stdout: redactOutput(stdout),
@@ -165,7 +177,9 @@ function runHcloudOnce(plan, options) {
 function isRetryableNetworkError(result) {
   if (result.code === 'TIMEOUT') return false;
   const text = `${result.error || ''}\n${result.stdout || ''}\n${result.stderr || ''}`;
-  return /\[NETWORK_ERROR\]|connection timed out|ECONNRESET|ETIMEDOUT|temporary failure|TLS handshake timeout/i.test(text);
+  return /\[NETWORK_ERROR\]|connection timed out|ECONNRESET|ETIMEDOUT|temporary failure|TLS handshake timeout/i.test(
+    text,
+  );
 }
 
 function wait(ms) {
@@ -194,7 +208,11 @@ const REQUIRED_PARAMS = {
   'ECS CreateServers': ['server.flavorRef', 'server.imageRef', 'server.nics.1.subnet_id'],
   'VPC CreateVpc': ['vpc.cidr'],
   'VPC CreateSubnet': ['subnet.vpc_id', 'subnet.cidr'],
-  'VPC CreateSecurityGroupRule': ['security_group_rule.security_group_id', 'security_group_rule.direction', 'security_group_rule.protocol'],
+  'VPC CreateSecurityGroupRule': [
+    'security_group_rule.security_group_id',
+    'security_group_rule.direction',
+    'security_group_rule.protocol',
+  ],
   'EIP CreatePublicip': ['bandwidth.share_type', 'publicip.type'],
   'FunctionGraph CreateFunction': ['func_name', 'runtime', 'handler', 'memory_size', 'package', 'timeout'],
   'FunctionGraph CreateFunctionTrigger': ['function_urn', 'trigger_type_code'],
@@ -208,9 +226,9 @@ const PARAM_VALUE_HINTS = {
   'server.imageRef': 'Run `hcloud IMS ListImages --cli-region=<r> --__imagetype=gold` to find valid image IDs',
   'server.nics.1.subnet_id': 'Run `hcloud VPC ListSubnets --cli-region=<r>` to find subnet IDs',
   'subnet.vpc_id': 'Run `hcloud VPC ListVpcs --cli-region=<r>` to find VPC IDs',
-  'func_name': 'Function name must be unique within project',
-  'runtime': 'Run `hcloud FunctionGraph ListRuntimes` to see available runtimes',
-  'spec_id': 'APIG spec: BASIC (no public IP) or PROFESSIONAL (requires --loadbalancer_provider)',
+  func_name: 'Function name must be unique within project',
+  runtime: 'Run `hcloud FunctionGraph ListRuntimes` to see available runtimes',
+  spec_id: 'APIG spec: BASIC (no public IP) or PROFESSIONAL (requires --loadbalancer_provider)',
   'obs://': 'Bucket name must be globally unique and DNS-compliant (lowercase, numbers, hyphens only)',
 };
 

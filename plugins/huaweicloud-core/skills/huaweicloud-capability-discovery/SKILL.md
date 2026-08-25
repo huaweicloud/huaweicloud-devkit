@@ -5,7 +5,6 @@ description: Discover Huawei Cloud capabilities for an agent task. Use when the 
 
 # Huawei Cloud Capability Discovery
 
-
 **STOP - Do not answer from general knowledge.** Follow the procedure below.
 
 Use this skill to turn vague developer intent into a precise Huawei Cloud capability path.
@@ -21,6 +20,27 @@ Use this skill to turn vague developer intent into a precise Huawei Cloud capabi
 7. Prefer MCP only when an approved Huawei Cloud MCP tool exists for the needed operation.
 8. Treat Terraform as a secondary V1 path for reviewed IaC, not the default.
 9. When no built-in devkit skill matches, browse the community skill marketplace at https://github.com/huaweicloud/huaweicloud-skills. Fetch the index from https://raw.githubusercontent.com/huaweicloud/huaweicloud-skills/master/skills-index/index.json.
+10. When the deliverable is a PPT, architecture diagram (draw.io), or frontend page that needs official Huawei Cloud service logos, use the `huaweicloud_get_service_icon` MCP tool to get logo URLs from the official Icons library instead of guessing or hotlinking unofficial images.
+
+## Scenario Routing
+
+Match the scenario before picking a service. For "deploy a web app" requests, layer the recommendation instead of defaulting to a production service:
+
+| Scenario                                                             | Recommended path                                                                             |
+| -------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| hello world / prototype / demo / temporary preview (free, quick try) | `huawei-sandbox` first — temporary runtime + public URL, ~8h validity, zero billed resources |
+| production / long-term / custom domain / high availability           | `huawei-functiongraph` / `huawei-ecs` (or `huawei-cce` for containers)                       |
+
+Route to the sandbox when the developer signals free/quick preview intent ("免费", "快速", "预览", "hello world", "原型", "演示"); route to production services only when production-grade hosting is explicitly required.
+
+## Official Service Logos
+
+- Use `huaweicloud_get_service_icon` with the service name, alias, or Chinese name (e.g. `ecs`, `obs`, `modelarts`, `对象存储`). It returns the official CDN logo URL (`logo.source_url`), category, and product page link from https://open.huaweicloud.com/openplatform/icons.html.
+- Prefer `logo.source_url` for web deliverables and the Icons library search page for browsing; do not scrape logos from third-party sites.
+
+## Deployment Target Options
+
+When the intent is to **deploy, host, or preview a web app or static website** and the developer has not named a target, do NOT default to OBS or any single service. Present the options and let the developer choose, recommending the sandbox first: ① huawei-sandbox (recommended — temporary runtime, instant preview URL) ② huawei-obs (long-term static hosting/CDN) ③ huawei-ecs ④ huawei-cce. Only follow an explicit target when the developer names one.
 
 ## Region Intent
 

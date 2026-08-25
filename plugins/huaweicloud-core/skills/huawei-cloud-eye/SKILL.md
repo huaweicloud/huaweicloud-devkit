@@ -1,6 +1,6 @@
 ---
 name: huawei-cloud-eye
-description: "Use when setting up monitoring, alarms, dashboards, or event rules on Huawei Cloud Eye (CES). Triggers: Cloud Eye, CES, monitoring, alarm, metrics, dashboard, event monitoring. NOT for: CTS audit logs (use huawei-cts), AAD anti-DDoS (use huawei-waf-aad)."
+description: 'Use when setting up monitoring, alarms, dashboards, or event rules on Huawei Cloud Eye (CES). Triggers: Cloud Eye, CES, monitoring, alarm, metrics, dashboard, event monitoring. NOT for: CTS audit logs (use huawei-cts), AAD anti-DDoS (use huawei-waf-aad).'
 version: 1
 ---
 
@@ -16,13 +16,13 @@ Domain expertise for Cloud Eye (CES). Covers metric queries, alarm rules, dashbo
 
 ## Critical Warnings
 
-| Trap | Why |
-|------|-----|
-| Telescope agent required for detailed metrics | Without agent: only basic CPU/network metrics. Memory, disk require agent installation on ECS |
-| Alarm needs SMN topic first | Alarm notifications fail silently without a configured SMN topic |
-| Cost metrics incur charges | Custom metrics and high-frequency alarms have billing implications |
-| CES endpoint may vary by region | Some older regions use different endpoint URLs. Check `https://developer.huaweicloud.com/endpoint?CES` |
-| Metric granularity minimum 300s | Free tier has 5-minute minimum. Higher resolution requires paid tier |
+| Trap                                          | Why                                                                                                    |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Telescope agent required for detailed metrics | Without agent: only basic CPU/network metrics. Memory, disk require agent installation on ECS          |
+| Alarm needs SMN topic first                   | Alarm notifications fail silently without a configured SMN topic                                       |
+| Cost metrics incur charges                    | Custom metrics and high-frequency alarms have billing implications                                     |
+| CES endpoint may vary by region               | Some older regions use different endpoint URLs. Check `https://developer.huaweicloud.com/endpoint?CES` |
+| Metric granularity minimum 300s               | Free tier has 5-minute minimum. Higher resolution requires paid tier                                   |
 
 ## Prerequisites
 
@@ -32,15 +32,15 @@ Domain expertise for Cloud Eye (CES). Covers metric queries, alarm rules, dashbo
 
 ## Common Workflows
 
-| Task | Operation |
-|------|-----------|
-| List metrics | `ListMetrics --cli-region=<r> --project_id=<p>` |
-| Get metric data | `BatchListMetricData --cli-region=<r> --project_id=<p>` |
-| List alarms | `ListAlarms --cli-region=<r> --project_id=<p>` |
-| Create alarm | `CreateAlarm` (see below) |
-| Delete alarm | `BatchDeleteAlarmRules --cli-region=<r> --project_id=<p>` |
-| List dashboards | `ListDashboardWidgets --cli-region=<r> --project_id=<p>` |
-| Create dashboard | `CreateDashboard --cli-region=<r> --project_id=<p>` |
+| Task             | Operation                                                 |
+| ---------------- | --------------------------------------------------------- |
+| List metrics     | `ListMetrics --cli-region=<r> --project_id=<p>`           |
+| Get metric data  | `BatchListMetricData --cli-region=<r> --project_id=<p>`   |
+| List alarms      | `ListAlarms --cli-region=<r> --project_id=<p>`            |
+| Create alarm     | `CreateAlarm` (see below)                                 |
+| Delete alarm     | `BatchDeleteAlarmRules --cli-region=<r> --project_id=<p>` |
+| List dashboards  | `ListDashboardWidgets --cli-region=<r> --project_id=<p>`  |
+| Create dashboard | `CreateDashboard --cli-region=<r> --project_id=<p>`       |
 
 ## Create Alarm Rule — Param Structure
 
@@ -57,14 +57,14 @@ hcloud CES CreateAlarm --help
 
 For metric alarms use **symbols** (NOT words like `gt`/`lt`):
 
-| Value | Meaning |
-|-------|---------|
-| `>` | Greater than |
-| `>=` | Greater than or equal |
-| `<` | Less than |
-| `<=` | Less than or equal |
-| `=` | Equal |
-| `!=` | Not equal |
+| Value | Meaning               |
+| ----- | --------------------- |
+| `>`   | Greater than          |
+| `>=`  | Greater than or equal |
+| `<`   | Less than             |
+| `<=`  | Less than or equal    |
+| `=`   | Equal                 |
+| `!=`  | Not equal             |
 
 For event alarms: `cycle_decrease`, `cycle_increase`, `cycle_wave`.
 
@@ -72,11 +72,11 @@ For event alarms: `cycle_decrease`, `cycle_increase`, `cycle_wave`.
 
 ## Troubleshooting
 
-| Error | Fix |
-|-------|-----|
-| No metric data | Telescope agent not installed or ECS stopped. Install agent for detailed metrics |
-| Alarm not triggering | Check metric period (minimum 300s), verify condition threshold |
-| CES network timeout in region | Some regions may have CES endpoint issues. Try a different region |
+| Error                         | Fix                                                                              |
+| ----------------------------- | -------------------------------------------------------------------------------- |
+| No metric data                | Telescope agent not installed or ECS stopped. Install agent for detailed metrics |
+| Alarm not triggering          | Check metric period (minimum 300s), verify condition threshold                   |
+| CES network timeout in region | Some regions may have CES endpoint issues. Try a different region                |
 
 ## Security
 

@@ -18,15 +18,38 @@ from pathlib import Path
 
 DENY_PREFIX = "Huawei Cloud safety hook blocked this action: "
 RULES_PATH = Path(__file__).resolve().parents[1] / "safety" / "rules" / "cloud-risk-rules.json"
+POLICY_PATH = Path(__file__).resolve().parents[1] / "safety" / "policy.json"
 
-CONFIG_FILE_RE = re.compile(r"(\.hcloud|\.huaweicloud|hcloud[/\\](config|credentials)|huaweicloud[/\\](config|credentials))", re.I)
-ENV_DUMP_RE = re.compile(r"(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:).*(HUAWEICLOUD|HWC_|HCLOUD|OS_)", re.I)
-SECRET_READ_RE = re.compile(r"(ShowSecretVersion|GetSecretValue|secret_string|secret_binary)", re.I)
-HCLOUD_RE = re.compile(r"(^|\s)hcloud(\.exe)?\s+", re.I)
-WRITE_OPERATION_RE = re.compile(
-    r"\b(BatchCreate|BatchDelete|Create|Delete|Update|Modify|Resize|Reboot|Stop|Start|Restart|Authorize|Revoke|Add|Remove|Associate|Disassociate|Attach|Detach|Enable|Disable)\w*",
-    re.I,
+CONFIG_FILE_RE = None
+SECRET_READ_RE = None
+WRITE_OPERATION_RE = None
+
+
+def load_policy():
+    global CONFIG_FILE_RE, SECRET_READ_RE, WRITE_OPERATION_RE
+    try:
+        with POLICY_PATH.open("r", encoding="utf-8") as file_obj:
+            policy = json.load(file_obj)
+        cred_patterns = policy.get("credentialFilePatterns", [])
+        if cred_patterns:
+            CONFIG_FILE_RE = re.compile("|".join(cred_patterns), re.I)
+        blocked_secrets = policy.get("blockedSecretOperations", [])
+        if blocked_secrets:
+            SECRET_READ_RE = re.compile("|".join(re.escape(op) for op in blocked_secrets), re.I)
+        write_prefixes = policy.get("writeOperationPrefixes", [])
+        if write_prefixes:
+            WRITE_OPERATION_RE = re.compile(r"\b(" + "|".join(write_prefixes) + r")\w*", re.I)
+    except Exception:
+        pass
+
+
+load_policy()
+
+ENV_DUMP_RE = re.compile(
+    r"(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:).*(HUAWEICLOUD|HWC_|HCLOUD|OS_)", re.I,
 )
+HCLOUD_RE = re.compile(r"(^|\s)hcloud(\.exe)?\s+", re.I)
+READ_OPERATION_RE = re.compile(r"\b(List|Show|Get|Describe|NovaList|NovaShow)\w*", re.I)
 READ_OPERATION_RE = re.compile(r"\b(List|Show|Get|Describe|NovaList|NovaShow)\w*", re.I)
 
 
@@ -117,11 +140,11 @@ def main():
     tool_name = data.get("tool_name", "")
     text = command_text(data.get("tool_input", {}))
 
-    if CONFIG_FILE_RE.search(text):
+    if CONFIG_FILE_RE and CONFIG_FILE_RE.search(text):
         deny("reading Huawei Cloud credential/profile files can expose AK/SK or tokens. Use redacted toolkit tools.")
     if ENV_DUMP_RE.search(text):
         deny("dumping cloud credential environment variables is not allowed.")
-    if SECRET_READ_RE.search(text):
+    if SECRET_READ_RE and SECRET_READ_RE.search(text):
         deny("direct secret value retrieval would put plaintext secrets into the agent context.")
     denied_rule = first_denied_command_rule(text)
     if denied_rule:

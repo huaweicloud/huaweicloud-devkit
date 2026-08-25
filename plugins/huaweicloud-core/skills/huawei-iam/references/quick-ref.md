@@ -31,13 +31,13 @@ hcloud IAM GetAccountSummary                     # account summary
 
 ## IAM vs AWS Comparison
 
-| AWS | Huawei Cloud |
-|-----|-------------|
-| `iam:ListUsers` | `iam:users:list` (lowercase + colon) |
-| AWS Managed Policy | System Policy (系统策略) |
-| Customer Managed | Custom Policy (自定义策略) |
-| Resource-Based Policy | Project-Level Policy (项目级策略) |
-| IAM Role | Agency (委托) |
+| AWS                   | Huawei Cloud                         |
+| --------------------- | ------------------------------------ |
+| `iam:ListUsers`       | `iam:users:list` (lowercase + colon) |
+| AWS Managed Policy    | System Policy (系统策略)             |
+| Customer Managed      | Custom Policy (自定义策略)           |
+| Resource-Based Policy | Project-Level Policy (项目级策略)    |
+| IAM Role              | Agency (委托)                        |
 
 > Huawei Cloud IAM action naming: `<service>:<resource>:<action>`. Always verify at https://support.huaweicloud.com/usermanual-iam/iam_01_0001.html
 
@@ -49,8 +49,8 @@ hcloud IAM GetAccountSummary                     # account summary
   "Action": ["ecs:*"],
   "Resource": ["*"],
   "Condition": {
-    "StringEquals": {"g:SourceAccount": "<account-id>"},
-    "StringLike": {"g:SourceUrn": "urn:fss:*"}
+    "StringEquals": { "g:SourceAccount": "<account-id>" },
+    "StringLike": { "g:SourceUrn": "urn:fss:*" }
   }
 }
 ```

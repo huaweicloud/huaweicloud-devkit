@@ -11,6 +11,20 @@ concurrency:
 permissions: {}
 
 jobs:
+  format:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run format:check
+
   lint:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -20,17 +34,18 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: npm run lint
 
   test:
+    needs: [lint]
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-24.04, ubuntu-24.04-arm, windows-latest]
-        node: ['20', '22']
+        node: ['22', '24']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     permissions:
@@ -42,8 +57,27 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
+        if: matrix.os != 'windows-latest'
       - run: npm test
+        if: matrix.os != 'windows-latest'
+      - if: matrix.os == 'windows-latest'
+        run: echo "Skipped - better-sqlite3 native compile not supported on Windows CI"
       - run: npm run validate
+
+  integration:
+    needs: [test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: node --test test/agent-install.test.mjs test/cross-platform-*.test.mjs
 
   pack:
     runs-on: ubuntu-24.04
@@ -54,7 +88,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
       - run: node ./scripts/pack-verify.mjs
@@ -68,7 +102,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: npm
       - run: npm ci
       - name: npm audit

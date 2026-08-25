@@ -1,0 +1,20 @@
+{
+  "name": "huaweicloud-devkit",
+  "id": "huaweicloud-devkit",
+  "displayName": "HuaweiCloud DevKit",
+  "version": "1.0.2",
+  "family": "bundle-plugin",
+  "bundleFormat": "codex",
+  "description": "Guide coding agents to use Huawei Cloud safely — KooCLI, APIs, SDKs, 28 MCP tools, skills, and safety guardrails.",
+  "author": {
+    "name": "HuaweiCloud Mate",
+    "url": "https://github.com/huaweicloud"
+  },
+  "homepage": "https://github.com/huaweicloud/huaweicloud-devkit",
+  "repository": "https://github.com/huaweicloud/huaweicloud-devkit",
+  "license": "Apache-2.0",
+  "keywords": ["huaweicloud", "huawei-cloud", "koocli", "hcloud", "agent", "mcp", "api", "sdk", "skills", "cloud"],
+  "category": "Cloud",
+  "capabilities": ["Read", "Interactive"],
+  "brandColor": "#C7000B"
+}

@@ -23,7 +23,14 @@ Closes #
 - [ ] `npm test` passes locally
 - [ ] `npm run validate` passes locally
 - [ ] `npm run lint` passes locally
-- [ ] Docs updated if needed (README / docs/CHANGELOG.md)
+
+### README & Documentation
+
+> ⚠️ **Required for `feat`, `fix`, `refactor` PRs.** Check one:
+
+- [ ] **Yes, README updated** — I added/changed documentation to reflect this PR
+- [ ] **No change needed** — this PR does not affect features, agents, or behavior visible to users
+- [ ] **Docs-only** — this PR only contains documentation changes
 
 ## Notes
 

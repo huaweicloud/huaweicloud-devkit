@@ -3,10 +3,12 @@
 **Before executing any command: If MCP tools are not available** (new session after install), restart your session or use hcloud CLI directly with caution. Commands using adminPass/password WILL appear in shell history — prefer key_name.
 
 ## 1. Discover flavors
+
 hcloud ECS ListFlavors --cli-region=<region> --cli-output=json
 Filter for `os_extra_specs.cond:operation:status == normal` — most results are abandoned. See references/flavors.md.
 
 ## 2. Find availability zones
+
 hcloud ECS NovaListAvailabilityZones --cli-region=<region>
 
 ## 3. Find image
@@ -19,27 +21,32 @@ hcloud IMS ListImages --cli-region=<region> --__imagetype=gold --__isregistered=
 If searching by name (e.g. --name="Ubuntu") returns empty: use broad search without name filter, pick from results. Some regions only offer Huawei Cloud EulerOS (HCE).
 
 Common images (verify live per region):
-| Image | Region | ID |
-|-------|--------|----|
+
+| Image            | Region     | ID                                   |
+| ---------------- | ---------- | ------------------------------------ |
 | HCE 2.0 Standard | cn-north-4 | 7d940784-ac0a-425f-b3fa-8478f1a1df70 |
-| Ubuntu 22.04 | Query live | Query live |
-| CentOS 8.2 | Query live | Query live |
+| Ubuntu 22.04     | Query live | Query live                           |
+| CentOS 8.2       | Query live | Query live                           |
 
 ## 4. Verify or create VPC/subnet
+
 hcloud VPC ListVpcs --cli-region=<region>
 hcloud VPC ListSubnets --vpc_id=<vpc-id> --cli-region=<region>
 If no VPC/subnet exists: load `huawei-vpc` skill → create VPC → create subnet (with DNS) → create security group → return here.
 
 ## 5. Create keypair (recommended over adminPass)
+
 hcloud ECS NovaCreateKeypair --keypair.name=<name>
 Save the returned private key to a local file. The public key is auto-injected.
 
 Password alternative:
+
 - adminPass: 8-26 chars, must have uppercase + lowercase + digit + special char
 - Passwords appear ONCE in creation output and are not retrievable
 - Passwords are logged in shell history — this is a security risk
 
 ## 6. Create instance
+
 hcloud ECS CreateServers --cli-region=<region> --server.name=<name> --server.flavorRef=<flavor-id> --server.imageRef=<image-id> --server.nics.1.subnet_id=<subnet-id> --server.root_volume.volumetype=<type> --server.root_volume.size=<minsize> --server.vpcid=<vpc-id> --server.availability_zone=<az> --server.key_name=<keypair-name> --server.count=1
 
 ### Bootstrap with user_data (cloud-init)
@@ -63,6 +70,7 @@ hcloud ECS CreateServers ... --server.user_data=$user_data
 > **Debugging**: If the script didn't run, check `/var/log/cloud-init-output.log` on the instance.
 >
 > **Recovery after failure**: user_data only executes on **first boot**. Restarting the instance will NOT re-run user_data scripts. If cloud-init fails (e.g., DNS missing → `yum`/`apt` cannot resolve repos):
+>
 > 1. Fix the root cause (e.g., update subnet DNS via `VPC UpdateSubnet`)
 > 2. Either: SSH into the instance and run the setup commands manually (see `huawei-ecs` → SSH Connection Verification → Running Commands Inside the Instance)
 > 3. Or: Delete the instance and recreate with corrected user_data (fresh boot)
@@ -70,6 +78,7 @@ hcloud ECS CreateServers ... --server.user_data=$user_data
 ## 7. EIP (two methods)
 
 ### Method A: Inline with CreateServers (Recommended)
+
 Add EIP parameters to the `CreateServers` command in step 6:
 
 ```bash
@@ -84,6 +93,7 @@ hcloud ECS CreateServers \
 > **Trap**: Parameter names differ from `EIP CreatePublicip`. Use `iptype` (not `type`), `sharetype` (not `share_type`), and `chargemode` (not `charging_mode`). Always verify with `hcloud ECS CreateServers --help`.
 
 ### Method B: Create and bind separately
+
 hcloud EIP CreatePublicip --publicip.type=<type> --bandwidth.size=<size> --bandwidth.share_type=<share-type> --bandwidth.name=<name>
 
 ```bash
@@ -131,3 +141,4 @@ Warning: --delete_publicip and --delete_volume default to false. Set to true to 
 - Flavor: must be available in target region — always ListFlavors first
 - Root volume: SSD 40GB min
 - Keypair is safer than adminPass (passwords leak into shell history)
+```

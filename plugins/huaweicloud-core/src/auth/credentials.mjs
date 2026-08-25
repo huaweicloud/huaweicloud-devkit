@@ -7,14 +7,20 @@ import { homedir } from 'node:os';
 // Native Windows has no POSIX modes (statSync always reports 0666), so skip the check there.
 function ensurePrivateMode(path) {
   if (process.platform === 'win32') return;
-  try { chmodSync(path, 0o600); } catch {}
+  try {
+    chmodSync(path, 0o600);
+  } catch {}
   try {
     const mode = statSync(path).mode & 0o777;
     if (mode !== 0o600) {
-      console.warn(`\x1b[33m[WARN]\x1b[0m Could not set 0600 on ${path} (current mode ${mode.toString(8)}). Credentials may be readable by other users.`);
+      console.warn(
+        `\x1b[33m[WARN]\x1b[0m Could not set 0600 on ${path} (current mode ${mode.toString(8)}). Credentials may be readable by other users.`,
+      );
       console.warn(`\x1b[33m       If running under WSL, move the credential home to the Linux filesystem:\x1b[0m`);
       console.warn(`\x1b[33m         export HUAWEICLOUD_HOME=$HOME  (then re-run auth init)\x1b[0m`);
-      console.warn(`\x1b[33m       Or skip file storage entirely with HW_ACCESS_KEY/HW_SECRET_KEY environment variables.\x1b[0m`);
+      console.warn(
+        `\x1b[33m       Or skip file storage entirely with HW_ACCESS_KEY/HW_SECRET_KEY environment variables.\x1b[0m`,
+      );
     }
   } catch {}
 }
@@ -78,6 +84,13 @@ export function resolveCredentials(options = {}) {
   let securityToken = process.env.HW_SECURITY_TOKEN;
   let region = process.env.HW_REGION || process.env.HUAWEICLOUD_REGION || '';
 
+  const codeartsCreds = isCodeArtsContext() ? readCodeArtsCredentials() : null;
+  if (codeartsCreds) {
+    if (!ak && codeartsCreds.ak) ak = codeartsCreds.ak;
+    if (!sk && codeartsCreds.sk) sk = codeartsCreds.sk;
+    if (!region && codeartsCreds.region) region = codeartsCreds.region;
+  }
+
   const stored = readGlobalCredentials();
   if (stored) {
     if (!ak && stored.ak) ak = stored.ak;
@@ -88,8 +101,68 @@ export function resolveCredentials(options = {}) {
 
   if (!ak || !sk) {
     if (options.allowMissing) return null;
-    throw new Error('Huawei Cloud credentials are not configured. Run "npx huaweicloud-devkit auth init" or set HW_ACCESS_KEY/HW_SECRET_KEY.');
+    throw new Error(
+      'Huawei Cloud credentials are not configured. Run "npx huaweicloud-devkit auth init" or set HW_ACCESS_KEY/HW_SECRET_KEY.',
+    );
   }
 
   return { ak, sk, securityToken, region };
+}
+
+function isCodeArtsContext() {
+  return existsSync(join(process.cwd(), '.codeartsdoer')) || existsSync(join(homedir(), '.codeartsdoer'));
+}
+
+function readCodeArtsCredentials() {
+  const searchPaths = [
+    join(process.cwd(), '.codeartsdoer', 'mcp', 'mcp_settings.json'),
+    join(homedir(), '.codeartsdoer', 'mcp', 'mcp_settings.json'),
+  ];
+
+  for (const path of searchPaths) {
+    try {
+      if (!existsSync(path)) continue;
+      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const server = config?.mcpServers?.['huaweicloud-devkit'];
+      if (!server?.env) continue;
+
+      const ak = server.env.HW_ACCESS_KEY;
+      const sk = server.env.HW_SECRET_KEY;
+      if (ak && sk) {
+        return {
+          ak,
+          sk,
+          securityToken: server.env.HW_SECURITY_TOKEN || '',
+          region: server.env.HW_REGION || server.env.HUAWEICLOUD_REGION || '',
+        };
+      }
+    } catch {
+      // mcp_settings.json missing or invalid — skip
+    }
+  }
+
+  return null;
+}
+
+let runtimeCredentials = null;
+
+export function setRuntimeCredentials(ak, sk, securityToken, region) {
+  runtimeCredentials = { ak, sk, securityToken: securityToken || '', region: region || '' };
+}
+
+export function clearRuntimeCredentials() {
+  runtimeCredentials = null;
+}
+
+export function resolveCredentialsWithRuntime(options = {}) {
+  if (runtimeCredentials) {
+    return {
+      ak: runtimeCredentials.ak,
+      sk: runtimeCredentials.sk,
+      securityToken: runtimeCredentials.securityToken,
+      region: runtimeCredentials.region,
+    };
+  }
+
+  return resolveCredentials(options);
 }

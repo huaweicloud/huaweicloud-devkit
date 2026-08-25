@@ -4,12 +4,17 @@
 
 ```bash
 npm test                 # all tests (node --test)
+npm run lint             # ESLint + markdownlint
+npm run lint:js          # ESLint only
+npm run lint:md          # markdownlint only
+npm run format           # Prettier format all files
+npm run format:check     # Prettier check (no write)
 npm run validate         # structural validation
 node --test test/structure.test.mjs   # single test file
 node ./scripts/validate-package.mjs   # validation alone
 ```
 
-No build step, no linter, no typecheck. Zero runtime npm dependencies.
+No build step, no typecheck. One runtime dependency (undici for proxy support).
 
 ## Architecture
 
@@ -18,12 +23,13 @@ This is an **agent guidance + safety package**, not a service encyclopedia. Six 
 ```
 plugins/huaweicloud-core/
   skills/           ← 6 meta-skills + service skills
-  src/              ← Node.js MCP server (stdio JSON-RPC, 12 tools)
+  src/              ← Node.js MCP server (stdio JSON-RPC, 13 tools)
   safety/           ← shared policy.json
   hooks/            ← Python PreToolUse hook
   .codex-plugin/    ← Codex plugin manifest
   .claude-plugin/   ← Claude Code plugin manifest
   .cursor-plugin/   ← Cursor plugin manifest
+  .officeace-plugin/← OfficeAce plugin manifest
   .mcp.json         ← MCP server config for agents
 ```
 
@@ -52,17 +58,18 @@ Design docs in `docs/` use `huawei-*` and plan 20+ service skills. The **actual 
 ### Skill Design Principles
 
 **Parameters are discovered via `--help`, not hardcoded.** Every service skill must instruct the agent:
+
 > Always run `hcloud <Service> <Operation> --help` before constructing commands to discover exact parameter names and requirements.
 
 The skill provides the correct **service name and operation names** (which agents cannot reliably discover). Parameters come from `--help` (which is self-documenting and never stale).
 
 **Three-class parameter value rule.** When a command in a SKILL.md or reference file contains a concrete value (not a `<placeholder>`), classify it before committing:
 
-| Class | Definition | Action |
-|-------|-----------|--------|
-| **HELPFUL** | `--help` cannot reveal this knowledge | **Keep** the concrete value |
+| Class           | Definition                                | Action                           |
+| --------------- | ----------------------------------------- | -------------------------------- |
+| **HELPFUL**     | `--help` cannot reveal this knowledge     | **Keep** the concrete value      |
 | **UNNECESSARY** | `--help` already documents this correctly | **Replace** with `<placeholder>` |
-| **WRONG** | Contradicts what `--help` says | **Fix immediately** |
+| **WRONG**       | Contradicts what `--help` says            | **Fix immediately**              |
 
 ```
 HELPFUL examples (keep):
@@ -85,6 +92,7 @@ UNNECESSARY examples (replace with placeholder):
 **Reference files vs SKILL.md:** SKILL.md is the routing layer (~80 lines) — prefer placeholders or omit inline values entirely. `references/*.md` are teaching files — complete working commands are expected, but UNNECESSARY values should still use placeholders unless the value itself is the teaching point.
 
 **Only document non-obvious traps.** If `--help` already explains a parameter correctly, don't repeat it. Document what `--help` gets wrong:
+
 - Parameters marked optional that are actually required (e.g., `protocol`/`sl_domain`/`env_name`/`env_id` for DEDICATEDGATEWAY)
 - Deprecated values (e.g., `APIG` trigger type, use `DEDICATEDGATEWAY`)
 - Format traps (e.g., event_data uses dotted `--event_data.key=value`, NOT JSON strings)
