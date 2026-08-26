@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.0.3-next.1 (2026-08-26)
+
+- style: format fix
+- fix: separate OpenClaw install from Codex Desktop
+- style: format marketplace.json
+- feat: codex-desktop install to Codex-standard plugin layout
+- fix: 错误提示改为英文
+- style: 修复 catch 参数命名，符合 unicorn/catch-error-name 规则
+- fix: 修复 hdkitservice-api.mjs 中 undici 动态导入的 lint 报错
+- fix: voucher 工具后端不可用时优雅降级
+- style: 修复 prettier 格式问题
+- feat: 新增激励金代金券 MCP 工具
+- style: format fix
+- feat: add web framework detection and sandbox deploy workflow
+
 ## 1.1.0-next.0 (2026-08-25)
 
 - fix(release): restore manifest to 1.0.2 (latest stable)
