@@ -128,12 +128,7 @@ function isCodeArtsContext() {
 
 function readCodeArtsCredentials() {
   const parentCwd = getParentCwd();
-  const searchDirs = [
-    process.env.CODEARTS_PROJECT_DIR,
-    parentCwd,
-    process.cwd(),
-    homedir(),
-  ];
+  const searchDirs = [process.env.CODEARTS_PROJECT_DIR, parentCwd, process.cwd(), homedir()];
 
   for (const dir of searchDirs) {
     if (!dir) continue;
