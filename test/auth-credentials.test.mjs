@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   clearRuntimeCredentials,
+  getParentCwd,
   globalCredentialsPath,
   obsConfigPath,
   readGlobalCredentials,
@@ -286,5 +287,59 @@ test('auth status is redacted and reflects vault/OBS state', () => {
     assert.ok(status.agents.opencode !== undefined);
     assert.ok(status.agents.dsh !== undefined);
     assert.doesNotMatch(JSON.stringify(status), /STATUS_AK|STATUS_SK/);
+  });
+});
+
+test('getParentCwd returns a string on Linux and does not throw', () => {
+  const cwd = getParentCwd();
+  if (process.platform === 'linux') {
+    assert.ok(typeof cwd === 'string' && cwd.length > 0);
+  }
+  // Never throws on any platform
+  assert.ok(cwd === null || (typeof cwd === 'string' && cwd.length > 0));
+});
+
+test('resolveCredentials reads CodeArts credentials from CODEARTS_PROJECT_DIR', () => {
+  withTempHome((_home) => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+
+    const projectDir = join(process.cwd(), 'fake-project');
+
+    try {
+      const codeartsDir = join(projectDir, '.codeartsdoer', 'mcp');
+      mkdirSync(codeartsDir, { recursive: true });
+      writeFileSync(
+        join(codeartsDir, 'mcp_settings.json'),
+        JSON.stringify({
+          mcpServers: {
+            'huaweicloud-devkit': {
+              env: {
+                HW_ACCESS_KEY: 'PROJECT_DIR_AK',
+                HW_SECRET_KEY: 'PROJECT_DIR_SK',
+                HW_REGION: 'cn-east-3',
+              },
+            },
+          },
+        }),
+        'utf8',
+      );
+
+      const prev = process.env.CODEARTS_PROJECT_DIR;
+      process.env.CODEARTS_PROJECT_DIR = projectDir;
+
+      try {
+        const creds = resolveCredentials();
+        assert.equal(creds.ak, 'PROJECT_DIR_AK');
+        assert.equal(creds.sk, 'PROJECT_DIR_SK');
+        assert.equal(creds.region, 'cn-east-3');
+      } finally {
+        if (prev === undefined) delete process.env.CODEARTS_PROJECT_DIR;
+        else process.env.CODEARTS_PROJECT_DIR = prev;
+      }
+    } finally {
+      rmSync(projectDir, { recursive: true, force: true });
+    }
   });
 });

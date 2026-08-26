@@ -6,6 +6,11 @@ import { fileURLToPath } from 'node:url';
 
 import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
 
+const projectDirIdx = process.argv.indexOf('--codearts-project-dir');
+if (projectDirIdx > -1 && process.argv[projectDirIdx + 1]) {
+  process.env.CODEARTS_PROJECT_DIR = process.argv[projectDirIdx + 1];
+}
+
 try {
   const { readProxyConfig } = await import('./proxy/proxy-config.mjs');
   const proxyConfig = readProxyConfig();

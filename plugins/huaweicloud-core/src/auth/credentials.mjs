@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -109,17 +109,35 @@ export function resolveCredentials(options = {}) {
   return { ak, sk, securityToken, region };
 }
 
+let _parentCwd = undefined;
+
+export function getParentCwd() {
+  if (_parentCwd !== undefined) return _parentCwd;
+  try {
+    _parentCwd = readlinkSync(`/proc/${process.ppid}/cwd`);
+    return _parentCwd;
+  } catch {
+    _parentCwd = null;
+    return null;
+  }
+}
+
 function isCodeArtsContext() {
   return existsSync(join(process.cwd(), '.codeartsdoer')) || existsSync(join(homedir(), '.codeartsdoer'));
 }
 
 function readCodeArtsCredentials() {
-  const searchPaths = [
-    join(process.cwd(), '.codeartsdoer', 'mcp', 'mcp_settings.json'),
-    join(homedir(), '.codeartsdoer', 'mcp', 'mcp_settings.json'),
+  const parentCwd = getParentCwd();
+  const searchDirs = [
+    process.env.CODEARTS_PROJECT_DIR,
+    parentCwd,
+    process.cwd(),
+    homedir(),
   ];
 
-  for (const path of searchPaths) {
+  for (const dir of searchDirs) {
+    if (!dir) continue;
+    const path = join(dir, '.codeartsdoer', 'mcp', 'mcp_settings.json');
     try {
       if (!existsSync(path)) continue;
       const config = JSON.parse(readFileSync(path, 'utf8'));
