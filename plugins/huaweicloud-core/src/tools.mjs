@@ -652,7 +652,7 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: {
-        domain_id: { type: 'string' },
+        domain_id: { type: 'string', description: '可选。生产环境请留空，账号由后端从 IAM 自动解析。' },
       },
     },
   },
@@ -662,7 +662,7 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: {
-        domain_id: { type: 'string' },
+        domain_id: { type: 'string', description: '可选。生产环境请留空，账号由后端从 IAM 自动解析。' },
       },
     },
   },
