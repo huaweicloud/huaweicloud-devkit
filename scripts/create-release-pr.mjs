@@ -1,5 +1,5 @@
 import { execSync } from 'node:child_process';
-import { readFileSync, writeFileSync, unlinkSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -75,10 +75,6 @@ const entry = `\n## ${version} (${date})\n\n${commits || '- Release'}\n`;
 changelog = changelog.slice(0, insertAt) + entry + changelog.slice(insertAt);
 writeFileSync(join(root, changelogPath), changelog, 'utf8');
 
-if (existsSync(join(root, '.version-override'))) {
-  unlinkSync(join(root, '.version-override'));
-}
-
 const changedFiles = [
   '.release-please-manifest.json',
   'package.json',
@@ -103,11 +99,6 @@ run(`git add ${pluginRoot}/.cursor-plugin/plugin.json`);
 run(`git add ${pluginRoot}/.workbuddy-plugin/plugin.json`);
 run(`git add ${pluginRoot}/.hermes-plugin/plugin.json`);
 run(`git add ${pluginRoot}/openclaw.plugin.json`);
-try {
-  run('git add .version-override');
-} catch {
-  /* optional */
-}
 
 run(`git commit -m "chore(release): ${version}"`);
 

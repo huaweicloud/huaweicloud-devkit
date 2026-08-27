@@ -221,24 +221,22 @@ Before installing project dependencies, verify the sandbox has the required runt
 ```bash
 # Core tools (expected pre-installed in sandbox image)
 echo "=== Checking core tools ==="
-command -v node && node --version || echo "MISSING: node"
-command -v npm && npm --version || echo "MISSING: npm"
-command -v nginx && nginx -v 2>&1 || echo "MISSING: nginx"
-command -v git && git --version || echo "MISSING: git"
-command -v python3 && python3 --version || echo "MISSING: python3"
-command -v curl && curl --version | head -1 || echo "MISSING: curl"
-command -v wget && wget --version | head -1 || echo "MISSING: wget"
-dpkg -l build-essential >/dev/null 2>&1 && echo "build-essential: found" || echo "MISSING: build-essential"
-command -v lsof && lsof -v 2>&1 | head -1 || echo "MISSING: lsof"
-command -v netstat && netstat --version 2>&1 | head -1 || echo "MISSING: net-tools"
-command -v make && make --version | head -1 || echo "MISSING: make"
+if command -v node >/dev/null 2>&1; then node --version; else echo "MISSING: node"; fi
+if command -v npm >/dev/null 2>&1; then npm --version; else echo "MISSING: npm"; fi
+if command -v nginx >/dev/null 2>&1; then nginx -v 2>&1; else echo "MISSING: nginx"; fi
+if command -v git >/dev/null 2>&1; then git --version; else echo "MISSING: git"; fi
+if command -v python3 >/dev/null 2>&1; then python3 --version; else echo "MISSING: python3"; fi
+if command -v curl >/dev/null 2>&1; then curl --version | head -1; else echo "MISSING: curl"; fi
+if command -v wget >/dev/null 2>&1; then wget --version | head -1; else echo "MISSING: wget"; fi
+if dpkg -l build-essential >/dev/null 2>&1; then echo "build-essential: found"; else echo "MISSING: build-essential"; fi
+if command -v make >/dev/null 2>&1; then make --version | head -1; else echo "MISSING: make"; fi
 
 # Framework-specific tools (install on demand)
 echo "=== Checking framework tools ==="
-command -v pnpm && pnpm --version || echo "MISSING: pnpm"
-command -v yarn && yarn --version || echo "MISSING: yarn"
-command -v hugo && hugo version || echo "MISSING: hugo"
-command -v devbridge && devbridge version || echo "MISSING: devbridge"
+if command -v pnpm >/dev/null 2>&1; then pnpm --version; else echo "MISSING: pnpm"; fi
+if command -v yarn >/dev/null 2>&1; then yarn --version; else echo "MISSING: yarn"; fi
+if command -v hugo >/dev/null 2>&1; then hugo version; else echo "MISSING: hugo"; fi
+if command -v devbridge >/dev/null 2>&1; then devbridge version; else echo "MISSING: devbridge"; fi
 ```
 
 **Install only missing tools** — parse the pre-flight output and install only tools reported as `MISSING`. Skip tools already present:
@@ -250,8 +248,6 @@ command -v devbridge && devbridge version || echo "MISSING: devbridge"
 | curl            | `sudo apt-get update -qq && sudo apt-get install -y -qq curl`                                                                                                                                                         |
 | wget            | `sudo apt-get update -qq && sudo apt-get install -y -qq wget`                                                                                                                                                         |
 | build-essential | `sudo apt-get update -qq && sudo apt-get install -y -qq build-essential`                                                                                                                                              |
-| lsof            | `sudo apt-get update -qq && sudo apt-get install -y -qq lsof`                                                                                                                                                         |
-| net-tools       | `sudo apt-get update -qq && sudo apt-get install -y -qq net-tools`                                                                                                                                                    |
 | make            | `sudo apt-get update -qq && sudo apt-get install -y -qq make`                                                                                                                                                         |
 | pnpm            | `npm i -g pnpm`                                                                                                                                                                                                       |
 | yarn            | `npm i -g yarn`                                                                                                                                                                                                       |
@@ -277,7 +273,7 @@ Wait for install to complete, then:
 **Build** — only if build output doesn't already exist:
 
 ```bash
-cd /workspace/<dirname> && [ -d <outputDir> ] && echo "SKIP: <outputDir> exists" || <buildCmd>
+cd /workspace/<dirname> && [ -d <outputDir> ] && echo "SKIP: <outputDir> exists" || (umask 022 && <buildCmd>)
 ```
 
 - `cd /workspace/<dirname>/<subAppPath>` for Monorepo sub-apps.
@@ -302,6 +298,20 @@ Check `references/nginx-templates.md` for the correct template based on `nginxTy
 Replace `<port>`, `<project>`, `<outputDir>` (and `<nodePort>`/`<publicPort>` for SSR) with detected values.
 
 Write the config with `sudo tee`, then reload nginx. If nginx fails, fall back to Python HTTP server (see `references/nginx-templates.md`).
+
+**Verify nginx is serving** — curl-check the app before proceeding to DevBridge:
+
+```bash
+curl -s -o /dev/null -w "nginx status: %{http_code}\n" http://localhost:<port>
+```
+
+If the status code is not 2xx/3xx:
+
+- **403** — likely file permissions: run `chmod -R o+rX /workspace/<project>/<outputDir>` and re-test
+- **000 (connection refused)** — nginx not listening: check `sudo nginx -t` for config errors
+- **Other** — check nginx error log: `sudo tail -20 /var/log/nginx/error.log`
+
+> If `curl` is unavailable, check port listening via `/proc`: `cat /proc/net/tcp | awk '{print $2}' | grep -q "$(printf '%04X' <port>)" && echo "port <port> listening" || echo "port <port> NOT listening"`
 
 ### Step 6: Start the App
 

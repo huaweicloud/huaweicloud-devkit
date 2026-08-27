@@ -6,7 +6,7 @@ Nginx is the primary serving mechanism for web apps deployed to the sandbox. Pyt
 
 ```bash
 sudo apt-get update -qq && sudo apt-get install -y -qq nginx 2>/dev/null || true
-sudo mkdir -p /etc/nginx/sites-enabled
+sudo mkdir -p /etc/nginx/conf.d
 ```
 
 ## Template 1: SPA (with try_files fallback)
@@ -14,7 +14,7 @@ sudo mkdir -p /etc/nginx/sites-enabled
 Use for: Vite, CRA, Vue CLI, Angular, VitePress, Docusaurus, Taro H5, uni-app H5
 
 ```bash
-sudo tee /etc/nginx/sites-enabled/app.conf > /dev/null << 'NGINX_EOF'
+sudo tee /etc/nginx/conf.d/app.conf > /dev/null << 'NGINX_EOF'
 server {
     listen <port>;
     root /workspace/<project>/<outputDir>;
@@ -38,7 +38,7 @@ sudo nginx -s reload 2>/dev/null || sudo nginx
 Use for: Next.js, Nuxt
 
 ```bash
-sudo tee /etc/nginx/sites-enabled/app.conf > /dev/null << 'NGINX_EOF'
+sudo tee /etc/nginx/conf.d/app.conf > /dev/null << 'NGINX_EOF'
 server {
     listen <publicPort>;
     server_name _;
@@ -65,7 +65,7 @@ sudo nginx -s reload 2>/dev/null || sudo nginx
 Use for: Hugo, Hexo, plain static HTML
 
 ```bash
-sudo tee /etc/nginx/sites-enabled/app.conf > /dev/null << 'NGINX_EOF'
+sudo tee /etc/nginx/conf.d/app.conf > /dev/null << 'NGINX_EOF'
 server {
     listen <port>;
     root /workspace/<project>/<outputDir>;

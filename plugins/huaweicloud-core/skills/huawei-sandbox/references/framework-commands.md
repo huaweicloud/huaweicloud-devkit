@@ -50,7 +50,6 @@ These tools should be available in the sandbox image. Verify with the pre-flight
 | curl            | 8.x         | Tool downloads, health checks |
 | build-essential | -           | Native module compilation     |
 | pnpm            | 10.x        | Monorepo / workspace installs |
-| lsof            | 4.95.x      | Port conflict detection       |
 
 ### Install on Demand
 
