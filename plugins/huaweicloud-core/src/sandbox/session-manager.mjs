@@ -155,7 +155,9 @@ export async function execWithSession(workspaceId, command, username, timeoutMs)
 
 export const UPLOAD_CHUNK_SIZE = 30000;
 
-export const UPLOAD_BATCH_SIZE = 5;
+export const UPLOAD_BATCH_SIZE = 2;
+
+export const UPLOAD_MAX_RETRIES = 3;
 
 export function splitBase64Chunks(base64, chunkSize = UPLOAD_CHUNK_SIZE) {
   const chunks = [];
@@ -189,11 +191,21 @@ export async function uploadFileWithSession(workspaceId, localPath, remotePath, 
     const batchNum = Math.floor(batchStart / UPLOAD_BATCH_SIZE) + 1;
     const totalBatches = Math.ceil(chunks.length / UPLOAD_BATCH_SIZE);
     const cmd = `printf '%s' '${combinedChunk}' >> "${tmp}"`;
-    const res = await execWithSession(workspaceId, cmd, username, timeoutMs);
-    if (res.exitCode !== 0) {
-      throw new Error(
-        `sandbox upload: failed writing batch ${batchNum}/${totalBatches}: ${res.stdout || res.error || res.exitCode}`,
-      );
+
+    let batchOk = false;
+    let lastError;
+    for (let retry = 0; retry < UPLOAD_MAX_RETRIES; retry++) {
+      const res = await execWithSession(workspaceId, cmd, username, timeoutMs);
+      if (res.exitCode === 0) {
+        batchOk = true;
+        break;
+      }
+      lastError = res.stdout || res.error || res.exitCode;
+      console.error(`  upload retry ${retry + 1}/${UPLOAD_MAX_RETRIES} for batch ${batchNum}/${totalBatches}`);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+    if (!batchOk) {
+      throw new Error(`sandbox upload: failed writing batch ${batchNum}/${totalBatches}: ${lastError}`);
     }
     if (batchNum % 10 === 0 || batchNum === totalBatches) {
       console.error(`  upload progress: batch ${batchNum}/${totalBatches}`);
@@ -556,14 +568,25 @@ export async function uploadProjectWithSession(
   uploadLog(`uploadProject: ${localDir} -> ${archiveRemotePath} (archive=${archiveSize} bytes, md5=${expectedMd5})`);
 
   let result;
-  try {
-    result = await uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, username, timeoutMs, options);
-  } catch (tunnelError) {
-    uploadLog(`uploadProject: HTTP tunnel upload failed: ${tunnelError.message}`);
+  let tunnelError;
+  for (let attempt = 0; attempt < UPLOAD_MAX_RETRIES; attempt++) {
+    try {
+      await cleanupFileServer(workspaceId, username).catch(() => {});
+      result = await uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, username, timeoutMs, options);
+      tunnelError = null;
+      break;
+    } catch (error) {
+      tunnelError = error;
+      uploadLog(`uploadProject: attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES} failed: ${error.message}`);
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  }
+  if (tunnelError) {
+    uploadLog(`uploadProject: all ${UPLOAD_MAX_RETRIES} attempts failed: ${tunnelError.message}`);
     uploadLog(`uploadProject: NOT falling back to base64 (removed). Rethrowing with diagnostics.`);
     cleanupLocalArchive(archivePath);
     throw new Error(
-      `sandbox upload failed: HTTP tunnel could not transfer the project archive. ` +
+      `sandbox upload failed after ${UPLOAD_MAX_RETRIES} attempts: HTTP tunnel could not transfer the project archive. ` +
         `Archive size: ${(archiveSize / 1024).toFixed(1)}KB. ` +
         `Root cause: ${tunnelError.message}. ` +
         `Diagnostic log: ${UPLOAD_LOG_PATH}`,
