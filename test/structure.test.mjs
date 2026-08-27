@@ -50,6 +50,25 @@ test('OpenCode integration exposes skills, commands, and MCP config', () => {
   assert.ok(existsSync(join(root, 'integrations', 'opencode', 'skills', 'huaweicloud-core', 'SKILL.md')));
 });
 
+test('Hermes MCP Catalog manifest is present and valid', () => {
+  const manifestPath = join(root, 'integrations', 'hermes', 'manifest.yaml');
+  assert.ok(existsSync(manifestPath), 'Missing integrations/hermes/manifest.yaml');
+
+  const yaml = readFileSync(manifestPath, 'utf8');
+
+  assert.match(yaml, /manifest_version:\s*1/);
+  assert.match(yaml, /name:\s*huaweicloud-devkit/);
+  assert.match(yaml, /transport:/);
+  assert.match(yaml, /type:\s*stdio/);
+  assert.match(yaml, /command:\s*"node"/);
+  assert.match(yaml, /mcp-server\.mjs/);
+  assert.match(yaml, /install:/);
+  assert.match(yaml, /type:\s*git/);
+  assert.match(yaml, /huaweicloud\/huaweicloud-devkit/);
+  assert.match(yaml, /--target hermes --skip-mcp-server/);
+  assert.match(yaml, /post_install:/);
+});
+
 test('plugin skills are compact meta-skills instead of service encyclopedia entries', () => {
   const skillsDir = join(pluginRoot, 'skills');
   const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
@@ -444,6 +463,7 @@ test('setup-cli.mjs supports the hermes target end to end', () => {
   assert.match(setup, /install --target hermes/);
   assert.match(setup, /HERMES_HOME/);
   assert.match(setup, /LOCALAPPDATA/);
+  assert.match(setup, /--skip-mcp-server/);
 });
 
 test('tools.mjs resolves skills from the hermes directory', () => {

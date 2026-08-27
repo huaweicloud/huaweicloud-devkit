@@ -2104,20 +2104,23 @@ async function installHermes() {
   const safetyDir = join(PLUGIN_ROOT, 'safety');
   const hooksDir = join(PLUGIN_ROOT, 'hooks');
   const pluginDest = hermesPluginsDir();
+  const skipMcp = process.argv.includes('--skip-mcp-server');
 
   copyDir(skillsSrc, hermesSkillsDir());
   console.log(`  Skills -> ${hermesSkillsDir()}`);
 
-  copyDir(srcDir, join(pluginDest, 'src'));
-  console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
+  if (!skipMcp) {
+    copyDir(srcDir, join(pluginDest, 'src'));
+    console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
+  }
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
   console.log(`  Safety Hooks -> ${join(pluginDest, 'hooks')}`);
 
-  ensureHermesMcpConfig();
+  if (!skipMcp) ensureHermesMcpConfig();
   ensureHermesHooksConfig();
-  installRuntimeDeps(pluginDest);
+  if (!skipMcp) installRuntimeDeps(pluginDest);
 }
 
 async function updateHermes() {
