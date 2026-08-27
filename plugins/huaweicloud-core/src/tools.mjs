@@ -652,7 +652,10 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: {
-        domain_id: { type: 'string', description: '可选。生产环境请留空，账号由后端从 IAM 自动解析。' },
+        domain_id: {
+          type: 'string',
+          description: 'Optional. Leave empty in production — account is resolved from IAM automatically.',
+        },
       },
     },
   },
@@ -662,7 +665,10 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: {
-        domain_id: { type: 'string', description: '可选。生产环境请留空，账号由后端从 IAM 自动解析。' },
+        domain_id: {
+          type: 'string',
+          description: 'Optional. Leave empty in production — account is resolved from IAM automatically.',
+        },
       },
     },
   },
