@@ -38,15 +38,36 @@ function closeQuietly(ws) {
   }
 }
 
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
 function stripEchoedLine(text, line, options = {}) {
-  const escaped = escapeRegExp(line);
-  const stripped = text.replace(new RegExp(`(^|\\r?\\n)${escaped}\\r?\\n?`), '$1');
-  if (!options.allowAttached || stripped !== text) return stripped;
-  return text.replace(new RegExp(`${escaped}(?:\\r?\\n){0,2}$`), '');
+  if (text.startsWith(line)) {
+    text = text.slice(line.length);
+    text = text.replace(/^\r?\n/, '');
+    if (!options.allowAttached) return text;
+  }
+
+  for (const nl of ['\r\n', '\n']) {
+    const idx = text.indexOf(nl + line);
+    if (idx !== -1) {
+      const before = text.slice(0, idx + nl.length);
+      const after = text.slice(idx + nl.length + line.length);
+      text = before + after.replace(/^\r?\n/, '');
+      if (!options.allowAttached) return text;
+      break;
+    }
+  }
+
+  if (options.allowAttached) {
+    for (let trail = 2; trail >= 0; trail--) {
+      for (const nl of ['\r\n', '\n']) {
+        const suffix = nl.repeat(trail);
+        if (text.endsWith(line + suffix)) {
+          return text.slice(0, text.length - line.length - suffix.length);
+        }
+      }
+    }
+  }
+
+  return text;
 }
 
 function buildMarkers(nonce = randomBytes(8).toString('hex')) {
