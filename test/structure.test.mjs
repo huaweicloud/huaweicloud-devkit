@@ -60,7 +60,7 @@ test('Hermes MCP Catalog manifest is present and valid', () => {
   assert.match(yaml, /name:\s*huaweicloud-devkit/);
   assert.match(yaml, /transport:/);
   assert.match(yaml, /type:\s*stdio/);
-  assert.match(yaml, /command:\s*"node"/);
+  assert.match(yaml, /command:\s*['"]node['"]/);
   assert.match(yaml, /mcp-server\.mjs/);
   assert.match(yaml, /install:/);
   assert.match(yaml, /type:\s*git/);
