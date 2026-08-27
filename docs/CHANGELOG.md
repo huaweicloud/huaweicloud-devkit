@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0-next.6 (2026-08-27)
+
+- feat: 代金券能力可发现化，新增 huawei-voucher skill 与路由
+- fix(sandbox): add DevBridge quota auto-recovery, pre-cleanup, Taro build 900s timeout
+- fix(sandbox): add DevBridge quota auto-recovery, pre-cleanup, Taro build 900s timeout
+- fix(sandbox): add .swc/dist exclusion, post-upload permission fix, PNG QR priority, cross-platform 600s timeout
+- fix(sandbox): add build timeout recovery, env injection, OS detection, dependency exclusion for upload
+- fix(sandbox): add build timeout recovery, env injection, OS detection, dependency exclusion for upload
+
 ## 1.1.0-next.5 (2026-08-27)
 
 - fix: voucher 工具 domain_id 参数标注为可选，避免 Agent 误判为必传 (#308)

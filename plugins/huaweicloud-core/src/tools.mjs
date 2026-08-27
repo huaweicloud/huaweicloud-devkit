@@ -648,7 +648,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_voucher_status',
-    description: 'Query the Huawei Cloud incentive voucher claim status.',
+    description: '查询代金券领取状态。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -661,7 +661,7 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_voucher_claim',
-    description: 'Claim the Huawei Cloud incentive voucher. Automatically checks if already claimed.',
+    description: '领取代金券（一人一次）。重复领取会返回已领取。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1189,6 +1189,11 @@ function serviceCatalog(intent = '') {
       keywords: ['dds', 'dcs', 'mongodb', 'redis', 'memcached', 'cache', 'document db'],
       skills: ['huawei-dds-dcs'],
       services: ['DDS', 'DCS'],
+    },
+    {
+      keywords: ['voucher', 'coupon', 'incentive', 'credit', '领券', '代金券', '优惠券', '激励金', '领取'],
+      skills: ['huawei-voucher'],
+      services: ['Incentive Voucher'],
     },
   ];
   const matched = [];

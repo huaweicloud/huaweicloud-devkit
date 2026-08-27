@@ -72,6 +72,8 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 { "timeout_ms": 300000 }
 ```
 
+**Session recovery**: if `exec_with_session` returns `session is not ready`, the WebSocket connection has dropped. Do NOT retry the same session — fall back to `exec_one_shot` for that command instead. To recover state (cd, env vars), reconstruct them explicitly in the one-shot command.
+
 ## Workflow
 
 Setup is a **plugin-side preflight** — the developer should be asked a question only once, when the agreement actually needs signing:
@@ -102,14 +104,27 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
   "local_dir": "/path/to/local/project",
   "remote_dir": "/workspace",
   "extract": true,
-  "exclude": ["node_modules", ".git", "__pycache__"]
+  "exclude": [
+    "node_modules",
+    ".git",
+    "__pycache__",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".turbo",
+    ".cache",
+    ".swc",
+    "dist",
+    "coverage",
+    "*.pyc"
+  ]
 }
 ```
 
 - `local_dir` (required): local project directory
 - `remote_dir` (optional, default `/workspace`): parent directory on sandbox
 - `extract` (optional, default `true`): extract tar.gz after upload
-- `exclude` (optional): patterns to exclude from archive
+- `exclude` (optional): patterns to exclude from archive. **For web apps, always exclude dependency directories** (`node_modules`, `.next`, `.nuxt`, `.output`, `.turbo`, `.cache`) — these will be re-installed/built in the sandbox.
 - Result includes `md5` and `md5Verified` for integrity check
 
 ### upload_file (for single files)
@@ -170,10 +185,27 @@ devbridge auth login --huaweicloud --access-key "$AK" --secret-key "$SK"
 **Expose** (run the web server and the tunnel in the background, then read the URL from the log; the app lives in the workspace mount, e.g. `/workspace/<repo-name>`):
 
 ```bash
-cd /workspace/<repo-name> && nohup python3 -m http.server 8080 > /tmp/http.log 2>&1 &
-nohup devbridge host -p 8080 -e 8 > /tmp/host.log 2>&1 &
+# 0. Pre-cleanup: remove stale tunnels to avoid quota exceeded
+devbridge delete-all 2>/dev/null || true
+
+# 1. Start tunnel
+nohup devbridge host -p <port> -e 8 > /tmp/host.log 2>&1 &
 sleep 10 && cat /tmp/host.log
 ```
+
+**Quota recovery**: if the tunnel creation fails with `10006: quota exceeded`:
+
+```bash
+# Step A: List all tunnels (both active and stale)
+devbridge ls --all
+# Step B: Remove all stale tunnels
+devbridge delete-all
+# Step C: Retry tunnel creation
+nohup devbridge host -p <port> -e 8 > /tmp/host.log 2>&1 &
+sleep 10 && cat /tmp/host.log
+```
+
+This eliminates the most common deployment failure — historical tunnels from previous sessions accumulating past the max=10 quota.
 
 - The public URL has the form `https://<id>-<port>.cn-north-4-bridge.myhuaweicloud.com` (from the `Tunnel URL:` line).
 - **Return this URL to the developer as the deployment result link.** Keep the host process running (do not close the session before handing over the URL).
@@ -208,13 +240,79 @@ Follow the standard [Workflow](#workflow) steps 1-6 to connect to the sandbox, t
 ```json
 {
   "local_dir": "<projectPath>",
-  "remote_dir": "/workspace"
+  "remote_dir": "/workspace",
+  "exclude": [
+    "node_modules",
+    ".git",
+    "__pycache__",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".turbo",
+    ".cache",
+    ".swc",
+    "dist",
+    "coverage",
+    "*.pyc"
+  ]
 }
 ```
 
-The project will be extracted to `/workspace/<dirname>/`.
+**Always exclude build artifacts and dependency directories** — they will be re-installed/built inside the sandbox:
+
+| Pattern        | Why excluded                                   |
+| -------------- | ---------------------------------------------- |
+| `node_modules` | Dependencies — reinstall in sandbox            |
+| `.git`         | Version control — not needed for deployment    |
+| `__pycache__`  | Python bytecode cache                          |
+| `.next`        | Next.js build output — rebuild in sandbox      |
+| `.nuxt`        | Nuxt build cache — rebuild in sandbox          |
+| `.output`      | Nuxt production output — rebuild in sandbox    |
+| `.turbo`       | Turborepo cache — re-run in sandbox            |
+| `.cache`       | Generic tool cache (Parcel, Storybook, etc.)   |
+| `.swc`         | Taro/Webpack SWC cache — regenerate in sandbox |
+| `dist`         | Build output — rebuild in sandbox              |
+| `coverage`     | Test coverage reports — not needed for deploy  |
+| `*.pyc`        | Python compiled files                          |
+
+**Post-upload permission fix**: after `upload_project` extracts the project, fix file permissions lost during transfer (native binaries from other platforms, .bin symlinks):
+
+```bash
+# Fix executable permissions on node_modules/.bin (lost during cross-platform transfer)
+chmod -R +x /workspace/<dirname>/node_modules/.bin 2>/dev/null || true
+# Fix world-read on all files (sandbox default umask may restrict)
+chmod -R o+rX /workspace/<dirname> 2>/dev/null || true
+```
 
 ### Step 3: Sandbox Environment Readiness
+
+Install OS-level dependencies **before** uploading the project (independent of project code, can run in parallel if desired).
+
+#### 3a: Detect OS and package manager
+
+```bash
+source /etc/os-release 2>/dev/null
+echo "OS_DETECTED=${ID:-unknown}|${ID_LIKE:-}"
+if command -v apt-get >/dev/null 2>&1; then echo "PKG_MGR=apt"; elif command -v yum >/dev/null 2>&1; then echo "PKG_MGR=yum"; elif command -v dnf >/dev/null 2>&1; then echo "PKG_MGR=dnf"; elif command -v apk >/dev/null 2>&1; then echo "PKG_MGR=apk"; else echo "PKG_MGR=unknown"; fi
+```
+
+Use the detected `PKG_MGR` for all package installations below.
+
+#### 3b: Install nginx (before project upload)
+
+```bash
+# Use the detected PKG_MGR from step 3a
+case "$PKG_MGR" in
+  apt) sudo apt-get update -qq && sudo apt-get install -y -qq nginx ;;
+  yum) sudo yum install -y nginx ;;
+  dnf) sudo dnf install -y nginx ;;
+esac
+sudo nginx -t && echo "nginx: ready"
+```
+
+If nginx cannot be installed, skip to Python HTTP server fallback (see `references/nginx-templates.md`).
+
+#### 3c: Verify remaining tools
 
 Before installing project dependencies, verify the sandbox has the required runtime tools. Run this pre-flight check via `exec_one_shot`:
 
@@ -228,7 +326,6 @@ if command -v git >/dev/null 2>&1; then git --version; else echo "MISSING: git";
 if command -v python3 >/dev/null 2>&1; then python3 --version; else echo "MISSING: python3"; fi
 if command -v curl >/dev/null 2>&1; then curl --version | head -1; else echo "MISSING: curl"; fi
 if command -v wget >/dev/null 2>&1; then wget --version | head -1; else echo "MISSING: wget"; fi
-if dpkg -l build-essential >/dev/null 2>&1; then echo "build-essential: found"; else echo "MISSING: build-essential"; fi
 if command -v make >/dev/null 2>&1; then make --version | head -1; else echo "MISSING: make"; fi
 
 # Framework-specific tools (install on demand)
@@ -239,41 +336,120 @@ if command -v hugo >/dev/null 2>&1; then hugo version; else echo "MISSING: hugo"
 if command -v devbridge >/dev/null 2>&1; then devbridge version; else echo "MISSING: devbridge"; fi
 ```
 
-**Install only missing tools** — parse the pre-flight output and install only tools reported as `MISSING`. Skip tools already present:
+**Install only missing tools** — parse the pre-flight output and install only tools reported as `MISSING`. Use OS-aware commands:
 
-| Missing Tool    | Install Command                                                                                                                                                                                                       |
-| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Node.js         | Follow [Node.js in the sandbox](#nodejs-in-the-sandbox)                                                                                                                                                               |
-| nginx           | `sudo apt-get update -qq && sudo apt-get install -y -qq nginx`                                                                                                                                                        |
-| curl            | `sudo apt-get update -qq && sudo apt-get install -y -qq curl`                                                                                                                                                         |
-| wget            | `sudo apt-get update -qq && sudo apt-get install -y -qq wget`                                                                                                                                                         |
-| build-essential | `sudo apt-get update -qq && sudo apt-get install -y -qq build-essential`                                                                                                                                              |
-| make            | `sudo apt-get update -qq && sudo apt-get install -y -qq make`                                                                                                                                                         |
-| pnpm            | `npm i -g pnpm`                                                                                                                                                                                                       |
-| yarn            | `npm i -g yarn`                                                                                                                                                                                                       |
-| Hugo            | `curl -fsSL https://github.com/gohugoio/hugo/releases/download/v0.140.0/hugo_extended_0.140.0_linux-amd64.tar.gz -o /tmp/hugo.tar.gz && sudo tar -xzf /tmp/hugo.tar.gz -C /usr/local/bin hugo && rm /tmp/hugo.tar.gz` |
-| DevBridge       | `curl -fsSL https://res-hd.hc-cdn.cn/sharedata/hdspace/devbridge/install.sh \| bash && export PATH=$PATH:$HOME/.huawei/bin`                                                                                           |
-
-**If nginx cannot be installed**, skip to Python HTTP server fallback (see `references/nginx-templates.md`).
+| Missing Tool | Install Command (apt)                                                                                                                                                                                                 | Install Command (yum/dnf)   |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| Node.js      | Follow [Node.js in the sandbox](#nodejs-in-the-sandbox)                                                                                                                                                               | Same                        |
+| nginx        | `sudo apt-get update -qq && sudo apt-get install -y -qq nginx`                                                                                                                                                        | `sudo yum install -y nginx` |
+| curl         | `sudo apt-get update -qq && sudo apt-get install -y -qq curl`                                                                                                                                                         | `sudo yum install -y curl`  |
+| wget         | `sudo apt-get update -qq && sudo apt-get install -y -qq wget`                                                                                                                                                         | `sudo yum install -y wget`  |
+| make         | `sudo apt-get update -qq && sudo apt-get install -y -qq make`                                                                                                                                                         | `sudo yum install -y make`  |
+| pnpm         | `npm i -g pnpm`                                                                                                                                                                                                       | Same                        |
+| yarn         | `npm i -g yarn`                                                                                                                                                                                                       | Same                        |
+| Hugo         | `curl -fsSL https://github.com/gohugoio/hugo/releases/download/v0.140.0/hugo_extended_0.140.0_linux-amd64.tar.gz -o /tmp/hugo.tar.gz && sudo tar -xzf /tmp/hugo.tar.gz -C /usr/local/bin hugo && rm /tmp/hugo.tar.gz` | Same                        |
+| DevBridge    | `curl -fsSL https://res-hd.hc-cdn.cn/sharedata/hdspace/devbridge/install.sh \| bash && export PATH=$PATH:$HOME/.huawei/bin`                                                                                           | Same                        |
 
 **If Node.js is missing**, install it first — all build workflows depend on it. Stop and report to the developer if Node.js installation fails.
 
 ### Step 4: Install and Build
 
-Use `exec_one_shot` for the build pipeline (long-running, more stable).
+#### 4a: Inject Environment Variables
 
-**Install dependencies** — skip if `node_modules` already exists:
+Before any project commands, parse `.env*` files and inject them into the shell environment. Prisma, Drizzle, and other ORM/database tools do NOT auto-read framework-level env files:
+
+```bash
+cd /workspace/<dirname>
+# Load env files if present (most specific first)
+for f in .env.local .env.development.local .env.development .env; do
+  if [ -f "$f" ]; then
+    set -a && source "$f" 2>/dev/null; set +a
+    echo "Loaded env: $f"
+  fi
+done
+# Verify key variables for common tools
+echo "DATABASE_URL=${DATABASE_URL:-<NOT SET>}"
+echo "NODE_ENV=${NODE_ENV:-development}"
+```
+
+This must run via `exec_with_session` so the exported variables persist for subsequent build commands in the same session.
+
+#### 4b: Install Dependencies
+
+Use `exec_one_shot` for install (no shared state needed). Skip if `node_modules` already exists:
 
 ```bash
 cd /workspace/<dirname> && [ -d node_modules ] && echo "SKIP: node_modules exists" || <installCmd>
 ```
 
-Wait for install to complete, then:
+Wait for install to complete. For large projects on aarch64 sandboxes (1000+ packages), set `timeout_ms` to 180000 (3 min).
 
-**Build** — only if build output doesn't already exist:
+#### 4c: Build
+
+**Timeout strategy by framework type:**
+
+| Type                           | timeout_ms      | Rationale                             |
+| ------------------------------ | --------------- | ------------------------------------- |
+| SPA / SSG                      | 300000 (5 min)  | Vite/Webpack builds typically < 3 min |
+| Cross-platform (Taro, uni-app) | 900000 (15 min) | Webpack5 H5 slow on aarch64, 7-8 min  |
+| SSR (Next.js, Nuxt)            | 600000 (10 min) | Full-stack compilation + SSG pages    |
+| Monorepo                       | 600000 (10 min) | Multiple apps, shared packages        |
+| `null` (no build)              | N/A             | Skip                                  |
+
+**Build with `exec_one_shot`:**
 
 ```bash
-cd /workspace/<dirname> && [ -d <outputDir> ] && echo "SKIP: <outputDir> exists" || (umask 022 && <buildCmd>)
+cd /workspace/<dirname> && [ -d <outputDir> ] && echo "SKIP: <outputDir> exists" || (umask 022 && <buildCmd> 2>&1 | tee /tmp/build.log)
+```
+
+Always pipe build output through `tee /tmp/build.log` — captures stderr+stdout so diagnostics are available even if the command times out.
+
+**OutDir verification**: before building for the first time, check the project's actual output directory (not just the default from framework detection). Projects can override outDir in config (e.g., VitePress `outDir: '../dist'`):
+
+```bash
+# Check for custom outDir in common config files
+grep -r "outDir\|outputDir\|dest\|distDir" /workspace/<dirname>/.vitepress/config.* 2>/dev/null || true
+```
+
+If a custom outDir is found, use that instead of the framework-detected default for all subsequent checks.
+
+**Post-timeout recovery**: if `exec_one_shot` returns a timeout error (Request timed out), do NOT fail immediately. First dump any captured build log, then check the output directory:
+
+```bash
+# If timeout occurred, show captured output and verify build
+if timeout_error; then
+  echo "=== Build log (tail) ==="
+  tail -30 /tmp/build.log 2>/dev/null
+  echo "=== Checking output ==="
+  if [ -d <outputDir> ] && [ "$(ls -A <outputDir> 2>/dev/null)" ]; then
+    # Verify at least one key output file exists (not just empty dir from broken build)
+    if [ -f <outputDir>/index.html ] || [ -f <outputDir>/server.js ] || [ -f <outputDir>/app.js ]; then
+      echo "Build output detected despite timeout — continuing with deployment"
+    else
+      echo "ERROR: Output directory exists but missing expected files (index.html/server.js). Build may have failed silently."
+      echo "Full log: /tmp/build.log"
+      exit 1
+    fi
+  else
+    echo "ERROR: Build did not complete. Output directory empty or missing."
+    echo "Full log: /tmp/build.log"
+    exit 1
+  fi
+fi
+```
+
+For SSR frameworks, also verify the server entry point exists: `test -f <outputDir>/server.js || test -f node_modules/next/dist/server/next-server.js`.
+
+**Build progress visibility**: for very large builds, touch a marker file before starting and use `exec_with_session` to poll intermediate logs:
+
+```bash
+# Before build:
+touch /tmp/build-start && echo "Build started at $(date)"
+
+# During build via exec_with_session (separate call for polling):
+cat .next/trace 2>/dev/null | tail -5  # Next.js build trace
+# or
+tail -5 /tmp/build.log 2>/dev/null
 ```
 
 - `cd /workspace/<dirname>/<subAppPath>` for Monorepo sub-apps.
@@ -281,11 +457,55 @@ cd /workspace/<dirname> && [ -d <outputDir> ] && echo "SKIP: <outputDir> exists"
 - For Hugo/static sites where `installCmd` is `null`, skip install entirely.
 - For static sites where `buildCmd` is `null`, skip build entirely.
 
-**Real-time logging**: each `exec_one_shot` call returns stdout. Show build progress to the developer as it arrives.
+### Step 5: Port Availability Check
 
-**Timeout**: for large projects, set `timeout_ms` to 300000 (5 min) or higher.
+**Before configuring nginx or starting the app**, verify the target ports are free. Port conflicts from previous deployments cause silent failures:
 
-### Step 5: Configure Nginx
+```bash
+# Check ports from framework detection
+check_port() {
+  PORT=$1
+  # Prefer lsof (most portable), fallback to netstat, then ss
+  if command -v lsof >/dev/null 2>&1; then
+    PID=$(lsof -ti :$PORT 2>/dev/null)
+    if [ -n "$PID" ]; then
+      echo "PORT_IN_USE:$PORT (PID=$PID)"
+      kill -9 $PID 2>/dev/null && echo "Killed PID $PID on port $PORT"
+    else
+      echo "PORT_FREE:$PORT"
+    fi
+  elif command -v netstat >/dev/null 2>&1; then
+    PID=$(netstat -tlnp 2>/dev/null | grep ":$PORT " | awk '{print $NF}' | sed 's|/.*||')
+    if [ -n "$PID" ] && [ "$PID" != "-" ]; then
+      echo "PORT_IN_USE:$PORT (PID=$PID)"
+      kill -9 $PID 2>/dev/null && echo "Killed PID $PID on port $PORT"
+    else
+      echo "PORT_FREE:$PORT"
+    fi
+  else
+    # Last resort: ss (iproute2)
+    PID=$(ss -tlnp 2>/dev/null | grep ":$PORT " | sed -n 's/.*pid=\([0-9]*\).*/\1/p' | head -1)
+    if [ -n "$PID" ]; then
+      echo "PORT_IN_USE:$PORT (PID=$PID)"
+      kill -9 $PID 2>/dev/null && echo "Killed PID $PID on port $PORT"
+    else
+      echo "PORT_FREE:$PORT"
+    fi
+  fi
+}
+check_port <port>
+# For SSR, also check the Node port
+check_port <nodePort>
+```
+
+| Scenario               | Port                                 | Action if occupied                     |
+| ---------------------- | ------------------------------------ | -------------------------------------- |
+| SPA/SSG/Cross-platform | nginx port (from `framework.detect`) | Kill old process, then configure nginx |
+| SSR                    | nginx public port + Node app port    | Kill old processes on both ports       |
+
+If the port cannot be freed (different user/process), increment to the next available port: `<port>+1`, update all subsequent nginx config and DevBridge references accordingly.
+
+#### Configure Nginx
 
 Check `references/nginx-templates.md` for the correct template based on `nginxType`:
 
@@ -311,7 +531,7 @@ If the status code is not 2xx/3xx:
 - **000 (connection refused)** — nginx not listening: check `sudo nginx -t` for config errors
 - **Other** — check nginx error log: `sudo tail -20 /var/log/nginx/error.log`
 
-> If `curl` is unavailable, check port listening via `/proc`: `cat /proc/net/tcp | awk '{print $2}' | grep -q "$(printf '%04X' <port>)" && echo "port <port> listening" || echo "port <port> NOT listening"`
+> If `curl` is unavailable, check port via `lsof -i :<port>` or `netstat -tlnp | grep :<port>`
 
 ### Step 6: Start the App
 
@@ -324,9 +544,31 @@ Follow the standard [Expose the deployed app](#expose-the-deployed-app-public-ur
 
 Use `exec_with_session` to background DevBridge. For SSR, DevBridge tunnels the nginx public port (not the Node port directly).
 
+**Pre-flight**: always run `devbridge delete-all` before creating a new tunnel to prevent `10006: quota exceeded` from accumulated stale tunnels. If you still get quota error, list tunnels with `devbridge ls --all`, delete stale ones, and retry.
+
 ### Step 8: Return URL
 
-Extract the tunnel URL from DevBridge output and return it to the developer. For cross-platform H5 apps, also mention QR code scanning on mobile.
+Extract the tunnel URL from DevBridge output and return it to the developer.
+
+**For cross-platform H5 apps** (Taro, uni-app), also generate a QR code for mobile scanning:
+
+```bash
+TUNNEL_URL="<extracted-tunnel-url>"
+
+# Method 1 (preferred): PNG via curl API (works on all terminals)
+curl -s "https://api.qrserver.com/v1/create-qr-code/?size=300x300&data=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1]))" "$TUNNEL_URL")" -o /workspace/qr.png
+chmod o+r /workspace/qr.png
+echo "QR code saved. Scan QR to access on mobile."
+echo "Desktop URL: $TUNNEL_URL"
+
+# Method 2 (fallback): terminal ANSI QR (requires qrencode, may not render on all terminals)
+# apt-get install -y qrencode || yum install -y qrencode
+# qrencode -t ANSI256 -m 1 -s 2 "$TUNNEL_URL"
+```
+
+If the sandbox cannot reach `api.qrserver.com`, fall back to installing `qrencode` for terminal QR output. Always `chmod o+r` the generated QR image file.
+
+Return both the QR code and the URL to the developer. For cross-platform apps, mention: "手机扫描二维码即可访问".
 
 ## References
 

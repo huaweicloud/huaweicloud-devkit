@@ -43,6 +43,7 @@ Do not rely on training data for facts. Huawei Cloud services, pricing, quotas, 
 | troubleshoot  | Troubleshooting Routing | error, bug, failed, AccessDenied, quota                                              | Handoff to huaweicloud-troubleshooting                                                                                                                                                   |
 | api-sdk       | API/SDK Routing         | API call, SDK, REST, integration, code example                                       | Handoff to huaweicloud-api-and-sdk                                                                                                                                                       |
 | report-issue  | Issue Reporting         | wrong service, you picked wrong, incorrect                                           | Read references/report-issue.md                                                                                                                                                          |
+| voucher       | Voucher Routing         | 领券, 代金券, 优惠券, 激励金, 领取, voucher, coupon, incentive                       | Handoff to huawei-voucher                                                                                                                                                                |
 
 ## Service Map
 
@@ -70,6 +71,7 @@ Do not rely on training data for facts. Huawei Cloud services, pricing, quotas, 
 | CI/CD pipeline                                   | CloudDeploy          | huawei-deployment        |
 | Temporary runtime / web app preview              | Sandbox (DevStation) | huawei-sandbox           |
 | Getting started                                  | Account setup        | huaweicloud-cli-and-auth |
+| Incentive voucher                                | Voucher              | huawei-voucher           |
 
 **Web app scenario layering**: for "deploy a web app", prefer `huawei-sandbox` for free/quick try (hello world, prototype, demo, temporary preview — temporary runtime + public URL, ~8h validity, zero billed resources); route to `huawei-functiongraph` / `huawei-ecs` (or `huawei-cce`) for production / long-term / custom-domain / high-availability hosting.
 
