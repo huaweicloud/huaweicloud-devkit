@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.0-next.5 (2026-08-27)
+
+- fix: voucher 工具 domain_id 参数标注为可选，避免 Agent 误判为必传 (#308)
+- style: rename catch parameter err to error for unicorn/catch-error-name rule
+- fix(sandbox): add retry for upload batch/tunnel failures, add process persistence and cross-platform warnings
+
 ## 1.1.0-next.4 (2026-08-27)
 
 - fix(release): stop auto-deleting .version-override in create-release-pr

@@ -648,21 +648,27 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_voucher_status',
-    description: '查询激励金代金券领取状态。',
+    description: 'Query the Huawei Cloud incentive voucher claim status.',
     inputSchema: {
       type: 'object',
       properties: {
-        domain_id: { type: 'string' },
+        domain_id: {
+          type: 'string',
+          description: 'Optional. Leave empty in production — account is resolved from IAM automatically.',
+        },
       },
     },
   },
   {
     name: 'huaweicloud_voucher_claim',
-    description: '领取激励金代金券。领取前会自动检查是否已领取。',
+    description: 'Claim the Huawei Cloud incentive voucher. Automatically checks if already claimed.',
     inputSchema: {
       type: 'object',
       properties: {
-        domain_id: { type: 'string' },
+        domain_id: {
+          type: 'string',
+          description: 'Optional. Leave empty in production — account is resolved from IAM automatically.',
+        },
       },
     },
   },
