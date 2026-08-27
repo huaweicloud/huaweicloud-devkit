@@ -8,7 +8,7 @@
 
 帮助 AI 编码助手安全、准确地使用华为云——一站式集成云知识、CLI 工具和安全护栏。
 
-支持 OpenCode、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、OpenClaw、AtomCode。
+支持 OpenCode、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes Agent、OpenClaw、AtomCode。
 
 ## 前置条件
 
@@ -97,6 +97,25 @@ npx --yes huaweicloud-devkit status --target officeace
 npx --yes huaweicloud-devkit update --target officeace
 npx --yes huaweicloud-devkit uninstall --target officeace
 ```
+
+### Hermes Agent
+
+```bash
+npx --yes huaweicloud-devkit install --target hermes
+```
+
+安装后**重启 Hermes Agent 会话**。
+
+```bash
+npx --yes huaweicloud-devkit doctor --target hermes
+npx --yes huaweicloud-devkit status --target hermes
+npx --yes huaweicloud-devkit update --target hermes
+npx --yes huaweicloud-devkit uninstall --target hermes
+```
+
+> **安全钩子（Safety hooks）**：安装器会在 `config.yaml` 中写入 shell hooks 配置（`hooks.pre_tool_call`），拦截不安全的终端命令，如读取凭据文件、导出环境变量、未审批的 `hcloud` 写操作。Hermes 首次使用时会弹出同意提示，可批准或设置 `hooks_auto_accept: true` 自动批准。
+
+> **Windows**：Hermes 在 Windows 上数据存储在 `%LOCALAPPDATA%\hermes` 而非 `~/.hermes`，安装器会自动检测适配。
 
 ### OpenClaw
 

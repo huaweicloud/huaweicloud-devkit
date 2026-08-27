@@ -2035,10 +2035,74 @@ function removeHermesMcpConfigBlock() {
   console.log('  MCP config cleaned');
 }
 
+function ensureHermesHooksConfig() {
+  const configPath = hermesConfigFile();
+  const pluginDest = hermesPluginsDir();
+  const hookScript = join(pluginDest, 'hooks', 'huaweicloud-safety.py').replace(/\\/g, '/');
+
+  const blockLines = [
+    'hooks:',
+    '  pre_tool_call:',
+    '    - matcher: "terminal"',
+    `      command: "python3 ${hookScript}"`,
+    '      timeout: 5',
+  ];
+  const block = blockLines.join('\n');
+
+  let existing = '';
+  if (existsSync(configPath)) {
+    try {
+      existing = readFileSync(configPath, 'utf8');
+    } catch {}
+    if (existing.includes('hooks:') && existing.includes('huaweicloud-safety.py')) {
+      console.log(`  Hooks config unchanged: ${configPath}`);
+      return false;
+    }
+  }
+  mkdirSync(dirname(configPath), { recursive: true });
+  const newContent = existing ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`;
+  writeFileSync(configPath, newContent);
+  console.log(`  Hooks config updated: ${configPath}`);
+  return true;
+}
+
+function removeHermesHooksConfigBlock() {
+  const configPath = hermesConfigFile();
+  if (!existsSync(configPath)) return;
+  const lines = readFileSync(configPath, 'utf8').split(/\r?\n/);
+  const out = [];
+  let skip = false;
+  for (const line of lines) {
+    if (/^\s*huaweicloud-safety\.py/.test(line.trim())) {
+      skip = true;
+      continue;
+    }
+    if (skip) {
+      if (line.trim() === '') continue;
+      if (/^\s{2,}/.test(line) && line.trim() !== '') continue;
+      skip = false;
+    }
+    if (line.trim() === 'hooks:') {
+      continue;
+    }
+    if (line.trim() === 'pre_tool_call:') {
+      continue;
+    }
+    if (/^\s*- matcher:\s*"terminal"/.test(line)) {
+      continue;
+    }
+    out.push(line);
+  }
+  const cleaned = out.join('\n').trimEnd();
+  writeFileSync(configPath, cleaned ? `${cleaned}\n` : '');
+  console.log('  Hooks config cleaned');
+}
+
 async function installHermes() {
   const skillsSrc = join(PLUGIN_ROOT, 'skills');
   const srcDir = join(PLUGIN_ROOT, 'src');
   const safetyDir = join(PLUGIN_ROOT, 'safety');
+  const hooksDir = join(PLUGIN_ROOT, 'hooks');
   const pluginDest = hermesPluginsDir();
 
   copyDir(skillsSrc, hermesSkillsDir());
@@ -2048,8 +2112,11 @@ async function installHermes() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  copyDir(hooksDir, join(pluginDest, 'hooks'));
+  console.log(`  Safety Hooks -> ${join(pluginDest, 'hooks')}`);
 
   ensureHermesMcpConfig();
+  ensureHermesHooksConfig();
   installRuntimeDeps(pluginDest);
 }
 
@@ -2057,6 +2124,7 @@ async function updateHermes() {
   const skillsSrc = join(PLUGIN_ROOT, 'skills');
   const srcDir = join(PLUGIN_ROOT, 'src');
   const safetyDir = join(PLUGIN_ROOT, 'safety');
+  const hooksDir = join(PLUGIN_ROOT, 'hooks');
   const pluginDest = hermesPluginsDir();
 
   copyDir(skillsSrc, hermesSkillsDir());
@@ -2066,7 +2134,10 @@ async function updateHermes() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  copyDir(hooksDir, join(pluginDest, 'hooks'));
+  console.log(`  Safety Hooks updated -> ${join(pluginDest, 'hooks')}`);
   ensureHermesMcpConfig();
+  ensureHermesHooksConfig();
   mkdirSync(pluginDest, { recursive: true });
   writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
   installRuntimeDeps(pluginDest);
@@ -2092,9 +2163,10 @@ function uninstallHermes() {
   }
 
   if (removeIfExists(hermesPluginsDir())) {
-    console.log('  Removed MCP server and safety policy');
+    console.log('  Removed MCP server, safety policy and hooks');
   }
   removeHermesMcpConfigBlock();
+  removeHermesHooksConfigBlock();
 }
 
 function hermesStatus() {
@@ -2105,6 +2177,9 @@ function hermesStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+  );
+  console.log(
+    `  Safety Hooks: ${existsSync(join(pluginDir, 'hooks', 'huaweicloud-safety.py')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -2119,13 +2194,17 @@ function hermesStatus() {
   if (existsSync(configPath)) {
     try {
       const config = readFileSync(configPath, 'utf8');
-      const configured = config.includes('mcp_servers:') && config.includes('huaweicloud-devkit');
-      console.log(`  MCP config: ${configured ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`);
+      const mcpConfigured = config.includes('mcp_servers:') && config.includes('huaweicloud-devkit');
+      const hooksConfigured = config.includes('hooks:') && config.includes('huaweicloud-safety.py');
+      console.log(`  MCP config: ${mcpConfigured ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`);
+      console.log(`  Hooks config: ${hooksConfigured ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`);
     } catch {
       console.log(`  MCP config: \x1b[31mInvalid\x1b[0m`);
+      console.log(`  Hooks config: \x1b[31mInvalid\x1b[0m`);
     }
   } else {
     console.log(`  MCP config: \x1b[31mNot found\x1b[0m`);
+    console.log(`  Hooks config: \x1b[31mNot found\x1b[0m`);
   }
 }
 

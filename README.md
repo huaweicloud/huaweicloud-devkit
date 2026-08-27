@@ -8,7 +8,7 @@
 
 Help AI coding agents use Huawei Cloud safely and accurately — a single integration that gives agents cloud knowledge, CLI tooling, and safety guardrails.
 
-Supports OpenCode, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), OfficeAce, OpenClaw, and AtomCode.
+Supports OpenCode, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), OfficeAce, Hermes Agent, OpenClaw, and AtomCode.
 
 ## Prerequisites
 
@@ -97,6 +97,25 @@ npx --yes huaweicloud-devkit status --target officeace
 npx --yes huaweicloud-devkit update --target officeace
 npx --yes huaweicloud-devkit uninstall --target officeace
 ```
+
+### Hermes Agent
+
+```bash
+npx --yes huaweicloud-devkit install --target hermes
+```
+
+**Restart the Hermes Agent session** after installation.
+
+```bash
+npx --yes huaweicloud-devkit doctor --target hermes
+npx --yes huaweicloud-devkit status --target hermes
+npx --yes huaweicloud-devkit update --target hermes
+npx --yes huaweicloud-devkit uninstall --target hermes
+```
+
+> **Safety hooks**: The installer configures Hermes shell hooks (`config.yaml` → `hooks.pre_tool_call`) to intercept unsafe terminal commands such as credential file reads, environment variable dumps, and unapproved `hcloud` write operations. Hermes shows a consent prompt the first time; approve it or set `hooks_auto_accept: true` in `config.yaml` to auto-accept.
+
+> **Windows**: Hermes on Windows stores data under `%LOCALAPPDATA%\hermes` instead of `~/.hermes`. The installer detects this automatically.
 
 ### OpenClaw
 

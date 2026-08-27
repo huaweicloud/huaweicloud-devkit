@@ -50,3 +50,34 @@ test('python hook still blocks credential files', () => {
   assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /credential|profile/i);
 });
+
+test('python hook outputs Hermes format when hook_event_name is present', () => {
+  const result = runHook({
+    hook_event_name: 'pre_tool_call',
+    tool_name: 'terminal',
+    tool_input: { command: 'cat ~/.hcloud/config.json' },
+    session_id: 'test',
+    cwd: '/tmp',
+  });
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.action, 'block');
+  assert.match(output.message, /Huawei Cloud safety hook blocked this action/);
+  assert.ok(!('hookSpecificOutput' in output), 'Hermes format must not include hookSpecificOutput');
+});
+
+test('python hook allows safe commands under Hermes context', () => {
+  const result = runHook({
+    hook_event_name: 'pre_tool_call',
+    tool_name: 'terminal',
+    tool_input: { command: 'ls -la' },
+    session_id: 'test',
+    cwd: '/tmp',
+  });
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout.trim(), '', 'safe commands should produce no output');
+});

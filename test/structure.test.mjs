@@ -426,15 +426,24 @@ test('setup-cli.mjs supports the hermes target end to end', () => {
   assert.match(setup, /function hermesConfigFile\(\)/);
   assert.match(setup, /function ensureHermesMcpConfig\(\)/);
   assert.match(setup, /function removeHermesMcpConfigBlock\(\)/);
+  assert.match(setup, /function ensureHermesHooksConfig\(\)/);
+  assert.match(setup, /function removeHermesHooksConfigBlock\(\)/);
   assert.match(setup, /copyDir\(skillsSrc, hermesSkillsDir\(\)\)/);
+  assert.match(setup, /copyDir\(hooksDir, join\(pluginDest, 'hooks'\)\)/);
   assert.match(setup, /ensureHermesMcpConfig\(\)/);
+  assert.match(setup, /ensureHermesHooksConfig\(\)/);
   assert.match(setup, /mcp_servers:/);
   assert.match(setup, /huaweicloud-devkit:/);
   assert.match(setup, /HUAWEICLOUD_AGENT_TOOLKIT_MODE: "local"/);
+  assert.match(setup, /hooks:/);
+  assert.match(setup, /pre_tool_call:/);
+  assert.match(setup, /matcher: "terminal"/);
+  assert.match(setup, /huaweicloud-safety\.py/);
   const branches = setup.match(/target === 'hermes' \|\| target === 'all'/g);
   assert.ok(branches && branches.length >= 3, `hermes dispatch branches: ${branches?.length}`);
   assert.match(setup, /install --target hermes/);
   assert.match(setup, /HERMES_HOME/);
+  assert.match(setup, /LOCALAPPDATA/);
 });
 
 test('tools.mjs resolves skills from the hermes directory', () => {
