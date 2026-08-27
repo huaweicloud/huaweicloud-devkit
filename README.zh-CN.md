@@ -8,7 +8,7 @@
 
 帮助 AI 编码助手安全、准确地使用华为云——一站式集成云知识、CLI 工具和安全护栏。
 
-支持 OpenCode、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes Agent、OpenClaw、AtomCode。
+支持 OpenCode、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes、OpenClaw、AtomCode。
 
 ## 前置条件
 
@@ -98,13 +98,13 @@ npx --yes huaweicloud-devkit update --target officeace
 npx --yes huaweicloud-devkit uninstall --target officeace
 ```
 
-### Hermes Agent
+### Hermes
 
 ```bash
 npx --yes huaweicloud-devkit install --target hermes
 ```
 
-安装后**重启 Hermes Agent 会话**。
+安装后**重启 Hermes 会话**。
 
 ```bash
 npx --yes huaweicloud-devkit doctor --target hermes

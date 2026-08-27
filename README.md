@@ -8,7 +8,7 @@
 
 Help AI coding agents use Huawei Cloud safely and accurately — a single integration that gives agents cloud knowledge, CLI tooling, and safety guardrails.
 
-Supports OpenCode, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), OfficeAce, Hermes Agent, OpenClaw, and AtomCode.
+Supports OpenCode, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), OfficeAce, Hermes, OpenClaw, and AtomCode.
 
 ## Prerequisites
 
@@ -98,13 +98,13 @@ npx --yes huaweicloud-devkit update --target officeace
 npx --yes huaweicloud-devkit uninstall --target officeace
 ```
 
-### Hermes Agent
+### Hermes
 
 ```bash
 npx --yes huaweicloud-devkit install --target hermes
 ```
 
-**Restart the Hermes Agent session** after installation.
+**Restart the Hermes session** after installation.
 
 ```bash
 npx --yes huaweicloud-devkit doctor --target hermes
