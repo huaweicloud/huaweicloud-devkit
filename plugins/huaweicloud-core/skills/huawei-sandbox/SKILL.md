@@ -86,10 +86,21 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
 3. **Sign agreement only** (`HDKIT_NOT_AGREEMENT`): **STOP and do NOT sign on your own.** Ask the developer: "Huawei Cloud sandbox requires signing the latest developer service agreement. May I sign it for you?" Then **wait for the developer to explicitly agree** (e.g. "签署" / "确认" / "sign it"). Only after explicit consent call `huaweicloud_sandbox_sign_agreement` and return its result (`signed`/`signedCount`) to the developer. **Never sign a legal agreement on the developer's behalf without their explicit, unambiguous consent.** Do not expose the underlying sandbox/DevBridge service as a separate entity the developer must understand or sign up for
 4. **Both missing** (`HDKIT_NOT_REALNAME_AND_AGREEMENT`): present **both** requirements together in one message — the real-name verification steps (console, step 2) **and** the agreement-signing request (step 3, wait for explicit consent) — so the developer can complete both at once
 5. **Connect**: `huaweicloud_sandbox_connect` — returns `session_id`, `dev_stage_id`, `connection_id`, `connection_address`
-6. **Inject credentials** (optional): `huaweicloud_sandbox_credentials` — enables cloud API access from sandbox
-7. **Execute commands**: use `huaweicloud_sandbox_exec_with_session` for interactive work (cd, env setup), or `huaweicloud_sandbox_exec_one_shot` for long-running builds/installs. See [Tool Selection Guide](#tool-selection-guide).
-8. **Upload project** (if deploying local code): `huaweicloud_sandbox_upload_project` to transfer a local project directory into `/workspace/<name>` — uses HTTP tunnel, much faster than base64 for multi-file projects. Use `huaweicloud_sandbox_upload_file` for single files.
-9. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer
+6. **Cleanup previous deployments** (after first connect to a sandbox): nginx configs and DevBridge tunnels from previous deployments can cause port conflicts and quota errors. Run cleanup immediately after connect:
+
+   ```bash
+   # Remove stale nginx configs from previous deployments
+   sudo rm -f /etc/nginx/conf.d/app.conf /etc/nginx/conf.d/*.conf.bak 2>/dev/null
+   # Remove stale DevBridge tunnels
+   devbridge delete-all 2>/dev/null || true
+   # Reload nginx to apply
+   sudo nginx -s reload 2>/dev/null || true
+   ```
+
+7. **Inject credentials** (optional): `huaweicloud_sandbox_credentials` — enables cloud API access from sandbox
+8. **Execute commands**: use `huaweicloud_sandbox_exec_with_session` for interactive work (cd, env setup), or `huaweicloud_sandbox_exec_one_shot` for long-running builds/installs. See [Tool Selection Guide](#tool-selection-guide).
+9. **Upload project** (if deploying local code): `huaweicloud_sandbox_upload_project` to transfer a local project directory into `/workspace/<name>` — uses HTTP tunnel, much faster than base64 for multi-file projects. Use `huaweicloud_sandbox_upload_file` for single files.
+10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer
 
 ## File Transfer (local → sandbox)
 
@@ -105,7 +116,7 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
   "remote_dir": "/workspace",
   "extract": true,
   "exclude": [
-    "node_modules",
+    "**/node_modules",
     ".git",
     "__pycache__",
     ".next",
@@ -242,7 +253,7 @@ Follow the standard [Workflow](#workflow) steps 1-6 to connect to the sandbox, t
   "local_dir": "<projectPath>",
   "remote_dir": "/workspace",
   "exclude": [
-    "node_modules",
+    "**/node_modules",
     ".git",
     "__pycache__",
     ".next",
@@ -260,20 +271,20 @@ Follow the standard [Workflow](#workflow) steps 1-6 to connect to the sandbox, t
 
 **Always exclude build artifacts and dependency directories** — they will be re-installed/built inside the sandbox:
 
-| Pattern        | Why excluded                                   |
-| -------------- | ---------------------------------------------- |
-| `node_modules` | Dependencies — reinstall in sandbox            |
-| `.git`         | Version control — not needed for deployment    |
-| `__pycache__`  | Python bytecode cache                          |
-| `.next`        | Next.js build output — rebuild in sandbox      |
-| `.nuxt`        | Nuxt build cache — rebuild in sandbox          |
-| `.output`      | Nuxt production output — rebuild in sandbox    |
-| `.turbo`       | Turborepo cache — re-run in sandbox            |
-| `.cache`       | Generic tool cache (Parcel, Storybook, etc.)   |
-| `.swc`         | Taro/Webpack SWC cache — regenerate in sandbox |
-| `dist`         | Build output — rebuild in sandbox              |
-| `coverage`     | Test coverage reports — not needed for deploy  |
-| `*.pyc`        | Python compiled files                          |
+| Pattern           | Why excluded                                   |
+| ----------------- | ---------------------------------------------- |
+| `**/node_modules` | Dependencies — reinstall in sandbox            |
+| `.git`            | Version control — not needed for deployment    |
+| `__pycache__`     | Python bytecode cache                          |
+| `.next`           | Next.js build output — rebuild in sandbox      |
+| `.nuxt`           | Nuxt build cache — rebuild in sandbox          |
+| `.output`         | Nuxt production output — rebuild in sandbox    |
+| `.turbo`          | Turborepo cache — re-run in sandbox            |
+| `.cache`          | Generic tool cache (Parcel, Storybook, etc.)   |
+| `.swc`            | Taro/Webpack SWC cache — regenerate in sandbox |
+| `dist`            | Build output — rebuild in sandbox              |
+| `coverage`        | Test coverage reports — not needed for deploy  |
+| `*.pyc`           | Python compiled files                          |
 
 **Post-upload permission fix**: after `upload_project` extracts the project, fix file permissions lost during transfer (native binaries from other platforms, .bin symlinks):
 

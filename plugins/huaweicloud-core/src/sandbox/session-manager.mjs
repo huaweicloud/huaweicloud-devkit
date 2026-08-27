@@ -1,7 +1,16 @@
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createConnection as netConnect } from 'node:net';
-import { existsSync, readFileSync, statSync, mkdirSync, rmSync, createReadStream, appendFileSync } from 'node:fs';
+import {
+  existsSync,
+  readFileSync,
+  statSync,
+  mkdirSync,
+  rmSync,
+  createReadStream,
+  appendFileSync,
+  unlinkSync,
+} from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
 import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -266,6 +275,17 @@ function uploadLog(message) {
   console.error(line.trimEnd());
   try {
     appendFileSync(UPLOAD_LOG_PATH, line);
+  } catch {}
+}
+
+function rotateUploadLog(maxBytes = 100 * 1024) {
+  try {
+    if (existsSync(UPLOAD_LOG_PATH)) {
+      const stat = statSync(UPLOAD_LOG_PATH);
+      if (stat.size > maxBytes) {
+        unlinkSync(UPLOAD_LOG_PATH);
+      }
+    }
   } catch {}
 }
 
@@ -557,6 +577,8 @@ export async function uploadProjectWithSession(
     throw new Error(`sandbox upload project: path is not a directory: ${localDir}`);
   }
 
+  rotateUploadLog();
+
   const projectName = basename(localDir);
   const targetParentDir = remoteDir || '/workspace';
   const archiveRemotePath = `${targetParentDir}/${projectName}.tar.gz`;
@@ -566,6 +588,15 @@ export async function uploadProjectWithSession(
   const expectedMd5 = await computeMd5(archivePath);
 
   uploadLog(`uploadProject: ${localDir} -> ${archiveRemotePath} (archive=${archiveSize} bytes, md5=${expectedMd5})`);
+
+  const SIZE_50MB = 50 * 1024 * 1024;
+  if (archiveSize > SIZE_50MB) {
+    uploadLog(
+      `uploadProject: archive size ${(archiveSize / (1024 * 1024)).toFixed(1)}MB exceeds 50MB. ` +
+        `Dependencies or platform binaries may have been included. ` +
+        `Ensure exclude list contains "**/node_modules" to match all nesting levels.`,
+    );
+  }
 
   let result;
   let tunnelError;
@@ -577,7 +608,8 @@ export async function uploadProjectWithSession(
       break;
     } catch (error) {
       tunnelError = error;
-      uploadLog(`uploadProject: attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES} failed: ${error.message}`);
+      const errorType = error.code || error.name || 'unknown';
+      uploadLog(`uploadProject: attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES} failed [${errorType}]: ${error.message}`);
       await new Promise((r) => setTimeout(r, 5000));
     }
   }
