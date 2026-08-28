@@ -5,10 +5,17 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
+import { initTelemetry } from './telemetry/telemetry.mjs';
+import { detectAgentHarness } from './telemetry/agent-detect.mjs';
 
 const projectDirIdx = process.argv.indexOf('--codearts-project-dir');
 if (projectDirIdx > -1 && process.argv[projectDirIdx + 1]) {
   process.env.CODEARTS_PROJECT_DIR = process.argv[projectDirIdx + 1];
+}
+
+const endpointIdx = process.argv.indexOf('--hdkitservice-endpoint');
+if (endpointIdx > -1 && process.argv[endpointIdx + 1]) {
+  process.env.HDKITSERVICE_ENDPOINT = process.argv[endpointIdx + 1];
 }
 
 try {
@@ -23,6 +30,11 @@ try {
     }
   }
 } catch {}
+
+const telemetryEndpointIdx = process.argv.indexOf('--telemetry-endpoint');
+if (telemetryEndpointIdx > -1 && process.argv[telemetryEndpointIdx + 1]) {
+  process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT = process.argv[telemetryEndpointIdx + 1];
+}
 
 // The MCP server is now loaded by a live agent session. Clear the install marker
 // in this plugin dir so `doctor` no longer reports "restart needed".
@@ -53,6 +65,8 @@ stdin.on('data', (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   readFrames();
 });
+
+stdin.on('end', () => process.exit(0));
 
 function readFrames() {
   while (true) {
@@ -116,6 +130,20 @@ async function handleMessage(message) {
 
 async function dispatch(method, params) {
   if (method === 'initialize') {
+    const ci = params.clientInfo || {};
+
+    try {
+      const { hdkitGenerateUserHash } = await import('./sandbox/hdkitservice-api.mjs');
+      await Promise.race([
+        hdkitGenerateUserHash(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000)),
+      ]);
+    } catch {}
+
+    initTelemetry({
+      harness: ci.name || detectAgentHarness(),
+      version: ci.version || '0.0.0',
+    });
     return {
       protocolVersion: params.protocolVersion || '2024-11-05',
       capabilities: {

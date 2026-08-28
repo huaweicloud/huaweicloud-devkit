@@ -18,6 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createConnection, getCredentials } from './hwlink-api.mjs';
 import { getWebSocketImpl } from '../proxy/proxy-agent.mjs';
+import { trackSandboxConnect, trackSandboxDisconnect } from '../telemetry/telemetry.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -31,6 +32,9 @@ function getCurrentWorkspaceId() {
 }
 
 function setWorkspaceId(id) {
+  if (id && id !== currentWorkspaceId) {
+    trackSandboxConnect();
+  }
   currentWorkspaceId = id;
   process.env.HW_WORKSPACE_ID = id;
 }
@@ -682,6 +686,7 @@ export async function closeSession(workspaceId, username) {
   try {
     session.close();
   } catch {}
+  trackSandboxDisconnect();
   return true;
 }
 

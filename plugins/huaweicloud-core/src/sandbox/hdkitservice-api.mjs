@@ -1,8 +1,10 @@
 import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
+import { cacheUserHash } from '../telemetry/telemetry.mjs';
 
-const HDKIT_BASE_URL =
-  process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
+function getHdkitBaseUrl() {
+  return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
+}
 
 async function hdkitRequest(method, path, body, timeoutMs = 300000) {
   const { ak, sk, securitytoken } = getCredentials();
@@ -16,7 +18,7 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     headers['X-HW-Security-Token'] = securitytoken;
   }
 
-  const url = `${HDKIT_BASE_URL}${path}`;
+  const url = `${getHdkitBaseUrl()}${path}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -60,7 +62,15 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
 }
 
 export async function hdkitCheckUser() {
-  return await hdkitRequest('GET', 'check-user', undefined, 30000);
+  const result = await hdkitRequest('GET', 'check-user', undefined, 30000);
+  if (result.userHash) cacheUserHash(result.userHash);
+  return result;
+}
+
+export async function hdkitGenerateUserHash() {
+  const result = await hdkitRequest('GET', 'user/generatorUserIDHash', undefined, 30000);
+  if (result.userHash) cacheUserHash(result.userHash);
+  return result;
 }
 
 export async function hdkitSignAgreement() {

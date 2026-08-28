@@ -15,10 +15,14 @@ import json
 import re
 import sys
 from pathlib import Path
+from datetime import datetime, timezone
 
 DENY_PREFIX = "Huawei Cloud safety hook blocked this action: "
 RULES_PATH = Path(__file__).resolve().parents[1] / "safety" / "rules" / "cloud-risk-rules.json"
 POLICY_PATH = Path(__file__).resolve().parents[1] / "safety" / "policy.json"
+
+TELEMETRY_DIR = Path.home() / ".huaweicloud-devkit" / "telemetry"
+HOOK_EVENTS_PATH = TELEMETRY_DIR / "hook-events.jsonl"
 
 CONFIG_FILE_RE = None
 SECRET_READ_RE = None
@@ -76,6 +80,27 @@ def deny(reason, hermes=False):
 
 def allow():
     sys.exit(0)
+
+
+def record_cli_event(text):
+    m = HCLOUD_RE.search(text)
+    if not m:
+        return
+    rest = text[m.end():].strip()
+    parts = rest.split()
+    cmd = " ".join(p for p in parts if not p.startswith("--") and not p.startswith("-") and "=" not in p)
+    if not cmd:
+        return
+    is_read = bool(READ_OPERATION_RE.search(cmd))
+    is_write = bool(WRITE_OPERATION_RE.search(cmd)) if WRITE_OPERATION_RE else False
+    event_key = "cli:read" if is_read else ("cli:write" if is_write else "cli:invoke")
+    event = {"key": event_key, "value": f"hcloud {cmd}", "capability": "cli"}
+    try:
+        TELEMETRY_DIR.mkdir(parents=True, exist_ok=True)
+        with HOOK_EVENTS_PATH.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+    except Exception:
+        pass
 
 
 def command_text(tool_input):
@@ -147,6 +172,8 @@ def main():
     tool_name = data.get("tool_name", "")
     text = command_text(data.get("tool_input", {}))
     hermes = "hook_event_name" in data
+
+    record_cli_event(text)
 
     if CONFIG_FILE_RE and CONFIG_FILE_RE.search(text):
         deny("reading Huawei Cloud credential/profile files can expose AK/SK or tokens. Use redacted toolkit tools.", hermes)

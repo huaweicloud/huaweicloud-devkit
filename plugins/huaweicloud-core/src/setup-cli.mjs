@@ -534,7 +534,7 @@ function updateOpenCodeConfig(pluginDir) {
     timeout: 300000,
   };
   writeFileSync(configPath, JSON.stringify(config, null, 2));
-  console.log(`  OpenCode MCP config updated: ${configPath}`);
+  console.log(`  OpenCode config updated: ${configPath}`);
 }
 
 function removeOpenCodeConfig() {
@@ -660,6 +660,7 @@ async function installOpenCode() {
   const commandsSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'commands');
   const srcDir = join(PLUGIN_ROOT, 'src');
   const safetyDir = join(PLUGIN_ROOT, 'safety');
+  const pluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'hooks', 'skill-tracker.js');
   const pluginDest = opencodePluginsDir();
 
   copyDir(skillsSrc, opencodeSkillsDir());
@@ -670,6 +671,10 @@ async function installOpenCode() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  const opcPlugins = join(configRoot('opencode'), 'plugins');
+  mkdirSync(opcPlugins, { recursive: true });
+  copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
+  console.log(`  Plugin -> ${opcPlugins}`);
   updateOpenCodeConfig(pluginDest);
   installRuntimeDeps(pluginDest);
 }
@@ -700,6 +705,12 @@ function uninstallOpenCode() {
     if (cmdRemoved > 0) console.log(`  Removed ${cmdRemoved} commands`);
   }
 
+  const pluginFile = join(configRoot('opencode'), 'plugins', 'skill-tracker.js');
+  if (existsSync(pluginFile)) {
+    removeIfExists(pluginFile);
+    console.log('  Removed plugin');
+  }
+
   if (removeIfExists(opencodePluginsDir())) {
     console.log('  Removed MCP server and safety policy');
   }
@@ -727,6 +738,7 @@ async function updateOpenCode() {
   const commandsSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'commands');
   const srcDir = join(PLUGIN_ROOT, 'src');
   const safetyDir = join(PLUGIN_ROOT, 'safety');
+  const pluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'hooks', 'skill-tracker.js');
   const pluginDest = opencodePluginsDir();
 
   copyDir(skillsSrc, opencodeSkillsDir());
@@ -741,6 +753,10 @@ async function updateOpenCode() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  const opcPlugins = join(configRoot('opencode'), 'plugins');
+  mkdirSync(opcPlugins, { recursive: true });
+  copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
+  console.log(`  Plugin updated -> ${opcPlugins}`);
   updateOpenCodeConfig(pluginDest);
   mkdirSync(pluginDest, { recursive: true });
   writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
@@ -2319,6 +2335,19 @@ function parseTarget() {
   process.exit(1);
 }
 
+function recordTelemetryInstall() {
+  const telemDir = join(homedir(), '.huaweicloud-devkit', 'telemetry');
+  mkdirSync(telemDir, { recursive: true });
+  writeFileSync(join(telemDir, 'install-stamp'), new Date().toISOString());
+
+  const counterPath = join(telemDir, 'install-counter');
+  let count = 0;
+  if (existsSync(counterPath)) {
+    count = parseInt(readFileSync(counterPath, 'utf8').trim(), 10) || 0;
+  }
+  writeFileSync(counterPath, String(count + 1));
+}
+
 async function cmdInstall() {
   const target = parseTarget();
   console.log(BANNER);
@@ -2384,6 +2413,7 @@ async function cmdInstall() {
       installCodex();
     }
   }
+  recordTelemetryInstall();
   console.log(`\n\x1b[32mInstallation complete!\x1b[0m`);
   const appName =
     target === 'codearts'
