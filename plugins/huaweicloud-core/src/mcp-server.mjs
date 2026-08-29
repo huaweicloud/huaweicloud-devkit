@@ -49,6 +49,13 @@ for (const base of [pluginRoot, packageRoot]) {
 let buffer = Buffer.alloc(0);
 let useContentLengthFraming = true;
 
+// Prevent process exit on Windows when stdin is closed by the parent process.
+// Node.js event loop exits when no active handles remain; stdin 'data' listener
+// is the only handle.  On Windows, Hermes may close the stdin pipe after the
+// initial handshake, causing the process to exit silently (code 0).
+// A lightweight non-unref timer ensures the loop stays alive.
+setInterval(() => {}, 3600000);
+
 stdin.on('data', (chunk) => {
   buffer = Buffer.concat([buffer, chunk]);
   readFrames();
