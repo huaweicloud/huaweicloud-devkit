@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0-next.10 (2026-08-29)
+
+- fix: prevent MCP server silent exit on Windows when stdin is closed (#340)
+
 ## 1.1.0-next.9 (2026-08-28)
 
 - fix(sandbox): nginx cleanup, try_files, reload, config_name
