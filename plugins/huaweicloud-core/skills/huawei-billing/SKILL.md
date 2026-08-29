@@ -8,7 +8,7 @@ version: 1
 
 **STOP - Do not answer from general knowledge.** Follow the procedure below.
 
-Always run `hcloud BSS <Operation> --help` before constructing commands to discover exact parameter names and requirements.
+Always run `hcloud BSS <Operation> --help --cli-region=cn-north-1` before constructing commands to discover exact parameter names and requirements.
 
 ## Overview
 
@@ -21,17 +21,18 @@ Domain expertise for billing queries (BSS). Covers cost tracking, bill details, 
 | Bills delayed ~24h         | Yesterday's costs may not appear until the next day  |
 | BSS Admin role needed      | IAM user must have BSS Administrator or Finance role |
 | Currency conversion varies | Cross-region costs use daily exchange rates          |
+| Region fixed to cn-north-1 | BSS operations only support `--cli-region=cn-north-1` in KooCLI. This is a KooCLI metadata limitation — the billing data itself covers all regions. |
 
 ## Common Workflows
 
 | Task                 | Operation                                                       |
 | -------------------- | --------------------------------------------------------------- |
-| List costs           | `ListCosts --cli-region=<r> --project_id=<p>`                   |
-| List customer bills  | `ListCustomerBills --cli-region=<r> --project_id=<p>`           |
-| List resource usage  | `ListResourceUsage --cli-region=<r> --project_id=<p>`           |
-| List sub-customers   | `ListConsumeSubCustomers --cli-region=<r> --project_id=<p>`     |
-| Show account balance | `ShowCustomerAccountBalances --cli-region=<r> --project_id=<p>` |
-| List conversions     | `ListConversions --cli-region=<r> --project_id=<p>`             |
+| List costs           | `ListCosts --cli-region=cn-north-1 --project_id=<p>`                   |
+| List customer bills  | `ListCustomerBillsFeeRecords --cli-region=cn-north-1 --project_id=<p>`           |
+| List resource usage  | `ListResourceUsage --cli-region=cn-north-1 --project_id=<p>`           |
+| List sub-customers   | `ListConsumeSubCustomers --cli-region=cn-north-1 --project_id=<p>`     |
+| Show account balance | `ShowCustomerAccountBalances --cli-region=cn-north-1 --project_id=<p>` |
+| List conversions     | `ListConversions --cli-region=cn-north-1 --project_id=<p>`             |
 
 Discover exact parameters with `--help` before executing any command. All BSS operations are read-only.
 

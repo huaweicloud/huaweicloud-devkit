@@ -69,7 +69,7 @@ secret_value = client.get_secret(secret_id="my-secret")
 
 # hcloud (for approved automation only)
 
-hcloud CSMS DownloadSecret --secret_name=<name>
+hcloud CSMS DownloadSecretBlob --secret_name=<name>
 
 # WARNING: Output goes to stdout. Pipe directly, never capture in agent.
 
