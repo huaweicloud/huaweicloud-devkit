@@ -171,6 +171,7 @@ export async function searchMarketplace(query = '', category = '') {
       description: truncate(skill.description),
       triggers: (skill.triggers || []).slice(0, 5),
       matched,
+      installCommand: `npx skills add huaweicloud/huaweicloud-skills --skill ${skill.name}`,
     });
   }
   results.sort((a, b) => b.score - a.score);
