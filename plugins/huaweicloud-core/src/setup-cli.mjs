@@ -2070,26 +2070,19 @@ function removeHermesHooksConfigBlock() {
   const configPath = hermesConfigFile();
   if (!existsSync(configPath)) return;
   const lines = readFileSync(configPath, 'utf8').split(/\r?\n/);
+  let inHooksBlock = false;
   const out = [];
-  let skip = false;
   for (const line of lines) {
-    if (/^\s*huaweicloud-safety\.py/.test(line.trim())) {
-      skip = true;
+    const trimmed = line.trim();
+    if (trimmed === 'hooks:' && !inHooksBlock) {
+      inHooksBlock = true;
       continue;
     }
-    if (skip) {
-      if (line.trim() === '') continue;
-      if (/^\s{2,}/.test(line) && line.trim() !== '') continue;
-      skip = false;
-    }
-    if (line.trim() === 'hooks:') {
-      continue;
-    }
-    if (line.trim() === 'pre_tool_call:') {
-      continue;
-    }
-    if (/^\s*- matcher:\s*"terminal"/.test(line)) {
-      continue;
+    if (inHooksBlock) {
+      if (trimmed === '' || line.startsWith(' ') || line.startsWith('\t')) {
+        continue;
+      }
+      inHooksBlock = false;
     }
     out.push(line);
   }
@@ -2186,6 +2179,36 @@ async function updateHermes() {
 function uninstallHermes() {
   const skillsDir = hermesSkillsDir();
   let removed = 0;
+
+  // 1. Remove hook config from config.yaml (before deleting script files)
+  removeHermesHooksConfigBlock();
+  console.log('  Hooks config removed');
+
+  // 2. Clean shell-hooks-allowlist.json (remove approved hook references)
+  const hermesHome = hermesHomeDir();
+  const allowlistPath = join(hermesHome, 'shell-hooks-allowlist.json');
+  if (existsSync(allowlistPath)) {
+    try {
+      const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8'));
+      const before = (allowlist.approvals || []).length;
+      allowlist.approvals = (allowlist.approvals || []).filter((a) =>
+        typeof a === 'string' ? !a.includes('huaweicloud-safety.py') : true,
+      );
+      if (allowlist.approvals.length < before) {
+        writeFileSync(allowlistPath, JSON.stringify(allowlist, null, 2));
+        console.log(`  Removed ${before - allowlist.approvals.length} hook approvals from allowlist`);
+      }
+    } catch {
+      removeIfExists(allowlistPath);
+      console.log('  Removed hook allowlist file');
+    }
+  }
+
+  // 3. Remove MCP config from config.yaml
+  removeHermesMcpConfigBlock();
+  console.log('  MCP config removed');
+
+  // 4. Remove skills (file deletion comes after config cleanup)
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
@@ -2202,11 +2225,10 @@ function uninstallHermes() {
     } catch {}
   }
 
+  // 5. Remove plugin directory (hook script files deleted last)
   if (removeIfExists(hermesPluginsDir())) {
     console.log('  Removed MCP server, safety policy and hooks');
   }
-  removeHermesMcpConfigBlock();
-  removeHermesHooksConfigBlock();
 }
 
 function hermesStatus() {
