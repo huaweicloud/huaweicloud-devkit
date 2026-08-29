@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0-next.11 (2026-08-29)
+
+- fix(hermes): fix uninstall order, config.yaml residue, and allowlist cleanup (#343)
+
 ## 1.1.0-next.10 (2026-08-29)
 
 - fix: prevent MCP server silent exit on Windows when stdin is closed (#340)
