@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.0-next.13 (2026-08-31)
+
+- fix: scope MCP keepalive to after stdin close only (#361)
+
 ## 1.1.0-next.12 (2026-08-31)
 
 - fix: correct broken CLI commands in billing/vpc/dew skills (#358)
