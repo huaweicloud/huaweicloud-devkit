@@ -2867,17 +2867,19 @@ async function cmdDoctor() {
       ? 'Codex Desktop'
       : existsSync(join(codeartsPluginDir, 'src', 'mcp-server.mjs'))
         ? 'CodeArts'
-        : existsSync(join(workbuddyPluginDir, 'src', 'mcp-server.mjs'))
-          ? 'WorkBuddy'
-          : existsSync(join(dshPluginDir, 'src', 'mcp-server.mjs'))
-            ? 'DSH'
-            : existsSync(join(officeacePluginDir, 'src', 'mcp-server.mjs'))
-              ? 'OfficeAce'
-              : existsSync(join(hermesPluginDir, 'src', 'mcp-server.mjs'))
-                ? 'Hermes Agent'
-                : existsSync(join(atomcodePluginDir, 'src', 'mcp-server.mjs'))
-                  ? 'AtomCode'
-                  : '';
+        : existsSync(join(codeartsWorkPluginDir, 'src', 'mcp-server.mjs'))
+          ? 'CodeArts Work'
+          : existsSync(join(workbuddyPluginDir, 'src', 'mcp-server.mjs'))
+            ? 'WorkBuddy'
+            : existsSync(join(dshPluginDir, 'src', 'mcp-server.mjs'))
+              ? 'DSH'
+              : existsSync(join(officeacePluginDir, 'src', 'mcp-server.mjs'))
+                ? 'OfficeAce'
+                : existsSync(join(hermesPluginDir, 'src', 'mcp-server.mjs'))
+                  ? 'Hermes Agent'
+                  : existsSync(join(atomcodePluginDir, 'src', 'mcp-server.mjs'))
+                    ? 'AtomCode'
+                    : '';
   check('MCP server installed', mcpOk, 'Run: npx huaweicloud-devkit install');
 
   if (mcpOk) {
@@ -2888,6 +2890,7 @@ async function cmdDoctor() {
     opencodePluginDir,
     codexPluginDir,
     codeartsPluginDir,
+    codeartsWorkPluginDir,
     workbuddyPluginDir,
     dshPluginDir,
     officeacePluginDir,
@@ -2938,6 +2941,16 @@ async function cmdDoctor() {
       if (cfg.mcpServers && cfg.mcpServers['huaweicloud-devkit']) {
         mcpConfigured = true;
         mcpCfgTarget = 'CodeArts';
+      }
+    } catch {}
+  }
+  const codeartsWorkCfg = codeartsWorkMcpSettingsFile();
+  if (!mcpConfigured && existsSync(codeartsWorkCfg)) {
+    try {
+      const cfg = JSON.parse(readFileSync(codeartsWorkCfg, 'utf8'));
+      if (cfg.mcpServers && cfg.mcpServers['huaweicloud-devkit']) {
+        mcpConfigured = true;
+        mcpCfgTarget = 'CodeArts Work';
       }
     } catch {}
   }
