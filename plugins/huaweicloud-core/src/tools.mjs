@@ -48,6 +48,10 @@ function codeartsSkillsDir() {
   const home = homedir();
   return join(home, '.codeartsdoer', 'skills');
 }
+function codeartsWorkSkillsDir() {
+  const home = homedir();
+  return join(home, '.codeartswork', 'skills');
+}
 function workbuddySkillsDir() {
   const home = homedir();
   return join(home, '.workbuddy', 'skills');
@@ -126,6 +130,7 @@ function resolveSkillsRoot() {
       SKILLS_ROOT_DEV,
       dshSkillsDir(),
       codeartsSkillsDir(),
+      codeartsWorkSkillsDir(),
       opencodeSkillsDir(),
       workbuddySkillsDir(),
       officeaceSkillsRoot(),
@@ -449,7 +454,7 @@ export const TOOL_DEFINITIONS = [
         target: {
           type: 'string',
           description:
-            'Agent target to check: opencode, codex, codex-desktop, codearts, workbuddy, dsh, officeace, hermes, openclaw, atomcode, or all (default).',
+            'Agent target to check: opencode, codex, codex-desktop, codearts, codearts-work, workbuddy, dsh, officeace, hermes, openclaw, atomcode, or all (default).',
         },
       },
     },
@@ -464,7 +469,7 @@ export const TOOL_DEFINITIONS = [
         target: {
           type: 'string',
           description:
-            'Agent target to report after sync: opencode, codex, codex-desktop, codearts, workbuddy, dsh, officeace, hermes, or all (default).',
+            'Agent target to report after sync: opencode, codex, codex-desktop, codearts, codearts-work, workbuddy, dsh, officeace, hermes, or all (default).',
         },
       },
     },
