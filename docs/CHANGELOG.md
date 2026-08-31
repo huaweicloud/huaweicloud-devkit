@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0-next.12 (2026-08-31)
+
+- fix: correct broken CLI commands in billing/vpc/dew skills (#358)
+- feat: add installCommand to search_marketplace results (#353)
+
 ## 1.1.0-next.11 (2026-08-29)
 
 - fix(hermes): fix uninstall order, config.yaml residue, and allowlist cleanup (#343)
