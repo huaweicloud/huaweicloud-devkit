@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0-next.15 (2026-08-31)
+
+- feat: add codearts-work (CodeArts Space) agent target support (#387)
+- fix(sandbox): default deploy_nginx config_name from 'app' to project name
+
 ## 1.1.0-next.14 (2026-08-31)
 
 - test: update hdkitservice error message assertion to match new format
