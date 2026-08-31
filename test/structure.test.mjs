@@ -283,17 +283,17 @@ test('setup-cli.mjs supports the codearts target end to end', () => {
   // .installed marker goes to the codearts plugins dir
   assert.match(
     setup,
-    /const markerDir =[\s\S]*?target === 'dsh'[\s\S]*?dshPluginsDir\(\)[\s\S]*?target === 'codearts'[\s\S]*?codeartsPluginsDir\(\)[\s\S]*?target === 'workbuddy'[\s\S]*?workbuddyPluginsDir\(\)[\s\S]*?target === 'codex-desktop'[\s\S]*?codexDesktopPluginsDir\(\)[\s\S]*?;/,
+    /const markerDir =[\s\S]*?target === 'dsh'[\s\S]*?dshPluginsDir\(\)[\s\S]*?target === 'codearts'[\s\S]*?codeartsPluginsDir\(\)[\s\S]*?target === 'codearts-work'[\s\S]*?codeartsWorkPluginsDir\(\)[\s\S]*?target === 'workbuddy'[\s\S]*?workbuddyPluginsDir\(\)[\s\S]*?target === 'codex-desktop'[\s\S]*?codexDesktopPluginsDir\(\)[\s\S]*?;/,
   );
   // doctor checks the codearts skills dir alongside opencode
   assert.match(
     setup,
-    /const skillsOptions = \[[\s\S]*?opencodeSkillsDir\(\)[\s\S]*?codexDesktopSkillsDir\(\)[\s\S]*?codeartsSkillsDir\(\)[\s\S]*?workbuddySkillsDir\(\)[\s\S]*?dshSkillsDir\(\)[\s\S]*?\];/,
+    /const skillsOptions = \[[\s\S]*?opencodeSkillsDir\(\)[\s\S]*?codexDesktopSkillsDir\(\)[\s\S]*?codeartsSkillsDir\(\)[\s\S]*?codeartsWorkSkillsDir\(\)[\s\S]*?workbuddySkillsDir\(\)[\s\S]*?dshSkillsDir\(\)[\s\S]*?\];/,
   );
   // help text documents the target
   assert.match(
     setup,
-    /--target <opencode\|codex\|codearts\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
+    /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
   );
   assert.match(setup, /install --target codearts/);
 });
@@ -379,7 +379,7 @@ test('setup-cli.mjs supports the dsh target end to end', () => {
   // help text documents the target
   assert.match(
     setup,
-    /--target <opencode\|codex\|codearts\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
+    /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
   );
   assert.match(setup, /install --target dsh/);
 });
@@ -394,7 +394,7 @@ test('tools.mjs resolves skills from the dsh directory', () => {
   assert.match(tools, /\|\|\s*SKILLS_ROOT_DEV/);
   assert.match(
     tools,
-    /opencode, codex, codex-desktop, codearts, workbuddy, dsh, officeace, hermes, openclaw, atomcode, or all/,
+    /opencode, codex, codex-desktop, codearts, codearts-work, workbuddy, dsh, officeace, hermes, openclaw, atomcode, or all/,
   );
 });
 

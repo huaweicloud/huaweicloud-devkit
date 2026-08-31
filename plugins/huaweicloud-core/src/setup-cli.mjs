@@ -105,6 +105,17 @@ function codeartsPluginsDir() {
   return join(homedir(), '.codeartsdoer', 'huaweicloud-plugins');
 }
 
+// CodeArts Work (CodeArts Space) — user-level only
+function codeartsWorkSkillsDir() {
+  return join(homedir(), '.codeartswork', 'skills');
+}
+function codeartsWorkMcpSettingsFile() {
+  return join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json');
+}
+function codeartsWorkPluginsDir() {
+  return join(homedir(), '.codeartswork', 'huaweicloud-plugins');
+}
+
 function workbuddySkillsDir() {
   return join(homedir(), '.workbuddy', 'skills');
 }
@@ -1248,6 +1259,146 @@ function codeartsStatus() {
   }
 }
 
+// --- CodeArts Work (CodeArts Space) ---
+
+function registerCodeartsWorkMcp() {
+  const configPath = codeartsWorkMcpSettingsFile();
+  const mcpPath = join(codeartsWorkPluginsDir(), 'src', 'mcp-server.mjs').replace(/\\/g, '/');
+  const env = { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' };
+  const hcloudBin = findHcloudBin();
+  if (hcloudBin) env.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
+  let config = {};
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf8'));
+    } catch {
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m Could not parse ${configPath}. Skipping MCP config write; ensure "mcpServers.huaweicloud-devkit" points to ${mcpPath}.`,
+      );
+      return;
+    }
+    const existing = config.mcpServers?.['huaweicloud-devkit'];
+    if (
+      existing &&
+      existing.command === 'node' &&
+      Array.isArray(existing.args) &&
+      existing.args[0] === mcpPath &&
+      existing.timeout === 300000
+    ) {
+      console.log(`  MCP config unchanged: ${configPath}`);
+      return;
+    }
+  }
+  config.mcpServers = config.mcpServers || {};
+  config.mcpServers['huaweicloud-devkit'] = {
+    command: 'node',
+    args: [mcpPath],
+    env,
+    enabled: true,
+    timeout: 300000,
+  };
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  console.log(`  MCP config updated: ${configPath}`);
+}
+
+async function installCodeArtsWork() {
+  const skillsSrc = join(PLUGIN_ROOT, 'skills');
+  const srcDir = join(PLUGIN_ROOT, 'src');
+  const safetyDir = join(PLUGIN_ROOT, 'safety');
+
+  copyDir(skillsSrc, codeartsWorkSkillsDir());
+  console.log(`  Skills -> ${codeartsWorkSkillsDir()}`);
+
+  const pluginDest = codeartsWorkPluginsDir();
+  copyDir(srcDir, join(pluginDest, 'src'));
+  console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
+  copyDir(safetyDir, join(pluginDest, 'safety'));
+  console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+
+  registerCodeartsWorkMcp();
+  installRuntimeDeps(pluginDest);
+}
+
+async function updateCodeArtsWork() {
+  const skillsSrc = join(PLUGIN_ROOT, 'skills');
+  const srcDir = join(PLUGIN_ROOT, 'src');
+  const safetyDir = join(PLUGIN_ROOT, 'safety');
+  const pluginDest = codeartsWorkPluginsDir();
+
+  copyDir(skillsSrc, codeartsWorkSkillsDir());
+  console.log(`  Skills updated -> ${codeartsWorkSkillsDir()}`);
+  copyDir(srcDir, join(pluginDest, 'src'));
+  console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
+  copyDir(safetyDir, join(pluginDest, 'safety'));
+  console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  registerCodeartsWorkMcp();
+  mkdirSync(pluginDest, { recursive: true });
+  writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
+  installRuntimeDeps(pluginDest);
+}
+
+function uninstallCodeArtsWork() {
+  const skillsDir = codeartsWorkSkillsDir();
+  if (existsSync(skillsDir)) {
+    let removed = 0;
+    for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+      if (entry.name.startsWith('huawei')) {
+        removeIfExists(join(skillsDir, entry.name));
+        removed++;
+      }
+    }
+    if (removed > 0) console.log(`  Removed ${removed} skills`);
+  }
+
+  if (removeIfExists(codeartsWorkPluginsDir())) {
+    console.log('  Removed MCP server and safety policy');
+  }
+
+  const configPath = codeartsWorkMcpSettingsFile();
+  if (existsSync(configPath)) {
+    let config = {};
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf8'));
+    } catch {}
+    if (config.mcpServers?.['huaweicloud-devkit']) {
+      delete config.mcpServers['huaweicloud-devkit'];
+      if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log(`  Config cleaned: ${configPath}`);
+    }
+  }
+}
+
+function codeartsWorkStatus() {
+  const pluginDir = codeartsWorkPluginsDir();
+  console.log(
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+  );
+  console.log(
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+  );
+  let skillCount = 0;
+  if (existsSync(codeartsWorkSkillsDir())) {
+    skillCount = readdirSync(codeartsWorkSkillsDir(), { withFileTypes: true }).filter(
+      (d) => d.isDirectory() && d.name.startsWith('huawei'),
+    ).length;
+  }
+  console.log(
+    `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
+  );
+  if (existsSync(codeartsWorkMcpSettingsFile())) {
+    try {
+      const config = JSON.parse(readFileSync(codeartsWorkMcpSettingsFile(), 'utf8'));
+      console.log(
+        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`,
+      );
+    } catch {
+      console.log(`  MCP config: \x1b[31mInvalid\x1b[0m`);
+    }
+  }
+}
+
 // Returns true when the config file was written, false when it was already correct.
 function ensureWorkbuddyMcpConfig() {
   const configPath = workbuddyMcpConfigFile();
@@ -2307,6 +2458,7 @@ function autoDetectTarget() {
     ['opencode', () => existsSync(join(homedir(), '.config', 'opencode'))],
     ['codex-desktop', () => existsSync(join(homedir(), '.codex'))],
     ['codearts', () => existsSync(join(homedir(), '.codeartsdoer'))],
+    ['codearts-work', () => existsSync(join(homedir(), '.codeartswork'))],
     ['workbuddy', () => existsSync(join(homedir(), '.workbuddy'))],
     [
       'dsh',
@@ -2359,6 +2511,10 @@ async function cmdInstall() {
     console.log('\n[CodeArts]');
     await installCodeArts();
   }
+  if (target === 'codearts-work' || target === 'all') {
+    console.log('\n[CodeArts Work]');
+    await installCodeArtsWork();
+  }
   if (target === 'workbuddy' || target === 'all') {
     console.log('\n[WorkBuddy]');
     await installWorkBuddy();
@@ -2410,23 +2566,25 @@ async function cmdInstall() {
   const appName =
     target === 'codearts'
       ? 'CodeArts'
-      : target === 'codex-desktop'
-        ? 'Codex Desktop'
-        : target === 'codex'
-          ? 'Codex'
-          : target === 'workbuddy'
-            ? 'WorkBuddy'
-            : target === 'dsh'
-              ? 'DSH'
-              : target === 'officeace'
-                ? 'OfficeAce'
-                : target === 'hermes'
-                  ? 'Hermes Agent'
-                  : target === 'openclaw'
-                    ? 'OpenClaw'
-                    : target === 'atomcode'
-                      ? 'AtomCode'
-                      : '当前 agent';
+      : target === 'codearts-work'
+        ? 'CodeArts Work'
+        : target === 'codex-desktop'
+          ? 'Codex Desktop'
+          : target === 'codex'
+            ? 'Codex'
+            : target === 'workbuddy'
+              ? 'WorkBuddy'
+              : target === 'dsh'
+                ? 'DSH'
+                : target === 'officeace'
+                  ? 'OfficeAce'
+                  : target === 'hermes'
+                    ? 'Hermes Agent'
+                    : target === 'openclaw'
+                      ? 'OpenClaw'
+                      : target === 'atomcode'
+                        ? 'AtomCode'
+                        : '当前 agent';
   const pad = ' '.repeat(24 - appName.length);
   if (target === 'officeace') {
     console.log(`\n\x1b[1m\x1b[33m╔══════════════════════════════════════════════════════════╗`);
@@ -2480,17 +2638,19 @@ async function cmdInstall() {
       ? dshPluginsDir()
       : target === 'codearts'
         ? codeartsPluginsDir()
-        : target === 'workbuddy'
-          ? workbuddyPluginsDir()
-          : target === 'officeace'
-            ? officeacePluginsDir()
-            : target === 'openclaw'
-              ? codexDesktopPluginsDir()
-              : target === 'atomcode'
-                ? atomcodePluginsDir()
-                : target === 'codex-desktop'
-                  ? codexDesktopPluginsDir()
-                  : opencodePluginsDir();
+        : target === 'codearts-work'
+          ? codeartsWorkPluginsDir()
+          : target === 'workbuddy'
+            ? workbuddyPluginsDir()
+            : target === 'officeace'
+              ? officeacePluginsDir()
+              : target === 'openclaw'
+                ? codexDesktopPluginsDir()
+                : target === 'atomcode'
+                  ? atomcodePluginsDir()
+                  : target === 'codex-desktop'
+                    ? codexDesktopPluginsDir()
+                    : opencodePluginsDir();
   mkdirSync(markerDir, { recursive: true });
   writeFileSync(join(markerDir, '.installed'), new Date().toISOString());
   if (target === 'opencode' || target === 'all') {
@@ -2498,6 +2658,9 @@ async function cmdInstall() {
   }
   if (target === 'codearts' || target === 'all') {
     console.log('Or describe your Huawei Cloud task in CodeArts');
+  }
+  if (target === 'codearts-work' || target === 'all') {
+    console.log('Or describe your Huawei Cloud task in CodeArts Work');
   }
   if (target === 'codex' || target === 'all') {
     console.log('Or mention @huaweicloud-core in Codex');
@@ -2531,6 +2694,10 @@ async function cmdUninstall() {
   if (target === 'codearts' || target === 'all') {
     console.log('\n[CodeArts]');
     uninstallCodeArts();
+  }
+  if (target === 'codearts-work' || target === 'all') {
+    console.log('\n[CodeArts Work]');
+    uninstallCodeArtsWork();
   }
   if (target === 'workbuddy' || target === 'all') {
     console.log('\n[WorkBuddy]');
@@ -2595,6 +2762,10 @@ async function cmdStatus() {
   if (target === 'codearts' || target === 'all') {
     console.log('\n[CodeArts]');
     codeartsStatus();
+  }
+  if (target === 'codearts-work' || target === 'all') {
+    console.log('\n[CodeArts Work]');
+    codeartsWorkStatus();
   }
   if (target === 'workbuddy' || target === 'all') {
     console.log('\n[WorkBuddy]');
@@ -2674,6 +2845,7 @@ async function cmdDoctor() {
   const opencodePluginDir = opencodePluginsDir();
   const codexPluginDir = codexDesktopPluginsDir();
   const codeartsPluginDir = codeartsPluginsDir();
+  const codeartsWorkPluginDir = codeartsWorkPluginsDir();
   const workbuddyPluginDir = workbuddyPluginsDir();
   const dshPluginDir = dshPluginsDir();
   const officeacePluginDir = officeacePluginsDir();
@@ -2683,6 +2855,7 @@ async function cmdDoctor() {
     existsSync(join(opencodePluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(codexPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(codeartsPluginDir, 'src', 'mcp-server.mjs')) ||
+    existsSync(join(codeartsWorkPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(workbuddyPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(dshPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(officeacePluginDir, 'src', 'mcp-server.mjs')) ||
@@ -2727,6 +2900,7 @@ async function cmdDoctor() {
     existsSync(join(opencodePluginDir, 'safety', 'policy.json')) ||
     existsSync(join(codexPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(codeartsPluginDir, 'safety', 'policy.json')) ||
+    existsSync(join(codeartsWorkPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(workbuddyPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(dshPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(officeacePluginDir, 'safety', 'policy.json')) ||
@@ -2875,6 +3049,7 @@ async function cmdDoctor() {
     opencodeSkillsDir(),
     codexDesktopSkillsDir(),
     codeartsSkillsDir(),
+    codeartsWorkSkillsDir(),
     workbuddySkillsDir(),
     dshSkillsDir(),
     officeaceSkillsDir(),
@@ -2934,6 +3109,7 @@ async function cmdDoctor() {
     { path: join(codexDesktopPluginsDir(), '.installed'), name: 'Codex Desktop' },
     { path: join(workbuddyPluginsDir(), '.installed'), name: 'WorkBuddy' },
     { path: join(codeartsPluginsDir(), '.installed'), name: 'CodeArts' },
+    { path: join(codeartsWorkPluginsDir(), '.installed'), name: 'CodeArts Work' },
     { path: join(dshPluginsDir(), '.installed'), name: 'DSH' },
     { path: join(officeacePluginsDir(), '.installed'), name: 'OfficeAce' },
     { path: join(atomcodePluginsDir(), '.installed'), name: 'AtomCode' },
@@ -3003,6 +3179,18 @@ async function cmdUpdate() {
     await updateCodeArts();
     console.log(`\n\x1b[32mUpdate complete.\x1b[0m`);
     console.log(`\x1b[33mMCP 工具在重启 CodeArts 会话后才生效。\x1b[0m`);
+    return;
+  }
+
+  if (target === 'codearts-work') {
+    if (!existsSync(join(codeartsWorkPluginsDir(), 'src', 'mcp-server.mjs'))) {
+      console.log('\x1b[33mNot installed. Use "install" command first.\x1b[0m');
+      return;
+    }
+    console.log('[CodeArts Work]');
+    await updateCodeArtsWork();
+    console.log(`\n\x1b[32mUpdate complete.\x1b[0m`);
+    console.log(`\x1b[33mMCP 工具在重启 CodeArts Work 会话后才生效。\x1b[0m`);
     return;
   }
 
@@ -3093,6 +3281,11 @@ async function cmdUpdate() {
     if (existsSync(join(codeartsPluginsDir(), 'src', 'mcp-server.mjs'))) {
       console.log('\n[CodeArts]');
       await updateCodeArts();
+      updatedAny = true;
+    }
+    if (existsSync(join(codeartsWorkPluginsDir(), 'src', 'mcp-server.mjs'))) {
+      console.log('\n[CodeArts Work]');
+      await updateCodeArtsWork();
       updatedAny = true;
     }
     if (existsSync(join(workbuddyPluginsDir(), 'src', 'mcp-server.mjs'))) {
@@ -3620,7 +3813,7 @@ async function main() {
     default:
       console.log(BANNER);
       console.log(
-        'Usage: npx huaweicloud-devkit <command> [--target <opencode|codex|codearts|workbuddy|dsh|officeace|hermes|openclaw|atomcode|all>]\n',
+        'Usage: npx huaweicloud-devkit <command> [--target <opencode|codex|codearts|codearts-work|workbuddy|dsh|officeace|hermes|openclaw|atomcode|all>]\n',
       );
       console.log('Commands:');
       console.log('  install      Install skills, MCP server, safety policy');
@@ -3635,12 +3828,13 @@ async function main() {
       console.log('  help         Show this help');
       console.log('\nOptions:');
       console.log(
-        '  --target     Target agent: opencode (default), codex, codearts, workbuddy, dsh, officeace, hermes, openclaw, atomcode, all',
+        '  --target     Target agent: opencode (default), codex, codearts, codearts-work, workbuddy, dsh, officeace, hermes, openclaw, atomcode, all',
       );
       console.log('\nExamples:');
       console.log('  npx huaweicloud-devkit install');
       console.log('  npx huaweicloud-devkit install --target codex');
       console.log('  npx huaweicloud-devkit install --target codearts');
+      console.log('  npx huaweicloud-devkit install --target codearts-work');
       console.log('  npx huaweicloud-devkit install --target workbuddy');
       console.log('  npx huaweicloud-devkit install --target dsh');
       console.log('  npx huaweicloud-devkit install --target officeace');

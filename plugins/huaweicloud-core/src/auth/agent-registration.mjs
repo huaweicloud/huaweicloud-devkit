@@ -9,6 +9,7 @@ export const SUPPORTED_AGENT_TARGETS = [
   'codex',
   'codex-desktop',
   'codearts',
+  'codearts-work',
   'workbuddy',
   'dsh',
   'officeace',
@@ -76,6 +77,12 @@ function codeartsRegistered() {
     const cfg = readJsonSafe(path);
     return Boolean(cfg?.mcpServers?.['huaweicloud-devkit']);
   });
+}
+
+function codeartsWorkRegistered() {
+  const path = join(baseHome(), '.codeartswork', 'mcp', 'mcp_settings.json');
+  const cfg = readJsonSafe(path);
+  return Boolean(cfg?.mcpServers?.['huaweicloud-devkit']);
 }
 
 function workbuddyRegistered() {
@@ -208,6 +215,7 @@ export function getAgentRegistrationStatuses(target = 'all') {
     if (agent === 'codex-desktop') configured = codexDesktopRegistered();
     if (agent === 'codex') configured = codexCliRegistered();
     if (agent === 'codearts') configured = codeartsRegistered();
+    if (agent === 'codearts-work') configured = codeartsWorkRegistered();
     if (agent === 'workbuddy') configured = workbuddyRegistered();
     if (agent === 'dsh') configured = dshRegistered();
     if (agent === 'officeace') configured = officeaceRegistered();
