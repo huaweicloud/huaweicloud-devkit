@@ -66,7 +66,7 @@ function onStdoutClose() {
     clearInterval(keepAlive);
     keepAlive = null;
   }
-  process.exit(0);
+  process.exitCode = 0;
 }
 stdin.on('close', onStdinClose);
 stdin.on('end', onStdinClose);
