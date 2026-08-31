@@ -21,6 +21,10 @@ function codeartsSkillsDir() {
   const home = homedir();
   return join(home, '.codeartsdoer', 'skills');
 }
+function codeartsWorkSkillsDir() {
+  const home = homedir();
+  return join(home, '.codeartswork', 'skills');
+}
 function workbuddySkillsDir() {
   const home = homedir();
   return join(home, '.workbuddy', 'skills');
@@ -33,6 +37,7 @@ function resolveSkillsRoot() {
   if (existsSync(SKILLS_ROOT_DEV)) return SKILLS_ROOT_DEV;
   if (existsSync(dshSkillsDir())) return dshSkillsDir();
   if (existsSync(codeartsSkillsDir())) return codeartsSkillsDir();
+  if (existsSync(codeartsWorkSkillsDir())) return codeartsWorkSkillsDir();
   if (existsSync(opencodeSkillsDir())) return opencodeSkillsDir();
   if (existsSync(workbuddySkillsDir())) return workbuddySkillsDir();
   return SKILLS_ROOT_DEV;
@@ -300,7 +305,7 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: {
-        target: { type: 'string', description: 'Agent target to check: opencode, codex, codex-desktop, codearts, workbuddy, dsh, or all (default).' },
+        target: { type: 'string', description: 'Agent target to check: opencode, codex, codex-desktop, codearts, codearts-work, workbuddy, dsh, or all (default).' },
       },
     },
   },
@@ -310,7 +315,7 @@ export const TOOL_DEFINITIONS = [
     inputSchema: {
       type: 'object',
       properties: {
-        target: { type: 'string', description: 'Agent target to report after sync: opencode, codex, codex-desktop, codearts, workbuddy, dsh, or all (default).' },
+        target: { type: 'string', description: 'Agent target to report after sync: opencode, codex, codex-desktop, codearts, codearts-work, workbuddy, dsh, or all (default).' },
       },
     },
   },

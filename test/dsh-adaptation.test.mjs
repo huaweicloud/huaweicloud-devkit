@@ -205,7 +205,7 @@ test('cli help documents the dsh target', () => {
   try {
     const res = runCli(home, cwd, ['help']);
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stdout, /--target <opencode\|codex\|codearts\|workbuddy\|dsh\|all>/);
+    assert.match(res.stdout, /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|dsh\|all>/);
     assert.match(res.stdout, /install --target dsh/);
   } finally {
     rmSync(home, { recursive: true, force: true });

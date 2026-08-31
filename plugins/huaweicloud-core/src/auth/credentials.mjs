@@ -78,6 +78,13 @@ export function resolveCredentials(options = {}) {
   let securityToken = process.env.HW_SECURITY_TOKEN;
   let region = process.env.HW_REGION || process.env.HUAWEICLOUD_REGION || '';
 
+  const codeartsCreds = readCodeArtsCredentials();
+  if (codeartsCreds) {
+    if (!ak && codeartsCreds.ak) ak = codeartsCreds.ak;
+    if (!sk && codeartsCreds.sk) sk = codeartsCreds.sk;
+    if (!region && codeartsCreds.region) region = codeartsCreds.region;
+  }
+
   const stored = readGlobalCredentials();
   if (stored) {
     if (!ak && stored.ak) ak = stored.ak;
@@ -92,4 +99,36 @@ export function resolveCredentials(options = {}) {
   }
 
   return { ak, sk, securityToken, region };
+}
+
+function readCodeArtsCredentials() {
+  const searchPaths = [
+    join(process.cwd(), '.codeartsdoer', 'mcp', 'mcp_settings.json'),
+    join(homedir(), '.codeartsdoer', 'mcp', 'mcp_settings.json'),
+    join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json'),
+  ];
+
+  for (const path of searchPaths) {
+    try {
+      if (!existsSync(path)) continue;
+      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const server = config?.mcpServers?.['huaweicloud-devkit'];
+      if (!server?.env) continue;
+
+      const ak = server.env.HW_ACCESS_KEY;
+      const sk = server.env.HW_SECRET_KEY;
+      if (ak && sk) {
+        return {
+          ak,
+          sk,
+          securityToken: server.env.HW_SECURITY_TOKEN || '',
+          region: server.env.HW_REGION || server.env.HUAWEICLOUD_REGION || '',
+        };
+      }
+    } catch {
+      // mcp_settings.json missing or invalid — skip
+    }
+  }
+
+  return null;
 }

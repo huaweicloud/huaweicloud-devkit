@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
-export const SUPPORTED_AGENT_TARGETS = ['opencode', 'codex', 'codex-desktop', 'codearts', 'workbuddy', 'dsh'];
+export const SUPPORTED_AGENT_TARGETS = ['opencode', 'codex', 'codex-desktop', 'codearts', 'codearts-work', 'workbuddy', 'dsh'];
 
 function baseHome() {
   return process.env.HUAWEICLOUD_HOME || homedir();
@@ -66,6 +66,12 @@ function codeartsRegistered() {
   });
 }
 
+function codeartsWorkRegistered() {
+  const path = join(baseHome(), '.codeartswork', 'mcp', 'mcp_settings.json');
+  const cfg = readJsonSafe(path);
+  return Boolean(cfg?.mcpServers?.['huaweicloud-devkit']);
+}
+
 function workbuddyRegistered() {
   const cfg = readJsonSafe(join(baseHome(), '.workbuddy', 'mcp.json'));
   return Boolean(cfg?.mcpServers?.['huaweicloud-devkit']);
@@ -97,6 +103,7 @@ export function getAgentRegistrationStatuses(target = 'all') {
     if (agent === 'codex-desktop') configured = codexDesktopRegistered();
     if (agent === 'codex') configured = codexCliRegistered();
     if (agent === 'codearts') configured = codeartsRegistered();
+    if (agent === 'codearts-work') configured = codeartsWorkRegistered();
     if (agent === 'workbuddy') configured = workbuddyRegistered();
     if (agent === 'dsh') configured = dshRegistered();
     result.agents[agent] = { configured };

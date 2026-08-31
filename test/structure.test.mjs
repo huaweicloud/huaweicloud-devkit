@@ -221,6 +221,7 @@ test('setup-cli.mjs supports the codearts target end to end', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
   // parseTarget accepts codearts
   assert.match(setup, /if \(val === 'codearts'\) return 'codearts';/);
+  assert.match(setup, /if \(val === 'codearts-work'\) return 'codearts-work';/);
   // install / uninstall / status functions exist
   assert.match(setup, /async function installCodeArts\(\)/);
   assert.match(setup, /function uninstallCodeArts\(\)/);
@@ -244,11 +245,11 @@ test('setup-cli.mjs supports the codearts target end to end', () => {
   const branches = setup.match(/target === 'codearts' \|\| target === 'all'/g);
   assert.ok(branches && branches.length >= 3, `codearts dispatch branches: ${branches?.length}`);
   // .installed marker goes to the codearts plugins dir
-  assert.match(setup, /const markerDir = target === 'dsh' \? dshPluginsDir\(\)\s+: target === 'codearts' \? codeartsPluginsDir\(\)\s+: target === 'workbuddy' \? workbuddyPluginsDir\(\)\s+: target === 'codex-desktop' \? codexDesktopPluginsDir\(\)\s+: opencodePluginsDir\(\);/);
+  assert.match(setup, /const markerDir = target === 'dsh' \? dshPluginsDir\(\)\s+: target === 'codearts' \? codeartsPluginsDir\(\)\s+: target === 'codearts-work' \? codeartsWorkPluginsDir\(\)\s+: target === 'workbuddy' \? workbuddyPluginsDir\(\)\s+: target === 'codex-desktop' \? codexDesktopPluginsDir\(\)\s+: opencodePluginsDir\(\);/);
   // doctor checks the codearts skills dir alongside opencode
-  assert.match(setup, /const skillsOptions = \[opencodeSkillsDir\(\), codexDesktopSkillsDir\(\), codeartsSkillsDir\(\), workbuddySkillsDir\(\), dshSkillsDir\(\)\];/);
+  assert.match(setup, /const skillsOptions = \[opencodeSkillsDir\(\), codexDesktopSkillsDir\(\), codeartsSkillsDir\(\), codeartsWorkSkillsDir\(\), workbuddySkillsDir\(\), dshSkillsDir\(\)\];/);
   // help text documents the target
-  assert.match(setup, /--target <opencode\|codex\|codearts\|workbuddy\|dsh\|all>/);
+  assert.match(setup, /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|dsh\|all>/);
   assert.match(setup, /install --target codearts/);
 });
 
