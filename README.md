@@ -133,7 +133,7 @@ npx --yes huaweicloud-devkit uninstall --target hermes
 > **Uninstall notes**: On Linux, run `rm -rf ~/.npm/_npx/* && npm cache clean --force` after uninstall to ensure a clean slate. On Windows, close all Hermes sessions first to release file locks, then after uninstall check `%LOCALAPPDATA%\hermes\config.yaml` for YAML corruption and manually remove `%LOCALAPPDATA%\hermes\huaweicloud-plugins` if any files remain.
 > **Safety hooks**: The installer configures Hermes shell hooks (`config.yaml` → `hooks.pre_tool_call`) to intercept unsafe terminal commands such as credential file reads, environment variable dumps, and unapproved `hcloud` write operations. Hermes shows a consent prompt the first time; approve it or set `hooks_auto_accept: true` in `config.yaml` to auto-accept.
 > **MCP Python SDK**: The installer automatically installs the `mcp` Python package required by Hermes for MCP tool discovery. If you see `[FAIL] Hermes MCP Python SDK` in `doctor`, run `pip3 install mcp` manually.
-> **Windows**: Hermes on Windows stores data under `%LOCALAPPDATA%\hermes` instead of `~/.hermes`. The installer detects this automatically.
+> **Windows**: See [docs/hermes-windows.md](docs/hermes-windows.md) for known issues and workarounds.
 
 ### OpenClaw
 
