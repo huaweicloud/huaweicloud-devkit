@@ -123,7 +123,11 @@ export function getParentCwd() {
 }
 
 function isCodeArtsContext() {
-  return existsSync(join(process.cwd(), '.codeartsdoer')) || existsSync(join(homedir(), '.codeartsdoer'));
+  return (
+    existsSync(join(process.cwd(), '.codeartsdoer')) ||
+    existsSync(join(homedir(), '.codeartsdoer')) ||
+    existsSync(join(homedir(), '.codeartswork'))
+  );
 }
 
 function readCodeArtsCredentials() {
@@ -148,6 +152,31 @@ function readCodeArtsCredentials() {
           securityToken: server.env.HW_SECURITY_TOKEN || '',
           region: server.env.HW_REGION || server.env.HUAWEICLOUD_REGION || '',
         };
+      }
+    } catch {
+      // mcp_settings.json missing or invalid — skip
+    }
+  }
+
+  // CodeArts Work — user-level only
+  {
+    const path = join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json');
+    try {
+      if (existsSync(path)) {
+        const config = JSON.parse(readFileSync(path, 'utf8'));
+        const server = config?.mcpServers?.['huaweicloud-devkit'];
+        if (server?.env) {
+          const ak = server.env.HW_ACCESS_KEY;
+          const sk = server.env.HW_SECRET_KEY;
+          if (ak && sk) {
+            return {
+              ak,
+              sk,
+              securityToken: server.env.HW_SECURITY_TOKEN || '',
+              region: server.env.HW_REGION || server.env.HUAWEICLOUD_REGION || '',
+            };
+          }
+        }
       }
     } catch {
       // mcp_settings.json missing or invalid — skip

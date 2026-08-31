@@ -190,7 +190,7 @@ test('cli help documents the codearts target', () => {
     assert.equal(res.status, 0, res.stderr);
     assert.match(
       res.stdout,
-      /--target <opencode\|codex\|codearts\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
+      /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
     );
     assert.match(res.stdout, /install --target codearts/);
   } finally {
