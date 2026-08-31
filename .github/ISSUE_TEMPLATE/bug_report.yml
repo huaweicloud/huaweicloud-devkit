@@ -21,7 +21,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: OS and agent (Codex / OpenCode / Claude Code / Cursor)
+      description: OS and agent (Codex / OpenCode / Claude Code / Cursor / CodeArts / CodeArts Work / WorkBuddy / DSH)
       placeholder: 'e.g. Windows 11, Codex 0.4'
     validations:
       required: true
