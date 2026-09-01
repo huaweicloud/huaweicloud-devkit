@@ -1,0 +1,50 @@
+name: Community Invite
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened]
+
+jobs:
+  invite:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Post community invitation
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const repo = context.repo;
+            const discussionLink = 'https://github.com/huaweicloud/huaweicloud-devkit/discussions/218';
+            const issueLink = 'https://github.com/huaweicloud/huaweicloud-devkit/issues/220';
+            const isIssue = context.payload.issue !== undefined;
+            const number = isIssue ? context.payload.issue.number : context.payload.pull_request.number;
+            const type = isIssue ? 'issue' : 'pull request';
+
+            const body = `👋 欢迎提交 ${type} #${number}！
+
+            ---
+
+            🏆 **华为云开放能力闯关挑战进行中！**
+
+            10 关任务打造你的专属个人网站，完成即可获得**积分兑换华为云代金券**：
+            - 🟢 入门奖（1-4 关）：**500 积分（价值 ¥50）**
+            - 🟡 进阶奖（1-7 关）：**1000 积分（价值 ¥100）**
+            - 🔴 通关奖（全部 10 关）：**2000 积分（价值 ¥200）**
+
+            👉 [**立即闯关 →**](https://open.huaweicloud.com/openplatform/activity/)
+            💬 [**晒作品交流 →**](${discussionLink})
+            ⭐ [**给 DevKit 点 Star →**](https://github.com/huaweicloud/huaweicloud-devkit)
+
+            ---
+
+            *积分通过官网获取，可兑换华为云代金券。本消息由 Community Bot 自动发送*`;
+
+            await github.rest.issues.createComment({
+              ...repo,
+              issue_number: number,
+              body: body
+            });
