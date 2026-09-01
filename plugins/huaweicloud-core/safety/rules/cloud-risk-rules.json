@@ -222,6 +222,27 @@
       "remediation": "Show the exact resources to be deleted, confirm backups or recovery path, and require explicit user approval for the exact command."
     },
     {
+      "id": "hwc-destructive-delete-operation",
+      "title": "Destructive cloud resource operation",
+      "category": "destructive",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "hcloud\\s+\\w+\\s+(Delete\\w*|Detach\\w*|Remove\\w*|Dissociate\\w*|Unassign\\w*|Revoke\\w*)\\b"
+          },
+          {
+            "field": "text",
+            "regex": "hcloud\\s+\\w+\\s+(BatchDelete\\w*|BatchRemove\\w*)\\b"
+          }
+        ]
+      },
+      "message": "This hcloud command will delete, detach, or remove cloud resources. The operation may be irreversible.",
+      "remediation": "List the resources to be affected first, confirm with the user, and require explicit approval before executing any destructive operation."
+    },
+    {
       "id": "hwc-sandbox-missing-ttl",
       "title": "Sandbox deployment missing cleanup metadata",
       "category": "sandbox",
