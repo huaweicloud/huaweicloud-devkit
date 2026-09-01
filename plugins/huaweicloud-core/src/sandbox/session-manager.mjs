@@ -836,7 +836,7 @@ fi`;
   try {
     const tunnelCheck = await execOneShot(
       workspaceId,
-      'devbridge ls 2>/dev/null | grep -q "Tunnel URL" && echo "ACTIVE" || echo "INACTIVE"',
+      'devbridge list -j 2>/dev/null | grep -q \'"tunnelId"\' && echo "ACTIVE" || echo "INACTIVE"',
       username,
       10000,
     );
@@ -912,7 +912,7 @@ export async function deployCheck(
     `fi`,
     ``,
     `TOTAL=$((TOTAL+1))`,
-    `if devbridge ls 2>/dev/null | grep -q "Tunnel URL"; then`,
+    `if devbridge list -j 2>/dev/null | grep -q '"tunnelId"'; then`,
     `  echo "devbridge_tunnel:PASS"`,
     `  PASS=$((PASS+1))`,
     `else`,
@@ -920,8 +920,9 @@ export async function deployCheck(
     `fi`,
     ``,
     `TOTAL=$((TOTAL+1))`,
-    `TUNNEL_URL=$(devbridge ls 2>/dev/null | grep -oP "Tunnel URL: \\Khttps://[^ ]+")`,
-    `if [ -n "$TUNNEL_URL" ]; then`,
+    `TUNNEL_ID=$(devbridge list -j 2>/dev/null | grep -oP '"tunnelId":\\s*"\\K[^"]+' | head -1)`,
+    `TUNNEL_URL="https://\${TUNNEL_ID}-${port}.cn-north-4-bridge.myhuaweicloud.com"`,
+    `if [ -n "$TUNNEL_ID" ] && [ -n "$TUNNEL_URL" ]; then`,
     `  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
     `  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then`,
     `    echo "tunnel_url_accessible:PASS ($TUNNEL_URL -> $HTTP_CODE)"`,

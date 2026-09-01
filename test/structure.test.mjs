@@ -175,6 +175,17 @@ test('web/static-site deployment intent offers target options with sandbox first
   assert.match(discovery, /do NOT default to OBS/);
 });
 
+test('devbridge uses the valid `list` command, not the non-existent `ls`', () => {
+  const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  assert.doesNotMatch(sandbox, /devbridge ls\b/);
+  assert.match(sandbox, /devbridge list -j/);
+
+  assert.doesNotMatch(sessionManager, /devbridge ls\b/);
+  assert.match(sessionManager, /devbridge list -j/);
+});
+
 test('all plugin manifests are valid JSON', () => {
   const manifests = [
     join(pluginRoot, '.codex-plugin', 'plugin.json'),

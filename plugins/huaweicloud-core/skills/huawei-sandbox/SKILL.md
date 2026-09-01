@@ -253,7 +253,7 @@ fi
 
 ```bash
 # Step A: List all tunnels (both active and stale)
-devbridge ls --all
+devbridge list -j
 # Step B: Remove all stale tunnels
 devbridge delete-all
 # Step C: Retry tunnel creation
@@ -265,6 +265,7 @@ This eliminates the most common deployment failure — historical tunnels from p
 
 - The public URL has the form `https://<id>-<port>.cn-north-4-bridge.myhuaweicloud.com` (from the `Tunnel URL:` line).
 - **Return this URL to the developer as the deployment result link.** Keep the host process running (do not close the session before handing over the URL).
+- Tunnel `description` (`-d`) accepts only Chinese characters, letters, and digits (0-64). Symbols such as `-`/`_`/spaces are rejected (`Invalid tunnel description`).
 - Internal docs: https://huaweicloud.github.io/devspace-devbridge/
 
 **No local downgrade**: if the tunnel tooling cannot be installed in the sandbox, STOP and report a generic error ("无法生成访问地址") without technical detail. Never install it on the developer's local machine — a local install would defeat the purpose of sandbox deployment.
@@ -751,7 +752,7 @@ Follow the standard [Expose the deployed app](#expose-the-deployed-app-public-ur
 
 Use `exec_with_session` to background DevBridge. For SSR, DevBridge tunnels the nginx public port (not the Node port directly).
 
-**Pre-flight**: always run `devbridge delete-all` before creating a new tunnel to prevent `10006: quota exceeded` from accumulated stale tunnels. If you still get quota error, list tunnels with `devbridge ls --all`, delete stale ones, and retry.
+**Pre-flight**: always run `devbridge delete-all` before creating a new tunnel to prevent `10006: quota exceeded` from accumulated stale tunnels. If you still get quota error, list tunnels with `devbridge list -j`, delete stale ones, and retry.
 
 Extract the tunnel URL from DevBridge output. The public URL has the form `https://<id>-<port>.cn-north-4-bridge.myhuaweicloud.com`. **Return this URL to the developer as the deployment result.**
 
