@@ -6,7 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 import { evaluateArtifacts, evaluateCommandRisk, evaluateDeployPlan } from './risk-rule-engine.mjs';
 import { classifyTextCommand, redactSecrets } from './safety-policy.mjs';
-import { planHcloudCommand, runHcloud } from './hcloud-cli.mjs';
+import { planHcloudCommand, runHcloud, consumeApprovalToken } from './hcloud-cli.mjs';
 import { searchMarketplace } from './search-market.mjs';
 import { getServiceIcon } from './icon-library.mjs';
 import { detectFramework } from './detect-framework.mjs';
@@ -224,16 +224,16 @@ export const TOOL_DEFINITIONS = [
       'Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user.',
     inputSchema: {
       type: 'object',
-      required: ['args', 'approvedCommand', 'approvedByUser'],
+      required: ['args', 'approvalToken', 'approvedByUser'],
       properties: {
         args: {
           type: 'array',
           items: { type: 'string' },
           description: 'hcloud arguments, excluding the hcloud executable.',
         },
-        approvedCommand: {
+        approvalToken: {
           type: 'string',
-          description: 'The exact command string previously shown to the user.',
+          description: 'The approvalToken returned by huaweicloud_plan_cli_command.',
         },
         approvedByUser: {
           type: 'boolean',
@@ -1231,15 +1231,17 @@ async function runApprovedCommand(args = {}) {
   if (args.approvedByUser !== true) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
-  const strictPlan = planHcloudCommand(args.args || [], { allowWrites: false });
-  const plan = planHcloudCommand(args.args || [], { allowWrites: true });
-  const approved = String(args.approvedCommand || '');
-  const planned = String(plan.command || '');
-  const normalized = (s) => s.replace(/--\S+[= ]<redacted>/g, '--<placeholder>');
-  if (normalized(approved) !== normalized(planned)) {
-    throw new Error('approvedCommand must exactly match the planned hcloud command.');
+  const token = String(args.approvalToken || '');
+  const storedArgs = consumeApprovalToken(token);
+  if (!storedArgs || storedArgs.length === 0) {
+    throw new Error('Invalid or expired approval token. Please re-plan the command.');
   }
-  const result = await runHcloud(args.args || [], {
+  const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+  if (JSON.stringify(storedArgs) !== JSON.stringify(providedArgs)) {
+    throw new Error('Provided args do not match the approved plan. Use the exact args from the plan.');
+  }
+  const strictPlan = planHcloudCommand(providedArgs, { allowWrites: false });
+  const result = await runHcloud(providedArgs, {
     allowWrites: true,
     timeoutMs: args.timeoutMs,
     maxRetries: args.maxRetries,
