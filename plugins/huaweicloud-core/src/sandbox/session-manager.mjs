@@ -934,19 +934,15 @@ export async function deployCheck(
     `  echo "tunnel_url_accessible:FAIL (no tunnel URL)"`,
     `fi`,
     ``,
-    `${
-      isCrossPlatform
-        ? `
+    `${`
 TOTAL=$((TOTAL+1))
 if [ -f "${outputPath}/qr.png" ]; then
   echo "qr_code:PASS"
   PASS=$((PASS+1))
 else
-  echo "qr_code:FAIL (cross-platform app missing QR code)"
+  echo "qr_code:FAIL (no QR code — generate one for cross-platform H5 apps)"
 fi
-`
-        : ''
-    }`,
+`}`,
     `echo "SCORE:\${PASS}/\${TOTAL}"`,
     `echo "TUNNEL_URL:\${TUNNEL_URL:-}"`,
     `[ "\${PASS}" = "\${TOTAL}" ] && echo "VERDICT:COMPLETE" || echo "VERDICT:INCOMPLETE"`,

@@ -13,7 +13,10 @@
             "field": "text",
             "regex": "(^|\\s)(cat|type|Get-Content|gc|less|more)\\s+[^\\n]*(\\.hcloud|\\.huaweicloud)"
           },
-          { "field": "text", "regex": "(hcloud|huaweicloud)[/\\\\](config|credentials)" }
+          {
+            "field": "text",
+            "regex": "(hcloud|huaweicloud)[/\\\\](config|credentials)"
+          }
         ]
       },
       "message": "The command may read local Huawei Cloud credential or profile files into the agent context.",
@@ -27,8 +30,14 @@
       "stages": ["command"],
       "match": {
         "all": [
-          { "field": "text", "regex": "(^|\\s)(env|printenv|Get-ChildItem\\s+Env:|gci\\s+Env:|dir\\s+Env:)" },
-          { "field": "text", "regex": "(HUAWEICLOUD|HWC_|HCLOUD|OS_)" }
+          {
+            "field": "text",
+            "regex": "(^|\\s)(env|printenv|Get-ChildItem\\s+Env:|gci\\s+Env:|dir\\s+Env:)"
+          },
+          {
+            "field": "text",
+            "regex": "(HUAWEICLOUD|HWC_|HCLOUD|OS_)"
+          }
         ]
       },
       "message": "The command may print cloud credential environment variables.",
@@ -42,12 +51,35 @@
       "stages": ["command"],
       "match": {
         "any": [
-          { "field": "text", "regex": "(ShowSecretVersion|DownloadSecret|GetSecretValue)" },
-          { "field": "text", "regex": "(secret_string|secret_binary|secretString|secretBinary)" }
+          {
+            "field": "text",
+            "regex": "(ShowSecretVersion|DownloadSecret|GetSecretValue)"
+          },
+          {
+            "field": "text",
+            "regex": "(secret_string|secret_binary|secretString|secretBinary)"
+          }
         ]
       },
       "message": "The command appears to retrieve plaintext secret values.",
       "remediation": "Use runtime secret references, user-side inspection, or redacted metadata checks instead of returning secret values to the agent."
+    },
+    {
+      "id": "hwc-command-sts-credential",
+      "title": "Temporary credential exposure",
+      "category": "credential",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "hcloud\\s+STS\\s+(AssumeAgency|GetCallerIdentity|GetTemporaryCredential)\\b"
+          }
+        ]
+      },
+      "message": "此操作将返回临时 AK/SK 和 SecurityToken。注意敏感数据保密，不要将凭证输出到日志或分享给第三方。",
+      "remediation": "临时凭证仅用于当前会话，使用完毕后及时销毁，不要持久化存储。"
     },
     {
       "id": "hwc-command-encoded-shell-exec",
@@ -61,8 +93,14 @@
             "field": "text",
             "regex": "(base64\\s+(-d|--decode)|xxd\\s+-r|certutil\\s+-decode|FromBase64String|hex\\s*decode)"
           },
-          { "field": "text", "regex": "(\\||;|&&)" },
-          { "field": "text", "regex": "\\b(bash|sh|zsh|powershell|pwsh|cmd|python|node)\\b" }
+          {
+            "field": "text",
+            "regex": "(\\||;|&&)"
+          },
+          {
+            "field": "text",
+            "regex": "\\b(bash|sh|zsh|powershell|pwsh|cmd|python|node)\\b"
+          }
         ]
       },
       "message": "The command decodes an encoded payload and pipes it into an interpreter.",
@@ -96,7 +134,12 @@
       "severity": "deny",
       "stages": ["command", "artifact", "deploy_plan"],
       "match": {
-        "all": [{ "field": "text", "regex": "(OBS|obs://|bucket|object|Statement|Principal)" }],
+        "all": [
+          {
+            "field": "text",
+            "regex": "(OBS|obs://|bucket|object|Statement|Principal)"
+          }
+        ],
         "any": [
           {
             "field": "text",
@@ -119,7 +162,10 @@
       "stages": ["command", "artifact", "deploy_plan"],
       "match": {
         "all": [
-          { "field": "text", "regex": "(FunctionGraph|APIG|CreateTrigger|CreateApi|DEDICATEDGATEWAY|API Gateway)" },
+          {
+            "field": "text",
+            "regex": "(FunctionGraph|APIG|CreateTrigger|CreateApi|DEDICATEDGATEWAY|API Gateway)"
+          },
           {
             "field": "text",
             "regex": "(public|PUBLIC|0\\.0\\.0\\.0\\s*/\\s*0|auth[\\\"']?\\s*[=:]\\s*[\\\"']?(NONE|none|false)|security_authentication[\\\"']?\\s*[=:]\\s*[\\\"']?(NONE|none))"
@@ -137,12 +183,18 @@
       "stages": ["command", "artifact", "deploy_plan"],
       "match": {
         "all": [
-          { "field": "text", "regex": "(IAM|policy|role|agency|Statement|Action)" },
+          {
+            "field": "text",
+            "regex": "(IAM|policy|role|agency|Statement|Action)"
+          },
           {
             "field": "text",
             "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
           },
-          { "field": "text", "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)" }
+          {
+            "field": "text",
+            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
+          }
         ]
       },
       "message": "The change appears to grant broad administrator permissions.",
@@ -156,12 +208,39 @@
       "stages": ["command"],
       "match": {
         "all": [
-          { "field": "text", "regex": "(Delete|BatchDelete|Remove|\\brm\\b|delete)" },
-          { "field": "text", "regex": "(\\s--force|\\s-f\\s|\\s--recursive|\\s-r\\s|delete_publicip\\s*[=:]\\s*true)" }
+          {
+            "field": "text",
+            "regex": "(Delete|BatchDelete|Remove|\\brm\\b|delete)"
+          },
+          {
+            "field": "text",
+            "regex": "(\\s--force|\\s-f\\s|\\s--recursive|\\s-r\\s|delete_publicip\\s*[=:]\\s*true)"
+          }
         ]
       },
       "message": "The command combines deletion with force, recursive, or cascading deletion behavior.",
       "remediation": "Show the exact resources to be deleted, confirm backups or recovery path, and require explicit user approval for the exact command."
+    },
+    {
+      "id": "hwc-destructive-delete-operation",
+      "title": "Destructive cloud resource operation",
+      "category": "destructive",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "hcloud\\s+\\w+\\s+(Delete\\w*|Detach\\w*|Remove\\w*|Dissociate\\w*|Unassign\\w*|Revoke\\w*)\\b"
+          },
+          {
+            "field": "text",
+            "regex": "hcloud\\s+\\w+\\s+(BatchDelete\\w*|BatchRemove\\w*)\\b"
+          }
+        ]
+      },
+      "message": "This hcloud command will delete, detach, or remove cloud resources. The operation may be irreversible.",
+      "remediation": "List the resources to be affected first, confirm with the user, and require explicit approval before executing any destructive operation."
     },
     {
       "id": "hwc-sandbox-missing-ttl",
@@ -175,10 +254,16 @@
             "field": "text",
             "regex": "(sandbox|preview|temporary|ephemeral|dev environment|FunctionGraph|ECS|CCE|APIG)"
           },
-          { "field": "text", "regex": "(Create|Deploy|Provision|resource|stack|environment)" }
+          {
+            "field": "text",
+            "regex": "(Create|Deploy|Provision|resource|stack|environment)"
+          }
         ],
         "none": [
-          { "field": "text", "regex": "(ttl|expires_at|expire_at|cleanup|owner|cost_center|auto_delete|auto-delete)" }
+          {
+            "field": "text",
+            "regex": "(ttl|expires_at|expire_at|cleanup|owner|cost_center|auto_delete|auto-delete)"
+          }
         ]
       },
       "message": "The preview or sandbox deployment does not show cleanup or ownership metadata.",
@@ -196,7 +281,10 @@
             "field": "text",
             "regex": "(max_instances|max_node_count|max_replica|desired\\s*[=:]\\s*[5-9][0-9]|replicas\\s*[=:]\\s*[5-9][0-9])"
           },
-          { "field": "text", "regex": "(GPU|gpu|large|xlarge|charging_mode\\s*[=:]\\s*prePaid|period_type|period_num)" }
+          {
+            "field": "text",
+            "regex": "(GPU|gpu|large|xlarge|charging_mode\\s*[=:]\\s*prePaid|period_type|period_num)"
+          }
         ]
       },
       "message": "The generated plan may create high-cost or unbounded capacity.",
@@ -210,14 +298,38 @@
       "stages": ["command"],
       "match": {
         "any": [
-          { "field": "text", "regex": "rm\\s+-rf\\s+/" },
-          { "field": "text", "regex": "mkfs" },
-          { "field": "text", "regex": "dd\\s+if=" },
-          { "field": "text", "regex": ":\\\\(\\\\)\\\\{[^}]*\\\\|[^}]*&[^}]*\\\\}[^;]*;:" },
-          { "field": "text", "regex": "\\bshutdown\\b" },
-          { "field": "text", "regex": "\\breboot\\b" },
-          { "field": "text", "regex": "\\binit\\s+[06]\\b" },
-          { "field": "text", "regex": "\\bfdisk\\b" }
+          {
+            "field": "text",
+            "regex": "rm\\s+-rf\\s+/"
+          },
+          {
+            "field": "text",
+            "regex": "mkfs"
+          },
+          {
+            "field": "text",
+            "regex": "dd\\s+if="
+          },
+          {
+            "field": "text",
+            "regex": ":\\\\(\\\\)\\\\{[^}]*\\\\|[^}]*&[^}]*\\\\}[^;]*;:"
+          },
+          {
+            "field": "text",
+            "regex": "\\bshutdown\\b"
+          },
+          {
+            "field": "text",
+            "regex": "\\breboot\\b"
+          },
+          {
+            "field": "text",
+            "regex": "\\binit\\s+[06]\\b"
+          },
+          {
+            "field": "text",
+            "regex": "\\bfdisk\\b"
+          }
         ]
       },
       "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",

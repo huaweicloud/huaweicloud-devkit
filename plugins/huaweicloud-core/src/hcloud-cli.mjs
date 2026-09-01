@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -11,6 +11,8 @@ const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
 const DEFAULT_MAX_RETRIES = 1;
 const APPROVAL_TTL_MS = 5 * 60_000;
+const LARGE_OUTPUT_THRESHOLD = 50_000;
+const OUTPUT_DIR = join('/tmp', 'huaweicloud-devkit');
 
 const approvalStore = new Map();
 
@@ -35,6 +37,18 @@ export function consumeApprovalToken(token) {
   }
   approvalStore.delete(token);
   return entry.rawArgs;
+}
+
+function saveLargeOutput(rawStdout) {
+  if (rawStdout.length <= LARGE_OUTPUT_THRESHOLD) return null;
+  try {
+    mkdirSync(OUTPUT_DIR, { recursive: true });
+    const filePath = join(OUTPUT_DIR, `output-${Date.now()}.json`);
+    writeFileSync(filePath, rawStdout, { encoding: 'utf8' });
+    return filePath;
+  } catch {
+    return null;
+  }
 }
 
 export function planHcloudCommand(args, options = {}) {
@@ -140,6 +154,13 @@ function runHcloudOnce(plan, options) {
       clearTimeout(timer);
       clearTimeout(forceTimer);
       clearTimeout(settleTimer);
+      if (result.stdout && String(result.stdout).length > LARGE_OUTPUT_THRESHOLD) {
+        const outputFile = saveLargeOutput(stdout);
+        if (outputFile) {
+          result.outputFile = outputFile;
+          result.stdout = String(result.stdout).slice(0, 2000) + `\n...(truncated, full output saved to ${outputFile})`;
+        }
+      }
       resolve(result);
     }
 

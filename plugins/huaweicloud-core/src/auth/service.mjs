@@ -54,9 +54,42 @@ export function syncAuth(target = 'all') {
     };
   }
 
+  let hcloud = { ok: false, message: 'KooCLI not installed' };
+  if (hcloudInstalled()) {
+    const bin = process.env.HCLOUD_BIN || 'hcloud';
+    const r = spawnSync(
+      bin,
+      [
+        'configure',
+        'set',
+        `--cli-access-key=${credentials.ak}`,
+        `--cli-secret-key=${credentials.sk}`,
+        `--cli-region=${credentials.region || ''}`,
+      ],
+      {
+        shell: false,
+        windowsHide: true,
+        stdio: 'pipe',
+        timeout: 30000,
+      },
+    );
+    if (r.status === 0) {
+      hcloud = { ok: true, message: 'KooCLI config synced' };
+    } else {
+      hcloud = {
+        ok: false,
+        message: 'KooCLI config sync failed',
+        error: String(r.stderr || '')
+          .trim()
+          .slice(0, 240),
+      };
+    }
+  }
+
   return {
     ok: true,
     obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
+    hcloud,
     credentialsConfigured: true,
     agents: getAgentRegistrationStatuses(target).agents,
     note: 'OBS credentials were synced from the global credential vault. Agent MCP registration is managed by "npx huaweicloud-devkit install --target <agent>".',

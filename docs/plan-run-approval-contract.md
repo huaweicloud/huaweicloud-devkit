@@ -35,8 +35,8 @@ If all checks pass, the stored args are used to execute `runHcloud`.
 Tokens are stored in an in-memory `Map` in the MCP server process:
 
 ```js
-const approvalStore = new Map();  // token → { rawArgs, createdAt }
-const APPROVAL_TTL_MS = 5 * 60_000;  // 5 minutes
+const approvalStore = new Map(); // token → { rawArgs, createdAt }
+const APPROVAL_TTL_MS = 5 * 60_000; // 5 minutes
 ```
 
 - Token is a UUID v4
@@ -46,12 +46,12 @@ const APPROVAL_TTL_MS = 5 * 60_000;  // 5 minutes
 
 ### Key Functions
 
-| Function | Location | Purpose |
-|---|---|---|
-| `createApprovalToken(rawArgs)` | `hcloud-cli.mjs` | Stores args, returns token |
-| `consumeApprovalToken(token)` | `hcloud-cli.mjs` | Validates, returns args, deletes from store |
-| `planHcloudCommand()` | `hcloud-cli.mjs` | Returns `approvalToken` in result |
-| `runApprovedCommand()` | `tools.mjs` | Validates token, executes with stored args |
+| Function                       | Location         | Purpose                                     |
+| ------------------------------ | ---------------- | ------------------------------------------- |
+| `createApprovalToken(rawArgs)` | `hcloud-cli.mjs` | Stores args, returns token                  |
+| `consumeApprovalToken(token)`  | `hcloud-cli.mjs` | Validates, returns args, deletes from store |
+| `planHcloudCommand()`          | `hcloud-cli.mjs` | Returns `approvalToken` in result           |
+| `runApprovedCommand()`         | `tools.mjs`      | Validates token, executes with stored args  |
 
 ## Why Token Instead of String Comparison
 
