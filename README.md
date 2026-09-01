@@ -3,7 +3,7 @@
 [![Discussions](https://img.shields.io/badge/Discussions-Join%20the%20discussion-blue)](https://github.com/huaweicloud/huaweicloud-devkit/discussions)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
-[![Beta](https://img.shields.io/badge/beta-v1.1-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.0-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **[中文](README.zh-CN.md) | English**
 
