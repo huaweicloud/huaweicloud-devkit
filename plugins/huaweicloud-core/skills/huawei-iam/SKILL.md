@@ -42,14 +42,14 @@ Domain expertise for Huawei Cloud Identity and Access Management (IAM). Covers u
 
 ## Common Workflows
 
-| Task                     | Command                                                                                        | Steps                         |
-| ------------------------ | ---------------------------------------------------------------------------------------------- | ----------------------------- |
-| List users               | hcloud IAM ListUsers                                                                           | references/iam-ops.md         |
-| Create group             | hcloud IAM CreateGroup --group.name=<name>                                                     | references/iam-ops.md         |
-| Create custom policy     | hcloud IAM CreateCustomPolicy --policy.name=<n> --policy.document=<json>                       | references/policy-examples.md |
-| Create agency            | hcloud IAM CreateAgency --agency.name=<n> --agency.domain_id=<id> --agency.trust_policy=<json> | references/agency.md          |
-| Get temporary credential | hcloud STS GetTemporaryCredential --agency_name=<n> --domain_id=<id> --duration_seconds=3600   | references/sts.md             |
-| Attach policy            | hcloud IAM AttachGroupPolicy --group_id=<id> --policy_id=<id>                                  | references/iam-ops.md         |
+| Task                     | Command                                                                                                                     | Steps                         |
+| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| List users               | hcloud IAM KeystoneListUsers --cli-region=<r>                                                                               | references/iam-ops.md         |
+| Create group             | hcloud IAM CreateGroupV5 --group_name=<name>                                                                                | references/iam-ops.md         |
+| Create custom policy     | hcloud IAM CreateCloudServiceCustomPolicy --role.display_name=<n> --role.type=<type> --role.policy.Statement.1.Effect=Allow | references/policy-examples.md |
+| Create agency            | hcloud IAM CreateAgency --agency.name=<n> --agency.domain_id=<id> --agency.trust_domain_name=<domain>                       | references/agency.md          |
+| Get temporary credential | hcloud STS AssumeAgency --agency_urn=<urn> --agency_session_name=<n> --duration_seconds=3600                                | references/sts.md             |
+| Attach policy to group   | hcloud IAM AttachGroupPolicyV5 --group_id=<id> --policy_id=<id>                                                             | references/iam-ops.md         |
 
 ## Policy Examples (Least Privilege)
 
@@ -88,10 +88,10 @@ FunctionGraph needs an agency to access VPC resources (RDS, DCS, etc.):
 
 ```bash
 # 1. Create agency with FunctionGraph trust
-hcloud IAM CreateAgency --agency_name=<name> --trust_domain_name=functiongraph
+hcloud IAM CreateAgency --agency.name=<name> --agency.trust_domain_name=functiongraph
 
-# 2. Attach VPC Administrator role
-hcloud IAM GrantRoleToAgency --agency_name=<name> --role_id=<role-id>
+# 2. Grant role to agency
+hcloud IAM AssociateAgencyWithDomainPermission --agency_id=<id> --role_id=<role-id>
 
 # 3. Use in CreateFunction
 hcloud FunctionGraph CreateFunction ... --app_xrole=<agency-name>
