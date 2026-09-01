@@ -29,8 +29,8 @@ Domain expertise for WAF and Anti-DDoS. Covers WAF policy/rules, AAD protection,
 
 | Task                | Operation                                                       |
 | ------------------- | --------------------------------------------------------------- |
-| List WAF instances  | `ListInstances --cli-region=<r> --project_id=<p>`               |
-| List policies       | `ListPolicies --cli-region=<r> --project_id=<p>`                |
+| List WAF instances  | `ListCompositeHosts --cli-region=<r> --project_id=<p>`          |
+| List policies       | `ListPolicy --cli-region=<r> --project_id=<p>`                  |
 | Create custom rule  | `BatchCreateCustomRule --cli-region=<r> --project_id=<p>`       |
 | Create IP blacklist | `BatchCreateWhiteblackipRule --cli-region=<r> --project_id=<p>` |
 | Create CC rule      | `BatchCreateCcRule --cli-region=<r> --project_id=<p>`           |
@@ -39,8 +39,11 @@ Domain expertise for WAF and Anti-DDoS. Covers WAF policy/rules, AAD protection,
 ### AAD
 
 ```bash
-hcloud AAD ListInstances --cli-region=<r> --project_id=<p>
-hcloud AAD CreateInstance --cli-region=<r> --project_id=<p>
+# List AAD instances (requires --cli-region=cn-north-4 or ap-southeast-1)
+hcloud AAD ListInstance --cli-region=<r> --project_id=<p>
+
+# List DDoS attack events
+hcloud AAD ListDDoSAttackEvent --cli-region=<r> --project_id=<p>
 ```
 
 ## Troubleshooting
