@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0 (2026-09-01)
+
+- chore: version override for 1.1.0 stable release (#433)
+- docs: add Huawei Cloud npm mirror recommendation for China users
+
 ## 1.0.2 (2026-08-22)
 
 - style: prettier format fix
