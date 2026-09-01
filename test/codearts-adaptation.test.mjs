@@ -198,3 +198,98 @@ test('cli help documents the codearts target', () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+// --- CodeArts Work integration tests ---
+
+test('codearts-work install copies skills, MCP server, and safety policy', () => {
+  const home = mkdtempSync(join(tmpdir(), 'codearts-work-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'codearts-work-proj-'));
+  try {
+    const res = runCli(home, cwd, ['install', '--target', 'codearts-work']);
+    assert.equal(res.status, 0, res.stderr);
+
+    const userSkills = countSkills(join(home, '.codeartswork', 'skills'));
+    assert.ok(userSkills >= 6, `user skills (${userSkills})`);
+
+    const pluginDir = join(home, '.codeartswork', 'huaweicloud-plugins');
+    assert.ok(existsSync(join(pluginDir, 'src', 'mcp-server.mjs')), 'MCP server');
+    assert.ok(existsSync(join(pluginDir, 'safety', 'policy.json')), 'safety policy');
+    assert.ok(existsSync(join(pluginDir, '.installed')), '.installed marker');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('codearts-work install writes correct mcp_settings.json', () => {
+  const home = mkdtempSync(join(tmpdir(), 'codearts-work-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'codearts-work-proj-'));
+  try {
+    const res = runCli(home, cwd, ['install', '--target', 'codearts-work']);
+    assert.equal(res.status, 0, res.stderr);
+
+    const config = mcpConfig(join(home, '.codeartswork', 'mcp', 'mcp_settings.json'));
+    assert.ok(config, 'mcp_settings.json exists');
+    const server = config.mcpServers['huaweicloud-devkit'];
+    assert.ok(server, 'huaweicloud-devkit entry exists');
+    assert.equal(server.command, 'node');
+    assert.equal(server.enabled, true);
+    assert.equal(server.timeout, 300000);
+    assert.match(server.args[0], /huaweicloud-plugins.src.mcp-server/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('codearts-work status reports installed skills and configured MCP', () => {
+  const home = mkdtempSync(join(tmpdir(), 'codearts-work-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'codearts-work-proj-'));
+  try {
+    const install = runCli(home, cwd, ['install', '--target', 'codearts-work']);
+    assert.equal(install.status, 0, install.stderr);
+
+    const res = runCli(home, cwd, ['status', '--target', 'codearts-work']);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installed/);
+    assert.match(res.stdout, /Configured/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('codearts-work uninstall removes skills, plugins, and MCP config', () => {
+  const home = mkdtempSync(join(tmpdir(), 'codearts-work-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'codearts-work-proj-'));
+  try {
+    const install = runCli(home, cwd, ['install', '--target', 'codearts-work']);
+    assert.equal(install.status, 0, install.stderr);
+
+    const res = runCli(home, cwd, ['uninstall', '--target', 'codearts-work']);
+    assert.equal(res.status, 0, res.stderr);
+
+    assert.equal(countSkills(join(home, '.codeartswork', 'skills')), 0, 'skills removed');
+    assert.ok(!existsSync(join(home, '.codeartswork', 'huaweicloud-plugins')), 'plugins dir removed');
+
+    const config = mcpConfig(join(home, '.codeartswork', 'mcp', 'mcp_settings.json'));
+    assert.ok(!config?.mcpServers?.['huaweicloud-devkit'], 'MCP config cleaned');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('codearts-work appears in help output', () => {
+  const home = mkdtempSync(join(tmpdir(), 'codearts-work-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'codearts-work-proj-'));
+  try {
+    const res = runCli(home, cwd, ['help']);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy/);
+    assert.match(res.stdout, /install --target codearts-work/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
