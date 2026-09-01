@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.1.0-next.19 (2026-09-01)
+
+- feat(cli): save large hcloud output to file and return path (#416)
+- fix(sandbox): always run QR code check in deploy_check regardless of frameworkType
+- fix(rds): correct ARM volume type from ULTRAHIGH to CLOUDSSD (#5) (#417)
+- fix(safety): add STS credential exposure warning rule (#10) (#418)
+- fix(safety): add rule to warn on all Delete/Detach/Remove cloud operations (#413)
+- fix(auth): sync KooCLI hcloud config on auth sync (#411)
+- fix: remove UTF-8 BOM from files
+- fix: remove UTF-8 BOM from files
+- style: prettier format fix
+- style: prettier format fix
+- feat: add HC activity ECS+Nginx deployment workflow reference doc
+- feat: add HC activity ECS+Nginx deployment workflow to huawei-ecs skill
+- style: prettier reformat huawei-vpc SKILL.md tables (#394)
+- fix(vpc): correct subnet DNS addresses per region (#394)
+
 ## 1.1.0-next.18 (2026-09-01)
 
 - docs(sandbox): fix source parameter value typos (#376)
