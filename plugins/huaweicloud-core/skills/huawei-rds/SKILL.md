@@ -40,7 +40,7 @@ hcloud RDS <Operation> --cli-region=<region> [--key=value ...]
 | Automated backups use OBS           | Backup storage incurs separate charges. Set retention period explicitly                                                                      |
 | Storage auto-scaling off by default | Enable before storage runs out or instance goes read-only                                                                                    |
 | `--password` conflicts with KooCLI  | Use `--cli-jsonInput=<file>` with JSON file (see `--cli-jsonInput` section below). The `printf "b\n"` workaround is broken in KooCLI 7.2.12+ |
-| Volume type must match flavor       | General→CLOUDSSD; Dedicated→CLOUDSSD\|ESSD; ARM→ULTRAHIGH                                                                                    |
+| Volume type must match flavor       | General→CLOUDSSD; Dedicated→CLOUDSSD\|ESSD; ARM→CLOUDSSD                                                                                     |
 | Flavor not in region                | Always `ListFlavors` first. Spec codes vary by region                                                                                        |
 | `database_name` is case-sensitive   | Use `MySQL` / `PostgreSQL` / `SQLServer` / `MariaDB` — NOT lower-case `mysql`                                                                |
 | Instance creation takes 3–8 min     | Status: BUILD→MODIFYING→ACTIVE. Poll every 15s: `hcloud RDS ListInstances --cli-region=<r> --instance_id=<id> \| jq '.instances[0].status'`  |
@@ -109,7 +109,7 @@ hcloud RDS CreateInstance --cli-region=<r> \
 | `--name`              | Yes      | Instance name                                                                                |
 | `--datastore`         | Yes      | `--datastore.type=<engine> --datastore.version=<version>`                                    |
 | `--flavor_ref`        | Yes      | From `ListFlavors` output                                                                    |
-| `--volume`            | Yes      | Type matching: General→CLOUDSSD, Dedicated→CLOUDSSD\|ESSD, ARM→ULTRAHIGH                     |
+| `--volume`            | Yes      | Type matching: General→CLOUDSSD, Dedicated→CLOUDSSD\|ESSD, ARM→CLOUDSSD                      |
 | `--vpc_id`            | Yes      | Must exist in target region                                                                  |
 | `--subnet_id`         | Yes      | Must exist in target region                                                                  |
 | `--security_group_id` | Yes      | Must have DB port open                                                                       |
