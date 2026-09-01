@@ -28,19 +28,20 @@ jobs:
 
             ---
 
-            🌟 **华为云 DevKit 社区活动进行中！**
+            🏆 **华为云开放能力闯关挑战进行中！**
 
-            分享你使用 DevKit 的场景/案例，即可赢取 **华为云代金券**：
-            - 🥇 最佳实践奖 — ¥200（每月 3 位）
-            - 🥈 积极参与奖 — ¥100
-            - 🌟 人气之星 — ¥300（月度 👍 最多）
+            10 关任务打造你的专属个人网站，完成即可获得**积分兑换华为云代金券**：
+            - 🟢 入门奖（1-4 关）：**500 积分（价值 ¥50）**
+            - 🟡 进阶奖（1-7 关）：**1000 积分（价值 ¥100）**
+            - 🔴 通关奖（全部 10 关）：**2000 积分（价值 ¥200）**
 
-            👉 [**立即分享你的故事 →**](${discussionLink})
+            👉 [**立即闯关 →**](https://open.huaweicloud.com/openplatform/activity/)
+            💬 [**晒作品交流 →**](${discussionLink})
             ⭐ [**给 DevKit 点 Star →**](https://github.com/huaweicloud/huaweicloud-devkit)
 
             ---
 
-            *本消息由 Community Bot 自动发送*`;
+            *积分通过官网获取，可兑换华为云代金券。本消息由 Community Bot 自动发送*`;
 
             await github.rest.issues.createComment({
               ...repo,
