@@ -102,6 +102,7 @@ test('auth sync writes OBS and reports all agent registration targets', () => {
     assert.ok(sync.agents.codex !== undefined);
     assert.ok(sync.agents['codex-desktop'] !== undefined);
     assert.ok(sync.agents.codearts !== undefined);
+    assert.ok(sync.agents['codearts-work'] !== undefined);
     assert.ok(sync.agents.workbuddy !== undefined);
     assert.ok(sync.agents.dsh !== undefined);
   });
