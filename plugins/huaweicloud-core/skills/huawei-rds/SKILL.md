@@ -55,7 +55,7 @@ hcloud RDS <Operation> --cli-region=<region> [--key=value ...]
 hcloud RDS ListInstances --cli-region=<r>
 hcloud RDS ListFlavors --database_name=<engine> --cli-region=<r>
 hcloud RDS ListDatastores --database_name=<engine> --cli-region=<r>
-hcloud RDS ListEngineFlavors --instance_id=<id> --cli-region=<r>
+hcloud RDS ListEngineFlavors --instance_id=<id> --availability_zone_ids=<az> --ha_mode=<mode> --cli-region=<r>
 ```
 
 ### Create Instance
@@ -150,7 +150,8 @@ hcloud RDS CreateRestoreInstance --instance_id=<id> --backup_id=<id> --name=<new
 ## Read Replicas
 
 ```bash
-hcloud RDS CreateReadReplica --replica_of_id=<primary-id> --name=<name> --flavor_ref=<id> --volume.type=<vol-type> --volume.size=<size> --cli-region=<r>
+# Create a read replica via CreateInstance with --replica_of_id
+hcloud RDS CreateInstance --replica_of_id=<primary-id> --name=<name> --flavor_ref=<id> --volume.type=<vol-type> --volume.size=<size> --cli-region=<r>
 ```
 
 ## Fault Diagnosis
@@ -159,7 +160,7 @@ hcloud RDS CreateReadReplica --replica_of_id=<primary-id> --name=<name> --flavor
 hcloud RDS ListErrorLogs --instance_id=<id> --start_date=2024-01-01T00:00:00Z --end_date=2024-01-31T23:59:59Z --cli-region=<r>
 hcloud RDS ListSlowLogs --instance_id=<id> --start_date=... --end_date=... --cli-region=<r>
 hcloud RDS ShowReplicationStatus --instance_id=<id> --cli-region=<r>
-hcloud RDS ListInstanceDiagnosis --cli-region=<r>
+hcloud RDS ListInstanceDiagnosis --engine=<engine> --cli-region=<r>
 ```
 
 ## Connecting
