@@ -8,7 +8,7 @@ version: 1
 
 **STOP - Do not answer from general knowledge.** Follow the procedure below.
 
-Always run `hcloud SMN <Operation> --help` or `hcloud DMS <Operation> --help` before constructing commands.
+Always run `hcloud SMN <Operation> --help`, `hcloud Kafka <Operation> --help`, `hcloud RabbitMQ <Operation> --help`, or `hcloud RocketMQ <Operation> --help` before constructing commands.
 
 ## Overview
 
@@ -38,21 +38,28 @@ Domain expertise for SMN (Simple Message Notification) and DMS (Distributed Mess
 
 ## DMS
 
-### Service Types
+> **DMS 是产品统一品牌**，涵盖 Kafka、RabbitMQ、RocketMQ 三种引擎。在 KooCLI 中，三种引擎被拆分为独立服务，**不存在 `hcloud DMS` 命令**。
 
-| Type     | KooCLI Service |
-| -------- | -------------- |
-| Kafka    | `hcloud DMS`   |
-| RabbitMQ | `hcloud DMS`   |
-| RocketMQ | `hcloud DMS`   |
+### Engine → KooCLI Service Mapping
+
+| Engine    | KooCLI Service | Description           |
+| --------- | -------------- | --------------------- |
+| Kafka     | `hcloud Kafka` | 高吞吐分布式消息队列 |
+| RabbitMQ  | `hcloud RabbitMQ` | AMQP 消息代理       |
+| RocketMQ  | `hcloud RocketMQ` | 低延迟金融级消息队列 |
 
 ### Common Workflows
 
-| Task                  | Operation                                          |
-| --------------------- | -------------------------------------------------- |
-| List instances        | `ListInstances --cli-region=<r> --project_id=<p>`  |
-| Create Kafka instance | `CreateInstance --cli-region=<r> --project_id=<p>` |
-| List Kafka topics     | `ListTopics --cli-region=<r> --project_id=<p>`     |
+| Task                      | Service      | Operation                                                       |
+| ------------------------- | ------------ | --------------------------------------------------------------- |
+| List Kafka instances      | `Kafka`      | `ListInstances --cli-region=<r> --project_id=<p>`               |
+| List RabbitMQ instances   | `RabbitMQ`   | `ListInstancesDetails --cli-region=<r> --project_id=<p>`        |
+| List RocketMQ instances   | `RocketMQ`   | `ListInstances --cli-region=<r> --project_id=<p>`               |
+| Create Kafka instance     | `Kafka`      | `CreatePostPaidKafkaInstance --cli-region=<r> --project_id=<p>` |
+| Create RabbitMQ instance  | `RabbitMQ`   | `CreatePostPaidInstanceByEngine --cli-region=<r> --project_id=<p>` |
+| Create RocketMQ instance  | `RocketMQ`   | `CreateInstanceByEngine --cli-region=<r> --project_id=<p>`      |
+| List Kafka topics         | `Kafka`      | `ListInstanceTopics --cli-region=<r> --project_id=<p>`          |
+| List RocketMQ topics      | `RocketMQ`   | `ListRocketInstanceTopics --cli-region=<r> --project_id=<p>`    |
 
 Discover exact parameters with `--help` before executing any command.
 
