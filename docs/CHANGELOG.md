@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.0.3 (2026-09-01)
+
+- docs: add Huawei Cloud npm mirror recommendation for China users
+
 ## 1.0.2 (2026-08-22)
 
 - style: prettier format fix
