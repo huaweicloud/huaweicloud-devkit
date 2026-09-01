@@ -42,24 +42,24 @@ Domain expertise for SMN (Simple Message Notification) and DMS (Distributed Mess
 
 ### Engine → KooCLI Service Mapping
 
-| Engine    | KooCLI Service | Description           |
-| --------- | -------------- | --------------------- |
-| Kafka     | `hcloud Kafka` | 高吞吐分布式消息队列 |
-| RabbitMQ  | `hcloud RabbitMQ` | AMQP 消息代理       |
-| RocketMQ  | `hcloud RocketMQ` | 低延迟金融级消息队列 |
+| Engine   | KooCLI Service    | Description          |
+| -------- | ----------------- | -------------------- |
+| Kafka    | `hcloud Kafka`    | 高吞吐分布式消息队列 |
+| RabbitMQ | `hcloud RabbitMQ` | AMQP 消息代理        |
+| RocketMQ | `hcloud RocketMQ` | 低延迟金融级消息队列 |
 
 ### Common Workflows
 
-| Task                      | Service      | Operation                                                       |
-| ------------------------- | ------------ | --------------------------------------------------------------- |
-| List Kafka instances      | `Kafka`      | `ListInstances --cli-region=<r> --project_id=<p>`               |
-| List RabbitMQ instances   | `RabbitMQ`   | `ListInstancesDetails --cli-region=<r> --project_id=<p>`        |
-| List RocketMQ instances   | `RocketMQ`   | `ListInstances --cli-region=<r> --project_id=<p>`               |
-| Create Kafka instance     | `Kafka`      | `CreatePostPaidKafkaInstance --cli-region=<r> --project_id=<p>` |
-| Create RabbitMQ instance  | `RabbitMQ`   | `CreatePostPaidInstanceByEngine --cli-region=<r> --project_id=<p>` |
-| Create RocketMQ instance  | `RocketMQ`   | `CreateInstanceByEngine --cli-region=<r> --project_id=<p>`      |
-| List Kafka topics         | `Kafka`      | `ListInstanceTopics --cli-region=<r> --project_id=<p>`          |
-| List RocketMQ topics      | `RocketMQ`   | `ListRocketInstanceTopics --cli-region=<r> --project_id=<p>`    |
+| Task                     | Service    | Operation                                                          |
+| ------------------------ | ---------- | ------------------------------------------------------------------ |
+| List Kafka instances     | `Kafka`    | `ListInstances --cli-region=<r> --project_id=<p>`                  |
+| List RabbitMQ instances  | `RabbitMQ` | `ListInstancesDetails --cli-region=<r> --project_id=<p>`           |
+| List RocketMQ instances  | `RocketMQ` | `ListInstances --cli-region=<r> --project_id=<p>`                  |
+| Create Kafka instance    | `Kafka`    | `CreatePostPaidKafkaInstance --cli-region=<r> --project_id=<p>`    |
+| Create RabbitMQ instance | `RabbitMQ` | `CreatePostPaidInstanceByEngine --cli-region=<r> --project_id=<p>` |
+| Create RocketMQ instance | `RocketMQ` | `CreateInstanceByEngine --cli-region=<r> --project_id=<p>`         |
+| List Kafka topics        | `Kafka`    | `ListInstanceTopics --cli-region=<r> --project_id=<p>`             |
+| List RocketMQ topics     | `RocketMQ` | `ListRocketInstanceTopics --cli-region=<r> --project_id=<p>`       |
 
 Discover exact parameters with `--help` before executing any command.
 
