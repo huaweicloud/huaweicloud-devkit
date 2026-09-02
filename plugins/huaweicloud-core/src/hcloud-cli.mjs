@@ -123,9 +123,10 @@ function applyPreflightFindings(classification, sgFindings) {
   if (hasDeny) {
     return {
       ...classification,
-      decision: 'deny',
+      decision: 'warn',
       risk: 'public_exposure',
       reason: sgFindings[0].message,
+      requireUserConfirmation: true,
     };
   }
   return classification;
@@ -140,6 +141,7 @@ export function planHcloudCommand(args, options = {}) {
   if (sgFindings.length > 0) {
     for (const f of sgFindings) warnings.push(f);
   }
+  const finalClassification = applyPreflightFindings(classification, sgFindings);
   const paramValidation = validateRequiredParams(normalizedArgs);
   if (paramValidation.missing.length > 0) {
     warnings.push('Missing required parameters: ' + paramValidation.missing.join(', '));
@@ -153,10 +155,10 @@ export function planHcloudCommand(args, options = {}) {
     command: redactOutput(command),
     executableBlock: redactOutput(command),
     warnings,
-    classification: applyPreflightFindings(classification, sgFindings),
+    classification: finalClassification,
     sgFindings,
     approvalToken: createApprovalToken(normalizedArgs),
-    safeToRun: classification.decision === 'allow',
+    safeToRun: finalClassification.decision === 'allow',
   };
 }
 
