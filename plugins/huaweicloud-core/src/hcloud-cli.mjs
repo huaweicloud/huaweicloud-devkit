@@ -58,16 +58,19 @@ function preflightSecurityGroupCheck(normalizedArgs) {
 
   const sgIds = [];
   for (const arg of normalizedArgs) {
-    const m = arg.match(/^--security_group_id(\.\d+)?=(.+)/);
-    if (m) sgIds.push(m[2]);
+    const m = arg.match(/^(?:--security_group_id(?:\.\d+)?|--server\.security_groups(?:\.\d+)?\.id)=(.+)/);
+    if (m) sgIds.push(m[1]);
   }
   if (sgIds.length === 0) return [];
 
+  const regionArg = normalizedArgs.find((a) => a.startsWith('--cli-region='));
   const findings = [];
   for (const sgId of sgIds) {
     try {
       const hcloudBin = process.env.HCLOUD_BIN || 'hcloud';
-      const r = spawnSync(hcloudBin, ['VPC', 'ListSecurityGroupRules', `--security_group_id=${sgId}`], {
+      const spawnArgs = ['VPC', 'ListSecurityGroupRules', `--security_group_id.1=${sgId}`];
+      if (regionArg) spawnArgs.push(regionArg);
+      const r = spawnSync(hcloudBin, spawnArgs, {
         shell: false,
         windowsHide: true,
         stdio: 'pipe',
