@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -51,11 +51,92 @@ function saveLargeOutput(rawStdout) {
   }
 }
 
+function preflightSecurityGroupCheck(normalizedArgs) {
+  const service = normalizedArgs[0];
+  const operation = normalizedArgs[1];
+  if (service !== 'ECS' || !/CreateServers|RunInstances/i.test(operation)) return [];
+
+  const sgIds = [];
+  for (const arg of normalizedArgs) {
+    const m = arg.match(/^--security_group_id(\.\d+)?=(.+)/);
+    if (m) sgIds.push(m[2]);
+  }
+  if (sgIds.length === 0) return [];
+
+  const findings = [];
+  for (const sgId of sgIds) {
+    try {
+      const hcloudBin = process.env.HCLOUD_BIN || 'hcloud';
+      const r = spawnSync(hcloudBin, ['VPC', 'ListSecurityGroupRules', `--security_group_id=${sgId}`], {
+        shell: false,
+        windowsHide: true,
+        stdio: 'pipe',
+        timeout: 20000,
+      });
+      const stdout = (r.stdout || '').toString();
+      if (r.status !== 0 || !stdout.includes('security_group_rules')) continue;
+
+      const bracketIdx = stdout.indexOf('{');
+      const jsonText = bracketIdx >= 0 ? stdout.slice(bracketIdx) : stdout;
+      const data = JSON.parse(jsonText);
+      const rules = data?.security_group_rules || [];
+
+      for (const rule of rules) {
+        const direction = rule.direction || '';
+        const remoteIp = rule.remote_ip_prefix || rule.remote_address_group_id || '';
+        const portMin = String(rule.port_range_min || rule.multiport || '');
+        const portMax = String(rule.port_range_max || rule.multiport || '');
+        const protocol = (rule.protocol || '').toLowerCase();
+        if (direction !== 'ingress') continue;
+        if (remoteIp !== '0.0.0.0/0' && remoteIp !== '::/0') continue;
+        if (protocol === 'icmp' || protocol === 'icmpv6') {
+          findings.push({
+            severity: 'warn',
+            title: `Security group ${sgId}: ICMP open to public`,
+            message: `安全组 ${sgId} 对公网开放了 ICMP (ping)，可能被用于探测。是否继续？`,
+          });
+          continue;
+        }
+        const sensitivePorts = ['22', '3389', '3306', '5432', '6379', '9200', '27017', '8080', '8443'];
+        const port = portMin || portMax;
+        if (port && sensitivePorts.includes(port)) {
+          findings.push({
+            severity: 'deny',
+            title: `Security group ${sgId}: port ${port} open to public`,
+            message: `安全组 ${sgId} 已对公网开放 ${port} 端口（${protocol || 'TCP'}）。确认继续创建 ECS？`,
+          });
+        }
+      }
+    } catch (e) {
+      // Preflight failed silently; don't block the plan
+    }
+  }
+  return findings;
+}
+
+function applyPreflightFindings(classification, sgFindings) {
+  if (!sgFindings || sgFindings.length === 0) return classification;
+  const hasDeny = sgFindings.some((f) => f.severity === 'deny');
+  if (hasDeny) {
+    return {
+      ...classification,
+      decision: 'deny',
+      risk: 'public_exposure',
+      reason: sgFindings[0].message,
+    };
+  }
+  return classification;
+}
+
 export function planHcloudCommand(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const classification = classifyHcloudArgs(normalizedArgs, options);
   const command = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
   const warnings = planningWarnings(normalizedArgs);
+  const sgFindings = preflightSecurityGroupCheck(normalizedArgs);
+  if (sgFindings.length > 0) {
+    for (const f of sgFindings) warnings.push(f);
+  }
   const paramValidation = validateRequiredParams(normalizedArgs);
   if (paramValidation.missing.length > 0) {
     warnings.push('Missing required parameters: ' + paramValidation.missing.join(', '));
@@ -69,7 +150,8 @@ export function planHcloudCommand(args, options = {}) {
     command: redactOutput(command),
     executableBlock: redactOutput(command),
     warnings,
-    classification,
+    classification: applyPreflightFindings(classification, sgFindings),
+    sgFindings,
     approvalToken: createApprovalToken(normalizedArgs),
     safeToRun: classification.decision === 'allow',
   };
