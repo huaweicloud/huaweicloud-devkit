@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1-next.6 (2026-09-02)
+
+- Revert "fix(ecs): change preflight SG check from hard-deny to require_user_confirmation (#468)" (#470)
+
 ## 1.1.1-next.5 (2026-09-02)
 
 - fix(ecs): change preflight SG check from hard-deny to require_user_confirmation (#468)
