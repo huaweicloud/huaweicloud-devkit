@@ -40,10 +40,10 @@ if (hasTags) {
 
 let nextVersion;
 if (branch === 'dev') {
-  const allTags = execSync('git tag -l "v*" --sort=-version:refname', { encoding: 'utf8' })
+  const allTags = execSync('git tag -l --sort=-version:refname', { encoding: 'utf8' })
     .trim()
     .split('\n')
-    .filter((t) => t);
+    .filter((t) => t && t.startsWith('v'));
   const stableRe = /^v(\d+)\.(\d+)\.(\d+)$/;
   let latestStable = '0.0.0';
   for (const tag of allTags) {
@@ -70,10 +70,8 @@ if (branch === 'dev') {
     nextStable = parts.join('.');
   }
 
-  const nextTags = execSync(`git tag -l "v${nextStable}-next.*"`, { encoding: 'utf8' })
-    .trim()
-    .split('\n')
-    .filter((t) => t);
+  const prefix = `v${nextStable}-next.`;
+  const nextTags = allTags.filter((t) => t.startsWith(prefix));
 
   if (nextTags.length > 0) {
     const counters = nextTags.map((t) => {

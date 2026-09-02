@@ -214,7 +214,7 @@
           },
           {
             "field": "text",
-            "regex": "(\\s--force|\\s-f\\s|\\s--recursive|\\s-r\\s|delete_publicip\\s*[=:]\\s*true)"
+            "regex": "(\\s--force|\\s-f\\s|\\s--recursive|\\s-r\\s)"
           }
         ]
       },
@@ -241,6 +241,27 @@
       },
       "message": "This hcloud command will delete, detach, or remove cloud resources. The operation may be irreversible.",
       "remediation": "List the resources to be affected first, confirm with the user, and require explicit approval before executing any destructive operation."
+    },
+    {
+      "id": "hwc-destructive-delete-cascade",
+      "title": "Cascading cloud resource deletion",
+      "category": "destructive",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(Delete|BatchDelete|Remove|\\brm\\b|delete)"
+          },
+          {
+            "field": "text",
+            "regex": "(delete_publicip\\s*[=:]\\s*true|delete_volume\\s*[=:]\\s*true)"
+          }
+        ]
+      },
+      "message": "This delete command will also remove associated resources (EIP, volume). Check that these should be deleted together.",
+      "remediation": "Confirm with the user whether to delete the associated resources, or set delete_publicip/delete_volume to false to keep them."
     },
     {
       "id": "hwc-sandbox-missing-ttl",

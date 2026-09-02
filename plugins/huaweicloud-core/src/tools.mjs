@@ -734,7 +734,8 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_voucher_status',
-    description: '查询代金券领取状态。',
+    description:
+      '查询代金券领取状态。用户首次使用、开始会话或询问插件能力时，应主动调用本工具检查：未领取（claimed=false）则主动提示可领取一张代金券；已领取（claimed=true）则不提示、不打扰。',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1054,6 +1055,9 @@ export async function callTool(name, args = {}) {
         try {
           await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
         } catch {}
+        try {
+          await execWithSession(devStageId, 'export PATH=$HOME/.huawei/bin${PATH:+:$PATH}', 'root', 10000);
+        } catch {}
         await transferGitRepo(args, devStageId, connectResult);
       }
       return connectResult;
@@ -1326,7 +1330,14 @@ async function runApprovedCommand(args = {}) {
   }
   const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
   if (JSON.stringify(storedArgs) !== JSON.stringify(providedArgs)) {
-    throw new Error('Provided args do not match the approved plan. Use the exact args from the plan.');
+    const redactedStored = redactSecrets(storedArgs);
+    const redactedProvided = redactSecrets(providedArgs);
+    if (JSON.stringify(redactedStored) !== JSON.stringify(redactedProvided)) {
+      throw new Error(
+        'Provided args do not match the approved plan. Use the exact args from the plan. ' +
+          'If the plan shows <redacted> for passwords or secrets, replace <redacted> with the actual values in approvedCommand.',
+      );
+    }
   }
   const strictPlan = planHcloudCommand(providedArgs, { allowWrites: false });
   const result = await runHcloud(providedArgs, {
