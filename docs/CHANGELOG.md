@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1-next.5 (2026-09-02)
+
+- fix(ecs): change preflight SG check from hard-deny to require_user_confirmation (#468)
+- chore: add dsh.bundle manifest for DSH plugin ecosystem
+
 ## 1.1.1-next.4 (2026-09-02)
 
 - fix(ecs): fix preflightSecurityGroupCheck regex and query parameter format (#443) (#464)
