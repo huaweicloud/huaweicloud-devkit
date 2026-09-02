@@ -128,6 +128,21 @@
       "remediation": "Restrict the source CIDR to a trusted range, use a bastion or VPN, and keep public preview endpoints behind authenticated HTTP services."
     },
     {
+      "id": "hwc-ecs-reuse-existing-sg",
+      "title": "ECS reusing existing security group",
+      "category": "public_exposure",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          { "field": "text", "regex": "(CreateServers|RunInstances)\\b" },
+          { "field": "text", "regex": "security_group_id(\\.\\d+)?\\s*[:=]\\s*\\S+" }
+        ]
+      },
+      "message": "正在引用已有安全组。请先执行 hcloud VPC ListSecurityGroupRules --security_group_id=<id> 检查入方向规则，确认没有 0.0.0.0/0 开放敏感端口。",
+      "remediation": "审计已有安全组规则。如发现 0.0.0.0/0 开放敏感端口，立即告警用户并等待用户确认后再继续创建 ECS。"
+    },
+    {
       "id": "hwc-obs-anonymous-write",
       "title": "OBS anonymous write",
       "category": "public_exposure",
