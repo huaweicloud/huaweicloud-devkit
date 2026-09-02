@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.1-next.3 (2026-09-02)
+
+- feat(ecs): auto-check security group rules during plan phase (#443) (#462)
+- fix: use CodeArts Work native MCP format (mcp key, command array, environment) (#461)
+
 ## 1.1.1-next.2 (2026-09-02)
 
 - docs: voucher_status 工具描述内嵌主动提示行为指令
