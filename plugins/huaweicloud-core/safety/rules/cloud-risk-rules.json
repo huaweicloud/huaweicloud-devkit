@@ -131,7 +131,7 @@
       "id": "hwc-ecs-reuse-existing-sg",
       "title": "ECS reusing existing security group",
       "category": "public_exposure",
-      "severity": "warn",
+      "severity": "deny",
       "stages": ["command"],
       "match": {
         "all": [
