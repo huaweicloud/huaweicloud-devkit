@@ -55,7 +55,21 @@ console.log(JSON.stringify({
     );
 
     assert.ok(plan.sgFindings.length > 0, 'B1+B2 fix: should have sg findings');
-    assert.equal(plan.classification.decision, 'deny', 'B1+B2 fix: should deny ECS on dangerous SG reuse');
+    assert.equal(
+      plan.classification.requireUserConfirmation,
+      true,
+      'B1+B2 fix: should require user confirmation, not hard-deny',
+    );
+    assert.notEqual(
+      plan.classification.decision,
+      'deny',
+      'B1+B2 fix: must not hard-deny, user should be able to confirm and proceed',
+    );
+    assert.equal(
+      plan.safeToRun,
+      false,
+      'B1+B2 fix: safeToRun should be false to prevent agent from executing without user confirmation',
+    );
     assert.match(plan.sgFindings[0].message, /22/);
     assert.match(plan.sgFindings[0].message, /77216397/);
   } finally {
@@ -161,7 +175,8 @@ console.log(JSON.stringify({
     );
 
     assert.ok(plan.sgFindings.length > 0, 'old format should still work');
-    assert.equal(plan.classification.decision, 'deny');
+    assert.equal(plan.classification.requireUserConfirmation, true, 'old format: should require user confirmation');
+    assert.notEqual(plan.classification.decision, 'deny', 'old format: must not hard-deny');
   } finally {
     process.env.HCLOUD_BIN = oldEnv;
     try {
