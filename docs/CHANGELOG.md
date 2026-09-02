@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1-next.4 (2026-09-02)
+
+- fix(ecs): fix preflightSecurityGroupCheck regex and query parameter format (#443) (#464)
+
 ## 1.1.1-next.3 (2026-09-02)
 
 - feat(ecs): auto-check security group rules during plan phase (#443) (#462)
