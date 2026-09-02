@@ -107,7 +107,7 @@ function preflightSecurityGroupCheck(normalizedArgs) {
           });
         }
       }
-    } catch (e) {
+    } catch (error) {
       // Preflight failed silently; don't block the plan
     }
   }
