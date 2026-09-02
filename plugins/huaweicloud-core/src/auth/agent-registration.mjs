@@ -82,7 +82,7 @@ function codeartsRegistered() {
 function codeartsWorkRegistered() {
   const path = join(baseHome(), '.codeartswork', 'mcp', 'mcp_settings.json');
   const cfg = readJsonSafe(path);
-  return Boolean(cfg?.mcpServers?.['huaweicloud-devkit']);
+  return Boolean(cfg?.mcp?.['huaweicloud-devkit']);
 }
 
 function workbuddyRegistered() {
