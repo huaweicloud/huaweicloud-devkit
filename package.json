@@ -17,6 +17,11 @@
     "type": "git",
     "url": "https://github.com/huaweicloud/huaweicloud-devkit.git"
   },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "scripts": {
     "test": "node --test",
     "format": "prettier --write .",
