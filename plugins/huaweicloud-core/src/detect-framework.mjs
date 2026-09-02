@@ -244,7 +244,7 @@ function readVitepressOutDir(projectPath) {
     if (!existsSync(configPath)) continue;
     try {
       const content = readFileSync(configPath, 'utf8');
-      const match = content.match(/outDir\s*:\s*['"]([^'"]+)['"]/);
+      const match = content.match(/outDir\s*:\s*['"`]?([^'"`\s,}]+)['"`]?/);
       if (match) return match[1];
     } catch {}
   }

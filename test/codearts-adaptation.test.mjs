@@ -230,12 +230,13 @@ test('codearts-work install writes correct mcp_settings.json', () => {
 
     const config = mcpConfig(join(home, '.codeartswork', 'mcp', 'mcp_settings.json'));
     assert.ok(config, 'mcp_settings.json exists');
-    const server = config.mcpServers['huaweicloud-devkit'];
+    const server = config.mcp['huaweicloud-devkit'];
     assert.ok(server, 'huaweicloud-devkit entry exists');
-    assert.equal(server.command, 'node');
+    assert.equal(server.type, 'local');
     assert.equal(server.enabled, true);
     assert.equal(server.timeout, 300000);
-    assert.match(server.args[0], /huaweicloud-plugins.src.mcp-server/);
+    assert.equal(server.command[0], 'node');
+    assert.match(server.command[1], /huaweicloud-plugins.src.mcp-server/);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -273,7 +274,7 @@ test('codearts-work uninstall removes skills, plugins, and MCP config', () => {
     assert.ok(!existsSync(join(home, '.codeartswork', 'huaweicloud-plugins')), 'plugins dir removed');
 
     const config = mcpConfig(join(home, '.codeartswork', 'mcp', 'mcp_settings.json'));
-    assert.ok(!config?.mcpServers?.['huaweicloud-devkit'], 'MCP config cleaned');
+    assert.ok(!config?.mcp?.['huaweicloud-devkit'], 'MCP config cleaned');
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

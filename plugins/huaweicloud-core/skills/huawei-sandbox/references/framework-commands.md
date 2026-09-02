@@ -2,6 +2,26 @@
 
 Maps web frameworks to install, build, serve commands and output directories for sandbox deployment.
 
+## Architecture Compatibility
+
+The sandbox runs **HCE OS on aarch64**. Frameworks that depend on native binaries (e.g., `@swc/core`, `esbuild`, `sharp`, `prisma`) may fail to install or build inside the sandbox since prebuilt binaries target x86_64 by default.
+
+**Recommended strategy**: build locally (x86_64) then upload the dist output to the sandbox for serving.
+
+| Dependency       | Frameworks Affected      | Mitigation                            |
+| ---------------- | ------------------------ | ------------------------------------- |
+| `@swc/core`      | Taro, Next.js 13+        | Pre-build locally, upload dist        |
+| `esbuild`        | Vite, Nuxt, uni-app      | Usually has aarch64 binary; try build |
+| `sharp`          | Gatsby, Next.js images   | Pre-build locally, upload dist        |
+| `prisma`         | Next.js, Nuxt (database) | Use `binaryTargets = ["linux-arm64"]` |
+| `node-gyp` (C++) | node-sass, bcrypt        | `build-essential` is pre-installed    |
+
+**Pre-build workflow**:
+
+1. Build on local machine (x86_64): `npm install && npm run build`
+2. Use `huaweicloud_sandbox_connect` with git config (auto-transfers code) or `huaweicloud_sandbox_upload_project` to upload dist
+3. Deploy with nginx static/SPA template — no native deps needed at runtime
+
 ## SSR Frameworks
 
 | Framework | Install       | Build           | Serve                                                       | Output Dir | Port | Nginx |

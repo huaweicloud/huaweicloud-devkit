@@ -164,16 +164,16 @@ function readCodeArtsCredentials() {
     try {
       if (existsSync(path)) {
         const config = JSON.parse(readFileSync(path, 'utf8'));
-        const server = config?.mcpServers?.['huaweicloud-devkit'];
-        if (server?.env) {
-          const ak = server.env.HW_ACCESS_KEY;
-          const sk = server.env.HW_SECRET_KEY;
+        const server = config?.mcp?.['huaweicloud-devkit'];
+        if (server?.environment) {
+          const ak = server.environment.HW_ACCESS_KEY;
+          const sk = server.environment.HW_SECRET_KEY;
           if (ak && sk) {
             return {
               ak,
               sk,
-              securityToken: server.env.HW_SECURITY_TOKEN || '',
-              region: server.env.HW_REGION || server.env.HUAWEICLOUD_REGION || '',
+              securityToken: server.environment.HW_SECURITY_TOKEN || '',
+              region: server.environment.HW_REGION || server.environment.HUAWEICLOUD_REGION || '',
             };
           }
         }

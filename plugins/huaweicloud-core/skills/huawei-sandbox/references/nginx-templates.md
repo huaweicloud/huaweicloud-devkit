@@ -64,7 +64,7 @@ NGINX_EOF
 sudo nginx -s reload 2>/dev/null || sudo nginx
 ```
 
-## Template 3: Static Site (no SPA routing)
+## Template 3: Static Site (with clean URL support)
 
 Use for: Hugo, Hexo, plain static HTML
 
@@ -76,6 +76,7 @@ server {
     index index.html;
 
     location / {
+        try_files $uri $uri.html $uri/ =404;
         autoindex off;
     }
 

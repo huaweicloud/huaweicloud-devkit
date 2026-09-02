@@ -802,6 +802,7 @@ fi`;
     index index.html;
 
     location / {
+        try_files $uri $uri.html $uri/ =404;
         autoindex off;
     }
 
