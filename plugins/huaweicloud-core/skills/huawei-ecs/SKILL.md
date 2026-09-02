@@ -28,13 +28,14 @@ If these do not exist, load the `huawei-vpc` skill first and create them before 
 
 ## Critical Warnings
 
-| Trap                          | Why                                                                         |
-| ----------------------------- | --------------------------------------------------------------------------- |
-| Flavor not in region          | Not all flavors available everywhere. Check with ECS ListFlavors first      |
-| Security group denies all     | New SGs deny ALL inbound. Must explicitly add rules                         |
-| EIP bills when idle           | Unattached EIP still incurs charges                                         |
-| Stopped instance still bills  | Pay-per-use instances bill when stopped (unless shutdown-no-billing flavor) |
-| Disk survives instance delete | Deleting instance does NOT delete system disk by default                    |
+| Trap                            | Why                                                                                                                                              |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Flavor not in region            | Not all flavors available everywhere. Check with ECS ListFlavors first                                                                           |
+| Security group denies all       | New SGs deny ALL inbound. Must explicitly add rules                                                                                              |
+| Reusing existing security group | Existing SGs may have 0.0.0.0/0 rules. Before referencing, run hcloud VPC ListSecurityGroupRules --security_group_id=<id> to audit inbound rules |
+| EIP bills when idle             | Unattached EIP still incurs charges                                                                                                              |
+| Stopped instance still bills    | Pay-per-use instances bill when stopped (unless shutdown-no-billing flavor)                                                                      |
+| Disk survives instance delete   | Deleting instance does NOT delete system disk by default                                                                                         |
 
 ## Flavor Selection Guide
 
