@@ -1272,36 +1272,37 @@ function codeartsStatus() {
 function registerCodeartsWorkMcp() {
   const configPath = codeartsWorkMcpSettingsFile();
   const mcpPath = join(codeartsWorkPluginsDir(), 'src', 'mcp-server.mjs').replace(/\\/g, '/');
-  const env = { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' };
+  const environment = { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' };
   const hcloudBin = findHcloudBin();
-  if (hcloudBin) env.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
+  if (hcloudBin) environment.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
   let config = {};
   if (existsSync(configPath)) {
     try {
       config = JSON.parse(readFileSync(configPath, 'utf8'));
     } catch {
       console.log(
-        `  \x1b[33m[WARN]\x1b[0m Could not parse ${configPath}. Skipping MCP config write; ensure "mcpServers.huaweicloud-devkit" points to ${mcpPath}.`,
+        `  \x1b[33m[WARN]\x1b[0m Could not parse ${configPath}. Skipping MCP config write; ensure "mcp.huaweicloud-devkit" points to ${mcpPath}.`,
       );
       return;
     }
-    const existing = config.mcpServers?.['huaweicloud-devkit'];
+    const existing = config.mcp?.['huaweicloud-devkit'];
     if (
       existing &&
-      existing.command === 'node' &&
-      Array.isArray(existing.args) &&
-      existing.args[0] === mcpPath &&
+      existing.type === 'local' &&
+      Array.isArray(existing.command) &&
+      existing.command[0] === 'node' &&
+      existing.command[1] === mcpPath &&
       existing.timeout === 300000
     ) {
       console.log(`  MCP config unchanged: ${configPath}`);
       return;
     }
   }
-  config.mcpServers = config.mcpServers || {};
-  config.mcpServers['huaweicloud-devkit'] = {
-    command: 'node',
-    args: [mcpPath],
-    env,
+  config.mcp = config.mcp || {};
+  config.mcp['huaweicloud-devkit'] = {
+    type: 'local',
+    command: ['node', mcpPath],
+    environment,
     enabled: true,
     timeout: 300000,
   };
@@ -1369,9 +1370,9 @@ function uninstallCodeArtsWork() {
     try {
       config = JSON.parse(readFileSync(configPath, 'utf8'));
     } catch {}
-    if (config.mcpServers?.['huaweicloud-devkit']) {
-      delete config.mcpServers['huaweicloud-devkit'];
-      if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
+    if (config.mcp?.['huaweicloud-devkit']) {
+      delete config.mcp['huaweicloud-devkit'];
+      if (Object.keys(config.mcp).length === 0) delete config.mcp;
       writeFileSync(configPath, JSON.stringify(config, null, 2));
       console.log(`  Config cleaned: ${configPath}`);
     }
@@ -1399,7 +1400,7 @@ function codeartsWorkStatus() {
     try {
       const config = JSON.parse(readFileSync(codeartsWorkMcpSettingsFile(), 'utf8'));
       console.log(
-        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`,
+        `  MCP config: ${config.mcp?.['huaweicloud-devkit'] ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`,
       );
     } catch {
       console.log(`  MCP config: \x1b[31mInvalid\x1b[0m`);
@@ -3146,7 +3147,7 @@ async function cmdDoctor() {
   if (!mcpConfigured && existsSync(codeartsWorkCfg)) {
     try {
       const cfg = JSON.parse(readFileSync(codeartsWorkCfg, 'utf8'));
-      if (cfg.mcpServers && cfg.mcpServers['huaweicloud-devkit']) {
+      if (cfg.mcp && cfg.mcp['huaweicloud-devkit']) {
         mcpConfigured = true;
         mcpCfgTarget = 'CodeArts Work';
       }
