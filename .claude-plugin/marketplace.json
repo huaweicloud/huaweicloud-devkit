@@ -1,0 +1,14 @@
+{
+  "name": "huaweicloud",
+  "owner": {
+    "name": "Huawei Cloud",
+    "url": "https://github.com/huaweicloud"
+  },
+  "plugins": [
+    {
+      "name": "huaweicloud-devkit",
+      "source": "./integrations/claude-code",
+      "description": "Huawei Cloud plugin — 28 skills, 41 MCP tools, safety guardrails, cloud sandbox"
+    }
+  ]
+}
