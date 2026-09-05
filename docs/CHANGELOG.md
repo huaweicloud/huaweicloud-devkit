@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.1-next.14 (2026-09-05)
+
+- feat: detect new plugin versions on install/update
+
 ## 1.1.1-next.13 (2026-09-05)
 
 - feat(uninstall): optional KooCLI/OBS cleanup on global uninstall
