@@ -2,7 +2,19 @@ import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 import { getAgentRegistrationStatuses } from './agent-registration.mjs';
-import { globalCredentialsPath, obsConfigPath, readGlobalCredentials, writeObsConfig } from './credentials.mjs';
+import {
+  globalCredentialsPath,
+  obsConfigPath,
+  readGlobalCredentials,
+  writeLastSync,
+  writeObsConfig,
+} from './credentials.mjs';
+import {
+  exportStateForStatus,
+  hasRuntimeCredentials,
+  resolveManagedProfile,
+  runHcloudConfigure,
+} from './reconcile.mjs';
 
 function hcloudInstalled() {
   const bin = process.env.HCLOUD_BIN || 'hcloud';
@@ -22,6 +34,7 @@ function hcloudInstalled() {
 
 export function getAuthStatus(target = 'all') {
   const credentials = readGlobalCredentials();
+  const reconciled = { ...exportStateForStatus(), runtimeActive: hasRuntimeCredentials() };
   return {
     target,
     credentialsConfigured: Boolean(credentials?.ak && credentials?.sk),
@@ -29,6 +42,7 @@ export function getAuthStatus(target = 'all') {
     obsConfigured: existsSync(obsConfigPath()),
     obsConfigPath: obsConfigPath(),
     kooCliInstalled: hcloudInstalled(),
+    reconciled,
     agents: getAgentRegistrationStatuses(target).agents,
   };
 }
@@ -40,6 +54,13 @@ export function syncAuth(target = 'all') {
       ok: false,
       error: 'Global credentials are not configured.',
       nextStep: 'Run "npx huaweicloud-devkit auth init" first.',
+    };
+  }
+  if (hasRuntimeCredentials()) {
+    return {
+      ok: false,
+      error: 'Runtime credentials are active; auto-sync suppressed (R10).',
+      nextStep: 'Run huaweicloud_auth_switch action=clear or action=persist first.',
     };
   }
 
@@ -54,40 +75,24 @@ export function syncAuth(target = 'all') {
     };
   }
 
+  const profile = resolveManagedProfile();
   let hcloud = { ok: false, message: 'KooCLI not installed' };
   if (hcloudInstalled()) {
-    const bin = process.env.HCLOUD_BIN || 'hcloud';
-    const r = spawnSync(
-      bin,
-      [
-        'configure',
-        'set',
-        `--cli-access-key=${credentials.ak}`,
-        `--cli-secret-key=${credentials.sk}`,
-        `--cli-region=${credentials.region || ''}`,
-      ],
-      {
-        shell: false,
-        windowsHide: true,
-        stdio: 'pipe',
-        timeout: 30000,
-      },
-    );
-    if (r.status === 0) {
-      hcloud = { ok: true, message: 'KooCLI config synced' };
+    if (!profile) {
+      hcloud = { ok: false, message: 'KooCLI current profile unresolved' };
     } else {
-      hcloud = {
-        ok: false,
-        message: 'KooCLI config sync failed',
-        error: String(r.stderr || '')
-          .trim()
-          .slice(0, 240),
-      };
+      const r = runHcloudConfigure(profile, credentials.ak, credentials.sk, credentials.region);
+      hcloud = r.ok
+        ? { ok: true, message: `KooCLI config synced to profile=${profile}` }
+        : { ok: false, message: 'KooCLI config sync failed', error: r.error };
     }
   }
 
+  writeLastSync();
+
   return {
     ok: true,
+    profile,
     obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
     hcloud,
     credentialsConfigured: true,

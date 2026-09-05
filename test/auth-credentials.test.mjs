@@ -415,6 +415,16 @@ test('writeGlobalCredentials persists configuredBySession flag', () => {
   });
 });
 
+test('getAuthStatus reports reconciliation inconsistencies', () => {
+  withTempHome((_home) => {
+    writeGlobalCredentials({ ak: 'AK1', sk: 'SK1', region: 'cn-north-4' });
+    const status = getAuthStatus('all');
+    assert.ok('reconciled' in status);
+    assert.equal(typeof status.reconciled.inconsistent, 'boolean');
+    assert.equal(status.reconciled.runtimeActive, false);
+  });
+});
+
 test('backup and restore global credentials', () => {
   withTempHome((_home) => {
     writeGlobalCredentials({ ak: 'AK_ORIG', sk: 'SK_ORIG', region: 'cn-north-4' });
