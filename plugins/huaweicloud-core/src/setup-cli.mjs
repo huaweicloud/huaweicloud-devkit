@@ -2743,11 +2743,32 @@ function parseTarget() {
   process.exit(1);
 }
 
+function checkForUpdate() {
+  if (pkgVersion === '0.0.0') return;
+  const tag = /-next\.\d+/.test(pkgVersion) ? 'next' : 'latest';
+  let latest = null;
+  try {
+    const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const r = spawnSync(npmBin, ['view', `huaweicloud-devkit@${tag}`, 'version'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (r.status === 0) latest = (r.stdout || '').trim().split('\n').pop().trim();
+  } catch {}
+  if (latest && latest !== pkgVersion) {
+    console.log(
+      `\n\x1b[33mℹ️ 检测到新版本：${latest}（当前 ${pkgVersion}，${tag} 频道）。建议运行 \`npx huaweicloud-devkit@${tag} update\` 更新。\x1b[0m`,
+    );
+  }
+}
+
 async function cmdInstall() {
   const target = parseTarget();
   console.log(BANNER);
   console.log(`Installing HuaweiCloud DevKit${target !== 'opencode' ? ` for ${target}` : ''}...\n`);
   checkNode();
+  checkForUpdate();
 
   if (target === 'opencode' || target === 'all') {
     console.log('[OpenCode]');
@@ -3450,6 +3471,7 @@ async function cmdDoctor() {
 async function cmdUpdate() {
   console.log(BANNER);
   const target = parseTarget();
+  checkForUpdate();
 
   if (target === 'opencode') {
     if (!existsSync(join(opencodePluginsDir(), 'src', 'mcp-server.mjs'))) {
