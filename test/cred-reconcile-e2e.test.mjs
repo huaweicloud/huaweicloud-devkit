@@ -29,6 +29,7 @@ import { syncAuth } from '../plugins/huaweicloud-core/src/auth/service.mjs';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.mjs';
 
 const FAKE_HCLOUD = fileURLToPath(new URL('./fixtures/fake-hcloud.mjs', import.meta.url));
+const FAKE_HCLOUD_FAIL = fileURLToPath(new URL('./fixtures/fake-hcloud-fail-config.mjs', import.meta.url));
 
 const ENV_KEYS = [
   'HUAWEICLOUD_HOME',
@@ -39,6 +40,7 @@ const ENV_KEYS = [
   'HUAWEICLOUD_REGION',
   'HCLOUD_BIN',
   'HCLOUD_FAKE_LOG',
+  'CODEARTS_PROJECT_DIR',
 ];
 
 async function withTempHome(fn) {
@@ -363,5 +365,85 @@ test('16 restoreGlobalCredentialsBackup restores the previous S1', () => {
     assert.equal(readGlobalCredentials().ak, 'E2E16_B_AK');
     assert.equal(restoreGlobalCredentialsBackup(), true);
     assert.equal(readGlobalCredentials().ak, 'E2E16_A_AK');
+  });
+});
+
+test('17 persist with securityToken is rejected (R3) and S1 is not written (mode=memory)', async () => {
+  await withTempHome(async () => {
+    const out = await callTool('huaweicloud_auth_switch', {
+      mode: 'memory',
+      action: 'persist',
+      ak: 'E2E17_AK',
+      sk: 'E2E17_SK',
+      securityToken: 'E2E17_TOKEN',
+      region: 'cn-north-4',
+    });
+    assert.equal(out.status, 'error');
+    assert.equal(out.scope, 'rejected');
+    assert.match(out.error, /R3/);
+    assert.equal(existsSync(globalCredentialsPath()), false, 'S1 must not be written for STS credentials');
+  });
+});
+
+test('18 persist via mcp-config with platform STS token is rejected (R3) and S1 untouched', async () => {
+  await withTempHome(async (dir) => {
+    const mcpDir = join(dir, 'codearts');
+    mkdirSync(join(mcpDir, '.codeartsdoer', 'mcp'), { recursive: true });
+    writeFileSync(
+      join(mcpDir, '.codeartsdoer', 'mcp', 'mcp_settings.json'),
+      JSON.stringify({
+        mcpServers: {
+          'huaweicloud-devkit': {
+            env: {
+              HW_ACCESS_KEY: 'E2E18_MCP_AK',
+              HW_SECRET_KEY: 'E2E18_MCP_SK',
+              HW_SECURITY_TOKEN: 'E2E18_MCP_TOKEN',
+              HW_REGION: 'cn-north-4',
+            },
+          },
+        },
+      }),
+      'utf8',
+    );
+    process.env.CODEARTS_PROJECT_DIR = mcpDir;
+
+    const out = await callTool('huaweicloud_auth_switch', { mode: 'mcp-config', action: 'persist' });
+    assert.equal(out.status, 'error');
+    assert.equal(out.scope, 'rejected');
+    assert.match(out.error, /R3/);
+    assert.equal(existsSync(globalCredentialsPath()), false, 'S1 must not be written for platform STS token');
+
+    const stored = readGlobalCredentials();
+    assert.ok(!stored?.securityToken, 'no token may be at rest in S1');
+  });
+});
+
+test('19 malformed creds-import.json is still wiped even though the import is rejected', async () => {
+  await withTempHome(async (dir) => {
+    const importPath = join(dir, '.config', 'huaweicloud', 'creds-import.json');
+    mkdirSync(dirname(importPath), { recursive: true });
+    writeFileSync(importPath, '{not-valid-json', 'utf8');
+
+    await assert.rejects(
+      callTool('huaweicloud_auth_switch', { mode: 'import', action: 'temporary' }),
+      /ak and sk are required/,
+    );
+    assert.equal(existsSync(importPath), false, 'malformed import file must still be wiped');
+  });
+});
+
+test('20 syncAuth returns ok:false and skips .last_sync when S2 configure fails', () => {
+  withTempHome((dir) => {
+    process.env.HCLOUD_BIN = FAKE_HCLOUD_FAIL;
+    process.env.HCLOUD_FAKE_LOG = join(dir, 'hcloud.log');
+    writeFakeKooCli('deploy', [
+      { name: 'deploy', accessKeyId: 'E2E20_OLD_AK', secretAccessKey: 'E2E20_OLD_SK', region: 'cn-north-4' },
+    ]);
+    writeGlobalCredentials({ ak: 'E2E20_AK', sk: 'E2E20_SK', region: 'cn-north-4' });
+
+    const res = syncAuth('all');
+    assert.equal(res.ok, false);
+    assert.ok(res.error, 'failure must carry an error message');
+    assert.equal(existsSync(lastSyncPath()), false, 'no .last_sync marker may be stamped when S2 sync failed');
   });
 });

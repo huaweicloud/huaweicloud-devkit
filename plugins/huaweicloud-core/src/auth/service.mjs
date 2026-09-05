@@ -76,16 +76,32 @@ export function syncAuth(target = 'all') {
   }
 
   const profile = resolveManagedProfile();
-  let hcloud = { ok: false, message: 'KooCLI not installed' };
-  if (hcloudInstalled()) {
-    if (!profile) {
-      hcloud = { ok: false, message: 'KooCLI current profile unresolved' };
-    } else {
-      const r = runHcloudConfigure(profile, credentials.ak, credentials.sk, credentials.region);
-      hcloud = r.ok
-        ? { ok: true, message: `KooCLI config synced to profile=${profile}` }
-        : { ok: false, message: 'KooCLI config sync failed', error: r.error };
-    }
+  if (!profile) {
+    return {
+      ok: false,
+      error: 'KooCLI current profile unresolved; run "npx huaweicloud-devkit auth init" in a real terminal.',
+      nextStep: 'Run "npx huaweicloud-devkit auth init" in a real terminal to create the KooCLI current profile.',
+      obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
+    };
+  }
+
+  if (!hcloudInstalled()) {
+    return {
+      ok: false,
+      error: 'KooCLI not installed.',
+      nextStep: 'Install KooCLI or point HCLOUD_BIN at the hcloud executable.',
+      obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
+    };
+  }
+
+  const { ok, error } = runHcloudConfigure(profile, credentials.ak, credentials.sk, credentials.region);
+  if (!ok) {
+    return {
+      ok: false,
+      error: error || 'KooCLI config sync failed',
+      nextStep: 'Run "npx huaweicloud-devkit auth init" in a real terminal to refresh the KooCLI config.',
+      obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
+    };
   }
 
   writeLastSync();
@@ -94,7 +110,7 @@ export function syncAuth(target = 'all') {
     ok: true,
     profile,
     obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
-    hcloud,
+    hcloud: { ok: true, message: `KooCLI config synced to profile=${profile}` },
     credentialsConfigured: true,
     agents: getAgentRegistrationStatuses(target).agents,
     note: 'OBS credentials were synced from the global credential vault. Agent MCP registration is managed by "npx huaweicloud-devkit install --target <agent>".',

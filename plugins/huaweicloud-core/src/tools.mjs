@@ -882,7 +882,6 @@ function readImportFile() {
   try {
     if (!existsSync(path)) return null;
     const data = JSON.parse(readFileSync(path, 'utf8'));
-    rmSync(path, { force: true });
     return {
       ak: String(data.ak || ''),
       sk: String(data.sk || ''),
@@ -891,12 +890,21 @@ function readImportFile() {
     };
   } catch {
     return null;
+  } finally {
+    rmSync(path, { force: true });
   }
 }
 
 function persistCredentials(ak, sk, securityToken, region) {
+  if (String(securityToken || '')) {
+    return {
+      status: 'error',
+      error: 'Temporary STS credentials cannot be persisted (R3). Use action=temporary.',
+      scope: 'rejected',
+    };
+  }
   const before = backupGlobalCredentials();
-  writeGlobalCredentials({ ak, sk: String(sk), securityToken, region, configuredBySession: true });
+  writeGlobalCredentials({ ak, sk: String(sk), securityToken: '', region, configuredBySession: true });
   setConfiguredBySession(true);
   let obs;
   try {
@@ -919,7 +927,7 @@ function persistCredentials(ak, sk, securityToken, region) {
     backedUp: Boolean(before),
     obs: obs.ok ? { configured: true } : { configured: false, error: obs.error },
     hcloud,
-    note: 'S1 written with configuredBySession (R9), which now takes priority over env-injected credentials; S2(current profile) and S3 synced.',
+    note: 'S1 written with configuredBySession (R9), which now takes priority over env-injected credentials; S2(current profile) and S3 synced. Note: running `auth init` later clears the configuredBySession flag and env credentials regain priority.',
   };
 }
 

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import {
@@ -23,6 +24,8 @@ import {
 import { getAgentRegistrationStatuses } from '../plugins/huaweicloud-core/src/auth/agent-registration.mjs';
 import { getAuthStatus, syncAuth } from '../plugins/huaweicloud-core/src/auth/service.mjs';
 
+const FAKE_HCLOUD = fileURLToPath(new URL('./fixtures/fake-hcloud.mjs', import.meta.url));
+
 function withTempHome(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-auth-'));
   const previous = {
@@ -33,6 +36,8 @@ function withTempHome(fn) {
     HW_REGION: process.env.HW_REGION,
     HUAWEICLOUD_REGION: process.env.HUAWEICLOUD_REGION,
     DSH_HOME: process.env.DSH_HOME,
+    HCLOUD_BIN: process.env.HCLOUD_BIN,
+    HCLOUD_FAKE_LOG: process.env.HCLOUD_FAKE_LOG,
   };
   process.env.HUAWEICLOUD_HOME = dir;
   delete process.env.HW_ACCESS_KEY;
@@ -41,6 +46,8 @@ function withTempHome(fn) {
   delete process.env.HW_REGION;
   delete process.env.HUAWEICLOUD_REGION;
   delete process.env.DSH_HOME;
+  delete process.env.HCLOUD_BIN;
+  delete process.env.HCLOUD_FAKE_LOG;
   try {
     return fn(dir);
   } finally {
@@ -97,10 +104,24 @@ test('writeObsConfig creates obsutilconfig content from vault', () => {
 });
 
 test('auth sync writes OBS and reports all agent registration targets', () => {
-  withTempHome(() => {
+  withTempHome((home) => {
+    process.env.HCLOUD_BIN = FAKE_HCLOUD;
+    process.env.HCLOUD_FAKE_LOG = join(home, 'hcloud.log');
+    mkdirSync(join(home, '.hcloud'), { recursive: true });
+    writeFileSync(
+      join(home, '.hcloud', 'config.json'),
+      JSON.stringify({
+        current: 'deploy',
+        profiles: [
+          { name: 'deploy', accessKeyId: 'SYNC_OLD_AK', secretAccessKey: 'SYNC_OLD_SK', region: 'cn-north-4' },
+        ],
+      }),
+      'utf8',
+    );
     writeGlobalCredentials({ ak: 'SYNC_AK', sk: 'SYNC_SK', region: 'cn-north-4' });
     const sync = syncAuth('all');
     assert.equal(sync.ok, true);
+    assert.equal(sync.profile, 'deploy');
     assert.equal(sync.obs.configured, true);
     assert.ok(sync.agents.opencode !== undefined);
     assert.ok(sync.agents.codex !== undefined);

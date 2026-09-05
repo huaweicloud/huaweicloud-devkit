@@ -133,7 +133,7 @@ Credentials are resolved in this order (highest priority first):
 | 5        | S1 global file (no session flag)          | `auth init` permanent credentials                                                                          | Permanent (S1)                  |
 | 6        | KooCLI profile                            | `~/.hcloud/config.json` (KooCLI commands only)                                                             | Permanent                       |
 
-When switching accounts within the same Agent session, use `huaweicloud_auth_init` to set runtime credentials (overrides all sources for the current MCP process), or `huaweicloud_auth_switch action=persist`, which writes S1 with `configuredBySession: true` so the session-configured account outranks `HW_ACCESS_KEY` / `HW_SECRET_KEY`.
+When switching accounts within the same Agent session, use `huaweicloud_auth_init` to set runtime credentials (overrides all sources for the current MCP process), or `huaweicloud_auth_switch action=persist`, which writes S1 with `configuredBySession: true` so the session-configured account outranks `HW_ACCESS_KEY` / `HW_SECRET_KEY`. Note: running `auth init` clears the configuredBySession flag.
 
 ## Preferred Toolkit Tools
 

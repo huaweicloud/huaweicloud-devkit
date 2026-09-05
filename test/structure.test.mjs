@@ -510,8 +510,8 @@ test('setup-cli.mjs wires the auth reconcile subcommand', () => {
 test('setup-cli.mjs resolves the active KooCLI profile for configureHcloud', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
   assert.match(setup, /function configuredProfileName\(\)/);
-  assert.match(setup, /\.hcloud', 'config\.json'/);
-  assert.match(setup, /cfg\.current \|\| 'default'/);
+  assert.match(setup, /resolveManagedProfile\(\)/);
+  assert.match(setup, /return name \|\| 'default'/);
   assert.match(setup, /--cli-profile=\$\{configuredProfileName\(\)\}/);
   assert.doesNotMatch(setup, /hcloud configure init/);
 });

@@ -18,6 +18,8 @@ import { createRequire } from 'node:module';
 
 import { getAuthStatus, syncAuth } from './auth/service.mjs';
 import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.mjs';
+import { resolveManagedProfile } from './auth/reconcile.mjs';
+import { redactSecrets } from './safety-policy.mjs';
 import {
   globalCredentialsPath,
   readGlobalCredentials,
@@ -3894,14 +3896,8 @@ async function readSecret(prompt) {
 }
 
 function configuredProfileName() {
-  const configPath = join(process.env.HUAWEICLOUD_HOME || homedir(), '.hcloud', 'config.json');
-  try {
-    if (existsSync(configPath)) {
-      const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
-      return cfg.current || 'default';
-    }
-  } catch {}
-  return 'default';
+  const name = resolveManagedProfile();
+  return name || 'default';
 }
 
 function configureHcloud(credentials) {
@@ -3923,9 +3919,11 @@ function configureHcloud(credentials) {
   return {
     ok: r.status === 0,
     code: r.status,
-    error: String(r.stderr || '')
-      .trim()
-      .slice(0, 240),
+    error: redactSecrets(
+      String(r.stderr || '')
+        .trim()
+        .slice(0, 240),
+    ),
   };
 }
 

@@ -11,6 +11,7 @@ import {
   readLastSync,
   resolveCredentialsWithRuntime,
 } from './credentials.mjs';
+import { redactSecrets } from '../safety-policy.mjs';
 
 export { hasRuntimeCredentials };
 
@@ -164,8 +165,10 @@ export function runHcloudConfigure(profile, ak, sk, region) {
   const r = spawnSync(bin, args, { shell: false, windowsHide: true, stdio: 'pipe', timeout: 30000 });
   return {
     ok: r.status === 0,
-    error: String(r.stderr || '')
-      .trim()
-      .slice(0, 240),
+    error: redactSecrets(
+      String(r.stderr || '')
+        .trim()
+        .slice(0, 240),
+    ),
   };
 }
