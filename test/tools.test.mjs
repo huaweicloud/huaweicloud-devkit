@@ -11,6 +11,11 @@ import {
   findSkillsRoot,
   listSkillDirs,
 } from '../plugins/huaweicloud-core/src/tools.mjs';
+import {
+  clearRuntimeCredentials,
+  resolveCredentialsWithRuntime,
+  setRuntimeCredentials,
+} from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 
 test('runVersionCheck uses hcloud version instead of --version', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-version-'));
@@ -180,5 +185,54 @@ test('listSkillDirs ignores files, subdirs without SKILL.md, and counts symlinke
     assert.deepEqual(listSkillDirs(join(base, 'missing')), []);
   } finally {
     rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('auth_switch temporary sets runtime credentials for api path', async () => {
+  const prev = {
+    AK: process.env.HW_ACCESS_KEY,
+    SK: process.env.HW_SECRET_KEY,
+  };
+  delete process.env.HW_ACCESS_KEY;
+  delete process.env.HW_SECRET_KEY;
+  try {
+    const out = await callTool('huaweicloud_auth_switch', {
+      mode: 'memory',
+      action: 'temporary',
+      ak: 'RUNTIME_AK',
+      sk: 'RUNTIME_SK',
+      region: 'cn-north-4',
+    });
+    assert.equal(out.scope, 'temporary');
+    const resolved = resolveCredentialsWithRuntime({});
+    assert.equal(resolved.ak, 'RUNTIME_AK');
+  } finally {
+    clearRuntimeCredentials();
+    if (prev.AK === undefined) delete process.env.HW_ACCESS_KEY;
+    else process.env.HW_ACCESS_KEY = prev.AK;
+    if (prev.SK === undefined) delete process.env.HW_SECRET_KEY;
+    else process.env.HW_SECRET_KEY = prev.SK;
+  }
+});
+
+test('auth_switch clear resets runtime', async () => {
+  const isolatedHome = mkdtempSync(join(tmpdir(), 'huaweicloud-auth-clear-'));
+  const prevHome = process.env.HUAWEICLOUD_HOME;
+  process.env.HUAWEICLOUD_HOME = isolatedHome;
+  try {
+    setRuntimeCredentials('A', 'B', undefined, 'cn-north-4');
+    const out = await callTool('huaweicloud_auth_switch', { action: 'clear' });
+    assert.equal(out.status, 'cleared');
+    let threw = false;
+    try {
+      resolveCredentialsWithRuntime({});
+    } catch {
+      threw = true;
+    }
+    assert.equal(threw, true);
+  } finally {
+    if (prevHome === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = prevHome;
+    rmSync(isolatedHome, { recursive: true, force: true });
   }
 });

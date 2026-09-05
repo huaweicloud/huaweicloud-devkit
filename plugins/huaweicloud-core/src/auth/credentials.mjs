@@ -165,7 +165,7 @@ function isCodeArtsContext() {
   );
 }
 
-function readCodeArtsCredentials() {
+export function readCodeArtsCredentials() {
   const parentCwd = getParentCwd();
   const searchDirs = [process.env.CODEARTS_PROJECT_DIR, parentCwd, process.cwd(), homedir()];
 
