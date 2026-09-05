@@ -90,9 +90,11 @@ export default [
       'bin/*.cjs',
       'plugins/huaweicloud-core/src/setup-cli.mjs',
       'test/huaweicloud-agent-toolkit-test/scripts/invoke-mcp.mjs',
+      'test/fixtures/**',
     ],
     rules: {
       'n/no-process-exit': 'off',
+      'n/hashbang': 'off',
     },
   },
   {
