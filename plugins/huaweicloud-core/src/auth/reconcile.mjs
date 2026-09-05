@@ -62,7 +62,7 @@ export function resolveManagedProfile() {
 
 export function hasRuntimeCredentials() {
   try {
-    resolveCredentialsWithRuntime({ allowMissing: true });
+    resolveCredentialsWithRuntime();
     return true;
   } catch {
     return false;

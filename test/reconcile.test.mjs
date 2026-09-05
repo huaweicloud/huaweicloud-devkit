@@ -6,6 +6,7 @@ import test from 'node:test';
 
 import {
   fingerprint,
+  hasRuntimeCredentials,
   isManualModified,
   readKooCliProfiles,
   scanState,
@@ -99,5 +100,17 @@ test('isManualModified compares mtime vs .last_sync', () => {
     const after = new Date(lastSync + 60_000);
     utimesSync(store, after, after);
     assert.equal(isManualModified(store), true);
+  });
+});
+
+test('hasRuntimeCredentials reflects resolvable credentials', () => {
+  withTempHome(() => {
+    // Nothing resolvable (no env, no vault) → false
+    assert.equal(hasRuntimeCredentials(), false);
+
+    // Environment credentials present → true
+    process.env.HW_ACCESS_KEY = 'AK_ENV';
+    process.env.HW_SECRET_KEY = 'SK_ENV';
+    assert.equal(hasRuntimeCredentials(), true);
   });
 });
