@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -55,10 +55,19 @@ export function writeGlobalCredentials(credentials = {}) {
     sk: String(credentials.sk || ''),
     securityToken: String(credentials.securityToken || ''),
     region: String(credentials.region || ''),
+    ...(credentials.configuredBySession === undefined
+      ? {}
+      : { configuredBySession: Boolean(credentials.configuredBySession) }),
   };
   writeFileSync(path, JSON.stringify(payload, null, 2), { encoding: 'utf8', mode: 0o600 });
   ensurePrivateMode(path);
   return path;
+}
+
+export function setConfiguredBySession(flag) {
+  const stored = readGlobalCredentials();
+  const next = { ...(stored || {}), configuredBySession: Boolean(flag) };
+  writeGlobalCredentials(next);
 }
 
 export function writeObsConfig(credentials = {}) {
@@ -224,4 +233,52 @@ export function resolveCredentialsWithRuntime(options = {}) {
   }
 
   return resolveCredentials(options);
+}
+
+export function lastSyncPath() {
+  return join(baseHome(), '.config', 'huaweicloud', '.last_sync');
+}
+
+export function readLastSync() {
+  const path = lastSyncPath();
+  if (!existsSync(path)) return null;
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+export function writeLastSync() {
+  const path = lastSyncPath();
+  mkdirSync(dirname(path), { recursive: true });
+  const payload = { ts: Date.now() };
+  writeFileSync(path, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
+  ensurePrivateMode(path);
+}
+
+export function backupGlobalCredentials() {
+  const path = globalCredentialsPath();
+  if (!existsSync(path)) return null;
+  const bakPath = `${path}.bak`;
+  try {
+    copyFileSync(path, bakPath);
+    ensurePrivateMode(bakPath);
+    return bakPath;
+  } catch {
+    return null;
+  }
+}
+
+export function restoreGlobalCredentialsBackup() {
+  const path = globalCredentialsPath();
+  const bakPath = `${path}.bak`;
+  if (!existsSync(bakPath)) return false;
+  try {
+    copyFileSync(bakPath, path);
+    ensurePrivateMode(path);
+    return true;
+  } catch {
+    return false;
+  }
 }

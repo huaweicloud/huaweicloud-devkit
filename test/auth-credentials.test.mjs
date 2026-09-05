@@ -5,15 +5,19 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  backupGlobalCredentials,
   clearRuntimeCredentials,
   getParentCwd,
   globalCredentialsPath,
   obsConfigPath,
   readGlobalCredentials,
+  readLastSync,
   resolveCredentials,
   resolveCredentialsWithRuntime,
+  restoreGlobalCredentialsBackup,
   setRuntimeCredentials,
   writeGlobalCredentials,
+  writeLastSync,
   writeObsConfig,
 } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 import { getAgentRegistrationStatuses } from '../plugins/huaweicloud-core/src/auth/agent-registration.mjs';
@@ -389,5 +393,36 @@ test('resolveCredentials reads CodeArts credentials from CODEARTS_PROJECT_DIR', 
     } finally {
       rmSync(projectDir, { recursive: true, force: true });
     }
+  });
+});
+
+test('last_sync write/read round-trip', () => {
+  withTempHome((_home) => {
+    assert.equal(readLastSync(), null);
+    writeLastSync();
+    const sync = readLastSync();
+    assert.ok(sync && typeof sync.ts === 'number');
+    assert.ok(Date.now() - sync.ts < 5000);
+  });
+});
+
+test('writeGlobalCredentials persists configuredBySession flag', () => {
+  withTempHome((_home) => {
+    writeGlobalCredentials({ ak: 'AK1', sk: 'SK1', configuredBySession: true });
+    assert.equal(readGlobalCredentials().configuredBySession, true);
+    writeGlobalCredentials({ ak: 'AK1', sk: 'SK1' });
+    assert.equal(readGlobalCredentials().configuredBySession, undefined);
+  });
+});
+
+test('backup and restore global credentials', () => {
+  withTempHome((_home) => {
+    writeGlobalCredentials({ ak: 'AK_ORIG', sk: 'SK_ORIG', region: 'cn-north-4' });
+    const bak = backupGlobalCredentials();
+    assert.ok(bak && bak.endsWith('credentials.json.bak'));
+    writeGlobalCredentials({ ak: 'AK_NEW', sk: 'SK_NEW' });
+    assert.equal(readGlobalCredentials().ak, 'AK_NEW');
+    assert.equal(restoreGlobalCredentialsBackup(), true);
+    assert.equal(readGlobalCredentials().ak, 'AK_ORIG');
   });
 });
