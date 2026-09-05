@@ -197,6 +197,19 @@ test('uninstall --target all (non-TTY) keeps KooCLI/OBS but removes the vault', 
   }
 });
 
+test('auth reconcile dispatches to cmdAuthReconcile (no inconsistencies in clean home)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cp-reconcile-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
+  try {
+    const res = runCli(home, cwd, ['auth', 'reconcile']);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /All credential files are consistent/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('uninstall --target all --clean-global removes KooCLI and OBS config', () => {
   const home = mkdtempSync(join(tmpdir(), 'cp-uninst-clean-'));
   const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));

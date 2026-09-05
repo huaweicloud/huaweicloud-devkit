@@ -22,6 +22,7 @@ import {
   globalCredentialsPath,
   readGlobalCredentials,
   writeGlobalCredentials,
+  writeLastSync,
   writeObsConfig,
 } from './auth/credentials.mjs';
 import {
@@ -3836,7 +3837,6 @@ async function cmdInstallHcloud() {
   console.log('\nAfter install, set HCLOUD_BIN if hcloud is not on PATH.');
   console.log('\n\x1b[1m\x1b[33m=== Configure credentials SAFELY ===\x1b[0m');
   console.log('  Unified credentials (recommended): npx huaweicloud-devkit auth init');
-  console.log('  KooCLI only (alternative): hcloud configure init');
   console.log('  NEVER: hcloud configure set --cli-access-key=xxx  (AK/SK in shell history!)');
   console.log('\nThen run: npx huaweicloud-devkit doctor');
 }
@@ -3893,11 +3893,23 @@ async function readSecret(prompt) {
   });
 }
 
+function configuredProfileName() {
+  const configPath = join(process.env.HUAWEICLOUD_HOME || homedir(), '.hcloud', 'config.json');
+  try {
+    if (existsSync(configPath)) {
+      const cfg = JSON.parse(readFileSync(configPath, 'utf8'));
+      return cfg.current || 'default';
+    }
+  } catch {}
+  return 'default';
+}
+
 function configureHcloud(credentials) {
   const hcloudBin = findHcloudBin() || process.env.HCLOUD_BIN || 'hcloud';
   const args = [
     'configure',
     'set',
+    `--cli-profile=${configuredProfileName()}`,
     `--cli-access-key=${credentials.ak}`,
     `--cli-secret-key=${credentials.sk}`,
     `--cli-region=${credentials.region || ''}`,
@@ -3992,6 +4004,40 @@ async function cmdAuthInit() {
   console.log('  Restart your agent sessions.');
 }
 
+async function cmdAuthReconcile() {
+  console.log(BANNER);
+  console.log('HuaweiCloud DevKit Credential Reconciliation\n');
+  const { scanState, runHcloudConfigure, resolveManagedProfile } = await import('./auth/reconcile.mjs');
+  const state = scanState();
+  if (state.inconsistencies.length === 0) {
+    console.log('All credential files are consistent. ✓');
+    return;
+  }
+  for (const inc of state.inconsistencies) {
+    console.log(
+      `  [${inc.store}] fingerprint ${inc.fingerprint} differs from S1 ${state.stores.s1Fingerprint}${inc.manualModified ? ' (manual modified)' : ''}`,
+    );
+  }
+  const ask = await readLineQuestion('以 S1 为准同步到不一致文件? (y/N) ');
+  if (!['y', 'Y', 'yes'].includes(ask.trim())) {
+    console.log('Aborted.');
+    return;
+  }
+  const credentials = readGlobalCredentials();
+  try {
+    writeObsConfig(credentials);
+  } catch (error) {
+    console.log(`OBS sync failed: ${error.message}`);
+  }
+  const profile = resolveManagedProfile();
+  if (profile) {
+    const r = runHcloudConfigure(profile, credentials.ak, credentials.sk, credentials.region);
+    console.log(`  KooCLI ${r.ok ? 'synced' : 'sync failed'}: profile=${profile} ${r.error || ''}`);
+  }
+  writeLastSync();
+  console.log('Done. .last_sync refreshed.');
+}
+
 async function cmdAuthSync() {
   const target = parseTarget();
   console.log(BANNER);
@@ -4023,6 +4069,7 @@ async function cmdAuth() {
   const sub = (process.argv[3] || 'status').toLowerCase();
   if (sub === 'init' || sub === 'setup') return cmdAuthInit();
   if (sub === 'sync' || sub === 'refresh') return cmdAuthSync();
+  if (sub === 'reconcile') return cmdAuthReconcile();
   return cmdAuthStatus();
 }
 
