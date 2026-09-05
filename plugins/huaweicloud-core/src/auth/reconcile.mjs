@@ -4,12 +4,9 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
-import {
-  obsConfigPath,
-  readGlobalCredentials,
-  readLastSync,
-  resolveCredentialsWithRuntime,
-} from './credentials.mjs';
+import { hasRuntimeCredentials, obsConfigPath, readGlobalCredentials, readLastSync } from './credentials.mjs';
+
+export { hasRuntimeCredentials };
 
 function baseHome() {
   return process.env.HUAWEICLOUD_HOME || homedir();
@@ -58,15 +55,6 @@ export function resolveManagedProfile() {
   const res = readKooCliProfiles();
   if (res.error) return null;
   return res.current;
-}
-
-export function hasRuntimeCredentials() {
-  try {
-    resolveCredentialsWithRuntime();
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 export function currentFingerprintFromHcloud(res) {
@@ -157,5 +145,10 @@ export function runHcloudConfigure(profile, ak, sk, region) {
     `--cli-region=${region || ''}`,
   ];
   const r = spawnSync(bin, args, { shell: false, windowsHide: true, stdio: 'pipe', timeout: 30000 });
-  return { ok: r.status === 0, error: String(r.stderr || '').trim().slice(0, 240) };
+  return {
+    ok: r.status === 0,
+    error: String(r.stderr || '')
+      .trim()
+      .slice(0, 240),
+  };
 }

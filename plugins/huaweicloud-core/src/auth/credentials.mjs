@@ -1,4 +1,13 @@
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, readlinkSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  copyFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readlinkSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
@@ -220,6 +229,10 @@ export function setRuntimeCredentials(ak, sk, securityToken, region) {
 
 export function clearRuntimeCredentials() {
   runtimeCredentials = null;
+}
+
+export function hasRuntimeCredentials() {
+  return runtimeCredentials !== null;
 }
 
 export function resolveCredentialsWithRuntime(options = {}) {

@@ -11,20 +11,36 @@ import {
   readKooCliProfiles,
   scanState,
 } from '../plugins/huaweicloud-core/src/auth/reconcile.mjs';
-import { lastSyncPath, writeGlobalCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
+import {
+  clearRuntimeCredentials,
+  lastSyncPath,
+  setRuntimeCredentials,
+  writeGlobalCredentials,
+} from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 
 function withTempHome(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-rec-'));
-  const prev = process.env.HUAWEICLOUD_HOME;
+  const previous = {
+    HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
+    HW_ACCESS_KEY: process.env.HW_ACCESS_KEY,
+    HW_SECRET_KEY: process.env.HW_SECRET_KEY,
+    HW_SECURITY_TOKEN: process.env.HW_SECURITY_TOKEN,
+    HW_REGION: process.env.HW_REGION,
+    HUAWEICLOUD_REGION: process.env.HUAWEICLOUD_REGION,
+  };
   process.env.HUAWEICLOUD_HOME = dir;
   delete process.env.HW_ACCESS_KEY;
   delete process.env.HW_SECRET_KEY;
   delete process.env.HW_SECURITY_TOKEN;
+  delete process.env.HW_REGION;
+  delete process.env.HUAWEICLOUD_REGION;
   try {
     return fn(dir);
   } finally {
-    if (prev === undefined) delete process.env.HUAWEICLOUD_HOME;
-    else process.env.HUAWEICLOUD_HOME = prev;
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 }
@@ -70,9 +86,7 @@ test('readKooCliProfiles handles missing config', () => {
 test('scanState detects S1 vs KooCLI current-profile mismatch', () => {
   withTempHome(() => {
     writeGlobalCredentials({ ak: 'AK_S1', sk: 'SK_S1', region: 'cn-north-4' });
-    writeFakeKooCli('deploy', [
-      { name: 'deploy', accessKeyId: 'AK_B', secretAccessKey: 'SK_B', region: 'cn-north-4' },
-    ]);
+    writeFakeKooCli('deploy', [{ name: 'deploy', accessKeyId: 'AK_B', secretAccessKey: 'SK_B', region: 'cn-north-4' }]);
     const scan = scanState();
     assert.equal(scan.stores.s1Fingerprint, fingerprint('AK_S1', 'SK_S1'));
     assert.equal(scan.stores.currentFingerprint, fingerprint('AK_B', 'SK_B'));
@@ -103,14 +117,21 @@ test('isManualModified compares mtime vs .last_sync', () => {
   });
 });
 
-test('hasRuntimeCredentials reflects resolvable credentials', () => {
+test('hasRuntimeCredentials reflects only runtime-injected credentials', () => {
   withTempHome(() => {
-    // Nothing resolvable (no env, no vault) → false
-    assert.equal(hasRuntimeCredentials(), false);
+    clearRuntimeCredentials();
 
-    // Environment credentials present → true
+    // Env credentials are resolvable but NOT runtime-injected → false
     process.env.HW_ACCESS_KEY = 'AK_ENV';
     process.env.HW_SECRET_KEY = 'SK_ENV';
+    assert.equal(hasRuntimeCredentials(), false);
+
+    // Runtime-injected → true
+    setRuntimeCredentials('AK_RT', 'SK_RT');
     assert.equal(hasRuntimeCredentials(), true);
+
+    // Cleared → false
+    clearRuntimeCredentials();
+    assert.equal(hasRuntimeCredentials(), false);
   });
 });
