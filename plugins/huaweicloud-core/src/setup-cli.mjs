@@ -4272,7 +4272,7 @@ async function main() {
       console.log('  status       Show installation status');
       console.log('  doctor       Self-check: hcloud, MCP, skills, auth');
       console.log('  install-hcloud  Show KooCLI install commands for your OS');
-      console.log('  auth         Manage unified auth: init | sync | status');
+      console.log('  auth         Manage unified auth: init | sync | status | reconcile');
       console.log('  proxy        Manage proxy config: init | show | clear');
       console.log('  version      Print installed plugin version per agent');
       console.log('  help         Show this help');

@@ -70,9 +70,8 @@ Agent processes find executables through `PATH`. If OpenCode/Codex cannot find `
 **NEVER let AK/SK enter shell history. This is the #1 credential leak vector.**
 
 - Create AK/SK in the Huawei Cloud console under `My Credentials -> Access Keys`.
-- **Unified credentials** (preferred): `npx huaweicloud-devkit auth init`. This is the DevKit's primary auth path; `hcloud configure init` only covers KooCLI.
-- **KooCLI only, interactive** (SAFE): `hcloud configure init` — prompts for AK/SK via terminal input. Values do NOT enter shell history.
-- **Non-interactive** (DANGEROUS — AK/SK in shell history): `hcloud configure set --cli-access-key=<AK> --cli-secret-key=<SK> --cli-region=<region>`. Only use in ephemeral CI/CD shells. User must execute outside agent chat.
+- **Configure credentials ONLY via `npx huaweicloud-devkit auth init`** — the single entry point. It writes the unified `~/.config/huaweicloud/credentials.json` and mirrors it to KooCLI (`~/.hcloud/config.json`) and OBS (`~/.obsutilconfig`), without AK/SK entering shell history.
+- Never configure KooCLI on its own: do not ask the user to run `hcloud configure init` or `hcloud configure set --cli-access-key=... --cli-secret-key=... --cli-region=...` (AK/SK would leak into shell history). If KooCLI lacks credentials, tell the user to run `npx huaweicloud-devkit auth init`.
 - If MCP is available, use `huaweicloud_show_profile_redacted` to check status without ever seeing credentials.
 - Never paste AK/SK, passwords, tokens, or profile files into the agent conversation.
 - KooCLI stores credentials in `~/.hcloud/config.json`, NOT environment variables. `HCLOUD_ACCESS_KEY` / `HCLOUD_SECRET_KEY` / `HCLOUD_REGION` env vars are NOT read by KooCLI 7.x.

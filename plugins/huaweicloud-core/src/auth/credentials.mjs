@@ -117,6 +117,16 @@ export function resolveCredentials(options = {}) {
     if (!region && stored.region) region = stored.region;
   }
 
+  // R9: S1 written by `auth_switch persist` (configuredBySession) is the session's
+  // source of truth and wins over env-injected defaults. Plain S1 (`auth init`)
+  // still yields to env so devspace-style env injection keeps working.
+  if (stored && stored.configuredBySession === true && stored.ak && stored.sk) {
+    ak = stored.ak;
+    sk = stored.sk;
+    if (!securityToken) securityToken = stored.securityToken || '';
+    if (!region) region = stored.region || '';
+  }
+
   // Sandbox/platform-injected temporary STS credentials (env vars carrying a
   // security token) must not shadow the user's explicit permanent credentials
   // from `auth init`. Prefer the stored file when both exist.

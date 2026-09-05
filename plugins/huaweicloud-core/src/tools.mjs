@@ -42,6 +42,7 @@ import {
   backupGlobalCredentials,
   writeLastSync,
   readCodeArtsCredentials,
+  globalCredentialsPath,
 } from './auth/credentials.mjs';
 import { fingerprint, runHcloudConfigure, resolveManagedProfile } from './auth/reconcile.mjs';
 
@@ -877,7 +878,7 @@ async function transferGitRepo(args, devStageId, connectResult) {
 const pendingConfirms = new Map();
 
 function readImportFile() {
-  const path = join(homedir(), '.config', 'huaweicloud', 'creds-import.json');
+  const path = join(dirname(globalCredentialsPath()), 'creds-import.json');
   try {
     if (!existsSync(path)) return null;
     const data = JSON.parse(readFileSync(path, 'utf8'));
@@ -918,7 +919,7 @@ function persistCredentials(ak, sk, securityToken, region) {
     backedUp: Boolean(before),
     obs: obs.ok ? { configured: true } : { configured: false, error: obs.error },
     hcloud,
-    note: 'S1 written with configuredBySession; S2(current profile) and S3 synced. If devspace restarts the session, env-injected credentials become the default again.',
+    note: 'S1 written with configuredBySession (R9), which now takes priority over env-injected credentials; S2(current profile) and S3 synced.',
   };
 }
 
@@ -1287,7 +1288,7 @@ export async function runVersionCheck(options = {}) {
         ? 'hcloud executable not found. Set HCLOUD_BIN to the full hcloud path, or install KooCLI: npx huaweicloud-devkit install-hcloud. Then restart the agent.'
         : 'Install Huawei Cloud KooCLI: npx huaweicloud-devkit install-hcloud. Configure credentials outside the agent conversation.',
     authHint:
-      'If hcloud is installed but commands fail with "配置文件中不存在配置项", run `hcloud configure set --cli-access-key=<AK> --cli-secret-key=<SK> --cli-region=<region>` outside agent chat to configure credentials.',
+      'If hcloud is installed but commands fail with "配置文件中不存在配置项", run `npx huaweicloud-devkit auth init` outside agent chat to configure credentials.',
   };
 }
 
@@ -1400,7 +1401,7 @@ async function setupObsConfigFromHcloud(profile) {
     return {
       ok: false,
       error: 'No region found in hcloud profile.',
-      nextStep: 'Run "hcloud configure set --cli-region=<region>" outside agent chat to set a default region.',
+      nextStep: 'Run "npx huaweicloud-devkit auth init" outside agent chat to configure credentials and region.',
     };
   }
 
