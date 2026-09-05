@@ -4007,12 +4007,23 @@ async function cmdAuthInit() {
 async function cmdAuthReconcile() {
   console.log(BANNER);
   console.log('HuaweiCloud DevKit Credential Reconciliation\n');
+
   const { scanState, runHcloudConfigure, resolveManagedProfile } = await import('./auth/reconcile.mjs');
   const state = scanState();
   if (state.inconsistencies.length === 0) {
     console.log('All credential files are consistent. ✓');
     return;
   }
+
+  const interactive = process.stdin.isTTY && process.stdout.isTTY;
+  if (!interactive) {
+    console.error(
+      '\x1b[31mNon-interactive session. Cannot run interactive reconciliation. Use "npx huaweicloud-devkit auth sync" or run reconciliation in a real terminal.\x1b[0m',
+    );
+    process.exitCode = 1;
+    return;
+  }
+
   for (const inc of state.inconsistencies) {
     console.log(
       `  [${inc.store}] fingerprint ${inc.fingerprint} differs from S1 ${state.stores.s1Fingerprint}${inc.manualModified ? ' (manual modified)' : ''}`,
@@ -4024,6 +4035,11 @@ async function cmdAuthReconcile() {
     return;
   }
   const credentials = readGlobalCredentials();
+  if (!credentials?.ak || !credentials?.sk) {
+    console.error('No global credentials found after confirmation; aborting.');
+    process.exitCode = 1;
+    return;
+  }
   try {
     writeObsConfig(credentials);
   } catch (error) {
