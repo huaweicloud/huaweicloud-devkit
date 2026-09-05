@@ -124,15 +124,16 @@ hcloud <Service> <Op> --cli-debug=true
 
 Credentials are resolved in this order (highest priority first):
 
-| Priority | Source                   | Mechanism                                                                                              | Persistence                     |
-| -------- | ------------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------- |
-| 1        | Runtime credentials      | `huaweicloud_auth_init` tool                                                                           | Memory (cleared on MCP restart) |
-| 2        | Environment variables    | `HW_ACCESS_KEY` / `HW_SECRET_KEY`                                                                      | MCP process lifetime            |
-| 3        | CodeArts / CodeArts Work | `.codeartsdoer/mcp/mcp_settings.json` (project → user) or `.codeartswork/mcp/mcp_settings.json` (user) | File                            |
-| 4        | Global config file       | `~/.config/huaweicloud/credentials.json`                                                               | Permanent                       |
-| 5        | KooCLI profile           | `~/.hcloud/config.json` (KooCLI only)                                                                  | Permanent                       |
+| Priority | Source                                    | When active                                                                                                | Persistence                     |
+| -------- | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| 1        | Runtime (session) credentials             | `huaweicloud_auth_init` / `huaweicloud_auth_switch action=temporary` set them                              | Memory (MCP restart clears)     |
+| 2        | S1 global file with `configuredBySession: true` | set by `huaweicloud_auth_switch action=persist` (session-configured account wins over env)            | Permanent (S1)                  |
+| 3        | Environment variables                     | `HW_ACCESS_KEY` / `HW_SECRET_KEY` (platform/devspace-injected default account)                             | MCP process lifetime            |
+| 4        | CodeArts / CodeArts Work                  | `.codeartsdoer/mcp/mcp_settings.json` / `.codeartswork/mcp/mcp_settings.json`                              | File                            |
+| 5        | S1 global file (no session flag)          | `auth init` permanent credentials                                                                          | Permanent (S1)                  |
+| 6        | KooCLI profile                            | `~/.hcloud/config.json` (KooCLI commands only)                                                             | Permanent                       |
 
-When switching accounts within the same Agent session, use `huaweicloud_auth_init` to set runtime credentials. This overrides all other sources for the current MCP process.
+When switching accounts within the same Agent session, use `huaweicloud_auth_init` to set runtime credentials (overrides all sources for the current MCP process), or `huaweicloud_auth_switch action=persist`, which writes S1 with `configuredBySession: true` so the session-configured account outranks `HW_ACCESS_KEY` / `HW_SECRET_KEY`.
 
 ## Preferred Toolkit Tools
 
