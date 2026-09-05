@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
-import { hasRuntimeCredentials, obsConfigPath, readGlobalCredentials, readLastSync } from './credentials.mjs';
+import {
+  hasRuntimeCredentials,
+  obsConfigPath,
+  readGlobalCredentials,
+  readLastSync,
+  resolveCredentialsWithRuntime,
+} from './credentials.mjs';
 
 export { hasRuntimeCredentials };
 
@@ -76,6 +82,16 @@ export function scanState() {
   const s3 = existsSync(obsConfigPath()) ? parseS3ObsConfig(obsConfigPath()) : null;
   const s3Fingerprint = s3 ? fingerprint(s3.ak, s3.sk) : null;
 
+  let hasRuntime = false;
+  let runtimeFingerprint = null;
+  try {
+    const rt = resolveCredentialsWithRuntime();
+    hasRuntime = hasRuntimeCredentials();
+    if (hasRuntime) runtimeFingerprint = fingerprint(rt.ak, rt.sk);
+  } catch {
+    // nothing resolvable → runtime store inactive
+  }
+
   if (s1Fingerprint && currentFp && s1Fingerprint !== currentFp) {
     inconsistencies.push({
       store: 'S2-current',
@@ -99,11 +115,12 @@ export function scanState() {
       envFingerprint,
       currentFingerprint: currentFp,
       s3Fingerprint,
+      runtimeFingerprint,
     },
     kooCliCurrent: kooCli.error ? null : kooCli.current,
     inconsistencies,
-    hasRuntime: false, // filled by scanStateWithRuntime (Task 5)
-    runtimeFingerprint: null,
+    hasRuntime,
+    runtimeFingerprint,
   };
 }
 

@@ -172,15 +172,36 @@ export async function runHcloud(args, options = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const result = await runHcloudOnce(plan, options);
     if (result.ok || attempt >= maxRetries || !isRetryableNetworkError(result)) {
-      return {
+      const merged = {
         ...result,
         retries: attempt,
         attempts: attempt + 1,
       };
+      if (merged.ok) {
+        const warning = await runtimeCurrentMismatchWarning();
+        return warning ? { ...merged, authWarning: warning } : merged;
+      }
+      return merged;
     }
     await wait((options.retryBaseDelayMs ?? 500) * 2 ** attempt);
   }
   throw new Error('Unreachable retry state.');
+}
+
+async function runtimeCurrentMismatchWarning() {
+  try {
+    const { hasRuntimeCredentials, scanState } = await import('./auth/reconcile.mjs');
+    if (!hasRuntimeCredentials()) return null;
+    const scan = scanState();
+    const { runtimeFingerprint, currentFingerprint } = scan.stores;
+    if (runtimeFingerprint && currentFingerprint && runtimeFingerprint !== currentFingerprint) {
+      return '会话内临时账号与 KooCLI current 档不一致：hcloud 命令仍使用 current 档账号。如需对齐请用 huaweicloud_auth_switch action=persist。';
+    }
+    return null;
+  } catch {
+    // reconcile unavailable → no warning, never block the command
+    return null;
+  }
 }
 
 function discoverHcloudPath() {

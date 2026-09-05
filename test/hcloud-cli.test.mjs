@@ -1,10 +1,34 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { planHcloudCommand, runHcloud } from '../plugins/huaweicloud-core/src/hcloud-cli.mjs';
+import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
+
+async function withTempAuthHome(fn) {
+  const home = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-auth-'));
+  const previous = {
+    HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
+    HW_ACCESS_KEY: process.env.HW_ACCESS_KEY,
+    HW_SECRET_KEY: process.env.HW_SECRET_KEY,
+    HW_SECURITY_TOKEN: process.env.HW_SECURITY_TOKEN,
+  };
+  process.env.HUAWEICLOUD_HOME = home;
+  delete process.env.HW_ACCESS_KEY;
+  delete process.env.HW_SECRET_KEY;
+  delete process.env.HW_SECURITY_TOKEN;
+  try {
+    return await fn(home);
+  } finally {
+    clearRuntimeCredentials();
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 function fakeHcloudScript(source) {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-'));
@@ -110,4 +134,44 @@ console.log('adminPass=MySecret123!');
     executableArgs: [script],
   });
   assert.doesNotMatch(result.stdout, /MySecret123!/);
+});
+
+test('runHcloud succeeds with active runtime credentials and no KooCLI config (no-crash, no authWarning)', async () => {
+  const script = fakeHcloudScript(`
+console.log(JSON.stringify({ ok: true }));
+`);
+  await withTempAuthHome(async () => {
+    setRuntimeCredentials('RT_AK', 'RT_SK', undefined, 'cn-north-4');
+    const result = await runHcloud(['--version'], {
+      executable: process.execPath,
+      executableArgs: [script],
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.authWarning, undefined);
+  });
+});
+
+test('runHcloud emits authWarning when runtime differs from current profile', async () => {
+  const script = fakeHcloudScript(`
+console.log(JSON.stringify({ ok: true }));
+`);
+  await withTempAuthHome(async (home) => {
+    const cfgDir = join(home, '.hcloud');
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(
+      join(cfgDir, 'config.json'),
+      JSON.stringify({
+        current: 'deploy',
+        profiles: [{ name: 'deploy', accessKeyId: 'CUR_AK', secretAccessKey: 'CUR_SK', region: 'cn-north-4' }],
+      }),
+      'utf8',
+    );
+    setRuntimeCredentials('RT_AK', 'RT_SK', undefined, 'cn-north-4');
+    const result = await runHcloud(['--version'], {
+      executable: process.execPath,
+      executableArgs: [script],
+    });
+    assert.equal(result.ok, true);
+    assert.match(result.authWarning, /KooCLI current/);
+  });
 });

@@ -135,3 +135,24 @@ test('hasRuntimeCredentials reflects only runtime-injected credentials', () => {
     assert.equal(hasRuntimeCredentials(), false);
   });
 });
+
+test('scanState reports real runtime-store hasRuntime and runtimeFingerprint', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+
+    const none = scanState();
+    assert.equal(none.hasRuntime, false);
+    assert.equal(none.runtimeFingerprint, null);
+
+    setRuntimeCredentials('RT_AK', 'RT_SK', undefined, 'cn-north-4');
+    const active = scanState();
+    assert.equal(active.hasRuntime, true);
+    assert.equal(active.runtimeFingerprint, fingerprint('RT_AK', 'RT_SK'));
+    assert.equal(active.stores.runtimeFingerprint, fingerprint('RT_AK', 'RT_SK'));
+
+    clearRuntimeCredentials();
+    const cleared = scanState();
+    assert.equal(cleared.hasRuntime, false);
+    assert.equal(cleared.runtimeFingerprint, null);
+  });
+});
