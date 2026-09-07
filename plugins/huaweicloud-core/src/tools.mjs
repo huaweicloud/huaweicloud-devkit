@@ -46,6 +46,17 @@ import {
 } from './auth/credentials.mjs';
 import { trackToolInvoke, trackSkillRetrieve } from './telemetry/telemetry.mjs';
 import { fingerprint, runHcloudConfigure, resolveManagedProfile } from './auth/reconcile.mjs';
+import {
+  getCachedUpdateInfo,
+  getUpdateDistTags,
+  invalidateUpdateCache,
+  judgeUpdate,
+  determineTarget,
+  readInstalledVersion,
+  writeSkipState,
+  resolveSkipFilePath,
+  upgradePackage,
+} from './update-check.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SKILLS_ROOT_DEV = join(__dirname, '..', 'skills');
@@ -795,6 +806,36 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: 'huaweicloud_check_update',
+    description:
+      '检查 huaweicloud-devkit 插件是否有新版本。结果含 currentVersion / latestStable / latestNext / targetVersion / updateAvailable / dismissExpiresAt / result。支持 dismiss:true 记录用户拒绝（3 天冷却，新版本会重新提醒）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        dismiss: { type: 'boolean', description: '用户拒绝升级时传 true，记录冷却状态。' },
+        dismissVersion: {
+          type: 'string',
+          description: '与 dismiss:true 搭配，用户拒绝的版本号。缺省时用当前检测到的 targetVersion。',
+        },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_upgrade',
+    description:
+      '升级 huaweicloud-devkit 到最新版本。执行前必须先征得用户同意。version 仅支持 "latest"。完成后需重启会话生效。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        version: { type: 'string', description: '仅支持 "latest"（默认）。' },
+        target: {
+          type: 'string',
+          description: 'agent 目标（opencode/codex/codearts/.../all）。缺省时用 all（仅更新已安装的）。',
+        },
+      },
+    },
+  },
 ];
 
 function toolInvokeValue(name, args) {
@@ -1284,9 +1325,44 @@ export async function callTool(name, args = {}) {
       return await hdkitVoucherStatus(args.domain_id);
     case 'huaweicloud_voucher_claim':
       return await hdkitVoucherClaim(args.domain_id);
+    case 'huaweicloud_check_update':
+      return await handleCheckUpdate(args);
+    case 'huaweicloud_upgrade':
+      return await handleUpgrade(args);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
+}
+
+async function handleCheckUpdate(args = {}) {
+  const current = readInstalledVersion() || '0.0.0';
+  if (args.dismiss === true) {
+    const distTags = await getUpdateDistTags(current);
+    const target = determineTarget(current, distTags);
+    const dismissedVersion =
+      typeof args.dismissVersion === 'string' && args.dismissVersion ? args.dismissVersion : target || current;
+    const state = writeSkipState(resolveSkipFilePath(), dismissedVersion);
+    invalidateUpdateCache();
+    return judgeUpdate(current, distTags, state);
+  }
+  return getCachedUpdateInfo(current);
+}
+
+async function handleUpgrade(args = {}) {
+  const target = typeof args.target === 'string' && args.target ? args.target : 'all';
+  const version = typeof args.version === 'string' && args.version ? args.version : 'latest';
+  const current = readInstalledVersion() || '0.0.0';
+  const info = await getCachedUpdateInfo(current);
+  if (info && info.result === 'up_to_date') {
+    return {
+      success: false,
+      requiresRestart: false,
+      message: '已是最新版本，无需升级。',
+      currentVersion: info.currentVersion,
+      targetVersion: info.targetVersion,
+    };
+  }
+  return upgradePackage({ target, version });
 }
 
 function hookResult(result) {

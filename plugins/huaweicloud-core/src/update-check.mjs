@@ -257,6 +257,12 @@ export function peekCachedUpdateInfo() {
   return lastHint && lastHint.updateAvailable && lastHint.targetVersion ? lastHint : null;
 }
 
+export async function getUpdateDistTags(current) {
+  const result = await getCachedUpdateInfo(current);
+  if (!result) return null;
+  return { latest: result.latestStable ?? null, next: result.latestNext ?? null };
+}
+
 export function applyUpdateHint(result, name, hint) {
   if (!hint || !hint.updateAvailable) return result;
   if (name === 'huaweicloud_check_update' || name === 'huaweicloud_upgrade') return result;

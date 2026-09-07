@@ -572,3 +572,12 @@ test('official Huawei Cloud Icons library is integrated', () => {
   assert.match(discovery, /huaweicloud_get_service_icon/);
   assert.match(discovery, /open\.huaweicloud\.com\/openplatform\/icons\.html/);
 });
+
+test('tools.mjs registers version-update tools', () => {
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  for (const name of ['huaweicloud_check_update', 'huaweicloud_upgrade']) {
+    assert.match(tools, new RegExp(`name: '${name}'`));
+    assert.match(tools, new RegExp(`case '${name}':`));
+  }
+  assert.match(tools, /from '\.\/update-check\.mjs'/);
+});
