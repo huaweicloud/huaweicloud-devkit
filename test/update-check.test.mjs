@@ -18,6 +18,7 @@ import {
   peekCachedUpdateInfo,
   invalidateUpdateCache,
   applyUpdateHint,
+  upgradePackage,
 } from '../plugins/huaweicloud-core/src/update-check.mjs';
 
 test('semverParse 解析稳定版与 prerelease', () => {
@@ -216,4 +217,70 @@ test('applyUpdateHint 附加/跳过规则', () => {
     currentVersion: '1.0.2',
     latestVersion: '1.1.0',
   });
+});
+
+test('upgradePackage 参数校验: version 仅支持 latest', async () => {
+  const r = await upgradePackage({ target: 'opencode', version: '1.0.0' }, { spawnFn: () => ({ status: 0 }) });
+  assert.equal(r.success, false);
+  assert.match(r.error, /version 参数仅支持 latest/);
+});
+
+test('upgradePackage 成功路径: 目标版本/重启/文案/缓存失效', async () => {
+  invalidateUpdateCache();
+  let spawned = null;
+  const spawnFn = (cmd, args, opts) => {
+    spawned = { cmd, args, opts };
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  const r = await upgradePackage({ target: 'opencode', version: 'latest' }, { doQuery, spawnFn });
+  assert.equal(r.success, true);
+  assert.equal(r.previousVersion, '1.1.1-next.15'); // repo package.json 当前版本
+  assert.equal(r.installedVersion, '1.1.1');
+  assert.equal(r.requiresRestart, true);
+  assert.match(r.message, /重启当前会话/);
+  assert.equal(spawned.cmd, 'npx');
+  assert.deepEqual(spawned.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
+  assert.equal(spawned.opts.timeout, 300000);
+  // 升级后缓存失效 → 下一次检测重新查询（此处不 fetch，只验证 invalidate 生效）
+  invalidateUpdateCache();
+});
+
+test('upgradePackage next 目标: 用 next tag', async () => {
+  let spawned = null;
+  const spawnFn = (cmd, args) => {
+    spawned = args;
+    return { status: 0 };
+  };
+  const doQuery = async () => ({ latest: '1.1.0', next: '1.1.1-next.15' });
+  await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  assert.ok(spawned.some((a) => a === 'huaweicloud-devkit@next'));
+});
+
+test('upgradePackage officeace 专属重连文案', async () => {
+  const spawnFn = () => ({ status: 0 });
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  const r = await upgradePackage({ target: 'officeace' }, { doQuery, spawnFn });
+  assert.match(r.message, /连接器/);
+});
+
+test('upgradePackage 失败: 返回手动命令', async () => {
+  const spawnFn = () => ({ status: 1, stdout: '', stderr: 'EPERM: permission denied' });
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  assert.equal(r.success, false);
+  assert.match(r.manual, /npx --yes huaweicloud-devkit@latest update --target opencode/);
+  assert.match(r.error, /EPERM/);
+});
+
+test('upgradePackage 查询失败: 不 spawn 并给手动提示', async () => {
+  let spawned = false;
+  const spawnFn = () => {
+    spawned = true;
+    return { status: 0 };
+  };
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: async () => null, spawnFn });
+  assert.equal(r.success, false);
+  assert.equal(spawned, false);
+  assert.match(r.manual, /huaweicloud-devkit@latest update/);
 });

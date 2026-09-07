@@ -265,3 +265,52 @@ export function applyUpdateHint(result, name, hint) {
     _updateInfo: { currentVersion: hint.currentVersion, latestVersion: hint.targetVersion },
   };
 }
+
+function defaultSpawn(command, args, options) {
+  return spawnSync(command, args, options);
+}
+
+function restartMessage(target) {
+  if (target === 'officeace') {
+    return '升级完成，请打开连接器 → 我的连接器 → huaweicloud-devkit → 重新连接后使用新版本。';
+  }
+  return '升级完成，请重启当前会话使新版本生效。';
+}
+
+export async function upgradePackage({ target = 'all', version = 'latest' } = {}, options = {}) {
+  if (version !== 'latest') {
+    return { success: false, error: 'version 参数仅支持 latest。目标版本由插件自动判定。' };
+  }
+  const { doQuery = queryDistTags, spawnFn = defaultSpawn } = options;
+  const previousVersion = readInstalledVersion();
+  const distTags = await doQuery();
+  const targetVersion = determineTarget(previousVersion, distTags ?? {});
+  if (!targetVersion && !distTags) {
+    return {
+      success: false,
+      error: '无法确认最新版本（registry 查询失败）。',
+      manual: `npx --yes huaweicloud-devkit@latest update --target ${target}`,
+    };
+  }
+  const isNextTarget = Boolean(distTags?.next && targetVersion && semverCompare(targetVersion, distTags.next) === 0);
+  const tag = isNextTarget ? 'next' : 'latest';
+  const command = ['--yes', `huaweicloud-devkit@${tag}`, 'update', '--target', String(target)];
+  const execResult = spawnFn(NPX_BIN, command, { encoding: 'utf8', timeout: 300000, windowsHide: true });
+  if (execResult.status === 0) {
+    invalidateUpdateCache();
+    return {
+      success: true,
+      previousVersion,
+      installedVersion: targetVersion,
+      requiresRestart: true,
+      message: restartMessage(target),
+    };
+  }
+  const stderr = String(execResult.stderr || '').trim();
+  const reason = stderr ? stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' ') : `exit ${execResult.status}`;
+  return {
+    success: false,
+    error: reason,
+    manual: `npx --yes huaweicloud-devkit@${tag} update --target ${target}`,
+  };
+}
