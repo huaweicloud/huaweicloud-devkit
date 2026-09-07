@@ -587,3 +587,10 @@ test('mcp-server.mjs warms update cache and decorates first tool call', () => {
   assert.match(server, /applyUpdateHint\(/);
   assert.match(server, /peekCachedUpdateInfo\(\)/);
 });
+
+test('READMEs recommend @latest for updates', () => {
+  const en = readFileSync(join(root, 'README.md'), 'utf8');
+  assert.match(en, /huaweicloud-devkit@latest update --target all/);
+  const zh = readFileSync(join(root, 'README.zh-CN.md'), 'utf8');
+  assert.match(zh, /huaweicloud-devkit@latest update --target all/);
+});

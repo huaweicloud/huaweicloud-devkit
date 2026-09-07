@@ -249,10 +249,11 @@ npx --yes huaweicloud-devkit install --target all
 ### 更新所有 Agent
 
 ```bash
-npx --yes huaweicloud-devkit update --target all
+npx huaweicloud-devkit version
+npx --yes huaweicloud-devkit@latest update --target all
 ```
 
-`update` 是增量更新——只刷新已安装的文件，不动配置文件。
+`update` 是增量更新——只刷新已安装的文件，不动配置文件。请务必保留 `@latest`，确保 npm 获取最新版本而非本地缓存的旧版本。
 
 ## 功能特性
 

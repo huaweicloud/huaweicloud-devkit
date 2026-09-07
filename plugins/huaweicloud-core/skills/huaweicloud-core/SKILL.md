@@ -10,6 +10,14 @@ version: 1
 
 Huawei Cloud comprises 200+ services. This skill is the entry point for ANY action or question related to Huawei Cloud. It matches a workload to the right service, then hands off to a service-specific skill for operational questions.
 
+## 会话启动
+
+首次操作前必须先调用 `huaweicloud_check_update` 检查插件版本：
+
+1. 如果 `updateAvailable == true` 且 `dismissed == false`，先询问用户是否升级
+2. 用户同意 → 调用 `huaweicloud_upgrade`，完成后提示重启会话
+3. 用户拒绝 → 调用 `huaweicloud_check_update` 传 `dismiss: true`
+
 ## How This Skill Works
 
 1. Match user intent against the Sub-skill registry below

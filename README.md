@@ -249,10 +249,13 @@ npx --yes huaweicloud-devkit install --target all
 ### Update All Agents
 
 ```bash
-npx --yes huaweicloud-devkit update --target all
+npx huaweicloud-devkit version
+npx --yes huaweicloud-devkit@latest update --target all
 ```
 
-`update` is incremental — it refreshes installed files without touching your config.
+`update` is incremental — it refreshes installed files without touching your
+config. Always keep `@latest` so npm fetches the newest version instead of a
+locally cached older one.
 
 ## What It Does
 
