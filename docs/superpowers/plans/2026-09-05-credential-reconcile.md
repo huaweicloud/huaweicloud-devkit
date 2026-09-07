@@ -24,10 +24,12 @@
 ### Task 1: credentials.mjs — .last_sync、configuredBySession、备份
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/auth/credentials.mjs`
 - Test: `test/auth-credentials.test.mjs`
 
 **Interfaces:**
+
 - Produces:
   - `lastSyncPath()` => string（`.config/huaweicloud/` 下 `.last_sync`）
   - `readLastSync()` => `{ ts: number } | null`
@@ -173,10 +175,12 @@ git commit -m "feat(credentials): last_sync marker, configuredBySession flag, ba
 ### Task 2: reconcile.mjs — 指纹、KooCLI 档解析、scan
 
 **Files:**
+
 - Create: `plugins/huaweicloud-core/src/auth/reconcile.mjs`
 - Test: `test/reconcile.test.mjs`
 
 **Interfaces:**
+
 - Consumes: `readGlobalCredentials`、`readLastSync`、`writeLastSync`、`lastSyncPath`、`globalCredentialsPath`、`obsConfigPath`（Task 1）；`classifyHcloudArgs`… 不需要。
 - Produces:
   - `fingerprint(ak, sk)` => string（sha256(ak+sk).slice(0,8)，空值返回 `''`）
@@ -227,7 +231,12 @@ import {
   scanState,
   isManualModified,
 } from '../plugins/huaweicloud-core/src/auth/reconcile.mjs';
-import { writeGlobalCredentials, writeObsConfig, writeLastSync, lastSyncPath } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
+import {
+  writeGlobalCredentials,
+  writeObsConfig,
+  writeLastSync,
+  lastSyncPath,
+} from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 
 function withTempHome(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-rec-'));
@@ -474,7 +483,12 @@ export function runHcloudConfigure(profile, ak, sk, region) {
     `--cli-region=${region || ''}`,
   ];
   const r = spawnSync(bin, args, { shell: false, windowsHide: true, stdio: 'pipe', timeout: 30000 });
-  return { ok: r.status === 0, error: String(r.stderr || '').trim().slice(0, 240) };
+  return {
+    ok: r.status === 0,
+    error: String(r.stderr || '')
+      .trim()
+      .slice(0, 240),
+  };
 }
 ```
 
@@ -495,10 +509,12 @@ git commit -m "feat(reconcile): fingerprint, KooCLI profile parsing, scan state"
 ### Task 3: service.mjs — getAuthStatus 增 audit/指纹；syncAuth 对齐 R7/R10
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/auth/service.mjs`
 - Test: `test/auth-credentials.test.mjs`（追加）
 
 **Interfaces:**
+
 - Consumes: Task 1（`readLastSync`, `writeLastSync`, `backupGlobalCredentials`）、Task 2（`scanState`, `runHcloudConfigure`, `resolveManagedProfile`, `hasRuntimeCredentials`）
 - Produces: `getAuthStatus` 返回值新增字段 `reconciled: {...}`；`syncAuth` 行为：R10 守卫 + R7 写 current 档。
 
@@ -559,7 +575,11 @@ export function getAuthStatus(target = 'all') {
 export function syncAuth(target = 'all') {
   const credentials = readGlobalCredentials();
   if (!credentials?.ak || !credentials?.sk) {
-    return { ok: false, error: 'Global credentials are not configured.', nextStep: 'Run "npx huaweicloud-devkit auth init" first.' };
+    return {
+      ok: false,
+      error: 'Global credentials are not configured.',
+      nextStep: 'Run "npx huaweicloud-devkit auth init" first.',
+    };
   }
   if (hasRuntimeCredentials()) {
     return {
@@ -573,7 +593,11 @@ export function syncAuth(target = 'all') {
   try {
     obs = writeObsConfig(credentials);
   } catch (error) {
-    return { ok: false, error: error.message, nextStep: 'Run "npx huaweicloud-devkit auth init" to refresh credentials and region.' };
+    return {
+      ok: false,
+      error: error.message,
+      nextStep: 'Run "npx huaweicloud-devkit auth init" to refresh credentials and region.',
+    };
   }
 
   const profile = resolveManagedProfile();
@@ -620,10 +644,12 @@ git commit -m "feat(auth): audit status + R7 current-profile sync + R10 runtime 
 ### Task 4: tools.mjs — 新增 huaweicloud_auth_switch 与 huaweicloud_auth_confirm
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/tools.mjs`
 - Test: `test/tools.test.mjs`
 
 **Interfaces:**
+
 - Consumes: Task 1/2/3 exports；`readGlobalCredentials/writeGlobalCredentials`；`setConfiguredBySession`；`backupGlobalCredentials/restoreGlobalCredentialsBackup`；`reconcile` 流程。
 - Produces:
   - tool `huaweicloud_auth_switch`：
@@ -638,18 +664,28 @@ git commit -m "feat(auth): audit status + R7 current-profile sync + R10 runtime 
 ```js
 test('auth_switch temporary sets runtime credentials for api path', async () => {
   const prev = {
-    AK: process.env.HW_ACCESS_KEY, SK: process.env.HW_SECRET_KEY,
+    AK: process.env.HW_ACCESS_KEY,
+    SK: process.env.HW_SECRET_KEY,
   };
-  delete process.env.HW_ACCESS_KEY; delete process.env.HW_SECRET_KEY;
+  delete process.env.HW_ACCESS_KEY;
+  delete process.env.HW_SECRET_KEY;
   try {
-    const out = await callTool('huaweicloud_auth_switch', { mode: 'memory', action: 'temporary', ak: 'RUNTIME_AK', sk: 'RUNTIME_SK', region: 'cn-north-4' });
+    const out = await callTool('huaweicloud_auth_switch', {
+      mode: 'memory',
+      action: 'temporary',
+      ak: 'RUNTIME_AK',
+      sk: 'RUNTIME_SK',
+      region: 'cn-north-4',
+    });
     assert.equal(out.scope, 'temporary');
     const resolved = resolveCredentialsWithRuntime({});
     assert.equal(resolved.ak, 'RUNTIME_AK');
   } finally {
     clearRuntimeCredentials();
-    if (prev.AK === undefined) delete process.env.HW_ACCESS_KEY; else process.env.HW_ACCESS_KEY = prev.AK;
-    if (prev.SK === undefined) delete process.env.HW_SECRET_KEY; else process.env.HW_SECRET_KEY = prev.SK;
+    if (prev.AK === undefined) delete process.env.HW_ACCESS_KEY;
+    else process.env.HW_ACCESS_KEY = prev.AK;
+    if (prev.SK === undefined) delete process.env.HW_SECRET_KEY;
+    else process.env.HW_SECRET_KEY = prev.SK;
   }
 });
 
@@ -658,7 +694,11 @@ test('auth_switch clear resets runtime', async () => {
   const out = await callTool('huaweicloud_auth_switch', { action: 'clear' });
   assert.equal(out.status, 'cleared');
   let threw = false;
-  try { resolveCredentialsWithRuntime({}); } catch { threw = true; }
+  try {
+    resolveCredentialsWithRuntime({});
+  } catch {
+    threw = true;
+  }
   assert.equal(threw, true);
 });
 ```
@@ -678,11 +718,7 @@ import {
   backupGlobalCredentials,
   restoreGlobalCredentialsBackup,
 } from './auth/credentials.mjs';
-import {
-  runHcloudConfigure,
-  resolveManagedProfile,
-  scanState,
-} from './auth/reconcile.mjs';
+import { runHcloudConfigure, resolveManagedProfile, scanState } from './auth/reconcile.mjs';
 import { readCodeArtsCredentials } from './auth/credentials.mjs';
 ```
 
@@ -880,10 +916,12 @@ git commit -m "feat(tools): huaweicloud_auth_switch (import/memory/mcp-config x 
 ### Task 5: hcloud-cli.mjs — runHcloud 前置 A+C 一致性警告（G4/R10 兜底）
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/hcloud-cli.mjs`
 - Test: `test/hcloud-cli.test.mjs`
 
 **Interfaces:**
+
 - Consumes: Task 2 `hasRuntimeCredentials`、`scanState`
 - Produces: `runHcloud` 在 runtime 有效且 `runtimeFingerprint !== currentFingerprint` 时，返回值附 `authWarning` 字段（不阻塞执行）。
 
@@ -900,7 +938,8 @@ test('runHcloud emits authWarning when runtime differs from current profile', as
     assert.ok(result.ok);
   } finally {
     clearRuntimeCredentials();
-    if (prev === undefined) delete process.env.HW_ACCESS_KEY; else process.env.HW_ACCESS_KEY = prev;
+    if (prev === undefined) delete process.env.HW_ACCESS_KEY;
+    else process.env.HW_ACCESS_KEY = prev;
   }
 });
 ```
@@ -921,8 +960,13 @@ if (finalResult.ok) {
     const { hasRuntimeCredentials, scanState } = await import('./auth/reconcile.mjs');
     if (hasRuntimeCredentials()) {
       const scan = scanState();
-      if (scan.stores.runtimeFingerprint && scan.stores.currentFingerprint && scan.stores.runtimeFingerprint !== scan.stores.currentFingerprint) {
-        finalResult.authWarning = '会话内临时账号与 KooCLI current 档不一致：hcloud 命令仍使用 current 档账号。如需对齐请用 huaweicloud_auth_switch action=persist。';
+      if (
+        scan.stores.runtimeFingerprint &&
+        scan.stores.currentFingerprint &&
+        scan.stores.runtimeFingerprint !== scan.stores.currentFingerprint
+      ) {
+        finalResult.authWarning =
+          '会话内临时账号与 KooCLI current 档不一致：hcloud 命令仍使用 current 档账号。如需对齐请用 huaweicloud_auth_switch action=persist。';
       }
     }
   } catch {
@@ -943,6 +987,7 @@ try {
   hasRuntime = true;
 } catch {}
 ```
+
 并确保 `scanState` 返回 `hasRuntime`、`runtimeFingerprint`。
 
 - [ ] **Step 4: 运行确认通过**
@@ -962,10 +1007,12 @@ git commit -m "feat(hcloud-cli): runtime/current A+C warning before hcloud comma
 ### Task 6: setup-cli.mjs — cmdAuthReconcile + configureHcloud R7 + 文案错误清理
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/setup-cli.mjs`
 - Test: `test/cross-platform-install.test.mjs`（命令挂载）、`test/structure.test.mjs`
 
 **Interfaces:**
+
 - Consumes: Task 2/3 exports
 - Produces: `cmdAuthReconcile()`；`configureHcloud` 增加 `--cli-profile=<resolveManagedProfile()>`；删除 install-hcloud 横幅中 `hcloud configure init` 备选；`runVersionCheck` authHint、OBS region 提示指向 `auth init`。
 
@@ -1004,7 +1051,9 @@ async function cmdAuthReconcile() {
     return;
   }
   for (const inc of state.inconsistencies) {
-    console.log(`  [${inc.store}] fingerprint ${inc.fingerprint} differs from S1 ${state.stores.s1Fingerprint}${inc.manualModified ? ' (manual modified)' : ''}`);
+    console.log(
+      `  [${inc.store}] fingerprint ${inc.fingerprint} differs from S1 ${state.stores.s1Fingerprint}${inc.manualModified ? ' (manual modified)' : ''}`,
+    );
   }
   const ask = await readLineQuestion('以 S1 为准同步到不一致文件? (y/N) ');
   if (!['y', 'Y', 'yes'].includes(ask.trim())) {
@@ -1074,6 +1123,7 @@ git commit -m "feat(cli): auth reconcile command + R7 configuredProfileName + re
 ### Task 7: skill/default message 文案 + 全量测试矩阵 + lint/validate
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/skills/huaweicloud-cli-and-auth/SKILL.md`（取消 SAFE/DANGEROUS 双档，统一 auth init）
 - Test: 全量矩阵
 
