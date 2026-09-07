@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "huaweicloud-devkit",
-  "version": "1.1.1-next.16",
+  "version": "1.1.1",
   "description": "Huawei Cloud guidance, CLI/API/SDK routing, MCP tools, and safety for coding agents.",
   "author": {
     "name": "HuaweiCloud Mate",
