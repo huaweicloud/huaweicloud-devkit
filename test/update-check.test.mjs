@@ -13,6 +13,11 @@ import {
   parseDistTagsOutput,
   readSkipState,
   writeSkipState,
+  queryDistTagsSync,
+  getCachedUpdateInfo,
+  peekCachedUpdateInfo,
+  invalidateUpdateCache,
+  applyUpdateHint,
 } from '../plugins/huaweicloud-core/src/update-check.mjs';
 
 test('semverParse 解析稳定版与 prerelease', () => {
@@ -129,4 +134,86 @@ test('skip state 原子写往返 + 损坏容错', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('queryDistTagsSync 成功返回 distTags 对象', () => {
+  const result = queryDistTagsSync({ timeoutMs: 5000 });
+  // 结果允许为 null（离线/超时）；若成功则形状必须正确
+  if (result !== null) {
+    assert.equal(typeof result.latest, 'string');
+    assert.ok(result.next === null || typeof result.next === 'string');
+  }
+});
+
+test('getCachedUpdateInfo 单飞: 并发只查一次', async () => {
+  invalidateUpdateCache();
+  let calls = 0;
+  const fakeQuery = async () => {
+    calls++;
+    await new Promise((r) => setTimeout(r, 20));
+    return { latest: '1.1.1', next: null };
+  };
+  const [a, b] = await Promise.all([
+    getCachedUpdateInfo('1.0.2', { doQuery: fakeQuery }),
+    getCachedUpdateInfo('1.0.2', { doQuery: fakeQuery }),
+  ]);
+  assert.equal(calls, 1);
+  assert.equal(a.result, 'update_available');
+  assert.equal(b.result, 'update_available');
+  assert.equal(a.targetVersion, '1.1.1');
+  invalidateUpdateCache();
+});
+
+test('getCachedUpdateInfo TTL: 未过期不重复查询', async () => {
+  invalidateUpdateCache();
+  let calls = 0;
+  const fakeQuery = async () => {
+    calls++;
+    return { latest: '1.2.0', next: null };
+  };
+  assert.equal((await getCachedUpdateInfo('1.0.2', { doQuery: fakeQuery })).result, 'update_available');
+  assert.equal((await getCachedUpdateInfo('1.0.2', { doQuery: fakeQuery })).result, 'update_available');
+  assert.equal(calls, 1);
+  invalidateUpdateCache();
+});
+
+test('getCachedUpdateInfo 失败节流: 失败后短时间不重查', async () => {
+  invalidateUpdateCache();
+  let calls = 0;
+  const failQuery = async () => {
+    calls++;
+    return null;
+  };
+  const r1 = await getCachedUpdateInfo('1.0.2', { doQuery: failQuery });
+  const r2 = await getCachedUpdateInfo('1.0.2', { doQuery: failQuery });
+  assert.equal(r1.result, 'check_failed');
+  assert.equal(r2.result, 'check_failed');
+  assert.equal(calls, 1); // 同会话节流
+  invalidateUpdateCache();
+});
+
+test('peekCachedUpdateInfo 返回已就绪 hint | null', async () => {
+  invalidateUpdateCache();
+  assert.equal(peekCachedUpdateInfo(), null);
+  const fakeQuery = async () => ({ latest: '1.1.0', next: null });
+  await getCachedUpdateInfo('1.0.2', { doQuery: fakeQuery });
+  const hint = peekCachedUpdateInfo();
+  assert.ok(hint && hint.updateAvailable === true);
+  assert.equal(hint.currentVersion, '1.0.2');
+  assert.equal(hint.targetVersion, '1.1.0');
+  invalidateUpdateCache();
+});
+
+test('applyUpdateHint 附加/跳过规则', () => {
+  const base = { ok: true };
+  const hint = { updateAvailable: true, currentVersion: '1.0.2', targetVersion: '1.1.0' };
+  assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', hint)._updateInfo.latestVersion, '1.1.0');
+  assert.equal(applyUpdateHint(base, 'huaweicloud_check_update', hint), base); // 自身不加
+  assert.equal(applyUpdateHint(base, 'huaweicloud_upgrade', hint), base);
+  assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', null), base); // 无 hint 不加
+  assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', { updateAvailable: false }), base);
+  assert.deepEqual(applyUpdateHint(base, 'huaweicloud_check_cli', hint)._updateInfo, {
+    currentVersion: '1.0.2',
+    latestVersion: '1.1.0',
+  });
 });

@@ -181,3 +181,87 @@ export function writeSkipState(file, dismissedVersion, { at = Date.now(), days =
   renameSync(tmp, file);
   return state;
 }
+
+export function queryDistTagsSync({ timeoutMs = 5000, cwd } = {}) {
+  try {
+    const result = spawnSync(NPM_BIN, ['view', 'huaweicloud-devkit', 'dist-tags', '--json'], {
+      encoding: 'utf8',
+      timeout: timeoutMs,
+      windowsHide: true,
+      cwd,
+    });
+    if (result.status !== 0) return null;
+    return parseDistTagsOutput(result.stdout);
+  } catch {
+    return null;
+  }
+}
+
+export function queryDistTags(options = {}) {
+  return Promise.resolve(queryDistTagsSync(options));
+}
+
+let cachedDistTags = null;
+let cachedAt = 0;
+let failedAt = 0;
+let inflightQuery = null;
+let lastHint = null;
+
+export function invalidateUpdateCache() {
+  cachedDistTags = null;
+  cachedAt = 0;
+  failedAt = 0;
+  inflightQuery = null;
+  lastHint = null;
+}
+
+function cacheValid() {
+  return Boolean(cachedDistTags) && Date.now() - cachedAt <= TTL_MS;
+}
+
+export async function getCachedUpdateInfo(current, { doQuery = queryDistTags } = {}) {
+  if (process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE === '1') {
+    lastHint = judgeUpdate(current, null);
+    return lastHint;
+  }
+  const skipState = readSkipState(resolveSkipFilePath());
+  if (!cacheValid()) {
+    if (!cachedDistTags && Date.now() - failedAt < FAIL_THROTTLE_MS) {
+      lastHint = judgeUpdate(current, null, skipState);
+      return lastHint;
+    }
+    if (!inflightQuery) {
+      inflightQuery = doQuery()
+        .then((distTags) => {
+          if (distTags) {
+            cachedDistTags = distTags;
+            cachedAt = Date.now();
+          } else {
+            failedAt = Date.now();
+          }
+          return distTags;
+        })
+        .finally(() => {
+          inflightQuery = null;
+        });
+    }
+    const distTags = await inflightQuery;
+    lastHint = judgeUpdate(current, distTags, skipState);
+    return lastHint;
+  }
+  lastHint = judgeUpdate(current, cachedDistTags, skipState);
+  return lastHint;
+}
+
+export function peekCachedUpdateInfo() {
+  return lastHint && lastHint.updateAvailable && lastHint.targetVersion ? lastHint : null;
+}
+
+export function applyUpdateHint(result, name, hint) {
+  if (!hint || !hint.updateAvailable) return result;
+  if (name === 'huaweicloud_check_update' || name === 'huaweicloud_upgrade') return result;
+  return {
+    ...result,
+    _updateInfo: { currentVersion: hint.currentVersion, latestVersion: hint.targetVersion },
+  };
+}
