@@ -581,3 +581,10 @@ test('tools.mjs registers version-update tools', () => {
   }
   assert.match(tools, /from '\.\/update-check\.mjs'/);
 });
+
+test('mcp-server.mjs warms update cache and decorates first tool call', () => {
+  const server = readFileSync(join(pluginRoot, 'src', 'mcp-server.mjs'), 'utf8');
+  assert.match(server, /getCachedUpdateInfo\(readInstalledVersion\(\)/);
+  assert.match(server, /applyUpdateHint\(/);
+  assert.match(server, /peekCachedUpdateInfo\(\)/);
+});

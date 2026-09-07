@@ -6,6 +6,7 @@ import { platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
+import { getCachedUpdateInfo, readInstalledVersion, peekCachedUpdateInfo, applyUpdateHint } from './update-check.mjs';
 import { initTelemetry } from './telemetry/telemetry.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
 
@@ -73,6 +74,27 @@ let useContentLengthFraming = true;
 // shutdown signal — exit cleanly so the host does not see CLOSE_TIMEOUT.
 const { harness } = detectAgent();
 const NEEDS_KEEPALIVE = harness === 'hermes' && platform() === 'win32';
+
+// 版本升级检测预热：异步、非阻塞；失败静默（离线/超时不影响会话）。
+process.nextTick(() => {
+  getCachedUpdateInfo(readInstalledVersion() || '0.0.0').catch(() => {});
+});
+
+// 会话内首个非 check/upgrade 工具调用附加 _updateInfo，只消费一次。
+let hintConsumed = false;
+function decorateResult(name, result) {
+  if (hintConsumed) return result;
+  try {
+    const hint = peekCachedUpdateInfo();
+    if (!hint) return result;
+    const decorated = applyUpdateHint(result, name, hint);
+    if (decorated !== result) hintConsumed = true;
+    return decorated;
+  } catch {
+    return result; // 兜底装饰失败绝不影响工具调用
+  }
+}
+
 let keepAlive = null;
 function onStdinClose() {
   if (keepAlive) return;
@@ -191,11 +213,12 @@ async function dispatch(method, params) {
 
   if (method === 'tools/call') {
     const result = await callTool(params.name, params.arguments || {});
+    const decorated = decorateResult(params.name, result);
     return {
       content: [
         {
           type: 'text',
-          text: JSON.stringify(result, null, 2),
+          text: JSON.stringify(decorated, null, 2),
         },
       ],
       isError: false,
