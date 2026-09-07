@@ -1,5 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import {
   semverParse,
   semverCompare,
@@ -7,6 +11,8 @@ import {
   determineTarget,
   judgeUpdate,
   parseDistTagsOutput,
+  readSkipState,
+  writeSkipState,
 } from '../plugins/huaweicloud-core/src/update-check.mjs';
 
 test('semverParse 解析稳定版与 prerelease', () => {
@@ -100,4 +106,27 @@ test('parseDistTagsOutput 解析 npm view --json 输出', () => {
   assert.deepEqual(parseDistTagsOutput('{"latest":"1.1.0"}'), { latest: '1.1.0', next: null });
   assert.equal(parseDistTagsOutput('not json'), null);
   assert.equal(parseDistTagsOutput(''), null);
+});
+
+function tmpDir() {
+  const dir = mkdtempSync(join(tmpdir(), 'upd-'));
+  return dir;
+}
+
+test('skip state 原子写往返 + 损坏容错', () => {
+  const dir = tmpDir();
+  try {
+    const file = join(dir, '.update-skip.json');
+    assert.equal(readSkipState(file), null); // 不存在
+    const state = writeSkipState(file, '1.1.1-next.12');
+    assert.equal(state.dismissedVersion, '1.1.1-next.12');
+    assert.ok(!existsSync(`${file}.tmp`)); // 不留 tmp 残渣
+    const read = readSkipState(file);
+    assert.equal(read.dismissedVersion, '1.1.1-next.12');
+    assert.ok(Date.parse(read.expireAt) - Date.parse(read.dismissedAt) >= 2 * 24 * 60 * 60 * 1000); // 3 天
+    writeFileSync(file, '{broken json');
+    assert.equal(readSkipState(file), null); // 损坏 → null
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

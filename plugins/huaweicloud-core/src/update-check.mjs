@@ -124,3 +124,60 @@ export function judgeUpdate(current, distTags, skipState, now = Date.now()) {
   }
   return buildResult(current, distTags, { result: 'update_available', target });
 }
+
+function selfDir() {
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+export function readInstalledVersion() {
+  const pluginRoot = resolve(selfDir(), '..');
+  const packageRoot = resolve(pluginRoot, '..', '..');
+  for (const base of [pluginRoot, packageRoot]) {
+    try {
+      const version = JSON.parse(readFileSync(join(base, 'package.json'), 'utf8')).version;
+      if (typeof version === 'string' && version) return version;
+    } catch {}
+  }
+  return null;
+}
+
+export function skipFilePath() {
+  return join(resolve(selfDir(), '..'), '.update-skip.json');
+}
+
+export function fallbackSkipFilePath() {
+  const base = process.env.HUAWEICLOUD_HOME || homedir();
+  return join(base, '.config', 'huaweicloud', 'devkit-skip.json');
+}
+
+// A1 定稿: 标准 agent 用插件目录副本(有 package.json); codex 等无副本时回退共享文件
+export function resolveSkipFilePath() {
+  try {
+    if (existsSync(join(dirname(skipFilePath()), 'package.json'))) return skipFilePath();
+  } catch {}
+  return fallbackSkipFilePath();
+}
+
+export function readSkipState(file) {
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    if (!parsed || typeof parsed.dismissedVersion !== 'string' || !parsed.dismissedAt || !parsed.expireAt) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export function writeSkipState(file, dismissedVersion, { at = Date.now(), days = COOLDOWN_DAYS } = {}) {
+  const state = {
+    dismissedVersion: String(dismissedVersion),
+    dismissedAt: new Date(at).toISOString(),
+    expireAt: new Date(at + days * 24 * 60 * 60 * 1000).toISOString(),
+  };
+  mkdirSync(dirname(file), { recursive: true });
+  const tmp = `${file}.tmp`;
+  writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
+  renameSync(tmp, file);
+  return state;
+}
