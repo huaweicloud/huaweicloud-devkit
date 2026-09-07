@@ -515,12 +515,11 @@ test('setup-cli.mjs resolves the active KooCLI profile for configureHcloud', () 
   assert.doesNotMatch(setup, /hcloud configure init/);
 });
 
-test('setup-cli.mjs checks for updates on install/update', () => {
+test('setup-cli.mjs checks for updates on install/update via shared query', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
   assert.match(setup, /function checkForUpdate\(\)/);
-  assert.match(setup, /\? 'next' : 'latest'/);
-  assert.match(setup, /huaweicloud-devkit@\$\{tag\}/);
-  assert.match(setup, /npm\.cmd/);
+  assert.match(setup, /queryDistTagsSync\(/);
+  assert.match(setup, /semverCompare\(/);
   const calls = setup.match(/checkForUpdate\(\);?/g);
   assert.ok(calls && calls.length >= 2, 'checkForUpdate should be called in both cmdInstall and cmdUpdate');
 });

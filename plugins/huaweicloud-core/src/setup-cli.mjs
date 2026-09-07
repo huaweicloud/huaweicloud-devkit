@@ -35,6 +35,7 @@ import {
   getProxySettings,
 } from './proxy/proxy-config.mjs';
 import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.mjs';
+import { queryDistTagsSync, determineTarget, semverCompare } from './update-check.mjs';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 
@@ -3056,20 +3057,12 @@ function parseTarget() {
 
 function checkForUpdate() {
   if (pkgVersion === '0.0.0') return;
-  const tag = /-next\.\d+/.test(pkgVersion) ? 'next' : 'latest';
-  let latest = null;
-  try {
-    const npmBin = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-    const r = spawnSync(npmBin, ['view', `huaweicloud-devkit@${tag}`, 'version'], {
-      encoding: 'utf8',
-      timeout: 5000,
-      windowsHide: true,
-    });
-    if (r.status === 0) latest = (r.stdout || '').trim().split('\n').pop().trim();
-  } catch {}
-  if (latest && latest !== pkgVersion) {
+  const distTags = queryDistTagsSync({ timeoutMs: 5000 });
+  const target = determineTarget(pkgVersion, distTags ?? {});
+  if (target && semverCompare(target, pkgVersion) > 0) {
+    const tag = distTags.next && semverCompare(target, distTags.next) === 0 ? 'next' : 'latest';
     console.log(
-      `\n\x1b[33mℹ️ 检测到新版本：${latest}（当前 ${pkgVersion}，${tag} 频道）。建议运行 \`npx huaweicloud-devkit@${tag} update\` 更新。\x1b[0m`,
+      `\n\x1b[33mℹ️ 检测到新版本：${target}（当前 ${pkgVersion}，${tag} 频道）。建议运行 \`npx --yes huaweicloud-devkit@${tag} update\` 更新。\x1b[0m`,
     );
   }
 }
