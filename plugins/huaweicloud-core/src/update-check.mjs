@@ -1,7 +1,7 @@
 // Version-update detection & auto-upgrade for huaweicloud-devkit (session-level).
 // Spec: docs/superpowers/specs/2026-09-07-version-upgrade-design.md (internal, not committed).
-import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, rmSync } from 'node:fs';
+import { spawn, spawnSync } from 'node:child_process';
 import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -176,9 +176,14 @@ export function writeSkipState(file, dismissedVersion, { at = Date.now(), days =
     expireAt: new Date(at + days * 24 * 60 * 60 * 1000).toISOString(),
   };
   mkdirSync(dirname(file), { recursive: true });
-  const tmp = `${file}.tmp`;
+  const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf8');
-  renameSync(tmp, file);
+  try {
+    renameSync(tmp, file);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
   return state;
 }
 
@@ -197,8 +202,38 @@ export function queryDistTagsSync({ timeoutMs = 5000, cwd } = {}) {
   }
 }
 
-export function queryDistTags(options = {}) {
-  return Promise.resolve(queryDistTagsSync(options));
+export function queryDistTags({ timeoutMs = 5000, cwd } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(NPM_BIN, ['view', 'huaweicloud-devkit', 'dist-tags', '--json'], {
+        windowsHide: true,
+        cwd,
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    const timer = setTimeout(() => {
+      try {
+        child.kill();
+      } catch {}
+      resolve(null);
+    }, timeoutMs);
+    let stdout = '';
+    child.stdout.on('data', (d) => {
+      stdout += String(d);
+    });
+    child.on('error', () => {
+      clearTimeout(timer);
+      resolve(null);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(parseDistTagsOutput(stdout));
+      else resolve(null);
+    });
+  });
 }
 
 let cachedDistTags = null;
@@ -264,7 +299,7 @@ export async function getUpdateDistTags(current) {
 }
 
 export function applyUpdateHint(result, name, hint) {
-  if (!hint || !hint.updateAvailable) return result;
+  if (!hint || !hint.updateAvailable || !hint.targetVersion) return result;
   if (name === 'huaweicloud_check_update' || name === 'huaweicloud_upgrade') return result;
   return {
     ...result,
@@ -289,19 +324,40 @@ export async function upgradePackage({ target = 'all', version = 'latest' } = {}
   }
   const { doQuery = queryDistTags, spawnFn = defaultSpawn } = options;
   const previousVersion = readInstalledVersion();
-  const distTags = await doQuery();
+  let distTags;
+  try {
+    distTags = await doQuery();
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || '无法确认最新版本（registry 查询失败）。',
+      manual: `npx --yes huaweicloud-devkit@latest update --target ${target}`,
+    };
+  }
   const targetVersion = determineTarget(previousVersion, distTags ?? {});
-  if (!targetVersion && !distTags) {
+  if (distTags === null) {
     return {
       success: false,
       error: '无法确认最新版本（registry 查询失败）。',
       manual: `npx --yes huaweicloud-devkit@latest update --target ${target}`,
     };
   }
-  const isNextTarget = Boolean(distTags?.next && targetVersion && semverCompare(targetVersion, distTags.next) === 0);
+  if (!targetVersion) {
+    return { success: false, message: '已是最新版本，无需升级。', requiresRestart: false };
+  }
+  const isNextTarget = Boolean(distTags.next && semverCompare(targetVersion, distTags.next) === 0);
   const tag = isNextTarget ? 'next' : 'latest';
   const command = ['--yes', `huaweicloud-devkit@${tag}`, 'update', '--target', String(target)];
-  const execResult = spawnFn(NPX_BIN, command, { encoding: 'utf8', timeout: 300000, windowsHide: true });
+  let execResult;
+  try {
+    execResult = spawnFn(NPX_BIN, command, { encoding: 'utf8', timeout: 300000, windowsHide: true });
+  } catch (error) {
+    return {
+      success: false,
+      error: error?.message || '升级命令执行失败。',
+      manual: `npx --yes huaweicloud-devkit@${tag} update --target ${target}`,
+    };
+  }
   if (execResult.status === 0) {
     invalidateUpdateCache();
     return {
@@ -312,8 +368,13 @@ export async function upgradePackage({ target = 'all', version = 'latest' } = {}
       message: restartMessage(target),
     };
   }
+  const errObj = execResult.error;
   const stderr = String(execResult.stderr || '').trim();
-  const reason = stderr ? stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' ') : `exit ${execResult.status}`;
+  const reason = errObj?.message
+    ? errObj.message
+    : stderr
+      ? stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
+      : `exit ${execResult.status}`;
   return {
     success: false,
     error: reason,

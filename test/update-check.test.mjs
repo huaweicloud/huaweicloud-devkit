@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -14,6 +14,7 @@ import {
   readSkipState,
   writeSkipState,
   queryDistTagsSync,
+  queryDistTags,
   getCachedUpdateInfo,
   peekCachedUpdateInfo,
   invalidateUpdateCache,
@@ -137,8 +138,41 @@ test('skip state 原子写往返 + 损坏容错', () => {
   }
 });
 
+test('writeSkipState 目标不可写时清理临时文件', () => {
+  const dir = tmpDir();
+  try {
+    const file = join(dir, '.update-skip.json');
+    mkdirSync(file, { recursive: true }); // 目标为目录 → rename 失败
+    let threw = false;
+    try {
+      writeSkipState(file, '1.1.1');
+    } catch {
+      threw = true;
+    }
+    assert.equal(threw, true);
+    const leftover = readdirSync(dir).filter((f) => f.includes('.tmp'));
+    assert.deepEqual(leftover, []); // 不留 temp 残渣
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('queryDistTagsSync 成功返回 distTags 对象', () => {
   const result = queryDistTagsSync({ timeoutMs: 5000 });
+  // 结果允许为 null（离线/超时）；若成功则形状必须正确
+  if (result !== null) {
+    assert.equal(typeof result.latest, 'string');
+    assert.ok(result.next === null || typeof result.next === 'string');
+  }
+});
+
+test('queryDistTags 异步非阻塞: 同步调用立即返回 Promise', async () => {
+  const before = Date.now();
+  const p = queryDistTags({ timeoutMs: 5000 });
+  const callMs = Date.now() - before;
+  assert.ok(p instanceof Promise, 'queryDistTags 应返回 Promise');
+  assert.ok(callMs < 100, `queryDistTags 同步调用应非阻塞, 实际耗时 ${callMs}ms`);
+  const result = await p;
   // 结果允许为 null（离线/超时）；若成功则形状必须正确
   if (result !== null) {
     assert.equal(typeof result.latest, 'string');
@@ -213,6 +247,11 @@ test('applyUpdateHint 附加/跳过规则', () => {
   assert.equal(applyUpdateHint(base, 'huaweicloud_upgrade', hint), base);
   assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', null), base); // 无 hint 不加
   assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', { updateAvailable: false }), base);
+  assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', { updateAvailable: true }), base); // 无 targetVersion 不加
+  assert.equal(
+    applyUpdateHint(base, 'huaweicloud_check_cli', { updateAvailable: true, currentVersion: '1.0.2' }),
+    base,
+  );
   assert.deepEqual(applyUpdateHint(base, 'huaweicloud_check_cli', hint)._updateInfo, {
     currentVersion: '1.0.2',
     latestVersion: '1.1.0',
@@ -271,6 +310,34 @@ test('upgradePackage 失败: 返回手动命令', async () => {
   assert.equal(r.success, false);
   assert.match(r.manual, /npx --yes huaweicloud-devkit@latest update --target opencode/);
   assert.match(r.error, /EPERM/);
+});
+
+test('upgradePackage 失败: spawn 不存在时报可读错误而非 exit null', async () => {
+  const spawnFn = () => ({
+    status: null,
+    stdout: '',
+    stderr: '',
+    error: new Error('spawn npx ENOENT'),
+  });
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  assert.equal(r.success, false);
+  assert.match(r.error, /ENOENT/);
+  assert.doesNotMatch(r.error, /exit null/);
+});
+
+test('upgradePackage 无目标版本: distTags 有效但无候选时不 spawn 并返回无需升级', async () => {
+  let spawned = false;
+  const spawnFn = () => {
+    spawned = true;
+    return { status: 0 };
+  };
+  const doQuery = async () => ({ latest: null, next: null });
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  assert.equal(spawned, false);
+  assert.equal(r.success, false);
+  assert.equal(r.requiresRestart, false);
+  assert.match(r.message, /已是最新版本，无需升级。/);
 });
 
 test('upgradePackage 查询失败: 不 spawn 并给手动提示', async () => {

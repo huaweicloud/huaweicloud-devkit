@@ -520,7 +520,7 @@ test('setup-cli.mjs checks for updates on install/update via shared query', () =
   assert.match(setup, /function checkForUpdate\(\)/);
   assert.match(setup, /queryDistTagsSync\(/);
   assert.match(setup, /semverCompare\(/);
-  const calls = setup.match(/checkForUpdate\(\);?/g);
+  const calls = setup.match(/^\s+checkForUpdate\(\);$/gm);
   assert.ok(calls && calls.length >= 2, 'checkForUpdate should be called in both cmdInstall and cmdUpdate');
 });
 
