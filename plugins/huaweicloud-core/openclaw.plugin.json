@@ -13,22 +13,8 @@
   "homepage": "https://github.com/huaweicloud/huaweicloud-devkit",
   "repository": "https://github.com/huaweicloud/huaweicloud-devkit",
   "license": "Apache-2.0",
-  "keywords": [
-    "huaweicloud",
-    "huawei-cloud",
-    "koocli",
-    "hcloud",
-    "agent",
-    "mcp",
-    "api",
-    "sdk",
-    "skills",
-    "cloud"
-  ],
+  "keywords": ["huaweicloud", "huawei-cloud", "koocli", "hcloud", "agent", "mcp", "api", "sdk", "skills", "cloud"],
   "category": "Cloud",
-  "capabilities": [
-    "Read",
-    "Interactive"
-  ],
+  "capabilities": ["Read", "Interactive"],
   "brandColor": "#C7000B"
 }

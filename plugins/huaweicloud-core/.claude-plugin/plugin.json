@@ -5,10 +5,7 @@
     "longDescription": "HuaweiCloud Devkit helps coding agents choose and use Huawei Cloud Skills, KooCLI, APIs, SDKs, and MCP tools with less context, safer command execution, and more accurate cloud implementation decisions.",
     "developerName": "HuaweiCloud Mate",
     "category": "Cloud",
-    "capabilities": [
-      "Read",
-      "Interactive"
-    ],
+    "capabilities": ["Read", "Interactive"],
     "websiteURL": "https://github.com/huaweicloud/HuaweiCloud-Devkit",
     "brandColor": "#C7000B",
     "defaultPrompt": [
@@ -30,15 +27,5 @@
   "homepage": "https://github.com/huaweicloud/HuaweiCloud-Devkit",
   "repository": "https://github.com/huaweicloud/HuaweiCloud-Devkit",
   "license": "Apache-2.0",
-  "keywords": [
-    "huaweicloud",
-    "huawei-cloud",
-    "koocli",
-    "hcloud",
-    "agent",
-    "mcp",
-    "api",
-    "sdk",
-    "skills"
-  ]
+  "keywords": ["huaweicloud", "huawei-cloud", "koocli", "hcloud", "agent", "mcp", "api", "sdk", "skills"]
 }
