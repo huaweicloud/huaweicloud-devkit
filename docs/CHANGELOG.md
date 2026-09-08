@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.2-next.1 (2026-09-08)
+
+- fix(release): bump version override to 1.1.2 for next preview line (#527)
+- feat(update): session-level version update detection & auto-upgrade (#525)
+- chore: sync root plugin.json version to 1.1.1-next.16
+- chore: address Cursor marketplace PR review feedback
+- style: add trailing newline to plugin.json and mcp.json
+- chore: add Open Plugins manifest for Cursor marketplace
+
 ## 1.1.1-next.16 (2026-09-07)
 
 - fix(skills): deposit prompt cites official FAQ links (frozen deposit explanation + amount rules)
