@@ -226,6 +226,30 @@ npx --yes huaweicloud-devkit uninstall --target atomcode
 
 > 项目级 AK/SK 可通过 MCP 配置的 `env` 字段设置 `HW_ACCESS_KEY`/`HW_SECRET_KEY`。
 
+#### 通过 Remote（HTTP）连接
+
+若 Agent 支持 `type: "remote"`（Streamable HTTP）而非 stdio，可在本地先启动 devkit 的远程 MCP 服务器：
+
+```bash
+npx --yes huaweicloud-devkit-mcp --transport remote
+```
+
+默认监听 `127.0.0.1:9528`（与预置的 IACMCPServer 端口 9527 不冲突）。随后以远程方式连接（以 opencode 为例）：
+
+```jsonc
+{
+  "mcp": {
+    "huaweicloud-devkit": {
+      "type": "remote",
+      "url": "http://localhost:9528",
+      "enabled": true
+    }
+  }
+}
+```
+
+> 端口被占用时用 `--port <端口>` 换端口，`url` 同步修改；需要局域网访问时加 `--host 0.0.0.0`。remote 服务器不内置鉴权，请勿匿名暴露到公网。
+
 ### 安装 KooCLI
 
 ```bash

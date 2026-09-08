@@ -226,6 +226,30 @@ No installation required — `npx` handles everything.
 
 > Set `HW_ACCESS_KEY`/`HW_SECRET_KEY` in the MCP config `env` field for project-level credentials.
 
+#### Connecting over Remote (HTTP)
+
+If your agent supports `type: "remote"` (Streamable HTTP) instead of stdio, start the devkit remote MCP server locally first:
+
+```bash
+npx --yes huaweicloud-devkit-mcp --transport remote
+```
+
+It listens on `127.0.0.1:9528` by default (no conflict with the IACMCPServer port 9527). Then connect with a remote config (opencode example):
+
+```jsonc
+{
+  "mcp": {
+    "huaweicloud-devkit": {
+      "type": "remote",
+      "url": "http://localhost:9528",
+      "enabled": true
+    }
+  }
+}
+```
+
+> Use `--port <port>` if 9528 is taken and update `url` accordingly; add `--host 0.0.0.0` for LAN access. The remote server has no built-in auth — do not expose it anonymously to the public internet.
+
 ### Install KooCLI
 
 ```bash
