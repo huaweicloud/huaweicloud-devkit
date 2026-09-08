@@ -29,6 +29,13 @@ const pkg = readJson('package.json');
 pkg.version = version;
 writeJson('package.json', pkg);
 
+{
+  const p = join(root, 'plugin.json');
+  const m = readJson(p);
+  m.version = version;
+  writeJson(p, m);
+}
+
 const lock = readJson('package-lock.json');
 lock.version = version;
 if (lock.packages && lock.packages['']) {
@@ -76,6 +83,7 @@ changelog = changelog.slice(0, insertAt) + entry + changelog.slice(insertAt);
 writeFileSync(join(root, changelogPath), changelog, 'utf8');
 
 const changedFiles = [
+  'plugin.json',
   '.release-please-manifest.json',
   'package.json',
   'package-lock.json',
@@ -92,7 +100,7 @@ execSync(`npx prettier --write ${changedFiles.join(' ')}`, { cwd: root, stdio: '
 const isPrerelease = version.includes('-');
 const prBranch = isPrerelease ? `release-${branch}-${version}` : `release-${version}`;
 run(`git checkout -b ${prBranch}`);
-run('git add .release-please-manifest.json package.json package-lock.json docs/CHANGELOG.md');
+run('git add plugin.json .release-please-manifest.json package.json package-lock.json docs/CHANGELOG.md');
 run(`git add ${pluginRoot}/.codex-plugin/plugin.json`);
 run(`git add ${pluginRoot}/.claude-plugin/plugin.json`);
 run(`git add ${pluginRoot}/.cursor-plugin/plugin.json`);
