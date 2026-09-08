@@ -1,8 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   semverParse,
@@ -274,7 +275,8 @@ test('upgradePackage 成功路径: 目标版本/重启/文案/缓存失效', asy
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'opencode', version: 'latest' }, { doQuery, spawnFn });
   assert.equal(r.success, true);
-  assert.equal(r.previousVersion, '1.1.2-next.0'); // repo package.json 当前版本
+  const repoPkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
+  assert.equal(r.previousVersion, repoPkg.version); // 与仓库 package.json 当前版本动态一致
   assert.equal(r.installedVersion, '1.1.1');
   assert.equal(r.requiresRestart, true);
   assert.match(r.message, /重启当前会话/);
