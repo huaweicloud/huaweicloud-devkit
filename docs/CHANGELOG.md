@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.2-next.2 (2026-09-08)
+
+- fix(release): make create-release-pr path helpers idempotent (#537)
+- docs: remove Cursor section from README
+- feat(mcp): add remote (Streamable HTTP) transport mode (#531)
+- docs: clarify Cursor marketplace status (not yet listed)
+- docs: document Cursor Directory support alongside other agents
+- docs: move Cursor Directory section below Documentation
+- fix: use agent-neutral wording for KooCLI config-write failure hint
+
 ## 1.1.2-next.1 (2026-09-08)
 
 - fix(release): bump version override to 1.1.2 for next preview line (#527)
