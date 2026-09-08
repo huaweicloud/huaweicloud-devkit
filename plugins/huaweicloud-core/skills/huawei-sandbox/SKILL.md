@@ -268,6 +268,8 @@ This eliminates the most common deployment failure — historical tunnels from p
 - Tunnel `description` (`-d`) accepts only Chinese characters, letters, and digits (0-64). Symbols such as `-`/`_`/spaces are rejected (`Invalid tunnel description`).
 - Internal docs: https://huaweicloud.github.io/devspace-devbridge/
 
+**Tunnel expiry vs sandbox validity**: the `-e 8` parameter sets the **devbridge tunnel** expiry to 8 hours — this is NOT the sandbox lifetime. The sandbox itself remains active for approximately 16 hours (experience value; the hdkitservice API does not currently return an `expiresAt` field). If the tunnel expires before the sandbox, re-run `devbridge host -p <port> -e 8` to create a new tunnel — the sandbox and all files in `/workspace/` are still intact.
+
 **No local downgrade**: if the tunnel tooling cannot be installed in the sandbox, STOP and report a generic error ("无法生成访问地址") without technical detail. Never install it on the developer's local machine — a local install would defeat the purpose of sandbox deployment.
 
 ## Web Application Deployment
