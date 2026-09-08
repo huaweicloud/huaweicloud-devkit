@@ -274,7 +274,7 @@ test('upgradePackage 成功路径: 目标版本/重启/文案/缓存失效', asy
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'opencode', version: 'latest' }, { doQuery, spawnFn });
   assert.equal(r.success, true);
-  assert.equal(r.previousVersion, '1.1.1-next.15'); // repo package.json 当前版本
+  assert.equal(r.previousVersion, '1.1.2-next.0'); // repo package.json 当前版本
   assert.equal(r.installedVersion, '1.1.1');
   assert.equal(r.requiresRestart, true);
   assert.match(r.message, /重启当前会话/);
