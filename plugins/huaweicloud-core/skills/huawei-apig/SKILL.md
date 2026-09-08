@@ -119,7 +119,7 @@ hcloud APIG BatchPublishOrOfflineApiV2 \
 ## Throttling
 
 ```bash
-hcloud APIG CreateThrottlingPolicyV2 --name=<n> --api_call_limits=1000
+hcloud APIG CreateRequestThrottlingPolicyV2 --instance_id=<id> --name=<n> --api_call_limits=1000
 ```
 
 ## Common Workflows

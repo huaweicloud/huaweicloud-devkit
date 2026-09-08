@@ -110,6 +110,39 @@ for (const rule of riskCatalog.rules) {
 
 console.log(`Validated HuaweiCloud Devkit with ${skills.length} skills.`);
 
+// KooCLI version pairing: package.json declares the paired version, and every
+// fixed download URL in skills + source must target cli/<kooCliVersion>.
+const kooCliVersion = pkg.kooCliVersion;
+assert.match(
+  kooCliVersion ?? '',
+  /^\d+\.\d+\.\d+$/,
+  'package.json must declare a "kooCliVersion" semver (e.g. "7.2.12")',
+);
+
+function walk(dir, acc = []) {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) walk(full, acc);
+    else if (/\.(md|mjs|cjs)$/.test(entry.name)) acc.push(full);
+  }
+  return acc;
+}
+
+for (const file of walk(join(pluginRoot, 'skills')).concat(walk(join(pluginRoot, 'src')))) {
+  const text = readFileSync(file, 'utf8');
+  for (const line of text.split('\n')) {
+    if (line.includes('cli/latest') && !line.includes('hcloud_install.sh')) {
+      assert.fail(`${file}: fixed download URL must not use cli/latest`);
+    }
+    const m = line.match(/cli\/(\d+\.\d+\.\d+)/);
+    if (m && m[1] !== kooCliVersion) {
+      assert.fail(`${file}: download URL pins cli/${m[1]}, expected cli/${kooCliVersion}`);
+    }
+    assert.doesNotMatch(line, /hwcloudcli\.obs\.cn-north-1/, `${file}: stale hwcloudcli endpoint`);
+  }
+}
+console.log(`Validated KooCLI version pairing: ${kooCliVersion}.`);
+
 const readmePaths = [join(root, 'README.md'), join(root, 'README.zh-CN.md')];
 
 readmePaths.forEach((path) => {

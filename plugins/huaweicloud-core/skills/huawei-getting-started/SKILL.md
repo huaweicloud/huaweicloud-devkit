@@ -10,11 +10,15 @@ version: 1
 
 ## KooCLI Installation
 
-| OS                   | Command                                                                                                               |
-| -------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| Windows (PowerShell) | See https://support.huaweicloud.com/qs-hcli/hcli_02_003.html for MSI download                                         |
-| Linux                | curl -LO "https://hwcloudcli.obs.cn-north-1.myhuaweicloud.com/cli/latest/hcloud_install.sh" && bash hcloud_install.sh |
-| macOS                | curl -LO "https://hwcloudcli.obs.cn-north-1.myhuaweicloud.com/cli/latest/hcloud_install.sh" && bash hcloud_install.sh |
+This plugin is paired with **KooCLI v7.2.12**. Install the pinned version:
+
+| OS                   | Command                                                                                                                                                                 |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Windows (PowerShell) | See https://support.huaweicloud.com/qs-hcli/hcli_02_003.html for MSI download                                                                                           |
+| Linux                | curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/7.2.12/huaweicloud-cli-linux-amd64.tar.gz" && tar -zxvf huaweicloud-cli-linux-amd64.tar.gz |
+| macOS                | curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/7.2.12/huaweicloud-cli-mac-amd64.tar.gz" && tar -zxvf huaweicloud-cli-mac-amd64.tar.gz     |
+
+> See `huaweicloud-cli-and-auth` skill for arm64 variants and the one-liner (latest) option.
 
 ## First-Time Setup
 
@@ -24,19 +28,21 @@ version: 1
 4. **Verify**: `hcloud configure list` to confirm profile, then `hcloud ECS ListServersDetails --cli-region=cn-north-4`
 5. For detailed auth guidance, see `huaweicloud-cli-and-auth` skill
 
-> **Security**: Never pass AK/SK as command-line arguments (`--ak=...`). Always use `npx huaweicloud-devkit auth init` (unified, interactive, recommended) or `hcloud configure init` (KooCLI only) to avoid secrets in shell history.
+> **Security**: Never pass AK/SK as command-line arguments (`--ak=...`). Always use `npx huaweicloud-devkit auth init` (unified, interactive) or `hcloud configure init` (KooCLI only) to avoid secrets in shell history.
 
 ### Non-Interactive Setup (Agent/CI Environments)
 
-When the interactive TUI is unavailable (Agent tools, CI/CD), use `hcloud configure set` — this must be run outside agent chat by the user:
+When the interactive TUI is unavailable (Agent tools, CI/CD), configure credentials outside agent chat using the unified entry point:
 
 ```bash
 # User executes in their terminal (NOT in agent chat):
-hcloud configure set --cli-access-key=<AK> --cli-secret-key=<SK> --cli-region=<region>
+npx huaweicloud-devkit auth init
 
-# Agent verifies:
+# Agent verifies through redacted tooling only:
 hcloud configure list
 ```
+
+> Do **not** instruct the user to run `hcloud configure set --cli-access-key=... --cli-secret-key=...` — AK/SK would enter shell history. Use `npx huaweicloud-devkit auth init` instead.
 
 ## Critical Warnings
 

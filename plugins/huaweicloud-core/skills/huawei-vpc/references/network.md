@@ -54,7 +54,7 @@ hcloud EIP AssociatePublicips --publicip_id=<id> \
   --publicip.associate_instance_id=<port-id> --publicip.associate_instance_type=PORT
 
 # Unbind
-hcloud EIP DisassociatePublicip --publicip_id=<id>
+hcloud EIP DisassociatePublicips --publicip_id=<id>
 
 # List
 hcloud EIP ListPublicips

@@ -115,6 +115,13 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   assert.ok(cliSkill.includes('huaweicloud-cli-windows-amd64.zip'), 'Windows download URL');
   assert.ok(cliSkill.includes('huaweicloud-cli-linux-amd64.tar.gz'), 'Linux download URL');
   assert.ok(cliSkill.includes('huaweicloud-cli-mac-arm64.tar.gz'), 'macOS download URL');
+
+  // Verify KooCLI version pairing: fixed downloads pin cli/<kooCliVersion>, no stale endpoint
+  const pkg = readJson(join(root, 'package.json'));
+  const kooCliVersion = pkg.kooCliVersion;
+  assert.match(kooCliVersion ?? '', /^\d+\.\d+\.\d+$/, 'package.json declares kooCliVersion');
+  assert.ok(cliSkill.includes(`cli/${kooCliVersion}`), `cli-and-auth skill pins cli/${kooCliVersion} download URLs`);
+  assert.ok(!cliSkill.includes('hwcloudcli.obs.cn-north-1'), 'no stale hwcloudcli endpoint in cli-and-auth');
 });
 
 test('skill SKILL.md files meet minimum content quality bar', () => {

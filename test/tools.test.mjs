@@ -16,6 +16,7 @@ import {
   resolveCredentialsWithRuntime,
   setRuntimeCredentials,
 } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
+import { getKooCliVersion } from '../plugins/huaweicloud-core/src/koocli-version.mjs';
 
 test('runVersionCheck uses hcloud version instead of --version', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-version-'));
@@ -40,6 +41,38 @@ test('runVersionCheck returns installed:false and errorCode on ENOENT', async ()
   assert.equal(result.installed, false);
   assert.equal(result.errorCode, 'HCLOUD_NOT_FOUND');
   assert.match(result.nextStep, /HCLOUD_BIN/);
+});
+
+test('runVersionCheck reports versionMismatch when installed version differs from kooCliVersion', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-version-'));
+  const script = join(dir, 'fake-hcloud.mjs');
+  writeFileSync(script, 'console.log(JSON.stringify({ version: "7.0.0", args: process.argv.slice(2) }));', 'utf8');
+
+  const result = await runVersionCheck({
+    executable: process.execPath,
+    executableArgs: [script],
+  });
+
+  assert.equal(result.installed, true);
+  assert.equal(result.installedVersion, '7.0.0');
+  assert.equal(result.kooCliVersion, getKooCliVersion());
+  assert.equal(result.versionMismatch, true);
+  assert.match(result.nextStep, /version mismatch/i);
+});
+
+test('runVersionCheck reports no versionMismatch when installed version matches kooCliVersion', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-version-'));
+  const script = join(dir, 'fake-hcloud.mjs');
+  writeFileSync(script, `console.log("当前KooCLI版本:${getKooCliVersion()}");`, 'utf8');
+
+  const result = await runVersionCheck({
+    executable: process.execPath,
+    executableArgs: [script],
+  });
+
+  assert.equal(result.installed, true);
+  assert.equal(result.installedVersion, getKooCliVersion());
+  assert.equal(result.versionMismatch, false);
 });
 
 test('TOOL_DEFINITIONS includes all required tools including sandbox', () => {

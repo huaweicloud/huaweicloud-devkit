@@ -15,9 +15,9 @@ hcloud IAM KeystoneShowUser                      # show user detail
 ## Credential Management
 
 ```bash
-hcloud IAM KeystoneListAccessKeys --user_id=<id> # list AK/SK for user
-hcloud IAM CreateLoginToken                      # create login token
-hcloud IAM GetAccountSummary                     # account summary
+hcloud IAM ListAccessKeysV5 --user_id=<id> # list AK/SK for user
+hcloud IAM CreateLoginToken                # create login token
+hcloud IAM GetAccountSummaryV5             # account summary
 ```
 
 ## Security Best Practices

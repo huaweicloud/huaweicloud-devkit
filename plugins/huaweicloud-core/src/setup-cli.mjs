@@ -36,6 +36,13 @@ import {
 } from './proxy/proxy-config.mjs';
 import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.mjs';
 import { queryDistTagsSync, determineTarget, semverCompare } from './update-check.mjs';
+import {
+  getKooCliVersion,
+  parseHcloudVersion,
+  compareVersion,
+  kooCliDownloadBase,
+  KOO_CLI_BASE,
+} from './koocli-version.mjs';
 
 const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 
@@ -3668,6 +3675,20 @@ async function cmdDoctor() {
   const hcloudOk = hcloudCheck.status === 0 && /KooCLI|Current.*version|当前KooCLI/i.test(hcloudOut);
   check('hcloud CLI installed', hcloudOk, 'Run: npx huaweicloud-devkit install-hcloud');
 
+  const kooCliTarget = getKooCliVersion();
+  if (hcloudOk && kooCliTarget) {
+    const installed = parseHcloudVersion(hcloudOut);
+    if (installed && compareVersion(installed, kooCliTarget) !== 0) {
+      warn++;
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m KooCLI version mismatch: installed ${installed}, this plugin is paired with ${kooCliTarget}.`,
+      );
+      console.log(
+        `        Reinstall the pinned version: curl -LO "${kooCliDownloadBase()}/huaweicloud-cli-linux-amd64.tar.gz" (or your platform's package), or run \`npx huaweicloud-devkit install-hcloud\`.`,
+      );
+    }
+  }
+
   // CodeArts sandbox mode warning
   const sandboxMode = detectCodeartsSandbox();
   if (sandboxMode === 'sandbox') {
@@ -4016,7 +4037,9 @@ async function cmdInstallHcloud() {
 
   const os = platform();
   const arch = process.arch;
-  const baseUrl = 'https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest';
+  const baseUrl = kooCliDownloadBase();
+  const kooCliVersion = getKooCliVersion();
+  const latestUrl = `${KOO_CLI_BASE}/latest`;
   const installDir = os === 'win32' ? join(homedir(), 'hcloud') : join(homedir(), '.local', 'bin');
 
   if (os === 'win32') {
@@ -4113,28 +4136,30 @@ async function cmdInstallHcloud() {
       }
     }
   } else if (os === 'linux') {
-    console.log('[Linux] One-liner install:');
-    console.log(
-      '  curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y',
-    );
-    console.log(`\nOr manual: ${arch === 'arm64' ? 'ARM64' : 'AMD64'}`);
+    console.log('[Linux] Auto-install (pinned to KooCLI <version>):'.replace('<version>', kooCliVersion || ''));
     const pkg = arch === 'arm64' ? 'linux-arm64' : 'linux-amd64';
     console.log(`  curl -LO "${baseUrl}/huaweicloud-cli-${pkg}.tar.gz"`);
     console.log(`  tar -zxvf huaweicloud-cli-${pkg}.tar.gz`);
     console.log(`  mv hcloud ~/.local/bin/`);
     console.log(`  hcloud version`);
+    console.log(`\n  Or one-liner (installs LATEST, may differ from pinned ${kooCliVersion || ''}):`);
+    console.log(`  curl -sSL ${latestUrl}/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y`);
+    console.log(
+      `  \x1b[33m⚠️  The one-liner installs the latest KooCLI. If \`hcloud version\` != ${kooCliVersion}, doctor/check_cli will warn — use the pinned download above instead.\x1b[0m`,
+    );
     console.log(`\nFull guide: https://support.huaweicloud.com/qs-hcli/hcli_02_003_02.html`);
   } else if (os === 'darwin') {
-    console.log('[macOS] One-liner install:');
-    console.log(
-      '  curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y',
-    );
-    console.log(`\nOr manual: ${arch === 'arm64' ? 'ARM64 (Apple Silicon)' : 'AMD64 (Intel)'}`);
+    console.log('[macOS] Auto-install (pinned to KooCLI <version>):'.replace('<version>', kooCliVersion || ''));
     const pkg = arch === 'arm64' ? 'mac-arm64' : 'mac-amd64';
     console.log(`  curl -LO "${baseUrl}/huaweicloud-cli-${pkg}.tar.gz"`);
     console.log(`  tar -zxvf huaweicloud-cli-${pkg}.tar.gz`);
     console.log(`  mv hcloud /usr/local/bin/`);
     console.log(`  hcloud version`);
+    console.log(`\n  Or one-liner (installs LATEST, may differ from pinned ${kooCliVersion || ''}):`);
+    console.log(`  curl -sSL ${latestUrl}/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y`);
+    console.log(
+      `  \x1b[33m⚠️  The one-liner installs the latest KooCLI. If \`hcloud version\` != ${kooCliVersion}, doctor/check_cli will warn — use the pinned download above instead.\x1b[0m`,
+    );
     console.log(`\nFull guide: https://support.huaweicloud.com/qs-hcli/hcli_02_003_03.html`);
   }
 

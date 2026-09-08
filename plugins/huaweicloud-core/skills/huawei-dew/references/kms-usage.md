@@ -24,6 +24,6 @@ Use SDK with KMS client in application runtime.
 
 ## Key Deletion
 
-- Schedule: hcloud KMS ScheduleKeyDeletion --key_id=<key-id> --pending_days=7
+- Schedule: hcloud KMS DeleteKey --key_id=<key-id> --pending_days=7
 - Cancel during pending window: hcloud KMS CancelKeyDeletion --key_id=<key-id>
 - WARNING: After deletion window passes, data encrypted with this key is UNRECOVERABLE

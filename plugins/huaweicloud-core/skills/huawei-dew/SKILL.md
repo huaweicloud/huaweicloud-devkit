@@ -31,16 +31,15 @@ Domain expertise for Huawei Cloud Data Encryption Workshop (DEW). Covers CSMS fo
 | Operation          | Description                                            |
 | ------------------ | ------------------------------------------------------ |
 | ListSecrets        | List all secrets (names only, no values)               |
-| DescribeSecret     | Get secret metadata (rotation config, KMS key, status) |
+| ShowSecret         | Get secret metadata (rotation config, KMS key, status) |
 | ListSecretVersions | List version IDs and stages (no values)                |
 
 ### Secret Value (blocked by policy — use runtime injection)
 
-| Operation         | Safe Alternative                              |
-| ----------------- | --------------------------------------------- |
-| DownloadSecret    | Use {{resolve:csms:secret-id}} in IaC or SDK  |
-| ShowSecretVersion | Use runtime injection, never in agent context |
-| GetSecretValue    | Blocked. Use MCP proxy resolve pattern        |
+| Operation          | Safe Alternative                              |
+| ------------------ | --------------------------------------------- |
+| DownloadSecretBlob | Use {{resolve:csms:secret-id}} in IaC or SDK  |
+| ShowSecretVersion  | Use runtime injection, never in agent context |
 
 ## KMS Operations
 
@@ -80,7 +79,7 @@ hcloud CSMS DownloadSecretBlob --secret_name=<name>
 | Error                | Root Cause -> Fix                                                           |
 | -------------------- | --------------------------------------------------------------------------- |
 | Secret not found     | Wrong region or project -> Verify secret ARN includes region/project        |
-| AccessDenied on CSMS | Missing IAM CSMS policy -> Add csms:DescribeSecret + kms:Decrypt            |
+| AccessDenied on CSMS | Missing IAM CSMS policy -> Add csms:ShowSecret + kms:Decrypt                |
 | KMS key disabled     | Key scheduled for deletion or manually disabled -> Enable or create new key |
 | Rotation stuck       | Lambda/Python function error -> Check rotation function logs                |
 

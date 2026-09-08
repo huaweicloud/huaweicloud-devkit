@@ -13,55 +13,57 @@ Use KooCLI `hcloud` for local inspection and reviewed operations. Never ask the 
 
 Official guide: `https://support.huaweicloud.com/qs-hcli/hcli_02_003.html`.
 
+> **Version pairing**: this plugin is paired with **KooCLI v7.2.12** (`kooCliVersion` in `package.json`). Prefer the pinned download below. The one-liner script `hcloud_install.sh` always installs the `latest` version and cannot be pinned — if you use it, `check_cli`/`doctor` will warn when the installed version does not match v7.2.12.
+
 ### Windows
 
-1. Download and unzip: `https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-windows-amd64.zip`
+1. Download and unzip: `https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/7.2.12/huaweicloud-cli-windows-amd64.zip`
 2. Extract to `%USERPROFILE%\hcloud`, add to user `PATH`
 3. Verify: `hcloud version`
 
 ### Linux (amd64 / arm64)
 
-One-liner (recommended):
-
-```bash
-curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y
-```
-
-Or manual download:
+Fixed download (recommended):
 
 ```bash
 # amd64
-curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-linux-amd64.tar.gz"
+curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/7.2.12/huaweicloud-cli-linux-amd64.tar.gz"
 tar -zxvf huaweicloud-cli-linux-amd64.tar.gz
 # arm64
-curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-linux-arm64.tar.gz"
+curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/7.2.12/huaweicloud-cli-linux-arm64.tar.gz"
 tar -zxvf huaweicloud-cli-linux-arm64.tar.gz
 ```
 
 Move to PATH: `mv $(pwd)/hcloud ~/.local/bin/`
 Verify: `hcloud version`
 
-### macOS (amd64 / arm64)
-
-One-liner (recommended):
+One-liner (installs `latest`, may drift from v7.2.12):
 
 ```bash
 curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y
 ```
 
-Or manual download:
+### macOS (amd64 / arm64)
+
+Fixed download (recommended):
 
 ```bash
 # amd64
-curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-mac-amd64.tar.gz"
+curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/7.2.12/huaweicloud-cli-mac-amd64.tar.gz"
 tar -zxvf huaweicloud-cli-mac-amd64.tar.gz
 # arm64 (Apple Silicon)
-curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/huaweicloud-cli-mac-arm64.tar.gz"
+curl -LO "https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/7.2.12/huaweicloud-cli-mac-arm64.tar.gz"
 tar -zxvf huaweicloud-cli-mac-arm64.tar.gz
 ```
 
 Move to PATH: `mv $(pwd)/hcloud /usr/local/bin/`
 Verify: `hcloud version`
+
+One-liner (installs `latest`, may drift from v7.2.12):
+
+```bash
+curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y
+```
 
 Agent processes find executables through `PATH`. If OpenCode/Codex cannot find `hcloud`, restart after updating `PATH`, or set `HCLOUD_BIN`.
 

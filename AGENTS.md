@@ -129,6 +129,7 @@ Policy vocabulary lives in `plugins/huaweicloud-core/safety/policy.json`. Both `
 - `hcloud` must be in PATH or `HCLOUD_BIN` set. Agent processes inherit the environment of their launcher.
 - Codex manifest (`plugin.json`) must NOT include a `hooks` field — it fails schema validation.
 - `npm version` only bumps `package.json`. When changing version, also update `plugins/huaweicloud-core/.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`. The `npm run validate` script enforces they match.
+- KooCLI version is paired via `kooCliVersion` in `package.json` (single source of truth). Install URLs in `src/setup-cli.mjs` and skills must pin `cli/<kooCliVersion>`; the `hcloud_install.sh` one-liner is the only allowed `cli/latest` (it cannot be pinned). `npm run validate` enforces this — before releasing, confirm whether `kooCliVersion` should bump to the latest KooCLI. `check_cli`/`doctor` warn (soft, non-blocking) when the installed `hcloud version` does not exactly match.
 - Skills are compact routing workflows, not service docs. Do not copy Huawei Cloud documentation into them. Point to `support.huaweicloud.com` instead.
 - For complex params (nested objects, arrays with special characters), prefer `--cli-jsonInput=<file>` over inline quoting to avoid shell escaping traps.
 - `HCLOUD_BIN` must be respected consistently across ALL tools and scripts (check_cli, doctor, runHcloud, etc.). Use `process.env.HCLOUD_BIN || 'hcloud'` everywhere, never hardcode `'hcloud'`.
