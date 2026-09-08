@@ -52,6 +52,34 @@ test('detectAgentHarness returns null when nothing matches', () => {
   });
 });
 
+test('detectAgentHarness classifies MCP client names to canonical harness', () => {
+  const keys = [
+    'OPENCODE_SESSION_ID',
+    'OPENCODE_CONFIG_PATH',
+    'CODEX_SESSION_ID',
+    'CODEX_CLI_VERSION',
+    'CODEX_SANDBOX',
+    'CODEX_THREAD_ID',
+    'OFFICEACE_SESSION_ID',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'OPENCLAW_SESSION_ID',
+    'OPENCLAW_CONFIG_ROOT',
+  ];
+  const saved = keys.map((k) => [k, process.env[k]]);
+  keys.forEach((k) => delete process.env[k]);
+  try {
+    assert.equal(detectAgentHarness({ name: 'codex-mcp-client' }), 'codex');
+    assert.equal(detectAgentHarness({ name: 'office-claw-mcp-connector-probe' }), 'officeace');
+    assert.equal(detectAgentHarness({ name: 'openclaw-bundle-mcp' }), 'openclaw');
+    assert.equal(detectAgentHarness({ name: 'opencode' }), 'opencode');
+  } finally {
+    for (const [k, v] of saved) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+});
+
 test('generateOrRecoverInstallId returns consistent string', async () => {
   const { generateOrRecoverInstallId } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
   const id1 = generateOrRecoverInstallId();

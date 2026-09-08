@@ -7,7 +7,7 @@ import { AGENTS, matchAgent, detectVersion, installSegment } from './agent-regis
 export function detectAgentHarness(clientInfo = {}) {
   if (process.env.AGENT_HARNESS) return process.env.AGENT_HARNESS;
   for (const agent of AGENTS) {
-    if (matchAgent(agent)) return agent.id;
+    if (matchAgent(agent, clientInfo)) return agent.id;
   }
   return clientInfo.name || null;
 }
@@ -22,7 +22,7 @@ export function detectAgent(clientInfo = {}) {
   }
 
   for (const agent of AGENTS) {
-    if (matchAgent(agent)) {
+    if (matchAgent(agent, clientInfo)) {
       return {
         harness: agent.id,
         version: detectVersion(agent.version) || clientInfo.version || '0.0.0',

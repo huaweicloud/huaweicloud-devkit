@@ -43,6 +43,7 @@ export const AGENTS = [
     id: 'codex',
     pathPatterns: null,
     envVars: ['CODEX_SESSION_ID', 'CODEX_CLI_VERSION', 'CODEX_SANDBOX', 'CODEX_THREAD_ID'],
+    clientNames: ['codex-mcp-client'],
     version: null,
   },
   {
@@ -67,6 +68,7 @@ export const AGENTS = [
     id: 'officeace',
     pathPatterns: ['/.office-claw/', '/.officeace/'],
     envVars: ['OFFICEACE_SESSION_ID', 'OFFICE_CLAW_CONFIG_ROOT'],
+    clientNames: ['office-claw-mcp-connector-probe'],
     version: { type: 'officeace' },
   },
   {
@@ -85,6 +87,7 @@ export const AGENTS = [
     id: 'openclaw',
     pathPatterns: ['/.openclaw/', '/.agents/huaweicloud-plugins/'],
     envVars: ['OPENCLAW_SESSION_ID', 'OPENCLAW_CONFIG_ROOT'],
+    clientNames: ['openclaw-bundle-mcp'],
     version: null,
   },
   {
@@ -161,9 +164,14 @@ export const AGENTS = [
   },
 ];
 
-export function matchAgent(agent) {
+export function matchAgent(agent, clientInfo = {}) {
   if (agent.pathPatterns && agent.pathPatterns.some((p) => selfPath.includes(p))) return true;
   if (agent.envVars && agent.envVars.some((v) => process.env[v])) return true;
+  const name = clientInfo.name;
+  if (!name) return false;
+  const lower = String(name).toLowerCase();
+  if (agent.id.toLowerCase() === lower) return true;
+  if (agent.clientNames && agent.clientNames.some((n) => n.toLowerCase() === lower)) return true;
   return false;
 }
 
