@@ -2424,10 +2424,6 @@ function officeaceStatus() {
 
 function hermesHomeDir() {
   if (process.env.HERMES_HOME) return process.env.HERMES_HOME;
-  // Hermes on Windows stores under LOCALAPPDATA, not ~/.hermes
-  if (platform() === 'win32' && process.env.LOCALAPPDATA) {
-    return join(process.env.LOCALAPPDATA, 'hermes');
-  }
   return join(homedir(), '.hermes');
 }
 
