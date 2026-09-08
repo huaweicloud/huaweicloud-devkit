@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.2-next.3 (2026-09-08)
+
+- chore: add mcpName field to package.json (#543)
+- fix(dew): distinguish auto-rotation enable vs RotateSecret trigger
+- fix(dew): CSMS CreateSecret uses --name, not --secret_name
+- test: add versionMismatch assertions for runVersionCheck
+- feat: pin KooCLI version and align skills with KooCLI 7.2.12
+
 ## 1.1.2-next.2 (2026-09-08)
 
 - fix(release): make create-release-pr path helpers idempotent (#537)
