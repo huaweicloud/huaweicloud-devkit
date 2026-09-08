@@ -201,12 +201,6 @@ npx --yes huaweicloud-devkit update --target atomcode
 npx --yes huaweicloud-devkit uninstall --target atomcode
 ```
 
-### Cursor
-
-Cursor is not an installer target. Connect it with the standard MCP config (see [Other Agents](#other-agents)).
-
-The repository is packaged to the [Open Plugins](https://open-plugins.com) standard for the [Cursor Directory](https://cursor.directory) marketplace and can be listed there by submitting this repository URL. The root-level `plugin.json`, `mcp.json`, `skills/`, and `rules/` files serve Cursor Directory discovery only and are **not** shipped in the npm tarball.
-
 ### Other Agents
 
 Any agent that supports MCP can use the standard config:

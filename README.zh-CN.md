@@ -201,12 +201,6 @@ npx --yes huaweicloud-devkit update --target atomcode
 npx --yes huaweicloud-devkit uninstall --target atomcode
 ```
 
-### Cursor
-
-Cursor 不是安装器 target，使用标准 MCP 配置接入（见「其他 Agent」一节）。
-
-本仓库已按 [Open Plugins](https://open-plugins.com) 标准打包，可提交仓库 URL 上架到 [Cursor Directory](https://cursor.directory) 市场。根目录的 `plugin.json`、`mcp.json`、`skills/`、`rules/` 仅用于 Cursor Directory 发现，**不会**打入 npm 包。
-
 ### 其他 Agent
 
 任何支持 MCP 协议的 Agent，直接使用标准 MCP 配置：
