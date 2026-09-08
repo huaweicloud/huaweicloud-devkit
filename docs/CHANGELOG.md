@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.2-next.3 (2026-09-08)
+
+- test: align sandbox warning assertion with unified codearts wording (#261)
+- style: prettier format for hcloud-cli obs hint
+- style: prettier format for hermes skills snapshot
+- fix(setup): unify CodeArts sandbox warning with accurate settings path (#261)
+- feat(hermes): add skills snapshot for one-shot bulk install
+- fix(iac): manifest-first batch approval, verified timer schedule, OBS plan hint
+- chore: add mcpName field to package.json (#543)
+- fix(dew): distinguish auto-rotation enable vs RotateSecret trigger
+- fix(dew): CSMS CreateSecret uses --name, not --secret_name
+- test: add versionMismatch assertions for runVersionCheck
+- feat: pin KooCLI version and align skills with KooCLI 7.2.12
+
 ## 1.1.2-next.2 (2026-09-08)
 
 - fix(release): make create-release-pr path helpers idempotent (#537)
