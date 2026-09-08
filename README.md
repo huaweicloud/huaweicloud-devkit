@@ -242,9 +242,9 @@ It listens on `127.0.0.1:9528` by default (no conflict with the IACMCPServer por
     "huaweicloud-devkit": {
       "type": "remote",
       "url": "http://localhost:9528",
-      "enabled": true
-    }
-  }
+      "enabled": true,
+    },
+  },
 }
 ```
 

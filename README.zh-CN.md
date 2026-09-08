@@ -242,9 +242,9 @@ npx --yes huaweicloud-devkit-mcp --transport remote
     "huaweicloud-devkit": {
       "type": "remote",
       "url": "http://localhost:9528",
-      "enabled": true
-    }
-  }
+      "enabled": true,
+    },
+  },
 }
 ```
 
