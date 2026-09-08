@@ -13,6 +13,8 @@ import { homedir, hostname, type as osType, networkInterfaces, release as osRele
 import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
+import { fetchWithProxy } from '../proxy/proxy-agent.mjs';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PLUGIN_DIR = join(__dirname, '..', '..');
@@ -315,7 +317,7 @@ function flushEvents() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-  fetch(endpoint, {
+  fetchWithProxy(endpoint, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(batch),

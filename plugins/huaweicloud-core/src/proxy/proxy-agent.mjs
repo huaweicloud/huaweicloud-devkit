@@ -26,6 +26,13 @@ export async function getProxyDispatcher(targetUrl) {
   return cachedDispatcher;
 }
 
+export async function fetchWithProxy(url, options = {}) {
+  const dispatcher = await getProxyDispatcher(url);
+  if (!dispatcher) return fetch(url, options);
+  const { fetch: undiciFetch } = await import('undici');
+  return undiciFetch(url, { ...options, dispatcher });
+}
+
 export function clearProxyDispatcherCache() {
   cachedDispatcher = undefined;
   cachedDispatcherProxyUrl = null;
