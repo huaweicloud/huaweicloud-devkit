@@ -1,9 +1,10 @@
 # HuaweiCloud DevKit
 
-[![参与讨论](https://img.shields.io/badge/参与讨论-Join%20the%20discussion-blue)](https://github.com/huaweicloud/huaweicloud-devkit/discussions)
+[![Discussions](https://img.shields.io/badge/Discussions-Join%20the%20discussion-blue)](https://github.com/huaweicloud/huaweicloud-devkit/discussions)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/huaweicloud-devkit)](https://www.npmjs.com/package/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.2-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **中文 | [English](README.md)**
 
@@ -31,7 +32,13 @@
 
 ## 快速开始
 
-> 省略 `--target` 时，安装器会自动检测机器上的 agent，检测到多个时**全部安装**。建议始终指定 `--target` 以明确安装目标。
+> 省略 `--target` 时，安装器会自动检测机器上的 agent：
+> - **未检测到**：交互终端会询问你如何继续（指定 target 安装 / 全部安装 / 接入通用 MCP agent）；非交互终端报错并列出支持列表。
+> - **检测到单个**：直接安装到该 agent。
+> - **检测到多个**：交互终端弹出多选；非交互终端报错并提示 `--target <agent>` 或 `--target all`。
+> 需要一步全量安装时执行 `npx --yes huaweicloud-devkit install --target all`（Codex 缺少 CLI 时跳过）。
+
+以下为全局命令（一次性作用于所有 agent）：
 
 ```bash
 npx --yes huaweicloud-devkit version  # 查看 CLI 版本和各 agent 已安装的插件版本
@@ -256,7 +263,7 @@ npx --yes huaweicloud-devkit uninstall --target atomcode
 npx --yes huaweicloud-devkit-mcp --transport remote
 ```
 
-默认监听 `127.0.0.1:9528`（与预置的 IACMCPServer 端口 9527 不冲突）。随后以远程方式连接（以 opencode 为例）：
+默认监听 `127.0.0.1:9528`。随后以远程方式连接（以 opencode 为例）：
 
 ```jsonc
 {
@@ -312,7 +319,7 @@ npx --yes huaweicloud-devkit install --target all
 ### 更新所有 Agent
 
 ```bash
-npx huaweicloud-devkit version
+npx --yes huaweicloud-devkit@latest version
 npx --yes huaweicloud-devkit@latest update --target all
 ```
 
@@ -320,7 +327,7 @@ npx --yes huaweicloud-devkit@latest update --target all
 
 ## 功能特性
 
-- **引导式云操作** — Agent 获得 20+ 华为云服务的分步操作指引（ECS、OBS、VPC、RDS、GaussDB、FunctionGraph、APIG、CCE 等）
+- **引导式云操作** — Agent 获得 20+ 常用华为云服务的分步操作指引（ECS、OBS、VPC、RDS、GaussDB、FunctionGraph、APIG、CCE 等）
 - **安全优先执行** — 所有写操作需用户明确批准；凭证和密钥自动脱敏
 - **执行前风险检查** — 公网暴露、凭证泄露、破坏性操作在执行前即被拦截
 - **区域感知** — 自动发现可用区域，创建资源前检查服务可用性
@@ -329,6 +336,8 @@ npx --yes huaweicloud-devkit@latest update --target all
 ## 支持的服务
 
 ECS、OBS、VPC、IAM、RDS、GaussDB、FunctionGraph、APIG、CCE、SMN/DMS、ModelArts、Cloud Eye、CTS、DEW、Billing、CBR、WAF/AAD、DDS/DCS、Deployment，以及入门指南。
+
+> 以上为预置指引的服务列表；其余 200+ 华为云服务仍可通过 KooCLI / API / SDK 路由调用（见 capability-discovery 与 cli-and-auth 元技能）。
 
 ## 文档
 

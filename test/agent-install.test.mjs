@@ -44,6 +44,15 @@ function run(target, home, cwd, cmd, extraEnv = {}) {
   });
 }
 
+function runAuto(home, cwd, cmd, extraEnv = {}) {
+  return spawnSync(process.execPath, [setupCli, cmd], {
+    cwd,
+    env: makeEnv(home, extraEnv),
+    encoding: 'utf8',
+    timeout: 60000,
+  });
+}
+
 function fakeCodexEnv(cwd, options = {}) {
   const binDir = join(cwd, 'fake-bin');
   mkdirSync(binDir, { recursive: true });
@@ -525,6 +534,369 @@ test('codex uninstall removes current and legacy plugin ids', () => {
     const log = readFileSync(env.logPath, 'utf8');
     assert.match(log, /"plugin","remove","huaweicloud-devkit@huaweicloud-devkit"/);
     assert.match(log, /"plugin","remove","huaweicloud-core@huaweicloud-devkit"/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install auto-detect with multiple agents requires explicit target in non-interactive shells', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAuto(home, cwd, 'install');
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /Multiple agents detected \(opencode, workbuddy\)/);
+    assert.match(res.stderr, /non-interactive shell/);
+    assert.match(res.stderr, /--target <agent>.*--target all/);
+    assert.ok(!existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins')), 'no partial install');
+    assert.ok(!existsSync(join(home, '.workbuddy', 'huaweicloud-plugins')), 'no partial install');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+function runAutoPty(home, cwd, cmd, input, extraEnv = {}) {
+  return spawnSync('script', ['-qec', `${process.execPath} ${setupCli} ${cmd}`, '/dev/null'], {
+    cwd,
+    env: makeEnv(home, extraEnv),
+    input,
+    encoding: 'utf8',
+    timeout: 90000,
+  });
+}
+
+function runAutoPtyStaged(home, cwd, cmd, stages, extraEnv = {}) {
+  const env = makeEnv(home, extraEnv);
+  const innerCmd = `${process.execPath} ${setupCli} ${cmd}`;
+  const feed = stages
+    .map((s) => (typeof s === 'number' ? `sleep ${s}` : `printf '%s\\n' "${s}"`))
+    .join('; ');
+  return spawnSync('/bin/bash', ['-c', `{ ${feed}; } | script -qec "${innerCmd}" /dev/null`], {
+    cwd,
+    env,
+    encoding: 'utf8',
+    timeout: 150000,
+  });
+}
+
+test('install auto-detect multiple agents interactive multi-select picks only chosen ones', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '1\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(!existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy not installed');
+    assert.doesNotMatch(res.stdout, /\[WorkBuddy\]/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install auto-detect multiple agents interactive multi-select picks all on comma list', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '1,2\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install auto-detect multiple agents interactive cancel installs nothing', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '0\n');
+    assert.equal(res.status, 1);
+    assert.doesNotMatch(res.stdout, /Installation complete/);
+    assert.ok(!existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins')), 'nothing installed on cancel');
+    assert.ok(!existsSync(join(home, '.workbuddy', 'huaweicloud-plugins')), 'nothing installed on cancel');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install --target all still installs every supported agent', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  const pluginDirs = [
+    join(home, '.config', 'opencode', 'huaweicloud-plugins'),
+    join(home, 'plugins', 'huaweicloud-devkit'),
+    join(home, '.codeartsdoer', 'huaweicloud-plugins'),
+    join(home, '.codeartswork', 'huaweicloud-plugins'),
+    join(home, '.workbuddy', 'huaweicloud-plugins'),
+    join(home, '.dsh', 'huaweicloud-plugins'),
+    join(home, '.office-claw', 'huaweicloud-plugins'),
+    join(home, '.hermes', 'huaweicloud-plugins'),
+    join(home, '.agents', 'huaweicloud-plugins'),
+    join(home, '.atomcode', 'huaweicloud-plugins'),
+  ];
+  try {
+    const res = run('all', home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    for (const dir of pluginDirs) {
+      assert.ok(existsSync(join(dir, '.installed')), `install marker missing for ${dir}`);
+    }
+    assert.match(res.stdout, /\[AtomCode\]/);
+    assert.match(res.stdout, /\[CodeArts\]/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install auto-detect single agent installs only that agent', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    const res = runAuto(home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit for opencode/);
+    assert.ok(countSkills(join(home, '.config', 'opencode', 'skills')) >= 6, 'opencode skills installed');
+    assert.ok(!existsSync(join(home, '.workbuddy')), 'workbuddy must not be created');
+    assert.doesNotMatch(res.stdout, /\[WorkBuddy\]/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install auto-detect with no agents reports error', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = runAuto(home, cwd, 'install');
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /No supported agent detected/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('status auto-detect multiple retains full-range behavior (install-only change)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAuto(home, cwd, 'status');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /\[OpenCode\]/);
+    assert.match(res.stdout, /\[AtomCode\]/, 'status still reaches all targets under auto-detect');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install auto-detect multiple agents interactive multi-select installs all on "all"', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', 'all\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install auto-detect multiple agents invalid input falls back to all detected', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '9\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Invalid selection: "9"/);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install rejects unknown --target', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = run('bogus', home, cwd, 'install');
+    assert.equal(res.status, 1);
+    assert.match(res.stderr, /Unknown target: bogus/);
+    assert.match(res.stderr, /Supported:/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('uninstall auto-detect multiple retains full-range behavior (install-only change)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAuto(home, cwd, 'uninstall');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /\[OpenCode\]/);
+    assert.match(res.stdout, /\[AtomCode\]/, 'uninstall still reaches all targets under auto-detect');
+    assert.match(res.stdout, /\[Hermes Agent\]/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 1 installs to the entered target', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = runAutoPty(home, cwd, 'install', '1\nopencode\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit for opencode/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 1 rejects unknown target', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = runAutoPty(home, cwd, 'install', '1\nbogus\n');
+    assert.equal(res.status, 1);
+    assert.match(res.stdout, /Unknown target: bogus/);
+    assert.ok(!existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins')), 'nothing installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 2 installs to all', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.office-claw'), { recursive: true });
+    writeFileSync(join(home, '.office-claw', 'capabilities.json'), '{}');
+    const res = runAutoPtyStaged(home, cwd, 'install', ['2', 30, home]);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit for all/);
+    assert.match(res.stdout, /\[OpenCode\]/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')));
+    assert.ok(existsSync(join(home, '.atomcode', 'huaweicloud-plugins', '.installed')));
+    // OfficeAce cannot fully install in this sandbox (its mcp-connectors.sqlite is absent), so it
+    // fails after the directory prompt is satisfied; that is expected and does not affect the
+    // all-routing proof above. Exit code is therefore 1.
+    assert.match(res.stdout, /Installation failed for: officeace/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 0 exits without installing', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = runAutoPty(home, cwd, 'install', '0\n');
+    assert.equal(res.status, 1);
+    assert.ok(!existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins')), 'nothing installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 3 writes Claude Code MCP config with backup', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ existing: true }));
+    const res = runAutoPty(home, cwd, 'install', '3\n');
+    assert.equal(res.status, 0, res.stderr);
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    assert.equal(cfg.existing, true);
+    assert.equal(cfg.mcpServers['huaweicloud-devkit'].command, 'npx');
+    assert.ok(existsSync(join(home, '.claude.json.bak')), 'backup created');
+    assert.match(res.stdout, /Restart the session to apply/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 3 writes Cursor mcp.json', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.cursor'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '3\n');
+    assert.equal(res.status, 0, res.stderr);
+    const cfg = JSON.parse(readFileSync(join(home, '.cursor', 'mcp.json'), 'utf8'));
+    assert.equal(cfg.mcpServers['huaweicloud-devkit'].command, 'npx');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 3 skips already-configured MCP', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const existing = { mcpServers: { 'huaweicloud-devkit': { command: 'custom' } } };
+    writeFileSync(join(home, '.claude.json'), JSON.stringify(existing));
+    const res = runAutoPty(home, cwd, 'install', '3\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /already configured; skipping/);
+    assert.ok(!existsSync(join(home, '.claude.json.bak')), 'no backup written when skipped');
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    assert.equal(cfg.mcpServers['huaweicloud-devkit'].command, 'custom');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('install zero-detect menu option 3 prints snippet when no MCP agent detected', { skip: process.platform === 'win32' }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = runAutoPty(home, cwd, 'install', '3\n');
+    assert.equal(res.status, 1);
+    assert.match(res.stdout, /config snippet you can paste/);
+    assert.match(res.stdout, /huaweicloud-devkit-mcp/);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

@@ -2,7 +2,7 @@
 description: Self-check Huawei Cloud DevKit readiness — hcloud, MCP, skills, auth.
 ---
 
-Use HuaweiCloud Devkit tools and skills to perform a comprehensive readiness check:
+Use HuaweiCloud DevKit tools and skills to perform a comprehensive readiness check:
 
 1. Check if KooCLI `hcloud` is installed: `huaweicloud_check_cli`. If not, guide user to install.
 2. Check if hcloud has active credentials: `hcloud configure list` (redacted).

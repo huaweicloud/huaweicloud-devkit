@@ -33,10 +33,11 @@
     "test": "node --test \"test/*.test.mjs\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.git\" \"#test/**\" \"#docs/**\"",
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.git\" \"#test/**\" \"#docs/**\" \"#.superpowers/**\"",
     "lint:js": "eslint .",
     "lint": "npm run lint:md && npm run lint:js",
-    "validate": "node ./scripts/validate-package.mjs",
+    "validate": "node ./scripts/validate-package.mjs && node ./scripts/sync-readme-badge.mjs",
+    "badge:sync": "node ./scripts/sync-readme-badge.mjs --write",
     "pack:verify": "node ./scripts/pack-verify.mjs",
     "postinstall": "node ./bin/dsh-postinstall.cjs"
   },

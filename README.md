@@ -4,6 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/huaweicloud-devkit)](https://www.npmjs.com/package/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.2-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **[中文](README.zh-CN.md) | English**
 
@@ -31,7 +32,17 @@ Supports OpenCode, Codex, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), Off
 
 ## Quick Start
 
-> If `--target` is omitted, the installer auto-detects agents on your machine. When multiple agents are detected, **all of them** will be installed. Specify `--target` to control which agent receives the install.
+> If `--target` is omitted, the installer auto-detects agents on your machine:
+> - **None detected**: interactive terminals ask what you want (install to one
+>   explicit target / install to all / wire up a generic MCP agent);
+>   non-interactive shells error out with the supported target list.
+> - **One detected**: installs directly to it.
+> - **Multiple detected**: interactive terminals show a multi-select chooser;
+>   non-interactive shells error and point at `--target <agent>` / `--target all`.
+> For a one-shot full setup, run `npx --yes huaweicloud-devkit install --target all`
+> (Codex is skipped when its CLI is missing).
+
+The commands below are global (they act on every agent):
 
 ```bash
 npx --yes huaweicloud-devkit version  # print CLI version and installed plugin versions per agent
@@ -256,7 +267,7 @@ If your agent supports `type: "remote"` (Streamable HTTP) instead of stdio, star
 npx --yes huaweicloud-devkit-mcp --transport remote
 ```
 
-It listens on `127.0.0.1:9528` by default (no conflict with the IACMCPServer port 9527). Then connect with a remote config (opencode example):
+It listens on `127.0.0.1:9528` by default. Then connect with a remote config (opencode example):
 
 ```jsonc
 {
@@ -312,7 +323,7 @@ npx --yes huaweicloud-devkit install --target all
 ### Update All Agents
 
 ```bash
-npx huaweicloud-devkit version
+npx --yes huaweicloud-devkit@latest version
 npx --yes huaweicloud-devkit@latest update --target all
 ```
 
@@ -322,7 +333,7 @@ locally cached older one.
 
 ## What It Does
 
-- **Guided cloud operations** — agents get step-by-step guidance for 20+ Huawei Cloud services (ECS, OBS, VPC, RDS, GaussDB, FunctionGraph, APIG, CCE, and more)
+- **Guided cloud operations** — agents get step-by-step guidance for 20+ commonly used Huawei Cloud services (ECS, OBS, VPC, RDS, GaussDB, FunctionGraph, APIG, CCE, and more)
 - **Safety-first execution** — all write operations require explicit user approval; credentials and secrets are automatically redacted from output
 - **Pre-execution risk checks** — public exposure, credential leaks, and destructive operations are caught before they run
 - **Regional awareness** — auto-discovers available regions and checks service availability before creating resources
@@ -331,6 +342,10 @@ locally cached older one.
 ## Supported Services
 
 ECS, OBS, VPC, IAM, RDS, GaussDB, FunctionGraph, APIG, CCE, SMN/DMS, ModelArts, Cloud Eye, CTS, DEW, Billing, CBR, WAF/AAD, DDS/DCS, Deployment, and Getting Started guides.
+
+> Above is the pre-wired guidance list; the remaining 200+ Huawei Cloud services
+> are still reachable via KooCLI / API / SDK routing (see capability-discovery
+> and cli-and-auth meta-skills).
 
 ## Documentation
 
