@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.3-next.0 (2026-09-09)
+
+- chore: set version-override to 1.1.3 (next -> 1.1.3-next.0) (#588)
+
 ## 1.1.2-next.8 (2026-09-09)
 
 - feat(rev4): send X-HW-Client-Version; SKILL wording; remove unreachable cmdUpdate reinstall (#586)
