@@ -62,7 +62,7 @@ npx --yes huaweicloud-devkit doctor --target opencode
 npx --yes huaweicloud-devkit status --target opencode
 npx --yes huaweicloud-devkit update --target opencode
 npx --yes huaweicloud-devkit uninstall --target opencode
-rm -rf ~/.npm/_npx/  # Linux/macOS only; Windows path TBD
+rm -rf ~/.npm/_npx/  # Linux/macOS; Windows: rmdir /s /q %LOCALAPPDATA%\npm-cache\_npx
 ```
 
 ### Codex
@@ -222,7 +222,7 @@ npx --yes huaweicloud-devkit install --target openclaw
 npx --yes huaweicloud-devkit status --target openclaw
 npx --yes huaweicloud-devkit update --target openclaw
 npx --yes huaweicloud-devkit uninstall --target openclaw
-rm -rf ~/.npm/_npx/  # Linux/macOS only; Windows path TBD
+rm -rf ~/.npm/_npx/  # Linux/macOS; Windows: rmdir /s /q %LOCALAPPDATA%\npm-cache\_npx
 ```
 
 ### AtomCode
