@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/huaweicloud-devkit)](https://www.npmjs.com/package/huaweicloud-devkit)
-[![Beta](https://img.shields.io/badge/beta-v1.1.2-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.3-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **[中文](README.zh-CN.md) | English**
 
