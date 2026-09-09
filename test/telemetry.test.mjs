@@ -64,6 +64,8 @@ test('detectAgentHarness classifies MCP client names to canonical harness', () =
     'OFFICE_CLAW_CONFIG_ROOT',
     'OPENCLAW_SESSION_ID',
     'OPENCLAW_CONFIG_ROOT',
+    'CURSOR_SESSION_ID',
+    'CURSOR_GIT_WORKDIR',
   ];
   const saved = keys.map((k) => [k, process.env[k]]);
   keys.forEach((k) => delete process.env[k]);
@@ -71,6 +73,8 @@ test('detectAgentHarness classifies MCP client names to canonical harness', () =
     assert.equal(detectAgentHarness({ name: 'codex-mcp-client' }), 'codex');
     assert.equal(detectAgentHarness({ name: 'office-claw-mcp-connector-probe' }), 'officeace');
     assert.equal(detectAgentHarness({ name: 'openclaw-bundle-mcp' }), 'openclaw');
+    assert.equal(detectAgentHarness({ name: 'officeace-agent' }), 'officeace');
+    assert.equal(detectAgentHarness({ name: 'cursor-vscode' }), 'cursor');
     assert.equal(detectAgentHarness({ name: 'opencode' }), 'opencode');
   } finally {
     for (const [k, v] of saved) {
