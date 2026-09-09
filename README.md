@@ -33,14 +33,15 @@ Supports OpenCode, Codex, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), Off
 ## Quick Start
 
 > If `--target` is omitted, the installer auto-detects agents on your machine:
+>
 > - **None detected**: interactive terminals ask what you want (install to one
 >   explicit target / install to all / wire up a generic MCP agent);
 >   non-interactive shells error out with the supported target list.
 > - **One detected**: installs directly to it.
 > - **Multiple detected**: interactive terminals show a multi-select chooser;
 >   non-interactive shells error and point at `--target <agent>` / `--target all`.
-> For a one-shot full setup, run `npx --yes huaweicloud-devkit install --target all`
-> (Codex is skipped when its CLI is missing).
+>   For a one-shot full setup, run `npx --yes huaweicloud-devkit install --target all`
+>   (Codex is skipped when its CLI is missing).
 
 The commands below are global (they act on every agent):
 

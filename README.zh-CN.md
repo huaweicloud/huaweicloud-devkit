@@ -33,10 +33,11 @@
 ## 快速开始
 
 > 省略 `--target` 时，安装器会自动检测机器上的 agent：
+>
 > - **未检测到**：交互终端会询问你如何继续（指定 target 安装 / 全部安装 / 接入通用 MCP agent）；非交互终端报错并列出支持列表。
 > - **检测到单个**：直接安装到该 agent。
 > - **检测到多个**：交互终端弹出多选；非交互终端报错并提示 `--target <agent>` 或 `--target all`。
-> 需要一步全量安装时执行 `npx --yes huaweicloud-devkit install --target all`（Codex 缺少 CLI 时跳过）。
+>   需要一步全量安装时执行 `npx --yes huaweicloud-devkit install --target all`（Codex 缺少 CLI 时跳过）。
 
 以下为全局命令（一次性作用于所有 agent）：
 
