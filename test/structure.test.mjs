@@ -607,6 +607,15 @@ test('stdio server warms update cache; shared protocol decorates first tool call
   assert.match(protocol, /peekCachedUpdateInfo\(\)/);
 });
 
+test('hdkitservice-api sends X-HW-Client-Version; SKILL session-start wording', () => {
+  const api = readFileSync(join(pluginRoot, 'src', 'sandbox', 'hdkitservice-api.mjs'), 'utf8');
+  assert.match(api, /X-HW-Client-Version/);
+  assert.match(api, /readInstalledVersion\(\)/);
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
+  assert.match(skill, /先调用 `huaweicloud_check_update` 检查插件版本/);
+  assert.match(skill, /若未先行检查，插件会在使用中收到服务端升级提示/);
+});
+
 test('READMEs recommend @latest for updates', () => {
   const en = readFileSync(join(root, 'README.md'), 'utf8');
   assert.match(en, /huaweicloud-devkit@latest update --target all/);

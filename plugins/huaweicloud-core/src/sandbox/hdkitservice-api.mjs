@@ -1,6 +1,7 @@
 import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
+import { readInstalledVersion } from '../update-check.mjs';
 
 function getHdkitBaseUrl() {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
@@ -19,6 +20,7 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     'Content-Type': 'application/json',
     'X-HW-AK': ak,
     'X-HW-SK': sk,
+    'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
   };
   if (securitytoken) {
     headers['X-HW-Security-Token'] = securitytoken;
