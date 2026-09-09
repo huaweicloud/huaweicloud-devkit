@@ -49,7 +49,7 @@ version: 1
 ## 环境注意
 
 - 生产环境：`voucher_status` / `voucher_claim` 无需传 `domain_id`，后端从 IAM 自动解析账号。
-- 测试环境：需传 `domain_id`（华为云账号 ID）；未传时返回 `测试环境需提供 domain_id`，此时可用 `hcloud IAM KeystoneListAuthDomains` 查询账号 ID 后补传。
+- 测试环境：需传 `domain_id`（华为云账号 ID）；未传时返回 `测试环境需提供 domain_id`。
 
 ## 注意事项
 

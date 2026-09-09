@@ -16,13 +16,14 @@ Domain expertise for Huawei Cloud Identity and Access Management (IAM). Covers u
 
 ## Critical Warnings
 
-| Trap                              | Why                                                             |
-| --------------------------------- | --------------------------------------------------------------- |
-| NEVER create IAM users for humans | Use OneAccess (IAM Identity Center) or federated SSO            |
-| NEVER create long-term AK/SK      | Use temporary STS tokens via agencies                           |
-| Wildcard policies dangerous       | Effect:Allow + Resource:* = full access. Always scope resources |
-| Agency trust is powerful          | Agencies let services assume roles. Always add conditions       |
-| Root account must have MFA        | Root AK/SK is all-powerful. Enable MFA immediately              |
+| Trap                                         | Why                                                                                                                                                                                                                                  |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| NEVER create IAM users for humans            | Use OneAccess (IAM Identity Center) or federated SSO                                                                                                                                                                                 |
+| NEVER create long-term AK/SK                 | Use temporary STS tokens via agencies                                                                                                                                                                                                |
+| Wildcard policies dangerous                  | Effect:Allow + Resource:* = full access. Always scope resources                                                                                                                                                                      |
+| Agency trust is powerful                     | Agencies let services assume roles. Always add conditions                                                                                                                                                                            |
+| Root account must have MFA                   | Root AK/SK is all-powerful. Enable MFA immediately                                                                                                                                                                                   |
+| `缺少必填参数 cli-domain-id` = invalid creds | KooCLI's account-id lookup failed (APIGW.0301). Re-run `auth init`. Domain-level params (`--domain_id`, `--agency.domain_id`) are separate — get the account-id via `hcloud STS GetCallerIdentity --cli-region=<region>` when needed |
 
 ## Policy Structure
 

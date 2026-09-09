@@ -112,7 +112,13 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
    sudo nginx -s reload 2>/dev/null || true
    ```
 
-7. **Inject credentials** (optional): `huaweicloud_sandbox_credentials` — enables cloud API access from sandbox. After injection, credentials are also written to `/tmp/hw_creds.sh` for shell access:
+7. **Inject credentials** (optional): `huaweicloud_sandbox_credentials` — enables cloud API access from sandbox. Pass `session_id` **or** `dev_stage_id` (at least one; both come from `sandbox_connect`, and `dev_stage_id` may be omitted to reuse the most recent connect). The tool validates the AK/SK against IAM first — an invalid SK is rejected here instead of failing later with `APIGW.0301` during exec. Example:
+
+   ```json
+   { "dev_stage_id": "<dev_stage_id from connect>" }
+   ```
+
+   After injection, credentials are also written to `/tmp/hw_creds.sh` for shell access (includes `HW_PROJECT_ID` when resolvable):
 
    ```bash
    # Source credentials in any sandbox shell before using hcloud/devbridge:
@@ -364,6 +370,14 @@ git -c http.sslVerify=false clone <repo-url>
 ```
 
 Then retry the clone. This bypasses SSL verification only for this single clone.
+
+**index.html overwritten by the platform landing page**: when a repo is cloned **inside** the sandbox (fallback path, used only when the operator machine has no git), the DevStation portal-template init may asynchronously write a default GitCode/AtomGit landing page over the repo's `index.html`, leaving a blank page after deploy. Symptoms: `git show HEAD:index.html` shows the user's original page but `/workspace/<repo>/index.html` is a Vue SPA shell referencing `cdn-static.gitcode.com`. Recovery:
+
+```bash
+cd /workspace/<repo> && git checkout HEAD -- index.html
+```
+
+Prevention: `sandbox_connect` clones locally and uploads the finished tree by default (`_repoStatus: 'uploaded_from_local'`), which never triggers this race — keep local git available so the fallback in-sandbox clone is not used. The overwrite itself is DevStation platform behavior; report persistent occurrences to the platform team.
 
 #### 3b: Install nginx (before project upload)
 

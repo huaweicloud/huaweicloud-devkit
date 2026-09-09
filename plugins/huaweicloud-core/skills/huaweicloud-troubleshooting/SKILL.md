@@ -50,18 +50,19 @@ Use evidence before fixes. Do not guess service behavior when request IDs, regio
 
 ## Common Error Codes
 
-| Error                    | Likely Cause                       | Fix                                                          |
-| ------------------------ | ---------------------------------- | ------------------------------------------------------------ |
-| AuthFailure / 401        | AK/SK invalid or expired           | Regenerate AK/SK, re-run `npx huaweicloud-devkit auth init`  |
-| AccessDenied / 403       | IAM permission missing             | Check `huawei-iam` skill, add required policy action         |
-| NoSuchKey / 404          | Resource not found                 | Verify resource ID, region, and project_id                   |
-| QuotaExceeded            | Account limit reached              | Request quota increase in console                            |
-| [USE_ERROR] 不正确的参数 | Wrong param name                   | Run `--help`, check `--param=value` format and nested prefix |
-| Ecs.0005                 | Flavor-image mismatch              | Check image `__support_*` against flavor virtualization type |
-| FSS.0400                 | FunctionGraph latest version error | Strip `:latest` from function URN                            |
-| FSS.1417                 | DEDICATEDGATEWAY missing params    | Add instance_id, group_id, protocol, env_name, env_id        |
-| APIC.7201                | Missing security_group_id          | Add `--security_group_id` param for APIG CreateInstanceV2    |
-| [NETWORK_ERROR]          | Transient network failure          | Retry with `maxRetries` param or wait and retry              |
+| Error                                   | Likely Cause                                                                 | Fix                                                                                            |
+| --------------------------------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| AuthFailure / 401                       | AK/SK invalid or expired                                                     | Regenerate AK/SK, re-run `npx huaweicloud-devkit auth init`                                    |
+| AccessDenied / 403                      | IAM permission missing                                                       | Check `huawei-iam` skill, add required policy action                                           |
+| NoSuchKey / 404                         | Resource not found                                                           | Verify resource ID, region, and project_id                                                     |
+| QuotaExceeded                           | Account limit reached                                                        | Request quota increase in console                                                              |
+| [USE_ERROR] 不正确的参数                | Wrong param name                                                             | Run `--help`, check `--param=value` format and nested prefix                                   |
+| `[USE_ERROR]缺少必填参数 cli-domain-id` | Invalid/expired credentials — KooCLI's account-id lookup failed (APIGW.0301) | Re-run `npx huaweicloud-devkit auth init`; KooCLI auto-resolves domain-id once creds are valid |
+| Ecs.0005                                | Flavor-image mismatch                                                        | Check image `__support_*` against flavor virtualization type                                   |
+| FSS.0400                                | FunctionGraph latest version error                                           | Strip `:latest` from function URN                                                              |
+| FSS.1417                                | DEDICATEDGATEWAY missing params                                              | Add instance_id, group_id, protocol, env_name, env_id                                          |
+| APIC.7201                               | Missing security_group_id                                                    | Add `--security_group_id` param for APIG CreateInstanceV2                                      |
+| [NETWORK_ERROR]                         | Transient network failure                                                    | Retry with `maxRetries` param or wait and retry                                                |
 
 ## KooCLI Error Types
 

@@ -22,13 +22,19 @@ Supports OpenCode, Codex, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), Off
 > ```
 >
 > Restore the default registry: `npm config delete registry`
+>
+> **Mirror lag**: npm mirrors (npmmirror, mirrors.huaweicloud.com) may lag behind the official registry for hours after a new release. If install fails with `ETARGET` or you get an older version, install via the official registry instead:
+>
+> ```bash
+> npx --yes --registry=https://registry.npmjs.org huaweicloud-devkit install --target <target>
+> ```
 
 ## Quick Start
 
 > If `--target` is omitted, the installer auto-detects agents on your machine. When multiple agents are detected, **all of them** will be installed. Specify `--target` to control which agent receives the install.
 
 ```bash
-npx --yes huaweicloud-devkit version  # print the installed plugin version per agent
+npx --yes huaweicloud-devkit version  # print CLI version and installed plugin versions per agent
 npx --yes huaweicloud-devkit uninstall --target all --clean-global  # also remove KooCLI + OBS config
 ```
 

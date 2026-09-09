@@ -10,7 +10,14 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 
 function makeEnv(home) {
-  return { ...process.env, USERPROFILE: home, HOME: home, HOMEDRIVE: home.slice(0, 2), HOMEPATH: home.slice(2) };
+  return {
+    ...process.env,
+    USERPROFILE: home,
+    HOME: home,
+    HOMEDRIVE: home.slice(0, 2),
+    HOMEPATH: home.slice(2),
+    HUAWEICLOUD_HOME: home,
+  };
 }
 
 function runCli(home, cwd, args) {
@@ -138,15 +145,35 @@ test('uninstall cleans up all platform directories', () => {
   }
 });
 
-test('version reports installed plugin version per agent', () => {
+test('version reports CLI version and installed plugin version per agent', () => {
   const home = mkdtempSync(join(tmpdir(), 'cp-verinst-'));
   const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
   try {
     assert.equal(runCli(home, cwd, ['install', '--target', 'opencode']).status, 0);
     const res = runCli(home, cwd, ['version']);
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stdout, /OpenCode: \d+\.\d+\.\d+/);
-    assert.doesNotMatch(res.stdout, /not installed/);
+    assert.match(res.stdout, /HuaweiCloud DevKit CLI: \d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?/);
+    assert.match(res.stdout, /Installed agent plugins:/);
+    assert.match(res.stdout, /OpenCode: \d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?/);
+    assert.match(res.stdout, /update --target <agent>/);
+    assert.doesNotMatch(res.stdout, /No Huawei Cloud DevKit plugin installed/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('version reports CLI version and install hint when no agent plugin is installed', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cp-verempty-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
+  try {
+    const res = runCli(home, cwd, ['version']);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /HuaweiCloud DevKit CLI: \d+\.\d+\.\d+(?:-[0-9A-Za-z-.]+)?(?:\+[0-9A-Za-z-.]+)?/);
+    assert.match(res.stdout, /No Huawei Cloud DevKit plugin installed/);
+    assert.match(res.stdout, /install --target <agent>/);
+    assert.doesNotMatch(res.stdout, /Installed agent plugins:/);
+    assert.doesNotMatch(res.stdout, /update --target <agent>/);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

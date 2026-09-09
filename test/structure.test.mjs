@@ -364,6 +364,19 @@ test('setup-cli.mjs handles KooCLI sandbox blockers and privacy agreement', () =
   assert.match(setup, /设置 → 对话流 → 智能体 终端命令运行模式 → 自动运行/);
 });
 
+test('setup-cli.mjs covers hermes restart hints, unix auto-install, and grouped status (#280)', () => {
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  // Hermes .installed marker is read for restart hints (#280-4)
+  assert.match(setup, /hermesPluginsDir\(\), '\.installed'/);
+  // Unix install-hcloud executes for real: download → extract → install → verify (#280-3)
+  assert.match(setup, /Auto-installing to \$\{binDir\}/);
+  assert.match(setup, /spawnSync\('curl', \['-fL', url, '-o', tmpTar\]/);
+  assert.match(setup, /spawnSync\('tar', \['-xzf', tmpTar, '-C', tmpdir\(\)\]/);
+  // status groups sections by install state, installed first (#280-9)
+  assert.match(setup, /stateOrder = \{ installed: 0, partial: 1, unknown: 2, not: 3 \}/);
+  assert.match(setup, /已安装: /);
+});
+
 test('setup-cli.mjs supports the dsh target end to end', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
   // SUPPORTED_AGENT_TARGETS includes dsh and parseTarget uses it

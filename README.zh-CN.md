@@ -22,13 +22,19 @@
 > ```
 >
 > 恢复默认镜像：`npm config delete registry`
+>
+> **镜像滞后**：npm 镜像（npmmirror、mirrors.huaweicloud.com）在新版本发布后可能滞后官方源数小时。若安装报 `ETARGET` 或拿到旧版本，改用官方源安装：
+>
+> ```bash
+> npx --yes --registry=https://registry.npmjs.org huaweicloud-devkit install --target <target>
+> ```
 
 ## 快速开始
 
 > 省略 `--target` 时，安装器会自动检测机器上的 agent，检测到多个时**全部安装**。建议始终指定 `--target` 以明确安装目标。
 
 ```bash
-npx --yes huaweicloud-devkit version  # 查看各 agent 已安装的插件版本
+npx --yes huaweicloud-devkit version  # 查看 CLI 版本和各 agent 已安装的插件版本
 npx --yes huaweicloud-devkit uninstall --target all --clean-global  # 一并删除 KooCLI 与 OBS 配置
 ```
 

@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.1.2-next.7 (2026-09-09)
+
+- fix(skills): correct cli-domain-id root cause — it signals invalid credentials, not a missing domain-id (#574)
+
+## 1.1.2-next.6 (2026-09-09)
+
+- style: prettier table alignment (#574)
+- docs(voucher): drop in-flow domain-id discovery detail from test-env note (#574)
+- fix(skills): teach agents to self-discover cli-domain-id via STS GetCallerIdentity (#574)
+- docs(iac): verified traps from 2026-09-08 e2e report - keypair/RDS/DCS/EIP-quota/long-args/destroy-alignment
+- docs(sandbox): index.html platform-overwrite symptom, recovery, and prevention (#263)
+- feat(auth): complete non-interactive guidance and detect existing KooCLI profile in auth init (#260)
+
+## 1.1.2-next.5 (2026-09-09)
+
+- fix: clarify devkit version output
+- docs: note mirror-lag fallback to official registry (#518)
+- style: add trailing newline to hook-plugin test
+- fix(auth): spawn hcloud without shell in project-id resolution
+- feat(auth): validate credentials before sandbox injection + auto-set project_id (#259, #262)
+- feat(telemetry): route telemetry upload through proxy
+- feat(telemetry): classify MCP client names to canonical agent harness
+- fix(telemetry): regenerate userHash after credential switch
+- fix(telemetry): bound hcloud capture and isolate failed event retries
+
 ## 1.1.2-next.4 (2026-09-08)
 
 - fix codex install auth probe and safety hook

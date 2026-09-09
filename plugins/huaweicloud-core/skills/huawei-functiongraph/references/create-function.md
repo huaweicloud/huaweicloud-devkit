@@ -69,4 +69,6 @@ hcloud IAM AssociateAgencyWithDomainPermission --agency_id=<id> --domain_id=<id>
 hcloud FunctionGraph CreateFunction --func_vpc.vpc_id=<vpc> --func_vpc.subnet_id=<subnet> --app_xrole=<name> ...
 ```
 
+> The `缺少必填参数 cli-domain-id` error means invalid credentials (APIGW.0301) — re-run `auth init`. `CreateAgency` / `AssociateAgencyWithDomainPermission` need the account-id for their `--agency.domain_id` / `--domain_id` params; get it via `hcloud STS GetCallerIdentity --cli-region=<region>`.
+
 | QuotaExceeded | Max 10 functions per project per region |

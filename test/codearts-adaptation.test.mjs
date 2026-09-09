@@ -11,13 +11,16 @@ const setupCli = join(root, 'bin', 'setup.cjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
 function makeEnv(home, _cwd) {
-  return {
+  const env = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
+    HUAWEICLOUD_HOME: home,
   };
+  delete env.HCLOUD_BIN;
+  return env;
 }
 
 function runCli(home, cwd, args) {
