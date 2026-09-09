@@ -294,7 +294,9 @@ test('upgradePackage next 目标: 用 next tag', async () => {
     return { status: 0 };
   };
   const doQuery = async () => ({ latest: '1.1.0', next: '1.1.1-next.15' });
-  await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  // currentVersion 显式注入：包版本在 prerelease/stable 之间切换（如 release 分支 bump 成稳定版）
+  // 不应改变升级 tag 的判定逻辑
+  await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn, currentVersion: '1.1.0-next.1' });
   assert.ok(spawned.some((a) => a === 'huaweicloud-devkit@next'));
 });
 
