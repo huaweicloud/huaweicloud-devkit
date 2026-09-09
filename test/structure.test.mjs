@@ -622,3 +622,17 @@ test('READMEs recommend @latest for updates', () => {
   const zh = readFileSync(join(root, 'README.zh-CN.md'), 'utf8');
   assert.match(zh, /huaweicloud-devkit@latest update --target all/);
 });
+
+test('cmdUpdate has no trailing unreachable reinstall; cmdReinstall keeps it', () => {
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  // cmdUpdate（'update'/'upgrade' 入口）本身不得做"卸载+重装"；各 target 分支均 return。
+  const cmdUpdateBody = setup.slice(setup.indexOf('async function cmdUpdate()'),
+    setup.indexOf('async function cmdReinstall()'));
+  assert.doesNotMatch(cmdUpdateBody, /await cmdUninstall\(\)/);
+  assert.doesNotMatch(cmdUpdateBody, /await cmdInstall\(\)/);
+  // cmdReinstall 是专职重装：卸载+重装逻辑必须保留。
+  const cmdReinstallBody = setup.slice(setup.indexOf('async function cmdReinstall()'),
+    setup.indexOf('async function cmdInstallHcloud()'));
+  assert.match(cmdReinstallBody, /await cmdUninstall\(\)/);
+  assert.match(cmdReinstallBody, /await cmdInstall\(\)/);
+});
