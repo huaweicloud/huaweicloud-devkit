@@ -4298,6 +4298,10 @@ async function cmdReinstall() {
 let confirmed = false;
 async function confirm(msg) {
   if (confirmed) return true;
+  if (!process.stdin.isTTY) {
+    console.log('Non-interactive shell: skipping confirmation (declined).');
+    return false;
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((ok) => {
     rl.question(`${msg} [y/N] `, (a) => {
