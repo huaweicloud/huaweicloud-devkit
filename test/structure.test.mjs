@@ -548,11 +548,11 @@ test('setup-cli.mjs resolves the active KooCLI profile for configureHcloud', () 
 
 test('setup-cli.mjs checks for updates on install/update via shared query', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
-  assert.match(setup, /function checkForUpdate\(\)/);
-  assert.match(setup, /queryDistTagsSync\(/);
+  assert.match(setup, /async function checkForUpdate\(\)/);
+  assert.match(setup, /queryDistTagsFetch\(/);
   assert.match(setup, /semverCompare\(/);
-  const calls = setup.match(/^\s+checkForUpdate\(\);$/gm);
-  assert.ok(calls && calls.length >= 2, 'checkForUpdate should be called in both cmdInstall and cmdUpdate');
+  const calls = setup.match(/^\s+await checkForUpdate\(\);$/gm);
+  assert.ok(calls && calls.length >= 2, 'checkForUpdate should be awaited in both cmdInstall and cmdUpdate');
 });
 
 test('tools.mjs resolves skills from the hermes directory', () => {

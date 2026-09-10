@@ -6,6 +6,8 @@ import { join, dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
+import { fetchWithProxy } from './proxy/proxy-agent.mjs';
+
 const IS_WINDOWS = process.platform === 'win32';
 const NPM_BIN = IS_WINDOWS ? 'npm.cmd' : 'npm';
 const NPX_BIN = IS_WINDOWS ? 'npx.cmd' : 'npx';
@@ -187,7 +189,33 @@ export function writeSkipState(file, dismissedVersion, { at = Date.now(), days =
   return state;
 }
 
-export function queryDistTagsSync({ timeoutMs = 5000, cwd } = {}) {
+function debugLog(message) {
+  if (process.env.HUAWEICLOUD_DEVKIT_DEBUG === '1' || process.env.HUAWEICLOUD_DEVKIT_DEBUG === 'true') {
+    console.error(`[debug] ${message}`);
+  }
+}
+
+export function queryDistTagsFetch({ timeoutMs = 15000 } = {}) {
+  let registry = 'https://registry.npmjs.org';
+  if (process.env.HUAWEICLOUD_NPM_REGISTRY) {
+    registry = process.env.HUAWEICLOUD_NPM_REGISTRY.replace(/\/+$/, '');
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`)
+    .then((resp) => {
+      clearTimeout(timer);
+      if (!resp || !resp.ok) return null;
+      return resp.json().catch(() => null);
+    })
+    .catch((error) => {
+      clearTimeout(timer);
+      debugLog(`queryDistTagsFetch: ${error?.message || error}`);
+      return null;
+    });
+}
+
+export function queryDistTagsSync({ timeoutMs = 15000, cwd } = {}) {
   try {
     const result = spawnSync(NPM_BIN, ['view', 'huaweicloud-devkit', 'dist-tags', '--json'], {
       encoding: 'utf8',
@@ -195,14 +223,18 @@ export function queryDistTagsSync({ timeoutMs = 5000, cwd } = {}) {
       windowsHide: true,
       cwd,
     });
-    if (result.status !== 0) return null;
+    if (result.status !== 0) {
+      debugLog(`queryDistTagsSync: npm view exited with status ${result.status}`);
+      return null;
+    }
     return parseDistTagsOutput(result.stdout);
-  } catch {
+  } catch (error) {
+    debugLog(`queryDistTagsSync: ${error?.message || error}`);
     return null;
   }
 }
 
-export function queryDistTags({ timeoutMs = 5000, cwd } = {}) {
+export function queryDistTags({ timeoutMs = 15000, cwd } = {}) {
   return new Promise((resolve) => {
     let child;
     try {
@@ -210,7 +242,8 @@ export function queryDistTags({ timeoutMs = 5000, cwd } = {}) {
         windowsHide: true,
         cwd,
       });
-    } catch {
+    } catch (error) {
+      debugLog(`queryDistTags: ${error?.message || error}`);
       resolve(null);
       return;
     }
@@ -218,20 +251,26 @@ export function queryDistTags({ timeoutMs = 5000, cwd } = {}) {
       try {
         child.kill();
       } catch {}
+      debugLog(`queryDistTags: timed out after ${timeoutMs}ms`);
       resolve(null);
     }, timeoutMs);
     let stdout = '';
     child.stdout.on('data', (d) => {
       stdout += String(d);
     });
-    child.on('error', () => {
+    child.on('error', (error) => {
       clearTimeout(timer);
+      debugLog(`queryDistTags: ${error?.message || error}`);
       resolve(null);
     });
     child.on('close', (code) => {
       clearTimeout(timer);
-      if (code === 0) resolve(parseDistTagsOutput(stdout));
-      else resolve(null);
+      if (code === 0) {
+        resolve(parseDistTagsOutput(stdout));
+      } else {
+        debugLog(`queryDistTags: npm view exited with code ${code}`);
+        resolve(null);
+      }
     });
   });
 }

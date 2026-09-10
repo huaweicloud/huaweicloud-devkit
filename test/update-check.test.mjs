@@ -16,6 +16,7 @@ import {
   writeSkipState,
   queryDistTagsSync,
   queryDistTags,
+  queryDistTagsFetch,
   getCachedUpdateInfo,
   peekCachedUpdateInfo,
   invalidateUpdateCache,
@@ -179,6 +180,48 @@ test('queryDistTags 异步非阻塞: 同步调用立即返回 Promise', async ()
     assert.equal(typeof result.latest, 'string');
     assert.ok(result.next === null || typeof result.next === 'string');
   }
+});
+
+test('queryDistTagsFetch 直接 fetch registry 返回 distTags', async () => {
+  const result = await queryDistTagsFetch({ timeoutMs: 15000 });
+  // 结果允许为 null（受限网络）；若成功则形状必须正确
+  if (result !== null) {
+    assert.equal(typeof result.latest, 'string');
+    assert.ok(result.next === null || typeof result.next === 'string');
+  }
+});
+
+test('queryDistTagsFetch 尊重 HUAWEICLOUD_NPM_REGISTRY 覆盖', async () => {
+  const prev = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = 'http://127.0.0.1:1';
+  try {
+    const result = await queryDistTagsFetch({ timeoutMs: 2000 });
+    assert.equal(result, null); // 不可达 registry → 静默降级 null
+  } finally {
+    if (prev === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = prev;
+  }
+});
+
+test('queryDistTagsSync 失败时在 DEBUG 下输出日志而非静默', () => {
+  const prev = process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+  const logs = [];
+  const origErr = console.error;
+  console.error = (msg) => logs.push(String(msg));
+  process.env.HUAWEICLOUD_DEVKIT_DEBUG = '1';
+  try {
+    // 指向不可达 registry 的 npm view 会失败（fast，避免慢网拖长）
+    const result = queryDistTagsSync({
+      timeoutMs: 2000,
+      cwd: '/nonexistent-dir-to-force-failure',
+    });
+    assert.equal(result, null);
+  } finally {
+    console.error = origErr;
+    if (prev === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+    else process.env.HUAWEICLOUD_DEVKIT_DEBUG = prev;
+  }
+  assert.ok(logs.some((l) => l.includes('[debug] queryDistTagsSync')), `expected debug log, got: ${logs}`);
 });
 
 test('getCachedUpdateInfo 单飞: 并发只查一次', async () => {

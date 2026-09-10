@@ -36,7 +36,7 @@ import {
   getProxySettings,
 } from './proxy/proxy-config.mjs';
 import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.mjs';
-import { queryDistTagsSync, determineTarget, semverCompare } from './update-check.mjs';
+import { queryDistTagsFetch, determineTarget, semverCompare } from './update-check.mjs';
 import { getKooCliVersion, compareVersion, kooCliDownloadBase, KOO_CLI_BASE } from './koocli-version.mjs';
 import { findHcloudBin, hcloudProbeNextStep, probeHcloud } from './hcloud-probe.mjs';
 
@@ -3049,9 +3049,9 @@ function parseTarget() {
   process.exit(1);
 }
 
-function checkForUpdate() {
+async function checkForUpdate() {
   if (pkgVersion === '0.0.0') return;
-  const distTags = queryDistTagsSync({ timeoutMs: 5000 });
+  const distTags = await queryDistTagsFetch({ timeoutMs: 15000 });
   const target = determineTarget(pkgVersion, distTags ?? {});
   if (target && semverCompare(target, pkgVersion) > 0) {
     const tag = distTags.next && semverCompare(target, distTags.next) === 0 ? 'next' : 'latest';
@@ -3088,7 +3088,7 @@ async function cmdInstall() {
   console.log(BANNER);
   console.log(`Installing HuaweiCloud DevKit${target !== 'opencode' ? ` for ${target}` : ''}...\n`);
   checkNode();
-  checkForUpdate();
+  await checkForUpdate();
   const installFailures = [];
 
   async function runInstallStep(stepTarget, title, fn) {
@@ -3847,7 +3847,7 @@ async function cmdDoctor() {
 async function cmdUpdate() {
   console.log(BANNER);
   const target = parseTarget();
-  checkForUpdate();
+  await checkForUpdate();
 
   if (target === 'opencode') {
     if (!existsSync(join(opencodePluginsDir(), 'src', 'mcp-server.mjs'))) {
