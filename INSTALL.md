@@ -1,4 +1,4 @@
-﻿# HuaweiCloud Devkit 安装指南
+﻿# HuaweiCloud DevKit 安装指南
 
 ## 前置条件
 
@@ -92,7 +92,7 @@ npm run validate
 预期输出：
 
 - 测试全部通过
-- "Validated HuaweiCloud Devkit with 28 skills."
+- "Validated HuaweiCloud DevKit with 29 skills."
 
 ## 开发环境
 

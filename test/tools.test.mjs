@@ -148,6 +148,21 @@ test('huaweicloud_explain_error maps APIGW.0301 to credential/project_id guidanc
   assert.match(text, /project_id/);
 });
 
+test('callTool rejects invalid numeric timeoutMs instead of silently ignoring it', async () => {
+  await assert.rejects(
+    () =>
+      callTool('huaweicloud_run_readonly_command', { args: ['ECS', 'ListServersDetails'], timeoutMs: 'not-a-number' }),
+    /positive number/,
+  );
+});
+
+test('callTool accepts maxRetries 0 and integer timeoutMs (no false rejection)', async () => {
+  // maxRetries: 0 is legitimate ("no retries") and must pass normalization (#530)
+  await assert.doesNotReject(() =>
+    callTool('huaweicloud_plan_cli_command', { args: ['ECS', 'ListServersDetails'], maxRetries: 0, timeoutMs: 30000 }),
+  );
+});
+
 test('huaweicloud_hook_check_artifacts detects broad IAM policy', async () => {
   const result = await callTool('huaweicloud_hook_check_artifacts', {
     artifacts: [

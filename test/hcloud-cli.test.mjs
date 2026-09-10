@@ -11,11 +11,15 @@ async function withTempAuthHome(fn) {
   const home = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-auth-'));
   const previous = {
     HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
+    HCLOUD_CONFIG_PATH: process.env.HCLOUD_CONFIG_PATH,
+    HCLOUD_OBS_CONFIG_PATH: process.env.HCLOUD_OBS_CONFIG_PATH,
     HW_ACCESS_KEY: process.env.HW_ACCESS_KEY,
     HW_SECRET_KEY: process.env.HW_SECRET_KEY,
     HW_SECURITY_TOKEN: process.env.HW_SECURITY_TOKEN,
   };
   process.env.HUAWEICLOUD_HOME = home;
+  process.env.HCLOUD_CONFIG_PATH = join(home, '.hcloud', 'config.json');
+  process.env.HCLOUD_OBS_CONFIG_PATH = join(home, '.obsutilconfig');
   delete process.env.HW_ACCESS_KEY;
   delete process.env.HW_SECRET_KEY;
   delete process.env.HW_SECURITY_TOKEN;

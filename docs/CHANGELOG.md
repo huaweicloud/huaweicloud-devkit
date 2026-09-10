@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.1.3-next.4 (2026-09-10)
+
+- fix: 受限网络下升级检测静默失败——checkForUpdate 改 fetch registry + 15s 超时 + DEBUG 日志 (#612) (#613)
+- ci: trigger CI on push to dev (#501) (#605)
+
+## 1.1.3-next.3 (2026-09-10)
+
+- fix(safety): cover Nova*/Reset* destructive ops in hook risk rules (#501) (#594)
+- fix(auth): resolve KooCLI config from homedir, not HUAWEICLOUD_HOME (#501) (#595)
+- docs(iac): remove deposit (保证金) guidance - vouchers no longer require a deposit
+- chore(docs): remove committed superpowers plan doc (already gitignored) (#501) (#599)
+- fix(deps): override smol-toml to 1.8.0 to clear npm audit high vuln (#501)
+
+## 1.1.3-next.2 (2026-09-09)
+
+- feat(install): interactive zero-detection install menu + generic MCP wiring (#592)
+
+## 1.1.3-next.1 (2026-09-09)
+
+- style: prettier-align credential priority tables in README (#520)
+- fix(auth): skip S2 fingerprint drift when KooCLI authEncrypt stores ciphertext (#533)
+- docs: align README credential docs with SKILL.md - priority, auth_switch, env security warning (#520)
+- fix(mcp): allow maxRetries 0 in numeric arg validation (#530)
+- fix(mcp): reject invalid numeric args (timeoutMs/maxRetries) instead of silently ignoring (#530)
+- docs: replace static beta version badge with npm version badge (#530)
+- docs(obs): mb return-code trap and website endpoint propagation delay (#485)
+- test(update-check): decouple upgrade-tag logic from repo package.json version
+
+## 1.1.3-next.0 (2026-09-09)
+
+- chore: set version-override to 1.1.3 (next -> 1.1.3-next.0) (#588)
+
 ## 1.1.2-next.8 (2026-09-09)
 
 - feat(rev4): send X-HW-Client-Version; SKILL wording; remove unreachable cmdUpdate reinstall (#586)

@@ -43,7 +43,9 @@ export function globalCredentialsPath() {
 }
 
 export function obsConfigPath() {
-  return join(baseHome(), '.obsutilconfig');
+  // obsutil reads its config from a fixed location (~/.obsutilconfig), independent
+  // of HUAWEICLOUD_HOME. HCLOUD_OBS_CONFIG_PATH exists solely for hermetic test injection.
+  return process.env.HCLOUD_OBS_CONFIG_PATH || join(homedir(), '.obsutilconfig');
 }
 
 export function readGlobalCredentials() {

@@ -116,3 +116,58 @@ test('evidence snippets redact secret-shaped values', () => {
   assert.doesNotMatch(JSON.stringify(result), /PlainText123/);
   assert.match(JSON.stringify(result), /<redacted>/);
 });
+
+test('evaluateCommandRisk warns on prefixed delete family (Nova*)', () => {
+  for (const op of ['NovaDeleteServer', 'NovaDeleteKeypair', 'NovaDeleteServerGroup', 'NovaDeleteServerMetadataItem']) {
+    const result = evaluateCommandRisk(`hcloud ECS ${op} --x=1`);
+    assert.equal(result.decision, 'warn', `${op} should warn`);
+    assert.equal(result.findings[0].ruleId, 'hwc-destructive-delete-operation');
+  }
+});
+
+test('evaluateCommandRisk warns on reset family (ResetServerPassword etc.)', () => {
+  for (const op of ['ResetServerPassword', 'ResetServerVnc', 'ResetServerMetadata']) {
+    const result = evaluateCommandRisk(`hcloud ECS ${op} --server_id=x`);
+    assert.equal(result.decision, 'warn', `${op} should warn`);
+    assert.equal(result.findings[0].ruleId, 'hwc-destructive-reset-operation');
+  }
+});
+
+test('evaluateCommandRisk still allows read-only Nova list ops', () => {
+  const result = evaluateCommandRisk('hcloud ECS NovaListServers --limit=1');
+  assert.equal(result.decision, 'allow');
+  assert.equal(result.findings.length, 0);
+});
+
+test('evaluateCommandRisk blocks IAM admin policy creation via CLI flag', () => {
+  const result = evaluateCommandRisk(
+    'hcloud IAM CreatePolicy --policy.name=admin-all --policy.action=*:*:* --policy.effect=Allow',
+  );
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
+test('evaluateCommandRisk warns on batch reset family (BatchReset*)', () => {
+  const cases = [
+    ['ECS', 'BatchResetServersPassword'],
+    ['DRS', 'BatchResetPassword'],
+    ['ModelArts', 'BatchResetPoolNodes'],
+  ];
+  for (const [svc, op] of cases) {
+    const result = evaluateCommandRisk(`hcloud ${svc} ${op} --x=1`);
+    assert.equal(result.decision, 'warn', `${svc} ${op} should warn`);
+    assert.equal(result.findings[0].ruleId, 'hwc-destructive-reset-operation');
+  }
+});
+
+test('evaluateCommandRisk does not flag delete-protection toggles as destructive', () => {
+  for (const op of [
+    'ShowDeleteProtection',
+    'UpdateDeleteProtection',
+    'EnableDeleteProtection',
+    'DisableDeleteProtection',
+  ]) {
+    const result = evaluateCommandRisk(`hcloud ECS ${op} --server_id=x`);
+    assert.equal(result.decision, 'allow', `${op} should not be flagged as destructive delete`);
+  }
+});

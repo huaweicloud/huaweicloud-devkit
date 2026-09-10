@@ -1,6 +1,6 @@
 ---
 name: huaweicloud-core
-description: OpenCode entry skill for HuaweiCloud Devkit. Use when a developer asks OpenCode to use Huawei Cloud Skills, KooCLI, APIs, SDKs, future MCP tools, or low-priority Terraform guidance.
+description: OpenCode entry skill for HuaweiCloud DevKit. Use when a developer asks OpenCode to use Huawei Cloud Skills, KooCLI, APIs, SDKs, future MCP tools, or low-priority Terraform guidance.
 ---
 
 # Huawei Cloud Core For OpenCode

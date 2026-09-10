@@ -16,6 +16,7 @@ import {
   writeSkipState,
   queryDistTagsSync,
   queryDistTags,
+  queryDistTagsFetch,
   getCachedUpdateInfo,
   peekCachedUpdateInfo,
   invalidateUpdateCache,
@@ -181,6 +182,51 @@ test('queryDistTags 异步非阻塞: 同步调用立即返回 Promise', async ()
   }
 });
 
+test('queryDistTagsFetch 直接 fetch registry 返回 distTags', async () => {
+  const result = await queryDistTagsFetch({ timeoutMs: 15000 });
+  // 结果允许为 null（受限网络）；若成功则形状必须正确
+  if (result !== null) {
+    assert.equal(typeof result.latest, 'string');
+    assert.ok(result.next === null || typeof result.next === 'string');
+  }
+});
+
+test('queryDistTagsFetch 尊重 HUAWEICLOUD_NPM_REGISTRY 覆盖', async () => {
+  const prev = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = 'http://127.0.0.1:1';
+  try {
+    const result = await queryDistTagsFetch({ timeoutMs: 2000 });
+    assert.equal(result, null); // 不可达 registry → 静默降级 null
+  } finally {
+    if (prev === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = prev;
+  }
+});
+
+test('queryDistTagsSync 失败时在 DEBUG 下输出日志而非静默', () => {
+  const prev = process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+  const logs = [];
+  const origErr = console.error;
+  console.error = (msg) => logs.push(String(msg));
+  process.env.HUAWEICLOUD_DEVKIT_DEBUG = '1';
+  try {
+    // 指向不可达 registry 的 npm view 会失败（fast，避免慢网拖长）
+    const result = queryDistTagsSync({
+      timeoutMs: 2000,
+      cwd: '/nonexistent-dir-to-force-failure',
+    });
+    assert.equal(result, null);
+  } finally {
+    console.error = origErr;
+    if (prev === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+    else process.env.HUAWEICLOUD_DEVKIT_DEBUG = prev;
+  }
+  assert.ok(
+    logs.some((l) => l.includes('[debug] queryDistTagsSync')),
+    `expected debug log, got: ${logs}`,
+  );
+});
+
 test('getCachedUpdateInfo 单飞: 并发只查一次', async () => {
   invalidateUpdateCache();
   let calls = 0;
@@ -225,6 +271,32 @@ test('getCachedUpdateInfo 失败节流: 失败后短时间不重查', async () =
   assert.equal(r1.result, 'check_failed');
   assert.equal(r2.result, 'check_failed');
   assert.equal(calls, 1); // 同会话节流
+  invalidateUpdateCache();
+});
+
+test('must-notify: 节流过期后重查成功 → 立即补提 hint', async () => {
+  invalidateUpdateCache();
+  let calls = 0;
+  const failThenSucceed = async () => {
+    calls++;
+    return calls === 1 ? null : { latest: '1.1.1', next: null };
+  };
+  const t0 = 1_000_000_000; // 大基数：failedAt 初始 0 时 now-0 必须 > throttle 才触发首查
+  const r1 = await getCachedUpdateInfo('1.0.2', { doQuery: failThenSucceed, now: t0 });
+  assert.equal(r1.result, 'check_failed'); // 首次失败，记 failedAt=t0
+  assert.equal(peekCachedUpdateInfo(), null); // 失败→无提示（不漏但不刷警告）
+
+  // 同会话节流期内（t0+1ms）：不重查，仍 check_failed
+  const r2 = await getCachedUpdateInfo('1.0.2', { doQuery: failThenSucceed, now: t0 + 1 });
+  assert.equal(r2.result, 'check_failed');
+  assert.equal(calls, 1); // 节流内未触发新查询
+
+  // 节流过期后（t0 + FAIL_THROTTLE*2）：重查成功 → 立即补提（迟到但不漏）
+  const late = 6 * 60 * 1000; // > FAIL_THROTTLE_MS(5min)
+  const r3 = await getCachedUpdateInfo('1.0.2', { doQuery: failThenSucceed, now: t0 + late });
+  assert.equal(r3.result, 'update_available');
+  assert.equal(r3.targetVersion, '1.1.1');
+  assert.equal(calls, 2);
   invalidateUpdateCache();
 });
 
@@ -294,7 +366,9 @@ test('upgradePackage next 目标: 用 next tag', async () => {
     return { status: 0 };
   };
   const doQuery = async () => ({ latest: '1.1.0', next: '1.1.1-next.15' });
-  await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  // currentVersion 显式注入：包版本在 prerelease/stable 之间切换（如 release 分支 bump 成稳定版）
+  // 不应改变升级 tag 的判定逻辑
+  await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn, currentVersion: '1.1.0-next.1' });
   assert.ok(spawned.some((a) => a === 'huaweicloud-devkit@next'));
 });
 

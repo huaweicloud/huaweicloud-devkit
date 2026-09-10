@@ -16,8 +16,11 @@ import { redactSecrets } from '../safety-policy.mjs';
 
 export { hasRuntimeCredentials };
 
-function baseHome() {
-  return process.env.HUAWEICLOUD_HOME || homedir();
+export function kooCliConfigPath() {
+  // KooCLI keeps its config at a fixed location (~/.hcloud/config.json),
+  // independent of HUAWEICLOUD_HOME (that env only relocates devkit's own S1/S3).
+  // HCLOUD_CONFIG_PATH exists solely for hermetic test injection.
+  return process.env.HCLOUD_CONFIG_PATH || join(homedir(), '.hcloud', 'config.json');
 }
 
 export function fingerprint(ak, sk) {
@@ -38,22 +41,34 @@ export function isManualModified(path) {
 }
 
 export function readKooCliProfiles() {
-  const configPath = join(baseHome(), '.hcloud', 'config.json');
+  const configPath = kooCliConfigPath();
   if (!existsSync(configPath)) return { error: 'KooCLI config not found' };
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf8'));
     const current = String(raw.current || 'default');
     const profiles = Array.isArray(raw.profiles) ? raw.profiles : [];
     const mtimeMs = statSync(configPath).mtimeMs;
+    // KooCLI 7.x stores AK/SK encrypted (authEncrypt=true): the on-disk values
+    // are ciphertext, so a fingerprint computed from them can never match the
+    // plaintext S1/S3 stores. Blind the comparable fields instead of treating
+    // ciphertext as a real credential and misreporting a S2 drift (#533).
+    // KooCLI serializes the flag as the string "true", not a boolean.
+    const encrypted = raw.authEncrypt === true || raw.authEncrypt === 'true';
     return {
       current,
       mtimeMs,
       configPath,
-      profiles: profiles.map((p) => ({
-        name: String(p.name || ''),
-        fingerprint: fingerprint(p.accessKeyId, p.secretAccessKey),
-        accessKeyId: p.accessKeyId || '',
-      })),
+      authEncrypt: encrypted,
+      profiles: profiles.map((p) =>
+        encrypted
+          ? { name: String(p.name || ''), fingerprint: '', accessKeyId: '', encrypted: true }
+          : {
+              name: String(p.name || ''),
+              fingerprint: fingerprint(p.accessKeyId, p.secretAccessKey),
+              accessKeyId: p.accessKeyId || '',
+              encrypted: false,
+            },
+      ),
     };
   } catch {
     return { error: 'KooCLI config parse failed' };
@@ -117,7 +132,7 @@ export function scanState() {
       store: 'S2-current',
       source: 'KooCLI current profile',
       fingerprint: currentFp,
-      manualModified: isManualModified(kooCli.configPath || join(baseHome(), '.hcloud', 'config.json')),
+      manualModified: isManualModified(kooCli.configPath || kooCliConfigPath()),
     });
   }
   if (s1Fingerprint && s3Fingerprint && s1Fingerprint !== s3Fingerprint) {
@@ -138,6 +153,9 @@ export function scanState() {
       runtimeFingerprint,
     },
     kooCliCurrent: kooCli.error ? null : kooCli.current,
+    // S2 is encrypted storage (authEncrypt) → its fingerprint is unavailable,
+    // so the S2-current drift check is intentionally skipped (#533).
+    s2Encrypted: Boolean(!kooCli.error && kooCli.authEncrypt),
     inconsistencies,
     hasRuntime,
     runtimeFingerprint,

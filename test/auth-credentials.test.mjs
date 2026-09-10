@@ -30,6 +30,8 @@ function withTempHome(fn) {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-auth-'));
   const previous = {
     HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
+    HCLOUD_CONFIG_PATH: process.env.HCLOUD_CONFIG_PATH,
+    HCLOUD_OBS_CONFIG_PATH: process.env.HCLOUD_OBS_CONFIG_PATH,
     HW_ACCESS_KEY: process.env.HW_ACCESS_KEY,
     HW_SECRET_KEY: process.env.HW_SECRET_KEY,
     HW_SECURITY_TOKEN: process.env.HW_SECURITY_TOKEN,
@@ -41,6 +43,8 @@ function withTempHome(fn) {
     HCLOUD_FAKE_LOG: process.env.HCLOUD_FAKE_LOG,
   };
   process.env.HUAWEICLOUD_HOME = dir;
+  process.env.HCLOUD_CONFIG_PATH = join(dir, '.hcloud', 'config.json');
+  process.env.HCLOUD_OBS_CONFIG_PATH = join(dir, '.obsutilconfig');
   delete process.env.HW_ACCESS_KEY;
   delete process.env.HW_SECRET_KEY;
   delete process.env.HW_SECURITY_TOKEN;

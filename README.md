@@ -3,7 +3,8 @@
 [![Discussions](https://img.shields.io/badge/Discussions-Join%20the%20discussion-blue)](https://github.com/huaweicloud/huaweicloud-devkit/discussions)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
-[![Beta](https://img.shields.io/badge/beta-v1.1.0-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
+[![npm version](https://img.shields.io/npm/v/huaweicloud-devkit)](https://www.npmjs.com/package/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.3-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **[中文](README.zh-CN.md) | English**
 
@@ -31,7 +32,18 @@ Supports OpenCode, Codex, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), Off
 
 ## Quick Start
 
-> If `--target` is omitted, the installer auto-detects agents on your machine. When multiple agents are detected, **all of them** will be installed. Specify `--target` to control which agent receives the install.
+> If `--target` is omitted, the installer auto-detects agents on your machine:
+>
+> - **None detected**: interactive terminals ask what you want (install to one
+>   explicit target / install to all / wire up a generic MCP agent);
+>   non-interactive shells error out with the supported target list.
+> - **One detected**: installs directly to it.
+> - **Multiple detected**: interactive terminals show a multi-select chooser;
+>   non-interactive shells error and point at `--target <agent>` / `--target all`.
+>   For a one-shot full setup, run `npx --yes huaweicloud-devkit install --target all`
+>   (Codex is skipped when its CLI is missing).
+
+The commands below are global (they act on every agent):
 
 ```bash
 npx --yes huaweicloud-devkit version  # print CLI version and installed plugin versions per agent
@@ -51,7 +63,7 @@ npx --yes huaweicloud-devkit doctor --target opencode
 npx --yes huaweicloud-devkit status --target opencode
 npx --yes huaweicloud-devkit update --target opencode
 npx --yes huaweicloud-devkit uninstall --target opencode
-rm -rf ~/.npm/_npx/  # Linux/macOS only; Windows path TBD
+rm -rf ~/.npm/_npx/  # Linux/macOS; Windows: rmdir /s /q %LOCALAPPDATA%\npm-cache\_npx
 ```
 
 ### Codex
@@ -211,7 +223,7 @@ npx --yes huaweicloud-devkit install --target openclaw
 npx --yes huaweicloud-devkit status --target openclaw
 npx --yes huaweicloud-devkit update --target openclaw
 npx --yes huaweicloud-devkit uninstall --target openclaw
-rm -rf ~/.npm/_npx/  # Linux/macOS only; Windows path TBD
+rm -rf ~/.npm/_npx/  # Linux/macOS; Windows: rmdir /s /q %LOCALAPPDATA%\npm-cache\_npx
 ```
 
 ### AtomCode
@@ -246,7 +258,7 @@ Any agent that supports MCP can use the standard config:
 
 No installation required — `npx` handles everything.
 
-> Set `HW_ACCESS_KEY`/`HW_SECRET_KEY` in the MCP config `env` field for project-level credentials.
+> For manual MCP registrations like this, do not put credentials in the config. `HW_ACCESS_KEY`/`HW_SECRET_KEY` are reserved for **platform/CI-injected** accounts (e.g. a DevSpace-managed default account) — configure your own account via `npx huaweicloud-devkit auth init` (the single entry point), and switch accounts at runtime with the `huaweicloud_auth_init` / `huaweicloud_auth_switch` MCP tools. See `plugins/huaweicloud-core/skills/huaweicloud-cli-and-auth/SKILL.md` for the full credential-resolution priority.
 
 #### Connecting over Remote (HTTP)
 
@@ -256,7 +268,7 @@ If your agent supports `type: "remote"` (Streamable HTTP) instead of stdio, star
 npx --yes huaweicloud-devkit-mcp --transport remote
 ```
 
-It listens on `127.0.0.1:9528` by default (no conflict with the IACMCPServer port 9527). Then connect with a remote config (opencode example):
+It listens on `127.0.0.1:9528` by default. Then connect with a remote config (opencode example):
 
 ```jsonc
 {
@@ -284,7 +296,24 @@ npx --yes huaweicloud-devkit install-hcloud
 npx --yes huaweicloud-devkit auth init
 ```
 
-Synchronizes AK/SK to KooCLI, OBS, and sandbox APIs in one step.
+Synchronizes AK/SK to KooCLI, OBS, and sandbox APIs in one step — this is the **single entry point**. Never hard-code AK/SK into agent or shell config.
+
+**Account switching at runtime** (within an agent session): use the MCP tools `huaweicloud_auth_init` (in-memory, highest priority) or `huaweicloud_auth_switch` (actions: `temporary` / `persist` / `clear`). In sandbox/DevSpace environments where a default account is injected via `HW_ACCESS_KEY`/`HW_SECRET_KEY`, a plain `auth init` will not override it — use `huaweicloud_auth_switch action=persist` to make the session account win.
+
+**Credential resolution priority** (highest first):
+
+| #   | Source                                                  | Set by                                                                        |
+| --- | ------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| 1   | Runtime (session) credentials                           | `huaweicloud_auth_init` / `huaweicloud_auth_switch action=temporary`          |
+| 2   | S1 global file with `configuredBySession: true`         | `huaweicloud_auth_switch action=persist`                                      |
+| 3   | Environment variables (`HW_ACCESS_KEY`/`HW_SECRET_KEY`) | platform/DevSpace-injected default account                                    |
+| 4   | CodeArts / CodeArts Work                                | `.codeartsdoer/mcp/mcp_settings.json` / `.codeartswork/mcp/mcp_settings.json` |
+| 5   | S1 global file (no session flag)                        | `auth init`                                                                   |
+| 6   | KooCLI profile                                          | `~/.hcloud/config.json` (KooCLI commands only)                                |
+
+> **Security**: never put your own AK/SK into the MCP config `env` field — they'd be stored in plaintext and could leak if the config file is committed to git. `env` is for platform/CI injection only.
+
+Full details: `plugins/huaweicloud-core/skills/huaweicloud-cli-and-auth/SKILL.md`.
 
 ### Install All Agents
 
@@ -295,7 +324,7 @@ npx --yes huaweicloud-devkit install --target all
 ### Update All Agents
 
 ```bash
-npx huaweicloud-devkit version
+npx --yes huaweicloud-devkit@latest version
 npx --yes huaweicloud-devkit@latest update --target all
 ```
 
@@ -305,7 +334,7 @@ locally cached older one.
 
 ## What It Does
 
-- **Guided cloud operations** — agents get step-by-step guidance for 20+ Huawei Cloud services (ECS, OBS, VPC, RDS, GaussDB, FunctionGraph, APIG, CCE, and more)
+- **Guided cloud operations** — agents get step-by-step guidance for 20+ commonly used Huawei Cloud services (ECS, OBS, VPC, RDS, GaussDB, FunctionGraph, APIG, CCE, and more)
 - **Safety-first execution** — all write operations require explicit user approval; credentials and secrets are automatically redacted from output
 - **Pre-execution risk checks** — public exposure, credential leaks, and destructive operations are caught before they run
 - **Regional awareness** — auto-discovers available regions and checks service availability before creating resources
@@ -314,6 +343,10 @@ locally cached older one.
 ## Supported Services
 
 ECS, OBS, VPC, IAM, RDS, GaussDB, FunctionGraph, APIG, CCE, SMN/DMS, ModelArts, Cloud Eye, CTS, DEW, Billing, CBR, WAF/AAD, DDS/DCS, Deployment, and Getting Started guides.
+
+> Above is the pre-wired guidance list; the remaining 200+ Huawei Cloud services
+> are still reachable via KooCLI / API / SDK routing (see capability-discovery
+> and cli-and-auth meta-skills).
 
 ## Documentation
 

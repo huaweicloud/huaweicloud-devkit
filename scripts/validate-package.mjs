@@ -108,7 +108,7 @@ for (const rule of riskCatalog.rules) {
   assert.doesNotMatch(JSON.stringify(rule), /\baccountId\b|\bticketId\b|\brawText\b|\binternalSource\b/i);
 }
 
-console.log(`Validated HuaweiCloud Devkit with ${skills.length} skills.`);
+console.log(`Validated HuaweiCloud DevKit with ${skills.length} skills.`);
 
 // KooCLI version pairing: package.json declares the paired version, and every
 // fixed download URL in skills + source must target cli/<kooCliVersion>.
