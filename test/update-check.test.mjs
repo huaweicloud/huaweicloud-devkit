@@ -221,7 +221,10 @@ test('queryDistTagsSync 失败时在 DEBUG 下输出日志而非静默', () => {
     if (prev === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
     else process.env.HUAWEICLOUD_DEVKIT_DEBUG = prev;
   }
-  assert.ok(logs.some((l) => l.includes('[debug] queryDistTagsSync')), `expected debug log, got: ${logs}`);
+  assert.ok(
+    logs.some((l) => l.includes('[debug] queryDistTagsSync')),
+    `expected debug log, got: ${logs}`,
+  );
 });
 
 test('getCachedUpdateInfo 单飞: 并发只查一次', async () => {
