@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.3-next.4 (2026-09-10)
+
+- fix: 受限网络下升级检测静默失败——checkForUpdate 改 fetch registry + 15s 超时 + DEBUG 日志 (#612) (#613)
+- ci: trigger CI on push to dev (#501) (#605)
+
 ## 1.1.3-next.3 (2026-09-10)
 
 - fix(safety): cover Nova*/Reset* destructive ops in hook risk rules (#501) (#594)
