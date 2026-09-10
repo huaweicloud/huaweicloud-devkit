@@ -289,19 +289,19 @@ export function invalidateUpdateCache() {
   lastHint = null;
 }
 
-function cacheValid() {
-  return Boolean(cachedDistTags) && Date.now() - cachedAt <= TTL_MS;
+function cacheValid(now = Date.now()) {
+  return Boolean(cachedDistTags) && now - cachedAt <= TTL_MS;
 }
 
-export async function getCachedUpdateInfo(current, { doQuery = queryDistTags } = {}) {
+export async function getCachedUpdateInfo(current, { doQuery = queryDistTags, now = Date.now() } = {}) {
   if (process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE === '1') {
-    lastHint = judgeUpdate(current, null);
+    lastHint = judgeUpdate(current, null, undefined, now);
     return lastHint;
   }
   const skipState = readSkipState(resolveSkipFilePath());
-  if (!cacheValid()) {
-    if (!cachedDistTags && Date.now() - failedAt < FAIL_THROTTLE_MS) {
-      lastHint = judgeUpdate(current, null, skipState);
+  if (!cacheValid(now)) {
+    if (!cachedDistTags && now - failedAt < FAIL_THROTTLE_MS) {
+      lastHint = judgeUpdate(current, null, skipState, now);
       return lastHint;
     }
     if (!inflightQuery) {
@@ -309,9 +309,9 @@ export async function getCachedUpdateInfo(current, { doQuery = queryDistTags } =
         .then((distTags) => {
           if (distTags) {
             cachedDistTags = distTags;
-            cachedAt = Date.now();
+            cachedAt = now;
           } else {
-            failedAt = Date.now();
+            failedAt = now;
           }
           return distTags;
         })
@@ -320,7 +320,7 @@ export async function getCachedUpdateInfo(current, { doQuery = queryDistTags } =
         });
     }
     const distTags = await inflightQuery;
-    lastHint = judgeUpdate(current, distTags, skipState);
+    lastHint = judgeUpdate(current, distTags, skipState, now);
     return lastHint;
   }
   lastHint = judgeUpdate(current, cachedDistTags, skipState);

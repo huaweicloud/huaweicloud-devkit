@@ -274,6 +274,32 @@ test('getCachedUpdateInfo 失败节流: 失败后短时间不重查', async () =
   invalidateUpdateCache();
 });
 
+test('must-notify: 节流过期后重查成功 → 立即补提 hint', async () => {
+  invalidateUpdateCache();
+  let calls = 0;
+  const failThenSucceed = async () => {
+    calls++;
+    return calls === 1 ? null : { latest: '1.1.1', next: null };
+  };
+  const t0 = 1_000_000_000; // 大基数：failedAt 初始 0 时 now-0 必须 > throttle 才触发首查
+  const r1 = await getCachedUpdateInfo('1.0.2', { doQuery: failThenSucceed, now: t0 });
+  assert.equal(r1.result, 'check_failed'); // 首次失败，记 failedAt=t0
+  assert.equal(peekCachedUpdateInfo(), null); // 失败→无提示（不漏但不刷警告）
+
+  // 同会话节流期内（t0+1ms）：不重查，仍 check_failed
+  const r2 = await getCachedUpdateInfo('1.0.2', { doQuery: failThenSucceed, now: t0 + 1 });
+  assert.equal(r2.result, 'check_failed');
+  assert.equal(calls, 1); // 节流内未触发新查询
+
+  // 节流过期后（t0 + FAIL_THROTTLE*2）：重查成功 → 立即补提（迟到但不漏）
+  const late = 6 * 60 * 1000; // > FAIL_THROTTLE_MS(5min)
+  const r3 = await getCachedUpdateInfo('1.0.2', { doQuery: failThenSucceed, now: t0 + late });
+  assert.equal(r3.result, 'update_available');
+  assert.equal(r3.targetVersion, '1.1.1');
+  assert.equal(calls, 2);
+  invalidateUpdateCache();
+});
+
 test('peekCachedUpdateInfo 返回已就绪 hint | null', async () => {
   invalidateUpdateCache();
   assert.equal(peekCachedUpdateInfo(), null);
