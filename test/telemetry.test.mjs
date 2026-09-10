@@ -19,6 +19,27 @@ function withNoAgentEnv(fn) {
   }
 }
 
+// 隔离 telemetry.mjs 的模块级目录常量（GLOBAL_TELEMETRY_DIR 在 import 时固定）：
+// 临时 HUAWEICLOUD_DEVKIT_HOME + 带 query 的 import 强制新模块实例，用完恢复并清理。
+async function withIsolatedTelemetry(fn) {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hwdk-telemetry-'));
+  const prevHome = process.env.HUAWEICLOUD_DEVKIT_HOME;
+  process.env.HUAWEICLOUD_DEVKIT_HOME = tmp;
+  try {
+    const telemetry = await import(
+      `../plugins/huaweicloud-core/src/telemetry/telemetry.mjs?iso=${Date.now()}`,
+    );
+    return await fn(telemetry);
+  } finally {
+    if (prevHome === undefined) delete process.env.HUAWEICLOUD_DEVKIT_HOME;
+    else process.env.HUAWEICLOUD_DEVKIT_HOME = prevHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 test('detectAgentHarness returns known when no env set', () => {
   const result = detectAgentHarness();
   assert.ok(result === null || (typeof result === 'string' && result.length > 0));
@@ -79,11 +100,12 @@ test('detectAgentHarness prefers real host env over clientInfo.name', () => {
 });
 
 test('generateOrRecoverInstallId returns consistent string', async () => {
-  const { generateOrRecoverInstallId } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-  const id1 = generateOrRecoverInstallId();
-  const id2 = generateOrRecoverInstallId();
-  assert.equal(typeof id1, 'string');
-  assert.equal(id1, id2);
+  await withIsolatedTelemetry(async ({ generateOrRecoverInstallId }) => {
+    const id1 = generateOrRecoverInstallId();
+    const id2 = generateOrRecoverInstallId();
+    assert.equal(typeof id1, 'string');
+    assert.equal(id1, id2);
+  });
 });
 
 test('isTelemetryEnabled defaults to true', async () => {
@@ -104,21 +126,19 @@ test('isTelemetryEnabled returns false when env set to off', async () => {
 });
 
 test('initTelemetry and trackToolInvoke do not throw', async () => {
-  const { initTelemetry, trackToolInvoke, trackSkillRetrieve } =
-    await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-
-  initTelemetry({ harness: 'test', version: '1.0.0' });
-  assert.doesNotThrow(() => trackToolInvoke('test_tool_name'));
-  assert.doesNotThrow(() => trackSkillRetrieve('test_skill_name'));
+  await withIsolatedTelemetry(async ({ initTelemetry, trackToolInvoke, trackSkillRetrieve }) => {
+    initTelemetry({ harness: 'test', version: '1.0.0' });
+    assert.doesNotThrow(() => trackToolInvoke('test_tool_name'));
+    assert.doesNotThrow(() => trackSkillRetrieve('test_skill_name'));
+  });
 });
 
 test('trackSandboxConnect and trackSandboxDisconnect do not throw', async () => {
-  const { initTelemetry, trackSandboxConnect, trackSandboxDisconnect } =
-    await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-
-  initTelemetry({ harness: 'test', version: '1.0.0' });
-  assert.doesNotThrow(() => trackSandboxConnect());
-  assert.doesNotThrow(() => trackSandboxDisconnect());
+  await withIsolatedTelemetry(async ({ initTelemetry, trackSandboxConnect, trackSandboxDisconnect }) => {
+    initTelemetry({ harness: 'test', version: '1.0.0' });
+    assert.doesNotThrow(() => trackSandboxConnect());
+    assert.doesNotThrow(() => trackSandboxDisconnect());
+  });
 });
 
 test('sanitizeValue truncates long values to 255', async () => {
@@ -146,26 +166,14 @@ test('sanitizeValue coerces non-strings and nulls safely', async () => {
 });
 
 test('cacheUserHash writes to filesystem', async () => {
-  const os = await import('node:os');
-  const fs = await import('node:fs');
-  const path = await import('node:path');
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hwdk-telemetry-'));
-  const prevHome = process.env.HUAWEICLOUD_DEVKIT_HOME;
-  process.env.HUAWEICLOUD_DEVKIT_HOME = tmp;
-  try {
-    const { cacheUserHash } = await import(
-      `../plugins/huaweicloud-core/src/telemetry/telemetry.mjs?iso=${Date.now()}`,
-    );
+  await withIsolatedTelemetry(async ({ cacheUserHash }) => {
     assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));
-  } finally {
-    if (prevHome === undefined) delete process.env.HUAWEICLOUD_DEVKIT_HOME;
-    else process.env.HUAWEICLOUD_DEVKIT_HOME = prevHome;
-    fs.rmSync(tmp, { recursive: true, force: true });
-  }
+  });
 });
 
 test('ingestHookEvents handles empty or missing file', async () => {
-  const { initTelemetry, ingestHookEvents } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-  initTelemetry({ harness: 'test', version: '1.0.0' });
-  assert.doesNotThrow(() => ingestHookEvents());
+  await withIsolatedTelemetry(async ({ initTelemetry, ingestHookEvents }) => {
+    initTelemetry({ harness: 'test', version: '1.0.0' });
+    assert.doesNotThrow(() => ingestHookEvents());
+  });
 });
