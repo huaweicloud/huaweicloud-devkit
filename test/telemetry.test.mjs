@@ -53,35 +53,14 @@ test('detectAgentHarness returns null when nothing matches', () => {
 });
 
 test('detectAgentHarness classifies MCP client names to canonical harness', () => {
-  const keys = [
-    'OPENCODE_SESSION_ID',
-    'OPENCODE_CONFIG_PATH',
-    'CODEX_SESSION_ID',
-    'CODEX_CLI_VERSION',
-    'CODEX_SANDBOX',
-    'CODEX_THREAD_ID',
-    'OFFICEACE_SESSION_ID',
-    'OFFICE_CLAW_CONFIG_ROOT',
-    'OPENCLAW_SESSION_ID',
-    'OPENCLAW_CONFIG_ROOT',
-    'CURSOR_SESSION_ID',
-    'CURSOR_GIT_WORKDIR',
-  ];
-  const saved = keys.map((k) => [k, process.env[k]]);
-  keys.forEach((k) => delete process.env[k]);
-  try {
+  withNoAgentEnv(() => {
     assert.equal(detectAgentHarness({ name: 'codex-mcp-client' }), 'codex');
     assert.equal(detectAgentHarness({ name: 'office-claw-mcp-connector-probe' }), 'officeace');
     assert.equal(detectAgentHarness({ name: 'openclaw-bundle-mcp' }), 'openclaw');
     assert.equal(detectAgentHarness({ name: 'officeace-agent' }), 'officeace');
     assert.equal(detectAgentHarness({ name: 'cursor-vscode' }), 'cursor');
     assert.equal(detectAgentHarness({ name: 'opencode' }), 'opencode');
-  } finally {
-    for (const [k, v] of saved) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
-    }
-  }
+  });
 });
 
 test('generateOrRecoverInstallId returns consistent string', async () => {
@@ -152,8 +131,22 @@ test('sanitizeValue coerces non-strings and nulls safely', async () => {
 });
 
 test('cacheUserHash writes to filesystem', async () => {
-  const { cacheUserHash } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-  assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));
+  const os = await import('node:os');
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hwdk-telemetry-'));
+  const prevHome = process.env.HUAWEICLOUD_DEVKIT_HOME;
+  process.env.HUAWEICLOUD_DEVKIT_HOME = tmp;
+  try {
+    const { cacheUserHash } = await import(
+      `../plugins/huaweicloud-core/src/telemetry/telemetry.mjs?iso=${Date.now()}`,
+    );
+    assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));
+  } finally {
+    if (prevHome === undefined) delete process.env.HUAWEICLOUD_DEVKIT_HOME;
+    else process.env.HUAWEICLOUD_DEVKIT_HOME = prevHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 });
 
 test('ingestHookEvents handles empty or missing file', async () => {
