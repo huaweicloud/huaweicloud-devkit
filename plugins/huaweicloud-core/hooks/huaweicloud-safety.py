@@ -43,7 +43,7 @@ def load_policy():
             SECRET_READ_RE = re.compile("|".join(re.escape(op) for op in blocked_secrets), re.I)
         write_prefixes = policy.get("writeOperationPrefixes", [])
         if write_prefixes:
-            WRITE_OPERATION_RE = re.compile(r"\b(" + "|".join(write_prefixes) + r")\w*", re.I)
+            WRITE_OPERATION_RE = re.compile(r"(^|[A-Za-z0-9])(" + "|".join(write_prefixes) + r")\w*", re.I)
     except Exception:
         pass
 

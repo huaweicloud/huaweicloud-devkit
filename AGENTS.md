@@ -1,4 +1,4 @@
-# AGENTS.md — HuaweiCloud Devkit
+# AGENTS.md — HuaweiCloud DevKit
 
 ## Commands
 
@@ -9,7 +9,8 @@ npm run lint:js          # ESLint only
 npm run lint:md          # markdownlint only
 npm run format           # Prettier format all files
 npm run format:check     # Prettier check (no write)
-npm run validate         # structural validation
+npm run validate         # structural validation + README beta badge sync check
+npm run badge:sync       # rewrite README beta badge to the next stable version
 node --test test/structure.test.mjs   # single test file
 node ./scripts/validate-package.mjs   # validation alone
 ```
@@ -138,4 +139,4 @@ Policy vocabulary lives in `plugins/huaweicloud-core/safety/policy.json`. Both `
 - `InvokeFunction` / `Execute` / `Trigger` / `Deploy` operations are classified as write (require approval) — they have execution side effects even without data mutation.
 - Codex plugin marketplace name is read from `.agents/plugins/marketplace.json`. `getMarketplaceName()` must match, never hardcode.
 - OpenCode integration lives in `integrations/opencode/` (separate from the plugin).
-- Node >= 20 required, ESM only.
+- Node >= 22 required, ESM only.

@@ -1047,7 +1047,7 @@ async function installCodexDesktop() {
 
   // Register in personal marketplace (Codex discovers plugins from ~/.agents/plugins/marketplace.json)
   ensureCodexMarketplaceEntry();
-  console.log('  \x1b[33m请到插件 → 个人 → HuaweiCloud Devkit → 安装\x1b[0m');
+  console.log('  \x1b[33m请到插件 → 个人 → HuaweiCloud DevKit → 安装\x1b[0m');
 
   // Clean up old install locations from pre-marketplace era
   removeIfExists(join(homedir(), '.agents', 'skills'));
@@ -3009,7 +3009,7 @@ function opencodeStatus() {
   }
 }
 
-function autoDetectTarget() {
+function detectAgents() {
   const checks = [
     ['opencode', () => existsSync(join(homedir(), '.config', 'opencode'))],
     ['codex-desktop', () => existsSync(join(homedir(), '.codex'))],
@@ -3028,7 +3028,11 @@ function autoDetectTarget() {
     ['openclaw', () => existsSync(join(homedir(), '.openclaw'))],
     ['atomcode', () => existsSync(atomcodeHome())],
   ];
-  const detected = checks.filter(([, check]) => check()).map(([name]) => name);
+  return checks.filter(([, check]) => check()).map(([name]) => name);
+}
+
+function autoDetectTarget() {
+  const detected = detectAgents();
   if (detected.length === 0) {
     console.error('No supported agent detected.');
     console.error(`Supported: ${SUPPORTED_AGENT_TARGETS.join(', ')} (or "all")`);
@@ -3037,6 +3041,208 @@ function autoDetectTarget() {
   }
   if (detected.length === 1) return detected[0];
   return 'all';
+}
+
+const AGENT_LABELS = {
+  opencode: 'OpenCode',
+  'codex-desktop': 'Codex Desktop',
+  codearts: 'CodeArts',
+  'codearts-work': 'CodeArts Work',
+  workbuddy: 'WorkBuddy',
+  dsh: 'DSH',
+  officeace: 'OfficeAce',
+  hermes: 'Hermes',
+  openclaw: 'OpenClaw',
+  atomcode: 'AtomCode',
+};
+
+function promptSelectAgents(detected) {
+  if (!process.stdin.isTTY) {
+    console.error(
+      `Multiple agents detected (${detected.join(', ')}). Cannot prompt in a non-interactive shell — ` +
+        'specify `--target <agent>` or `--target all`.',
+    );
+    return Promise.resolve(null);
+  }
+  const question = [
+    'Multiple agents detected. Select which to install (multi-select):',
+    ...detected.map((name, i) => `  ${i + 1}) ${AGENT_LABELS[name] || name}`),
+    'Enter numbers separated by commas/spaces, "all" for every detected, Enter to install all detected, or "0" to cancel: ',
+  ].join('\n');
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (a) => {
+      rl.close();
+      const answer = (a || '').trim().toLowerCase();
+      if (answer === '0' || answer === 'n' || answer === 'no' || answer === 'q') {
+        resolve(null);
+        return;
+      }
+      if (answer === '' || answer === 'all') {
+        resolve(detected.slice());
+        return;
+      }
+      const parts = answer.split(/[\s,，]+/).filter(Boolean);
+      const indices = new Set();
+      for (const part of parts) {
+        const n = Number(part);
+        if (Number.isSafeInteger(n) && n >= 1 && n <= detected.length) {
+          indices.add(n - 1);
+        } else {
+          console.error(`Invalid selection: "${part}". Installing all detected.`);
+          resolve(detected.slice());
+          return;
+        }
+      }
+      resolve([...indices].map((i) => detected[i]));
+    });
+  });
+}
+
+const MCP_ENTRY = {
+  command: 'npx',
+  args: ['-y', '-p', 'huaweicloud-devkit', 'huaweicloud-devkit-mcp'],
+};
+
+function promptZeroDetect() {
+  if (!process.stdin.isTTY) {
+    console.error('No supported agent detected.');
+    console.error(`Supported: ${SUPPORTED_AGENT_TARGETS.join(', ')} (or "all")`);
+    console.error('Use --target <agent> to specify.');
+    return Promise.resolve({ abort: true });
+  }
+  const question = [
+    'No supported agent detected.',
+    'What would you like to do?',
+    '  1) Install to a specific agent (e.g. codex)',
+    '  2) Install to all supported agents (--target all)',
+    '  3) Wire up a generic MCP agent (Claude Code / Cursor / custom MCP client)',
+    '  0) Exit',
+    'Enter choice: ',
+  ].join('\n');
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    const ask = () => {
+      rl.question(question, (a) => {
+        const answer = (a || '').trim().toLowerCase();
+        if (answer === '1') {
+          rl.question('Enter agent target (e.g. codex): ', (t) => {
+            const val = (t || '').trim().toLowerCase();
+            rl.close();
+            if (val === 'all' || SUPPORTED_AGENT_TARGETS.includes(val)) {
+              resolve({ explicit: true, target: val });
+            } else {
+              console.error(`Unknown target: ${val}`);
+              console.error(`Supported: ${SUPPORTED_AGENT_TARGETS.join(', ')} (or "all")`);
+              resolve({ abort: true });
+            }
+          });
+          return;
+        }
+        if (answer === '2') {
+          rl.close();
+          resolve({ explicit: true, target: 'all' });
+          return;
+        }
+        if (answer === '3') {
+          rl.close();
+          resolve({ mcp: true });
+          return;
+        }
+        if (answer === '' || answer === '0' || answer === 'n' || answer === 'no' || answer === 'q') {
+          rl.close();
+          resolve({ abort: true });
+          return;
+        }
+        console.error(`Invalid choice: "${answer}"`);
+        ask();
+      });
+    };
+    ask();
+  });
+}
+
+function printMCPConfigSnippet(reason) {
+  console.log(`  ${reason}`);
+  console.log('  Add this to your agent MCP config (stdio):');
+  const snippet = JSON.stringify({ mcpServers: { 'huaweicloud-devkit': MCP_ENTRY } }, null, 2)
+    .split('\n')
+    .map((line) => `    ${line}`)
+    .join('\n');
+  console.log(snippet);
+  console.log('  Or run the remote server and use a remote (Streamable HTTP) config:');
+  console.log('    npx --yes huaweicloud-devkit-mcp --transport remote   # listens on 127.0.0.1:9528');
+  console.log('  See README → "Other Agents" for details.');
+}
+
+function configureMCPAgent(targetFile, agentLabel) {
+  let config = {};
+  let existed = false;
+  if (existsSync(targetFile)) {
+    existed = true;
+    try {
+      config = JSON.parse(readFileSync(targetFile, 'utf8'));
+    } catch {
+      console.error(`  [${agentLabel}] ${targetFile} is not valid JSON; leaving it untouched.`);
+      return false;
+    }
+  }
+  config.mcpServers = config.mcpServers || {};
+  if (config.mcpServers['huaweicloud-devkit']) {
+    console.log(`  [${agentLabel}] mcpServers.huaweicloud-devkit already configured; skipping.`);
+    return true;
+  }
+  if (existed) copyFileSync(targetFile, `${targetFile}.bak`);
+  config.mcpServers['huaweicloud-devkit'] = { ...MCP_ENTRY };
+  mkdirSync(dirname(targetFile), { recursive: true });
+  writeFileSync(targetFile, JSON.stringify(config, null, 2), 'utf8');
+  console.log(`  [${agentLabel}] MCP server configured in ${targetFile}. Restart the session to apply.`);
+  return true;
+}
+
+function configureGenericMCP() {
+  console.log('Configuring a generic MCP agent (MCP tools only; skills/hooks are not installed)...');
+  const targets = [];
+  const claudeFile = process.env.CLAUDE_CONFIG_DIR
+    ? join(process.env.CLAUDE_CONFIG_DIR, '.claude.json')
+    : join(homedir(), '.claude.json');
+  if (existsSync(claudeFile)) targets.push(['Claude Code', claudeFile]);
+  const cursorFile = join(homedir(), '.cursor', 'mcp.json');
+  if (existsSync(cursorFile) || existsSync(join(homedir(), '.cursor'))) {
+    targets.push(['Cursor', cursorFile]);
+  }
+
+  if (targets.length === 0) {
+    printMCPConfigSnippet('No known MCP agent detected; here is a config snippet you can paste:');
+    return false;
+  }
+  let anyConfigured = false;
+  for (const [label, file] of targets) {
+    if (configureMCPAgent(file, label)) anyConfigured = true;
+  }
+  if (!anyConfigured) {
+    console.log('  Nothing to configure for the detected MCP agents.');
+  }
+  return anyConfigured;
+}
+
+async function resolveInstallTarget() {
+  const idx = process.argv.indexOf('--target');
+  if (idx >= 0) {
+    const val = (process.argv[idx + 1] || '').toLowerCase();
+    if (val === 'all' || SUPPORTED_AGENT_TARGETS.includes(val)) {
+      return { explicit: true, target: val };
+    }
+    console.error(`Unknown target: ${val}`);
+    console.error(`Supported: ${SUPPORTED_AGENT_TARGETS.join(', ')} (or "all")`);
+    process.exit(1);
+  }
+  const detected = detectAgents();
+  if (detected.length === 1) return { explicit: true, target: detected[0] };
+  if (detected.length === 0) return promptZeroDetect();
+  const chosen = await promptSelectAgents(detected);
+  if (!chosen) return { abort: true };
+  return { explicit: false, subset: chosen };
 }
 
 function parseTarget() {
@@ -3084,12 +3290,36 @@ function writeInstallMarker(target) {
 }
 
 async function cmdInstall() {
-  const target = parseTarget();
   console.log(BANNER);
-  console.log(`Installing HuaweiCloud DevKit${target !== 'opencode' ? ` for ${target}` : ''}...\n`);
+  const plan = await resolveInstallTarget();
+  if (plan.abort) {
+    process.exitCode = 1;
+    return;
+  }
+  if (plan.mcp) {
+    const ok = configureGenericMCP();
+    process.exitCode = ok ? 0 : 1;
+    return;
+  }
+  const hasExplicitTarget = plan.explicit;
+  const target = plan.explicit ? plan.target : null;
+  const selected = new Set(plan.explicit ? [] : plan.subset);
+
+  if (hasExplicitTarget) {
+    console.log(`Installing HuaweiCloud DevKit for ${target}...\n`);
+  } else {
+    console.log(`Installing HuaweiCloud DevKit to ${[...selected].join(', ')}...\n`);
+  }
+
   checkNode();
   await checkForUpdate();
   const installFailures = [];
+
+  function shouldInstall(name) {
+    if (name === 'codex') return hasExplicitTarget && (target === 'codex' || target === 'all');
+    if (hasExplicitTarget) return target === name || target === 'all';
+    return selected.has(name);
+  }
 
   async function runInstallStep(stepTarget, title, fn) {
     console.log(title);
@@ -3108,37 +3338,37 @@ async function cmdInstall() {
     }
   }
 
-  if (target === 'opencode' || target === 'all') {
+  if (shouldInstall('opencode')) {
     await runInstallStep('opencode', '[OpenCode]', installOpenCode);
   }
-  if (target === 'codex-desktop' || target === 'all') {
+  if (shouldInstall('codex-desktop')) {
     await runInstallStep('codex-desktop', '\n[Codex Desktop]', installCodexDesktop);
   }
-  if (target === 'codearts' || target === 'all') {
+  if (shouldInstall('codearts')) {
     await runInstallStep('codearts', '\n[CodeArts]', installCodeArts);
   }
-  if (target === 'codearts-work' || target === 'all') {
+  if (shouldInstall('codearts-work')) {
     await runInstallStep('codearts-work', '\n[CodeArts Work]', installCodeArtsWork);
   }
-  if (target === 'workbuddy' || target === 'all') {
+  if (shouldInstall('workbuddy')) {
     await runInstallStep('workbuddy', '\n[WorkBuddy]', installWorkBuddy);
   }
-  if (target === 'dsh' || target === 'all') {
+  if (shouldInstall('dsh')) {
     await runInstallStep('dsh', '\n[DSH]', installDsh);
   }
-  if (target === 'officeace' || target === 'all') {
+  if (shouldInstall('officeace')) {
     await runInstallStep('officeace', '\n[OfficeAce]', installOfficeAce);
   }
-  if (target === 'hermes' || target === 'all') {
+  if (shouldInstall('hermes')) {
     await runInstallStep('hermes', '\n[Hermes Agent]', installHermes);
   }
-  if (target === 'openclaw' || target === 'all') {
+  if (shouldInstall('openclaw')) {
     await runInstallStep('openclaw', '\n[OpenClaw]', installOpenClaw);
   }
-  if (target === 'atomcode' || target === 'all') {
+  if (shouldInstall('atomcode')) {
     await runInstallStep('atomcode', '\n[AtomCode]', installAtomCode);
   }
-  if (target === 'codex' || target === 'all') {
+  if (shouldInstall('codex')) {
     await runInstallStep('codex', '\n[Codex]', () => {
       if (!hasCodexCLI()) {
         if (target === 'codex') {
@@ -4068,6 +4298,10 @@ async function cmdReinstall() {
 let confirmed = false;
 async function confirm(msg) {
   if (confirmed) return true;
+  if (!process.stdin.isTTY) {
+    console.log('Non-interactive shell: skipping confirmation (declined).');
+    return false;
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((ok) => {
     rl.question(`${msg} [y/N] `, (a) => {

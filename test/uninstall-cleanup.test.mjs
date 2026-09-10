@@ -42,10 +42,10 @@ test('removeKooCli does not touch an empty non-hcloud install dir', () => {
 
 test('removeObsConfig removes the OBS config file', () => {
   const home = mkdtempSync(join(tmpdir(), 'cleanup-obs-'));
-  const prev = process.env.HUAWEICLOUD_HOME;
+  const prev = process.env.HCLOUD_OBS_CONFIG_PATH;
   try {
-    process.env.HUAWEICLOUD_HOME = home;
     const obsFile = join(home, '.obsutilconfig');
+    process.env.HCLOUD_OBS_CONFIG_PATH = obsFile;
     writeFileSync(obsFile, 'ak=x\nsk=y\n');
 
     const removed = removeObsConfig();
@@ -53,21 +53,21 @@ test('removeObsConfig removes the OBS config file', () => {
     assert.deepEqual(removed, [obsFile]);
     assert.ok(!existsSync(obsFile));
   } finally {
-    if (prev === undefined) delete process.env.HUAWEICLOUD_HOME;
-    else process.env.HUAWEICLOUD_HOME = prev;
+    if (prev === undefined) delete process.env.HCLOUD_OBS_CONFIG_PATH;
+    else process.env.HCLOUD_OBS_CONFIG_PATH = prev;
     rmSync(home, { recursive: true, force: true });
   }
 });
 
 test('removeObsConfig returns empty when no OBS config exists', () => {
   const home = mkdtempSync(join(tmpdir(), 'cleanup-obs2-'));
-  const prev = process.env.HUAWEICLOUD_HOME;
+  const prev = process.env.HCLOUD_OBS_CONFIG_PATH;
   try {
-    process.env.HUAWEICLOUD_HOME = home;
+    process.env.HCLOUD_OBS_CONFIG_PATH = join(home, '.obsutilconfig');
     assert.deepEqual(removeObsConfig(), []);
   } finally {
-    if (prev === undefined) delete process.env.HUAWEICLOUD_HOME;
-    else process.env.HUAWEICLOUD_HOME = prev;
+    if (prev === undefined) delete process.env.HCLOUD_OBS_CONFIG_PATH;
+    else process.env.HCLOUD_OBS_CONFIG_PATH = prev;
     rmSync(home, { recursive: true, force: true });
   }
 });

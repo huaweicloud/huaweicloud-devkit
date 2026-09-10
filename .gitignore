@@ -13,3 +13,15 @@ __pycache__/
 *.tgz
 scripts/sync-opencode.ps1
 startopencode.bat
+
+# Runtime telemetry artifacts written by the plugin during install/use
+plugins/huaweicloud-core/telemetry/
+plugins/telemetry/
+
+# Local planning / WIP docs kept out of the public repo
+docs/superpowers/
+docs/mcp-remote-transport.md
+.superpowers/
+
+# Project-level CodeArts config written by installs/tests can leak into repo root
+.codeartsdoer/

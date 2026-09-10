@@ -231,16 +231,39 @@
         "any": [
           {
             "field": "text",
-            "regex": "hcloud\\s+\\w+\\s+(Delete\\w*|Detach\\w*|Remove\\w*|Dissociate\\w*|Unassign\\w*|Revoke\\w*)\\b"
+            "regex": "hcloud\\s+\\w+\\s+(\\w*Delete\\w*|\\w*Detach\\w*|\\w*Remove\\w*|Dissociate\\w*|Unassign\\w*|Revoke\\w*)\\b"
           },
           {
             "field": "text",
-            "regex": "hcloud\\s+\\w+\\s+(BatchDelete\\w*|BatchRemove\\w*)\\b"
+            "regex": "hcloud\\s+\\w+\\s+(\\w*BatchDelete\\w*|\\w*BatchRemove\\w*)\\b"
+          }
+        ],
+        "none": [
+          {
+            "field": "text",
+            "regex": "DeleteProtection"
           }
         ]
       },
       "message": "This hcloud command will delete, detach, or remove cloud resources. The operation may be irreversible.",
       "remediation": "List the resources to be affected first, confirm with the user, and require explicit approval before executing any destructive operation."
+    },
+    {
+      "id": "hwc-destructive-reset-operation",
+      "title": "Destructive resource reset operation",
+      "category": "destructive",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "hcloud\\s+\\w+\\s+(Batch)?Reset\\w*\\b"
+          }
+        ]
+      },
+      "message": "This hcloud command resets a cloud resource (password, metadata, or instance state). This may disrupt access or mutate the resource.",
+      "remediation": "Confirm the reset target with the user and require explicit approval before executing."
     },
     {
       "id": "hwc-destructive-delete-cascade",

@@ -362,7 +362,9 @@ export async function upgradePackage({ target = 'all', version = 'latest' } = {}
     return { success: false, error: 'version 参数仅支持 latest。目标版本由插件自动判定。' };
   }
   const { doQuery = queryDistTags, spawnFn = defaultSpawn } = options;
-  const previousVersion = readInstalledVersion();
+  // Tests inject currentVersion explicitly - the repo package.json version changes
+  // between prerelease and stable lines, which must not flip the upgrade-tag logic.
+  const previousVersion = options.currentVersion || readInstalledVersion();
   let distTags;
   try {
     distTags = await doQuery();
