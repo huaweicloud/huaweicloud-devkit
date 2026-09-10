@@ -53,13 +53,28 @@ test('detectAgentHarness returns null when nothing matches', () => {
 });
 
 test('detectAgentHarness classifies MCP client names to canonical harness', () => {
+  const nameBackedAgents = AGENTS.filter((a) => a.clientNames?.length);
+  const idNameAgents = AGENTS.filter((a) => a.envVars?.length);
+  const cases = [
+    ...nameBackedAgents.flatMap((a) => a.clientNames.map((n) => [n, a.id])),
+    ...idNameAgents.map((a) => [a.id, a.id]),
+  ];
   withNoAgentEnv(() => {
-    assert.equal(detectAgentHarness({ name: 'codex-mcp-client' }), 'codex');
-    assert.equal(detectAgentHarness({ name: 'office-claw-mcp-connector-probe' }), 'officeace');
-    assert.equal(detectAgentHarness({ name: 'openclaw-bundle-mcp' }), 'openclaw');
-    assert.equal(detectAgentHarness({ name: 'officeace-agent' }), 'officeace');
-    assert.equal(detectAgentHarness({ name: 'cursor-vscode' }), 'cursor');
-    assert.equal(detectAgentHarness({ name: 'opencode' }), 'opencode');
+    for (const [name, expected] of cases) {
+      assert.equal(detectAgentHarness({ name }), expected, `name=${name}`);
+    }
+  });
+});
+
+test('detectAgentHarness prefers real host env over clientInfo.name', () => {
+  const hostBackedAgents = AGENTS.filter((a) => a.envVars?.length);
+  withNoAgentEnv(() => {
+    for (const agent of hostBackedAgents) {
+      process.env[agent.envVars[0]] = 'simulated';
+      assert.equal(detectAgentHarness({ name: 'unknown-mcp-client-probe' }), agent.id,
+        `env ${agent.envVars[0]} should win over name for ${agent.id}`);
+      delete process.env[agent.envVars[0]];
+    }
   });
 });
 
