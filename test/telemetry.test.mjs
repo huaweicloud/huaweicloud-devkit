@@ -29,9 +29,7 @@ async function withIsolatedTelemetry(fn) {
   const prevHome = process.env.HUAWEICLOUD_DEVKIT_HOME;
   process.env.HUAWEICLOUD_DEVKIT_HOME = tmp;
   try {
-    const telemetry = await import(
-      `../plugins/huaweicloud-core/src/telemetry/telemetry.mjs?iso=${Date.now()}`,
-    );
+    const telemetry = await import(`../plugins/huaweicloud-core/src/telemetry/telemetry.mjs?iso=${Date.now()}`);
     return await fn(telemetry);
   } finally {
     if (prevHome === undefined) delete process.env.HUAWEICLOUD_DEVKIT_HOME;
@@ -92,8 +90,11 @@ test('detectAgentHarness prefers real host env over clientInfo.name', () => {
   withNoAgentEnv(() => {
     for (const agent of hostBackedAgents) {
       process.env[agent.envVars[0]] = 'simulated';
-      assert.equal(detectAgentHarness({ name: 'unknown-mcp-client-probe' }), agent.id,
-        `env ${agent.envVars[0]} should win over name for ${agent.id}`);
+      assert.equal(
+        detectAgentHarness({ name: 'unknown-mcp-client-probe' }),
+        agent.id,
+        `env ${agent.envVars[0]} should win over name for ${agent.id}`,
+      );
       delete process.env[agent.envVars[0]];
     }
   });
