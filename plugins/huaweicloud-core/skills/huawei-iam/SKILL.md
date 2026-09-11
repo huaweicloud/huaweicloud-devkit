@@ -45,12 +45,12 @@ Domain expertise for Huawei Cloud Identity and Access Management (IAM). Covers u
 
 | Task                     | Command                                                                                                                     | Steps                         |
 | ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| List users               | hcloud IAM KeystoneListUsers --cli-region=<r>                                                                               | references/iam-ops.md         |
-| Create group             | hcloud IAM CreateGroupV5 --group_name=<name>                                                                                | references/iam-ops.md         |
+| List users               | hcloud IAM KeystoneListUsers --cli-region=<r>                                                                               | references/quick-ref.md       |
+| Create group             | hcloud IAM CreateGroupV5 --group_name=<name>                                                                                | references/quick-ref.md       |
 | Create custom policy     | hcloud IAM CreateCloudServiceCustomPolicy --role.display_name=<n> --role.type=<type> --role.policy.Statement.1.Effect=Allow | references/policy-examples.md |
-| Create agency            | hcloud IAM CreateAgency --agency.name=<n> --agency.domain_id=<id> --agency.trust_domain_name=<domain>                       | references/agency.md          |
-| Get temporary credential | hcloud STS AssumeAgency --agency_urn=<urn> --agency_session_name=<n> --duration_seconds=3600                                | references/sts.md             |
-| Attach policy to group   | hcloud IAM AttachGroupPolicyV5 --group_id=<id> --policy_id=<id>                                                             | references/iam-ops.md         |
+| Create agency            | hcloud IAM CreateAgency --agency.name=<n> --agency.domain_id=<id> --agency.trust_domain_name=<domain>                       | references/quick-ref.md       |
+| Get temporary credential | hcloud STS AssumeAgency --agency_urn=<urn> --agency_session_name=<n> --duration_seconds=3600                                | references/quick-ref.md       |
+| Attach policy to group   | hcloud IAM AttachGroupPolicyV5 --group_id=<id> --policy_id=<id>                                                             | references/quick-ref.md       |
 
 ## Policy Examples (Least Privilege)
 
@@ -109,4 +109,4 @@ Common roles for FunctionGraph: VPC Administrator, RDS Administrator, DCS Admini
 
 - IAM Docs: https://support.huaweicloud.com/iam/
 - Policy examples: references/policy-examples.md
-- Agency setup: references/agency.md
+- Agency setup: references/quick-ref.md
