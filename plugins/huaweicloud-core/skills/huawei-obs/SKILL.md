@@ -131,4 +131,3 @@ See `references/single-file-share.md` for the full workflow to host one file and
 - Static website: references/static-website.md
 - Single-file share: references/single-file-share.md
 - Lifecycle: references/bucket-lifecycle.md
-- Replication: references/replication.md
