@@ -1,17 +1,19 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
-  createApprovalToken,
   consumeApprovalToken,
+  createApprovalToken,
   hashArgs,
   planHcloudCommand,
   runHcloud,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.mjs';
 import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
+import { extractApiError } from '../plugins/huaweicloud-core/src/hcloud-cli.mjs';
+import { callTool } from '../plugins/huaweicloud-core/src/tools.mjs';
 
 async function withTempAuthHome(fn) {
   const home = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-auth-'));
@@ -46,6 +48,22 @@ function fakeHcloudScript(source) {
   const script = join(dir, 'fake-hcloud.mjs');
   writeFileSync(script, source, 'utf8');
   return script;
+}
+
+function fakeHcloudExecutable(source) {
+  const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-bin-'));
+  const script = join(dir, 'fake-hcloud');
+  writeFileSync(script, `#!/usr/bin/env node\n${source}`, 'utf8');
+  chmodSync(script, 0o755);
+  return script;
+}
+
+function withMetaRepo(files) {
+  const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-meta-'));
+  for (const [name, items] of Object.entries(files)) {
+    writeFileSync(join(dir, name), JSON.stringify({ items }));
+  }
+  return dir;
 }
 
 test('planHcloudCommand includes copyable command text and password history warning', () => {
@@ -233,4 +251,114 @@ console.log(JSON.stringify({ ok: true }));
     assert.equal(result.ok, true);
     assert.match(result.authWarning, /KooCLI current/);
   });
+});
+
+test(
+  'koocli lang G4: approved plan end-to-end runs through internal --cli-lang injection',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const home = mkdtempSync(join(tmpdir(), 'appr-home-'));
+    const metaRepo = join(home, '.hcloud', 'metaRepo');
+    mkdirSync(metaRepo, { recursive: true });
+    writeFileSync(join(metaRepo, 'services_cn.json'), JSON.stringify({ items: [{ Service: { Text: 'BSS' } }] }));
+    writeFileSync(join(metaRepo, 'services_en.json'), JSON.stringify({ items: [{ Service: { Text: 'ECS' } }] }));
+
+    const binDir = mkdtempSync(join(tmpdir(), 'appr-bin-'));
+    const logFile = join(binDir, 'calls.txt');
+    const fake = fakeHcloudExecutable(`
+import { appendFileSync } from 'node:fs';
+const logFile = ${JSON.stringify(logFile)};
+const args = process.argv.slice(2);
+appendFileSync(logFile, JSON.stringify(args) + '\\n');
+if (!args.includes('--cli-lang=cn')) {
+  console.error('Unsupported service: BSS');
+  process.exit(1);
+}
+console.log(JSON.stringify({ ok: true, seen: args }));
+`);
+
+    const previousHome = process.env.HOME;
+    const previousBin = process.env.HCLOUD_BIN;
+    process.env.HOME = home;
+    process.env.HCLOUD_BIN = fake;
+    try {
+      const plan = await callTool('huaweicloud_plan_cli_command', {
+        args: ['BSS', 'ShowCustomerAccountBalances'],
+        allowWrites: true,
+      });
+      assert.ok(plan.approvalToken, 'plan produces an approvalToken');
+      assert.equal(plan.safeToRun, true);
+      assert.ok(!plan.args.includes('--cli-lang'), 'approved args carry no injected lang flag');
+
+      const result = await callTool('huaweicloud_run_approved_command', {
+        args: ['BSS', 'ShowCustomerAccountBalances'],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+        maxRetries: 0,
+      });
+      assert.equal(result.approved, true, 'approved execution flag preserved');
+      assert.equal(result.ok, true);
+      assert.equal(result.autoRetried, true, 'lang injection ran inside the approved path');
+      assert.equal(result.injectedLang, 'cn');
+      assert.deepEqual(JSON.parse(result.stdout).seen, ['BSS', 'ShowCustomerAccountBalances', '--cli-lang=cn']);
+
+      const calls = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+      assert.equal(calls.length, 1, 'exactly one child invocation, lang flag appended internally');
+      assert.deepEqual(JSON.parse(calls[0]), ['BSS', 'ShowCustomerAccountBalances', '--cli-lang=cn']);
+    } finally {
+      process.env.HOME = previousHome;
+      if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = previousBin;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(binDir, { recursive: true, force: true });
+    }
+  },
+);
+
+test('koocli lang G4: approval token still rejects args that differ from the approved plan', async () => {
+  const plan = await callTool('huaweicloud_plan_cli_command', {
+    args: ['BSS', 'ShowCustomerAccountBalances'],
+    allowWrites: true,
+  });
+  await assert.rejects(
+    callTool('huaweicloud_run_approved_command', {
+      args: ['BSS', 'DifferentOperation'],
+      approvalToken: plan.approvalToken,
+      approvedByUser: true,
+    }),
+    /do not match the approved plan/,
+  );
+});
+
+test('koocli lang: extractApiError keeps JSON keys stable under Chinese KooCLI output', () => {
+  const result = extractApiError(
+    'ListVpcs有多个版本,默认使用该API版本v3{ "error_code": "BSS.0001", "error_msg": "指定余额不足" }',
+  );
+  assert.equal(result.errorCode, 'BSS.0001');
+  assert.equal(result.errorMessage, '指定余额不足');
+});
+
+test('runHcloud surfaces Chinese-mode KooCLI JSON error with code and message', async () => {
+  const metaDir = withMetaRepo({
+    'services_cn.json': [{ Service: { Text: 'ECS' } }],
+    'services_en.json': [{ Service: { Text: 'ECS' } }],
+  });
+  const script = fakeHcloudScript(`
+console.log('ListVpcs有多个版本,默认使用该API版本v3' + '{ "error_code": "BSS.0001", "error_msg": "指定余额不足" }');
+process.exit(1);
+`);
+  try {
+    const result = await runHcloud(['ECS', 'ListServersDetails'], {
+      executable: process.execPath,
+      executableArgs: [script],
+      maxRetries: 0,
+      metaDir,
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'BSS.0001');
+    assert.equal(result.errorMessage, '指定余额不足');
+  } finally {
+    rmSync(metaDir, { recursive: true, force: true });
+    rmSync(join(script, '..'), { recursive: true, force: true });
+  }
 });

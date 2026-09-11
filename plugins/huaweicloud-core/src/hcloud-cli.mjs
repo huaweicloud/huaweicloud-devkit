@@ -598,7 +598,7 @@ function validateRequiredParams(args) {
   return { valid: missing.length === 0, missing, hints };
 }
 
-function extractApiError(stdout) {
+export function extractApiError(stdout) {
   let text = String(stdout || '');
   // Strip KooCLI multi-version prefix lines (e.g. "ListVpcs有多个版本,默认使用该API版本v3…")
   const bracketIdx = text.indexOf('{');
