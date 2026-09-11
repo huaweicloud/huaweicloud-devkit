@@ -37,8 +37,14 @@ test('readServiceCatalogs: maps items[].Service.Text into cn/en sets', () => {
   });
   try {
     const { cn, en } = readServiceCatalogs(dir);
-    assert.deepEqual([...cn].sort((a, b) => a.localeCompare(b)), ['BSS', 'ECS']);
-    assert.deepEqual([...en].sort((a, b) => a.localeCompare(b)), ['ECS']);
+    assert.deepEqual(
+      [...cn].sort((a, b) => a.localeCompare(b)),
+      ['BSS', 'ECS'],
+    );
+    assert.deepEqual(
+      [...en].sort((a, b) => a.localeCompare(b)),
+      ['ECS'],
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
