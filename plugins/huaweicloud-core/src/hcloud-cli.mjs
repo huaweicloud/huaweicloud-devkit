@@ -196,6 +196,60 @@ function obsWriteHint(args) {
   return 'OBS write operations are obsutil-style and always write-class. Before executing, present the full resource manifest (bucket/object list) to the user for ONE batch approval, then run each command through plan → approve (see huawei-iac skill, Provisioning Rules).';
 }
 
+const OBS_SUBCOMMANDS = new Set([
+  'help',
+  'ls',
+  'mb',
+  'cp',
+  'mv',
+  'rm',
+  'chattri',
+  'config',
+  'cors',
+  'lifecycle',
+  'policy',
+  'share',
+  'sync',
+  'url',
+  'sign',
+]);
+
+const CATALOG_TTL_MS = 5 * 60 * 1000;
+let _catalogCache = { dir: null, t: 0, cn: new Set(), en: new Set() };
+
+export function readServiceCatalogs(metaDir = join(homedir(), '.hcloud', 'metaRepo')) {
+  const now = Date.now();
+  if (_catalogCache.dir === metaDir && now - _catalogCache.t < CATALOG_TTL_MS) return _catalogCache;
+  const load = (f) => {
+    try {
+      const d = JSON.parse(readFileSync(join(metaDir, f), 'utf8'));
+      return new Set((d.items || []).map((i) => i?.Service?.Text).filter(Boolean));
+    } catch {
+      return new Set();
+    }
+  };
+  _catalogCache = { dir: metaDir, t: now, cn: load('services_cn.json'), en: load('services_en.json') };
+  return _catalogCache;
+}
+
+export function classifyUnsupported(service, metaDir) {
+  const { cn, en } = readServiceCatalogs(metaDir);
+  const s = String(service || '').toUpperCase();
+  if (!s) return 'other';
+  if (cn.has(s) && !en.has(s)) return 'lang-missing';
+  if (!cn.has(s) && !en.has(s)) return 'not-found';
+  return 'other';
+}
+
+export function shouldInjectLang(args, metaDir) {
+  const arr = Array.isArray(args) ? args.map(String) : [];
+  if (arr.some((a) => /^--cli-lang=/.test(a))) return false;
+  const s = (arr[0] || '').toUpperCase();
+  if (!s) return false;
+  if (s === 'OBS' && OBS_SUBCOMMANDS.has((arr[1] || '').toLowerCase())) return false;
+  return classifyUnsupported(s, metaDir) === 'lang-missing';
+}
+
 export function planHcloudCommand(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const classification = classifyHcloudArgs(normalizedArgs, options);
