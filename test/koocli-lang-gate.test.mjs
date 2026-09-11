@@ -146,6 +146,22 @@ test('koocli gate review: both catalogs missing stays unknown, never proactive',
   }
 });
 
+test('koocli gate review: mixed-case catalog entries are normalized (G3 closes)', () => {
+  // Real catalogs store mixed-case names (DevStar, CloudTable); lookups are uppercase.
+  const dir = withCatalog({
+    'services_cn.json': [{ Service: { Text: 'DevStar' } }, { Service: { Text: 'ECS' } }],
+    'services_en.json': [{ Service: { Text: 'ECS' } }],
+  });
+  try {
+    assert.equal(classifyUnsupported('DevStar', dir), 'lang-missing');
+    assert.equal(shouldInjectLang(['DevStar', 'SomeOp'], dir), true);
+    assert.equal(shouldInjectLang(['devstar', 'SomeOp'], dir), true);
+    assert.equal(shouldInjectLang(['DEVSTAR', 'SomeOp'], dir), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('koocli gate review: full catalogs keep lang-missing / other / not-found', () => {
   const dir = withCatalog({
     'services_cn.json': [{ Service: { Text: 'BSS' } }, { Service: { Text: 'ECS' } }],

@@ -225,7 +225,12 @@ export function readServiceCatalogs(metaDir = join(homedir(), '.hcloud', 'metaRe
       const p = join(metaDir, f);
       if (!existsSync(p)) return { present: false, set: new Set() };
       const d = JSON.parse(readFileSync(p, 'utf8'));
-      return { present: true, set: new Set((d.items || []).map((i) => i?.Service?.Text).filter(Boolean)) };
+      // Normalize to uppercase on load: catalog entries are mixed-case
+      // (DevStar, CloudTable, MapDS, ...) while lookups use uppercase.
+      return {
+        present: true,
+        set: new Set((d.items || []).map((i) => i?.Service?.Text?.toUpperCase()).filter(Boolean)),
+      };
     } catch {
       return { present: false, set: new Set() };
     }
@@ -347,6 +352,7 @@ export async function runHcloud(args, options = {}) {
     const tagged = {
       ...result,
       autoRetried: true,
+      injection: 'proactive',
       injectedLang: 'cn',
     };
     if (tagged.ok) return tagged;
@@ -366,7 +372,7 @@ export async function runHcloud(args, options = {}) {
       options,
     );
     return retry.ok
-      ? { ...retry, autoRetried: true, reactiveFallback: true, injectedLang: 'cn' }
+      ? { ...retry, autoRetried: true, reactiveFallback: true, injection: 'reactive', injectedLang: 'cn' }
       : appendLangHint(retry, match[1], metaDir);
   }
   if (match && !result.ok) {
