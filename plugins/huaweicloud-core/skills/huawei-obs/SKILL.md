@@ -41,7 +41,7 @@ Domain expertise for Huawei Cloud Object Storage Service (OBS). Covers bucket/ob
 | Three-layer permissions            | IAM > Bucket Policy > ACL. Most restrictive wins                                                                                                   |
 | Versioning is irreversible         | Once enabled, cannot be disabled, only suspended                                                                                                   |
 | OBS uses AK/SK directly            | NOT IAM tokens. Auth errors mean check AK/SK validity                                                                                              |
-| Static website via CLI missing     | KooCLI OBS lacks website config. Use REST API or console                                                                                           |
+| Static website via CLI missing     | KooCLI OBS lacks website config. Use `huaweicloud_obs_set_website_config` MCP tool (handles AWS4 signing internally) or console                    |
 | **OBS needs separate cred config** | `hcloud configure` is NOT enough for OBS. Before any OBS operation, call `huaweicloud_setup_obs_config` to sync credentials from hcloud profile.   |
 | **obsutil interactive prompts**    | `cp`/`rm` without `-f` causes "Please input (y/n)" → Agent hangs (TIMEOUT). Always use `-f` for non-interactive.                                   |
 | **Directory upload adds prefix**   | `cp <dir>/ obs://<bucket>/ -r` puts files under `bucket/<dir>/...`. Use `-flat` for root-level files (static sites). Preview with `-dryRun` first. |
@@ -83,7 +83,7 @@ hcloud OBS config -e=<endpoint> -i=<AK> -k=<SK> -t=token
 See `references/static-website.md` for the full end-to-end workflow:
 Build → Create bucket → Upload → Set bucket ACL → Set object ACL → Configure website (REST API/console)
 
-> KooCLI OBS does NOT support `SetBucketWebsite`. Configure static website hosting via REST API (`PUT /?website`) or the Huawei Cloud console.
+> KooCLI OBS does NOT support `SetBucketWebsite`. Use the `huaweicloud_obs_set_website_config` MCP tool (handles AWS4 signing internally, no manual signature needed) or the Huawei Cloud console.
 
 ## Single-File Quick Share
 

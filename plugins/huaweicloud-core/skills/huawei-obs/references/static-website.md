@@ -31,13 +31,9 @@ hcloud OBS chattri obs://my-static-site -acl=public-read
 hcloud OBS chattri obs://my-static-site/ -r -f -acl=public-read
 
 # 5. Configure static website hosting
-# KooCLI OBS does NOT support this. Use one of:
-# Option A — REST API:
-#   PUT /?website HTTP/1.1
-#   Host: my-static-site.obs.cn-north-4.myhuaweicloud.com
-#   Body: {"IndexDocument": {"Suffix": "index.html"}, "ErrorDocument": {"Key": "error.html"}}
-#   (requires AK/SK signature)
-# Option B — Huawei Cloud Console:
+# KooCLI OBS does NOT support this. Use the MCP tool (handles AWS4 signing internally):
+# action=set, bucket=<bucket>, region=<region>, indexDocument=index.html, errorDocument=404.html
+# Or use Huawei Cloud Console:
 #   Console → OBS → Bucket → Basic Settings → Static Website Hosting
 
 # 6. Verify

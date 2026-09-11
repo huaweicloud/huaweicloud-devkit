@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
 import { spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { createHmac, createHash } from 'node:crypto';
 
 import { evaluateArtifacts, evaluateCommandRisk, evaluateDeployPlan } from './risk-rule-engine.mjs';
 import { classifyTextCommand, redactSecrets } from './safety-policy.mjs';
@@ -48,6 +49,7 @@ import {
   resolveCredentialsWithRuntime,
 } from './auth/credentials.mjs';
 import { trackToolInvoke, trackSkillRetrieve, clearUserHash } from './telemetry/telemetry.mjs';
+import { fetchWithProxy } from './proxy/proxy-agent.mjs';
 import { fingerprint, runHcloudConfigure, resolveManagedProfile } from './auth/reconcile.mjs';
 import {
   getCachedUpdateInfo,
@@ -846,6 +848,32 @@ export const TOOL_DEFINITIONS = [
       },
     },
   },
+  {
+    name: 'huaweicloud_obs_set_website_config',
+    description:
+      '配置 OBS 桶的静态网站托管。KooCLI OBS 不支持 SetBucketWebsite API，此工具内部实现 AWS4 签名调用 OBS REST API，屏蔽签名细节。支持 set（配置）、get（查询）、delete（删除）三种操作。操作前需确保桶已创建且已设置 public-read ACL。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['set', 'get', 'delete'],
+          description: '操作类型：set=配置静态网站托管，get=查询当前配置，delete=删除配置',
+        },
+        bucket: { type: 'string', description: 'OBS 桶名称' },
+        region: { type: 'string', description: 'OBS 桶所在区域，如 cn-north-4' },
+        indexDocument: {
+          type: 'string',
+          description: '首页文件名（action=set 时必填），如 index.html',
+        },
+        errorDocument: {
+          type: 'string',
+          description: '错误页面文件名（action=set 时可选），如 404.html 或 error.html',
+        },
+      },
+      required: ['action', 'bucket', 'region'],
+    },
+  },
 ];
 
 function toolInvokeValue(name, args) {
@@ -1417,6 +1445,8 @@ export async function callTool(name, rawArgs = {}) {
       return await handleCheckUpdate(args);
     case 'huaweicloud_upgrade':
       return await handleUpgrade(args);
+    case 'huaweicloud_obs_set_website_config':
+      return await handleObsWebsiteConfig(args);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -2218,4 +2248,113 @@ async function getRegionalAvailability(service, region) {
 
 export function classifyRawCommand(command) {
   return classifyTextCommand(command);
+}
+
+// ── OBS Static Website Hosting (AWS4 signed REST API) ──
+
+async function handleObsWebsiteConfig(args) {
+  const { action, bucket, region, indexDocument, errorDocument } = args;
+  if (!bucket || !region) {
+    throw new Error('bucket and region are required');
+  }
+  const creds = resolveCredentialsWithRuntime({});
+  if (!creds?.ak || !creds?.sk) {
+    throw new Error('OBS website config requires AK/SK credentials. Run huaweicloud_auth_init first.');
+  }
+
+  const host = `${bucket}.obs.${region}.myhuaweicloud.com`;
+  const endpoint = `https://${host}`;
+
+  if (action === 'get') {
+    const res = await obsSignedRequest('GET', endpoint, '/?website', '', creds, region);
+    return { ok: res.status === 200, status: res.status, body: res.body };
+  }
+
+  if (action === 'delete') {
+    const res = await obsSignedRequest('DELETE', endpoint, '/?website', '', creds, region);
+    return { ok: res.status === 204, status: res.status };
+  }
+
+  if (action === 'set') {
+    if (!indexDocument) {
+      throw new Error('indexDocument is required for action=set');
+    }
+    const xmlParts = ['<WebsiteConfiguration>', `  <IndexDocument><Suffix>${indexDocument}</Suffix></IndexDocument>`];
+    if (errorDocument) {
+      xmlParts.push(`  <ErrorDocument><Key>${errorDocument}</Key></ErrorDocument>`);
+    }
+    xmlParts.push('</WebsiteConfiguration>');
+    const body = xmlParts.join('\n');
+    const res = await obsSignedRequest('PUT', endpoint, '/?website', body, creds, region);
+    const websiteUrl = `http://${bucket}.obs-website.${region}.myhuaweicloud.com`;
+    return {
+      ok: res.status === 200,
+      status: res.status,
+      websiteUrl,
+      message:
+        res.status === 200
+          ? `Static website hosting configured. Website URL: ${websiteUrl} (may take ~1 min to propagate)`
+          : `Failed to configure website: HTTP ${res.status}`,
+    };
+  }
+
+  throw new Error(`Unknown action: ${action}. Use set, get, or delete.`);
+}
+
+async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, region) {
+  const now = new Date();
+  const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, '');
+  const amzDate = dateStamp + 'T' + now.toISOString().slice(11, 19).replace(/:/g, '') + 'Z';
+  const payloadHash = createHash('sha256').update(body).digest('hex');
+
+  const url = new URL(endpoint + pathAndQuery);
+  const canonicalUri = '/';
+  const canonicalQueryString = 'website=';
+  const canonicalHeaders = `host:${url.host}\n` + `x-amz-content-sha256:${payloadHash}\n` + `x-amz-date:${amzDate}\n`;
+  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+  const canonicalRequest = [
+    method,
+    canonicalUri,
+    canonicalQueryString,
+    canonicalHeaders,
+    signedHeaders,
+    payloadHash,
+  ].join('\n');
+
+  const credentialScope = `${dateStamp}/${region}/s3/aws4_request`;
+  const stringToSign = [
+    'AWS4-HMAC-SHA256',
+    amzDate,
+    credentialScope,
+    createHash('sha256').update(canonicalRequest).digest('hex'),
+  ].join('\n');
+
+  const kDate = createHmac('sha256', 'AWS4' + creds.sk)
+    .update(dateStamp)
+    .digest();
+  const kRegion = createHmac('sha256', kDate).update(region).digest();
+  const kService = createHmac('sha256', kRegion).update('s3').digest();
+  const kSigning = createHmac('sha256', kService).update('aws4_request').digest();
+  const signature = createHmac('sha256', kSigning).update(stringToSign).digest('hex');
+
+  const authorization =
+    `AWS4-HMAC-SHA256 Credential=${creds.ak}/${credentialScope}, ` +
+    `SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+  const headers = {
+    Host: url.host,
+    'x-amz-content-sha256': payloadHash,
+    'x-amz-date': amzDate,
+    Authorization: authorization,
+  };
+  if (body) headers['Content-Type'] = 'application/xml';
+  if (creds.securityToken) headers['x-amz-security-token'] = creds.securityToken;
+
+  const res = await fetchWithProxy(endpoint + pathAndQuery, {
+    method,
+    headers,
+    body: body || undefined,
+  });
+  const resBody = await res.text();
+  return { status: res.status, body: resBody };
 }
