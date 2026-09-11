@@ -1,6 +1,6 @@
 # Architecture
 
-HuaweiCloud Devkit is an agent guidance and safety package, not a service encyclopedia.
+HuaweiCloud DevKit is an agent guidance and safety package, not a service encyclopedia.
 
 ## Layers
 

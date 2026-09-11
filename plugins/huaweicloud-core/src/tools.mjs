@@ -1012,7 +1012,31 @@ function refreshUserHashAfterAuthChange({ regenerate = true } = {}) {
   }
 }
 
-export async function callTool(name, args = {}) {
+// Reject invalid numeric args up front instead of silently coercing them to
+// NaN (which downstream defaults would absorb as "no timeout set") — see #530.
+const NUMERIC_ARG_KEYS = ['timeoutMs', 'maxRetries', 'timeout_ms'];
+
+function normalizeNumericArgs(args) {
+  const out = { ...args };
+  for (const key of NUMERIC_ARG_KEYS) {
+    const value = out[key];
+    if (value === undefined || value === null) continue;
+    const num = Number(value);
+    // timeouts must be positive; maxRetries may be 0 (means "no retries").
+    const isRetries = key === 'maxRetries';
+    const valid = Number.isFinite(num) && (isRetries ? Number.isSafeInteger(num) && num >= 0 : num > 0);
+    if (!valid) {
+      throw new Error(
+        `Invalid parameter "${key}": expected a ${isRetries ? 'non-negative integer' : 'positive number'}, received ${JSON.stringify(value)}.`,
+      );
+    }
+    out[key] = num;
+  }
+  return out;
+}
+
+export async function callTool(name, rawArgs = {}) {
+  const args = normalizeNumericArgs(rawArgs);
   const toolValue = toolInvokeValue(name, args);
   trackToolInvoke(name, toolValue);
 

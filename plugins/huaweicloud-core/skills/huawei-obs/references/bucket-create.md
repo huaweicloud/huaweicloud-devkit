@@ -47,3 +47,4 @@ hcloud OBS stat obs://<bucket>
 - Region is immutable after creation
 - ACL does NOT cascade to objects — set both bucket-level and object-level access
 - OBS uses separate credentials (`~/.obsutilconfig`, configure via `hcloud OBS config -i`)
+- **Return code is unreliable for `mb`**: it can exit non-zero (e.g. 6) while the bucket is actually created (output still carries a request id). Confirm with `stat obs://<bucket>` / `OBS ls` instead of the exit code; re-running `mb` on the same name is idempotent.

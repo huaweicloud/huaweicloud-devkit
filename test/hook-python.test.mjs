@@ -126,3 +126,26 @@ test('python hook evaluate() allows safe commands', () => {
   assert.equal(result.status, 0);
   assert.equal(JSON.parse(result.stdout), null);
 });
+
+test('python hook write-gate blocks prefixed destructive ops (NovaDelete*/Reset*)', () => {
+  for (const cmd of [
+    'hcloud ECS NovaDeleteServer --server_id=x',
+    'hcloud ECS ResetServerPassword --server_id=x',
+    'hcloud ECS BatchResetServersPassword --server_id=x',
+  ]) {
+    const result = runEvaluate('terminal', { command: cmd });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0);
+    const reason = JSON.parse(result.stdout);
+    assert.equal(typeof reason, 'string', `${cmd} should be blocked by the write-gate`);
+    assert.match(reason, /write|plan|approv/i);
+  }
+});
+
+test('python hook write-gate still allows read-only Nova ops', () => {
+  const result = runEvaluate('terminal', { command: 'hcloud ECS NovaListServers --limit=1' });
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  assert.equal(JSON.parse(result.stdout), null);
+});

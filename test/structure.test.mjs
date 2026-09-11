@@ -304,7 +304,11 @@ test('setup-cli.mjs supports the codearts target end to end', () => {
   assert.match(setup, /enabled: true,/);
   // command dispatch covers codearts for install / uninstall / status
   const branches = setup.match(/target === 'codearts' \|\| target === 'all'/g);
-  assert.ok(branches && branches.length >= 3, `codearts dispatch branches: ${branches?.length}`);
+  const installDispatch = setup.match(/shouldInstall\('codearts'\)/g);
+  assert.ok(
+    (branches?.length ?? 0) + (installDispatch?.length ?? 0) >= 3,
+    `codearts dispatch branches: ${(branches?.length ?? 0) + (installDispatch?.length ?? 0)}`,
+  );
   // .installed marker goes to the codearts plugins dir
   assert.match(setup, /function installMarkerDirForTarget\(target\)/);
   assert.match(setup, /if \(target === 'codex'\) return null;/);
@@ -410,7 +414,11 @@ test('setup-cli.mjs supports the dsh target end to end', () => {
   assert.match(setup, /removeDshMcpPatch\(\)/);
   // command dispatch covers dsh for install / uninstall / status / update
   const branches = setup.match(/target === 'dsh' \|\| target === 'all'/g);
-  assert.ok(branches && branches.length >= 4, `dsh dispatch branches: ${branches?.length}`);
+  const installDispatch = setup.match(/shouldInstall\('dsh'\)/g);
+  assert.ok(
+    (branches?.length ?? 0) + (installDispatch?.length ?? 0) >= 4,
+    `dsh dispatch branches: ${(branches?.length ?? 0) + (installDispatch?.length ?? 0)}`,
+  );
   // .installed marker goes to the dsh plugins dir
   assert.match(setup, /if \(target === 'dsh'\) return dshPluginsDir\(\);/);
   // doctor checks DSH plugin dir, patch, and skills dir
@@ -469,7 +477,11 @@ test('setup-cli.mjs supports the officeace target end to end', () => {
   assert.match(setup, /mcpServer.*command.*node/s);
   assert.match(setup, /capabilities\.json/);
   const branches = setup.match(/target === 'officeace' \|\| target === 'all'/g);
-  assert.ok(branches && branches.length >= 3, `officeace dispatch branches: ${branches?.length}`);
+  const installDispatch = setup.match(/shouldInstall\('officeace'\)/g);
+  assert.ok(
+    (branches?.length ?? 0) + (installDispatch?.length ?? 0) >= 3,
+    `officeace dispatch branches: ${(branches?.length ?? 0) + (installDispatch?.length ?? 0)}`,
+  );
   assert.match(setup, /install --target officeace/);
 });
 
@@ -513,7 +525,11 @@ test('setup-cli.mjs supports the hermes target end to end', () => {
   assert.match(setup, /evaluate\(tool_name, args\)/);
   assert.match(setup, /huaweicloud-safety\.py/);
   const branches = setup.match(/target === 'hermes' \|\| target === 'all'/g);
-  assert.ok(branches && branches.length >= 3, `hermes dispatch branches: ${branches?.length}`);
+  const installDispatch = setup.match(/shouldInstall\('hermes'\)/g);
+  assert.ok(
+    (branches?.length ?? 0) + (installDispatch?.length ?? 0) >= 3,
+    `hermes dispatch branches: ${(branches?.length ?? 0) + (installDispatch?.length ?? 0)}`,
+  );
   assert.match(setup, /install --target hermes/);
   assert.match(setup, /HERMES_HOME/);
   assert.match(setup, /LOCALAPPDATA/);
@@ -548,11 +564,11 @@ test('setup-cli.mjs resolves the active KooCLI profile for configureHcloud', () 
 
 test('setup-cli.mjs checks for updates on install/update via shared query', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
-  assert.match(setup, /function checkForUpdate\(\)/);
-  assert.match(setup, /queryDistTagsSync\(/);
+  assert.match(setup, /async function checkForUpdate\(\)/);
+  assert.match(setup, /queryDistTagsFetch\(/);
   assert.match(setup, /semverCompare\(/);
-  const calls = setup.match(/^\s+checkForUpdate\(\);$/gm);
-  assert.ok(calls && calls.length >= 2, 'checkForUpdate should be called in both cmdInstall and cmdUpdate');
+  const calls = setup.match(/^\s+await checkForUpdate\(\);$/gm);
+  assert.ok(calls && calls.length >= 2, 'checkForUpdate should be awaited in both cmdInstall and cmdUpdate');
 });
 
 test('tools.mjs resolves skills from the hermes directory', () => {
@@ -620,9 +636,36 @@ test('stdio server warms update cache; shared protocol decorates first tool call
   assert.match(protocol, /peekCachedUpdateInfo\(\)/);
 });
 
+test('hdkitservice-api sends X-HW-Client-Version; SKILL session-start wording', () => {
+  const api = readFileSync(join(pluginRoot, 'src', 'sandbox', 'hdkitservice-api.mjs'), 'utf8');
+  assert.match(api, /X-HW-Client-Version/);
+  assert.match(api, /readInstalledVersion\(\)/);
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
+  assert.match(skill, /先调用 `huaweicloud_check_update` 检查插件版本/);
+  assert.match(skill, /若未先行检查，插件会在使用中收到服务端升级提示/);
+});
+
 test('READMEs recommend @latest for updates', () => {
   const en = readFileSync(join(root, 'README.md'), 'utf8');
   assert.match(en, /huaweicloud-devkit@latest update --target all/);
   const zh = readFileSync(join(root, 'README.zh-CN.md'), 'utf8');
   assert.match(zh, /huaweicloud-devkit@latest update --target all/);
+});
+
+test('cmdUpdate has no trailing unreachable reinstall; cmdReinstall keeps it', () => {
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  // cmdUpdate（'update'/'upgrade' 入口）本身不得做"卸载+重装"；各 target 分支均 return。
+  const cmdUpdateBody = setup.slice(
+    setup.indexOf('async function cmdUpdate()'),
+    setup.indexOf('async function cmdReinstall()'),
+  );
+  assert.doesNotMatch(cmdUpdateBody, /await cmdUninstall\(\)/);
+  assert.doesNotMatch(cmdUpdateBody, /await cmdInstall\(\)/);
+  // cmdReinstall 是专职重装：卸载+重装逻辑必须保留。
+  const cmdReinstallBody = setup.slice(
+    setup.indexOf('async function cmdReinstall()'),
+    setup.indexOf('async function cmdInstallHcloud()'),
+  );
+  assert.match(cmdReinstallBody, /await cmdUninstall\(\)/);
+  assert.match(cmdReinstallBody, /await cmdInstall\(\)/);
 });

@@ -1,7 +1,7 @@
 {
   "name": "huaweicloud-devkit",
   "interface": {
-    "displayName": "HuaweiCloud Devkit"
+    "displayName": "HuaweiCloud DevKit"
   },
   "plugins": [
     {

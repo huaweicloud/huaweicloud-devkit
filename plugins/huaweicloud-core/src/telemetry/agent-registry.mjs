@@ -68,7 +68,7 @@ export const AGENTS = [
     id: 'officeace',
     pathPatterns: ['/.office-claw/', '/.officeace/'],
     envVars: ['OFFICEACE_SESSION_ID', 'OFFICE_CLAW_CONFIG_ROOT'],
-    clientNames: ['office-claw-mcp-connector-probe'],
+    clientNames: ['office-claw-mcp-connector-probe', 'officeace-agent'],
     version: { type: 'officeace' },
   },
   {
@@ -94,6 +94,7 @@ export const AGENTS = [
     id: 'cursor',
     pathPatterns: ['/.cursor/', '/cursor/'],
     envVars: ['CURSOR_SESSION_ID', 'CURSOR_GIT_WORKDIR'],
+    clientNames: ['cursor-vscode'],
     version: null,
   },
   {

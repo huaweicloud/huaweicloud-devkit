@@ -34,6 +34,8 @@ const FAKE_HCLOUD_FAIL = fileURLToPath(new URL('./fixtures/fake-hcloud-fail-conf
 
 const ENV_KEYS = [
   'HUAWEICLOUD_HOME',
+  'HCLOUD_CONFIG_PATH',
+  'HCLOUD_OBS_CONFIG_PATH',
   'HW_ACCESS_KEY',
   'HW_SECRET_KEY',
   'HW_SECURITY_TOKEN',
@@ -50,8 +52,11 @@ function withTempHome(fn) {
   const prev = {};
   for (const key of ENV_KEYS) prev[key] = process.env[key];
   process.env.HUAWEICLOUD_HOME = dir;
+  process.env.HCLOUD_CONFIG_PATH = join(dir, '.hcloud', 'config.json');
+  process.env.HCLOUD_OBS_CONFIG_PATH = join(dir, '.obsutilconfig');
   for (const key of ENV_KEYS) {
-    if (key !== 'HUAWEICLOUD_HOME') delete process.env[key];
+    if (key !== 'HUAWEICLOUD_HOME' && key !== 'HCLOUD_CONFIG_PATH' && key !== 'HCLOUD_OBS_CONFIG_PATH')
+      delete process.env[key];
   }
   clearRuntimeCredentials();
   const cleanup = () => {
@@ -75,8 +80,8 @@ function withTempHome(fn) {
   }
 }
 
-// HUAWEICLOUD_HOME is the temp dir here, so the fake KooCLI config must live
-// under it (readKooCliProfiles resolves via baseHome → HUAWEICLOUD_HOME).
+// The fake KooCLI config is wired to HCLOUD_CONFIG_PATH (set in withTempHome),
+// so readKooCliProfiles reads it instead of the real ~/.hcloud/config.json.
 function writeFakeKooCli(current, profiles) {
   const p = join(process.env.HUAWEICLOUD_HOME, '.hcloud', 'config.json');
   mkdirSync(dirname(p), { recursive: true });

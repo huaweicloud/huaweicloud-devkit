@@ -1,8 +1,8 @@
 {
   "interface": {
-    "displayName": "HuaweiCloud Devkit",
-    "shortDescription": "HuaweiCloud Devkit - Huawei Cloud guidance, CLI/API/SDK routing, MCP tools, and safety for coding agents.",
-    "longDescription": "HuaweiCloud Devkit helps coding agents choose and use Huawei Cloud Skills, KooCLI, APIs, SDKs, and MCP tools with less context, safer command execution, and more accurate cloud implementation decisions.",
+    "displayName": "HuaweiCloud DevKit",
+    "shortDescription": "HuaweiCloud DevKit - Huawei Cloud guidance, CLI/API/SDK routing, MCP tools, and safety for coding agents.",
+    "longDescription": "HuaweiCloud DevKit helps coding agents choose and use Huawei Cloud Skills, KooCLI, APIs, SDKs, and MCP tools with less context, safer command execution, and more accurate cloud implementation decisions.",
     "developerName": "HuaweiCloud Mate",
     "category": "Cloud",
     "capabilities": ["Read", "Interactive"],
@@ -17,7 +17,7 @@
   "mcpServers": "./.mcp.json",
   "description": "Guide coding agents to use Huawei Cloud Skills, KooCLI, APIs, SDKs, and future MCP capabilities with safer execution and less context.",
   "skills": "./skills/",
-  "version": "1.1.2",
+  "version": "1.1.3-next.4",
   "author": {
     "name": "HuaweiCloud Mate",
     "url": "https://github.com/huaweicloud"

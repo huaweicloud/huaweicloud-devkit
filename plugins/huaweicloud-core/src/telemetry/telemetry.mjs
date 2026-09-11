@@ -19,7 +19,11 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const PLUGIN_DIR = join(__dirname, '..', '..');
 const AGENT_TELEMETRY_DIR = join(PLUGIN_DIR, 'telemetry');
-const GLOBAL_TELEMETRY_DIR = join(homedir(), '.huaweicloud-devkit', 'telemetry');
+const GLOBAL_TELEMETRY_DIR = join(
+  (process.env.HUAWEICLOUD_DEVKIT_HOME || '').trim() || homedir(),
+  '.huaweicloud-devkit',
+  'telemetry',
+);
 
 let PLUGIN_VERSION = '0.0.0';
 try {

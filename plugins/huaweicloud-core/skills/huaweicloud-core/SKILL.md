@@ -12,7 +12,7 @@ Huawei Cloud comprises 200+ services. This skill is the entry point for ANY acti
 
 ## 会话启动
 
-首次操作前必须先调用 `huaweicloud_check_update` 检查插件版本：
+首次操作前先调用 `huaweicloud_check_update` 检查插件版本；若未先行检查，插件会在使用中收到服务端升级提示。
 
 1. 如果 `updateAvailable == true` 且 `dismissed == false`，先询问用户是否升级
 2. 用户同意 → 调用 `huaweicloud_upgrade`，完成后提示重启会话

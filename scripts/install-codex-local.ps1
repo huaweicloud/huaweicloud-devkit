@@ -40,9 +40,9 @@ $pluginJson = @{
   skills      = "./skills/"
   mcpServers  = "./.mcp.json"
   interface   = @{
-    displayName      = "HuaweiCloud Devkit"
-    shortDescription = "HuaweiCloud Devkit - Huawei Cloud guidance, CLI/API/SDK routing, MCP tools, and safety for coding agents."
-    longDescription  = "HuaweiCloud Devkit helps coding agents choose and use Huawei Cloud Skills, KooCLI, APIs, SDKs, and MCP tools with less context, safer command execution, and more accurate cloud implementation decisions."
+    displayName      = "HuaweiCloud DevKit"
+    shortDescription = "HuaweiCloud DevKit - Huawei Cloud guidance, CLI/API/SDK routing, MCP tools, and safety for coding agents."
+    longDescription  = "HuaweiCloud DevKit helps coding agents choose and use Huawei Cloud Skills, KooCLI, APIs, SDKs, and MCP tools with less context, safer command execution, and more accurate cloud implementation decisions."
     developerName    = "HuaweiCloud Mate"
     category         = "Cloud"
     capabilities     = @("Read", "Interactive")
@@ -61,7 +61,7 @@ Write-Host "Written plugin.json: $pluginJsonPath"
 Write-Host "--- Step 2: Constructing repo marketplace.json ---"
 $repoMarketplaceJson = @{
   name      = $marketplaceName
-  interface = @{ displayName = "HuaweiCloud Devkit" }
+  interface = @{ displayName = "HuaweiCloud DevKit" }
   plugins   = @(
     @{
       name     = $pluginName

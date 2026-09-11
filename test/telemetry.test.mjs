@@ -19,6 +19,25 @@ function withNoAgentEnv(fn) {
   }
 }
 
+// 隔离 telemetry.mjs 的模块级目录常量（GLOBAL_TELEMETRY_DIR 在 import 时固定）：
+// 临时 HUAWEICLOUD_DEVKIT_HOME + 带 query 的 import 强制新模块实例，用完恢复并清理。
+async function withIsolatedTelemetry(fn) {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'hwdk-telemetry-'));
+  const prevHome = process.env.HUAWEICLOUD_DEVKIT_HOME;
+  process.env.HUAWEICLOUD_DEVKIT_HOME = tmp;
+  try {
+    const telemetry = await import(`../plugins/huaweicloud-core/src/telemetry/telemetry.mjs?iso=${Date.now()}`);
+    return await fn(telemetry);
+  } finally {
+    if (prevHome === undefined) delete process.env.HUAWEICLOUD_DEVKIT_HOME;
+    else process.env.HUAWEICLOUD_DEVKIT_HOME = prevHome;
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 test('detectAgentHarness returns known when no env set', () => {
   const result = detectAgentHarness();
   assert.ok(result === null || (typeof result === 'string' && result.length > 0));
@@ -53,39 +72,41 @@ test('detectAgentHarness returns null when nothing matches', () => {
 });
 
 test('detectAgentHarness classifies MCP client names to canonical harness', () => {
-  const keys = [
-    'OPENCODE_SESSION_ID',
-    'OPENCODE_CONFIG_PATH',
-    'CODEX_SESSION_ID',
-    'CODEX_CLI_VERSION',
-    'CODEX_SANDBOX',
-    'CODEX_THREAD_ID',
-    'OFFICEACE_SESSION_ID',
-    'OFFICE_CLAW_CONFIG_ROOT',
-    'OPENCLAW_SESSION_ID',
-    'OPENCLAW_CONFIG_ROOT',
+  const nameBackedAgents = AGENTS.filter((a) => a.clientNames?.length);
+  const idNameAgents = AGENTS.filter((a) => a.envVars?.length);
+  const cases = [
+    ...nameBackedAgents.flatMap((a) => a.clientNames.map((n) => [n, a.id])),
+    ...idNameAgents.map((a) => [a.id, a.id]),
   ];
-  const saved = keys.map((k) => [k, process.env[k]]);
-  keys.forEach((k) => delete process.env[k]);
-  try {
-    assert.equal(detectAgentHarness({ name: 'codex-mcp-client' }), 'codex');
-    assert.equal(detectAgentHarness({ name: 'office-claw-mcp-connector-probe' }), 'officeace');
-    assert.equal(detectAgentHarness({ name: 'openclaw-bundle-mcp' }), 'openclaw');
-    assert.equal(detectAgentHarness({ name: 'opencode' }), 'opencode');
-  } finally {
-    for (const [k, v] of saved) {
-      if (v === undefined) delete process.env[k];
-      else process.env[k] = v;
+  withNoAgentEnv(() => {
+    for (const [name, expected] of cases) {
+      assert.equal(detectAgentHarness({ name }), expected, `name=${name}`);
     }
-  }
+  });
+});
+
+test('detectAgentHarness prefers real host env over clientInfo.name', () => {
+  const hostBackedAgents = AGENTS.filter((a) => a.envVars?.length);
+  withNoAgentEnv(() => {
+    for (const agent of hostBackedAgents) {
+      process.env[agent.envVars[0]] = 'simulated';
+      assert.equal(
+        detectAgentHarness({ name: 'unknown-mcp-client-probe' }),
+        agent.id,
+        `env ${agent.envVars[0]} should win over name for ${agent.id}`,
+      );
+      delete process.env[agent.envVars[0]];
+    }
+  });
 });
 
 test('generateOrRecoverInstallId returns consistent string', async () => {
-  const { generateOrRecoverInstallId } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-  const id1 = generateOrRecoverInstallId();
-  const id2 = generateOrRecoverInstallId();
-  assert.equal(typeof id1, 'string');
-  assert.equal(id1, id2);
+  await withIsolatedTelemetry(async ({ generateOrRecoverInstallId }) => {
+    const id1 = generateOrRecoverInstallId();
+    const id2 = generateOrRecoverInstallId();
+    assert.equal(typeof id1, 'string');
+    assert.equal(id1, id2);
+  });
 });
 
 test('isTelemetryEnabled defaults to true', async () => {
@@ -106,21 +127,19 @@ test('isTelemetryEnabled returns false when env set to off', async () => {
 });
 
 test('initTelemetry and trackToolInvoke do not throw', async () => {
-  const { initTelemetry, trackToolInvoke, trackSkillRetrieve } =
-    await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-
-  initTelemetry({ harness: 'test', version: '1.0.0' });
-  assert.doesNotThrow(() => trackToolInvoke('test_tool_name'));
-  assert.doesNotThrow(() => trackSkillRetrieve('test_skill_name'));
+  await withIsolatedTelemetry(async ({ initTelemetry, trackToolInvoke, trackSkillRetrieve }) => {
+    initTelemetry({ harness: 'test', version: '1.0.0' });
+    assert.doesNotThrow(() => trackToolInvoke('test_tool_name'));
+    assert.doesNotThrow(() => trackSkillRetrieve('test_skill_name'));
+  });
 });
 
 test('trackSandboxConnect and trackSandboxDisconnect do not throw', async () => {
-  const { initTelemetry, trackSandboxConnect, trackSandboxDisconnect } =
-    await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-
-  initTelemetry({ harness: 'test', version: '1.0.0' });
-  assert.doesNotThrow(() => trackSandboxConnect());
-  assert.doesNotThrow(() => trackSandboxDisconnect());
+  await withIsolatedTelemetry(async ({ initTelemetry, trackSandboxConnect, trackSandboxDisconnect }) => {
+    initTelemetry({ harness: 'test', version: '1.0.0' });
+    assert.doesNotThrow(() => trackSandboxConnect());
+    assert.doesNotThrow(() => trackSandboxDisconnect());
+  });
 });
 
 test('sanitizeValue truncates long values to 255', async () => {
@@ -148,12 +167,14 @@ test('sanitizeValue coerces non-strings and nulls safely', async () => {
 });
 
 test('cacheUserHash writes to filesystem', async () => {
-  const { cacheUserHash } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-  assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));
+  await withIsolatedTelemetry(async ({ cacheUserHash }) => {
+    assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));
+  });
 });
 
 test('ingestHookEvents handles empty or missing file', async () => {
-  const { initTelemetry, ingestHookEvents } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
-  initTelemetry({ harness: 'test', version: '1.0.0' });
-  assert.doesNotThrow(() => ingestHookEvents());
+  await withIsolatedTelemetry(async ({ initTelemetry, ingestHookEvents }) => {
+    initTelemetry({ harness: 'test', version: '1.0.0' });
+    assert.doesNotThrow(() => ingestHookEvents());
+  });
 });
