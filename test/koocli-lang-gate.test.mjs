@@ -113,6 +113,56 @@ test('koocli gate: no injection when service is in neither catalog', () => {
   }
 });
 
+test('koocli gate review: missing catalog file is "unknown", not lang-missing', () => {
+  // cn-only machine (en catalog file absent): a standard service must NOT be
+  // proactively injected — its absence from en proves nothing.
+  const dir = withCatalog({ 'services_cn.json': [{ Service: { Text: 'ECS' } }] });
+  try {
+    assert.equal(classifyUnsupported('ECS', dir), 'unknown');
+    assert.equal(shouldInjectLang(['ECS', 'ListServers'], dir), false);
+    assert.equal(shouldInjectLang(['BSS', 'x'], dir), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('koocli gate review: en-only machine (#597) classify unknown, no proactive', () => {
+  const dir = withCatalog({ 'services_en.json': [{ Service: { Text: 'ECS' } }] });
+  try {
+    assert.equal(classifyUnsupported('BSS', dir), 'unknown');
+    assert.equal(shouldInjectLang(['BSS', 'ShowCustomerAccountBalances'], dir), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('koocli gate review: both catalogs missing stays unknown, never proactive', () => {
+  const dir = withCatalog({});
+  try {
+    assert.equal(classifyUnsupported('BSS', dir), 'unknown');
+    assert.equal(shouldInjectLang(['BSS', 'ShowCustomerAccountBalances'], dir), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('koocli gate review: full catalogs keep lang-missing / other / not-found', () => {
+  const dir = withCatalog({
+    'services_cn.json': [{ Service: { Text: 'BSS' } }, { Service: { Text: 'ECS' } }],
+    'services_en.json': [{ Service: { Text: 'ECS' } }],
+  });
+  try {
+    assert.equal(classifyUnsupported('BSS', dir), 'lang-missing');
+    assert.equal(shouldInjectLang(['BSS', 'ShowCustomerAccountBalances'], dir), true);
+    assert.equal(classifyUnsupported('ECS', dir), 'other');
+    assert.equal(shouldInjectLang(['ECS', 'ListServers'], dir), false);
+    assert.equal(classifyUnsupported('MadeUpService', dir), 'not-found');
+    assert.equal(shouldInjectLang(['MadeUpService', 'x'], dir), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('koocli gate: no injection when service is in both catalogs', () => {
   const dir = withCatalog({
     'services_cn.json': [{ Service: { Text: 'ECS' } }, { Service: { Text: 'BSS' } }],
@@ -192,9 +242,10 @@ console.log(JSON.stringify({ ok: true, langs: args.filter((a) => a.startsWith('-
 });
 
 test('runHcloud lang: reactive fallback runs at most once on Unsupported service', async () => {
+  // cn-only catalog (en file missing): classify='unknown', no proactive inject,
+  // but reactive is allowed and runs exactly once.
   const dir = withCatalog({
     'services_cn.json': [{ Service: { Text: 'BSS' } }, { Service: { Text: 'ECS' } }],
-    'services_en.json': [{ Service: { Text: 'ECS' } }],
   });
   const stateFile = join(mkdtempSync(join(tmpdir(), 'koocli-reactive-state-')), 'count.txt');
   const script = fakeHcloudScript(`

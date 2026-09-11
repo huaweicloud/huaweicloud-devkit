@@ -222,23 +222,33 @@ export function readServiceCatalogs(metaDir = join(homedir(), '.hcloud', 'metaRe
   if (_catalogCache.dir === metaDir && now - _catalogCache.t < CATALOG_TTL_MS) return _catalogCache;
   const load = (f) => {
     try {
-      const d = JSON.parse(readFileSync(join(metaDir, f), 'utf8'));
-      return new Set((d.items || []).map((i) => i?.Service?.Text).filter(Boolean));
+      const p = join(metaDir, f);
+      if (!existsSync(p)) return { present: false, set: new Set() };
+      const d = JSON.parse(readFileSync(p, 'utf8'));
+      return { present: true, set: new Set((d.items || []).map((i) => i?.Service?.Text).filter(Boolean)) };
     } catch {
-      return new Set();
+      return { present: false, set: new Set() };
     }
   };
-  _catalogCache = { dir: metaDir, t: now, cn: load('services_cn.json'), en: load('services_en.json') };
+  const cn = load('services_cn.json');
+  const en = load('services_en.json');
+  _catalogCache = { dir: metaDir, t: now, cn: cn.set, en: en.set, cnPresent: cn.present, enPresent: en.present };
   return _catalogCache;
 }
 
 export function classifyUnsupported(service, metaDir) {
-  const { cn, en } = readServiceCatalogs(metaDir);
+  const { cn, en, cnPresent, enPresent } = readServiceCatalogs(metaDir);
   const s = String(service || '').toUpperCase();
   if (!s) return 'other';
-  if (cn.has(s) && !en.has(s)) return 'lang-missing';
-  if (!cn.has(s) && !en.has(s)) return 'not-found';
-  return 'other';
+  if (cnPresent && enPresent) {
+    if (cn.has(s) && !en.has(s)) return 'lang-missing';
+    if (!cn.has(s) && !en.has(s)) return 'not-found';
+    return 'other';
+  }
+  // One or both catalog files are missing locally — we cannot distinguish
+  // "service missing from the en catalog" from "en catalog not downloaded".
+  // Only the reactive fallback may attempt --cli-lang=cn for this case.
+  return 'unknown';
 }
 
 export function shouldInjectLang(args, metaDir) {
@@ -285,7 +295,7 @@ const UNSUPPORTED_SERVICE_RE = /Unsupported service:\s*([A-Za-z0-9_-]+)/i;
 
 function appendLangHint(result, service, metaDir) {
   const cause = classifyUnsupported(service, metaDir);
-  if (cause === 'lang-missing' || cause === 'other') {
+  if (cause === 'lang-missing' || cause === 'unknown') {
     const nextStep = 'Re-run with --cli-lang=cn, or set hcloud configure set --cli-lang=cn.';
     return {
       ...result,
@@ -301,6 +311,16 @@ function appendLangHint(result, service, metaDir) {
     langHint: `Unsupported service: ${service}. ${nextStep}`,
     langNextStep: nextStep,
   };
+}
+
+function isObsUtilStyle(args) {
+  const s = String(args[0] || '').toUpperCase();
+  return s === 'OBS' && OBS_SUBCOMMANDS.has(String(args[1] || '').toLowerCase());
+}
+
+function canRetryLang(service, metaDir) {
+  const cause = classifyUnsupported(service, metaDir);
+  return cause === 'lang-missing' || cause === 'unknown';
 }
 
 export async function runHcloud(args, options = {}) {
@@ -337,7 +357,7 @@ export async function runHcloud(args, options = {}) {
   const result = await runHcloudOnceWithRetries(plan, options);
   const text = `${result.stderr || ''}\n${result.stdout || ''}`;
   const match = text.match(UNSUPPORTED_SERVICE_RE);
-  if (match && !langGiven && !result.ok) {
+  if (match && !langGiven && !result.ok && canRetryLang(match[1], metaDir) && !isObsUtilStyle(normalizedArgs)) {
     const retry = await runHcloudOnceWithRetries(
       {
         ...plan,
