@@ -24,17 +24,28 @@ This is an **agent guidance + safety package**, not a service encyclopedia. Six 
 ```
 plugins/huaweicloud-core/
   skills/           ← 6 meta-skills + service skills
-  src/              ← Node.js MCP server (stdio JSON-RPC, 13 tools)
-  safety/           ← shared policy.json
-  hooks/            ← Python PreToolUse hook
+  src/              ← Node.js MCP server (stdio/remote JSON-RPC, 39 tools in tools.mjs)
+  safety/           ← shared policy.json + risk rules
+  hooks/            ← PreToolUse hook (Node huaweicloud-safety.mjs, wired via hooks.json; .py variant kept for compatibility)
   .codex-plugin/    ← Codex plugin manifest
   .claude-plugin/   ← Claude Code plugin manifest
   .cursor-plugin/   ← Cursor plugin manifest
-  .officeace-plugin/← OfficeAce plugin manifest
+  .workbuddy-plugin/← WorkBuddy plugin manifest
+  .hermes-plugin/   ← Hermes plugin manifest
   .mcp.json         ← MCP server config for agents
+  openclaw.plugin.json ← OpenClaw plugin manifest
 ```
 
 Safety is 3-layer: **skills teach → hooks block → MCP/CLI wrappers enforce**.
+
+Also in the repo:
+
+- `bin/setup.cjs` — interactive installer (`huaweicloud-devkit`); dispatches to each agent's plugin dir.
+- `integrations/` — per-agent adapter configs (opencode, dsh, hermes, workbuddy, atomcode), separate from the plugin.
+- `src/tools.mjs` — 39 MCP tool definitions (hcloud CLI, hooks, catalog, auth, sandbox, voucher, update). `src/mcp-server-remote.mjs` — remote (HTTP) transport alongside stdio.
+- `src/setup-cli.mjs` — KooCLI install/doctor logic; honors `HCLOUD_BIN`.
+- `scripts/*.mjs` — validation, version sync, packaging, release helpers.
+- `.superpowers/` + `docs/superpowers/` — planning/spec workflow used for larger changes.
 
 ## Skill Naming: Meta vs Service
 
@@ -46,13 +57,13 @@ Required meta-skills (tethered to `test/structure.test.mjs`):
 
 ## File Naming: Design Docs vs Implementation
 
-Design docs in `docs/` use `huawei-*` and plan 20+ service skills. The **actual implementation** uses `huaweicloud-*` for meta-skills and `huawei-*` for service skills. Design docs are planning artifacts; trust the filesystem.
+`docs/` holds planning/design artifacts (`*-design.md`, `architecture.md`, `safety-model.md`, ...). These are historical and may lag reality. The **actual implementation** is in `plugins/huaweicloud-core/` — `huaweicloud-*` for meta-skills and `huawei-*` for service skills. Trust the filesystem, not the docs.
 
 ## Creating or Editing Skills
 
 - Every `SKILL.md` must start with `---\nname: huaweicloud-<name>` or `---\nname: huawei-<name>` YAML frontmatter (validated by both `npm run validate` and `structure.test.mjs`)
 - No `TODO` or `[TODO]` markers in committed files (also validated)
-- The 6 meta-skills must always exist. Service skills can be added freely — `test/structure.test.mjs` enforces a minimum of 6, not an exact count.
+- The 6 meta-skills must always exist. Service skills can be added freely. `test/structure.test.mjs` enforces a minimum of 6 skills and `scripts/validate-package.mjs` a minimum of 5; the installed set is not an exact count.
 - Update `test/structure.test.mjs` if introducing new testable invariants (e.g., new required sections in SKILL.md)
 - Add `node --test` tests if introducing new measurable invariants
 
@@ -120,16 +131,28 @@ Service skills may skip steps 1-2 when the correct service name and operation ar
 
 ## Safety Model
 
-Write operations are blocked by default. The only write path is `huaweicloud_run_approved_command`, which requires `approvedCommand` + `approvedByUser: true`.
+Write-capable `hcloud` commands are blocked by default. The only write path for hcloud command I/O is `huaweicloud_run_approved_command`, which requires `args` + `approvalToken` + `approvedByUser: true`. Non-hcloud tools that mutate state by design (e.g., `huaweicloud_auth_init`, `huaweicloud_voucher_claim`, `huaweicloud_sandbox_connect`, `huaweicloud_upgrade`) do not require approval.
 
 Policy vocabulary lives in `plugins/huaweicloud-core/safety/policy.json`. Both `src/safety-policy.mjs` and `hooks/huaweicloud-safety.py` read from it. If you add a blocked pattern, update the policy JSON, not just one enforcement layer.
+
+## Before You Commit
+
+```bash
+npm run lint            # markdownlint + ESLint
+npm test                # node --test (includes structure.test.mjs)
+npm run validate        # package/version/skill/kooCli pairing checks
+npm run format          # prettier --write
+npm run pack:verify     # simulate npm pack, catch missing files (e.g. new manifests)
+```
+
+If you changed a SKILL.md, add or update a guard in `test/structure.test.mjs` and the corresponding test. If you changed the paired KooCLI version, run `npm run validate` to confirm every pinned URL matches. Release process: see `docs/RELEASING.md`.
 
 ## Common Gotchas
 
 - KooCLI 7.x uses `--param=value`, not space-separated. Array params are 1-indexed (`nics.1.subnet_id`, not `.0`).
 - `hcloud` must be in PATH or `HCLOUD_BIN` set. Agent processes inherit the environment of their launcher.
-- Codex manifest (`plugin.json`) must NOT include a `hooks` field — it fails schema validation.
-- `npm version` only bumps `package.json`. When changing version, also update `plugins/huaweicloud-core/.codex-plugin/plugin.json`, `.claude-plugin/plugin.json`, `.cursor-plugin/plugin.json`. The `npm run validate` script enforces they match.
+- Codex and WorkBuddy manifests (`plugin.json`) must NOT include a `hooks` field — Codex fails schema validation, WorkBuddy triggers manual trust prompts.
+- `npm version` only bumps `package.json`. Run `node scripts/sync-version.mjs` to sync the 5 plugin manifests (`.codex-plugin`, `.claude-plugin`, `.cursor-plugin`, `.workbuddy-plugin`, `.hermes-plugin`). `npm run validate` enforces version parity across 7 files and will fail if root `plugin.json` or `openclaw.plugin.json` is out of sync.
 - KooCLI version is paired via `kooCliVersion` in `package.json` (single source of truth). Install URLs in `src/setup-cli.mjs` and skills must pin `cli/<kooCliVersion>`; the `hcloud_install.sh` one-liner is the only allowed `cli/latest` (it cannot be pinned). `npm run validate` enforces this — before releasing, confirm whether `kooCliVersion` should bump to the latest KooCLI. `check_cli`/`doctor` warn (soft, non-blocking) when the installed `hcloud version` does not exactly match.
 - Skills are compact routing workflows, not service docs. Do not copy Huawei Cloud documentation into them. Point to `support.huaweicloud.com` instead.
 - For complex params (nested objects, arrays with special characters), prefer `--cli-jsonInput=<file>` over inline quoting to avoid shell escaping traps.
