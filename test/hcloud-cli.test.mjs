@@ -9,7 +9,8 @@ import {
   createApprovalToken,
   hashArgs,
   planHcloudCommand,
-  runHcloud, extractApiError 
+  runHcloud,
+  extractApiError,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.mjs';
 import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.mjs';
