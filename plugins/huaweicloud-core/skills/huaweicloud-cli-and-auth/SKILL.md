@@ -106,6 +106,13 @@ hcloud ECS CreateServers --cli-region=<region> --server.name=<name> --server.fla
 
 If a command needs an `adminPass` or other password field, do not leave plaintext secrets in shell history. Prefer local-only input or runtime injection.
 
+## Language / Service Catalog Trap
+
+- KooCLI loads the service list from a per-language catalog: `~/.hcloud/metaRepo/services_{cn,en}.json`. The **English catalog is incomplete** (149 services vs 220 in Chinese; ~70 services — BSS, DevStar, CloudTable, FRS, ASM, ... — are missing). A command against a service that only exists in the Chinese catalog fails with a misleading `Unsupported service: X`.
+- `huaweicloud-devkit` auto-injects `--cli-lang=cn` (proactive when the catalog shows `X ∈ cn ∧ X ∉ en`, reactive once if `Unsupported service` still appears) for read and write commands; approved write commands keep their approved argument list (injection happens inside the runner).
+- Manual fallback (do not rely on the auto path alone): append `--cli-lang=cn` to the failing command, or set globally with `hcloud configure set --cli-lang=cn` (this changes ALL CLI output language).
+- Distinguish from **region** metadata limits (e.g., BSS only supports `cn-north-1`): a region error is NOT solved by switching language.
+
 ## Output Formatting
 
 ```bash

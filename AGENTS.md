@@ -150,6 +150,7 @@ If you changed a SKILL.md, add or update a guard in `test/structure.test.mjs` an
 ## Common Gotchas
 
 - KooCLI 7.x uses `--param=value`, not space-separated. Array params are 1-indexed (`nics.1.subnet_id`, not `.0`).
+- KooCLI's English service catalog (`~/.hcloud/metaRepo/services_en.json`) is incomplete (~70 services, incl. BSS). `Unsupported service: X` usually means the en catalog lacks the service — `hcloud-cli.mjs` auto-injects `--cli-lang=cn` (both read and write); keep `shouldInjectLang`'s G1–G4 guards on any change.
 - `hcloud` must be in PATH or `HCLOUD_BIN` set. Agent processes inherit the environment of their launcher.
 - Codex and WorkBuddy manifests (`plugin.json`) must NOT include a `hooks` field — Codex fails schema validation, WorkBuddy triggers manual trust prompts.
 - `npm version` only bumps `package.json`. Run `node scripts/sync-version.mjs` to sync the 5 plugin manifests (`.codex-plugin`, `.claude-plugin`, `.cursor-plugin`, `.workbuddy-plugin`, `.hermes-plugin`). `npm run validate` enforces version parity across 7 files and will fail if root `plugin.json` or `openclaw.plugin.json` is out of sync.
