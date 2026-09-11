@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.3 (2026-09-11)
+
+- chore: advance main to 1.1.3-next.4 (business keeps dev; prepare stable 1.1.3) (#619)
+- test(update-check): decouple upgrade-tag logic from repo package.json version
+- chore(release): 1.1.2
+- test: resolve structure.test.mjs to dev version (union-merge artifact)
+- chore(release): 1.1.1 (#515)
+- chore: merge dev into main for 1.1.1 stable release (#513)
+- chore: add dsh.bundle manifest for DSH plugin ecosystem
+- chore(release): 1.1.0 (#440)
+- chore: merge dev into main for 1.1.0 release (#438)
+- chore: version override for 1.1.0 stable release (#433)
+- docs: add Huawei Cloud npm mirror recommendation for China users
+- chore(release): 1.0.2
+- style: prettier format fix
+- feat: v1.0.2 stable - merge all dev changes
+- fix(release): update release trigger to workflow_dispatch and main push only
+- feat(release): sync release workflow to main, seed manifest with 1.0.1
+- fix(release): retire the live Publish Dev workflow on main
+- fix(release): restore full publish flow with quoted step names
+- fix(release): probe publish job with environment only
+- fix(release): probe without job outputs and needs.outputs wiring
+- fix(release): restore full tag-gated publish logic
+- fix(release): reduce npm-publish workflow to minimal probe
+- fix(release): drop workflow_dispatch inputs, derive dist-tag from the tag version
+- fix(release): rename publish workflow to npm-publish to recover a fresh workflow_dispatch index
+- fix(release): add pack-verify script to main
+- fix(release): sync ci.yml with pack verification to main
+- fix(release): add tag-gated Publish workflow to main so workflow_dispatch works from tags
+
 ## 1.1.3-next.4 (2026-09-10)
 
 - fix: 受限网络下升级检测静默失败——checkForUpdate 改 fetch registry + 15s 超时 + DEBUG 日志 (#612) (#613)
