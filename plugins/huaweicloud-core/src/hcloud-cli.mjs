@@ -281,6 +281,28 @@ export function planHcloudCommand(args, options = {}) {
   };
 }
 
+const UNSUPPORTED_SERVICE_RE = /Unsupported service:\s*([A-Za-z0-9_-]+)/i;
+
+function appendLangHint(result, service, metaDir) {
+  const cause = classifyUnsupported(service, metaDir);
+  if (cause === 'lang-missing' || cause === 'other') {
+    const nextStep = 'Re-run with --cli-lang=cn, or set hcloud configure set --cli-lang=cn.';
+    return {
+      ...result,
+      langCause: cause,
+      langHint: `Unsupported service: ${service}. ${nextStep}`,
+      langNextStep: nextStep,
+    };
+  }
+  const nextStep = 'Check the service name, or refresh KooCLI metadata (hcloud upgrade / configure).';
+  return {
+    ...result,
+    langCause: cause,
+    langHint: `Unsupported service: ${service}. ${nextStep}`,
+    langNextStep: nextStep,
+  };
+}
+
 export async function runHcloud(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const plan = {
@@ -289,6 +311,51 @@ export async function runHcloud(args, options = {}) {
   };
   assertAllowed(plan.classification);
 
+  const metaDir = options.metaDir;
+  const langGiven = normalizedArgs.some((a) => /^--cli-lang=/.test(a));
+  const injectedArgs =
+    !langGiven && shouldInjectLang(normalizedArgs, metaDir) ? [...normalizedArgs, '--cli-lang=cn'] : null;
+
+  if (injectedArgs) {
+    const result = await runHcloudOnceWithRetries(
+      {
+        ...plan,
+        rawArgs: injectedArgs,
+      },
+      options,
+    );
+    const tagged = {
+      ...result,
+      autoRetried: true,
+      injectedLang: 'cn',
+    };
+    if (tagged.ok) return tagged;
+    const match = `${result.stderr || ''}\n${result.stdout || ''}`.match(UNSUPPORTED_SERVICE_RE);
+    return match ? appendLangHint(tagged, match[1], metaDir) : tagged;
+  }
+
+  const result = await runHcloudOnceWithRetries(plan, options);
+  const text = `${result.stderr || ''}\n${result.stdout || ''}`;
+  const match = text.match(UNSUPPORTED_SERVICE_RE);
+  if (match && !langGiven && !result.ok) {
+    const retry = await runHcloudOnceWithRetries(
+      {
+        ...plan,
+        rawArgs: [...normalizedArgs, '--cli-lang=cn'],
+      },
+      options,
+    );
+    return retry.ok
+      ? { ...retry, autoRetried: true, reactiveFallback: true, injectedLang: 'cn' }
+      : appendLangHint(retry, match[1], metaDir);
+  }
+  if (match && !result.ok) {
+    return appendLangHint(result, match[1], metaDir);
+  }
+  return result;
+}
+
+async function runHcloudOnceWithRetries(plan, options) {
   const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     const result = await runHcloudOnce(plan, options);
@@ -336,6 +403,9 @@ function runHcloudOnce(plan, options) {
   const executableArgs = Array.isArray(options.executableArgs) ? options.executableArgs.map(String) : [];
   const cwd = options.cwd || undefined;
   const stdin = options.stdin ?? 'y\n';
+  const childOptions = { ...options };
+  delete childOptions.metaDir;
+  const childEnv = { ...process.env, ...childOptions.env };
 
   return new Promise((resolve) => {
     const proxySettings = getProxySettings();
@@ -352,7 +422,7 @@ function runHcloudOnce(plan, options) {
       env: {
         ...process.env,
         ...proxyEnv,
-        ...options.env,
+        ...childEnv,
       },
     });
     if (stdin) {
