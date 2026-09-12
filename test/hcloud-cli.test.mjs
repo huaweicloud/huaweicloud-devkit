@@ -254,7 +254,7 @@ console.log(JSON.stringify({ ok: true }));
 });
 
 test(
-  'koocli lang G4: approved plan end-to-end runs through internal --cli-lang injection',
+  'koocli lang G4: approved plan end-to-end does NOT mutate the approved command',
   { skip: process.platform === 'win32' },
   async () => {
     const home = mkdtempSync(join(tmpdir(), 'appr-home-'));
@@ -270,11 +270,8 @@ import { appendFileSync } from 'node:fs';
 const logFile = ${JSON.stringify(logFile)};
 const args = process.argv.slice(2);
 appendFileSync(logFile, JSON.stringify(args) + '\\n');
-if (!args.includes('--cli-lang=cn')) {
-  console.error('Unsupported service: BSS');
-  process.exit(1);
-}
-console.log(JSON.stringify({ ok: true, seen: args }));
+console.error('Unsupported service: BSS');
+process.exit(1);
 `);
 
     const previousHome = process.env.HOME;
@@ -288,7 +285,7 @@ console.log(JSON.stringify({ ok: true, seen: args }));
       });
       assert.ok(plan.approvalToken, 'plan produces an approvalToken');
       assert.equal(plan.safeToRun, true);
-      assert.ok(!plan.args.includes('--cli-lang'), 'approved args carry no injected lang flag');
+      assert.ok(!plan.args.includes('--cli-lang'), 'approved args carry no lang flag');
 
       const result = await callTool('huaweicloud_run_approved_command', {
         args: ['BSS', 'ShowCustomerAccountBalances'],
@@ -297,14 +294,15 @@ console.log(JSON.stringify({ ok: true, seen: args }));
         maxRetries: 0,
       });
       assert.equal(result.approved, true, 'approved execution flag preserved');
-      assert.equal(result.ok, true);
-      assert.equal(result.autoRetried, true, 'lang injection ran inside the approved path');
-      assert.equal(result.injectedLang, 'cn');
-      assert.deepEqual(JSON.parse(result.stdout).seen, ['BSS', 'ShowCustomerAccountBalances', '--cli-lang=cn']);
+      assert.equal(result.ok, false, 'command itself failed with Unsupported');
+      assert.equal(result.langCause, 'lang-missing');
+      assert.match(result.langNextStep, /hcloud configure set --cli-lang=cn/);
+      assert.equal(result.injectedLang, undefined, 'no lang flag injected into the approved command');
+      assert.equal(result.autoRetried, undefined);
 
       const calls = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
-      assert.equal(calls.length, 1, 'exactly one child invocation, lang flag appended internally');
-      assert.deepEqual(JSON.parse(calls[0]), ['BSS', 'ShowCustomerAccountBalances', '--cli-lang=cn']);
+      assert.equal(calls.length, 1, 'exactly one child invocation, command unchanged');
+      assert.deepEqual(JSON.parse(calls[0]), ['BSS', 'ShowCustomerAccountBalances']);
     } finally {
       process.env.HOME = previousHome;
       if (previousBin === undefined) delete process.env.HCLOUD_BIN;

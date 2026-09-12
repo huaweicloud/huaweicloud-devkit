@@ -196,24 +196,6 @@ function obsWriteHint(args) {
   return 'OBS write operations are obsutil-style and always write-class. Before executing, present the full resource manifest (bucket/object list) to the user for ONE batch approval, then run each command through plan → approve (see huawei-iac skill, Provisioning Rules).';
 }
 
-const OBS_SUBCOMMANDS = new Set([
-  'help',
-  'ls',
-  'mb',
-  'cp',
-  'mv',
-  'rm',
-  'chattri',
-  'config',
-  'cors',
-  'lifecycle',
-  'policy',
-  'share',
-  'sync',
-  'url',
-  'sign',
-]);
-
 const CATALOG_TTL_MS = 5 * 60 * 1000;
 let _catalogCache = { dir: null, t: 0, cn: new Set(), en: new Set() };
 
@@ -252,17 +234,7 @@ export function classifyUnsupported(service, metaDir) {
   }
   // One or both catalog files are missing locally — we cannot distinguish
   // "service missing from the en catalog" from "en catalog not downloaded".
-  // Only the reactive fallback may attempt --cli-lang=cn for this case.
   return 'unknown';
-}
-
-export function shouldInjectLang(args, metaDir) {
-  const arr = Array.isArray(args) ? args.map(String) : [];
-  if (arr.some((a) => /^--cli-lang=/.test(a))) return false;
-  const s = (arr[0] || '').toUpperCase();
-  if (!s) return false;
-  if (s === 'OBS' && OBS_SUBCOMMANDS.has((arr[1] || '').toLowerCase())) return false;
-  return classifyUnsupported(s, metaDir) === 'lang-missing';
 }
 
 export function planHcloudCommand(args, options = {}) {
@@ -301,7 +273,8 @@ const UNSUPPORTED_SERVICE_RE = /Unsupported service:\s*([A-Za-z0-9_-]+)/i;
 function appendLangHint(result, service, metaDir) {
   const cause = classifyUnsupported(service, metaDir);
   if (cause === 'lang-missing' || cause === 'unknown') {
-    const nextStep = 'Re-run with --cli-lang=cn, or set hcloud configure set --cli-lang=cn.';
+    const nextStep =
+      'KooCLI switches language only via global config: hcloud configure set --cli-lang=cn (changes CLI output language; BSS requires Chinese mode).';
     return {
       ...result,
       langCause: cause,
@@ -318,16 +291,6 @@ function appendLangHint(result, service, metaDir) {
   };
 }
 
-function isObsUtilStyle(args) {
-  const s = String(args[0] || '').toUpperCase();
-  return s === 'OBS' && OBS_SUBCOMMANDS.has(String(args[1] || '').toLowerCase());
-}
-
-function canRetryLang(service, metaDir) {
-  const cause = classifyUnsupported(service, metaDir);
-  return cause === 'lang-missing' || cause === 'unknown';
-}
-
 export async function runHcloud(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const plan = {
@@ -337,44 +300,13 @@ export async function runHcloud(args, options = {}) {
   assertAllowed(plan.classification);
 
   const metaDir = options.metaDir;
-  const langGiven = normalizedArgs.some((a) => /^--cli-lang=/.test(a));
-  const injectedArgs =
-    !langGiven && shouldInjectLang(normalizedArgs, metaDir) ? [...normalizedArgs, '--cli-lang=cn'] : null;
 
-  if (injectedArgs) {
-    const result = await runHcloudOnceWithRetries(
-      {
-        ...plan,
-        rawArgs: injectedArgs,
-      },
-      options,
-    );
-    const tagged = {
-      ...result,
-      autoRetried: true,
-      injection: 'proactive',
-      injectedLang: 'cn',
-    };
-    if (tagged.ok) return tagged;
-    const match = `${result.stderr || ''}\n${result.stdout || ''}`.match(UNSUPPORTED_SERVICE_RE);
-    return match ? appendLangHint(tagged, match[1], metaDir) : tagged;
-  }
-
+  // KooCLI only switches language globally (`hcloud configure set --cli-lang=cn`); there is no
+  // per-command `--cli-lang` flag (it is rejected as "不正确的参数:cli-lang"). So we never mutate
+  // the command — we run it as-is and annotate `Unsupported service` with an actionable cause.
   const result = await runHcloudOnceWithRetries(plan, options);
   const text = `${result.stderr || ''}\n${result.stdout || ''}`;
   const match = text.match(UNSUPPORTED_SERVICE_RE);
-  if (match && !langGiven && !result.ok && canRetryLang(match[1], metaDir) && !isObsUtilStyle(normalizedArgs)) {
-    const retry = await runHcloudOnceWithRetries(
-      {
-        ...plan,
-        rawArgs: [...normalizedArgs, '--cli-lang=cn'],
-      },
-      options,
-    );
-    return retry.ok
-      ? { ...retry, autoRetried: true, reactiveFallback: true, injection: 'reactive', injectedLang: 'cn' }
-      : appendLangHint(retry, match[1], metaDir);
-  }
   if (match && !result.ok) {
     return appendLangHint(result, match[1], metaDir);
   }
