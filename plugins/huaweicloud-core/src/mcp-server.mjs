@@ -159,7 +159,7 @@ function runStdioServer() {
       return;
     }
     try {
-      const result = await dispatch(message.method, message.params || {});
+      const result = await dispatch(message.method, message.params || {}, { sessionId: 'stdin' });
       writeMessage({ jsonrpc: '2.0', id: message.id, result });
     } catch (error) {
       writeMessage({

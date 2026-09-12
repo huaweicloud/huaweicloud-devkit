@@ -22,21 +22,29 @@ for (const base of [pluginRoot, packageRoot]) {
 }
 
 // 会话内首个非 check/upgrade 工具调用附加 _updateInfo，只消费一次。
-let hintConsumed = false;
-function decorateResult(name, result) {
-  if (hintConsumed) return result;
+// 按会话隔离：同进程内不同会话(A/B)各自首次提示；stdio 用固定 'stdin'。
+const consumedBySession = new Map();
+export function _decorateResult(sessionId, name, result) {
+  if (consumedBySession.get(sessionId)) return result;
   try {
     const hint = peekCachedUpdateInfo();
     if (!hint) return result;
     const decorated = applyUpdateHint(result, name, hint);
-    if (decorated !== result) hintConsumed = true;
+    if (decorated !== result) consumedBySession.set(sessionId, true);
     return decorated;
   } catch {
     return result; // 兜底装饰失败绝不影响工具调用
   }
 }
+export function _resetHintConsumption() {
+  consumedBySession.clear();
+}
+export function _isHintConsumed(sessionId) {
+  return Boolean(consumedBySession.get(sessionId));
+}
 
-export async function dispatch(method, params) {
+export async function dispatch(method, params, opts = {}) {
+  const sessionId = opts?.sessionId || 'default';
   if (method === 'initialize') {
     const ci = params.clientInfo || {};
 
@@ -68,7 +76,7 @@ export async function dispatch(method, params) {
 
   if (method === 'tools/call') {
     const result = await callTool(params.name, params.arguments || {});
-    const decorated = decorateResult(params.name, result);
+    const decorated = _decorateResult(sessionId, params.name, result);
     return {
       content: [
         {
