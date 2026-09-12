@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.4-next.3 (2026-09-12)
+
+- fix(#606/#614): MCP 升级提示+dismiss 按会话隔离；remote 透传 session；pre线策略文档补全 (#646)
+
 ## 1.1.4-next.2 (2026-09-12)
 
 - fix(koocli): stop injecting --cli-lang; detect and guide global switch (#633)
