@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.4-next.2 (2026-09-12)
+
+- fix(koocli): stop injecting --cli-lang; detect and guide global switch (#633)
+
 ## 1.1.4-next.1 (2026-09-11)
 
 - fix(auth): clear import file on unfixable reject and after confirm success (#502)
