@@ -289,6 +289,30 @@ test('10 auth_confirm decision=s1 aborts and leaves S1 unchanged', async () => {
   });
 });
 
+test('10b auth_confirm(newImported) from import clears the import file on success', async () => {
+  await withTempHome(async (dir) => {
+    setFakeHcloud(join(dir, 'hcloud.log'));
+    const newAk = 'E2E10B_B_AK';
+    const newSk = 'E2E10B_B_SK';
+    const region = 'cn-north-4';
+    writeFakeKooCli('deploy', [{ name: 'deploy', accessKeyId: newAk, secretAccessKey: newSk, region }]);
+    writeGlobalCredentials({ ak: 'E2E10B_A_AK', sk: 'E2E10B_A_SK', region });
+
+    const importFile = join(dir, '.config', 'huaweicloud', 'creds-import.json');
+    mkdirSync(dirname(importFile), { recursive: true });
+    writeFileSync(importFile, JSON.stringify({ ak: newAk, sk: newSk, region }), 'utf8');
+
+    const switched = await callTool('huaweicloud_auth_switch', { mode: 'import', action: 'persist' });
+    assert.equal(switched.status, 'needs_confirmation');
+    assert.equal(existsSync(importFile), true, 'import file kept while awaiting confirmation');
+
+    const out = await callTool('huaweicloud_auth_confirm', { token: switched.confirmToken, decision: 'newImported' });
+    assert.equal(out.status, 'ok');
+    assert.equal(readGlobalCredentials().ak, newAk);
+    assert.equal(existsSync(importFile), false, 'import file cleared after successful confirm');
+  });
+});
+
 test('11 auth_switch clear empties runtime and lets syncAuth run again', async () => {
   await withTempHome(async (dir) => {
     const log = join(dir, 'hcloud.log');

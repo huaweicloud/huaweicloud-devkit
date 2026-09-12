@@ -57,10 +57,13 @@ export function syncAuth(target = 'all') {
   try {
     obs = writeObsConfig(credentials);
   } catch (error) {
+    const missingRegion = !String(credentials?.region || '').trim();
     return {
       ok: false,
       error: error.message,
-      nextStep: 'Run "npx huaweicloud-devkit auth init" to refresh credentials and region.',
+      nextStep: missingRegion
+        ? 'Credential region is missing — run huaweicloud_auth_switch action=persist with --region, or add "region" to creds-import.json and re-import.'
+        : 'Run "npx huaweicloud-devkit auth init" to refresh credentials and region.',
     };
   }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.4-next.1 (2026-09-11)
+
+- fix(auth): clear import file on unfixable reject and after confirm success (#502)
+- fix(auth): validate region before persist and keep import file for replay (#502)
+
 ## 1.1.4-next.0 (2026-09-11)
 
 - fix(koocli): auto-inject --cli-lang=cn for services missing from the English catalog (#627)

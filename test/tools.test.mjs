@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -294,5 +294,86 @@ test('auth_switch clear resets runtime', async () => {
     if (prevHome === undefined) delete process.env.HUAWEICLOUD_HOME;
     else process.env.HUAWEICLOUD_HOME = prevHome;
     rmSync(isolatedHome, { recursive: true, force: true });
+  }
+});
+
+test('auth_switch persist(mode=import) rejects missing region and keeps import file (#502)', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'auth-import-region-'));
+  const prevHome = process.env.HUAWEICLOUD_HOME;
+  process.env.HUAWEICLOUD_HOME = home;
+  try {
+    const cfgDir = join(home, '.config', 'huaweicloud');
+    mkdirSync(cfgDir, { recursive: true });
+    const importFile = join(cfgDir, 'creds-import.json');
+    writeFileSync(importFile, JSON.stringify({ ak: 'IMPORT_AK', sk: 'IMPORT_SK' }), 'utf8');
+
+    const out = await callTool('huaweicloud_auth_switch', { mode: 'import', action: 'persist' });
+
+    assert.equal(out.status, 'error');
+    assert.equal(out.scope, 'invalid_region');
+    assert.match(out.error, /region/);
+    // S1 must not be written on a rejected persist.
+    assert.equal(existsSync(join(cfgDir, 'credentials.json')), false);
+    // Import file must survive for replay.
+    assert.equal(existsSync(importFile), true);
+  } finally {
+    if (prevHome === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = prevHome;
+    clearRuntimeCredentials();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('auth_switch temporary(mode=import) clears import file on success', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'auth-import-temp-'));
+  const prevHome = process.env.HUAWEICLOUD_HOME;
+  process.env.HUAWEICLOUD_HOME = home;
+  try {
+    const cfgDir = join(home, '.config', 'huaweicloud');
+    mkdirSync(cfgDir, { recursive: true });
+    const importFile = join(cfgDir, 'creds-import.json');
+    writeFileSync(importFile, JSON.stringify({ ak: 'TMP_AK', sk: 'TMP_SK' }), 'utf8');
+
+    const out = await callTool('huaweicloud_auth_switch', { mode: 'import', action: 'temporary' });
+
+    assert.equal(out.scope, 'temporary');
+    assert.equal(existsSync(importFile), false, 'import file should be cleared after successful temporary set');
+    assert.equal(resolveCredentialsWithRuntime({}).ak, 'TMP_AK');
+  } finally {
+    if (prevHome === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = prevHome;
+    clearRuntimeCredentials();
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('auth_switch persist(mode=import) with STS token is rejected and clears import file', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'auth-import-sts-'));
+  const prevHome = process.env.HUAWEICLOUD_HOME;
+  process.env.HUAWEICLOUD_HOME = home;
+  try {
+    const cfgDir = join(home, '.config', 'huaweicloud');
+    mkdirSync(cfgDir, { recursive: true });
+    const importFile = join(cfgDir, 'creds-import.json');
+    writeFileSync(
+      importFile,
+      JSON.stringify({ ak: 'STS_AK', sk: 'STS_SK', securityToken: 'STS_TOK', region: 'cn-north-4' }),
+      'utf8',
+    );
+
+    const out = await callTool('huaweicloud_auth_switch', { mode: 'import', action: 'persist' });
+
+    assert.equal(out.status, 'error');
+    assert.equal(out.scope, 'rejected');
+    assert.equal(
+      existsSync(importFile),
+      false,
+      'unfixable STS import must be cleared — no replay value, and no plaintext token residual',
+    );
+  } finally {
+    if (prevHome === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = prevHome;
+    clearRuntimeCredentials();
+    rmSync(home, { recursive: true, force: true });
   }
 });
