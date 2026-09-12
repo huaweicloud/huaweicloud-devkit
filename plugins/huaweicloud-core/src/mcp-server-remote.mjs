@@ -50,7 +50,8 @@ export async function startRemoteServer({ port = DEFAULT_PORT, host = DEFAULT_HO
 
     let response;
     try {
-      const result = await dispatch(message.method, message.params || {});
+      const sessionId = (req.headers['mcp-session-id'] || '').trim() || 'default';
+      const result = await dispatch(message.method, message.params || {}, { sessionId });
       response = { jsonrpc: '2.0', id: message.id, result };
       if (message.method === 'initialize') {
         res.setHeader('MCP-Protocol-Version', result.protocolVersion || '2024-11-05');

@@ -1049,7 +1049,7 @@ function normalizeNumericArgs(args) {
   return out;
 }
 
-export async function callTool(name, rawArgs = {}) {
+export async function callTool(name, rawArgs = {}, opts = {}) {
   const args = normalizeNumericArgs(rawArgs);
   const toolValue = toolInvokeValue(name, args);
   trackToolInvoke(name, toolValue);
@@ -1448,33 +1448,35 @@ export async function callTool(name, rawArgs = {}) {
     case 'huaweicloud_voucher_claim':
       return await hdkitVoucherClaim(args.domain_id);
     case 'huaweicloud_check_update':
-      return await handleCheckUpdate(args);
+      return await handleCheckUpdate(args, { sessionId: opts?.sessionId });
     case 'huaweicloud_upgrade':
-      return await handleUpgrade(args);
+      return await handleUpgrade(args, { sessionId: opts?.sessionId });
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
 }
 
-async function handleCheckUpdate(args = {}) {
+async function handleCheckUpdate(args = {}, opts = {}) {
+  const sessionId = opts?.sessionId || null;
   const current = readInstalledVersion() || '0.0.0';
   if (args.dismiss === true) {
-    const distTags = await getUpdateDistTags(current);
+    const distTags = await getUpdateDistTags(current, { sessionId });
     const target = determineTarget(current, distTags);
     const dismissedVersion =
       typeof args.dismissVersion === 'string' && args.dismissVersion ? args.dismissVersion : target || current;
-    const state = writeSkipState(resolveSkipFilePath(), dismissedVersion);
+    const state = writeSkipState(resolveSkipFilePath(sessionId), dismissedVersion);
     invalidateUpdateCache();
     return judgeUpdate(current, distTags, state);
   }
-  return getCachedUpdateInfo(current);
+  return getCachedUpdateInfo(current, { sessionId });
 }
 
-async function handleUpgrade(args = {}) {
+async function handleUpgrade(args = {}, opts = {}) {
+  const sessionId = opts?.sessionId || null;
   const target = typeof args.target === 'string' && args.target ? args.target : 'all';
   const version = typeof args.version === 'string' && args.version ? args.version : 'latest';
   const current = readInstalledVersion() || '0.0.0';
-  const info = await getCachedUpdateInfo(current);
+  const info = await getCachedUpdateInfo(current, { sessionId });
   if (info && info.result === 'up_to_date') {
     return {
       success: false,

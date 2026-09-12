@@ -152,12 +152,26 @@ export function fallbackSkipFilePath() {
   return join(base, '.config', 'huaweicloud', 'devkit-skip.json');
 }
 
+// 会话化 skip 文件：remote 多会话按 sessionId 拆分，stdio/默认保持原文件(向后兼容)。
+function sanitizeSessionId(sessionId) {
+  return String(sessionId || '').replace(/[^0-9a-zA-Z-]/g, '_');
+}
+
 // A1 定稿: 标准 agent 用插件目录副本(有 package.json); codex 等无副本时回退共享文件
-export function resolveSkipFilePath() {
+export function resolveSkipFilePath(sessionId = null) {
+  let base;
   try {
-    if (existsSync(join(dirname(skipFilePath()), 'package.json'))) return skipFilePath();
-  } catch {}
-  return fallbackSkipFilePath();
+    if (existsSync(join(dirname(skipFilePath()), 'package.json'))) {
+      base = skipFilePath();
+    } else {
+      base = fallbackSkipFilePath();
+    }
+  } catch {
+    base = fallbackSkipFilePath();
+  }
+  // stdio / 默认 / 无 session → 原文件（保持向后兼容）
+  if (!sessionId || sessionId === 'default' || sessionId === 'stdin') return base;
+  return `${base}.${sanitizeSessionId(sessionId)}`;
 }
 
 export function readSkipState(file) {
@@ -293,12 +307,15 @@ function cacheValid(now = Date.now()) {
   return Boolean(cachedDistTags) && now - cachedAt <= TTL_MS;
 }
 
-export async function getCachedUpdateInfo(current, { doQuery = queryDistTags, now = Date.now() } = {}) {
+export async function getCachedUpdateInfo(
+  current,
+  { doQuery = queryDistTags, now = Date.now(), sessionId = null } = {},
+) {
   if (process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE === '1') {
     lastHint = judgeUpdate(current, null, undefined, now);
     return lastHint;
   }
-  const skipState = readSkipState(resolveSkipFilePath());
+  const skipState = readSkipState(resolveSkipFilePath(sessionId));
   if (!cacheValid(now)) {
     if (!cachedDistTags && now - failedAt < FAIL_THROTTLE_MS) {
       lastHint = judgeUpdate(current, null, skipState, now);
@@ -331,8 +348,8 @@ export function peekCachedUpdateInfo() {
   return lastHint && lastHint.updateAvailable && lastHint.targetVersion ? lastHint : null;
 }
 
-export async function getUpdateDistTags(current) {
-  const result = await getCachedUpdateInfo(current);
+export async function getUpdateDistTags(current, { sessionId = null } = {}) {
+  const result = await getCachedUpdateInfo(current, { sessionId });
   if (!result) return null;
   return { latest: result.latestStable ?? null, next: result.latestNext ?? null };
 }
