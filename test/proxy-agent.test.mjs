@@ -71,7 +71,7 @@ test(
     let captured = null;
 
     t.mock.module('undici', {
-      exports: {
+      namedExports: {
         ProxyAgent: class {
           constructor(options) {
             captured = options;
