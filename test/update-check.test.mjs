@@ -427,3 +427,39 @@ test('upgradePackage 查询失败: 不 spawn 并给手动提示', async () => {
   assert.equal(spawned, false);
   assert.match(r.manual, /huaweicloud-devkit@latest update/);
 });
+
+// ===== #614 回归: #607 dismiss+查询失败路径 =====
+
+test('#607: judgeUpdate 对 truthy 但空 distTags 也应 check_failed', async () => {
+  // truthy 对象 { latest:null, next:null } 当前会落 up_to_date —— 期望 check_failed
+  const r = judgeUpdate('1.1.0', { latest: null, next: null }, null);
+  assert.equal(r.result, 'check_failed', '应为 check_failed，而非 %s'.replace('%s', r.result));
+  assert.equal(r.updateAvailable, false);
+});
+
+test('#607: getUpdateDistTags 在查询失败态(check_failed)应返回 null', async () => {
+  const m = await import('../plugins/huaweicloud-core/src/update-check.mjs');
+  invalidateUpdateCache();
+  // doQuery 失败 → getCachedUpdateInfo 返回 check_failed；getUpdateDistTags 应折叠为 null
+  const dt = await m.getUpdateDistTags('1.1.0', { doQuery: async () => null });
+  assert.equal(dt, null, '失败态应折叠为 null');
+});
+
+test('#607: dismiss + 查询失败 → 折叠为 check_failed（不落伪冷却）', async () => {
+  const m = await import('../plugins/huaweicloud-core/src/update-check.mjs');
+  invalidateUpdateCache();
+  const f = m.resolveSkipFilePath('sess-607');
+  const { rmSync } = await import('node:fs');
+  try {
+    rmSync(f, { force: true });
+  } catch {}
+  // 模拟 dismiss 路径的处理：查询失败 → getUpdateDistTags null → judgeUpdate null
+  const dt = await m.getUpdateDistTags('1.1.0', { doQuery: async () => null, sessionId: 'sess-607' });
+  assert.equal(dt, null);
+  const r = m.judgeUpdate('1.1.0', dt);
+  assert.equal(r.result, 'check_failed');
+  assert.ok(!r.dismissed);
+  // 且不得写任何 skip 文件
+  const fs = await import('node:fs');
+  assert.ok(!fs.existsSync(f), '查询失败不得写 skip 冷却文件');
+});

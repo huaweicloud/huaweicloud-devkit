@@ -114,6 +114,10 @@ export function judgeUpdate(current, distTags, skipState, now = Date.now()) {
   if (!distTags) {
     return buildResult(current, null, { result: 'check_failed', note: '检测失败，不影响使用' });
   }
+  // truthy 但无有效版本（如 failure 折叠后的 { latest:null, next:null }）同样视为检测失败
+  if (!distTags.latest && !distTags.next) {
+    return buildResult(current, null, { result: 'check_failed', note: '检测失败，不影响使用' });
+  }
   const target = determineTarget(current, distTags);
   if (!target || semverCompare(target, current) <= 0) {
     return buildResult(current, distTags, { result: 'up_to_date', target: target ?? null });
@@ -348,9 +352,9 @@ export function peekCachedUpdateInfo() {
   return lastHint && lastHint.updateAvailable && lastHint.targetVersion ? lastHint : null;
 }
 
-export async function getUpdateDistTags(current, { sessionId = null } = {}) {
-  const result = await getCachedUpdateInfo(current, { sessionId });
-  if (!result) return null;
+export async function getUpdateDistTags(current, { sessionId = null, doQuery } = {}) {
+  const result = await getCachedUpdateInfo(current, { sessionId, doQuery });
+  if (!result || result.result === 'check_failed') return null;
   return { latest: result.latestStable ?? null, next: result.latestNext ?? null };
 }
 

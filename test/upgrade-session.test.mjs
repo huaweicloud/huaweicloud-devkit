@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -135,7 +135,7 @@ test('skip-path: 危险 session 值(路径穿越)被过滤为安全名', () => {
   const dir = tmpEnv();
   try {
     const p = updateCheck.resolveSkipFilePath('../evil/..id');
-    const suffix = p.split('/').pop();
+    const suffix = basename(p);
     assert.ok(!suffix.includes('..'), `suffix 不得含 .., got ${suffix}`);
     assert.ok(suffix.startsWith('devkit-skip.json.'), `应有会话后缀, got ${suffix}`);
     // 后缀部分仅允许 [0-9a-zA-Z_-]（过滤后不含 . / ..）
@@ -166,3 +166,27 @@ test('skip-path: 会话隔离写读 —— A 写 skip 不影响 B', () => {
 function dirname(file) {
   return file.slice(0, file.lastIndexOf('/'));
 }
+
+// ===== #607 回归: dismiss + 查询失败（走 callTool, 注入失败 doQuery）=====
+test('#607: callTool dismiss + doQuery 失败 → check_failed 且不写冷却', async () => {
+  const { callTool } = await import('../plugins/huaweicloud-core/src/tools.mjs');
+  const fs = await import('node:fs');
+  updateCheck.invalidateUpdateCache();
+  const f = updateCheck.resolveSkipFilePath('sess-607e');
+  try {
+    fs.rmSync(f, { force: true });
+  } catch {}
+
+  const r = await callTool(
+    'huaweicloud_check_update',
+    { dismiss: true },
+    {
+      sessionId: 'sess-607e',
+      doQuery: async () => null, // 注入失败
+    },
+  );
+  assert.equal(r.result, 'check_failed', `dismiss+失败应 check_failed, got ${r.result}`);
+  assert.ok(!fs.existsSync(f), '查询失败不得写 skip 冷却文件');
+  // 且不得沉 current 冷却（dismissed 必须 false）
+  assert.ok(!r.dismissed, '失败态不可 dismissed');
+});

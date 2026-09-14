@@ -36,6 +36,8 @@ import {
   getProxySettings,
 } from './proxy/proxy-config.mjs';
 import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.mjs';
+import { mergeCommandStyle, mergeArgsStyle, extractUserDelta, applyUserDelta } from './mcp-config-merge.mjs';
+import { saveAgentDelta, takeAgentDelta, purgeBackup } from './mcp-config-backup.mjs';
 import { queryDistTagsFetch, determineTarget, semverCompare } from './update-check.mjs';
 import { getKooCliVersion, compareVersion, kooCliDownloadBase, KOO_CLI_BASE } from './koocli-version.mjs';
 import { findHcloudBin, hcloudProbeNextStep, probeHcloud } from './hcloud-probe.mjs';
@@ -261,15 +263,30 @@ function ensureOfficeaceMcpInSqlite() {
     const envJson = JSON.stringify(env);
 
     if (existing) {
-      if (existing.command === 'node' && existing.args_json === argsJson && existing.env_json === envJson) {
+      // Merge: keep user's extra args/env values, only correct program-owned fields (issue #615).
+      let existingArgs = [];
+      let existingEnv = [];
+      try {
+        existingArgs = JSON.parse(existing.args_json || '[]');
+        existingEnv = JSON.parse(existing.env_json || '[]');
+      } catch {}
+      const userArgs = Array.isArray(existingArgs) ? existingArgs.slice(1) : [];
+      // Start from the user's env and add our required keys only when absent (user values win).
+      const envMerged = [...(Array.isArray(existingEnv) ? existingEnv : [])];
+      for (const e of env) {
+        if (e && e.key && !envMerged.some((x) => x && x.key === e.key)) envMerged.push(e);
+      }
+      const nextArgsJson = JSON.stringify([mcpPath, ...userArgs]);
+      const nextEnvJson = JSON.stringify(envMerged);
+      if (existing.command === 'node' && existing.args_json === nextArgsJson && existing.env_json === nextEnvJson) {
         console.log(`  MCP config unchanged: ${dbPath}`);
         db.close();
         return true;
       }
       db.prepare(
         'UPDATE mcp_connectors SET command = ?, args_json = ?, env_json = ?, updated_at = ?, status = ?, enabled = 1 WHERE id = ?',
-      ).run('node', argsJson, envJson, now, 'disconnected', existing.id);
-      console.log(`  MCP config updated: ${dbPath}`);
+      ).run('node', nextArgsJson, nextEnvJson, now, 'disconnected', existing.id);
+      console.log(`  MCP config merged (user fields preserved): ${dbPath}`);
     } else {
       const ownerUserId = officeaceGetOwnerUserId();
       if (!ownerUserId) {
@@ -277,10 +294,16 @@ function ensureOfficeaceMcpInSqlite() {
         db.close();
         return false;
       }
+      // Restore user args saved by a previous uninstall (issue #615).
+      const officeaceDelta = takeAgentDelta('officeace');
+      const insertArgsJson =
+        officeaceDelta && Array.isArray(officeaceDelta.argsExtra)
+          ? JSON.stringify([mcpPath, ...officeaceDelta.argsExtra])
+          : argsJson;
       db.prepare(
         `INSERT INTO mcp_connectors (id, owner_user_id, type, name, normalized_name, transport, timeout_ms, command, args_json, env_json, enabled, status, created_at, updated_at, version, seeded)
          VALUES (?, ?, 'custom', 'huaweicloud-devkit', 'huaweicloud-devkit', 'stdio', 60000, 'node', ?, ?, 1, 'disconnected', ?, ?, 1, 0)`,
-      ).run(randomUUID(), ownerUserId, argsJson, envJson, now, now);
+      ).run(randomUUID(), ownerUserId, insertArgsJson, envJson, now, now);
       console.log(`  MCP config created: ${dbPath}`);
     }
     db.close();
@@ -302,6 +325,14 @@ function removeOfficeaceMcpFromSqlite() {
   let db;
   try {
     db = openOfficeaceDb();
+    // Back up user args before deleting the connector row (issue #615).
+    try {
+      const row = db.prepare("SELECT args_json FROM mcp_connectors WHERE name = 'huaweicloud-devkit'").get();
+      const parsed = row ? JSON.parse(row.args_json || '[]') : [];
+      if (Array.isArray(parsed) && parsed.length > 1) {
+        saveAgentDelta('officeace', { argsExtra: parsed.slice(1) });
+      }
+    } catch {}
     db.prepare(
       "DELETE FROM mcp_connector_tools WHERE connector_id IN (SELECT id FROM mcp_connectors WHERE name = 'huaweicloud-devkit')",
     ).run();
@@ -558,27 +589,66 @@ function updateOpenCodeConfig(pluginDir) {
       return;
     }
     const existing = config.mcp?.['huaweicloud-devkit'];
-    if (
-      existing &&
-      existing.type === 'local' &&
-      Array.isArray(existing.command) &&
-      existing.command[0] === 'node' &&
-      existing.command[1] === mcpPath &&
-      existing.timeout === 300000
-    ) {
+    const { entry, changed } = mergeCommandStyle(existing, { mcpPath });
+    if (existing && !changed) {
       console.log(`  OpenCode MCP config unchanged: ${configPath}`);
+      return;
+    }
+    if (existing && changed) {
+      config.mcp['huaweicloud-devkit'] = entry;
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log(`  OpenCode MCP config merged (user fields preserved): ${configPath}`);
       return;
     }
   }
   config.mcp = config.mcp || {};
-  config.mcp['huaweicloud-devkit'] = {
-    type: 'local',
-    command: ['node', mcpPath],
-    enabled: true,
-    timeout: 300000,
-  };
+  config.mcp['huaweicloud-devkit'] = mergeCommandStyle(undefined, { mcpPath }).entry;
+  // Restore user fields saved by a previous uninstall (issue #615).
+  const delta = takeAgentDelta('opencode');
+  if (delta) config.mcp['huaweicloud-devkit'] = applyUserDelta(config.mcp['huaweicloud-devkit'], delta, 'command');
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`  OpenCode config updated: ${configPath}`);
+}
+
+// Read-merge-write for pluginDir/.mcp.json (OpenClaw, Codex Desktop).
+// Preserves user extra args/env; restores a prior uninstall's backup on fresh install (issue #615).
+function writeMcpServersFile(pluginDest, mcpPath, agentKey) {
+  const configPath = join(pluginDest, '.mcp.json');
+  let config;
+  try {
+    config = existsSync(configPath) ? JSON.parse(readFileSync(configPath, 'utf8')) : undefined;
+  } catch {
+    config = undefined;
+  }
+  const existing = config && typeof config === 'object' ? config.mcpServers?.['huaweicloud-devkit'] : undefined;
+  const { entry, changed } = mergeArgsStyle(existing, {
+    mcpPath,
+    env: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' },
+    defaultTimeout: null,
+  });
+  if (existing && !changed) {
+    console.log(`  MCP Config unchanged: ${configPath}`);
+    return;
+  }
+  const next = config && typeof config === 'object' && !Array.isArray(config) ? { ...config } : {};
+  next.mcpServers = { ...(config && typeof config === 'object' ? config.mcpServers : {}), 'huaweicloud-devkit': entry };
+  if (!existing) {
+    const delta = takeAgentDelta(agentKey);
+    if (delta)
+      next.mcpServers['huaweicloud-devkit'] = applyUserDelta(next.mcpServers['huaweicloud-devkit'], delta, 'args');
+  }
+  writeFileSync(configPath, JSON.stringify(next, null, 2));
+  console.log(`  MCP Config -> ${configPath}`);
+}
+
+// Back up the user delta from a pluginDir/.mcp.json before the directory is removed (issue #615).
+function backupDeltaFromMcpServersFile(pluginDest, agentKey) {
+  const configPath = join(pluginDest, '.mcp.json');
+  try {
+    const config = JSON.parse(readFileSync(configPath, 'utf8'));
+    const delta = extractUserDelta(config?.mcpServers?.['huaweicloud-devkit'], 'args');
+    if (delta) saveAgentDelta(agentKey, delta);
+  } catch {}
 }
 
 function removeOpenCodeConfig() {
@@ -591,6 +661,9 @@ function removeOpenCodeConfig() {
     return;
   }
   if (!config.mcp?.['huaweicloud-devkit']) return;
+  // Back up user-customized fields before removal so a later reinstall can restore them (issue #615).
+  const delta = extractUserDelta(config.mcp['huaweicloud-devkit'], 'command');
+  if (delta) saveAgentDelta('opencode', delta);
   delete config.mcp['huaweicloud-devkit'];
   if (Object.keys(config.mcp).length === 0) delete config.mcp;
   writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -920,17 +993,7 @@ async function installOpenClaw() {
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
-  const mcpConfig = {
-    mcpServers: {
-      'huaweicloud-devkit': {
-        command: 'node',
-        args: [mcpServerAbsPath],
-        env: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' },
-      },
-    },
-  };
-  writeFileSync(join(pluginDest, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
-  console.log(`  MCP Config -> ${join(pluginDest, '.mcp.json')}`);
+  writeMcpServersFile(pluginDest, mcpServerAbsPath, 'openclaw');
 
   const codexPluginSrc = join(PLUGIN_ROOT, '.codex-plugin');
   if (existsSync(codexPluginSrc)) {
@@ -967,6 +1030,7 @@ function uninstallOpenClaw() {
     if (cmdRemoved > 0) console.log(`  Removed ${cmdRemoved} commands`);
   }
 
+  backupDeltaFromMcpServersFile(openclawPluginsDir(), 'openclaw');
   if (removeIfExists(openclawPluginsDir())) {
     console.log('  Removed MCP server and safety policy');
   }
@@ -991,17 +1055,7 @@ async function updateOpenClaw() {
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
-  const mcpConfig = {
-    mcpServers: {
-      'huaweicloud-devkit': {
-        command: 'node',
-        args: [mcpServerAbsPath],
-        env: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' },
-      },
-    },
-  };
-  writeFileSync(join(pluginDest, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
-  console.log(`  MCP Config updated -> ${join(pluginDest, '.mcp.json')}`);
+  writeMcpServersFile(pluginDest, mcpServerAbsPath, 'openclaw');
 
   const codexPluginSrc = join(PLUGIN_ROOT, '.codex-plugin');
   if (existsSync(codexPluginSrc)) {
@@ -1039,17 +1093,7 @@ async function installCodexDesktop() {
 
   // Generate .mcp.json for Codex plugin MCP server discovery
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
-  const mcpConfig = {
-    mcpServers: {
-      'huaweicloud-devkit': {
-        command: 'node',
-        args: [mcpServerAbsPath],
-        env: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' },
-      },
-    },
-  };
-  writeFileSync(join(pluginDest, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
-  console.log(`  MCP Config -> ${join(pluginDest, '.mcp.json')}`);
+  writeMcpServersFile(pluginDest, mcpServerAbsPath, 'codex-desktop');
 
   // Copy .codex-plugin manifest for Codex Desktop plugin registration
   const codexPluginSrc = join(PLUGIN_ROOT, '.codex-plugin');
@@ -1106,17 +1150,7 @@ async function updateCodexDesktop() {
   }
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
-  const mcpConfig = {
-    mcpServers: {
-      'huaweicloud-devkit': {
-        command: 'node',
-        args: [mcpServerAbsPath],
-        env: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' },
-      },
-    },
-  };
-  writeFileSync(join(pluginDest, '.mcp.json'), JSON.stringify(mcpConfig, null, 2));
-  console.log(`  MCP Config updated -> ${join(pluginDest, '.mcp.json')}`);
+  writeMcpServersFile(pluginDest, mcpServerAbsPath, 'codex-desktop');
 
   const codexPluginSrc = join(PLUGIN_ROOT, '.codex-plugin');
   if (existsSync(codexPluginSrc)) {
@@ -1155,6 +1189,7 @@ function uninstallCodexDesktop() {
     if (cmdRemoved > 0) console.log(`  Removed ${cmdRemoved} commands`);
   }
 
+  backupDeltaFromMcpServersFile(pluginDest, 'codex-desktop');
   if (removeIfExists(pluginDest)) {
     console.log('  Removed MCP server and safety policy');
   }
@@ -1185,10 +1220,13 @@ function uninstallCodexDesktop() {
   }
 }
 
-function registerCodeartsMcp(configPath) {
+function registerCodeartsMcp(configPath, agentKey = 'codearts') {
   const mcpPath = join(codeartsPluginsDir(), 'src', 'mcp-server.mjs').replace(/\\/g, '/');
   const hcloudBin = findHcloudBin();
+  const env = { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' };
+  if (hcloudBin) env.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
   let config = {};
+  let existing;
   if (existsSync(configPath)) {
     try {
       config = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -1198,51 +1236,27 @@ function registerCodeartsMcp(configPath) {
       );
       return;
     }
-    const existing = config.mcpServers?.['huaweicloud-devkit'];
-    if (
-      existing &&
-      existing.command === 'node' &&
-      Array.isArray(existing.args) &&
-      existing.args[0] === mcpPath &&
-      existing.timeout === 300000
-    ) {
-      let changed = false;
-      if (!existing.env) {
-        existing.env = {};
-        changed = true;
-      }
-      if (!existing.env.HUAWEICLOUD_AGENT_TOOLKIT_MODE) {
-        existing.env.HUAWEICLOUD_AGENT_TOOLKIT_MODE = 'local';
-        changed = true;
-      }
-      if (hcloudBin && !existing.env.HCLOUD_BIN) {
-        existing.env.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
-        changed = true;
-      }
-      if (existing.enabled !== true) {
-        existing.enabled = true;
-        changed = true;
-      }
-      if (changed) {
-        mkdirSync(dirname(configPath), { recursive: true });
-        writeFileSync(configPath, JSON.stringify(config, null, 2));
-        console.log(`  MCP config refreshed: ${configPath}`);
-      } else {
+    existing = config.mcpServers?.['huaweicloud-devkit'];
+    if (existing) {
+      const { entry, changed } = mergeArgsStyle(existing, { mcpPath, env });
+      if (!changed) {
         console.log(`  MCP config unchanged: ${configPath}`);
+        return;
       }
+      config.mcpServers['huaweicloud-devkit'] = entry;
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log(`  MCP config merged (user fields preserved): ${configPath}`);
       return;
     }
   }
   config.mcpServers = config.mcpServers || {};
-  const env = { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' };
-  if (hcloudBin) env.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
-  config.mcpServers['huaweicloud-devkit'] = {
-    command: 'node',
-    args: [mcpPath],
-    env,
-    enabled: true,
-    timeout: 300000,
-  };
+  let entry = mergeArgsStyle(undefined, { mcpPath, env }).entry;
+  entry.enabled = true;
+  // Restore user fields saved by a previous uninstall (issue #615).
+  const delta = takeAgentDelta(agentKey);
+  if (delta) entry = applyUserDelta(entry, delta, 'args');
+  config.mcpServers['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`  MCP config updated: ${configPath}`);
@@ -1336,6 +1350,8 @@ function uninstallCodeArts() {
       config = JSON.parse(readFileSync(configPath, 'utf8'));
     } catch {}
     if (config.mcpServers?.['huaweicloud-devkit']) {
+      const delta = extractUserDelta(config.mcpServers['huaweicloud-devkit'], 'args');
+      if (delta) saveAgentDelta('codearts', delta);
       delete config.mcpServers['huaweicloud-devkit'];
       if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
       writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -1392,29 +1408,42 @@ function registerCodeartsWorkMcp() {
       return;
     }
     const existing = config.mcp?.['huaweicloud-devkit'];
-    if (
-      existing &&
-      existing.type === 'local' &&
-      Array.isArray(existing.command) &&
-      existing.command[0] === 'node' &&
-      existing.command[1] === mcpPath &&
-      existing.timeout === 300000
-    ) {
-      console.log(`  MCP config unchanged: ${configPath}`);
+    if (existing) {
+      // codearts-work uses `command` array + `environment` naming; adapt via mergeCommandStyle.
+      const { entry, changed } = mergeCommandStyle(existing, { mcpPath });
+      if (!changed) {
+        console.log(`  MCP config unchanged: ${configPath}`);
+        return;
+      }
+      const merged = { ...entry };
+      merged.environment = {
+        ...(isPlainLocal(existing.environment) ? existing.environment : {}),
+        HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local',
+      };
+      if (hcloudBin && merged.environment.HCLOUD_BIN === undefined) {
+        merged.environment.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
+      }
+      config.mcp['huaweicloud-devkit'] = merged;
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log(`  MCP config merged (user fields preserved): ${configPath}`);
       return;
     }
   }
   config.mcp = config.mcp || {};
-  config.mcp['huaweicloud-devkit'] = {
-    type: 'local',
-    command: ['node', mcpPath],
-    environment,
-    enabled: true,
-    timeout: 300000,
-  };
+  let entry = mergeCommandStyle(undefined, { mcpPath }).entry;
+  entry.environment = { ...environment };
+  // Restore user fields saved by a previous uninstall (issue #615).
+  const delta = takeAgentDelta('codearts-work');
+  if (delta) entry = applyUserDelta(entry, delta, 'command');
+  config.mcp['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`  MCP config updated: ${configPath}`);
+}
+
+function isPlainLocal(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 async function installCodeArtsWork() {
@@ -1477,6 +1506,8 @@ function uninstallCodeArtsWork() {
       config = JSON.parse(readFileSync(configPath, 'utf8'));
     } catch {}
     if (config.mcp?.['huaweicloud-devkit']) {
+      const delta = extractUserDelta(config.mcp['huaweicloud-devkit'], 'command');
+      if (delta) saveAgentDelta('codearts-work', delta);
       delete config.mcp['huaweicloud-devkit'];
       if (Object.keys(config.mcp).length === 0) delete config.mcp;
       writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -1532,24 +1563,25 @@ function ensureWorkbuddyMcpConfig() {
       return false;
     }
     const existing = config.mcpServers?.['huaweicloud-devkit'];
-    if (
-      existing &&
-      existing.command === 'node' &&
-      Array.isArray(existing.args) &&
-      existing.args[0] === mcpPath &&
-      existing.timeout === 300000
-    ) {
-      console.log(`  MCP config unchanged: ${configPath}`);
-      return false;
+    if (existing) {
+      const { entry, changed } = mergeArgsStyle(existing, { mcpPath, env });
+      if (!changed) {
+        console.log(`  MCP config unchanged: ${configPath}`);
+        return false;
+      }
+      config.mcpServers['huaweicloud-devkit'] = entry;
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log(`  MCP config merged (user fields preserved): ${configPath}`);
+      return true;
     }
   }
   config.mcpServers = config.mcpServers || {};
-  config.mcpServers['huaweicloud-devkit'] = {
-    command: 'node',
-    args: [mcpPath],
-    env,
-    timeout: 300000,
-  };
+  let entry = mergeArgsStyle(undefined, { mcpPath, env }).entry;
+  // Restore user fields saved by a previous uninstall (issue #615).
+  const delta = takeAgentDelta('workbuddy');
+  if (delta) entry = applyUserDelta(entry, delta, 'args');
+  config.mcpServers['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`  MCP config updated: ${configPath}`);
@@ -1762,6 +1794,8 @@ function uninstallWorkBuddy() {
       config = JSON.parse(readFileSync(configPath, 'utf8'));
     } catch {}
     if (config.mcpServers?.['huaweicloud-devkit']) {
+      const delta = extractUserDelta(config.mcpServers['huaweicloud-devkit'], 'args');
+      if (delta) saveAgentDelta('workbuddy', delta);
       delete config.mcpServers['huaweicloud-devkit'];
       if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
       writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -1861,24 +1895,25 @@ function ensureAtomcodeMcpConfig() {
       return false;
     }
     const existing = config.mcpServers?.['huaweicloud-devkit'];
-    if (
-      existing &&
-      existing.command === 'node' &&
-      Array.isArray(existing.args) &&
-      existing.args[0] === mcpPath &&
-      existing.timeout === 300000
-    ) {
-      console.log(`  MCP config unchanged: ${configPath}`);
-      return false;
+    if (existing) {
+      const { entry, changed } = mergeArgsStyle(existing, { mcpPath, env });
+      if (!changed) {
+        console.log(`  MCP config unchanged: ${configPath}`);
+        return false;
+      }
+      config.mcpServers['huaweicloud-devkit'] = entry;
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      console.log(`  MCP config merged (user fields preserved): ${configPath}`);
+      return true;
     }
   }
   config.mcpServers = config.mcpServers || {};
-  config.mcpServers['huaweicloud-devkit'] = {
-    command: 'node',
-    args: [mcpPath],
-    env,
-    timeout: 300000,
-  };
+  let entry = mergeArgsStyle(undefined, { mcpPath, env }).entry;
+  // Restore user fields saved by a previous uninstall (issue #615).
+  const delta = takeAgentDelta('atomcode');
+  if (delta) entry = applyUserDelta(entry, delta, 'args');
+  config.mcpServers['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
   writeFileSync(configPath, JSON.stringify(config, null, 2));
   console.log(`  MCP config updated: ${configPath}`);
@@ -1951,6 +1986,8 @@ function uninstallAtomCode() {
       config = JSON.parse(readFileSync(configPath, 'utf8'));
     } catch {}
     if (config.mcpServers?.['huaweicloud-devkit']) {
+      const delta = extractUserDelta(config.mcpServers['huaweicloud-devkit'], 'args');
+      if (delta) saveAgentDelta('atomcode', delta);
       delete config.mcpServers['huaweicloud-devkit'];
       if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
       writeFileSync(configPath, JSON.stringify(config, null, 2));
@@ -2478,7 +2515,6 @@ function ensureHermesMcpConfig() {
   if (hcloudBin) {
     blockLines.push(`      HCLOUD_BIN: "${hcloudBin.replace(/\\/g, '/')}"`);
   }
-  const block = blockLines.join('\n');
 
   let existing = '';
   if (existsSync(configPath)) {
@@ -2486,10 +2522,15 @@ function ensureHermesMcpConfig() {
       existing = readFileSync(configPath, 'utf8');
     } catch {}
     if (existing.includes('mcp_servers:') && existing.includes('huaweicloud-devkit')) {
-      if (existing.includes(`args: ["${mcpPath}"]`)) {
+      // Preserve user's extra args (e.g. --hdkitservice-endpoint) when rewriting the block (issue #615).
+      const argsMatch = existing.match(/^\s*huaweicloud-devkit\s*:[\s\S]*?^\s*args:\s*\[[^\]]*\]\s*$/m);
+      const extrasMatch = argsMatch ? argsMatch[0].match(/args:\s*\[".*?"(.*)\]/) : null;
+      const extras = extrasMatch && extrasMatch[1].trim() ? extrasMatch[1].replace(/,\s*$/, '') : '';
+      if (existing.includes(`args: ["${mcpPath}"${extras}]`)) {
         console.log(`  MCP config unchanged: ${configPath}`);
         return false;
       }
+      if (extras) blockLines[3] = `    args: ["${mcpPath}"${extras}]`;
       removeHermesMcpConfigBlock();
       existing = '';
       if (existsSync(configPath)) {
@@ -2500,7 +2541,14 @@ function ensureHermesMcpConfig() {
     }
   }
   mkdirSync(dirname(configPath), { recursive: true });
-  const newContent = existing ? `${existing.trimEnd()}\n\n${block}\n` : `${block}\n`;
+  // Restore user args saved by a previous uninstall (issue #615).
+  const hermesDelta = takeAgentDelta('hermes');
+  if (hermesDelta && Array.isArray(hermesDelta.argsExtra) && hermesDelta.argsExtra.length > 0) {
+    const extras = hermesDelta.argsExtra.map((a) => `"${String(a)}"`).join(', ');
+    blockLines[3] = `    args: ["${mcpPath}", ${extras}]`;
+  }
+  const newBlock = blockLines.join('\n');
+  const newContent = existing ? `${existing.trimEnd()}\n\n${newBlock}\n` : `${newBlock}\n`;
   writeFileSync(configPath, newContent);
   console.log(`  MCP config updated: ${configPath}`);
   return true;
@@ -2917,7 +2965,25 @@ function uninstallHermes() {
     }
   }
 
-  // 3. Remove MCP config from config.yaml
+  // 3. Remove MCP config from config.yaml (back up user args first, issue #615)
+  const hermesConfig = hermesConfigFile();
+  if (existsSync(hermesConfig)) {
+    try {
+      const text = readFileSync(hermesConfig, 'utf8');
+      const argsLine = text.match(/^\s*args:\s*\[([^\]]*)\]\s*$/m);
+      if (argsLine) {
+        let parsed;
+        try {
+          parsed = JSON.parse(`[${argsLine[1].replace(/'/g, '"')}]`);
+        } catch {
+          parsed = null;
+        }
+        if (Array.isArray(parsed) && parsed.length > 1) {
+          saveAgentDelta('hermes', { argsExtra: parsed.slice(1) });
+        }
+      }
+    } catch {}
+  }
   removeHermesMcpConfigBlock();
   console.log('  MCP config removed');
 
@@ -3582,6 +3648,10 @@ async function cmdUninstall() {
     const vaultPath = globalCredentialsPath();
     if (removeIfExists(vaultPath)) {
       console.log('  Removed credential vault');
+    }
+    // Full uninstall also discards any saved MCP config backups (issue #615).
+    if (purgeBackup()) {
+      console.log('  Removed MCP config backup');
     }
     const vaultDir = dirname(vaultPath);
     try {
