@@ -67,7 +67,7 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
     return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
   }
   if (envHasRealTriplet() && !s1Has) {
-    scenario = 0; // platform injection, nothing to do
+    scenario = 0;
     reason = 'platform-injected';
     message = 'Platform credentials are active; nothing to configure.';
     return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
@@ -80,19 +80,32 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
       { order: 1, action: 'use-s1', args: {}, label: '直接使用已保存账号' },
       { order: 2, action: 'switch-new', args: { mode: 'import', action: 'persist' }, label: '改用新账号(导入)' },
     ];
-  } else if (s1Has && envHasCreds && !injected) {
-    scenario = 2;
-    reason = 'conflict';
-    message = '检测到两套账号:已保存 与 环境注入,请选择其一。';
-    steps = [
-      { order: 1, action: 'switch-persist', args: { mode: 'memory', action: 'persist' }, label: '使用已保存账号覆盖' },
-      {
-        order: 2,
-        action: 'switch-env',
-        args: { mode: 'mcp-config', action: 'persist' },
-        label: '使用环境注入账号导入',
-      },
-    ];
+  } else if (s1Has && envHasCreds) {
+    // Covers both plain env creds (conflict) AND platform triplet when S1
+    // exists. resolveCredentials' STS gate keeps S1 in front of a triplet,
+    // so the effective account is S1 → scenario 1 semantics plus a note.
+    if (injected) {
+      scenario = 1;
+      reason = 's1-with-platform-injected';
+      message = `已保存账号(指纹 ${accountHint})优先于平台注入,可直接使用。`;
+      steps = [
+        { order: 1, action: 'use-s1', args: {}, label: '使用已保存账号' },
+        { order: 2, action: 'switch-platform', args: { mode: 'mcp-config', action: 'persist' }, label: '改用平台注入账号' },
+      ];
+    } else {
+      scenario = 2;
+      reason = 'conflict';
+      message = '检测到两套账号:已保存 与 环境注入,请选择其一。';
+      steps = [
+        { order: 1, action: 'switch-persist', args: { mode: 'memory', action: 'persist' }, label: '使用已保存账号覆盖' },
+        {
+          order: 2,
+          action: 'switch-env',
+          args: { mode: 'mcp-config', action: 'persist' },
+          label: '使用环境注入账号导入',
+        },
+      ];
+    }
   } else if (!s1Has && envHasCreds && !injected) {
     scenario = 4;
     reason = 'import-injected';

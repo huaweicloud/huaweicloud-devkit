@@ -567,3 +567,20 @@ test('49 huaweicloud_auth_status onboarding does not leak AK (fingerprint only)'
     assert.match(status.onboarding.accountHint, /^[0-9a-f]{8}$/);
   });
 });
+
+test('50 onboarding scenario1: S1 exists + platform triplet → use S1 (not s1-missing)', () => {
+  withTempHome(() => {
+    writeGlobalCredentials({ ak: 'OB_S1_AK', sk: 'OB_S1_SK', region: 'cn-north-4' });
+    process.env.HW_ACCESS_KEY = 'OB_PLATFORM_AK';
+    process.env.HW_SECRET_KEY = 'OB_PLATFORM_SK';
+    process.env.HW_SECURITY_TOKEN = 'OB_PLATFORM_TOKEN';
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.scenario, 1, JSON.stringify(onboarding));
+    assert.equal(onboarding.needsSetup, true);
+    assert.equal(onboarding.steps[0].action, 'use-s1');
+    assert.notEqual(onboarding.reason, 's1-missing');
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+  });
+});
