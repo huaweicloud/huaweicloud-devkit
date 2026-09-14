@@ -30,7 +30,7 @@
     }
   },
   "scripts": {
-    "test": "node --test \"test/*.test.mjs\"",
+    "test": "node --experimental-test-module-mocks --test \"test/*.test.mjs\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.git\" \"#test/**\" \"#docs/**\" \"#.superpowers/**\"",

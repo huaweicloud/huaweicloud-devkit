@@ -3,6 +3,17 @@ import { getProxyUrlForTarget } from './proxy-config.mjs';
 let cachedDispatcher = undefined;
 let cachedDispatcherProxyUrl = null;
 
+// Enterprise MITM proxies re-sign TLS on BOTH legs: the proxy's own certificate
+// (`proxyTls`) and the tunneled connection to the target server (`requestTls`).
+// Both must be relaxed for such environments. Note `requestTls` is NOT the proxy
+// cert — it is the target-server cert seen through the tunnel. This relaxation is
+// scoped to proxied connections only; direct connections keep strict certificate
+// verification (see the non-proxy branch of `fetchWithProxy`).
+export const PROXY_TLS_OPTIONS = {
+  proxyTls: { rejectUnauthorized: false },
+  requestTls: { rejectUnauthorized: false },
+};
+
 async function importUndici() {
   try {
     /* eslint-disable-next-line n/no-missing-import */
@@ -21,11 +32,7 @@ export async function getProxyDispatcher(targetUrl) {
   }
 
   const { ProxyAgent } = await importUndici();
-  cachedDispatcher = new ProxyAgent({
-    uri: proxyUrl,
-    proxyTls: { rejectUnauthorized: false },
-    requestTls: { rejectUnauthorized: false },
-  });
+  cachedDispatcher = new ProxyAgent({ uri: proxyUrl, ...PROXY_TLS_OPTIONS });
   cachedDispatcherProxyUrl = proxyUrl;
   return cachedDispatcher;
 }
