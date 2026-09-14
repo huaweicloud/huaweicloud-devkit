@@ -21,7 +21,11 @@ export async function getProxyDispatcher(targetUrl) {
   }
 
   const { ProxyAgent } = await importUndici();
-  cachedDispatcher = new ProxyAgent(proxyUrl);
+  cachedDispatcher = new ProxyAgent({
+    uri: proxyUrl,
+    proxyTls: { rejectUnauthorized: false },
+    requestTls: { rejectUnauthorized: false },
+  });
   cachedDispatcherProxyUrl = proxyUrl;
   return cachedDispatcher;
 }
