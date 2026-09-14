@@ -58,6 +58,33 @@ export function readGlobalCredentials() {
   }
 }
 
+// R11: Placeholder / masked credential values are treated as "not configured".
+// A vendor/IDE marketplace that pre-fills mcp_settings env with template text
+// (e.g. "<HW_ACCESS_KEY>" or "${SECRET_KEY}") must not shadow the user's real
+// S1 vault. Real AK/SK are >=20 char alphanumeric strings, so none of the
+// template/masked patterns below can match a genuine credential.
+export function isPlaceholder(value) {
+  if (typeof value !== 'string' || value.length === 0) return false;
+  // <HW_ACCESS_KEY> / <your-ak> / <...>
+  if (/^<[^>]*>$/.test(value)) return true;
+  // ${HW_ACCESS_KEY}
+  if (/^\$\{[^}]*\}$/.test(value)) return true;
+  // YOUR_AK / ACCESS_KEY / SECRET_KEY / SECURITY_TOKEN / REGION (bare keyword)
+  if (/^(YOUR_)?(AK|SK|ACCESS[_-]?KEY|SECRET[_-]?KEY|TOKEN|SECURITY[_-]?TOKEN|REGION)$/i.test(value)) return true;
+  // placeholder / replace_me / change.me
+  if (/\b(placeholder|replace[._-]?me|change[._-]?me)\b/i.test(value)) return true;
+  // masked value: short alnum prefix + asterisk run (abc**** / token****) — the
+  // S4 mirror writes the SK slot this way so the secret never lands in plaintext.
+  if (/^[A-Za-z0-9]{3,8}\*+$/.test(value)) return true;
+  // bare asterisks
+  if (/^\*+$/.test(value)) return true;
+  return false;
+}
+
+function present(v) {
+  return typeof v === 'string' && v.length > 0 && !isPlaceholder(v);
+}
+
 export function writeGlobalCredentials(credentials = {}) {
   const path = globalCredentialsPath();
   mkdirSync(dirname(path), { recursive: true });
@@ -99,9 +126,10 @@ export function writeObsConfig(credentials = {}) {
 }
 
 export function resolveCredentials(options = {}) {
-  let ak = process.env.HW_ACCESS_KEY;
-  let sk = process.env.HW_SECRET_KEY;
-  let securityToken = process.env.HW_SECURITY_TOKEN;
+  // R11: placeholder/masked env values are "not configured", never credentials.
+  let ak = present(process.env.HW_ACCESS_KEY) ? process.env.HW_ACCESS_KEY : '';
+  let sk = present(process.env.HW_SECRET_KEY) ? process.env.HW_SECRET_KEY : '';
+  let securityToken = present(process.env.HW_SECURITY_TOKEN) ? process.env.HW_SECURITY_TOKEN : '';
   let region = process.env.HW_REGION || process.env.HUAWEICLOUD_REGION || '';
 
   const codeartsCreds = isCodeArtsContext() ? readCodeArtsCredentials() : null;
@@ -113,36 +141,33 @@ export function resolveCredentials(options = {}) {
 
   const stored = readGlobalCredentials();
   if (stored) {
-    if (!ak && stored.ak) ak = stored.ak;
-    if (!sk && stored.sk) sk = stored.sk;
-    if (!securityToken && stored.securityToken) securityToken = stored.securityToken;
+    // R11: skip placeholder/masked values from the vault too (templates must
+    // not win the truthiness check and shadow another store).
+    if (!ak && present(stored.ak)) ak = stored.ak;
+    if (!sk && present(stored.sk)) sk = stored.sk;
+    if (!securityToken && present(stored.securityToken)) securityToken = stored.securityToken;
     if (!region && stored.region) region = stored.region;
   }
 
   // R9: S1 written by `auth_switch persist` (configuredBySession) is the session's
   // source of truth and wins over env-injected defaults. Plain S1 (`auth init`)
   // still yields to env so devspace-style env injection keeps working.
-  if (stored && stored.configuredBySession === true && stored.ak && stored.sk) {
+  if (stored && stored.configuredBySession === true && present(stored.ak) && present(stored.sk)) {
     ak = stored.ak;
     sk = stored.sk;
-    if (!securityToken) securityToken = stored.securityToken || '';
+    if (!securityToken) securityToken = present(stored.securityToken) ? stored.securityToken : '';
     if (!region) region = stored.region || '';
   }
 
   // Sandbox/platform-injected temporary STS credentials (env vars carrying a
   // security token) must not shadow the user's explicit permanent credentials
   // from `auth init`. Prefer the stored file when both exist.
-  if (
-    process.env.HW_ACCESS_KEY &&
-    process.env.HW_SECRET_KEY &&
-    process.env.HW_SECURITY_TOKEN &&
-    stored &&
-    stored.ak &&
-    stored.sk
-  ) {
+  const envHasFullTriplet =
+    present(process.env.HW_ACCESS_KEY) && present(process.env.HW_SECRET_KEY) && present(process.env.HW_SECURITY_TOKEN);
+  if (envHasFullTriplet && stored && present(stored.ak) && present(stored.sk)) {
     ak = stored.ak;
     sk = stored.sk;
-    securityToken = stored.securityToken || '';
+    securityToken = present(stored.securityToken) ? stored.securityToken : '';
     region = stored.region || region;
   }
 
@@ -189,16 +214,16 @@ export function readCodeArtsCredentials() {
     try {
       if (!existsSync(path)) continue;
       const config = JSON.parse(readFileSync(path, 'utf8'));
-      const server = config?.mcpServers?.['huaweicloud-devkit'];
+      const server = config?.mcpServers?.['huaweicloud-devkit'] || config?.mcpServers?.['HuaweiCloud DevKit'];
       if (!server?.env) continue;
 
       const ak = server.env.HW_ACCESS_KEY;
       const sk = server.env.HW_SECRET_KEY;
-      if (ak && sk) {
+      if (present(ak) && present(sk)) {
         return {
           ak,
           sk,
-          securityToken: server.env.HW_SECURITY_TOKEN || '',
+          securityToken: present(server.env.HW_SECURITY_TOKEN) ? server.env.HW_SECURITY_TOKEN : '',
           region: server.env.HW_REGION || server.env.HUAWEICLOUD_REGION || '',
         };
       }
@@ -213,15 +238,15 @@ export function readCodeArtsCredentials() {
     try {
       if (existsSync(path)) {
         const config = JSON.parse(readFileSync(path, 'utf8'));
-        const server = config?.mcp?.['huaweicloud-devkit'];
+        const server = config?.mcp?.['huaweicloud-devkit'] || config?.mcp?.['HuaweiCloud DevKit'];
         if (server?.environment) {
           const ak = server.environment.HW_ACCESS_KEY;
           const sk = server.environment.HW_SECRET_KEY;
-          if (ak && sk) {
+          if (present(ak) && present(sk)) {
             return {
               ak,
               sk,
-              securityToken: server.environment.HW_SECURITY_TOKEN || '',
+              securityToken: present(server.environment.HW_SECURITY_TOKEN) ? server.environment.HW_SECURITY_TOKEN : '',
               region: server.environment.HW_REGION || server.environment.HUAWEICLOUD_REGION || '',
             };
           }

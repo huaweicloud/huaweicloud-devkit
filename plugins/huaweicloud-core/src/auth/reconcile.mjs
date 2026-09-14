@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 
 import {
   hasRuntimeCredentials,
+  isPlaceholder,
   obsConfigPath,
   readGlobalCredentials,
   readLastSync,
@@ -104,10 +105,13 @@ function s2CurrentMatchesLastDevkitSync(kooCli, s1, s1Fingerprint) {
 
 export function scanState() {
   const s1 = readGlobalCredentials() || {};
-  const envAk = process.env.HW_ACCESS_KEY || '';
-  const envSk = process.env.HW_SECRET_KEY || '';
+  const envAk = isPlaceholder(process.env.HW_ACCESS_KEY) ? '' : process.env.HW_ACCESS_KEY || '';
+  const envSk = isPlaceholder(process.env.HW_SECRET_KEY) ? '' : process.env.HW_SECRET_KEY || '';
   const kooCli = readKooCliProfiles();
   const inconsistencies = [];
+  const envIsPlaceholder =
+    Boolean(process.env.HW_ACCESS_KEY && isPlaceholder(process.env.HW_ACCESS_KEY)) ||
+    Boolean(process.env.HW_SECRET_KEY && isPlaceholder(process.env.HW_SECRET_KEY));
 
   const s1Fingerprint = fingerprint(s1.ak, s1.sk);
   const currentFp = currentFingerprintFromHcloud(kooCli);
@@ -153,6 +157,9 @@ export function scanState() {
       runtimeFingerprint,
     },
     kooCliCurrent: kooCli.error ? null : kooCli.current,
+    // R11: env carries placeholder/masked values → surface that explicitly so
+    // diagnostics don't show a bogus fingerprint derived from template text.
+    envIsPlaceholder,
     // S2 is encrypted storage (authEncrypt) → its fingerprint is unavailable,
     // so the S2-current drift check is intentionally skipped (#533).
     s2Encrypted: Boolean(!kooCli.error && kooCli.authEncrypt),

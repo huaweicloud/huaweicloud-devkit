@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.4-next.4 (2026-09-14)
+
+- fix(auth): treat placeholder/masked credentials as not configured (R11, #570) (#655)
+
 ## 1.1.4-next.3 (2026-09-12)
 
 - fix(#606/#614): MCP 升级提示+dismiss 按会话隔离；remote 透传 session；pre线策略文档补全 (#646)
