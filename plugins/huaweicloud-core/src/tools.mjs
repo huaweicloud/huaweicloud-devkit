@@ -1476,7 +1476,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_voucher_claim':
       return await hdkitVoucherClaim(args.domain_id);
     case 'huaweicloud_check_update':
-      return await handleCheckUpdate(args, { sessionId: opts?.sessionId });
+      return await handleCheckUpdate(args, { sessionId: opts?.sessionId, doQuery: opts?.doQuery });
     case 'huaweicloud_upgrade':
       return await handleUpgrade(args, { sessionId: opts?.sessionId });
     case 'huaweicloud_obs_set_website_config':
@@ -1487,10 +1487,15 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
 }
 
 async function handleCheckUpdate(args = {}, opts = {}) {
-  const sessionId = opts?.sessionId || null;
+  const { sessionId = null, doQuery } = opts;
   const current = readInstalledVersion() || '0.0.0';
   if (args.dismiss === true) {
-    const distTags = await getUpdateDistTags(current, { sessionId });
+    const distTags = await getUpdateDistTags(current, { sessionId, doQuery });
+    if (!distTags) {
+      // 查询失败：不降级为 current 冷却、不写 skip，返回 check_failed。
+      // 不调 invalidateUpdateCache()，以保留 failedAt 的 5 分钟失败节流。
+      return judgeUpdate(current, null, null);
+    }
     const target = determineTarget(current, distTags);
     const dismissedVersion =
       typeof args.dismissVersion === 'string' && args.dismissVersion ? args.dismissVersion : target || current;
@@ -1498,7 +1503,7 @@ async function handleCheckUpdate(args = {}, opts = {}) {
     invalidateUpdateCache();
     return judgeUpdate(current, distTags, state);
   }
-  return getCachedUpdateInfo(current, { sessionId });
+  return getCachedUpdateInfo(current, { sessionId, doQuery });
 }
 
 async function handleUpgrade(args = {}, opts = {}) {
