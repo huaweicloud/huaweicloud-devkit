@@ -90,14 +90,24 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
       message = `已保存账号(指纹 ${accountHint})优先于平台注入,可直接使用。`;
       steps = [
         { order: 1, action: 'use-s1', args: {}, label: '使用已保存账号' },
-        { order: 2, action: 'switch-platform', args: { mode: 'mcp-config', action: 'persist' }, label: '改用平台注入账号' },
+        {
+          order: 2,
+          action: 'switch-platform',
+          args: { mode: 'mcp-config', action: 'persist' },
+          label: '改用平台注入账号',
+        },
       ];
     } else {
       scenario = 2;
       reason = 'conflict';
       message = '检测到两套账号:已保存 与 环境注入,请选择其一。';
       steps = [
-        { order: 1, action: 'switch-persist', args: { mode: 'memory', action: 'persist' }, label: '使用已保存账号覆盖' },
+        {
+          order: 1,
+          action: 'switch-persist',
+          args: { mode: 'memory', action: 'persist' },
+          label: '使用已保存账号覆盖',
+        },
         {
           order: 2,
           action: 'switch-env',
