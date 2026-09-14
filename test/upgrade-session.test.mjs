@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { test } from 'node:test';
 
 import {
@@ -135,7 +135,7 @@ test('skip-path: 危险 session 值(路径穿越)被过滤为安全名', () => {
   const dir = tmpEnv();
   try {
     const p = updateCheck.resolveSkipFilePath('../evil/..id');
-    const suffix = p.split('/').pop();
+    const suffix = basename(p);
     assert.ok(!suffix.includes('..'), `suffix 不得含 .., got ${suffix}`);
     assert.ok(suffix.startsWith('devkit-skip.json.'), `应有会话后缀, got ${suffix}`);
     // 后缀部分仅允许 [0-9a-zA-Z_-]（过滤后不含 . / ..）
