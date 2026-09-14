@@ -91,6 +91,33 @@ test('classifyHcloudArgs blocks unapproved writes', () => {
   assert.match(result.reason, /write operation/i);
 });
 
+test('classifyHcloudArgs blocks Apply* operations as writes (#644)', () => {
+  // EIP ApplyEip was classified as unknown_read and allowed through (issue #644 EXP-E04).
+  const applyWrites = [
+    ['EIP', 'ApplyEip'],
+    ['WAF', 'ApplyCertificateToHost'],
+    ['CDN', 'ApplyDomainTemplate'],
+    ['RDS', 'ApplyConfigurationAsync'],
+  ];
+  for (const args of applyWrites) {
+    const result = classifyHcloudArgs(args);
+    assert.equal(result.decision, 'deny', args.join(' '));
+    assert.equal(result.risk, 'write', args.join(' '));
+  }
+});
+
+test('classifyHcloudArgs keeps read operations containing Apply substring as read-only', () => {
+  const result = classifyHcloudArgs(['ECS', 'ListConfigurationApplyHistories']);
+  assert.equal(result.decision, 'allow');
+  assert.equal(result.risk, 'read_only');
+});
+
+test('classifyHcloudArgs allows local help for Apply operations', () => {
+  const result = classifyHcloudArgs(['EIP', 'ApplyEip', '--help']);
+  assert.equal(result.decision, 'allow');
+  assert.equal(result.risk, 'local_metadata');
+});
+
 test('classifyHcloudArgs allows local help for write operations', () => {
   const result = classifyHcloudArgs(['ECS', 'CreateServers', '--help']);
   assert.equal(result.decision, 'allow');

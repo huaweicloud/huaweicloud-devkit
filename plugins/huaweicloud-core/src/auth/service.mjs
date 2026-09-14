@@ -1,9 +1,12 @@
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 import { getAgentRegistrationStatuses } from './agent-registration.mjs';
 import { resolveAndApplyProjectId } from './project-id.mjs';
 import {
   globalCredentialsPath,
+  isPlaceholder,
   obsConfigPath,
   readGlobalCredentials,
   writeLastSync,
@@ -18,10 +21,141 @@ import {
 } from './reconcile.mjs';
 import { hcloudProbeNextStep, probeHcloud } from '../hcloud-probe.mjs';
 
+function isCodeArtsHome() {
+  return (
+    existsSync(join(process.cwd(), '.codeartsdoer')) ||
+    existsSync(join(homedir(), '.codeartsdoer')) ||
+    existsSync(join(homedir(), '.codeartswork'))
+  );
+}
+
+function envHasRealTriplet() {
+  return (
+    !isPlaceholder(process.env.HW_ACCESS_KEY) &&
+    Boolean(process.env.HW_ACCESS_KEY) &&
+    !isPlaceholder(process.env.HW_SECRET_KEY) &&
+    Boolean(process.env.HW_SECRET_KEY) &&
+    !isPlaceholder(process.env.HW_SECURITY_TOKEN) &&
+    Boolean(process.env.HW_SECURITY_TOKEN)
+  );
+}
+
+// Onboarding guidance (scenarios 1-4) for credential setup.
+// scenario: 1=S1 exists, no env/…; 2=conflict (S1 vs injected); 3=everything
+// missing (fresh user); 4=S1 empty but injected creds exist (import candidate).
+export function computeOnboarding({ credentials, reconciled } = {}) {
+  const creds = credentials ?? readGlobalCredentials();
+  const scan = reconciled ?? exportStateForStatus();
+  const s1Has = Boolean(creds?.ak && creds?.sk && !isPlaceholder(creds.ak) && !isPlaceholder(creds.sk));
+  const injected = envHasRealTriplet();
+  // env has real non-triplet creds that are NOT placeholders (e.g. devspace AK/SK w/o token)
+  const envRealAk = !isPlaceholder(process.env.HW_ACCESS_KEY) && Boolean(process.env.HW_ACCESS_KEY);
+  const envRealSk = !isPlaceholder(process.env.HW_SECRET_KEY) && Boolean(process.env.HW_SECRET_KEY);
+  const envHasCreds = envRealAk && envRealSk;
+  const codeArts = isCodeArtsHome();
+  const accountHint = s1Has ? fingerprint(creds.ak, creds.sk) : null;
+
+  let scenario;
+  let reason;
+  let message;
+  let steps;
+
+  if (scan.hasRuntime) {
+    scenario = 0;
+    reason = 'runtime-active';
+    message = 'Runtime credentials are active; no setup needed.';
+    return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
+  }
+  if (envHasRealTriplet() && !s1Has) {
+    scenario = 0;
+    reason = 'platform-injected';
+    message = 'Platform credentials are active; nothing to configure.';
+    return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
+  }
+  if (s1Has && !envHasCreds) {
+    scenario = 1;
+    reason = 's1-only';
+    message = `已保存账号(指纹 ${accountHint})可直接使用。`;
+    steps = [
+      { order: 1, action: 'use-s1', args: {}, label: '直接使用已保存账号' },
+      { order: 2, action: 'switch-new', args: { mode: 'import', action: 'persist' }, label: '改用新账号(导入)' },
+    ];
+  } else if (s1Has && envHasCreds) {
+    // Covers both plain env creds (conflict) AND platform triplet when S1
+    // exists. resolveCredentials' STS gate keeps S1 in front of a triplet,
+    // so the effective account is S1 → scenario 1 semantics plus a note.
+    if (injected) {
+      scenario = 1;
+      reason = 's1-with-platform-injected';
+      message = `已保存账号(指纹 ${accountHint})优先于平台注入,可直接使用。`;
+      steps = [
+        { order: 1, action: 'use-s1', args: {}, label: '使用已保存账号' },
+        {
+          order: 2,
+          action: 'switch-platform',
+          args: { mode: 'mcp-config', action: 'persist' },
+          label: '改用平台注入账号',
+        },
+      ];
+    } else {
+      scenario = 2;
+      reason = 'conflict';
+      message = '检测到两套账号:已保存 与 环境注入,请选择其一。';
+      steps = [
+        {
+          order: 1,
+          action: 'switch-persist',
+          args: { mode: 'memory', action: 'persist' },
+          label: '使用已保存账号覆盖',
+        },
+        {
+          order: 2,
+          action: 'switch-env',
+          args: { mode: 'mcp-config', action: 'persist' },
+          label: '使用环境注入账号导入',
+        },
+      ];
+    }
+  } else if (!s1Has && envHasCreds && !injected) {
+    scenario = 4;
+    reason = 'import-injected';
+    message = '检测到配置中已有有效账号,可导入为正式凭证。';
+    steps = [
+      {
+        order: 1,
+        action: 'switch-persist',
+        args: { mode: codeArts ? 'mcp-config' : 'import', action: 'persist' },
+        label: '导入该账号',
+      },
+    ];
+  } else {
+    scenario = 3;
+    reason = 's1-missing';
+    message = '未配置华为云凭证,需要完成登录后才能使用云能力。';
+    steps = [
+      { order: 1, action: 'obtain-aksk', target: 'console', label: '获取 AK/SK(华为云控制台)' },
+      ...(codeArts
+        ? [
+            {
+              order: 2,
+              action: 'write-import',
+              target: join(homedir(), '.config', 'huaweicloud', 'creds-import.json'),
+              label: '把 AK/SK 写入 creds-import.json',
+            },
+            { order: 3, action: 'auth_switch', args: { mode: 'import', action: 'persist' }, label: '执行导入完成配置' },
+          ]
+        : [{ order: 2, action: 'auth-init', args: {}, label: '运行 npx huaweicloud-devkit auth init' }]),
+    ];
+  }
+
+  return { needsSetup: true, scenario, reason, message, steps, accountHint };
+}
+
 export function getAuthStatus(target = 'all') {
   const credentials = readGlobalCredentials();
   const reconciled = { ...exportStateForStatus(), runtimeActive: hasRuntimeCredentials() };
   const hcloud = probeHcloud();
+  const onboarding = computeOnboarding({ credentials, reconciled });
   return {
     target,
     credentialsConfigured: Boolean(credentials?.ak && credentials?.sk),
@@ -32,6 +166,7 @@ export function getAuthStatus(target = 'all') {
     kooCliStatus: hcloud.status,
     kooCliNextStep: hcloudProbeNextStep(hcloud),
     reconciled,
+    onboarding,
     agents: getAgentRegistrationStatuses(target).agents,
   };
 }

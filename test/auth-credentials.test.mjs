@@ -474,3 +474,113 @@ test('backup and restore global credentials', () => {
     assert.equal(readGlobalCredentials().ak, 'AK_ORIG');
   });
 });
+
+test('43 getAuthStatus onboarding scenario1: S1 only, no env → use S1', () => {
+  withTempHome(() => {
+    writeGlobalCredentials({ ak: 'OB_AK_1', sk: 'OB_SK_1', region: 'cn-north-4' });
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.scenario, 1);
+    assert.equal(onboarding.reason, 's1-only');
+    assert.equal(onboarding.needsSetup, true);
+    assert.equal(onboarding.steps.length, 2);
+    assert.equal(onboarding.steps[0].action, 'use-s1');
+  });
+});
+
+test('44 getAuthStatus onboarding scenario2: conflict S1 vs env', () => {
+  withTempHome(() => {
+    writeGlobalCredentials({ ak: 'OB_AK_2', sk: 'OB_SK_2', region: 'cn-north-4' });
+    process.env.HW_ACCESS_KEY = 'OB_ENV_AK';
+    process.env.HW_SECRET_KEY = 'OB_ENV_SK';
+    // no token → env creds, not platform triplet → scenario 2 conflict
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.scenario, 2);
+    assert.equal(onboarding.reason, 'conflict');
+    assert.equal(onboarding.needsSetup, true);
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+  });
+});
+
+test('45 getAuthStatus onboarding scenario3: nothing configured → auth-init/import steps', () => {
+  withTempHome(() => {
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.scenario, 3);
+    assert.equal(onboarding.reason, 's1-missing');
+    assert.equal(onboarding.needsSetup, true);
+    assert.ok(onboarding.steps.length >= 2);
+    assert.equal(onboarding.steps[0].action, 'obtain-aksk');
+  });
+});
+
+test('46 getAuthStatus onboarding scenario4: no S1 but env creds present → import', () => {
+  withTempHome(() => {
+    process.env.HW_ACCESS_KEY = 'OB_ENV_AK';
+    process.env.HW_SECRET_KEY = 'OB_ENV_SK';
+    delete process.env.HW_SECURITY_TOKEN;
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.scenario, 4);
+    assert.equal(onboarding.reason, 'import-injected');
+    assert.equal(onboarding.needsSetup, true);
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+  });
+});
+
+test('47 getAuthStatus onboarding: platform triplet + no S1 → needsSetup=false', () => {
+  withTempHome(() => {
+    process.env.HW_ACCESS_KEY = 'OB_PLATFORM_AK';
+    process.env.HW_SECRET_KEY = 'OB_PLATFORM_SK';
+    process.env.HW_SECURITY_TOKEN = 'OB_PLATFORM_TOKEN';
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.needsSetup, false);
+    assert.equal(onboarding.scenario, 0);
+    assert.equal(onboarding.reason, 'platform-injected');
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+  });
+});
+
+test('48 getAuthStatus onboarding runtime active → needsSetup=false, no leak', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    setRuntimeCredentials('OB_RT_AK', 'OB_RT_SK');
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.needsSetup, false);
+    assert.equal(onboarding.scenario, 0);
+    assert.equal(onboarding.reason, 'runtime-active');
+    assert.equal(onboarding.accountHint, null);
+    assert.doesNotMatch(JSON.stringify(onboarding), /OB_RT_AK|OB_RT_SK/);
+    clearRuntimeCredentials();
+  });
+});
+
+test('49 huaweicloud_auth_status onboarding does not leak AK (fingerprint only)', () => {
+  withTempHome(() => {
+    writeGlobalCredentials({ ak: 'OB_SECRET_AK', sk: 'OB_SECRET_SK', region: 'cn-north-4' });
+    const status = getAuthStatus('all');
+    assert.doesNotMatch(JSON.stringify(status), /OB_SECRET_AK|OB_SECRET_SK/);
+    assert.match(status.onboarding.accountHint, /^[0-9a-f]{8}$/);
+  });
+});
+
+test('50 onboarding scenario1: S1 exists + platform triplet → use S1 (not s1-missing)', () => {
+  withTempHome(() => {
+    writeGlobalCredentials({ ak: 'OB_S1_AK', sk: 'OB_S1_SK', region: 'cn-north-4' });
+    process.env.HW_ACCESS_KEY = 'OB_PLATFORM_AK';
+    process.env.HW_SECRET_KEY = 'OB_PLATFORM_SK';
+    process.env.HW_SECURITY_TOKEN = 'OB_PLATFORM_TOKEN';
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.scenario, 1, JSON.stringify(onboarding));
+    assert.equal(onboarding.needsSetup, true);
+    assert.equal(onboarding.steps[0].action, 'use-s1');
+    assert.notEqual(onboarding.reason, 's1-missing');
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+  });
+});

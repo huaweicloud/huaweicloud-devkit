@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.4-next.6 (2026-09-14)
+
+- fix(setup): preserve user MCP config fields across install/update/uninstall (#615) (#661)
+
 ## 1.1.4-next.5 (2026-09-14)
 
 - fix(#614/#607): dismiss + 查询失败路径 — 不写伪冷却、返回 check_failed (#659)

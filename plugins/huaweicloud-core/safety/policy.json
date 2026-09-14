@@ -36,6 +36,7 @@
     "Stop",
     "Start",
     "Restart",
+    "Apply",
     "Authorize",
     "Revoke",
     "Add",
