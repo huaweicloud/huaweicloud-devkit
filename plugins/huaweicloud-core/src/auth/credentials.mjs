@@ -177,6 +177,38 @@ export function resolveCredentials(options = {}) {
       'Huawei Cloud credentials are not configured. Run "npx huaweicloud-devkit auth init" or set HW_ACCESS_KEY/HW_SECRET_KEY.',
     );
     err.code = 'HDKIT_CRED_MISSING';
+    // Lightweight onboarding hint: HDKIT_CRED_MISSING only fires when S1 is
+    // empty, so it is scenario 3 (nothing configured) or scenario 4 (injected
+    // creds available to import). Full guidance comes from getAuthStatus.
+    const injectedAvailable =
+      (present(readCodeArtsCredentials()?.ak) && present(readCodeArtsCredentials()?.sk)) ||
+      (present(process.env.HW_ACCESS_KEY) && present(process.env.HW_SECRET_KEY) && !process.env.HW_SECURITY_TOKEN);
+    err.onboarding = injectedAvailable
+      ? {
+          scenario: 4,
+          reason: 'import-injected',
+          message: '检测到配置中已有有效账号,可导入为正式凭证。',
+          steps: isCodeArtsContext()
+            ? [{ action: 'auth_switch', args: { mode: 'mcp-config', action: 'persist' }, label: '导入配置中的账号' }]
+            : [
+                {
+                  action: 'auth_switch',
+                  args: { mode: 'import', action: 'persist' },
+                  label: '通过 creds-import.json 导入',
+                },
+              ],
+        }
+      : {
+          scenario: 3,
+          reason: 's1-missing',
+          message: '未配置华为云凭证,需要完成登录后才能使用云能力。',
+          steps: isCodeArtsContext()
+            ? [
+                { action: 'write-import', target: join(homedir(), '.config', 'huaweicloud', 'creds-import.json') },
+                { action: 'auth_switch', args: { mode: 'import', action: 'persist' } },
+              ]
+            : [{ action: 'auth-init', args: {} }],
+        };
     throw err;
   }
 
