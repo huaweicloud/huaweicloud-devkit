@@ -118,6 +118,89 @@ test('classifyHcloudArgs allows local help for Apply operations', () => {
   assert.equal(result.risk, 'local_metadata');
 });
 
+test('classifyTextCommand blocks credential env-var references incl. HW_ prefix (#650 D4-2)', () => {
+  // HW_ is the plugin's own documented credential prefix (auth/credentials.mjs).
+  const bypasses = [
+    'echo $HW_SECRET_KEY',
+    'printenv HW_ACCESS_KEY',
+    'echo ${HW_SECURITY_TOKEN}',
+    'cat <<EOF $HW_ACCESS_KEY EOF',
+  ];
+  for (const cmd of bypasses) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'credential', cmd);
+  }
+  // Non-credential HW_ variables must not be blocked.
+  const benign = classifyTextCommand('echo $HW_CONFIG_PATH');
+  assert.equal(benign.decision, 'allow');
+  // Existing coverage keeps working.
+  assert.equal(classifyTextCommand('env | grep HUAWEICLOUD').decision, 'deny');
+});
+
+test('classifyHcloudArgs unwraps shell-wrapped hcloud write commands (#650 D4-16)', () => {
+  const wrapped = [
+    ['bash', '-c', 'hcloud ECS CreateServers --flavor=x'],
+    ['sh', '-c', 'hcloud CCE DeleteCluster --cluster_id=x'],
+    ['bash', '-c', 'sudo hcloud OBS rm obs://bucket/obj'],
+    ['sudo', 'hcloud', 'ECS', 'CreateServers'],
+    ['/bin/bash', '-c', 'bash -c "hcloud ECS DeleteServers --servers=[]"'],
+  ];
+  for (const args of wrapped) {
+    const result = classifyHcloudArgs(args);
+    assert.equal(result.decision, 'deny', args.join(' '));
+    assert.equal(result.risk, 'write', args.join(' '));
+  }
+});
+
+test('classifyHcloudArgs detects hcloud write commands mid-concatenation (#650 review)', () => {
+  const concatenated = [
+    ['bash', '-c', 'echo x; hcloud ECS CreateServers --flavor=x'],
+    ['bash', '-c', 'echo done && hcloud CCE DeleteCluster --cluster_id=x'],
+    ['sudo', 'sh', '-c', 'hcloud OBS rm obs://b/x && echo ok'],
+  ];
+  for (const args of concatenated) {
+    const result = classifyHcloudArgs(args);
+    assert.equal(result.decision, 'deny', args.join(' '));
+    assert.equal(result.risk, 'write', args.join(' '));
+  }
+  const textResult = classifyTextCommand('echo x && hcloud ECS CreateServers --flavor=x');
+  assert.equal(textResult.decision, 'deny');
+  assert.equal(textResult.risk, 'write');
+  // Read-only hcloud prefix keeps working.
+  const readResult = classifyTextCommand('hcloud ECS ListServers; echo done');
+  assert.equal(readResult.decision, 'allow');
+  assert.equal(readResult.risk, 'read_only');
+});
+
+test('classifyTextCommand allows escaped credential-name searches, blocks unescaped dumps (#650)', () => {
+  // Literal-NAME references (backslash-escaped or single-quoted) denote
+  // searching for where the variable appears, not shell expansion.
+  const escapedSearches = [
+    "git grep '\\$HW_SECRET_KEY' -- src/",
+    "rg '$HW_SECRET_KEY' ./",
+    'grep -r HW_SECRET_KEY ./src',
+  ];
+  for (const cmd of escapedSearches) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'allow', cmd);
+  }
+  // Unescaped $HW_* is a potential expansion/dump no matter the leading
+  // command — a whitelist by command name must not create a false negative.
+  const unescapedDumps = [
+    'echo $HW_SECRET_KEY',
+    'grep $HW_SECRET_KEY ./file',
+    'git commit -m "$HW_SECRET_KEY"',
+    'grep x && echo $HW_SECRET_KEY',
+    'rg $HW_ACCESS_KEY ./src',
+  ];
+  for (const cmd of unescapedDumps) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'credential', cmd);
+  }
+});
+
 test('classifyHcloudArgs allows local help for write operations', () => {
   const result = classifyHcloudArgs(['ECS', 'CreateServers', '--help']);
   assert.equal(result.decision, 'allow');

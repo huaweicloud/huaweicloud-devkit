@@ -92,5 +92,9 @@ export async function dispatch(method, params, opts = {}) {
     return { resources: [] };
   }
 
-  throw new Error(`Unsupported method: ${method}`);
+  // JSON-RPC 2.0: unknown methods must surface as -32601 (Method not found),
+  // not the generic -32603 internal error (#650 D9-2).
+  const methodError = new Error(`Method not found: ${method}`);
+  methodError.code = -32601;
+  throw methodError;
 }

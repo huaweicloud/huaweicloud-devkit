@@ -112,6 +112,23 @@ test('MCP server initializes, lists tools, and plans CLI commands', async () => 
   }
 });
 
+test('MCP server returns JSON-RPC -32601 for unknown methods (#650 D9-2)', async () => {
+  const client = createClient();
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    const response = await client.request('tools/unknown_xyz');
+    assert.ok(response.error, 'expected an error response');
+    assert.equal(response.error.code, -32601);
+    assert.match(response.error.message, /Method not found/);
+  } finally {
+    client.close();
+  }
+});
+
 test('MCP server reports version from plugin package.json in installed layout', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'hwc-version-'));
   try {

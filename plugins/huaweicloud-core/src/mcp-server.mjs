@@ -166,7 +166,7 @@ function runStdioServer() {
         jsonrpc: '2.0',
         id: message.id,
         error: {
-          code: -32603,
+          code: Number.isSafeInteger(error.code) ? error.code : -32603,
           message: error.message,
         },
       });

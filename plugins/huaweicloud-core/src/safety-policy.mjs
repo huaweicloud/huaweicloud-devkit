@@ -66,11 +66,38 @@ export function redactSecrets(value, policy = DEFAULT_POLICY) {
 
 function stripExecutable(args) {
   if (!args.length) return [];
-  const first = String(args[0]).toLowerCase();
-  if (first === 'hcloud' || first.endsWith('/hcloud') || first.endsWith('\\hcloud') || first === 'hcloud.exe') {
-    return args.slice(1);
+  let current = args;
+  // Unwrap shell wrappers (bash -c / sh -c 'hcloud ...', sudo hcloud ...) so
+  // wrapped write commands keep their deny classification (#650 D4-16).
+  for (let depth = 0; depth < 5; depth++) {
+    const first = String(current[0]).toLowerCase();
+    const isShell = [
+      'bash',
+      'sh',
+      'zsh',
+      'dash',
+      'bash.exe',
+      'sh.exe',
+      '/bin/bash',
+      '/bin/sh',
+      '/bin/zsh',
+      '/bin/dash',
+    ].includes(first);
+    if (isShell && String(current[1]).toLowerCase() === '-c' && current[2]) {
+      current = splitSimpleCommand(current[2]);
+      continue;
+    }
+    if (first === 'sudo' && current.length > 1) {
+      current = current.slice(1);
+      continue;
+    }
+    break;
   }
-  return args;
+  const first = String(current[0]).toLowerCase();
+  if (first === 'hcloud' || first.endsWith('/hcloud') || first.endsWith('\\hcloud') || first === 'hcloud.exe') {
+    return current.slice(1);
+  }
+  return current;
 }
 
 function commandOperation(args) {
@@ -123,8 +150,44 @@ function applyRawCommandRiskRules(base, command, options = {}) {
   return mergeRiskDecision(base, risk);
 }
 
+// Find hcloud command segments split by shell operators (; && || |) so a write
+// command in the middle of a concatenated string keeps its deny classification
+// (#650 review edge 1).
+function findHcloudCommandSegments(text) {
+  return String(text)
+    .split(/(?:\|\||&&|;|\|)/)
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .map((segment) => splitSimpleCommand(segment))
+    .filter((tokens) => {
+      const first = String(tokens[0] || '').toLowerCase();
+      return first === 'hcloud' || first.endsWith('/hcloud') || first.endsWith('\\hcloud') || first === 'hcloud.exe';
+    });
+}
+
 export function classifyHcloudArgs(args, options = {}) {
   const policy = options.policy || DEFAULT_POLICY;
+  // Second pass for shell-wrapped input (#650 D4-16 review edge 1): when the
+  // leading command is not hcloud but a concatenated segment contains one,
+  // classify every hcloud segment and merge to the most severe decision.
+  const unwrappedTokens = stripExecutable(Array.isArray(args) ? args.map(String) : []);
+  const unwrappedFirst = String(unwrappedTokens[0] || '').toLowerCase();
+  const unwrappedIsHcloud =
+    unwrappedFirst === 'hcloud' ||
+    unwrappedFirst.endsWith('/hcloud') ||
+    unwrappedFirst.endsWith('\\hcloud') ||
+    unwrappedFirst === 'hcloud.exe';
+  if (!unwrappedIsHcloud && !options._segmentDepth) {
+    const hcloudSegments = findHcloudCommandSegments(unwrappedTokens.join(' '));
+    if (hcloudSegments.length > 0) {
+      const results = hcloudSegments.map((segment) => classifyHcloudArgs(segment, { ...options, _segmentDepth: 1 }));
+      return (
+        results.find((result) => result.decision === 'deny') ||
+        results.find((result) => ['write', 'execution', 'secret', 'credential'].includes(result.risk)) ||
+        results[0]
+      );
+    }
+  }
   const { service, operation, args: normalizedArgs } = commandOperation(args);
   const joined = normalizedArgs.join(' ');
 
@@ -339,6 +402,26 @@ export function classifyTextCommand(command, options = {}) {
       decision: 'deny',
       risk: 'credential',
       reason: 'Dumping cloud credential environment variables is blocked.',
+    };
+  }
+
+  // Credential variable references bypass the env-command gate above: HW_ is
+  // the plugin's own documented credential prefix (HW_ACCESS_KEY/HW_SECRET_KEY/
+  // HW_SECURITY_TOKEN), and `echo $HW_SECRET_KEY` / `printenv HW_ACCESS_KEY`
+  // previously fell through to allow (#650 D4-2).
+  //
+  // The negative lookbehind exempts literal-NAME references — backslash-escaped
+  // (`\$HW_*`) or single-quoted (`'$HW_*'`, which the shell never expands) —
+  // while unescaped `$HW_*` is a potential expansion/dump regardless of the
+  // command. No command-name whitelist, so no false negative (#650 review).
+  if (
+    /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text) ||
+    /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text)
+  ) {
+    return {
+      decision: 'deny',
+      risk: 'credential',
+      reason: 'Printing cloud credential environment variables is blocked.',
     };
   }
 

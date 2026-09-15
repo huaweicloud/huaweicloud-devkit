@@ -60,7 +60,7 @@ export async function startRemoteServer({ port = DEFAULT_PORT, host = DEFAULT_HO
       response = {
         jsonrpc: '2.0',
         id: message.id,
-        error: { code: -32603, message: error.message },
+        error: { code: Number.isSafeInteger(error.code) ? error.code : -32603, message: error.message },
       };
     }
 
