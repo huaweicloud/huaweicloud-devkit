@@ -171,3 +171,41 @@ test('MCP server waits for incomplete Content-Length frames instead of spinning'
     client.close();
   }
 });
+
+test('dispatch returns -32602 for null/undefined params (#730 D9-2)', async () => {
+  const { dispatch } = await import('../plugins/huaweicloud-core/src/mcp-protocol.mjs');
+
+  // null params → -32602, not TypeError
+  await assert.rejects(
+    dispatch('tools/call', null),
+    (err) => err.code === -32602 && /Invalid params/.test(err.message),
+  );
+
+  // undefined params → -32602
+  await assert.rejects(
+    dispatch('tools/call', undefined),
+    (err) => err.code === -32602 && /Invalid params/.test(err.message),
+  );
+
+  // null params for initialize → -32602
+  await assert.rejects(
+    dispatch('initialize', null),
+    (err) => err.code === -32602 && /Invalid params/.test(err.message),
+  );
+});
+
+test('dispatch returns -32602 for tools/call with missing name (#730 D9-2)', async () => {
+  const { dispatch } = await import('../plugins/huaweicloud-core/src/mcp-protocol.mjs');
+
+  // Empty object (no name) → -32602
+  await assert.rejects(dispatch('tools/call', {}), (err) => err.code === -32602 && /name/.test(err.message));
+
+  // Empty string name → -32602
+  await assert.rejects(dispatch('tools/call', { name: '' }), (err) => err.code === -32602 && /name/.test(err.message));
+
+  // null name → -32602
+  await assert.rejects(
+    dispatch('tools/call', { name: null }),
+    (err) => err.code === -32602 && /name/.test(err.message),
+  );
+});
