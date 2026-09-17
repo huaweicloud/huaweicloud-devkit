@@ -10,7 +10,7 @@
 
 Help AI coding agents use Huawei Cloud safely and accurately — a single integration that gives agents cloud knowledge, CLI tooling, and safety guardrails.
 
-Supports OpenCode, Codex, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), OfficeAce, Hermes, OpenClaw, and AtomCode.
+Supports OpenCode, Codex, Codex Desktop, CodeArts Agent, CodeArts Work, WorkBuddy, DeepSeek Harness (DSH), OfficeAce, Hermes, OpenClaw, and AtomCode as dedicated install targets. Telemetry detection additionally recognizes Cursor, Claude Code, Cline, GitHub Copilot, Windsurf, Kimi, Gemini CLI, Augment CLI, Aider, Tongyi Lingma, Amazon Q, and Continue.
 
 ## Prerequisites
 
@@ -257,6 +257,8 @@ Any agent that supports MCP can use the standard config:
 ```
 
 No installation required — `npx` handles everything.
+
+> **Telemetry detection**: In addition to the dedicated install targets above, the telemetry module automatically detects the following agents when DevKit tools are invoked from within them: Cursor, Claude Code, Cline, GitHub Copilot, Windsurf, Kimi, Gemini CLI, Augment CLI, Aider, Tongyi Lingma, Amazon Q, and Continue. These agents are recognized for usage telemetry only — they do not have dedicated `--target` install paths. Use the generic MCP config above to integrate with them.
 
 > For manual MCP registrations like this, do not put credentials in the config. `HW_ACCESS_KEY`/`HW_SECRET_KEY` are reserved for **platform/CI-injected** accounts (e.g. a DevSpace-managed default account) — configure your own account via `npx huaweicloud-devkit auth init` (the single entry point), and switch accounts at runtime with the `huaweicloud_auth_init` / `huaweicloud_auth_switch` MCP tools. See `plugins/huaweicloud-core/skills/huaweicloud-cli-and-auth/SKILL.md` for the full credential-resolution priority.
 

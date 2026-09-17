@@ -10,7 +10,7 @@
 
 帮助 AI 编码助手安全、准确地使用华为云——一站式集成云知识、CLI 工具和安全护栏。
 
-支持 OpenCode、Codex、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes、OpenClaw、AtomCode。
+支持 OpenCode、Codex、Codex Desktop、码道（CodeArts Agent）、CodeArts Work、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes、OpenClaw、AtomCode 作为专用安装目标。遥测检测还支持 Cursor、Claude Code、Cline、GitHub Copilot、Windsurf、Kimi、Gemini CLI、Augment CLI、Aider、通义灵码、Amazon Q、Continue。
 
 ## 前置条件
 
@@ -253,6 +253,8 @@ npx --yes huaweicloud-devkit uninstall --target atomcode
 ```
 
 无需预安装 — `npx` 自动处理一切。
+
+> **遥测检测**：除上述专用安装目标外，遥测模块在 DevKit 工具从以下 Agent 中调用时会自动检测运行环境：Cursor、Claude Code、Cline、GitHub Copilot、Windsurf、Kimi、Gemini CLI、Augment CLI、Aider、通义灵码、Amazon Q、Continue。这些 Agent 仅用于遥测识别，没有专用的 `--target` 安装路径，请使用上方的通用 MCP 配置接入。
 
 > 像上面这种手动 MCP 注册方式，请勿在配置里写凭据。`HW_ACCESS_KEY`/`HW_SECRET_KEY` 是保留给**平台/CI 注入**的账号用的（例如 DevSpace 托管的默认账号）——自己的账号统一通过 `npx huaweicloud-devkit auth init` 配置（唯一入口），会话内切换账号用 `huaweicloud_auth_init` / `huaweicloud_auth_switch` MCP 工具。完整凭据解析优先级见 `plugins/huaweicloud-core/skills/huaweicloud-cli-and-auth/SKILL.md`。
 
