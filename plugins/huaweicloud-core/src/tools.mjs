@@ -20,6 +20,7 @@ import {
   uploadProjectWithSession,
   deployNginx,
   deployCheck,
+  diagChain,
   getCurrentWorkspaceId,
   setWorkspaceId,
 } from './sandbox/session-manager.mjs';
@@ -735,6 +736,47 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'huaweicloud_sandbox_diag_chain',
+    description:
+      'Run a one-shot connectivity diagnostic across an ordered chain of hops (e.g. DevBridge tunnel -> sandbox proxy -> ECS nginx -> Node/PM2 process). Each hop is either an HTTP probe (records status code + latency) or a shell health check (pass/fail). Returns per-hop results plus the first failing hop to localize the broken link quickly. Hops run inside the sandbox, so ECS-internal checks (pm2, nginx -t, localhost) must be run separately via SSH as a shell hop from the local machine.',
+    inputSchema: {
+      type: 'object',
+      required: ['hops'],
+      properties: {
+        hops: {
+          type: 'array',
+          description:
+            'Ordered hop list. Each hop: { name (required), kind ("http" default | "shell"), target (URL for http, command for shell), expect (http only, regex of acceptable status code prefixes, default "2|3") }.',
+          items: {
+            type: 'object',
+            required: ['name'],
+            properties: {
+              name: { type: 'string', description: 'Short hop identifier, e.g. tunnel, proxy, ecs_nginx, pm2.' },
+              kind: {
+                type: 'string',
+                enum: ['http', 'shell'],
+                description:
+                  'http (default) curls `target` and records status code + latency; shell runs `target` as a command, PASS on exit 0.',
+              },
+              target: { type: 'string', description: 'For http: a URL to probe. For shell: a shell command to run.' },
+              expect: {
+                type: 'string',
+                description: 'For http: regex of acceptable HTTP status code prefixes (default "2|3").',
+              },
+            },
+          },
+        },
+        workspace_id: {
+          type: 'string',
+          description:
+            'Workspace ID from huaweicloud_sandbox_connect return value. Required - must be passed explicitly when HW_WORKSPACE_ID is not set.',
+        },
+        username: { type: 'string', description: 'Login username (default: root)' },
+        timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 30000)' },
+      },
+    },
+  },
+  {
     name: 'huaweicloud_sandbox_check_user',
     description:
       'Check if the current user has completed real-name verification and signed the required agreements. Returns 200 {realnameVerified, agreementSigned} when all good; throws 403 HDKIT_NOT_REALNAME / HDKIT_NOT_AGREEMENT / HDKIT_NOT_REALNAME_AND_AGREEMENT to indicate what is missing. Never signs anything itself.',
@@ -1398,6 +1440,19 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         sandboxUser8,
         sandboxTimeout8,
       );
+    }
+    case 'huaweicloud_sandbox_diag_chain': {
+      if (!Array.isArray(args.hops) || args.hops.length === 0) {
+        throw new Error('hops (non-empty array) is required.');
+      }
+      const diagWsId = args.workspace_id || getCurrentWorkspaceId();
+      if (!diagWsId) {
+        throw new Error(
+          'workspace_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, ' +
+            'or set HW_WORKSPACE_ID environment variable before starting the agent.',
+        );
+      }
+      return await diagChain(diagWsId, { hops: args.hops }, args.username || 'root', args.timeout_ms || 30000);
     }
     case 'huaweicloud_sandbox_check_user':
       return await hdkitCheckUser();

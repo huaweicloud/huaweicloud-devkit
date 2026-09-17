@@ -5,6 +5,7 @@ import {
   WS_EXEC_INDEX_URL,
   splitBase64Chunks,
   UPLOAD_CHUNK_SIZE,
+  parseDiagChainOutput,
   getCurrentWorkspaceId,
   setWorkspaceId,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
@@ -43,4 +44,41 @@ test('setWorkspaceId caches and updates env var', () => {
   assert.equal(getCurrentWorkspaceId(), testId);
   assert.equal(process.env.HW_WORKSPACE_ID, testId);
   setWorkspaceId(null);
+});
+
+test('parseDiagChainOutput extracts status, code and latency per hop (with ANSI noise)', () => {
+  const stdout =
+    '\x1b[0m=== DIAG CHAIN ===\r\n' +
+    'diag:tunnel:PASS status=200 latency=0.125\r\n' +
+    'diag:proxy:FAIL status=502 latency=0.003\r\n' +
+    'diag:pm2:PASS\r\n' +
+    '\x1b[1;32mVERDICT:COMPLETE\x1b[0m';
+  const result = parseDiagChainOutput(stdout, ['tunnel', 'proxy', 'pm2']);
+  assert.equal(result.complete, false);
+  assert.equal(result.firstFailure, 'proxy');
+  assert.deepEqual(result.failedHops, ['proxy']);
+  assert.deepEqual(result.missingHops, []);
+  assert.equal(result.hops.length, 3);
+  assert.equal(result.hops[0].statusCode, 200);
+  assert.equal(result.hops[0].latencyMs, 125);
+  assert.equal(result.hops[1].statusCode, 502);
+  assert.equal(result.hops[1].latencyMs, 3);
+  assert.equal(result.hops[2].status, 'PASS');
+});
+
+test('parseDiagChainOutput flags a hop whose result line is missing entirely', () => {
+  const stdout = 'diag:tunnel:PASS status=200 latency=0.010\ndiag:proxy:FAIL status=000 latency=0.000';
+  const result = parseDiagChainOutput(stdout, ['tunnel', 'proxy', 'pm2']);
+  assert.equal(result.complete, false);
+  assert.deepEqual(result.missingHops, ['pm2']);
+  assert.deepEqual(result.failedHops, ['proxy']);
+  assert.equal(result.firstFailure, 'proxy');
+});
+
+test('parseDiagChainOutput returns parseWarning when no hop lines are found', () => {
+  const result = parseDiagChainOutput('some unrelated output', ['tunnel']);
+  assert.equal(result.complete, false);
+  assert.equal(result.hops.length, 0);
+  assert.match(result.parseWarning, /No hop results/);
+  assert.ok(result.rawOutput);
 });

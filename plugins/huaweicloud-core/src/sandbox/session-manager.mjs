@@ -866,6 +866,101 @@ fi`;
   };
 }
 
+function stripTerminalAnsi(output) {
+  const ESC = '\x1b';
+  const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
+  const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
+  return String(output || '')
+    .replace(csiRe, '')
+    .replace(oscRe, '');
+}
+
+function shq(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`;
+}
+
+export function parseDiagChainOutput(stdout, hopNames = []) {
+  const clean = stripTerminalAnsi(stdout);
+  const hopResults = [];
+  for (const rawLine of clean.split(/\r\n|\r|\n/)) {
+    const m = rawLine.trim().match(/^diag:([^:]+):(PASS|FAIL)\s*(.*)$/);
+    if (!m) continue;
+    const entry = { name: m[1], status: m[2] };
+    const detail = (m[3] || '').trim();
+    if (detail) entry.detail = detail;
+    const codeMatch = detail.match(/status=(\d+)/);
+    if (codeMatch) entry.statusCode = parseInt(codeMatch[1], 10);
+    const latencyMatch = detail.match(/latency=([0-9.]+)/);
+    if (latencyMatch) entry.latencyMs = Math.round(parseFloat(latencyMatch[1]) * 1000);
+    hopResults.push(entry);
+  }
+  const parsedNames = new Set(hopResults.map((h) => h.name));
+  const missingHops = hopNames.filter((n) => !parsedNames.has(n));
+  const failedHops = hopResults.filter((h) => h.status === 'FAIL').map((h) => h.name);
+  const complete = failedHops.length === 0 && missingHops.length === 0;
+  const firstFailure = failedHops.length > 0 ? failedHops[0] : missingHops.length > 0 ? missingHops[0] : undefined;
+  return {
+    complete,
+    hops: hopResults,
+    failedHops,
+    missingHops,
+    firstFailure,
+    parseWarning: hopResults.length === 0 ? 'No hop results parsed — see rawOutput for details.' : undefined,
+    rawOutput: hopResults.length === 0 ? clean.trim() : undefined,
+    nextStep: complete ? 'complete' : 'inspect_first_failure',
+  };
+}
+
+export async function diagChain(workspaceId, { hops }, username = 'root', timeoutMs = 30000) {
+  if (!workspaceId) {
+    throw new Error('sandbox chain diag: workspace_id is required.');
+  }
+  if (!Array.isArray(hops) || hops.length === 0) {
+    throw new Error('sandbox chain diag: hops must be a non-empty array.');
+  }
+  const hopNames = hops.map((hop, i) => {
+    if (!hop || typeof hop.name !== 'string' || !hop.name) {
+      throw new Error(`sandbox chain diag: hop[${i}].name is required.`);
+    }
+    return hop.name;
+  });
+
+  const lines = ['echo "=== DIAG CHAIN ==="'];
+  for (const hop of hops) {
+    const kind = hop.kind || 'http';
+    if (kind === 'http') {
+      const url = hop.target || hop.url;
+      const expected = hop.expect || '2|3';
+      lines.push(
+        `_OUT=$(curl -s -o /dev/null -w "%{http_code} %{time_total}" --max-time 10 ${shq(url)} 2>/dev/null || echo "000 0.000")`,
+        `_CODE=$(printf '%s' "$_OUT" | awk '{print $1}')`,
+        `_TIME=$(printf '%s' "$_OUT" | awk '{print $2}')`,
+        `if printf '%s' "$_CODE" | grep -qE "^(${expected})"; then`,
+        `  echo "diag:${hop.name}:PASS status=$_CODE latency=$_TIME"`,
+        `else`,
+        `  echo "diag:${hop.name}:FAIL status=$_CODE latency=$_TIME"`,
+        `fi`,
+      );
+    } else if (kind === 'shell') {
+      const cmd = hop.target || hop.cmd;
+      lines.push(
+        `if ${cmd} >/dev/null 2>&1; then`,
+        `  echo "diag:${hop.name}:PASS"`,
+        `else`,
+        `  echo "diag:${hop.name}:FAIL"`,
+        `fi`,
+      );
+    } else {
+      throw new Error(`sandbox chain diag: hop "${hop.name}" has unsupported kind "${kind}" (use "http" or "shell").`);
+    }
+  }
+  lines.push('echo "VERDICT:COMPLETE"');
+
+  const result = await execOneShot(workspaceId, lines.join('\n'), username, timeoutMs);
+  const parsed = parseDiagChainOutput(String(result.stdout || ''), hopNames);
+  return { ok: true, ...parsed };
+}
+
 export async function deployCheck(
   workspaceId,
   { port, project, outputDir, frameworkType },
@@ -984,13 +1079,7 @@ fi
 
   const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
   const stdout = String(result.stdout || '');
-  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
-  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
-  // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
-  const ESC = '\x1b';
-  const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
-  const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
-  const cleanStdout = stdout.replace(csiRe, '').replace(oscRe, '');
+  const cleanStdout = stripTerminalAnsi(stdout);
   const checks = {};
   const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
   for (const line of lines) {

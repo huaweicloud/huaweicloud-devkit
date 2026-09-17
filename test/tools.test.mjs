@@ -101,6 +101,7 @@ test('TOOL_DEFINITIONS includes all required tools including sandbox', () => {
     'huaweicloud_sandbox_sign_agreement',
     'huaweicloud_sandbox_connect',
     'huaweicloud_sandbox_credentials',
+    'huaweicloud_sandbox_diag_chain',
     'huaweicloud_voucher_status',
     'huaweicloud_voucher_claim',
   ];
