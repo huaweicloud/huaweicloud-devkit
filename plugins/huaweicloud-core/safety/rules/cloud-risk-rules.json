@@ -201,6 +201,23 @@
       "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials for generated application workflows."
     },
     {
+      "id": "hwc-iam-highrisk-write",
+      "title": "High-risk IAM write operation",
+      "category": "iam",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "hcloud\\s+IAM\\s+(CreateUser|CreatePolicy|CreateRole|CreateAgency)\\b"
+          }
+        ]
+      },
+      "message": "This hcloud command creates or modifies IAM principals (users, policies, roles, or agencies). These operations can grant elevated privileges.",
+      "remediation": "Confirm the principal name, scope, and attached permissions with the user before creating IAM users, policies, roles, or agencies."
+    },
+    {
       "id": "hwc-destructive-delete-force",
       "title": "Forced destructive operation",
       "category": "destructive",

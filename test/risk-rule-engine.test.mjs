@@ -172,6 +172,35 @@ test('evaluateCommandRisk does not flag delete-protection toggles as destructive
   }
 });
 
+test('evaluateCommandRisk warns on IAM high-risk write operations (#725)', () => {
+  for (const op of ['CreateUser', 'CreatePolicy', 'CreateRole', 'CreateAgency']) {
+    const result = evaluateCommandRisk(`hcloud IAM ${op} --name admin`);
+    assert.equal(result.decision, 'warn', `IAM ${op} should warn`);
+    assert.equal(result.findings[0].ruleId, 'hwc-iam-highrisk-write');
+  }
+});
+
+test('evaluateCommandRisk warns on IAM CreateUser with name flag (#725)', () => {
+  const result = evaluateCommandRisk('hcloud IAM CreateUser --name admin');
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-highrisk-write');
+});
+
+test('evaluateCommandRisk warns on IAM CreatePolicy with wildcard action (#725)', () => {
+  const result = evaluateCommandRisk('hcloud IAM CreatePolicy --name admin --action "*"');
+  assert.equal(result.decision, 'warn');
+  const ids = result.findings.map((f) => f.ruleId);
+  assert.ok(ids.includes('hwc-iam-highrisk-write'), 'should include hwc-iam-highrisk-write');
+});
+
+test('evaluateCommandRisk still allows IAM read-only operations (#725)', () => {
+  for (const op of ['ListUsers', 'ShowUser', 'ListPolicies', 'ShowPolicy']) {
+    const result = evaluateCommandRisk(`hcloud IAM ${op} --limit=1`);
+    assert.equal(result.decision, 'allow', `IAM ${op} should be allowed`);
+    assert.equal(result.findings.length, 0, `IAM ${op} should have no findings`);
+  }
+});
+
 test('evaluateCommandRisk fails closed on malformed input (#564)', () => {
   for (const bad of [null, undefined, 12345, { cmd: 'x' }, '', '   ']) {
     const result = evaluateCommandRisk(bad);
