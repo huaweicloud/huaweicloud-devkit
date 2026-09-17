@@ -235,6 +235,45 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
   assert.notEqual(result.recommendedSkills[0], 'huawei-sandbox');
 });
 
+test('service_catalog routes Chinese service intents to correct skills (#730 EXP-E)', async () => {
+  // 15+ Chinese intent evaluations — must hit ≥ 80% (≥12/15 matched to the
+  // correct skill).
+  const cases = [
+    { intent: '创建弹性云服务器', skill: 'huawei-ecs' },
+    { intent: '管理虚拟私有云和子网', skill: 'huawei-vpc' },
+    { intent: '上传文件到对象存储', skill: 'huawei-obs' },
+    { intent: '创建函数工作流', skill: 'huawei-functiongraph' },
+    { intent: '部署云容器引擎集群', skill: 'huawei-cce' },
+    { intent: '配置API网关限流', skill: 'huawei-apig' },
+    { intent: '创建关系型数据库实例', skill: 'huawei-rds' },
+    { intent: '管理高斯数据库', skill: 'huawei-gaussdb' },
+    { intent: '配置身份认证和权限策略', skill: 'huawei-iam' },
+    { intent: '使用密钥管理服务加密数据', skill: 'huawei-dew' },
+    { intent: '开始模型训练', skill: 'huawei-modelarts' },
+    { intent: '查看账单和费用', skill: 'huawei-billing' },
+    { intent: '配置Web应用防火墙', skill: 'huawei-waf-aad' },
+    { intent: '设置云监控告警', skill: 'huawei-cloud-eye' },
+    { intent: '创建云备份', skill: 'huawei-cbr' },
+    { intent: '查看云审计服务日志', skill: 'huawei-cts' },
+    { intent: '使用文档数据库和缓存', skill: 'huawei-dds-dcs' },
+    { intent: '领取代金券优惠券', skill: 'huawei-voucher' },
+  ];
+
+  let hits = 0;
+  for (const { intent, skill } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    if (result.recommendedSkills.includes(skill)) {
+      hits++;
+    } else {
+      console.error(
+        `MISS: intent="${intent}" expected skill="${skill}", got=${JSON.stringify(result.recommendedSkills)}`,
+      );
+    }
+  }
+  const hitRate = hits / cases.length;
+  assert.ok(hitRate >= 0.8, `Chinese intent hit rate ${hits}/${cases.length} (${(hitRate * 100).toFixed(0)}%) < 80%`);
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {

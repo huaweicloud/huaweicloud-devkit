@@ -45,6 +45,16 @@ export function _isHintConsumed(sessionId) {
 
 export async function dispatch(method, params, opts = {}) {
   const sessionId = opts?.sessionId || 'default';
+
+  // JSON-RPC 2.0: params must be present for methods that use them (#730 D9-2).
+  // Guard against null/undefined so callers receive -32602 (Invalid params)
+  // instead of a TypeError from property access on null.
+  if (params === null || params === undefined) {
+    const err = new Error(`Invalid params: ${method} requires a params object.`);
+    err.code = -32602;
+    throw err;
+  }
+
   if (method === 'initialize') {
     const ci = params.clientInfo || {};
 
@@ -75,6 +85,11 @@ export async function dispatch(method, params, opts = {}) {
   }
 
   if (method === 'tools/call') {
+    if (!params.name) {
+      const err = new Error('Invalid params: tools/call requires a non-empty name.');
+      err.code = -32602;
+      throw err;
+    }
     const result = await callTool(params.name, params.arguments || {});
     const decorated = _decorateResult(sessionId, params.name, result);
     return {

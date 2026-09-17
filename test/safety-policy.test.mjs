@@ -307,3 +307,57 @@ test('existing credential and secret blocks still win before risk-rule warnings'
   assert.equal(secretResult.decision, 'deny');
   assert.equal(secretResult.risk, 'secret');
 });
+
+test('classifyTextCommand blocks env dumps with HW_ prefix in grep/pipe context (#730 D4-2)', () => {
+  // env | grep HW_ACCESS_KEY previously fell through to allow because the
+  // env-dump regex at the first gate only checked HUAWEICLOUD|HWC_|HCLOUD|OS_
+  // — the HW_ prefix was missing. The second gate (credential var) only
+  // catches $HW_* or printenv HW_* forms, not `env | grep HW_*`.
+  const envDumps = [
+    'env | grep HW_ACCESS_KEY',
+    'env | grep HW_SECRET_KEY',
+    'printenv | grep HW_SECURITY_TOKEN',
+    'env | grep HW_',
+  ];
+  for (const cmd of envDumps) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'credential', cmd);
+  }
+  // Non-credential HW_ variables in env dumps are not blocked by this gate
+  // (they may be caught by risk rules, but not as credential).
+  // Verify the existing HUAWEICLOUD/HWC_/HCLOUD/OS_ prefixes still work.
+  assert.equal(classifyTextCommand('env | grep HUAWEICLOUD').decision, 'deny');
+  assert.equal(classifyTextCommand('env | grep HWC_').decision, 'deny');
+  assert.equal(classifyTextCommand('env | grep HCLOUD').decision, 'deny');
+  assert.equal(classifyTextCommand('env | grep OS_').decision, 'deny');
+});
+
+test('classifyTextCommand unwraps shell-wrapped hcloud write commands (#730 D4-16)', () => {
+  // sh -c "hcloud ..." / bash -c 'hcloud ...' bypass the hcloud regex because
+  // hcloud is inside quotes. The shell wrapper detection extracts the inner
+  // command and recurses so write/secret classifications apply.
+  const wrapped = [
+    'sh -c "hcloud ECS DeleteServer"',
+    'bash -c "hcloud CCE DeleteCluster --cluster_id=x"',
+    "sh -c 'hcloud OBS rm obs://bucket/obj'",
+    '/bin/bash -c "hcloud ECS CreateServers --flavor=x"',
+    'sudo sh -c "hcloud CCE CreateCluster"',
+    'zsh -c "hcloud ECS NovaCreateServers --server.name=test"',
+  ];
+  for (const cmd of wrapped) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'write', cmd);
+  }
+  // Shell-wrapped read operations are allowed.
+  assert.equal(classifyTextCommand('sh -c "hcloud ECS ListServers"').decision, 'allow');
+  // Shell-wrapped credential env dumps are denied.
+  assert.equal(classifyTextCommand('sh -c "env | grep HW_ACCESS_KEY"').decision, 'deny');
+  // Shell-wrapped credential file reads are denied.
+  assert.equal(classifyTextCommand('bash -c "cat ~/.hcloud/config.json"').decision, 'deny');
+  // Non-hcloud shell wrapper without cloud patterns is allowed.
+  assert.equal(classifyTextCommand('sh -c "echo hello"').decision, 'allow');
+  // Nested shell wrappers are handled (depth guard prevents infinite recursion).
+  assert.equal(classifyTextCommand(`bash -c "sh -c 'hcloud ECS DeleteServer'"`).decision, 'deny');
+});

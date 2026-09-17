@@ -381,6 +381,19 @@ function splitSimpleCommand(command) {
   );
 }
 
+// Detect shell wrapper patterns (sh -c "cmd", bash -c 'cmd', /bin/sh -c "cmd")
+// and extract the inner command string so wrapped hcloud write commands keep
+// their deny classification (#730 D4-16). Returns the inner command or null.
+// Two alternatives handle double-quoted and single-quoted inner commands
+// separately so nested quotes (e.g. bash -c "sh -c 'hcloud ...'") unwrap
+// correctly across recursive calls.
+const SHELL_WRAPPER_RE = /(?:^|\s|\/)(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c\s+(?:"([^"]+)"|'([^']+)')/i;
+function unwrapShellCommand(text) {
+  const match = text.match(SHELL_WRAPPER_RE);
+  if (!match) return null;
+  return match[1] !== undefined ? match[1] : match[2];
+}
+
 export function classifyTextCommand(command, options = {}) {
   const policy = options.policy || DEFAULT_POLICY;
   const text = String(command || '');
@@ -396,7 +409,7 @@ export function classifyTextCommand(command, options = {}) {
 
   if (
     /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) &&
-    /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(text)
+    /HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_/i.test(text)
   ) {
     return {
       decision: 'deny',
@@ -423,6 +436,16 @@ export function classifyTextCommand(command, options = {}) {
       risk: 'credential',
       reason: 'Printing cloud credential environment variables is blocked.',
     };
+  }
+
+  // Shell wrapper detection (#730 D4-16): sh -c "hcloud ..." / bash -c 'hcloud ...'
+  // bypasses the hcloud regex below because hcloud is inside quotes. Unwrap the
+  // quoted inner command and recurse so write/secret classifications apply.
+  if (!(options._unwrapDepth > 2)) {
+    const inner = unwrapShellCommand(text);
+    if (inner !== null && inner !== text) {
+      return classifyTextCommand(inner, { ...options, _unwrapDepth: (options._unwrapDepth || 0) + 1 });
+    }
   }
 
   if (/(^|\s)hcloud(\.exe)?\s+/i.test(text)) {
