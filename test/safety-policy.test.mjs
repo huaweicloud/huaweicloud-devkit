@@ -49,6 +49,23 @@ test('redactSecrets handles string values with key=value patterns', () => {
   assert.doesNotMatch(out, /HPUAI12345/);
 });
 
+test('redactSecrets redacts bare token= values (#726 D4-27)', () => {
+  const out = redactSecrets('token=TokenValueABCDEF123456');
+  assert.equal(out, 'token=<redacted>');
+  assert.doesNotMatch(out, /TokenValueABCDEF123456/);
+  // Long secret-token keys still redact (no regression, longest-match first).
+  assert.equal(redactSecrets('security_token=stABC123'), 'security_token=<redacted>');
+  assert.equal(redactSecrets('x_auth_token=xatABC123'), 'x_auth_token=<redacted>');
+  // Other secret keywords keep working alongside bare token.
+  assert.equal(
+    redactSecrets('token=t1\npassword=pw1\nadminPass=ap1\naccess_key=ak1'),
+    'token=<redacted>\npassword=<redacted>\nadminPass=<redacted>\naccess_key=<redacted>',
+  );
+  // Non-secret tokens (e.g. tokenize=) must NOT be redacted — the '=' boundary
+  // ensures 'token' is followed by '=' directly, not by 'ize'.
+  assert.equal(redactSecrets('tokenize=abc\ntokenizer=xyz'), 'tokenize=abc\ntokenizer=xyz');
+});
+
 test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) entirely', () => {
   const redacted = redactSecrets([
     'ECS',

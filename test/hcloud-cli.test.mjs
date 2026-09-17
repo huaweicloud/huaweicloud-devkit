@@ -11,6 +11,7 @@ import {
   planHcloudCommand,
   runHcloud,
   extractApiError,
+  redactOutput,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.mjs';
 import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.mjs';
@@ -211,6 +212,21 @@ console.log('adminPass=MySecret123!');
     executableArgs: [script],
   });
   assert.doesNotMatch(result.stdout, /MySecret123!/);
+});
+
+test('redactOutput redacts bare token= via redactSecrets reuse (#726 D4-27)', () => {
+  // Plain-text path: redactOutput falls back to redactSecrets(text).
+  const textOut = redactOutput('token=TokenValueABCDEF123456');
+  assert.equal(textOut, 'token=<redacted>');
+  assert.doesNotMatch(textOut, /TokenValueABCDEF123456/);
+  // JSON path: redactOutput parses JSON then redacts via redactSecrets.
+  const jsonOut = redactOutput('{"token": "TokenValueABCDEF123456", "note": "keep"}');
+  const parsed = JSON.parse(jsonOut);
+  assert.equal(parsed.token, '<redacted>');
+  assert.equal(parsed.note, 'keep');
+  // No regression on long token-bearing keys and other secrets.
+  const reg = redactOutput('security_token=stABC\nx_auth_token=xatABC\npassword=pw1');
+  assert.equal(reg, 'security_token=<redacted>\nx_auth_token=<redacted>\npassword=<redacted>');
 });
 
 test('runHcloud succeeds with active runtime credentials and no KooCLI config (no-crash, no authWarning)', async () => {
