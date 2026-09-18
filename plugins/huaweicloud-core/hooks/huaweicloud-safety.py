@@ -173,6 +173,9 @@ def evaluate(tool_name, tool_input):
     """
     text = command_text(tool_input)
 
+    if not text.strip():
+        return "Command input is missing, non-string, or empty; safety evaluation cannot proceed."
+
     if CONFIG_FILE_RE and CONFIG_FILE_RE.search(text):
         return "reading Huawei Cloud credential/profile files can expose AK/SK or tokens. Use redacted toolkit tools."
     if ENV_DUMP_RE.search(text):
@@ -192,7 +195,10 @@ def main():
     try:
         data = json.load(sys.stdin)
     except Exception:
-        allow()
+        deny("malformed or empty JSON input; safety hook cannot evaluate an unparseable request.")
+
+    if not isinstance(data, dict):
+        deny("invalid hook payload; safety hook expects a JSON object with tool_input.")
 
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})

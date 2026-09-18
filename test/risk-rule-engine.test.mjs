@@ -171,3 +171,42 @@ test('evaluateCommandRisk does not flag delete-protection toggles as destructive
     assert.equal(result.decision, 'allow', `${op} should not be flagged as destructive delete`);
   }
 });
+
+test('evaluateCommandRisk denies empty string input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk('');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-input-invalid');
+  assert.equal(result.findings[0].severity, 'deny');
+});
+
+test('evaluateCommandRisk denies whitespace-only input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk('   ');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-input-invalid');
+});
+
+test('evaluateCommandRisk denies undefined input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk(undefined);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-input-invalid');
+});
+
+test('evaluateCommandRisk denies null input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk(null);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-input-invalid');
+});
+
+test('evaluateCommandRisk denies non-string input (fail-closed #689)', () => {
+  for (const cmd of [123, {}, [], true]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${JSON.stringify(cmd)} should be denied`);
+    assert.equal(result.findings[0].ruleId, 'hwc-input-invalid');
+  }
+});
+
+test('evaluateCommandRisk still allows valid low-risk commands after fail-closed fix', () => {
+  assert.equal(evaluateCommandRisk('hcloud ECS NovaListServers --limit=1').decision, 'allow');
+  assert.equal(evaluateCommandRisk('ls -la').decision, 'allow');
+  assert.equal(evaluateCommandRisk('npm test').decision, 'allow');
+});

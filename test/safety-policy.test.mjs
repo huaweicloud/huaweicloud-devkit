@@ -307,3 +307,16 @@ test('existing credential and secret blocks still win before risk-rule warnings'
   assert.equal(secretResult.decision, 'deny');
   assert.equal(secretResult.risk, 'secret');
 });
+
+test('classifyTextCommand denies empty string input (fail-closed #689)', () => {
+  const result = classifyTextCommand('');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.blockedByRiskRule, true);
+  assert.equal(result.findings[0].ruleId, 'hwc-input-invalid');
+});
+
+test('classifyTextCommand denies whitespace-only input (fail-closed #689)', () => {
+  const result = classifyTextCommand('   ');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-input-invalid');
+});
