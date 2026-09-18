@@ -10,6 +10,8 @@ import {
   TOOL_DEFINITIONS,
   findSkillsRoot,
   listSkillDirs,
+  listOperations,
+  findSkillForService,
 } from '../plugins/huaweicloud-core/src/tools.mjs';
 import {
   clearRuntimeCredentials,
@@ -405,4 +407,146 @@ test('auth_switch persist(mode=import) with STS token is rejected and clears imp
     clearRuntimeCredentials();
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// #732 — listOperations() KooCLI-unsupported service fallback (DMS/DEW)
+// ---------------------------------------------------------------------------
+
+// Builds a fake hcloud that emits [USE_ERROR]不存在的服务 for unsupported services
+// (mirroring KooCLI 7.2.12 behavior on Windows daily-test) and a normal help listing
+// otherwise. Returns the executable + executableArgs to inject into listOperations.
+function makeFakeHcloud(unsupported = ['DMS', 'DEW', 'UNKNOWNXYZ']) {
+  const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-listops-fake-'));
+  const script = join(dir, 'fake-hcloud.mjs');
+  const body = `const args = process.argv.slice(2);
+const svc = args.find((a) => /^[A-Za-z][A-Za-z0-9-]*$/.test(a) && !['obs','help'].includes(a.toLowerCase()));
+const UNSUPPORTED = ${JSON.stringify(unsupported)};
+if (svc && UNSUPPORTED.includes(svc.toUpperCase())) {
+  process.stderr.write('[USE_ERROR]不存在的服务:' + svc + '\\n');
+  process.exit(1);
+}
+process.stdout.write('Available operations for ' + (svc || 'unknown') + ':\\n  ListXxx\\n  CreateXxx\\n');
+process.exit(0);
+`;
+  writeFileSync(script, body, 'utf8');
+  return { executable: process.execPath, executableArgs: [script], scriptDir: dir };
+}
+
+test('listOperations falls back to skill for DMS (KooCLI USE_ERROR)', async () => {
+  const fake = makeFakeHcloud();
+  try {
+    const out = await listOperations('DMS', {
+      executable: fake.executable,
+      executableArgs: fake.executableArgs,
+      stdin: '',
+    });
+    assert.equal(out.service, 'DMS');
+    assert.equal(out.result.ok, true);
+    assert.equal(out.result.fallback, 'skill');
+    assert.equal(out.result.skillName, 'huawei-smn-dms');
+    assert.match(out.result.skillHint, /huaweicloud_retrieve_skill/);
+    assert.match(out.result.skillHint, /huawei-smn-dms/);
+    assert.ok(out.result.recommendedServices.includes('DMS'));
+    assert.equal(out.result.kooCliUnsupported, true);
+  } finally {
+    rmSync(fake.scriptDir, { recursive: true, force: true });
+  }
+});
+
+test('listOperations falls back to skill for DEW (keyword-only route)', async () => {
+  // DEW route models services:['CSMS','KMS'] but keyword 'dew' — exercises the
+  // keyword branch of findSkillForService (services[] alone would miss DEW).
+  const fake = makeFakeHcloud();
+  try {
+    const out = await listOperations('DEW', {
+      executable: fake.executable,
+      executableArgs: fake.executableArgs,
+      stdin: '',
+    });
+    assert.equal(out.service, 'DEW');
+    assert.equal(out.result.ok, true);
+    assert.equal(out.result.fallback, 'skill');
+    assert.equal(out.result.skillName, 'huawei-dew');
+    assert.match(out.result.skillHint, /huawei-dew/);
+    assert.equal(out.result.kooCliUnsupported, true);
+  } finally {
+    rmSync(fake.scriptDir, { recursive: true, force: true });
+  }
+});
+
+test('listOperations stays unchanged for KooCLI-supported service (ECS)', async () => {
+  const fake = makeFakeHcloud();
+  try {
+    const out = await listOperations('ECS', {
+      executable: fake.executable,
+      executableArgs: fake.executableArgs,
+      stdin: '',
+    });
+    assert.equal(out.service, 'ECS');
+    assert.equal(out.result.ok, true);
+    // No fallback fields on the normal path — behavior unchanged.
+    assert.equal(out.result.fallback, undefined);
+    assert.equal(out.result.skillName, undefined);
+    assert.equal(out.result.kooCliUnsupported, undefined);
+    assert.match(out.result.stdout, /Available operations/);
+  } finally {
+    rmSync(fake.scriptDir, { recursive: true, force: true });
+  }
+});
+
+test('listOperations returns fallback:none with original error when no skill maps', async () => {
+  const fake = makeFakeHcloud();
+  try {
+    const out = await listOperations('UNKNOWNXYZ', {
+      executable: fake.executable,
+      executableArgs: fake.executableArgs,
+      stdin: '',
+    });
+    assert.equal(out.service, 'UNKNOWNXYZ');
+    assert.equal(out.result.ok, false);
+    assert.equal(out.result.fallback, 'none');
+    assert.equal(out.result.skillName, undefined);
+    assert.equal(out.result.kooCliUnsupported, true);
+    // Original USE_ERROR output is preserved for the caller.
+    assert.match(`${out.result.stderr || ''}${out.result.stdout || ''}`, /USE_ERROR/);
+  } finally {
+    rmSync(fake.scriptDir, { recursive: true, force: true });
+  }
+});
+
+test('listOperations rejects invalid service name (validation unchanged)', async () => {
+  await assert.rejects(() => listOperations('bad service!'), /service must be a KooCLI service name/);
+});
+
+test('findSkillForService matches by services[] array (DMS → huawei-smn-dms)', () => {
+  const matched = findSkillForService('DMS');
+  assert.equal(matched.length, 1);
+  assert.deepEqual(matched[0].skills, ['huawei-smn-dms']);
+  assert.ok(matched[0].services.includes('DMS'));
+});
+
+test('findSkillForService matches case-insensitively and via keyword (dew → huawei-dew)', () => {
+  const lower = findSkillForService('dew');
+  assert.equal(lower.length, 1);
+  assert.deepEqual(lower[0].skills, ['huawei-dew']);
+
+  const upper = findSkillForService('DEW');
+  assert.equal(upper.length, 1);
+  assert.deepEqual(upper[0].skills, ['huawei-dew']);
+});
+
+test('findSkillForService returns empty array for unmapped service', () => {
+  assert.deepEqual(findSkillForService('UNKNOWNXYZ'), []);
+  assert.deepEqual(findSkillForService(''), []);
+  assert.deepEqual(findSkillForService(undefined), []);
+});
+
+test('serviceCatalog still routes intent correctly after routeMap extraction', async () => {
+  const out = await callTool('huaweicloud_service_catalog', { intent: 'dms kafka queue' });
+  assert.ok(out.recommendedSkills.includes('huawei-smn-dms'));
+  assert.ok(out.recommendedServices.includes('DMS'));
+
+  const deploy = await callTool('huaweicloud_service_catalog', { intent: 'deploy a static website' });
+  assert.equal(deploy.recommendedSkills[0], 'huawei-sandbox');
 });
