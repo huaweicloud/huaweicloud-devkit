@@ -326,6 +326,18 @@ npx --yes huaweicloud-devkit@latest update --target all
 
 `update` 是增量更新——只刷新已安装的文件，不动配置文件。请务必保留 `@latest`，确保 npm 获取最新版本而非本地缓存的旧版本。
 
+### 配置代理
+
+```bash
+npx --yes huaweicloud-devkit proxy init    # 配置代理（交互式）
+npx --yes huaweicloud-devkit proxy show    # 查看生效的代理设置
+npx --yes huaweicloud-devkit proxy clear   # 删除代理配置
+```
+
+为连接华为云服务配置 HTTP/HTTPS 代理（如企业内网环境）。配置保存在 `~/.config/huaweicloud/proxy.json`。
+
+环境变量 `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY` 优先级高于文件配置——可使用 `proxy show` 查看最终生效的设置。
+
 ## 功能特性
 
 - **引导式云操作** — Agent 获得 20+ 常用华为云服务的分步操作指引（ECS、OBS、VPC、RDS、GaussDB、FunctionGraph、APIG、CCE 等）
