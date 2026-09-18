@@ -400,3 +400,125 @@ test('detectFramework handles non-web monorepo sub-apps gracefully', () => {
     cleanup(d);
   }
 });
+
+test('D3-B5: detectFramework detects Vite with .cjs config', () => {
+  const d = tmpDir();
+  try {
+    writeJson(d, 'package.json', {
+      name: 'my-app',
+      scripts: { dev: 'vite', build: 'vite build' },
+      dependencies: { vue: '^3' },
+      devDependencies: { vite: '^5' },
+    });
+    touchFile(d, 'vite.config.cjs');
+    const result = detectFramework(d);
+    assert.equal(result.type, 'spa');
+    assert.equal(result.framework, 'Vite (React/Vue/Svelte)');
+    assert.equal(result.outputDir, 'dist');
+  } finally {
+    cleanup(d);
+  }
+});
+
+test('D3-B5: detectFramework detects Next.js with .cjs config', () => {
+  const d = tmpDir();
+  try {
+    writeJson(d, 'package.json', {
+      name: 'next-app',
+      dependencies: { next: '^14', react: '^18' },
+    });
+    touchFile(d, 'next.config.cjs');
+    const result = detectFramework(d);
+    assert.equal(result.type, 'ssr');
+    assert.equal(result.framework, 'Next.js');
+  } finally {
+    cleanup(d);
+  }
+});
+
+test('D3-B5: detectFramework detects Nuxt with .mts config', () => {
+  const d = tmpDir();
+  try {
+    writeJson(d, 'package.json', { name: 'nuxt-app', dependencies: { nuxt: '^3' } });
+    touchFile(d, 'nuxt.config.mts');
+    const result = detectFramework(d);
+    assert.equal(result.type, 'ssr');
+    assert.equal(result.framework, 'Nuxt');
+  } finally {
+    cleanup(d);
+  }
+});
+
+test('D3-B5: detectFramework detects Vite with .mts config', () => {
+  const d = tmpDir();
+  try {
+    writeJson(d, 'package.json', {
+      name: 'mts-app',
+      dependencies: { vue: '^3' },
+      devDependencies: { vite: '^5' },
+    });
+    touchFile(d, 'vite.config.mts');
+    const result = detectFramework(d);
+    assert.equal(result.type, 'spa');
+    assert.equal(result.framework, 'Vite (React/Vue/Svelte)');
+  } finally {
+    cleanup(d);
+  }
+});
+
+test('D3-B5: detectFramework detects Vue project with entry file but no config', () => {
+  const d = tmpDir();
+  try {
+    writeJson(d, 'package.json', {
+      name: 'vue-no-config',
+      dependencies: { vue: '^3', 'vue-router': '^4' },
+    });
+    touchFile(d, 'src/main.js', "import { createApp } from 'vue';");
+    const result = detectFramework(d);
+    assert.ok(result !== null, 'should detect Vue project with entry file');
+    assert.equal(result.framework, 'Vue CLI');
+    assert.equal(result.type, 'spa');
+  } finally {
+    cleanup(d);
+  }
+});
+
+test('D3-B5: detectFramework detects React project with entry file but no config', () => {
+  const d = tmpDir();
+  try {
+    writeJson(d, 'package.json', {
+      name: 'react-no-config',
+      dependencies: { react: '^18', 'react-dom': '^18' },
+    });
+    touchFile(d, 'src/main.jsx', "import React from 'react';");
+    const result = detectFramework(d);
+    assert.ok(result !== null, 'should detect React project with entry file');
+    assert.equal(result.framework, 'Create React App');
+    assert.equal(result.type, 'spa');
+  } finally {
+    cleanup(d);
+  }
+});
+
+test('D3-B5: detectFramework detects static site with src/index.html', () => {
+  const d = tmpDir();
+  try {
+    touchFile(d, 'src/index.html', '<html><body>hello</body></html>');
+    const result = detectFramework(d);
+    assert.ok(result !== null, 'should detect static site with src/index.html');
+    assert.equal(result.framework, 'Static Site');
+    assert.equal(result.type, 'static');
+  } finally {
+    cleanup(d);
+  }
+});
+
+test('D3-B5: detectFramework still returns null for pure library project', () => {
+  const d = tmpDir();
+  try {
+    writeJson(d, 'package.json', { name: 'lib', dependencies: { lodash: '^4' } });
+    assert.equal(detectFramework(d), null);
+  } finally {
+    cleanup(d);
+  }
+});

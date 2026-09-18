@@ -320,6 +320,8 @@ async function runHcloudOnceWithRetries(plan, options) {
     if (result.ok || attempt >= maxRetries || !isRetryableNetworkError(result)) {
       const merged = {
         ...result,
+        ok: result.ok ?? false,
+        exitCode: result.exitCode ?? null,
         retries: attempt,
         attempts: attempt + 1,
       };
@@ -423,6 +425,8 @@ function runHcloudOnce(plan, options) {
           ok: false,
           code: 'TIMEOUT',
           error: `hcloud command timed out after ${timeoutMs} ms.`,
+          exitCode: null,
+          signal: null,
           stdout: redactOutput(stdout),
           stderr: redactOutput(stderr),
           plan,
@@ -441,6 +445,8 @@ function runHcloudOnce(plan, options) {
         ok: false,
         code: 'SPAWN_ERROR',
         error: error.message,
+        exitCode: null,
+        signal: null,
         plan,
       });
     });

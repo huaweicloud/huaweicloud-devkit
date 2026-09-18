@@ -904,17 +904,25 @@ export async function deployCheck(
   const outputPath = outputDir.startsWith('/') ? outputDir : `${projectPath}/${outputDir}`;
   const isCrossPlatform = frameworkType === 'cross-platform';
 
-  const checkScript = [
+  const checkScript = buildDeployCheckScript({ port, project, outputPath, isCrossPlatform });
+  const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
+  const stdout = String(result.stdout || '');
+  return parseDeployCheckOutput(stdout, { port, isCrossPlatform });
+}
+
+export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatform }) {
+  return [
     `echo "=== DEPLOY CHECK ==="`,
     `PASS=0`,
     `TOTAL=0`,
     ``,
     `TOTAL=$((TOTAL+1))`,
-    `if curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null | grep -qE "^(2|3)"; then`,
-    `  echo "nginx_serving:PASS (port ${port})"`,
+    `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null || echo "000")`,
+    `if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then`,
+    `  echo "nginx_serving:PASS (port ${port}, HTTP \${HTTP_CODE})"`,
     `  PASS=$((PASS+1))`,
     `else`,
-    `  echo "nginx_serving:FAIL"`,
+    `  echo "nginx_serving:FAIL (port ${port}, no HTTP response)"`,
     `fi`,
     ``,
     `TOTAL=$((TOTAL+1))`,
@@ -1009,16 +1017,18 @@ fi
   ]
     .filter(Boolean)
     .join('\n');
+}
 
-  const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
-  const stdout = String(result.stdout || '');
+export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
   // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
   // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
   // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
   const ESC = '\x1b';
   const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
   const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
-  const cleanStdout = stdout.replace(csiRe, '').replace(oscRe, '');
+  const cleanStdout = String(stdout || '')
+    .replace(csiRe, '')
+    .replace(oscRe, '');
   const checks = {};
   const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
   for (const line of lines) {
@@ -1064,7 +1074,7 @@ fi
     publicUrl: tunnelMatch ? tunnelMatch[1] : undefined,
     missingSteps: missing.length > 0 ? missing.join(', ') : undefined,
     parseWarning,
-    rawOutput: parseWarning ? stdout.trim() : undefined,
+    rawOutput: parseWarning ? String(stdout || '').trim() : undefined,
     nextStep: nextStepValue,
     remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(port) : undefined,
   };

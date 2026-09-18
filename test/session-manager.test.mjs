@@ -12,6 +12,8 @@ import {
   formatProxyPortWarning,
   buildExposeRemediation,
   TUNNEL_URL_PATTERN,
+  buildDeployCheckScript,
+  parseDeployCheckOutput,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
 
 test('ws-exec dynamic import uses file:// URL (Windows-safe)', async () => {
@@ -93,4 +95,53 @@ test('formatProxyPortWarning explains proxy templates ignore auto-increment', ()
   const msg = formatProxyPortWarning(80, 81);
   assert.match(msg, /still listens on port 80/);
   assert.match(msg, /auto-increment does not apply to proxy configs/);
+});
+
+test('D3-C3: buildDeployCheckScript accepts any non-zero HTTP code for nginx_serving', () => {
+  const script = buildDeployCheckScript({
+    port: 8080,
+    project: 'myapp',
+    outputPath: '/workspace/myapp/dist',
+    isCrossPlatform: false,
+  });
+  assert.ok(!script.includes('grep -qE "^(2|3)"'), 'must not use 2xx/3xx-only grep');
+  assert.ok(script.includes('HTTP_CODE'), 'must capture HTTP_CODE variable');
+  assert.ok(script.includes('"000"'), 'must check for 000 (connection refused)');
+  assert.ok(script.includes('nginx_serving:PASS'), 'must emit PASS line');
+});
+
+test('D3-C3: parseDeployCheckOutput returns nginx_serving PASS when nginx responds', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8080, HTTP 404)',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:PASS (https://abc-8080.cn-north-4-bridge.myhuaweicloud.com -> 200)',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:4/4',
+    'TUNNEL_URL:https://abc-8080.cn-north-4-bridge.myhuaweicloud.com',
+    'VERDICT:COMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.nginx_serving.status, 'PASS');
+  assert.equal(result.complete, true);
+  assert.equal(result.score.pass, 4);
+  assert.equal(result.score.total, 4);
+});
+
+test('D3-C3: parseDeployCheckOutput returns nginx_serving FAIL when no response', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:FAIL (port 8080, no HTTP response)',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'devbridge_tunnel:FAIL',
+    'tunnel_url_accessible:FAIL (no tunnel URL)',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:1/3',
+    'VERDICT:INCOMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.nginx_serving.status, 'FAIL');
+  assert.equal(result.complete, false);
+  assert.ok(result.missingSteps.includes('nginx_serving'));
 });

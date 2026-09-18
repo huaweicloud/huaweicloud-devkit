@@ -360,3 +360,60 @@ process.exit(1);
     rmSync(join(script, '..'), { recursive: true, force: true });
   }
 });
+
+test('D3-B7: runHcloud spawn error result includes ok and exitCode fields', async () => {
+  const result = await runHcloud(['ECS', 'ListServersDetails'], {
+    executable: '/nonexistent/hcloud-binary-that-does-not-exist',
+    maxRetries: 0,
+  });
+  assert.equal(result.ok, false);
+  assert.ok('exitCode' in result, 'exitCode must be present in spawn error result');
+  assert.equal(result.exitCode, null);
+  assert.equal(result.code, 'SPAWN_ERROR');
+});
+
+test('D3-B7: runHcloud timeout result includes ok and exitCode fields', async () => {
+  const script = fakeHcloudScript('setTimeout(() => {}, 10_000);');
+  const result = await runHcloud(['ECS', 'ListServersDetails'], {
+    executable: process.execPath,
+    executableArgs: [script],
+    timeoutMs: 50,
+    forceKillAfterMs: 50,
+    maxRetries: 0,
+  });
+  assert.equal(result.ok, false);
+  assert.ok('exitCode' in result, 'exitCode must be present in timeout result');
+  assert.equal(result.code, 'TIMEOUT');
+  rmSync(join(script, '..'), { recursive: true, force: true });
+});
+
+test('D3-B7: runHcloud approved command result includes ok and exitCode on success', async () => {
+  const fake = fakeHcloudExecutable(`
+console.log(JSON.stringify({ vpcs: [{ id: 'vpc-123', name: 'test-vpc', cidr: '192.168.0.0/16' }] }));
+`);
+  const previousBin = process.env.HCLOUD_BIN;
+  process.env.HCLOUD_BIN = fake;
+  await withTempAuthHome(async () => {
+    const plan = await callTool('huaweicloud_plan_cli_command', {
+      args: ['VPC', 'ListVpcs'],
+      allowWrites: true,
+    });
+    assert.ok(plan.approvalToken, 'plan produces an approvalToken');
+    assert.equal(plan.safeToRun, true);
+
+    const result = await callTool('huaweicloud_run_approved_command', {
+      args: ['VPC', 'ListVpcs'],
+      approvalToken: plan.approvalToken,
+      approvedByUser: true,
+      maxRetries: 0,
+    });
+    assert.equal(result.approved, true);
+    assert.ok('ok' in result, 'ok must be present in approved command result');
+    assert.ok('exitCode' in result, 'exitCode must be present in approved command result');
+    assert.equal(result.ok, true);
+    assert.equal(result.exitCode, 0);
+  });
+  if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+  else process.env.HCLOUD_BIN = previousBin;
+  rmSync(join(fake, '..'), { recursive: true, force: true });
+});
