@@ -715,7 +715,7 @@ check_port <nodePort>
 | SPA/SSG/Cross-platform | nginx port (from `framework.detect`) | Kill old process, then configure nginx |
 | SSR                    | nginx public port + Node app port    | Kill old processes on both ports       |
 
-If the port cannot be freed (different user/process), increment to the next available port: `<port>+1`, update all subsequent nginx config and DevBridge references accordingly.
+If the port cannot be freed (different user/process), the `deploy_nginx` tool auto-increments to the next available port (up to 10 attempts). For SSR (proxy) mode, nginx listens on the resolved `targetPort`, and the Node app follows the returned `nodePort` field — bind the Node process to the `nodePort` that `deploy_nginx` returns, and update all subsequent nginx config and DevBridge references accordingly.
 
 #### Configure Nginx
 
@@ -736,7 +736,7 @@ Use `huaweicloud_sandbox_deploy_nginx` to write the correct template, fix direct
 - `port` — listen port from framework detection
 - `project` — project dir name under `/workspace`
 - `output_dir` — build output dir relative to `/workspace/<project>`
-- `node_port` — Node.js app port for SSR proxy. Defaults to `<port> + 1` if omitted, and the result includes `nodePort` so you know which port to bind the Node process to.
+- `node_port` — Node.js app port for SSR proxy. When omitted it defaults to the resolved nginx listen port plus one (`targetPort + 1`), and the result includes `nodePort` so you know which port to bind the Node process to. When the nginx port auto-increments, `nodePort` follows it.
 - `public_port` — public listen port for SSR proxy (optional, defaults to `port`)
 
 The tool automatically handles:
@@ -764,7 +764,7 @@ If the status code is not 2xx/3xx:
 ### Step 6: Start the App [REQUIRED]
 
 - **Static (SPA/SSG/cross-platform)**: nginx is already serving. Skip.
-- **SSR**: `PORT=<nodePort>` prefix is REQUIRED before `<serveCmd>`. nginx `proxy_pass` targets `<nodePort>`, not `<port>` — the two must differ. `deployNginx` returns `nodePort` in its result (defaults to `<port> + 1` for proxy type).
+- **SSR**: `PORT=<nodePort>` prefix is REQUIRED before `<serveCmd>`. nginx `proxy_pass` targets `<nodePort>`, not `<port>` — the two must differ. `deployNginx` returns `nodePort` in its result (defaults to the resolved `targetPort + 1` for proxy type). Always use the returned `port`/`nodePort` values — they follow any auto-increment.
 
   **Runtime environment variables**: SSR apps often need `DATABASE_URL`, `NEXTAUTH_URL`, `NEXTAUTH_SECRET`, etc. at runtime. Before starting, verify env vars from Step 4a are still loaded, and re-source `.env` if the shell session was reset:
 

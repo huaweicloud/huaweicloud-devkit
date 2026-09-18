@@ -9,7 +9,7 @@ import {
   setWorkspaceId,
   formatPortConflictWarning,
   formatPortDriftWarning,
-  formatProxyPortWarning,
+  resolveProxyNodePort,
   buildExposeRemediation,
   TUNNEL_URL_PATTERN,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
@@ -85,12 +85,35 @@ test('TUNNEL_URL_PATTERN rejects URL with empty tunnel prefix', () => {
   assert.equal('TUNNEL_URL:https://-80.cn-north-4-bridge.myhuaweicloud.com'.match(TUNNEL_URL_PATTERN), null);
 });
 
-test('formatProxyPortWarning is undefined without drift', () => {
-  assert.equal(formatProxyPortWarning(80, 80), undefined);
+test('resolveProxyNodePort defaults to listenPort + 1 when no nodePort is given', async () => {
+  const port = await resolveProxyNodePort(undefined, 80, async () => false);
+  assert.equal(port, 81);
 });
 
-test('formatProxyPortWarning explains proxy templates ignore auto-increment', () => {
-  const msg = formatProxyPortWarning(80, 81);
-  assert.match(msg, /still listens on port 80/);
-  assert.match(msg, /auto-increment does not apply to proxy configs/);
+test('resolveProxyNodePort keeps the explicit nodePort when it differs from the listen port', async () => {
+  const port = await resolveProxyNodePort(82, 80, async () => false);
+  assert.equal(port, 82);
+});
+
+test('resolveProxyNodePort falls back to listenPort + 1 when nodePort collides with the listen port', async () => {
+  const port = await resolveProxyNodePort(80, 80, async () => false);
+  assert.equal(port, 81);
+});
+
+test('resolveProxyNodePort re-probes upward when the default candidate is in use', async () => {
+  const used = new Set([81]);
+  const port = await resolveProxyNodePort(undefined, 80, async (p) => used.has(p));
+  assert.equal(port, 82);
+});
+
+test('resolveProxyNodePort re-probes upward when the explicit nodePort is in use', async () => {
+  const used = new Set([82]);
+  const port = await resolveProxyNodePort(82, 80, async (p) => used.has(p));
+  assert.equal(port, 83);
+});
+
+test('resolveProxyNodePort re-probes past targetPort + 1 when it is occupied', async () => {
+  const used = new Set([81, 82]);
+  const port = await resolveProxyNodePort(undefined, 80, async (p) => used.has(p));
+  assert.equal(port, 83);
 });
