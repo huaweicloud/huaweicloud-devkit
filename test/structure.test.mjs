@@ -401,7 +401,7 @@ test('setup-cli.mjs supports the dsh target end to end', () => {
   // install copies skills/server/safety and registers MCP through cordis.patch.yml
   assert.match(setup, /copyDir\(skillsSrc, dshSkillsDir\(\)\)/);
   assert.match(setup, /copyDir\(srcDir, join\(pluginDest, 'src'\)\)/);
-  assert.match(setup, /copyDir\(safetyDir, join\(pluginDest, 'safety'\)\)/);
+  assert.match(setup, /copySafetyPolicy\(safetyDir, join\(pluginDest, 'safety'\)\)/);
   assert.match(setup, /ensureDshMcpPatch\(\)/);
   assert.match(setup, /tryInstallDshMcpClient\(\)/);
   // DSH MCP patch uses dsh-mcp-client with stdio local server mode
