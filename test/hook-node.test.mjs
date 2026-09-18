@@ -90,3 +90,41 @@ test('node hook denies empty stdin (fail-closed #689)', () => {
   assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
   assert.match(output.hookSpecificOutput.permissionDecisionReason, /empty|invalid/i);
 });
+
+test('node hook denies null payload (fail-closed #689)', () => {
+  const result = runHookRaw('null');
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /invalid.*payload|object/i);
+});
+
+test('node hook denies non-object JSON payloads (fail-closed #689)', () => {
+  for (const raw of ['123', '"foo"', '["x"]']) {
+    const result = runHookRaw(raw);
+
+    assert.equal(result.status, 0, `payload ${raw} should not crash: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', `payload ${raw}`);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /invalid.*payload|object/i, `payload ${raw}`);
+  }
+});
+
+test('node hook denies empty command text (fail-closed #689)', () => {
+  const result = runHook({ tool_name: 'Bash', tool_input: { command: '' } });
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /empty|missing|invalid/i);
+});
+
+test('node hook denies whitespace-only command text (fail-closed #689)', () => {
+  const result = runHook({ tool_name: 'Bash', tool_input: { command: '   ' } });
+
+  assert.equal(result.status, 0, result.stderr);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /empty|missing|invalid/i);
+});
