@@ -48,7 +48,7 @@ test('remote MCP server initializes, lists tools, and plans CLI commands', async
   assert.equal(initialized.status, 200);
   assert.equal(initialized.body.result.serverInfo.name, 'huaweicloud-devkit');
   assert.equal(initialized.body.result.protocolVersion, '2024-11-05');
-  assert.deepEqual(initialized.body.result.capabilities, { tools: {} });
+  assert.deepEqual(initialized.body.result.capabilities, { tools: {}, cancellation: {} });
 
   const listed = await rpc('tools/list');
   const toolNames = new Set(listed.body.result.tools.map((tool) => tool.name));
@@ -68,6 +68,19 @@ test('remote MCP server returns 202 for notifications/initialized', async () => 
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
+  });
+  assert.equal(res.status, 202);
+});
+
+test('remote MCP server returns 202 for notifications/cancelled (#698 D9-9)', async () => {
+  const res = await fetch(`${base}/`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      method: 'notifications/cancelled',
+      params: { requestId: 12345, reason: 'test' },
+    }),
   });
   assert.equal(res.status, 202);
 });

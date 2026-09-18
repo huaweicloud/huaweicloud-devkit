@@ -669,3 +669,27 @@ test('cmdUpdate has no trailing unreachable reinstall; cmdReinstall keeps it', (
   assert.match(cmdReinstallBody, /await cmdUninstall\(\)/);
   assert.match(cmdReinstallBody, /await cmdInstall\(\)/);
 });
+
+test('MCP protocol declares cancellation capability and -32000 timeout (#698 D9-9)', () => {
+  const protocol = readFileSync(join(pluginRoot, 'src', 'mcp-protocol.mjs'), 'utf8');
+  // initialize capabilities 必须声明 cancellation
+  assert.match(protocol, /cancellation:\s*\{\s*\}/);
+  // 必须实现请求级超时错误码 -32000
+  assert.match(protocol, /REQUEST_TIMEOUT_ERROR_CODE\s*=\s*-32000/);
+  assert.match(protocol, /RequestTimeoutError/);
+  // 必须 raceWithSignal 实现超时/取消中断
+  assert.match(protocol, /raceWithSignal/);
+  assert.match(protocol, /createRequestSignal/);
+  // 必须暴露 abortRequest 供 transport 处理 notifications/cancelled
+  assert.match(protocol, /export function abortRequest/);
+
+  const stdio = readFileSync(join(pluginRoot, 'src', 'mcp-server.mjs'), 'utf8');
+  assert.match(stdio, /notifications\/cancelled/);
+  assert.match(stdio, /abortRequest/);
+  assert.match(stdio, /REQUEST_TIMEOUT_ERROR_CODE/);
+
+  const remote = readFileSync(join(pluginRoot, 'src', 'mcp-server-remote.mjs'), 'utf8');
+  assert.match(remote, /notifications\/cancelled/);
+  assert.match(remote, /abortRequest/);
+  assert.match(remote, /REQUEST_TIMEOUT_ERROR_CODE/);
+});
