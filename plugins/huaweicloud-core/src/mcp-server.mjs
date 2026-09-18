@@ -62,7 +62,10 @@ try {
 // runtime policy lags behind the source policy).
 try {
   verifyAndSyncPolicy();
-} catch {}
+} catch {
+  // Best-effort: sync failures are non-fatal — a stale policy still
+  // operates with the last-known classification rules.
+}
 
 // First-use UX: if KooCLI is missing, kick off a background install so the first
 // cloud command doesn't hit a bare "command not found". Non-blocking + log-backed.
