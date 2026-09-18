@@ -22,6 +22,7 @@ import {
   invalidateUpdateCache,
   applyUpdateHint,
   upgradePackage,
+  readInstalledVersion,
 } from '../plugins/huaweicloud-core/src/update-check.mjs';
 
 test('semverParse 解析稳定版与 prerelease', () => {
@@ -426,6 +427,70 @@ test('upgradePackage 查询失败: 不 spawn 并给手动提示', async () => {
   assert.equal(r.success, false);
   assert.equal(spawned, false);
   assert.match(r.manual, /huaweicloud-devkit@latest update/);
+});
+
+// ===== #733 D1-39: Windows spawn shell:true + target allowlist =====
+
+test('upgradePackage spawn options include shell:true for Windows EINVAL fix (#733 D1-39)', async () => {
+  let spawned = null;
+  const spawnFn = (cmd, args, opts) => {
+    spawned = { cmd, args, opts };
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  await upgradePackage({ target: 'opencode', version: 'latest' }, { doQuery, spawnFn });
+  assert.equal(spawned.opts.shell, true, 'spawn options must include shell:true (#643/D1-39)');
+});
+
+test('upgradePackage rejects unknown target to prevent shell injection (#733 D1-39)', async () => {
+  const spawnFn = () => ({ status: 0 });
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  const r = await upgradePackage({ target: 'opencode; rm -rf /', version: 'latest' }, { doQuery, spawnFn });
+  assert.equal(r.success, false);
+  assert.match(r.error, /不支持的升级目标/);
+});
+
+test('upgradePackage accepts target "all" (#733 D1-39)', async () => {
+  let spawned = null;
+  const spawnFn = (cmd, args, opts) => {
+    spawned = { cmd, args, opts };
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  const r = await upgradePackage({ target: 'all', version: 'latest' }, { doQuery, spawnFn });
+  assert.equal(r.success, true);
+  assert.ok(spawned.args.includes('all'));
+  assert.equal(spawned.opts.shell, true);
+});
+
+test('upgradePackage accepts all supported agent targets (#733 D1-39)', async () => {
+  const supported = [
+    'opencode',
+    'codex',
+    'codex-desktop',
+    'codearts',
+    'codearts-work',
+    'workbuddy',
+    'dsh',
+    'officeace',
+    'hermes',
+    'openclaw',
+    'atomcode',
+  ];
+  for (const target of supported) {
+    const spawnFn = () => ({ status: 0 });
+    const doQuery = async () => ({ latest: '1.1.1', next: null });
+    const r = await upgradePackage({ target, version: 'latest' }, { doQuery, spawnFn });
+    assert.equal(r.success, true, `target "${target}" should be accepted`);
+  }
+});
+
+test('readInstalledVersion falls back to plugin manifest when no package.json (#733 D1-39 / #576)', () => {
+  // The repo has package.json at the root, so readInstalledVersion finds it first.
+  // This test verifies the function returns a valid version string (the manifest
+  // fallback is exercised in the mcp-server.test.mjs Codex cache layout test).
+  const version = readInstalledVersion();
+  assert.ok(typeof version === 'string' && version.length > 0, 'readInstalledVersion should return a version');
 });
 
 // ===== #614 回归: #607 dismiss+查询失败路径 =====

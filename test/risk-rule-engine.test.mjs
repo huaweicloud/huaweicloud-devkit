@@ -171,3 +171,59 @@ test('evaluateCommandRisk does not flag delete-protection toggles as destructive
     assert.equal(result.decision, 'allow', `${op} should not be flagged as destructive delete`);
   }
 });
+
+// ===== #733 D4-3: ShowSecret interception =====
+
+test('evaluateCommandRisk denies hcloud KMS ShowSecret (#733 D4-3)', () => {
+  const result = evaluateCommandRisk('hcloud KMS ShowSecret --secret_id=xxx');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
+  assert.equal(result.findings[0].category, 'secret');
+});
+
+test('evaluateCommandRisk still denies ShowSecretVersion and DownloadSecret (#733 D4-3 regression)', () => {
+  for (const op of ['ShowSecretVersion', 'DownloadSecret', 'GetSecretValue']) {
+    const result = evaluateCommandRisk(`hcloud KMS ${op} --secret_id=xxx`);
+    assert.equal(result.decision, 'deny', `${op} should be denied`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
+  }
+});
+
+// ===== #733 D4-6: adminPass exposure detection =====
+
+test('evaluateCommandRisk warns on adminPass CLI parameter (#733 D4-6)', () => {
+  const result = evaluateCommandRisk('hcloud ECS CreateServers --adminPass=P@ssw0rd');
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+  assert.equal(result.findings[0].category, 'secret');
+  assert.equal(result.findings[0].severity, 'warn');
+});
+
+test('evaluateCommandRisk warns on admin_pass and admin-password variants (#733 D4-6)', () => {
+  for (const variant of ['admin_pass', 'admin-password']) {
+    const result = evaluateCommandRisk(`hcloud ECS CreateServers --${variant}=Secret123`);
+    assert.equal(result.decision, 'warn', `${variant} should trigger adminpass rule`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+  }
+});
+
+test('evaluateArtifacts warns on adminPass in deployment files (#733 D4-6)', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'terraform.tf',
+      content: 'resource "huaweicloud_compute_instance" "web" {\n  admin_pass = "MyP@ssword1"\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+});
+
+test('evaluateDeployPlan warns when plan contains adminPass field (#733 D4-6)', () => {
+  const result = evaluateDeployPlan({
+    service: 'ECS',
+    action: 'CreateServers',
+    params: { adminPass: 'P@ssw0rd123!' },
+  });
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+});
