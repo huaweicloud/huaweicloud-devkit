@@ -219,6 +219,61 @@ test('huawei-sandbox skill documents devbridge description and host/connect trap
   assert.match(body, /expose_via_devbridge/);
 });
 
+test('proxy nginx template listens on targetPort, not the stale listenPort (#738)', () => {
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  // The proxy template must reference ${targetPort} (the auto-incremented port),
+  // not ${listenPort} (the original requested port which may be occupied).
+  // spa/static already used targetPort; proxy must follow suit.
+  const proxyBlock = sessionManager.match(/proxy: `server \{[\s\S]*?\}`/);
+  assert.ok(proxyBlock, 'proxy nginx template block not found');
+  assert.match(proxyBlock[0], /listen \$\{targetPort\}/);
+  assert.doesNotMatch(proxyBlock[0], /listen \$\{listenPort\}/);
+});
+
+test('effectiveNodePort for proxy resolves via the pure resolveProxyNodePort helper on targetPort (#738)', () => {
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  // effectiveNodePort must track the resolved targetPort so the Node app and
+  // nginx stay in sync after auto-increment, and the resolution must be
+  // extractable into a pure, unit-testable function (Spec v2 C).
+  const nodePortBlock = sessionManager.match(
+    /const effectiveNodePort =[\s\S]*?resolveProxyNodePort\(nodePort, targetPort[^;]*;[\s\S]*?\n\s*: undefined;/,
+  );
+  assert.ok(nodePortBlock, 'effectiveNodePort block not found');
+  const block = nodePortBlock[0];
+  assert.match(block, /resolveProxyNodePort\(nodePort, targetPort/);
+  assert.doesNotMatch(block, /nodePort !== listenPort/);
+
+  const helper = sessionManager.match(
+    /export async function resolveProxyNodePort\(nodePort, listenPort, isPortInUse\)[\s\S]*?\n\}/,
+  );
+  assert.ok(helper, 'resolveProxyNodePort helper not found');
+  assert.match(helper[0], /nodePort && nodePort !== listenPort \? nodePort : listenPort \+ 1/);
+  assert.match(helper[0], /candidate === listenPort \|\| \(await isPortInUse\(candidate\)\)/);
+});
+
+test('port conflict and drift warnings use the unified logic for all nginx types (#738)', () => {
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  // The #736 stopgap formatProxyPortWarning must be retired; proxy must get the
+  // same conflict/drift warnings as spa/static (Spec v2 B).
+  assert.doesNotMatch(sessionManager, /formatProxyPortWarning/);
+  assert.match(sessionManager, /formatPortConflictWarning\(basePort, targetPort\)/);
+  assert.match(sessionManager, /formatPortDriftWarning\(basePort, targetPort\)/);
+  assert.doesNotMatch(sessionManager, /nginxType !== 'proxy'\s*\?\s*formatPortDriftWarning/);
+});
+
+test('proxy port warnings are surfaced alongside the tunnel warning (#738)', () => {
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  // portWarning must always be collected (not hidden behind the tunnel check)
+  // so SSR port auto-increment is visible to the caller.
+  assert.match(sessionManager, /if \(conflictWarning\)/);
+  assert.match(sessionManager, /warnings\.push\(conflictWarning\)/);
+  assert.match(sessionManager, /warnings\.join\(' \| '\)/);
+});
+
 test('all plugin manifests are valid JSON', () => {
   const manifests = [
     join(pluginRoot, '.codex-plugin', 'plugin.json'),
