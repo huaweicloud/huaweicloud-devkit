@@ -313,6 +313,38 @@ test('10b auth_confirm(newImported) from import clears the import file on succes
   });
 });
 
+// D4-24 (#745): auth_confirm precise JSON contract — repeat and unknown
+// tokens return structured results instead of throwing a generic Error.
+test('10c auth_confirm: same token submitted twice returns {status:ok, outcome:already_processed}', async () => {
+  await withTempHome(async () => {
+    writeGlobalCredentials({ ak: 'E2E10C_A_AK', sk: 'E2E10C_A_SK', region: 'cn-north-4' });
+    const switched = await callTool('huaweicloud_auth_switch', {
+      mode: 'memory',
+      action: 'persist',
+      ak: 'E2E10C_B_AK',
+      sk: 'E2E10C_B_SK',
+      region: 'cn-north-4',
+    });
+    assert.equal(switched.status, 'needs_confirmation');
+
+    const first = await callTool('huaweicloud_auth_confirm', { token: switched.confirmToken, decision: 's1' });
+    assert.equal(first.status, 'ok');
+    assert.equal(first.outcome, 'aborted');
+
+    const second = await callTool('huaweicloud_auth_confirm', { token: switched.confirmToken, decision: 's1' });
+    assert.equal(second.status, 'ok');
+    assert.equal(second.outcome, 'already_processed');
+  });
+});
+
+test('10d auth_confirm: unknown token returns {status:rejected, code:CONFIRM_TOKEN_NOT_FOUND}', async () => {
+  await withTempHome(async () => {
+    const out = await callTool('huaweicloud_auth_confirm', { token: 'never-issued-confirm-token', decision: 's1' });
+    assert.equal(out.status, 'rejected');
+    assert.equal(out.code, 'CONFIRM_TOKEN_NOT_FOUND');
+  });
+});
+
 test('11 auth_switch clear empties runtime and lets syncAuth run again', async () => {
   await withTempHome(async (dir) => {
     const log = join(dir, 'hcloud.log');

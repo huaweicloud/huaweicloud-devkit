@@ -68,6 +68,17 @@ function pruneStale(map, now = Date.now()) {
   return changed;
 }
 
+// Approval token lifecycle states, surfaced to callers so they can emit the
+// precise JSON contract required by D4-24 (#745):
+//   'valid'            — token exists, not expired, not yet consumed
+//   'expired'          — token exists but createdAt is past APPROVAL_TTL_MS
+//   'already_consumed' — token was consumed on a prior call (tombstone kept)
+//   'not_found'        — token was never created (unknown / typo / pruned)
+const TOKEN_STATE_VALID = 'valid';
+const TOKEN_STATE_EXPIRED = 'expired';
+const TOKEN_STATE_ALREADY_CONSUMED = 'already_consumed';
+const TOKEN_STATE_NOT_FOUND = 'not_found';
+
 export function createApprovalToken(rawArgs) {
   const token = randomUUID();
   const map = readApprovals();
@@ -81,16 +92,36 @@ export function createApprovalToken(rawArgs) {
   return token;
 }
 
+// Inspect a token's lifecycle state WITHOUT consuming it. Used by
+// runApprovedCommand to decide between the 'expired' / 'already_consumed'
+// / 'not_found' JSON shapes. A consumed token leaves a tombstone
+// ({ consumedAt }) until it ages out past APPROVAL_TTL_MS.
+export function inspectApprovalToken(token) {
+  const map = readApprovals();
+  const entry = map[token];
+  if (!entry) return { state: TOKEN_STATE_NOT_FOUND };
+  if (entry.consumedAt !== undefined) return { state: TOKEN_STATE_ALREADY_CONSUMED };
+  if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) return { state: TOKEN_STATE_EXPIRED };
+  return { state: TOKEN_STATE_VALID, entry };
+}
+
+// Backward-compatible single-use consume. Returns the stored entry on first
+// call, then null. After consumption a tombstone ({ consumedAt }) is written
+// so a second call can be distinguished from an unknown token via
+// inspectApprovalToken. Kept for existing tests that assert null on reuse.
 export function consumeApprovalToken(token) {
   const map = readApprovals();
   const entry = map[token];
   if (!entry) return null;
+  if (entry.consumedAt !== undefined) return null;
   if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) {
     delete map[token];
     writeApprovals(map);
     return null;
   }
-  delete map[token];
+  // Mark as consumed (tombstone) instead of deleting outright, so a repeat
+  // call can be classified as already_processed rather than not_found.
+  map[token] = { consumedAt: Date.now(), createdAt: entry.createdAt };
   writeApprovals(map);
   return entry;
 }

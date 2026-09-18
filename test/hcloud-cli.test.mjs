@@ -8,6 +8,7 @@ import {
   consumeApprovalToken,
   createApprovalToken,
   hashArgs,
+  inspectApprovalToken,
   planHcloudCommand,
   runHcloud,
   extractApiError,
@@ -359,4 +360,144 @@ process.exit(1);
     rmSync(metaDir, { recursive: true, force: true });
     rmSync(join(script, '..'), { recursive: true, force: true });
   }
+});
+
+// D4-24 (#745): approval token precise JSON contract.
+// Expired and already-consumed tokens must return structured results with
+// machine-assertable codes instead of throwing a generic Error string.
+test('inspectApprovalToken classifies a fresh token as valid', async () => {
+  await withTempAuthHome(() => {
+    const token = createApprovalToken(['ECS', 'ListServersDetails']);
+    const inspection = inspectApprovalToken(token);
+    assert.equal(inspection.state, 'valid');
+    assert.ok(inspection.entry, 'valid state carries the stored entry');
+    assert.equal(inspection.entry.argsHash, hashArgs(['ECS', 'ListServersDetails']));
+  });
+});
+
+test('inspectApprovalToken classifies an expired token as expired', async () => {
+  await withTempAuthHome((home) => {
+    const token = createApprovalToken(['ECS', 'ListServersDetails']);
+    const file = join(home, '.config', 'huaweicloud', 'approvals.json');
+    const map = JSON.parse(readFileSync(file, 'utf8'));
+    map[token].createdAt = Date.now() - 6 * 60_000;
+    writeFileSync(file, JSON.stringify(map), 'utf8');
+
+    const inspection = inspectApprovalToken(token);
+    assert.equal(inspection.state, 'expired');
+    assert.equal(inspection.entry, undefined, 'expired state does not leak the entry');
+  });
+});
+
+test('inspectApprovalToken classifies an already-consumed token as already_consumed', async () => {
+  await withTempAuthHome(() => {
+    const token = createApprovalToken(['ECS', 'ListServersDetails']);
+    const first = consumeApprovalToken(token);
+    assert.ok(first, 'first consume returns the stored entry');
+
+    const inspection = inspectApprovalToken(token);
+    assert.equal(inspection.state, 'already_consumed');
+  });
+});
+
+test('inspectApprovalToken classifies an unknown token as not_found', async () => {
+  await withTempAuthHome(() => {
+    const inspection = inspectApprovalToken('never-created-uuid');
+    assert.equal(inspection.state, 'not_found');
+  });
+});
+
+test('consumeApprovalToken keeps a tombstone so the second call is distinguishable from not_found', async () => {
+  await withTempAuthHome(() => {
+    const token = createApprovalToken(['ECS', 'ListServersDetails']);
+    const first = consumeApprovalToken(token);
+    assert.ok(first);
+    // Second consume still returns null (backward compatible), but
+    // inspectApprovalToken must report already_consumed, not not_found.
+    assert.equal(consumeApprovalToken(token), null);
+    assert.equal(inspectApprovalToken(token).state, 'already_consumed');
+  });
+});
+
+// D4-24 (#745): runApprovedCommand returns precise JSON for expired and
+// already-processed tokens instead of throwing a generic Error string.
+test('runApprovedCommand: expired token returns {status:rejected, code:CONFIRM_TOKEN_EXPIRED}', async () => {
+  await withTempAuthHome(async (home) => {
+    const fake = fakeHcloudExecutable('console.log(JSON.stringify({ ok: true }));');
+    const prevBin = process.env.HCLOUD_BIN;
+    process.env.HCLOUD_BIN = fake;
+    try {
+      const plan = await callTool('huaweicloud_plan_cli_command', {
+        args: ['ECS', 'ListServersDetails'],
+      });
+      assert.ok(plan.approvalToken);
+
+      // Backdate the token past the 5-minute TTL.
+      const file = join(home, '.config', 'huaweicloud', 'approvals.json');
+      const map = JSON.parse(readFileSync(file, 'utf8'));
+      map[plan.approvalToken].createdAt = Date.now() - 6 * 60_000;
+      writeFileSync(file, JSON.stringify(map), 'utf8');
+
+      const result = await callTool('huaweicloud_run_approved_command', {
+        args: ['ECS', 'ListServersDetails'],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+        maxRetries: 0,
+      });
+      assert.equal(result.status, 'rejected');
+      assert.equal(result.code, 'CONFIRM_TOKEN_EXPIRED');
+    } finally {
+      if (prevBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = prevBin;
+      rmSync(join(fake, '..'), { recursive: true, force: true });
+    }
+  });
+});
+
+test('runApprovedCommand: same token submitted twice returns {status:ok, outcome:already_processed}', async () => {
+  await withTempAuthHome(async () => {
+    const fake = fakeHcloudExecutable('console.log(JSON.stringify({ ok: true }));');
+    const prevBin = process.env.HCLOUD_BIN;
+    process.env.HCLOUD_BIN = fake;
+    try {
+      const plan = await callTool('huaweicloud_plan_cli_command', {
+        args: ['ECS', 'ListServersDetails'],
+      });
+      assert.ok(plan.approvalToken);
+
+      const first = await callTool('huaweicloud_run_approved_command', {
+        args: ['ECS', 'ListServersDetails'],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+        maxRetries: 0,
+      });
+      assert.equal(first.approved, true, 'first call executes the command');
+
+      const second = await callTool('huaweicloud_run_approved_command', {
+        args: ['ECS', 'ListServersDetails'],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+        maxRetries: 0,
+      });
+      assert.equal(second.status, 'ok');
+      assert.equal(second.outcome, 'already_processed');
+    } finally {
+      if (prevBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = prevBin;
+      rmSync(join(fake, '..'), { recursive: true, force: true });
+    }
+  });
+});
+
+test('runApprovedCommand: unknown token returns {status:rejected, code:CONFIRM_TOKEN_NOT_FOUND}', async () => {
+  await withTempAuthHome(async () => {
+    const result = await callTool('huaweicloud_run_approved_command', {
+      args: ['ECS', 'ListServersDetails'],
+      approvalToken: 'never-created-uuid',
+      approvedByUser: true,
+      maxRetries: 0,
+    });
+    assert.equal(result.status, 'rejected');
+    assert.equal(result.code, 'CONFIRM_TOKEN_NOT_FOUND');
+  });
 });
