@@ -83,6 +83,25 @@ function evaluate(stage, inputs, options = {}) {
 
   for (const input of items) {
     const context = evaluationContext(stage, input || {});
+
+    // Fail-closed (#689): invalid/empty command input must not default to allow.
+    if (stage === 'command') {
+      const cmd = input?.command ?? input?.text;
+      if (typeof cmd !== 'string' || !cmd.trim()) {
+        findings.push({
+          ruleId: 'hwc-input-invalid',
+          title: 'Invalid or empty command input',
+          category: 'input-validation',
+          severity: 'deny',
+          message: 'Command input is missing, non-string, or empty; safety evaluation cannot proceed.',
+          remediation: 'Provide a valid non-empty command string for safety evaluation.',
+          source: input?.path || stage,
+          evidence: excerpt(context.text),
+        });
+        continue;
+      }
+    }
+
     for (const rule of catalog.rules) {
       if (!rule.stages.includes(stage)) continue;
       if (!ruleMatches(rule, context)) continue;

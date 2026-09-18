@@ -192,7 +192,10 @@ def main():
     try:
         data = json.load(sys.stdin)
     except Exception:
-        allow()
+        deny("malformed or empty JSON input; safety hook cannot evaluate an unparseable request.")
+
+    if not isinstance(data, dict):
+        deny("invalid hook payload; safety hook expects a JSON object with tool_input.")
 
     tool_name = data.get("tool_name", "")
     tool_input = data.get("tool_input", {})
