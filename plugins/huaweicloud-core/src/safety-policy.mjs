@@ -119,14 +119,15 @@ export function syncPolicyFromSource({ runtimePolicyPath = policyPath, sourcePol
   } catch {}
 
   const runtimeHash = oldContent ? createHash('sha256').update(oldContent).digest('hex') : null;
-  const sourceContent = readFileSync(resolvedSource, 'utf8');
-  const sourceHash = createHash('sha256').update(sourceContent).digest('hex');
-
-  if (runtimeHash && runtimeHash === sourceHash) {
-    return { synced: false, reason: 'in_sync' };
-  }
 
   try {
+    const sourceContent = readFileSync(resolvedSource, 'utf8');
+    const sourceHash = createHash('sha256').update(sourceContent).digest('hex');
+
+    if (runtimeHash && runtimeHash === sourceHash) {
+      return { synced: false, reason: 'in_sync' };
+    }
+
     mkdirSync(dirname(runtimePolicyPath), { recursive: true });
     copyFileSync(resolvedSource, runtimePolicyPath);
     let diff = '';
