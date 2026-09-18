@@ -673,3 +673,19 @@ test('hcloud classification quote normalization preserves existing exemptions (#
   assert.equal(jsonInput.decision, 'deny');
   assert.equal(jsonInput.risk, 'write');
 });
+
+// Defect #689 #6 (D4-17): empty/whitespace command text must not fall through
+// to allow — the classifier surfaces the engine's fail-closed `invalid-input`
+// finding so both hook implementations deny the same inputs.
+test('classifyTextCommand denies empty string input (fail-closed #689)', () => {
+  const result = classifyTextCommand('');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.blockedByRiskRule, true);
+  assert.equal(result.findings[0].ruleId, 'invalid-input');
+});
+
+test('classifyTextCommand denies whitespace-only input (fail-closed #689)', () => {
+  const result = classifyTextCommand('   ');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'invalid-input');
+});

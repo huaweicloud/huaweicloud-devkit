@@ -41,10 +41,15 @@ function readStdin() {
 
 function main() {
   const input = readStdin();
+  if (!input.trim()) {
+    deny('empty stdin received; safety hook cannot evaluate an empty request.');
+    return;
+  }
   let data;
   try {
     data = JSON.parse(input);
   } catch {
+    deny('malformed JSON input; safety hook cannot evaluate an unparseable request.');
     return;
   }
 

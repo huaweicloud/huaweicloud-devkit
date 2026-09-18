@@ -14,6 +14,13 @@ function runHook(payload) {
   });
 }
 
+function runHookRaw(rawInput) {
+  return spawnSync(pythonBin, [hookPath], {
+    input: rawInput,
+    encoding: 'utf8',
+  });
+}
+
 function pythonUnavailable(result) {
   return result.error?.code === 'ENOENT';
 }
@@ -93,6 +100,26 @@ test('python hook allows safe commands under Hermes context', () => {
 
   assert.equal(result.status, 0);
   assert.equal(result.stdout.trim(), '', 'safe commands should produce no output');
+});
+
+test('python hook denies malformed JSON stdin (fail-closed #689)', () => {
+  const result = runHookRaw('not-json-at-all');
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /malformed|empty|invalid/i);
+});
+
+test('python hook denies empty stdin (fail-closed #689)', () => {
+  const result = runHookRaw('');
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /empty|invalid/i);
 });
 
 function runEvaluate(toolName, toolInput) {

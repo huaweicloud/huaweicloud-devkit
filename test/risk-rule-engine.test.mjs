@@ -336,3 +336,47 @@ test('evaluateDeployPlan warns when plan contains adminPass field (#733 D4-6)', 
   assert.equal(result.decision, 'warn');
   assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
 });
+
+// Defect #689 #6 (D4-17): a risk check that cannot inspect its input must never
+// report "allow". The engine surfaces the fail-closed decision as the
+// `invalid-input` synthetic finding (introduced by #564), so these cases pin
+// that contract for the command stage.
+test('evaluateCommandRisk denies empty string input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk('');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.risk, 'invalid');
+  assert.equal(result.findings[0].ruleId, 'invalid-input');
+  assert.equal(result.findings[0].severity, 'deny');
+});
+
+test('evaluateCommandRisk denies whitespace-only input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk('   ');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'invalid-input');
+});
+
+test('evaluateCommandRisk denies undefined input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk(undefined);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'invalid-input');
+});
+
+test('evaluateCommandRisk denies null input (fail-closed #689)', () => {
+  const result = evaluateCommandRisk(null);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'invalid-input');
+});
+
+test('evaluateCommandRisk denies non-string input (fail-closed #689)', () => {
+  for (const cmd of [123, {}, [], true]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${JSON.stringify(cmd)} should be denied`);
+    assert.equal(result.findings[0].ruleId, 'invalid-input');
+  }
+});
+
+test('evaluateCommandRisk still allows valid low-risk commands after fail-closed fix', () => {
+  assert.equal(evaluateCommandRisk('hcloud ECS NovaListServers --limit=1').decision, 'allow');
+  assert.equal(evaluateCommandRisk('ls -la').decision, 'allow');
+  assert.equal(evaluateCommandRisk('npm test').decision, 'allow');
+});
