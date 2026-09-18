@@ -1711,24 +1711,57 @@ const SERVICE_EXAMPLES = {
   DCS: { list: 'DCS ListInstances', create: 'DCS CreateInstance', show: 'DCS ShowInstance' },
 };
 
-async function listOperations(service, options = {}) {
+export async function listOperations(service, options = {}) {
   const serviceName = String(service || '').trim();
   if (!/^[A-Za-z][A-Za-z0-9-]{1,63}$/.test(serviceName)) {
     throw new Error('service must be a KooCLI service name such as ECS, VPC, IMS, OBS, RDS, or CDN.');
   }
   const isObs = /^obs$/i.test(serviceName);
   const svc = isObs ? 'obs' : serviceName;
-  const args = isObs ? ['obs', 'help'] : [svc, '--help'];
-  let result = await runHcloud(args, {
+  // Forward test-injection options (executable/executableArgs/env/cwd) so the
+  // USE_ERROR fallback path is unit-testable without a real hcloud binary.
+  const runOpts = {
     timeoutMs: options.timeoutMs,
     maxRetries: 0,
-  });
+    executable: options.executable,
+    executableArgs: options.executableArgs,
+    env: options.env,
+    cwd: options.cwd,
+    stdin: options.stdin,
+  };
+  const args = isObs ? ['obs', 'help'] : [svc, '--help'];
+  let result = await runHcloud(args, runOpts);
   if (!result.ok && !isObs) {
-    result = await runHcloud([svc, 'help'], {
-      timeoutMs: options.timeoutMs,
-      maxRetries: 0,
-    });
+    result = await runHcloud([svc, 'help'], runOpts);
   }
+
+  // Fallback (#732): KooCLI 7.2.12 does not recognize some service names (DMS/DEW),
+  // returning [USE_ERROR]不存在的服务 / "Unsupported service". Instead of surfacing a
+  // bare error, route to the serviceCatalog skill mapping so the agent can load the
+  // matching skill (huawei-smn-dms / huawei-dew) and discover operations there.
+  const errorText = `${result.stderr || ''}\n${result.stdout || ''}\n${result.error || ''}\n${
+    result.errorMessage || ''
+  }\n${result.langHint || ''}`;
+  if (!result.ok && /USE_ERROR|不存在的服务|Unsupported service/i.test(errorText)) {
+    const matched = findSkillForService(serviceName);
+    if (matched.length > 0) {
+      const fallbackSkills = [...new Set(matched.flatMap((r) => r.skills))];
+      const fallbackServices = [...new Set(matched.flatMap((r) => r.services))];
+      const skillName = fallbackSkills[0];
+      result = {
+        ...result,
+        ok: true,
+        fallback: 'skill',
+        skillName,
+        skillHint: `KooCLI does not support service ${serviceName} (USE_ERROR). Call huaweicloud_retrieve_skill with name "${skillName}" to load the skill workflow and discover supported operations.`,
+        recommendedServices: fallbackServices,
+        kooCliUnsupported: true,
+      };
+    } else {
+      result = { ...result, fallback: 'none', kooCliUnsupported: true };
+    }
+  }
+
   return {
     service: serviceName,
     command: isObs ? 'hcloud obs help' : `hcloud ${svc} --help`,
@@ -1773,117 +1806,144 @@ async function runApprovedCommand(args = {}) {
   return result;
 }
 
+// Module-level route table shared by serviceCatalog (intent keyword matching) and
+// findSkillForService (exact service-name lookup for the KooCLI-unsupported fallback).
+// Extracted so listOperations() can traverse the services[] array without duplicating
+// the mapping data (#732).
+const SERVICE_ROUTE_MAP = [
+  {
+    keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image'],
+    skills: ['huawei-ecs'],
+    services: ['ECS'],
+  },
+  {
+    keywords: ['vpc', 'subnet', 'network', 'security group', 'eip', 'nat', 'vpn', 'bandwidth'],
+    skills: ['huawei-vpc'],
+    services: ['VPC', 'EIP'],
+  },
+  {
+    keywords: ['obs', 'bucket', 'storage', 'object', 'static website', 'static site', 'hosting'],
+    skills: ['huawei-obs'],
+    services: ['OBS'],
+  },
+  {
+    keywords: ['functiongraph', 'serverless', 'function', 'lambda', 'trigger', 'faas'],
+    skills: ['huawei-functiongraph'],
+    services: ['FunctionGraph'],
+  },
+  {
+    keywords: ['cce', 'kubernetes', 'k8s', 'container', 'cluster', 'node pool', 'swr', 'docker', 'image registry'],
+    skills: ['huawei-cce'],
+    services: ['CCE', 'SWR'],
+  },
+  { keywords: ['apig', 'api gateway', 'publish', 'throttle'], skills: ['huawei-apig'], services: ['APIG'] },
+  { keywords: ['rds', 'mysql', 'postgresql', 'database', 'db'], skills: ['huawei-rds'], services: ['RDS'] },
+  {
+    keywords: ['gaussdb', 'distributed', 'sharding', 'opengauss'],
+    skills: ['huawei-gaussdb'],
+    services: ['GaussDB'],
+  },
+  {
+    keywords: ['iam', 'permission', 'policy', 'role', 'user', 'ak/sk', 'access key', 'agency'],
+    skills: ['huawei-iam'],
+    services: ['IAM'],
+  },
+  {
+    keywords: ['dew', 'secret', 'kms', 'encrypt', 'decrypt', 'certificate', 'csms'],
+    skills: ['huawei-dew'],
+    services: ['CSMS', 'KMS'],
+  },
+  {
+    keywords: ['modelarts', 'ai', 'model', 'training', 'inference', 'machine learning'],
+    skills: ['huawei-modelarts'],
+    services: ['ModelArts'],
+  },
+  {
+    keywords: ['billing', 'cost', 'bill', 'budget', 'expense', 'bss'],
+    skills: ['huawei-billing'],
+    services: ['BSS'],
+  },
+  {
+    keywords: ['waf', 'aad', 'ddos', 'firewall', 'web protection'],
+    skills: ['huawei-waf-aad'],
+    services: ['WAF', 'AAD'],
+  },
+  {
+    keywords: ['smn', 'dms', 'notification', 'message', 'kafka', 'rabbitmq'],
+    skills: ['huawei-smn-dms'],
+    services: ['SMN', 'DMS'],
+  },
+  {
+    keywords: ['ces', 'monitor', 'alarm', 'metric', 'dashboard', 'cloud eye'],
+    skills: ['huawei-cloud-eye'],
+    services: ['CES'],
+  },
+  { keywords: ['cts', 'audit', 'trace', 'tracker'], skills: ['huawei-cts'], services: ['CTS'] },
+  { keywords: ['cbr', 'backup', 'restore', 'vault', 'snapshot'], skills: ['huawei-cbr'], services: ['CBR'] },
+  {
+    keywords: ['deployment', 'deploy', 'ci/cd', 'pipeline', 'release'],
+    skills: ['huawei-deployment'],
+    services: ['CloudDeploy'],
+  },
+  {
+    keywords: [
+      'sandbox',
+      'devstation',
+      'workspace',
+      'terminal',
+      'preview',
+      'hwlink',
+      'website',
+      'web app',
+      'webapp',
+      'hosting',
+      '网站',
+      '网页',
+      '静态',
+    ],
+    skills: ['huawei-sandbox'],
+    services: ['Sandbox', 'DevStation'],
+  },
+  {
+    keywords: ['dds', 'dcs', 'mongodb', 'redis', 'memcached', 'cache', 'document db'],
+    skills: ['huawei-dds-dcs'],
+    services: ['DDS', 'DCS'],
+  },
+  {
+    keywords: ['voucher', 'coupon', 'incentive', 'credit', '领券', '代金券', '优惠券', '激励金', '领取'],
+    skills: ['huawei-voucher'],
+    services: ['Incentive Voucher'],
+  },
+];
+
+/**
+ * Exact service-name lookup over SERVICE_ROUTE_MAP for the KooCLI-unsupported
+ * fallback path in listOperations() (#732). A route matches when the service name
+ * equals an entry in `services[]` (case-insensitive) OR equals a single-word
+ * keyword token. The keyword branch is required because some services are modeled
+ * as keywords only (e.g. DEW → services:['CSMS','KMS'], keywords:['dew',...]).
+ */
+export function findSkillForService(serviceName) {
+  const s = String(serviceName || '').trim();
+  if (!s) return [];
+  const upper = s.toUpperCase();
+  const lower = s.toLowerCase();
+  const matches = [];
+  for (const route of SERVICE_ROUTE_MAP) {
+    const services = Array.isArray(route.services) ? route.services : [];
+    const inServices = services.some((sv) => String(sv).toUpperCase() === upper);
+    const inKeywords = Array.isArray(route.keywords) && route.keywords.some((kw) => String(kw).toLowerCase() === lower);
+    if (inServices || inKeywords) matches.push(route);
+  }
+  return matches;
+}
+
 function serviceCatalog(intent = '') {
   const it = String(intent).toLowerCase();
-  const routeMap = [
-    {
-      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image'],
-      skills: ['huawei-ecs'],
-      services: ['ECS'],
-    },
-    {
-      keywords: ['vpc', 'subnet', 'network', 'security group', 'eip', 'nat', 'vpn', 'bandwidth'],
-      skills: ['huawei-vpc'],
-      services: ['VPC', 'EIP'],
-    },
-    {
-      keywords: ['obs', 'bucket', 'storage', 'object', 'static website', 'static site', 'hosting'],
-      skills: ['huawei-obs'],
-      services: ['OBS'],
-    },
-    {
-      keywords: ['functiongraph', 'serverless', 'function', 'lambda', 'trigger', 'faas'],
-      skills: ['huawei-functiongraph'],
-      services: ['FunctionGraph'],
-    },
-    {
-      keywords: ['cce', 'kubernetes', 'k8s', 'container', 'cluster', 'node pool', 'swr', 'docker', 'image registry'],
-      skills: ['huawei-cce'],
-      services: ['CCE', 'SWR'],
-    },
-    { keywords: ['apig', 'api gateway', 'publish', 'throttle'], skills: ['huawei-apig'], services: ['APIG'] },
-    { keywords: ['rds', 'mysql', 'postgresql', 'database', 'db'], skills: ['huawei-rds'], services: ['RDS'] },
-    {
-      keywords: ['gaussdb', 'distributed', 'sharding', 'opengauss'],
-      skills: ['huawei-gaussdb'],
-      services: ['GaussDB'],
-    },
-    {
-      keywords: ['iam', 'permission', 'policy', 'role', 'user', 'ak/sk', 'access key', 'agency'],
-      skills: ['huawei-iam'],
-      services: ['IAM'],
-    },
-    {
-      keywords: ['dew', 'secret', 'kms', 'encrypt', 'decrypt', 'certificate', 'csms'],
-      skills: ['huawei-dew'],
-      services: ['CSMS', 'KMS'],
-    },
-    {
-      keywords: ['modelarts', 'ai', 'model', 'training', 'inference', 'machine learning'],
-      skills: ['huawei-modelarts'],
-      services: ['ModelArts'],
-    },
-    {
-      keywords: ['billing', 'cost', 'bill', 'budget', 'expense', 'bss'],
-      skills: ['huawei-billing'],
-      services: ['BSS'],
-    },
-    {
-      keywords: ['waf', 'aad', 'ddos', 'firewall', 'web protection'],
-      skills: ['huawei-waf-aad'],
-      services: ['WAF', 'AAD'],
-    },
-    {
-      keywords: ['smn', 'dms', 'notification', 'message', 'kafka', 'rabbitmq'],
-      skills: ['huawei-smn-dms'],
-      services: ['SMN', 'DMS'],
-    },
-    {
-      keywords: ['ces', 'monitor', 'alarm', 'metric', 'dashboard', 'cloud eye'],
-      skills: ['huawei-cloud-eye'],
-      services: ['CES'],
-    },
-    { keywords: ['cts', 'audit', 'trace', 'tracker'], skills: ['huawei-cts'], services: ['CTS'] },
-    { keywords: ['cbr', 'backup', 'restore', 'vault', 'snapshot'], skills: ['huawei-cbr'], services: ['CBR'] },
-    {
-      keywords: ['deployment', 'deploy', 'ci/cd', 'pipeline', 'release'],
-      skills: ['huawei-deployment'],
-      services: ['CloudDeploy'],
-    },
-    {
-      keywords: [
-        'sandbox',
-        'devstation',
-        'workspace',
-        'terminal',
-        'preview',
-        'hwlink',
-        'website',
-        'web app',
-        'webapp',
-        'hosting',
-        '网站',
-        '网页',
-        '静态',
-      ],
-      skills: ['huawei-sandbox'],
-      services: ['Sandbox', 'DevStation'],
-    },
-    {
-      keywords: ['dds', 'dcs', 'mongodb', 'redis', 'memcached', 'cache', 'document db'],
-      skills: ['huawei-dds-dcs'],
-      services: ['DDS', 'DCS'],
-    },
-    {
-      keywords: ['voucher', 'coupon', 'incentive', 'credit', '领券', '代金券', '优惠券', '激励金', '领取'],
-      skills: ['huawei-voucher'],
-      services: ['Incentive Voucher'],
-    },
-  ];
   const matched = [];
   const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
   const cjk = /[\u4e00-\u9fff]/;
-  for (const route of routeMap) {
+  for (const route of SERVICE_ROUTE_MAP) {
     if (route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw) : tokens.has(kw)))) {
       matched.push(route);
     }
