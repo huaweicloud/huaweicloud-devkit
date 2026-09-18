@@ -28,6 +28,28 @@ The run step validates:
 
 If all checks pass, the stored args are used to execute `runHcloud`.
 
+#### Token lifecycle states (D4-24 precise JSON contract, #745)
+
+A token transitions through these states. Non-success states return a
+structured JSON result (they do **not** throw a generic Error) so clients
+can machine-assert each case:
+
+| State              | Trigger                                                                 | Result shape                                              |
+| ------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------- |
+| `valid`            | token exists, not expired, not yet consumed                             | normal execution result                                   |
+| `expired`          | `createdAt` is past `APPROVAL_TTL_MS` (5 min)                           | `{ status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' }`   |
+| `already_consumed` | same token submitted a second time                                      | `{ status: 'ok', outcome: 'already_processed' }`          |
+| `not_found`        | token was never created (typo / unknown / pruned past tombstone window) | `{ status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' }` |
+
+A consumed token leaves a **tombstone** (`{ consumedAt, createdAt }`) in the
+approval store so a second submission is classified as `already_consumed`
+rather than `not_found`. Tombstones age out past `APPROVAL_TTL_MS` via the
+normal prune sweep.
+
+`huaweicloud_auth_confirm` follows the same contract: a repeat call with an
+already-consumed `confirmToken` returns `{ status: 'ok', outcome: 'already_processed' }`,
+and an unknown token returns `{ status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' }`.
+
 ## Implementation
 
 ### Token Storage
@@ -49,7 +71,8 @@ const APPROVAL_TTL_MS = 5 * 60_000; // 5 minutes
 | Function                       | Location         | Purpose                                     |
 | ------------------------------ | ---------------- | ------------------------------------------- |
 | `createApprovalToken(rawArgs)` | `hcloud-cli.mjs` | Stores args, returns token                  |
-| `consumeApprovalToken(token)`  | `hcloud-cli.mjs` | Validates, returns args, deletes from store |
+| `inspectApprovalToken(token)`  | `hcloud-cli.mjs` | Classifies token state without consuming it |
+| `consumeApprovalToken(token)`  | `hcloud-cli.mjs` | Validates, returns args, writes tombstone   |
 | `planHcloudCommand()`          | `hcloud-cli.mjs` | Returns `approvalToken` in result           |
 | `runApprovedCommand()`         | `tools.mjs`      | Validates token, executes with stored args  |
 
