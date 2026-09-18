@@ -509,7 +509,7 @@ function quoteShellArg(value) {
 function planningWarnings(args) {
   const joined = args.join(' ');
   const warnings = [];
-  if (/adminPass|password|passwd|secret|token/i.test(joined)) {
+  if (/admin[_-]?pass|password|passwd|secret|token/i.test(joined)) {
     warnings.push(
       'This command appears to contain a password or secret field. Do not leave plaintext secrets in shell history; prefer local-only input or a runtime injection pattern.',
     );

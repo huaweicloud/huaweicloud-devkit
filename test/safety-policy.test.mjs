@@ -49,6 +49,45 @@ test('redactSecrets handles string values with key=value patterns', () => {
   assert.doesNotMatch(out, /HPUAI12345/);
 });
 
+test('redactSecrets redacts bare token= values (#726 D4-27)', () => {
+  const out = redactSecrets('token=TokenValueABCDEF123456');
+  assert.equal(out, 'token=<redacted>');
+  assert.doesNotMatch(out, /TokenValueABCDEF123456/);
+  // Long secret-token keys still redact (no regression, longest-match first).
+  assert.equal(redactSecrets('security_token=stABC123'), 'security_token=<redacted>');
+  assert.equal(redactSecrets('x_auth_token=xatABC123'), 'x_auth_token=<redacted>');
+  // Other secret keywords keep working alongside bare token.
+  assert.equal(
+    redactSecrets('token=t1\npassword=pw1\nadminPass=ap1\naccess_key=ak1'),
+    'token=<redacted>\npassword=<redacted>\nadminPass=<redacted>\naccess_key=<redacted>',
+  );
+  // Non-secret tokens (e.g. tokenize=) must NOT be redacted — the '=' boundary
+  // ensures 'token' is followed by '=' directly, not by 'ize'.
+  assert.equal(redactSecrets('tokenize=abc\ntokenizer=xyz'), 'tokenize=abc\ntokenizer=xyz');
+});
+
+test('redactSecrets redacts admin-pass / admin_pass / adminPass variants (#726 D4-27 v2)', () => {
+  // String path: redactString regex now uses admin[_-]?pass to cover all three
+  // shapes (camelCase / hyphen / underscore) under the /i flag.
+  assert.equal(redactSecrets('adminPass=Secret123!'), 'adminPass=<redacted>');
+  assert.equal(redactSecrets('admin-pass=Secret123!'), 'admin-pass=<redacted>');
+  assert.equal(redactSecrets('admin_pass=Secret123!'), 'admin_pass=<redacted>');
+  assert.equal(redactSecrets('ADMIN-PASS=Secret123!'), 'ADMIN-PASS=<redacted>');
+  assert.equal(redactSecrets('Admin_Pass=Secret123!'), 'Admin_Pass=<redacted>');
+  // admin-password also redacts (password keyword catches it) — regression guard.
+  assert.equal(redactSecrets('admin-password=Secret123!'), 'admin-password=<redacted>');
+  // Object key path: isSecretKeyName normalizes separators, so all variants
+  // are already secret-classified — regression guard.
+  const obj = redactSecrets({
+    adminPass: 'v1',
+    'admin-pass': 'v2',
+    admin_pass: 'v3',
+  });
+  assert.equal(obj.adminPass, '<redacted>');
+  assert.equal(obj['admin-pass'], '<redacted>');
+  assert.equal(obj.admin_pass, '<redacted>');
+});
+
 test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) entirely', () => {
   const redacted = redactSecrets([
     'ECS',
