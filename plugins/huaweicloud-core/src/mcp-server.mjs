@@ -9,6 +9,7 @@ import { dispatch } from './mcp-protocol.mjs';
 import { DEFAULT_PORT, DEFAULT_HOST } from './mcp-server-remote.mjs';
 import { getCachedUpdateInfo, readInstalledVersion } from './update-check.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
+import { verifyAndSyncPolicy } from './safety-policy.mjs';
 
 const transportIdx = process.argv.indexOf('--transport');
 const transport = transportIdx > -1 && process.argv[transportIdx + 1] ? process.argv[transportIdx + 1] : 'stdio';
@@ -51,6 +52,13 @@ try {
   const pluginDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const marker = resolve(pluginDir, '.installed');
   if (existsSync(marker)) rmSync(marker, { force: true });
+} catch {}
+
+// Verify runtime safety policy.json matches the npm package source; auto-sync
+// if stale (issue #685 — Apply* write ops misclassified as read-only when the
+// runtime policy lags behind the source policy).
+try {
+  verifyAndSyncPolicy();
 } catch {}
 
 if (transport === 'remote') {
