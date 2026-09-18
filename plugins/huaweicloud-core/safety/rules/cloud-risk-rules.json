@@ -53,7 +53,7 @@
         "any": [
           {
             "field": "text",
-            "regex": "(ShowSecretVersion|DownloadSecret|GetSecretValue)"
+            "regex": "(ShowSecretVersion|ShowSecret|DownloadSecret|GetSecretValue)"
           },
           {
             "field": "text",
@@ -63,6 +63,23 @@
       },
       "message": "The command appears to retrieve plaintext secret values.",
       "remediation": "Use runtime secret references, user-side inspection, or redacted metadata checks instead of returning secret values to the agent."
+    },
+    {
+      "id": "hwc-command-adminpass-exposure",
+      "title": "Plaintext adminPass exposure",
+      "category": "secret",
+      "severity": "warn",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "(adminPass|admin_pass|admin-password)"
+          }
+        ]
+      },
+      "message": "The command or plan contains a plaintext adminPass parameter. The password may be exposed in logs, command history, or agent context.",
+      "remediation": "Use userData cloud-init, KMS/CSMS secret references, or encrypted password injection instead of passing adminPass as a plaintext CLI argument."
     },
     {
       "id": "hwc-command-sts-credential",
