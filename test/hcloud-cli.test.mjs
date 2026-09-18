@@ -229,6 +229,18 @@ test('redactOutput redacts bare token= via redactSecrets reuse (#726 D4-27)', ()
   assert.equal(reg, 'security_token=<redacted>\nx_auth_token=<redacted>\npassword=<redacted>');
 });
 
+test('redactOutput redacts admin-pass / admin_pass / adminPass variants (#726 D4-27 v2)', () => {
+  // Text path: all three separator forms must redact under the /i flag.
+  assert.equal(redactOutput('adminPass=Secret123!'), 'adminPass=<redacted>');
+  assert.equal(redactOutput('admin-pass=Secret123!'), 'admin-pass=<redacted>');
+  assert.equal(redactOutput('admin_pass=Secret123!'), 'admin_pass=<redacted>');
+  // JSON path: object-key normalization already classifies all variants.
+  const jsonOut = redactOutput('{"admin-pass": "Secret123!", "admin_pass": "v2"}');
+  const parsed = JSON.parse(jsonOut);
+  assert.equal(parsed['admin-pass'], '<redacted>');
+  assert.equal(parsed.admin_pass, '<redacted>');
+});
+
 test('runHcloud succeeds with active runtime credentials and no KooCLI config (no-crash, no authWarning)', async () => {
   const script = fakeHcloudScript(`
 console.log(JSON.stringify({ ok: true }));
