@@ -173,6 +173,9 @@ def evaluate(tool_name, tool_input):
     """
     text = command_text(tool_input)
 
+    if not text.strip():
+        return "Command input is missing, non-string, or empty; safety evaluation cannot proceed."
+
     if CONFIG_FILE_RE and CONFIG_FILE_RE.search(text):
         return "reading Huawei Cloud credential/profile files can expose AK/SK or tokens. Use redacted toolkit tools."
     if ENV_DUMP_RE.search(text):

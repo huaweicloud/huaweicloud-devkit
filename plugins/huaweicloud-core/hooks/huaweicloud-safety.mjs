@@ -53,6 +53,11 @@ function main() {
     return;
   }
 
+  if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+    deny('invalid hook payload; safety hook expects a JSON object with tool_input.');
+    return;
+  }
+
   const text = commandText(data.tool_input ?? {});
   const result = classifyTextCommand(text);
   if (result.decision === 'deny') deny(result.reason);
