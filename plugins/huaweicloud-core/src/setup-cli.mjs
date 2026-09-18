@@ -594,7 +594,6 @@ function injectAgentRules(pluginDest) {
 
 function copySafetyPolicy(safetySrcDir, destDir) {
   const destPolicyPath = join(destDir, 'policy.json');
-  const srcPolicyPath = join(safetySrcDir, 'policy.json');
   let oldPolicy = null;
   try {
     oldPolicy = JSON.parse(readFileSync(destPolicyPath, 'utf8'));
@@ -602,7 +601,7 @@ function copySafetyPolicy(safetySrcDir, destDir) {
   copyDir(safetySrcDir, destDir);
   let newPolicy = null;
   try {
-    newPolicy = JSON.parse(readFileSync(srcPolicyPath, 'utf8'));
+    newPolicy = JSON.parse(readFileSync(destPolicyPath, 'utf8'));
   } catch {}
   const diff = computePolicyDiff(oldPolicy, newPolicy);
   if (diff) {
