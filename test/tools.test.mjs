@@ -17,6 +17,27 @@ import {
   setRuntimeCredentials,
 } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 import { getKooCliVersion } from '../plugins/huaweicloud-core/src/koocli-version.mjs';
+import { dispatch } from '../plugins/huaweicloud-core/src/mcp-protocol.mjs';
+
+// #746 — Tool protocol exposure drift guard.
+// The MCP protocol layer must return TOOL_DEFINITIONS verbatim (no filtering),
+// so every tool defined in tools.mjs is reachable via tools/list at runtime.
+// This locks the contract that external frameworks (CodeArts CLI et al.) rely on:
+// TOOL_DEFINITIONS count === dispatch('tools/list') count.
+test('#746: tools/list returns every TOOL_DEFINITIONS entry with no filtering', async () => {
+  const { tools } = await dispatch('tools/list', {});
+  const defNames = TOOL_DEFINITIONS.map((t) => t.name);
+  const listNames = tools.map((t) => t.name);
+
+  // 1. No tool is dropped or added by the protocol layer.
+  assert.equal(tools.length, TOOL_DEFINITIONS.length, 'tools/list count must equal TOOL_DEFINITIONS count');
+  // 2. The two sets are identical (order-independent).
+  assert.deepEqual([...listNames].sort(), [...defNames].sort(), 'tools/list names must match TOOL_DEFINITIONS');
+  // 3. The three tools flagged in #746 are present and reachable.
+  for (const name of ['huaweicloud_check_update', 'huaweicloud_upgrade', 'huaweicloud_obs_set_website_config']) {
+    assert.ok(listNames.includes(name), `tools/list must expose ${name}`);
+  }
+});
 
 test('runVersionCheck uses hcloud version instead of --version', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-version-'));
