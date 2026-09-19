@@ -1867,6 +1867,7 @@ function serviceCatalog(intent = '') {
         'preview',
         'hwlink',
         'website',
+        'web',
         'web app',
         'webapp',
         'hosting',
@@ -1889,7 +1890,7 @@ function serviceCatalog(intent = '') {
     },
   ];
   const matched = [];
-  const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
+  const tokens = new Set(Array.from(it.match(/[\u4e00-\u9fff]+|[a-z0-9]+/g) ?? []));
   const cjk = /[\u4e00-\u9fff]/;
   for (const route of routeMap) {
     if (route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw) : tokens.has(kw)))) {
