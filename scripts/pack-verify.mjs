@@ -24,6 +24,7 @@ const requiredFiles = [
   'bin/setup.cjs',
   '.agents/plugins/marketplace.json',
   'integrations/opencode/opencode.json',
+  'rules/huawei-agent-rules.mdc',
   'plugins/huaweicloud-core/.mcp.json',
   'plugins/huaweicloud-core/.codex-plugin/plugin.json',
   'plugins/huaweicloud-core/.claude-plugin/plugin.json',

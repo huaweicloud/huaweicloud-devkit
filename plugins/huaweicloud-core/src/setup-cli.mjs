@@ -512,6 +512,20 @@ function copyDir(src, dest) {
   }
 }
 
+// Copy the global agent rules file (rules/huawei-agent-rules.mdc) into the
+// plugin destination so installed agents can load behavioral constraints
+// (#758 D4-23). Idempotent — safe to call on install and update.
+const AGENT_RULES_FILE = 'huawei-agent-rules.mdc';
+
+function injectAgentRules(pluginDest) {
+  const rulesSrc = join(PACKAGE_ROOT, 'rules', AGENT_RULES_FILE);
+  if (!existsSync(rulesSrc)) return;
+  const rulesDestDir = join(pluginDest, 'rules');
+  mkdirSync(rulesDestDir, { recursive: true });
+  copyFileVerified(rulesSrc, join(rulesDestDir, AGENT_RULES_FILE));
+  console.log(`  Agent Rules -> ${join(rulesDestDir, AGENT_RULES_FILE)}`);
+}
+
 function installRuntimeDeps(pluginsDir) {
   const pkgJson = {
     name: 'huaweicloud-devkit',
@@ -809,6 +823,7 @@ async function installOpenCode() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
   mkdirSync(opcPlugins, { recursive: true });
   copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
@@ -891,6 +906,7 @@ async function updateOpenCode() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
   mkdirSync(opcPlugins, { recursive: true });
   copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
@@ -991,6 +1007,7 @@ async function installOpenClaw() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
   writeMcpServersFile(pluginDest, mcpServerAbsPath, 'openclaw');
@@ -1053,6 +1070,7 @@ async function updateOpenClaw() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
   writeMcpServersFile(pluginDest, mcpServerAbsPath, 'openclaw');
@@ -1083,6 +1101,7 @@ async function installCodexDesktop() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   // Copy assets (icons, logos) for Codex Desktop plugin UI
   const codexAssetsSrc = join(PLUGIN_ROOT, 'assets');
@@ -1141,6 +1160,7 @@ async function updateCodexDesktop() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   // Copy assets (icons, logos) for Codex Desktop plugin UI
   const codexAssetsSrc = join(PLUGIN_ROOT, 'assets');
@@ -1278,6 +1298,7 @@ async function installCodeArts() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   const codeartsHookDir = join(homedir(), '.codeartsdoer', 'plugins');
   mkdirSync(codeartsHookDir, { recursive: true });
@@ -1307,6 +1328,7 @@ async function updateCodeArts() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   const codeartsHookDir = join(homedir(), '.codeartsdoer', 'plugins');
   mkdirSync(codeartsHookDir, { recursive: true });
@@ -1459,6 +1481,7 @@ async function installCodeArtsWork() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   registerCodeartsWorkMcp();
   installRuntimeDeps(pluginDest);
@@ -1476,6 +1499,7 @@ async function updateCodeArtsWork() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   registerCodeartsWorkMcp();
   mkdirSync(pluginDest, { recursive: true });
   writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
@@ -1740,6 +1764,7 @@ async function installWorkBuddy() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   ensureWorkbuddyMcpConfig();
   installRuntimeDeps(pluginDest);
@@ -1762,6 +1787,7 @@ async function updateWorkBuddy() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   ensureWorkbuddyMcpConfig();
   mkdirSync(pluginDest, { recursive: true });
   writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
@@ -1933,6 +1959,7 @@ async function installAtomCode() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   ensureAtomcodeMcpConfig();
   deployAtomcodeHooks();
@@ -1953,6 +1980,7 @@ async function updateAtomCode() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   ensureAtomcodeMcpConfig();
   deployAtomcodeHooks();
   mkdirSync(pluginDest, { recursive: true });
@@ -2243,6 +2271,7 @@ async function installDsh() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
   console.log(`  Hook Plugin -> ${join(pluginDest, 'hook-plugin.mjs')}`);
   ensureDshMcpPatch();
@@ -2266,6 +2295,7 @@ async function updateDsh() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
   console.log(`  Hook Plugin updated -> ${join(pluginDest, 'hook-plugin.mjs')}`);
   ensureDshMcpPatch();
@@ -2375,6 +2405,7 @@ async function installOfficeAce() {
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
 
   installRuntimeDeps(pluginDest);
   ensureOfficeaceMcpInSqlite();
@@ -2394,6 +2425,7 @@ async function updateOfficeAce() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   installRuntimeDeps(pluginDest);
   ensureOfficeaceMcpInSqlite();
   registerOfficeaceSkillEntries();
@@ -2885,6 +2917,7 @@ async function installHermes() {
   }
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
   console.log(`  Safety Hooks -> ${join(pluginDest, 'hooks')}`);
   // Telemetry hook lives in integrations/hermes/hooks/ (platform-specific adapter)
@@ -2916,6 +2949,7 @@ async function updateHermes() {
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
   console.log(`  Safety Hooks updated -> ${join(pluginDest, 'hooks')}`);
   // Telemetry hook lives in integrations/hermes/hooks/ (platform-specific adapter)

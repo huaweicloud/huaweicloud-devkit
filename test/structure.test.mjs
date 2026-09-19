@@ -669,3 +669,22 @@ test('cmdUpdate has no trailing unreachable reinstall; cmdReinstall keeps it', (
   assert.match(cmdReinstallBody, /await cmdUninstall\(\)/);
   assert.match(cmdReinstallBody, /await cmdInstall\(\)/);
 });
+
+test('agent rules file is included in npm package and injected on install (#758 D4-23)', () => {
+  // The rules file exists in the repo.
+  const rulesPath = join(root, 'rules', 'huawei-agent-rules.mdc');
+  assert.ok(existsSync(rulesPath), 'Missing rules/huawei-agent-rules.mdc');
+
+  // The package.json files array includes "rules" so npm pack ships it.
+  const pkg = readJson(join(root, 'package.json'));
+  assert.ok(Array.isArray(pkg.files) && pkg.files.includes('rules'), 'package.json "files" array must include "rules"');
+
+  // setup-cli.mjs has the injectAgentRules helper.
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  assert.match(setup, /function injectAgentRules\(pluginDest\)/);
+
+  // Every install and update function calls injectAgentRules. There are
+  // 10 supported agents × 2 (install + update) = 20 expected call sites.
+  const calls = setup.match(/injectAgentRules\(pluginDest\)/g) || [];
+  assert.ok(calls.length >= 20, `Expected ≥20 injectAgentRules calls, found ${calls.length}`);
+});
