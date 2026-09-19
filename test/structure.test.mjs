@@ -701,3 +701,22 @@ test('doctor success message does not demand a restart', () => {
   assert.match(setupCli, /You can now describe your Huawei Cloud task/);
   assert.doesNotMatch(setupCli, /Restart your session, then describe/);
 });
+
+test('D4-23: package.json files whitelist includes rules/', () => {
+  const pkg = readJson(join(root, 'package.json'));
+  assert.ok(
+    Array.isArray(pkg.files) && pkg.files.some((entry) => entry === 'rules'),
+    'package.json "files" must include "rules"',
+  );
+  assert.ok(existsSync(join(root, 'rules', 'huawei-agent-rules.mdc')), 'rules/huawei-agent-rules.mdc must exist');
+});
+
+test('D4-23: setup-cli.mjs copies rules/ to install destination', () => {
+  const setupCli = readFileSync(join(root, 'plugins', 'huaweicloud-core', 'src', 'setup-cli.mjs'), 'utf8');
+  assert.match(setupCli, /copyGlobalRules/, 'setup-cli must define copyGlobalRules helper');
+  assert.match(setupCli, /join\(PACKAGE_ROOT,\s*'rules'\)/, 'copyGlobalRules must reference PACKAGE_ROOT/rules');
+  assert.ok(
+    (setupCli.match(/copyGlobalRules\(pluginDest\)/g) || []).length >= 10,
+    'copyGlobalRules must be called in at least 10 install functions',
+  );
+});

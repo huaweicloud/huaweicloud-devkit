@@ -166,6 +166,31 @@ test('sanitizeValue coerces non-strings and nulls safely', async () => {
   assert.equal(sanitizeValue(123), '123');
 });
 
+test('D8-9: sanitizeValue redacts AK/SK/token values', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  assert.match(sanitizeValue('AK=ABCDEFGHIJKLMNOP'), /<redacted>/);
+  assert.doesNotMatch(sanitizeValue('AK=ABCDEFGHIJKLMNOP'), /ABCDEFGHIJKLMNOP/);
+  assert.match(sanitizeValue('SK=ZYXWVUTSRQPONMLK'), /<redacted>/);
+  assert.doesNotMatch(sanitizeValue('SK=ZYXWVUTSRQPONMLK'), /ZYXWVUTSRQPONMLK/);
+  assert.match(sanitizeValue('token=abcdef1234567890abcdef'), /<redacted>/);
+  assert.doesNotMatch(sanitizeValue('token=abcdef1234567890abcdef'), /abcdef1234567890abcdef/);
+});
+
+test('D8-9: sanitizeValue redacts Authorization and X-Auth-Token', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  assert.match(sanitizeValue('Authorization=Bearer eyJhbGciOiJIUzI1'), /<redacted>/);
+  assert.doesNotMatch(sanitizeValue('Authorization=Bearer eyJhbGciOiJIUzI1'), /eyJhbGciOiJIUzI1/);
+  assert.match(sanitizeValue('X-Auth-Token=abcd1234efgh5678'), /<redacted>/);
+  assert.doesNotMatch(sanitizeValue('X-Auth-Token=abcd1234efgh5678'), /abcd1234efgh5678/);
+});
+
+test('D8-9: sanitizeValue does not redact short or safe values', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  assert.equal(sanitizeValue('AK=short'), 'AK=short');
+  assert.equal(sanitizeValue('hcloud ECS NovaListServers'), 'hcloud ECS NovaListServers');
+  assert.equal(sanitizeValue('token=abc'), 'token=abc');
+});
+
 test('cacheUserHash writes to filesystem', async () => {
   await withIsolatedTelemetry(async ({ cacheUserHash }) => {
     assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));

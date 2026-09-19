@@ -538,6 +538,14 @@ function copyDir(src, dest) {
   }
 }
 
+function copyGlobalRules(pluginDest) {
+  const rulesDir = join(PACKAGE_ROOT, 'rules');
+  if (existsSync(rulesDir)) {
+    copyDir(rulesDir, join(pluginDest, 'rules'));
+    console.log(`  Agent Rules -> ${join(pluginDest, 'rules')}`);
+  }
+}
+
 function installRuntimeDeps(pluginsDir) {
   const pkgJson = {
     name: 'huaweicloud-devkit',
@@ -837,6 +845,7 @@ async function installOpenCode() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
   mkdirSync(opcPlugins, { recursive: true });
@@ -916,6 +925,7 @@ async function updateOpenCode() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
   mkdirSync(opcPlugins, { recursive: true });
@@ -1016,6 +1026,7 @@ async function installOpenClaw() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
@@ -1076,6 +1087,7 @@ async function updateOpenClaw() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
@@ -1106,6 +1118,7 @@ async function installCodexDesktop() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   // Copy assets (icons, logos) for Codex Desktop plugin UI
@@ -1164,6 +1177,7 @@ async function updateCodexDesktop() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
 
   // Copy assets (icons, logos) for Codex Desktop plugin UI
@@ -1299,6 +1313,7 @@ async function installCodeArts() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   const codeartsHookDir = join(homedir(), '.codeartsdoer', 'plugins');
@@ -1328,6 +1343,7 @@ async function updateCodeArts() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
 
   const codeartsHookDir = join(homedir(), '.codeartsdoer', 'plugins');
@@ -1388,6 +1404,7 @@ function codeartsStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   let skillCount = 0;
   if (existsSync(codeartsSkillsDir())) {
@@ -1479,6 +1496,7 @@ async function installCodeArtsWork() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   registerCodeartsWorkMcp();
@@ -1496,6 +1514,7 @@ async function updateCodeArtsWork() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   registerCodeartsWorkMcp();
   mkdirSync(pluginDest, { recursive: true });
@@ -1543,6 +1562,7 @@ function codeartsWorkStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   let skillCount = 0;
   if (existsSync(codeartsWorkSkillsDir())) {
@@ -1759,6 +1779,7 @@ async function installWorkBuddy() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   ensureWorkbuddyMcpConfig();
@@ -1781,6 +1802,7 @@ async function updateWorkBuddy() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   ensureWorkbuddyMcpConfig();
   mkdirSync(pluginDest, { recursive: true });
@@ -1863,6 +1885,7 @@ function workbuddyStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -1952,6 +1975,7 @@ async function installAtomCode() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   ensureAtomcodeMcpConfig();
@@ -1972,6 +1996,7 @@ async function updateAtomCode() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   ensureAtomcodeMcpConfig();
   deployAtomcodeHooks();
@@ -2023,6 +2048,7 @@ function atomcodeStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -2261,6 +2287,7 @@ async function installDsh() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
   console.log(`  Hook Plugin -> ${join(pluginDest, 'hook-plugin.mjs')}`);
@@ -2284,6 +2311,7 @@ async function updateDsh() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
   console.log(`  Hook Plugin updated -> ${join(pluginDest, 'hook-plugin.mjs')}`);
@@ -2329,6 +2357,7 @@ function dshStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   console.log(
     `  Hook Plugin: ${existsSync(join(pluginDir, 'hook-plugin.mjs')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
@@ -2392,6 +2421,7 @@ async function installOfficeAce() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   installRuntimeDeps(pluginDest);
@@ -2420,6 +2450,7 @@ async function updateOfficeAce() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   installRuntimeDeps(pluginDest);
   if (ensureOfficeaceMcpInSqlite() === 'owner-missing') {
@@ -2468,6 +2499,7 @@ function officeaceStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -2917,6 +2949,7 @@ async function installHermes() {
     console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   }
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
   console.log(`  Safety Hooks -> ${join(pluginDest, 'hooks')}`);
@@ -2948,6 +2981,7 @@ async function updateHermes() {
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
   copyDir(safetyDir, join(pluginDest, 'safety'));
+  copyGlobalRules(pluginDest);
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
   console.log(`  Safety Hooks updated -> ${join(pluginDest, 'hooks')}`);
@@ -3050,6 +3084,7 @@ function hermesStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   console.log(
     `  Safety Hooks: ${existsSync(join(pluginDir, 'hooks', 'huaweicloud-safety.py')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
@@ -3099,6 +3134,7 @@ function opencodeStatus() {
   );
   console.log(
     `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+    `  Agent Rules: ${existsSync(join(pluginDir, 'rules', 'huawei-agent-rules.mdc')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {

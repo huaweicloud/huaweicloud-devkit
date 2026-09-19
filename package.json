@@ -9,6 +9,7 @@
     "cordis.patch.yml",
     "bin",
     ".agents",
+    "rules",
     "plugins/huaweicloud-core",
     "integrations/hermes",
     "integrations/opencode",

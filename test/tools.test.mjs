@@ -406,3 +406,27 @@ test('auth_switch persist(mode=import) with STS token is rejected and clears imp
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('D3-S8: serviceCatalog routes diagnostic intent to huaweicloud_explain_error', async () => {
+  const result = await callTool('huaweicloud_service_catalog', { intent: 'ECS error 403 forbidden' });
+  assert.ok(
+    result.recommendedTools?.includes('huaweicloud_explain_error'),
+    'diagnostic intent should recommend huaweicloud_explain_error',
+  );
+});
+
+test('D3-S8: serviceCatalog routes error code intent to huaweicloud_explain_error', async () => {
+  const result = await callTool('huaweicloud_service_catalog', { intent: 'APIGW.0301 timeout' });
+  assert.ok(
+    result.recommendedTools?.includes('huaweicloud_explain_error'),
+    'error code intent should recommend huaweicloud_explain_error',
+  );
+});
+
+test('D3-S8: serviceCatalog does not recommend explain_error for non-diagnostic intent', async () => {
+  const result = await callTool('huaweicloud_service_catalog', { intent: 'deploy a web app' });
+  assert.ok(
+    !result.recommendedTools?.includes('huaweicloud_explain_error'),
+    'non-diagnostic intent should not recommend huaweicloud_explain_error',
+  );
+});
