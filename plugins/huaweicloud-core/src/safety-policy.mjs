@@ -381,28 +381,91 @@ function splitSimpleCommand(command) {
   );
 }
 
+// Extract inner command text from shell wrappers: bash -c "…", sh -c '…',
+// eval "…", $(…). Returns an array of extracted inner strings (may include
+// nested extractions). This lets classifyTextCommand inspect the actual payload
+// instead of the wrapper tokens (#758 D4-16).
+export function extractInnerCommand(text, depth = 0) {
+  if (depth > 3) return [];
+  const t = String(text || '');
+  const results = [];
+  let m;
+
+  // bash -c "…" / sh -c '…' / /bin/bash -c "…" / bash.exe -c '…'
+  const shellWrap = /\b(?:bash|sh|zsh|dash|\/bin\/(?:bash|sh|zsh|dash)|bash\.exe|sh\.exe)\s+-c\s+(["'])([\s\S]*?)\1/gi;
+  while ((m = shellWrap.exec(t)) !== null) {
+    if (m[2]) {
+      results.push(m[2]);
+      results.push(...extractInnerCommand(m[2], depth + 1));
+    }
+  }
+
+  // eval "…" / eval '…'
+  const evalWrap = /\beval\s+(["'])([\s\S]*?)\1/gi;
+  while ((m = evalWrap.exec(t)) !== null) {
+    if (m[2]) {
+      results.push(m[2]);
+      results.push(...extractInnerCommand(m[2], depth + 1));
+    }
+  }
+
+  // $(…) command substitution (single-level; nested parens are a known limitation)
+  const cmdSubst = /\$\(([^)]+)\)/g;
+  while ((m = cmdSubst.exec(t)) !== null) {
+    if (m[1]) {
+      results.push(m[1]);
+      results.push(...extractInnerCommand(m[1], depth + 1));
+    }
+  }
+
+  return results;
+}
+
+// Find the hcloud keyword in text and return the subcommand starting from
+// that position. This handles prompt-injection prefixes ("Ignore previous
+// instructions and hcloud …") and shell-wrapped commands where hcloud is
+// not the first token (#758 D4-11 + D4-16).
+function extractHcloudSubcommand(text) {
+  const t = String(text || '');
+  const match = /\bhcloud(?:\.exe)?\b/i.exec(t);
+  if (!match) return null;
+  return t.slice(match.index);
+}
+
 export function classifyTextCommand(command, options = {}) {
   const policy = options.policy || DEFAULT_POLICY;
   const text = String(command || '');
 
-  if (matchesAny(text, policy.credentialFilePatterns)) {
-    return {
-      decision: 'deny',
-      risk: 'credential',
-      reason:
-        'Reading Huawei Cloud credential or profile files is blocked. Use redacted profile inspection tools instead.',
-    };
+  // Extract inner commands from shell wrappers (bash -c, sh -c, eval, $()).
+  // Each candidate (original + extracted inners) is checked independently so a
+  // wrapped credential dump or hcloud write is caught even when the wrapper
+  // text alone doesn't match (#758 D4-16, also covers #682 env-dump vector).
+  const candidates = [text, ...extractInnerCommand(text)];
+
+  // Credential file reads — check all candidates.
+  for (const candidate of candidates) {
+    if (matchesAny(candidate, policy.credentialFilePatterns)) {
+      return {
+        decision: 'deny',
+        risk: 'credential',
+        reason:
+          'Reading Huawei Cloud credential or profile files is blocked. Use redacted profile inspection tools instead.',
+      };
+    }
   }
 
-  if (
-    /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) &&
-    /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(text)
-  ) {
-    return {
-      decision: 'deny',
-      risk: 'credential',
-      reason: 'Dumping cloud credential environment variables is blocked.',
-    };
+  // Env var dumps — check all candidates (covers bash -c "env | grep HUAWEICLOUD", #682).
+  for (const candidate of candidates) {
+    if (
+      /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(candidate) &&
+      /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(candidate)
+    ) {
+      return {
+        decision: 'deny',
+        risk: 'credential',
+        reason: 'Dumping cloud credential environment variables is blocked.',
+      };
+    }
   }
 
   // Credential variable references bypass the env-command gate above: HW_ is
@@ -414,19 +477,28 @@ export function classifyTextCommand(command, options = {}) {
   // (`\$HW_*`) or single-quoted (`'$HW_*'`, which the shell never expands) —
   // while unescaped `$HW_*` is a potential expansion/dump regardless of the
   // command. No command-name whitelist, so no false negative (#650 review).
-  if (
-    /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text) ||
-    /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text)
-  ) {
-    return {
-      decision: 'deny',
-      risk: 'credential',
-      reason: 'Printing cloud credential environment variables is blocked.',
-    };
+  for (const candidate of candidates) {
+    if (
+      /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(candidate) ||
+      /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(candidate)
+    ) {
+      return {
+        decision: 'deny',
+        risk: 'credential',
+        reason: 'Printing cloud credential environment variables is blocked.',
+      };
+    }
   }
 
-  if (/(^|\s)hcloud(\.exe)?\s+/i.test(text)) {
-    return classifyHcloudArgs(splitSimpleCommand(text), { ...options, rawCommand: text });
+  // hcloud command detection — extract the subcommand starting from the hcloud
+  // keyword so prompt-injection prefixes ("Ignore previous instructions and
+  // hcloud …") and shell wrappers ("bash -c \"hcloud …\"") are classified
+  // correctly (#758 D4-16 + D4-11). Check all candidates (original + inners).
+  for (const candidate of candidates) {
+    const hcloudSubcommand = extractHcloudSubcommand(candidate);
+    if (hcloudSubcommand) {
+      return classifyHcloudArgs(splitSimpleCommand(hcloudSubcommand), { ...options, rawCommand: text });
+    }
   }
 
   if (/ShowSecretVersion|GetSecretValue|secret_string|secret_binary/i.test(text)) {
