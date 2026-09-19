@@ -448,6 +448,10 @@ export function classifyTextCommand(command, options = {}) {
   );
 }
 
+export function classifyRawCommand(command, options = {}) {
+  return classifyTextCommand(command, options);
+}
+
 export function assertAllowed(result) {
   if (result.decision === 'deny') {
     const error = new Error(result.reason);
