@@ -69,6 +69,10 @@ function createClient(server = serverPath) {
         });
       });
     },
+    notify(method, params = {}) {
+      const json = JSON.stringify({ jsonrpc: '2.0', method, params });
+      child.stdin.write(`Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`);
+    },
     requestInChunks(method, params = {}, bodyBytesInFirstChunk = 1) {
       const id = Math.floor(Math.random() * 1_000_000);
       const payload = frame({ jsonrpc: '2.0', id, method, params });
@@ -330,6 +334,116 @@ test('MCP server waits for incomplete Content-Length frames instead of spinning'
     const initialized = await client.requestInChunks('initialize', payload, 8);
 
     assert.equal(initialized.result.serverInfo.name, 'huaweicloud-devkit');
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server returns -32002 for tools/list before initialize (#774 D9-4)', async () => {
+  const client = createClient();
+  try {
+    const response = await client.request('tools/list');
+    assert.ok(response.error, 'expected an error response before initialize');
+    assert.equal(response.error.code, -32002);
+    assert.match(response.error.message, /not initialized/i);
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server returns -32002 for tools/call before initialize (#774 D9-4)', async () => {
+  const client = createClient();
+  try {
+    const response = await client.request('tools/call', {
+      name: 'huaweicloud_explain_error',
+      arguments: {},
+    });
+    assert.ok(response.error, 'expected an error response before initialize');
+    assert.equal(response.error.code, -32002);
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server declares cancellation capability in initialize response (#774 D9-9)', async () => {
+  const client = createClient();
+  try {
+    const initialized = await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    assert.ok(Object.hasOwn(initialized.result.capabilities, 'cancellation'), 'capabilities must include cancellation');
+    assert.ok(Object.hasOwn(initialized.result.capabilities, 'tools'), 'capabilities still includes tools');
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server accepts notifications/initialized after initialize (#774 D9-4)', async () => {
+  const client = createClient();
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    // Sending the notification must not crash the server or produce a response.
+    client.notify('notifications/initialized');
+    // Allow the notification to be processed.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(client.isAlive(), true, 'server still alive after notification');
+
+    // Server remains functional after the notification.
+    const listed = await client.request('tools/list');
+    assert.ok(Array.isArray(listed.result.tools), 'tools/list still works after notification');
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server is not unlocked by notifications/initialized alone (#774 D9-4 gate bypass)', async () => {
+  const client = createClient();
+  try {
+    // A client that skips `initialize` and only sends the notification must
+    // stay gated — the notification is accepted but never marks the session.
+    client.notify('notifications/initialized');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(client.isAlive(), true, 'server still alive after notification');
+
+    const response = await client.request('tools/list');
+    assert.ok(response.error, 'expected the session to remain uninitialized');
+    assert.equal(response.error.code, -32002);
+    assert.match(response.error.message, /not initialized/i);
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server drops the response of a request cancelled before it runs (#774 D9-9)', async () => {
+  const client = createClient();
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+
+    client.notify('notifications/cancelled', { requestId: 90210, reason: 'test' });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    client.raw(frame({ jsonrpc: '2.0', id: 90210, method: 'tools/list', params: {} }));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    assert.equal(
+      client.frames().some((entry) => entry.id === 90210),
+      false,
+      'a cancelled request must not be answered',
+    );
+    assert.equal(client.isAlive(), true, 'server still alive after cancellation');
+
+    // The rest of the session keeps working.
+    const listed = await client.request('tools/list');
+    assert.ok(Array.isArray(listed.result.tools), 'tools/list still works after a cancellation');
   } finally {
     client.close();
   }

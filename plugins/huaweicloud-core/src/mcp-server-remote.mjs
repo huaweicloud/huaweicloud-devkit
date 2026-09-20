@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 
-import { dispatch } from './mcp-protocol.mjs';
+import { dispatch, _markRequestCancelled, _consumeRequestCancellation } from './mcp-protocol.mjs';
 
 export const DEFAULT_PORT = 9528;
 export const DEFAULT_HOST = '127.0.0.1';
@@ -41,22 +41,51 @@ export async function startRemoteServer({ port = DEFAULT_PORT, host = DEFAULT_HO
       return;
     }
 
+    const sessionId = (req.headers['mcp-session-id'] || '').trim() || 'default';
+
     if (!Object.hasOwn(message, 'id')) {
+      // D9-4: notifications never unlock a session. `notifications/initialized`
+      // is accepted (202, no body) but only a successful `initialize` request
+      // marks the session initialized.
+      // D9-9: `notifications/cancelled` records the requestId so the matching
+      // response is dropped instead of written.
+      if (message.method === 'notifications/cancelled') {
+        _markRequestCancelled(sessionId, message.params?.requestId);
+      }
       // 通知类消息（含 notifications/initialized）无需响应体，HTTP 层直接 202。
       res.writeHead(202);
       res.end();
       return;
     }
 
+    // D9-9: a cancelled request must not receive a response. HTTP still needs a
+    // status line, so answer 202 with an empty body.
+    const writeCancelled = () => {
+      res.writeHead(202);
+      res.end();
+    };
+
+    if (_consumeRequestCancellation(sessionId, message.id)) {
+      writeCancelled();
+      return;
+    }
+
     let response;
     try {
-      const sessionId = (req.headers['mcp-session-id'] || '').trim() || 'default';
       const result = await dispatch(message.method, message.params || {}, { sessionId });
+      if (_consumeRequestCancellation(sessionId, message.id)) {
+        writeCancelled();
+        return;
+      }
       response = { jsonrpc: '2.0', id: message.id, result };
       if (message.method === 'initialize') {
         res.setHeader('MCP-Protocol-Version', result.protocolVersion || '2024-11-05');
       }
     } catch (error) {
+      if (_consumeRequestCancellation(sessionId, message.id)) {
+        writeCancelled();
+        return;
+      }
       response = {
         jsonrpc: '2.0',
         id: message.id,
