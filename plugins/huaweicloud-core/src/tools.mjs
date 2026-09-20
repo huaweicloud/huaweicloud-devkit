@@ -2027,8 +2027,17 @@ function serviceCatalog(intent = '') {
   const matched = [];
   const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
   const cjk = /[\u4e00-\u9fff]/;
+  // `it` is already lowercased above; lowercase the keyword too so mixed-case
+  // CJK+ASCII keywords (弹性公网IP / NAT网关 / DDoS防护 / Web应用防火墙) match
+  // case-insensitively. Without kw.toLowerCase(), includes("弹性公网IP") against
+  // the lowercased intent "申请弹性公网ip" returns false (#730 EXP-E review).
   for (const route of routeMap) {
-    if (route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw) : tokens.has(kw)))) {
+    if (
+      route.keywords.some((kw) => {
+        const lower = kw.toLowerCase();
+        return kw.includes(' ') || cjk.test(kw) ? it.includes(lower) : tokens.has(lower);
+      })
+    ) {
       matched.push(route);
     }
   }

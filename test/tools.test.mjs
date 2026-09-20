@@ -274,6 +274,28 @@ test('service_catalog routes Chinese service intents to correct skills (#730 EXP
   assert.ok(hitRate >= 0.8, `Chinese intent hit rate ${hits}/${cases.length} (${(hitRate * 100).toFixed(0)}%) < 80%`);
 });
 
+test('service_catalog routes mixed-case CJK+ASCII keywords case-insensitively (#730 EXP-E review)', async () => {
+  // Keywords containing uppercase ASCII run through it.includes(kw) after the
+  // intent is lowercased — without kw.toLowerCase() these all MISS. Each case
+  // below targets a keyword that has no lowercase fallback in its routeMap
+  // entry, so only case-insensitive matching can route it correctly.
+  const cases = [
+    { intent: '申请弹性公网IP', skill: 'huawei-vpc' },
+    { intent: '创建NAT网关', skill: 'huawei-vpc' },
+    { intent: '查看VPN网关', skill: 'huawei-vpc' },
+    { intent: '开启DDoS防护', skill: 'huawei-waf-aad' },
+    { intent: '配置Web应用防火墙规则', skill: 'huawei-waf-aad' },
+    { intent: '调用API网关接口', skill: 'huawei-apig' },
+  ];
+  for (const { intent, skill } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(
+      result.recommendedSkills.includes(skill),
+      `MISS: intent="${intent}" expected skill="${skill}", got=${JSON.stringify(result.recommendedSkills)}`,
+    );
+  }
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
