@@ -49,6 +49,32 @@ test('redactSecrets handles string values with key=value patterns', () => {
   assert.doesNotMatch(out, /HPUAI12345/);
 });
 
+test('redactSecrets redacts lowercase ak=/sk= patterns (#694 D2-4)', () => {
+  // obsutilconfig uses lowercase ak=/sk= format — must be redacted.
+  const out = redactSecrets('ak=AK123456 sk=SKsecret');
+  assert.doesNotMatch(out, /AK123456/);
+  assert.doesNotMatch(out, /SKsecret/);
+  assert.match(out, /ak=<redacted>/);
+  assert.match(out, /sk=<redacted>/);
+});
+
+test('redactSecrets redacts mixed-case Ak=/sK= patterns (#694 D2-4)', () => {
+  const out = redactSecrets('Ak=MyAccessKey sK=MySecretKey');
+  assert.doesNotMatch(out, /MyAccessKey/);
+  assert.doesNotMatch(out, /MySecretKey/);
+});
+
+test('redactSecrets does not falsely redact access_key= or tokenize= (#694 D2-4)', () => {
+  // access_key= is handled by the earlier generic credential regex, not the AK/SK one.
+  // tokenize= must not be matched by the AK/SK pattern.
+  const out1 = redactSecrets('access_key=AKIDTEST');
+  assert.doesNotMatch(out1, /AKIDTEST/);
+  assert.match(out1, /access_key=<redacted>/);
+
+  const out2 = redactSecrets('tokenize=abc');
+  assert.equal(out2, 'tokenize=abc');
+});
+
 test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) entirely', () => {
   const redacted = redactSecrets([
     'ECS',
