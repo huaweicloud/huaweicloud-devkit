@@ -384,13 +384,16 @@ function splitSimpleCommand(command) {
 // Detect shell wrapper patterns and extract the inner command string so wrapped
 // hcloud write commands keep their deny classification (#730 D4-16). Returns the
 // inner command or null. Covers Unix shells (bash/sh/zsh/dash -c) and Windows
-// wrappers (cmd /c, powershell -Command/-c, pwsh -c) so the defect source
-// platform (Windows) is also closed (#730 review). Two quote alternatives handle
-// double-quoted and single-quoted inner commands separately so nested quotes
-// (e.g. bash -c "sh -c 'hcloud ...'") unwrap correctly across recursive calls;
-// a trailing unquoted alternative captures bare `cmd /c hcloud ...` forms.
+// wrappers (cmd /c|/k with optional /s modifier, powershell/pwsh -Command/-c
+// with optional intermediate flags like -NoProfile/-NoLogo) so the defect source
+// platform (Windows) is also closed (#730 review r4). Two quote alternatives
+// handle double-quoted and single-quoted inner commands separately so nested
+// quotes (e.g. bash -c "sh -c 'hcloud ...'") unwrap correctly across recursive
+// calls; a trailing unquoted alternative captures bare `cmd /c hcloud ...` forms.
+// Non-greedy `(?:\s+-\w+)*?` / `(?:\s+\/\w+)*?` let the final -Command/-c or
+// /[ck] anchor bind correctly instead of being consumed by the flag group.
 const SHELL_WRAPPER_RE =
-  /(?:^|\s|[/\\])(?:(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c|cmd(?:\.exe)?\s+\/c|powershell(?:\.exe)?\s+-(?:Command|c)|pwsh(?:\.exe)?\s+-c)\s+(?:"([^"]+)"|'([^']+)'|(\S.*))/i;
+  /(?:^|\s|[/\\])(?:(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c|cmd(?:\.exe)?(?:\s+\/\w+)*?\s+\/[ck]|powershell(?:\.exe)?(?:\s+-\w+)*?\s+-(?:Command|c)|pwsh(?:\.exe)?(?:\s+-\w+)*?\s+-(?:Command|c))\s*(?:"([^"]+)"|'([^']+)'|(\S.*))/i;
 function unwrapShellCommand(text) {
   const match = text.match(SHELL_WRAPPER_RE);
   if (!match) return null;

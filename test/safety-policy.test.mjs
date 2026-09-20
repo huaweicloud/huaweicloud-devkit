@@ -387,3 +387,26 @@ test('classifyTextCommand unwraps Windows shell wrappers (#730 D4-16 review)', (
   // Non-hcloud Windows wrapper without cloud patterns is allowed.
   assert.equal(classifyTextCommand('cmd /c "echo hello"').decision, 'allow');
 });
+
+test('classifyTextCommand blocks 7 Windows wrapper bypass vectors (#730 D4-16 r4)', () => {
+  // Vectors from QA review round 4: pwsh -Command, cmd /k, cmd /c"...", -NoProfile,
+  // -NoLogo, cmd /s /c, pwsh -NoProfile -Command - all previously bypassed.
+  const vectors = [
+    'pwsh -Command "& hcloud ECS DeleteServer"',
+    'cmd /k "hcloud ECS DeleteServer"',
+    'cmd /c"hcloud ECS DeleteServer"',
+    'powershell -NoProfile -Command "& hcloud ECS DeleteServer"',
+    'powershell -NoLogo -Command "hcloud ECS DeleteServer"',
+    'cmd /s /c "hcloud ECS DeleteServer"',
+    'pwsh -NoProfile -Command "hcloud ECS DeleteServer"',
+  ];
+  for (const cmd of vectors) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'write', cmd);
+  }
+  // Read variants with new patterns remain allowed.
+  assert.equal(classifyTextCommand('pwsh -Command "hcloud ECS ListServers"').decision, 'allow');
+  assert.equal(classifyTextCommand('cmd /k "hcloud ECS ListServers"').decision, 'allow');
+  assert.equal(classifyTextCommand('powershell -NoProfile -Command "hcloud ECS ListServers"').decision, 'allow');
+});
