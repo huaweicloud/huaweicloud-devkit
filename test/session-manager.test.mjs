@@ -12,6 +12,7 @@ import {
   formatProxyPortWarning,
   buildExposeRemediation,
   TUNNEL_URL_PATTERN,
+  parseDeployCheckOutput,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
 
 test('ws-exec dynamic import uses file:// URL (Windows-safe)', async () => {
@@ -93,4 +94,68 @@ test('formatProxyPortWarning explains proxy templates ignore auto-increment', ()
   const msg = formatProxyPortWarning(80, 81);
   assert.match(msg, /still listens on port 80/);
   assert.match(msg, /auto-increment does not apply to proxy configs/);
+});
+
+test('parseDeployCheckOutput detects auto-incremented port and sets portWarning (#762 defect 6)', () => {
+  const simulatedStdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8081, auto-detected — requested port 8080 was auto-incremented)',
+    'ACTUAL_PORT:8081',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'content_verified:PASS',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:PASS (https://tunnel-8081.example.com -> 200)',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:5/5',
+    'TUNNEL_URL:https://tunnel-8081.example.com',
+    'VERDICT:COMPLETE',
+  ].join('\n');
+
+  const result = parseDeployCheckOutput(simulatedStdout, 8080, false);
+  assert.equal(result.complete, true);
+  assert.equal(result.detectedPort, '8081');
+  assert.ok(result.portWarning, 'portWarning should be set when port shifts');
+  assert.match(result.portWarning, /8080.*8081/);
+  assert.equal(result.checks.nginx_serving.status, 'PASS');
+});
+
+test('parseDeployCheckOutput leaves detectedPort undefined when port matches (#762 defect 6)', () => {
+  const simulatedStdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8080)',
+    'ACTUAL_PORT:8080',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'content_verified:PASS',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:PASS (https://tunnel-8080.example.com -> 200)',
+    'SCORE:5/5',
+    'TUNNEL_URL:https://tunnel-8080.example.com',
+    'VERDICT:COMPLETE',
+  ].join('\n');
+
+  const result = parseDeployCheckOutput(simulatedStdout, 8080, false);
+  assert.equal(result.complete, true);
+  assert.equal(result.detectedPort, undefined);
+  assert.equal(result.portWarning, undefined);
+});
+
+test('parseDeployCheckOutput uses detectedPort for remediation when port shifts (#762 defect 6)', () => {
+  const simulatedStdout = [
+    'nginx_serving:PASS (port 8081, auto-detected)',
+    'ACTUAL_PORT:8081',
+    'output_dir:PASS (/workspace/app/dist)',
+    'content_verified:PASS',
+    'devbridge_tunnel:FAIL',
+    'tunnel_url_accessible:FAIL (no tunnel URL)',
+    'SCORE:3/5',
+    'VERDICT:INCOMPLETE',
+  ].join('\n');
+
+  const result = parseDeployCheckOutput(simulatedStdout, 8080, false);
+  assert.equal(result.complete, false);
+  assert.equal(result.nextStep, 'expose_via_devbridge');
+  assert.equal(result.detectedPort, '8081');
+  assert.ok(result.remediation, 'remediation should be set for expose_via_devbridge');
+  assert.match(result.remediation, /8081/);
+  assert.doesNotMatch(result.remediation, /-p 8080\b/);
 });

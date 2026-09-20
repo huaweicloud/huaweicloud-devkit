@@ -1785,7 +1785,7 @@ function serviceCatalog(intent = '') {
   const it = String(intent).toLowerCase();
   const routeMap = [
     {
-      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image'],
+      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image', '云服务器', '服务器', '弹性云'],
       skills: ['huawei-ecs'],
       services: ['ECS'],
     },
@@ -1795,7 +1795,7 @@ function serviceCatalog(intent = '') {
       services: ['VPC', 'EIP'],
     },
     {
-      keywords: ['obs', 'bucket', 'storage', 'object', 'static website', 'static site', 'hosting'],
+      keywords: ['obs', 'bucket', 'storage', 'object', 'static website', 'static site', 'hosting', '对象存储', '对象'],
       skills: ['huawei-obs'],
       services: ['OBS'],
     },

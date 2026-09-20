@@ -285,6 +285,45 @@ test('service_catalog routes pure CJK intents without regression (#730 EXP-E ter
   }
 });
 
+test('service_catalog routes OBS+hosting composite CJK intent to both services (#762 defect 13a)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', {
+    intent: '对象存储+网站托管',
+  });
+  assert.ok(
+    result.recommendedSkills.includes('huawei-obs'),
+    `composite OBS+hosting intent should hit OBS, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.ok(
+    result.recommendedSkills.includes('huawei-sandbox'),
+    `composite OBS+hosting intent should hit sandbox for hosting, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.notEqual(
+    result.recommendedSkills[0],
+    'Use huaweicloud-core to route intent.',
+    'should not fall back to generic routing',
+  );
+});
+
+test('service_catalog routes single CJK ECS intent without fallback (#762 defect 13b)', async () => {
+  const cases = [
+    { intent: '创建 Ubuntu 云服务器', expect: 'huawei-ecs' },
+    { intent: '购买一台弹性云服务器', expect: 'huawei-ecs' },
+    { intent: '查看服务器列表', expect: 'huawei-ecs' },
+  ];
+  for (const { intent, expect } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(
+      result.recommendedSkills.includes(expect),
+      `intent="${intent}" should include skill=${expect}, got ${JSON.stringify(result.recommendedSkills)}`,
+    );
+    assert.notEqual(
+      result.recommendedSkills[0],
+      'Use huaweicloud-core to route intent.',
+      `intent="${intent}" should not fall back to generic routing`,
+    );
+  }
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
