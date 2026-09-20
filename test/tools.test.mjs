@@ -235,6 +235,47 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
   assert.notEqual(result.recommendedSkills[0], 'huawei-sandbox');
 });
 
+test('service_catalog routes all documented Chinese-intent eval cases >= 80% (#770 D10-3)', async () => {
+  // Daily-test eval set (CodeArtsWork 2026-09-21): 11 documented MISS cases +
+  // 3 baseline HIT guards. EXP-E08 (ECS troubleshooting) is N/A — diagnostics
+  // routing is explicitly out of scope. HIT = expected service appears in
+  // recommendedServices.
+  const cases = [
+    { id: 'EXP-E01', intent: '查询我的云服务器状态', expect: ['ECS'] },
+    { id: 'EXP-E02', intent: '创建一台弹性云服务器', expect: ['ECS'] },
+    { id: 'EXP-E03', intent: '部署静态网站到对象存储', expect: ['OBS'] },
+    { id: 'EXP-E04', intent: '申请一个弹性公网IP', expect: ['EIP', 'VPC'] },
+    { id: 'EXP-E05', intent: '查询数据库实例信息', expect: ['RDS'] },
+    { id: 'EXP-E06', intent: '领取代金券', expect: ['Incentive Voucher'] },
+    { id: 'EXP-E07', intent: '创建一个云备份', expect: ['CBR'] },
+    { id: 'EXP-E09', intent: '部署一个静态网站', expect: ['Sandbox', 'DevStation'] },
+    { id: 'EXP-E10', intent: '创建一个函数', expect: ['FunctionGraph'] },
+    { id: 'EXP-E11', intent: '查询本月账单费用', expect: ['BSS'] },
+    { id: 'EXP-E12', intent: '设置监控告警', expect: ['CES'] },
+    { id: 'EXP-E13', intent: '管理负载均衡证书', expect: ['ELB'] },
+    { id: 'EXP-E14', intent: '查看IAM用户权限', expect: ['IAM'] },
+    { id: 'EXP-E15', intent: '查看云审计事件', expect: ['CTS'] },
+  ];
+  let hits = 0;
+  for (const c of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent: c.intent });
+    const ok = c.expect.some((s) => result.recommendedServices.includes(s));
+    assert.equal(ok, true, `${c.id} ('${c.intent}') should route to ${c.expect.join('/')}`);
+    if (ok) hits += 1;
+  }
+  const accuracy = hits / cases.length;
+  assert.ok(accuracy >= 0.8, `Chinese-intent routing accuracy ${accuracy.toFixed(3)} < 0.8`);
+});
+
+test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)', async () => {
+  // `it` is lowercased before matching; keywords containing ASCII letters
+  // (弹性公网IP / NAT网关) must match the lowercased intent.
+  const eip = await callTool('huaweicloud_service_catalog', { intent: '申请一个弹性公网IP' });
+  assert.ok(eip.recommendedServices.includes('EIP'));
+  const nat = await callTool('huaweicloud_service_catalog', { intent: '查看NAT网关' });
+  assert.ok(nat.recommendedServices.includes('VPC'));
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
