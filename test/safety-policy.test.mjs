@@ -361,3 +361,29 @@ test('classifyTextCommand unwraps shell-wrapped hcloud write commands (#730 D4-1
   // Nested shell wrappers are handled (depth guard prevents infinite recursion).
   assert.equal(classifyTextCommand(`bash -c "sh -c 'hcloud ECS DeleteServer'"`).decision, 'deny');
 });
+
+test('classifyTextCommand unwraps Windows shell wrappers (#730 D4-16 review)', () => {
+  // cmd /c, cmd.exe /c, powershell -Command, pwsh -c wrap hcloud write commands
+  // on Windows; without SHELL_WRAPPER_RE coverage they bypass classification.
+  const wrapped = [
+    'cmd /c "hcloud ECS DeleteServer"',
+    'cmd.exe /c hcloud ECS DeleteServer',
+    'powershell -Command "& hcloud ECS DeleteServer"',
+    'pwsh -c "hcloud CCE DeleteCluster --cluster_id=x"',
+    'powershell.exe -c "hcloud OBS rm obs://bucket/obj"',
+    'C:\\Windows\\System32\\cmd.exe /c "hcloud ECS CreateServers --flavor=x"',
+  ];
+  for (const cmd of wrapped) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'write', cmd);
+  }
+  // Windows-wrapped read operations are allowed.
+  assert.equal(classifyTextCommand('cmd /c "hcloud ECS ListServers"').decision, 'allow');
+  assert.equal(classifyTextCommand('pwsh -c "hcloud ECS ListServers"').decision, 'allow');
+  // Windows-wrapped credential env dumps are denied.
+  assert.equal(classifyTextCommand('cmd /c "env | grep HW_ACCESS_KEY"').decision, 'deny');
+  assert.equal(classifyTextCommand('powershell -Command "Get-Content ~/.hcloud/config.json"').decision, 'deny');
+  // Non-hcloud Windows wrapper without cloud patterns is allowed.
+  assert.equal(classifyTextCommand('cmd /c "echo hello"').decision, 'allow');
+});

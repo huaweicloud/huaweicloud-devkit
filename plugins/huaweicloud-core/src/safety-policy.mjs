@@ -381,17 +381,29 @@ function splitSimpleCommand(command) {
   );
 }
 
-// Detect shell wrapper patterns (sh -c "cmd", bash -c 'cmd', /bin/sh -c "cmd")
-// and extract the inner command string so wrapped hcloud write commands keep
-// their deny classification (#730 D4-16). Returns the inner command or null.
-// Two alternatives handle double-quoted and single-quoted inner commands
-// separately so nested quotes (e.g. bash -c "sh -c 'hcloud ...'") unwrap
-// correctly across recursive calls.
-const SHELL_WRAPPER_RE = /(?:^|\s|\/)(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c\s+(?:"([^"]+)"|'([^']+)')/i;
+// Detect shell wrapper patterns and extract the inner command string so wrapped
+// hcloud write commands keep their deny classification (#730 D4-16). Returns the
+// inner command or null. Covers Unix shells (bash/sh/zsh/dash -c) and Windows
+// wrappers (cmd /c, powershell -Command/-c, pwsh -c) so the defect source
+// platform (Windows) is also closed (#730 review). Two quote alternatives handle
+// double-quoted and single-quoted inner commands separately so nested quotes
+// (e.g. bash -c "sh -c 'hcloud ...'") unwrap correctly across recursive calls;
+// a trailing unquoted alternative captures bare `cmd /c hcloud ...` forms.
+const SHELL_WRAPPER_RE =
+  /(?:^|\s|[/\\])(?:(?:bash|sh|zsh|dash)(?:\.exe)?\s+-c|cmd(?:\.exe)?\s+\/c|powershell(?:\.exe)?\s+-(?:Command|c)|pwsh(?:\.exe)?\s+-c)\s+(?:"([^"]+)"|'([^']+)'|(\S.*))/i;
 function unwrapShellCommand(text) {
   const match = text.match(SHELL_WRAPPER_RE);
   if (!match) return null;
-  return match[1] !== undefined ? match[1] : match[2];
+  let inner;
+  if (match[1] !== undefined) inner = match[1];
+  else if (match[2] !== undefined) inner = match[2];
+  else inner = match[3] !== undefined ? match[3] : null;
+  // Strip a leading PowerShell call operator ("& hcloud ...") so the inner
+  // hcloud command is classified correctly after unwrapping.
+  if (inner !== null) {
+    inner = inner.replace(/^\s*&\s+/, '');
+  }
+  return inner;
 }
 
 export function classifyTextCommand(command, options = {}) {
