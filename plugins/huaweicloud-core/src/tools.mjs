@@ -1887,6 +1887,32 @@ function serviceCatalog(intent = '') {
       skills: ['huawei-voucher'],
       services: ['Incentive Voucher'],
     },
+    {
+      // Troubleshooting/diagnostic intent — route to explain_error for diagnosis (#766).
+      // English keywords include variants because token matching is exact.
+      keywords: [
+        'error',
+        'errors',
+        'fail',
+        'failed',
+        'failure',
+        'troubleshoot',
+        'troubleshooting',
+        'diagnose',
+        'diagnostic',
+        'diagnosis',
+        'debug',
+        '排障',
+        '诊断',
+        '失败',
+        '报错',
+        '故障',
+        '异常',
+        '出错',
+      ],
+      skills: ['huaweicloud_explain_error'],
+      services: ['Troubleshooting'],
+    },
   ];
   const matched = [];
   const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
@@ -1906,6 +1932,17 @@ function serviceCatalog(intent = '') {
     const idx = recommendedSkills.indexOf('huawei-sandbox');
     recommendedSkills.splice(idx, 1);
     recommendedSkills.unshift('huawei-sandbox');
+  }
+
+  // Troubleshooting/diagnostic intent takes priority over service keyword matches (#766):
+  // "我的ECS启动失败" should lead with huaweicloud_explain_error, not just huawei-ecs.
+  if (recommendedSkills.includes('huaweicloud_explain_error')) {
+    const idx = recommendedSkills.indexOf('huaweicloud_explain_error');
+    recommendedSkills.splice(idx, 1);
+    recommendedSkills.unshift('huaweicloud_explain_error');
+    if (!recommendedServices.includes('Troubleshooting')) {
+      recommendedServices.unshift('Troubleshooting');
+    }
   }
 
   return {
