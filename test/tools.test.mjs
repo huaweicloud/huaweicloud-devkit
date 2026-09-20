@@ -235,6 +235,95 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
   assert.notEqual(result.recommendedSkills[0], 'huawei-sandbox');
 });
 
+test('service_catalog splits mixed CJK+ASCII intents across multiple services (#751 D3-S5)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', {
+    intent: '部署一个带有Redis缓存的Web应用到华为云',
+  });
+  assert.ok(
+    result.recommendedSkills.includes('huawei-sandbox'),
+    `composite web-app deploy intent should hit sandbox, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.ok(
+    result.recommendedSkills.includes('huawei-dds-dcs'),
+    `composite intent with redis cache should hit DCS/DDS, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.ok(
+    result.recommendedServices.includes('DCS'),
+    `composite intent should recommend DCS, got ${JSON.stringify(result.recommendedServices)}`,
+  );
+  assert.equal(result.recommendedSkills[0], 'huawei-sandbox', 'deployment intent should recommend sandbox first');
+});
+
+test('service_catalog matches English keywords embedded in CJK sentences', async () => {
+  const cases = [
+    { intent: '部署一个带有Redis缓存的Web应用到华为云', expect: ['huawei-sandbox', 'huawei-dds-dcs'] },
+    { intent: '使用redis缓存服务存储数据', expect: ['huawei-dds-dcs'] },
+    { intent: '创建ecs服务器实例', expect: ['huawei-ecs'] },
+    { intent: '查看ces监控数据', expect: ['huawei-cloud-eye'] },
+  ];
+  for (const { intent, expect } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    for (const skill of expect) {
+      assert.ok(result.recommendedSkills.includes(skill), `intent="${intent}" should include skill=${skill}`);
+    }
+    assert.notEqual(
+      result.recommendedSkills[0],
+      'Use huaweicloud-core to route intent.',
+      `intent="${intent}" should not fall back to generic routing`,
+    );
+  }
+});
+
+test('service_catalog routes pure CJK intents without regression (#730 EXP-E terms)', async () => {
+  const cases = [
+    { intent: '部署静态网站到华为云', expect: 'huawei-sandbox' },
+    { intent: '领取代金券优惠券', expect: 'huawei-voucher' },
+  ];
+  for (const { intent, expect } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(result.recommendedSkills.includes(expect), `intent="${intent}" should include skill=${expect}`);
+  }
+});
+
+test('service_catalog routes OBS+hosting composite CJK intent to both services (#762 defect 13a)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', {
+    intent: '对象存储+网站托管',
+  });
+  assert.ok(
+    result.recommendedSkills.includes('huawei-obs'),
+    `composite OBS+hosting intent should hit OBS, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.ok(
+    result.recommendedSkills.includes('huawei-sandbox'),
+    `composite OBS+hosting intent should hit sandbox for hosting, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.notEqual(
+    result.recommendedSkills[0],
+    'Use huaweicloud-core to route intent.',
+    'should not fall back to generic routing',
+  );
+});
+
+test('service_catalog routes single CJK ECS intent without fallback (#762 defect 13b)', async () => {
+  const cases = [
+    { intent: '创建 Ubuntu 云服务器', expect: 'huawei-ecs' },
+    { intent: '购买一台弹性云服务器', expect: 'huawei-ecs' },
+    { intent: '查看服务器列表', expect: 'huawei-ecs' },
+  ];
+  for (const { intent, expect } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(
+      result.recommendedSkills.includes(expect),
+      `intent="${intent}" should include skill=${expect}, got ${JSON.stringify(result.recommendedSkills)}`,
+    );
+    assert.notEqual(
+      result.recommendedSkills[0],
+      'Use huaweicloud-core to route intent.',
+      `intent="${intent}" should not fall back to generic routing`,
+    );
+  }
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {

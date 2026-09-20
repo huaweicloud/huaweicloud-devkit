@@ -1785,7 +1785,7 @@ function serviceCatalog(intent = '') {
   const it = String(intent).toLowerCase();
   const routeMap = [
     {
-      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image'],
+      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image', '云服务器', '服务器', '弹性云'],
       skills: ['huawei-ecs'],
       services: ['ECS'],
     },
@@ -1795,7 +1795,7 @@ function serviceCatalog(intent = '') {
       services: ['VPC', 'EIP'],
     },
     {
-      keywords: ['obs', 'bucket', 'storage', 'object', 'static website', 'static site', 'hosting'],
+      keywords: ['obs', 'bucket', 'storage', 'object', 'static website', 'static site', 'hosting', '对象存储', '对象'],
       skills: ['huawei-obs'],
       services: ['OBS'],
     },
@@ -1867,6 +1867,7 @@ function serviceCatalog(intent = '') {
         'preview',
         'hwlink',
         'website',
+        'web',
         'web app',
         'webapp',
         'hosting',
@@ -1889,7 +1890,7 @@ function serviceCatalog(intent = '') {
     },
   ];
   const matched = [];
-  const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
+  const tokens = new Set(Array.from(it.match(/[\u4e00-\u9fff]+|[a-z0-9]+/g) ?? []));
   const cjk = /[\u4e00-\u9fff]/;
   for (const route of routeMap) {
     if (route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw) : tokens.has(kw)))) {

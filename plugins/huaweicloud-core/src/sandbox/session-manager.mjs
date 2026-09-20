@@ -910,12 +910,27 @@ export async function deployCheck(
     `TOTAL=0`,
     ``,
     `TOTAL=$((TOTAL+1))`,
+    `ACTUAL_PORT="${port}"`,
     `if curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null | grep -qE "^(2|3)"; then`,
     `  echo "nginx_serving:PASS (port ${port})"`,
     `  PASS=$((PASS+1))`,
     `else`,
-    `  echo "nginx_serving:FAIL"`,
+    `  # Fallback: deploy_nginx may have auto-incremented the port (basePort occupied).`,
+    `  # Probe nginx's actual listen port via ss and retry.`,
+    `  DETECTED_PORT=$(ss -tlnp 2>/dev/null | grep -i nginx | grep -oP ':\\K\\d+(?=\\s)' | head -1)`,
+    `  if [ -n "$DETECTED_PORT" ] && [ "$DETECTED_PORT" != "${port}" ]; then`,
+    `    if curl -s -o /dev/null -w "%{http_code}" http://localhost:\${DETECTED_PORT} 2>/dev/null | grep -qE "^(2|3)"; then`,
+    `      ACTUAL_PORT="$DETECTED_PORT"`,
+    `      echo "nginx_serving:PASS (port \${DETECTED_PORT}, auto-detected — requested port ${port} was auto-incremented)"`,
+    `      PASS=$((PASS+1))`,
+    `    else`,
+    `      echo "nginx_serving:FAIL (no nginx listen port responded with 2xx/3xx)"`,
+    `    fi`,
+    `  else`,
+    `    echo "nginx_serving:FAIL (no nginx listen port responded with 2xx/3xx)"`,
+    `  fi`,
     `fi`,
+    `echo "ACTUAL_PORT:$ACTUAL_PORT"`,
     ``,
     `TOTAL=$((TOTAL+1))`,
     `if [ -d "${outputPath}" ] && ls -A "${outputPath}" 2>/dev/null | grep -q .; then`,
@@ -929,7 +944,7 @@ export async function deployCheck(
     `FINGERPRINT_FILE="${outputPath}/.deploy_fingerprint"`,
     `FINGERPRINT_EXPECTED=$(cat "$FINGERPRINT_FILE" 2>/dev/null)`,
     `if [ -n "$FINGERPRINT_EXPECTED" ]; then`,
-    `  FINGERPRINT_ACTUAL=$(curl -s http://localhost:${port}/.deploy_fingerprint 2>/dev/null)`,
+    `  FINGERPRINT_ACTUAL=$(curl -s http://localhost:\${ACTUAL_PORT}/.deploy_fingerprint 2>/dev/null)`,
     `  if [ "$FINGERPRINT_EXPECTED" = "$FINGERPRINT_ACTUAL" ]; then`,
     `    echo "content_verified:PASS"`,
     `    PASS=$((PASS+1))`,
@@ -952,7 +967,7 @@ export async function deployCheck(
     `TOTAL=$((TOTAL+1))`,
     `TUNNEL_ID=$(devbridge list -j 2>/dev/null | grep -oP '"tunnelId":\\s*"\\K[^"]+' | head -1)`,
     `if [ -n "$TUNNEL_ID" ]; then`,
-    `  TUNNEL_URL="https://\${TUNNEL_ID}-${port}.cn-north-4-bridge.myhuaweicloud.com"`,
+    `  TUNNEL_URL="https://\${TUNNEL_ID}-\${ACTUAL_PORT}.cn-north-4-bridge.myhuaweicloud.com"`,
     `else`,
     `  TUNNEL_URL=""`,
     `fi`,
@@ -1011,7 +1026,10 @@ fi
     .join('\n');
 
   const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
-  const stdout = String(result.stdout || '');
+  return parseDeployCheckOutput(String(result.stdout || ''), port, isCrossPlatform);
+}
+
+export function parseDeployCheckOutput(stdout, port, isCrossPlatform) {
   // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
   // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
   // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
@@ -1028,6 +1046,9 @@ fi
   }
   const scoreMatch = cleanStdout.match(/SCORE:(\d+)\/(\d+)/);
   const tunnelMatch = cleanStdout.match(TUNNEL_URL_PATTERN);
+  const actualPortMatch = cleanStdout.match(/^ACTUAL_PORT:(.+)$/m);
+  const detectedPort = actualPortMatch ? actualPortMatch[1].trim() : undefined;
+  const portShifted = detectedPort && detectedPort !== String(port);
   const complete = /VERDICT:COMPLETE/.test(cleanStdout);
 
   const missing = [];
@@ -1062,11 +1083,15 @@ fi
     checks,
     score: scoreMatch ? { pass: parseInt(scoreMatch[1], 10), total: parseInt(scoreMatch[2], 10) } : null,
     publicUrl: tunnelMatch ? tunnelMatch[1] : undefined,
+    detectedPort: portShifted ? detectedPort : undefined,
+    portWarning: portShifted
+      ? `Requested port ${port} was auto-incremented to ${detectedPort} by deploy_nginx. Use ${detectedPort} for DevBridge tunnel.`
+      : undefined,
     missingSteps: missing.length > 0 ? missing.join(', ') : undefined,
     parseWarning,
     rawOutput: parseWarning ? stdout.trim() : undefined,
     nextStep: nextStepValue,
-    remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(port) : undefined,
+    remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(detectedPort || port) : undefined,
   };
 }
 
