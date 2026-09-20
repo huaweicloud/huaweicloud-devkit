@@ -90,6 +90,13 @@ export async function dispatch(method, params, opts = {}) {
       err.code = -32602;
       throw err;
     }
+    // #730 D9-2 (spec v2): unknown tool names must surface -32602 (Invalid params),
+    // not callTool()'s default "Unknown tool" error, which is serialized as -32603.
+    if (!TOOL_DEFINITIONS.some((tool) => tool.name === params.name)) {
+      const err = new Error('Invalid params: unknown tool.');
+      err.code = -32602;
+      throw err;
+    }
     const result = await callTool(params.name, params.arguments || {});
     const decorated = _decorateResult(sessionId, params.name, result);
     return {
