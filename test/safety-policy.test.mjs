@@ -138,6 +138,45 @@ test('classifyTextCommand blocks credential env-var references incl. HW_ prefix 
   assert.equal(classifyTextCommand('env | grep HUAWEICLOUD').decision, 'deny');
 });
 
+test('classifyTextCommand blocks HUAWEICLOUD_SECRET_ACCESS_KEY env-var references (#770 D4-2)', () => {
+  // AWS-style credential env names (HUAWEICLOUD_SECRET_ACCESS_KEY) previously
+  // fell through the SECRET_KEY alternation and returned allow.
+  const bypasses = [
+    'echo $HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'echo ${HUAWEICLOUD_SECRET_ACCESS_KEY}',
+    'printenv HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'grep $HUAWEICLOUD_SECRET_ACCESS_KEY ./file',
+    'echo $HW_SECRET_ACCESS_KEY',
+  ];
+  for (const cmd of bypasses) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'credential', cmd);
+  }
+  // Literal-name references (single-quoted / backslash-escaped) stay allowed.
+  assert.equal(classifyTextCommand("echo '$HUAWEICLOUD_SECRET_ACCESS_KEY'").decision, 'allow');
+  assert.equal(classifyTextCommand('echo \\$HUAWEICLOUD_SECRET_ACCESS_KEY').decision, 'allow');
+  // Non-credential HUAWEICLOUD_* variables are not blocked.
+  assert.equal(classifyTextCommand('echo $HUAWEICLOUD_SDK_CACHE').decision, 'allow');
+});
+
+test('classifyTextCommand blocks KMS ShowSecret retrieval (#770 D4-3)', () => {
+  const blocked = [
+    'hcloud KMS ShowSecret',
+    'hcloud KMS ShowSecret --key_id x',
+    'hcloud DEW ShowSecret --secret_name prod/db',
+    'ShowSecret --secret_name prod/db',
+  ];
+  for (const cmd of blocked) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'secret', cmd);
+  }
+  // Plain Show* read operations that are not secret retrieval keep working.
+  assert.equal(classifyTextCommand('hcloud KMS ShowKey').decision, 'allow');
+  assert.equal(classifyTextCommand('hcloud KMS ListSecrets').decision, 'allow');
+});
+
 test('classifyHcloudArgs unwraps shell-wrapped hcloud write commands (#650 D4-16)', () => {
   const wrapped = [
     ['bash', '-c', 'hcloud ECS CreateServers --flavor=x'],
