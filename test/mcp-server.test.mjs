@@ -209,3 +209,19 @@ test('dispatch returns -32602 for tools/call with missing name (#730 D9-2)', asy
     (err) => err.code === -32602 && /name/.test(err.message),
   );
 });
+
+test('dispatch returns -32602 for tools/call with unknown tool name (#730 D9-2 scenario C)', async () => {
+  const { dispatch } = await import('../plugins/huaweicloud-core/src/mcp-protocol.mjs');
+
+  // Unknown tool name (not in TOOL_DEFINITIONS) → -32602, not callTool() default / -32603
+  await assert.rejects(
+    dispatch('tools/call', { name: 'not_exist_tool' }),
+    (err) => err.code === -32602 && /Invalid params/.test(err.message),
+  );
+
+  // Known-bogus huaweicloud-prefixed name → -32602
+  await assert.rejects(
+    dispatch('tools/call', { name: 'huaweicloud_nonexistent' }),
+    (err) => err.code === -32602 && /Invalid params/.test(err.message),
+  );
+});
