@@ -237,7 +237,7 @@ export function classifyHcloudArgs(args, options = {}) {
     };
   }
 
-  if (/secret[_-]?string|secret[_-]?binary|showsecretversion|getsecretvalue/i.test(joined)) {
+  if (/secret[_-]?string|secret[_-]?binary|showsecret|showsecretversion|getsecretvalue/i.test(joined)) {
     return {
       decision: 'deny',
       risk: 'secret',
@@ -407,16 +407,20 @@ export function classifyTextCommand(command, options = {}) {
 
   // Credential variable references bypass the env-command gate above: HW_ is
   // the plugin's own documented credential prefix (HW_ACCESS_KEY/HW_SECRET_KEY/
-  // HW_SECURITY_TOKEN), and `echo $HW_SECRET_KEY` / `printenv HW_ACCESS_KEY`
-  // previously fell through to allow (#650 D4-2).
+  // HW_SECURITY_TOKEN), cloud environments also expose the AWS-style
+  // HUAWEICLOUD_SECRET_ACCESS_KEY name, and `echo $HW_SECRET_KEY` /
+  // `printenv HW_ACCESS_KEY` / `echo $HUAWEICLOUD_SECRET_ACCESS_KEY` previously
+  // fell through to allow (#650 D4-2, #770 D4-2).
   //
   // The negative lookbehind exempts literal-NAME references — backslash-escaped
   // (`\$HW_*`) or single-quoted (`'$HW_*'`, which the shell never expands) —
   // while unescaped `$HW_*` is a potential expansion/dump regardless of the
   // command. No command-name whitelist, so no false negative (#650 review).
   if (
-    /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text) ||
-    /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text)
+    /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text) ||
+    /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(
+      text,
+    )
   ) {
     return {
       decision: 'deny',
@@ -429,7 +433,7 @@ export function classifyTextCommand(command, options = {}) {
     return classifyHcloudArgs(splitSimpleCommand(text), { ...options, rawCommand: text });
   }
 
-  if (/ShowSecretVersion|GetSecretValue|secret_string|secret_binary/i.test(text)) {
+  if (/ShowSecretVersion|ShowSecret|GetSecretValue|secret_string|secret_binary/i.test(text)) {
     return {
       decision: 'deny',
       risk: 'secret',
