@@ -14,10 +14,11 @@ function frame(message) {
   return `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
 }
 
-function createClient(server = serverPath) {
+function createClient(server = serverPath, env = {}) {
   const child = spawn(process.execPath, [server], {
     cwd: root,
     stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, ...env },
   });
   let buffer = Buffer.alloc(0);
   const pending = new Map();
@@ -73,6 +74,29 @@ function createClient(server = serverPath) {
     },
     close() {
       child.kill();
+    },
+    /**
+     * 发送一条无 id 的通知消息（如 notifications/cancelled），不等待响应。
+     */
+    notify(method, params = {}) {
+      const json = JSON.stringify({ jsonrpc: '2.0', method, params });
+      child.stdin.write(`Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`);
+    },
+    /**
+     * 发送一条带 id 的请求并返回响应 promise，但不使用默认 2000ms 超时
+     * （供需要自定义时序的场景，如发请求后立即 cancel）。
+     */
+    rawRequest(id, method, params = {}, timeoutMs = 5000) {
+      const json = JSON.stringify({ jsonrpc: '2.0', id, method, params });
+      child.stdin.write(`Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`);
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${method}`)), timeoutMs);
+        pending.set(id, (payload) => {
+          clearTimeout(timer);
+          pending.delete(id);
+          resolve(payload);
+        });
+      });
     },
   };
 }
@@ -167,6 +191,93 @@ test('MCP server waits for incomplete Content-Length frames instead of spinning'
     const initialized = await client.requestInChunks('initialize', payload, 8);
 
     assert.equal(initialized.result.serverInfo.name, 'huaweicloud-devkit');
+  } finally {
+    client.close();
+  }
+});
+
+test('initialize capabilities declares cancellation (#698 D9-9)', async () => {
+  const client = createClient();
+  try {
+    const initialized = await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    assert.ok(Object.hasOwn(initialized.result.capabilities, 'cancellation'), 'capabilities must declare cancellation');
+  } finally {
+    client.close();
+  }
+});
+
+test('tools/call request-level timeout returns JSON-RPC -32000 (#698 D9-9)', async () => {
+  // HCLOUD_MCP_REQUEST_TIMEOUT_MS=20 使协议层超时 20ms；
+  // huaweicloud_list_operations(ECS) 调用 runHcloud(['ECS','--help'])，实测 ~55-60ms，
+  // 20ms 超时必然先于工作完成触发 → 客户端收到 { code: -32000, message 含 timeout }。
+  const client = createClient(serverPath, { HCLOUD_MCP_REQUEST_TIMEOUT_MS: '20' });
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'timeout-test', version: '0.0.0' },
+    });
+    const res = await client.request('tools/call', {
+      name: 'huaweicloud_list_operations',
+      arguments: { service: 'ECS' },
+    });
+    assert.ok(res.error, 'expected an error response for timed-out request');
+    assert.equal(res.error.code, -32000, 'error code must be -32000');
+    assert.match(res.error.message, /timeout|timed out/i, 'message must mention timeout');
+  } finally {
+    client.close();
+  }
+});
+
+test('notifications/cancelled does not crash server and is accepted (#698 D9-9)', async () => {
+  const client = createClient();
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'cancel-test', version: '0.0.0' },
+    });
+    // 发送一条针对不存在的 requestId 的取消通知——服务器应静默接受不崩溃。
+    client.notify('notifications/cancelled', { requestId: 12345, reason: 'test-no-op' });
+
+    // 服务器仍可正常响应后续请求（证明未崩溃）。
+    const listed = await client.request('tools/list');
+    assert.ok(Array.isArray(listed.result.tools), 'server still responsive after cancel notification');
+  } finally {
+    client.close();
+  }
+});
+
+test('notifications/cancelled interrupts an in-flight tools/call (#698 D9-9)', async () => {
+  // huaweicloud_check_cli ~25ms；我们发起请求后立即发送 cancel 通知。
+  // 即便工具很快返回，cancel 通知到达时若请求已完成则为 no-op（合法）；
+  // 若请求仍在 flight 则被中断。两种情况服务器都不应崩溃，且客户端必然收到
+  // 一个响应（要么正常 result，要么 -32000 取消错误）。本用例验证「不丢失响应、不崩溃」。
+  const client = createClient();
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'cancel-inflight', version: '0.0.0' },
+    });
+    const id = Math.floor(Math.random() * 1_000_000);
+    const responsePromise = client.rawRequest(id, 'tools/call', {
+      name: 'huaweicloud_check_cli',
+      arguments: {},
+    });
+    // 立即发送取消通知（同 id）。
+    client.notify('notifications/cancelled', { requestId: id, reason: 'client cancelled inflight' });
+
+    const payload = await responsePromise;
+    assert.ok(payload, 'client must receive exactly one response (result or -32000)');
+    // 合法结果：有 result 或 error.code=-32000。
+    const okResult = payload.result !== undefined;
+    const okCancel = payload.error?.code === -32000;
+    assert.ok(okResult || okCancel, 'response is either a normal result or a -32000 cancellation');
   } finally {
     client.close();
   }

@@ -5,7 +5,14 @@ import { resolve, dirname } from 'node:path';
 import { platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { dispatch } from './mcp-protocol.mjs';
+import {
+  dispatch,
+  abortRequest,
+  _registerRequest,
+  _unregisterRequest,
+  RequestTimeoutError,
+  REQUEST_TIMEOUT_ERROR_CODE,
+} from './mcp-protocol.mjs';
 import { DEFAULT_PORT, DEFAULT_HOST } from './mcp-server-remote.mjs';
 import { getCachedUpdateInfo, readInstalledVersion } from './update-check.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
@@ -154,22 +161,45 @@ function runStdioServer() {
   }
 
   async function handleMessage(message) {
+    // 通知类消息（无 id）：notifications/initialized 静默；
+    // notifications/cancelled 中断对应 id 的进行中请求。
     if (!Object.hasOwn(message, 'id')) {
       if (message.method === 'notifications/initialized') return;
+      if (message.method === 'notifications/cancelled') {
+        const requestId = message.params?.requestId;
+        const reason = message.params?.reason || 'Client cancelled';
+        if (requestId !== undefined && requestId !== null) {
+          abortRequest(requestId, reason);
+        }
+        return;
+      }
       return;
     }
+    // 为每个请求注册 AbortController，使 notifications/cancelled 能中断它。
+    const controller = new AbortController();
+    _registerRequest(message.id, controller);
     try {
-      const result = await dispatch(message.method, message.params || {}, { sessionId: 'stdin' });
+      const result = await dispatch(message.method, message.params || {}, {
+        sessionId: 'stdin',
+        signal: controller.signal,
+      });
       writeMessage({ jsonrpc: '2.0', id: message.id, result });
     } catch (error) {
+      // 请求级超时/取消返回 { code: -32000, message 含 timeout }（D9-9）。
+      const isTimeoutLike =
+        error instanceof RequestTimeoutError ||
+        error?.code === REQUEST_TIMEOUT_ERROR_CODE ||
+        error?.name === 'RequestTimeoutError';
       writeMessage({
         jsonrpc: '2.0',
         id: message.id,
         error: {
-          code: Number.isSafeInteger(error.code) ? error.code : -32603,
+          code: isTimeoutLike ? REQUEST_TIMEOUT_ERROR_CODE : Number.isSafeInteger(error.code) ? error.code : -32603,
           message: error.message,
         },
       });
+    } finally {
+      _unregisterRequest(message.id);
     }
   }
 

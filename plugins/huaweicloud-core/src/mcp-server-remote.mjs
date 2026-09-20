@@ -3,7 +3,14 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 
-import { dispatch } from './mcp-protocol.mjs';
+import {
+  dispatch,
+  abortRequest,
+  _registerRequest,
+  _unregisterRequest,
+  RequestTimeoutError,
+  REQUEST_TIMEOUT_ERROR_CODE,
+} from './mcp-protocol.mjs';
 
 export const DEFAULT_PORT = 9528;
 export const DEFAULT_HOST = '127.0.0.1';
@@ -42,26 +49,50 @@ export async function startRemoteServer({ port = DEFAULT_PORT, host = DEFAULT_HO
     }
 
     if (!Object.hasOwn(message, 'id')) {
-      // 通知类消息（含 notifications/initialized）无需响应体，HTTP 层直接 202。
+      // 通知类消息无需响应体，HTTP 层直接 202。
+      // notifications/cancelled：中断对应 requestId 的进行中请求。
+      if (message.method === 'notifications/cancelled') {
+        const requestId = message.params?.requestId;
+        const reason = message.params?.reason || 'Client cancelled';
+        if (requestId !== undefined && requestId !== null) {
+          abortRequest(requestId, reason);
+        }
+      }
+      // notifications/initialized 及其它通知同样 202，无需响应体。
       res.writeHead(202);
       res.end();
       return;
     }
 
     let response;
+    const controller = new AbortController();
+    _registerRequest(message.id, controller);
     try {
       const sessionId = (req.headers['mcp-session-id'] || '').trim() || 'default';
-      const result = await dispatch(message.method, message.params || {}, { sessionId });
+      const result = await dispatch(message.method, message.params || {}, {
+        sessionId,
+        signal: controller.signal,
+      });
       response = { jsonrpc: '2.0', id: message.id, result };
       if (message.method === 'initialize') {
         res.setHeader('MCP-Protocol-Version', result.protocolVersion || '2024-11-05');
       }
     } catch (error) {
+      // 请求级超时/取消返回 { code: -32000, message 含 timeout }（D9-9）。
+      const isTimeoutLike =
+        error instanceof RequestTimeoutError ||
+        error?.code === REQUEST_TIMEOUT_ERROR_CODE ||
+        error?.name === 'RequestTimeoutError';
       response = {
         jsonrpc: '2.0',
         id: message.id,
-        error: { code: Number.isSafeInteger(error.code) ? error.code : -32603, message: error.message },
+        error: {
+          code: isTimeoutLike ? REQUEST_TIMEOUT_ERROR_CODE : Number.isSafeInteger(error.code) ? error.code : -32603,
+          message: error.message,
+        },
       };
+    } finally {
+      _unregisterRequest(message.id);
     }
 
     writeMCPResponse(res, response, req.headers.accept || '');
