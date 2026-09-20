@@ -39,7 +39,96 @@ export function clearProxyConfig() {
   return true;
 }
 
-function shouldBypassProxy(hostname, noProxyList) {
+function ipv4ToInt(ip) {
+  const parts = ip.split('.');
+  if (parts.length !== 4) return null;
+  let n = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const v = Number(part);
+    if (v > 255) return null;
+    n = n * 256 + v;
+  }
+  return BigInt(n);
+}
+
+function ipv6ToBigInt(ip) {
+  let addr = ip.toLowerCase();
+  if (addr === '::') addr = '0:0:0:0:0:0:0:0';
+  const [head, tail] = addr.split('::');
+  const headGroups = head ? head.split(':').filter(Boolean) : [];
+  const tailGroups = tail ? tail.split(':').filter(Boolean) : [];
+  if (addr.includes('::')) {
+    const missing = 8 - headGroups.length - tailGroups.length;
+    if (missing < 0) return null;
+    const groups = [...headGroups, ...Array(missing).fill('0'), ...tailGroups];
+    if (groups.length !== 8) return null;
+    return groupsToBigInt(groups);
+  }
+  const groups = head ? head.split(':') : [];
+  if (groups.length !== 8) return null;
+  return groupsToBigInt(groups);
+}
+
+function groupsToBigInt(groups) {
+  let n = 0n;
+  for (const g of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(g)) return null;
+    n = (n << 16n) | BigInt(parseInt(g, 16));
+  }
+  return n;
+}
+
+function ipv4MappedV6ToBigInt(ip) {
+  // ::ffff:a.b.c.d — IPv4-mapped IPv6. Compare against IPv4 CIDR too.
+  const m = ip.match(/^::ffff:([0-9.]+)$/i);
+  if (!m) return null;
+  const v4 = ipv4ToInt(m[1]);
+  if (v4 === null) return null;
+  return v4;
+}
+
+function parseCidr(pattern) {
+  const slash = pattern.lastIndexOf('/');
+  if (slash < 0) return null;
+  const ipPart = pattern.slice(0, slash);
+  const maskPart = pattern.slice(slash + 1);
+  if (!/^\d{1,3}$/.test(maskPart)) return null;
+  const prefix = Number(maskPart);
+  if (ipPart.includes(':')) {
+    const mapped = ipv4MappedV6ToBigInt(ipPart);
+    if (mapped !== null) {
+      if (prefix < 0 || prefix > 32) return null;
+      const mask = prefix === 0 ? 0n : ((1n << 32n) - 1n) ^ ((1n << (32n - BigInt(prefix))) - 1n);
+      return { bits: 32n, base: mapped, mask };
+    }
+    const base = ipv6ToBigInt(ipPart);
+    if (base === null) return null;
+    if (prefix < 0 || prefix > 128) return null;
+    const mask = prefix === 0 ? 0n : ((1n << 128n) - 1n) ^ ((1n << (128n - BigInt(prefix))) - 1n);
+    return { bits: 128n, base, mask };
+  }
+  const base = ipv4ToInt(ipPart);
+  if (base === null) return null;
+  if (prefix < 0 || prefix > 32) return null;
+  const mask = prefix === 0 ? 0n : ((1n << 32n) - 1n) ^ ((1n << (32n - BigInt(prefix))) - 1n);
+  return { bits: 32n, base, mask };
+}
+
+function ipInCidr(hostname, cidr) {
+  if (cidr.bits === 32n) {
+    const v4 = ipv4ToInt(hostname);
+    if (v4 !== null) return (v4 & cidr.mask) === (cidr.base & cidr.mask);
+    const mapped = ipv4MappedV6ToBigInt(hostname);
+    if (mapped !== null) return (mapped & cidr.mask) === (cidr.base & cidr.mask);
+    return false;
+  }
+  const v6 = ipv6ToBigInt(hostname);
+  if (v6 !== null) return (v6 & cidr.mask) === (cidr.base & cidr.mask);
+  return false;
+}
+
+export function shouldBypassProxy(hostname, noProxyList) {
   if (!noProxyList.length) return false;
   const lower = hostname.toLowerCase();
   for (const pattern of noProxyList) {
@@ -47,6 +136,10 @@ function shouldBypassProxy(hostname, noProxyList) {
     if (!p) continue;
     if (p === lower) return true;
     if (p === '*') return true;
+    if (p.includes('/')) {
+      const cidr = parseCidr(p);
+      if (cidr && ipInCidr(lower, cidr)) return true;
+    }
     if (p.startsWith('*.')) {
       const domain = p.slice(1);
       if (lower.endsWith(domain) || lower === p.slice(2)) return true;
