@@ -235,6 +235,47 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
   assert.notEqual(result.recommendedSkills[0], 'huawei-sandbox');
 });
 
+test('service_catalog routes troubleshooting intent to explain_error (#766)', async () => {
+  // Acceptance case: "我的ECS启动失败帮我分析原因" must recommend explain_error + Troubleshooting.
+  const zh = await callTool('huaweicloud_service_catalog', { intent: '我的ECS启动失败帮我分析原因' });
+  assert.ok(
+    zh.recommendedSkills.includes('huaweicloud_explain_error'),
+    'Chinese troubleshooting intent should route to huaweicloud_explain_error',
+  );
+  assert.equal(
+    zh.recommendedSkills[0],
+    'huaweicloud_explain_error',
+    'explain_error should be the top recommendation for troubleshooting intent',
+  );
+  assert.ok(
+    zh.recommendedServices.includes('Troubleshooting'),
+    'troubleshooting intent should include Troubleshooting in recommendedServices',
+  );
+
+  // English troubleshooting intent with a service name should prioritize explain_error.
+  const en = await callTool('huaweicloud_service_catalog', { intent: 'ECS startup failed help me diagnose' });
+  assert.equal(en.recommendedSkills[0], 'huaweicloud_explain_error');
+  assert.ok(en.recommendedSkills.includes('huawei-ecs'), 'service keyword match should still appear');
+  assert.ok(en.recommendedServices.includes('Troubleshooting'));
+
+  // English keyword variants
+  for (const intent of ['troubleshoot my deployment', 'diagnose the APIG error', 'debug a failure']) {
+    const r = await callTool('huaweicloud_service_catalog', { intent });
+    assert.equal(
+      r.recommendedSkills[0],
+      'huaweicloud_explain_error',
+      `expected explain_error first for intent: ${intent}`,
+    );
+  }
+});
+
+test('service_catalog does not misroute plain intent as troubleshooting (#766)', async () => {
+  // Intent without a diagnostic keyword must not recommend explain_error.
+  const r = await callTool('huaweicloud_service_catalog', { intent: 'create an ECS instance in cn-north-4' });
+  assert.ok(!r.recommendedSkills.includes('huaweicloud_explain_error'));
+  assert.ok(r.recommendedSkills.includes('huawei-ecs'));
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
