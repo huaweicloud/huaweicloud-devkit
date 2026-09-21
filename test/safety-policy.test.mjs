@@ -104,7 +104,6 @@ test('redactSecrets redacts JSON-format quoted "token" key (#694)', () => {
   assert.match(out, /"token": "<redacted>"/);
 });
 
-
 test('redactSecrets redacts lowercase ak:/sk: colon-separated patterns (#694 D2-4)', () => {
   // Colon separator must be preserved (not rewritten to =).
   const out = redactSecrets('ak:mykey sk:mysecret');
