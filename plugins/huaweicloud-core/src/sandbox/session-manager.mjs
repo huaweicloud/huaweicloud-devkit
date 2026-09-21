@@ -887,6 +887,8 @@ export async function deployCheck(
   { port, project, outputDir, frameworkType },
   username = 'root',
   timeoutMs = 30000,
+  _execOneShot = execOneShot,
+  _retryDelay = (ms) => new Promise((r) => setTimeout(r, ms)),
 ) {
   if (!workspaceId) {
     throw new Error('sandbox deploy check: workspace_id is required.');
@@ -1000,8 +1002,10 @@ fi
     .join('\n');
 
   let lastParsed = null;
+  let actualAttempts = 0;
   for (let attempt = 0; attempt < DEPLOY_CHECK_MAX_RETRIES; attempt++) {
-    const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
+    actualAttempts = attempt + 1;
+    const result = await _execOneShot(workspaceId, checkScript, username, timeoutMs);
     const stdout = String(result.stdout || '');
     // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
     // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
@@ -1053,10 +1057,14 @@ fi
       invalidUrlWarning,
     };
 
-    // If complete or no retryable failures, break out of retry loop
+    // If complete or no retryable failures, break out of retry loop.
+    // Do NOT retry tunnel_url_accessible when devbridge_tunnel itself is FAIL —
+    // without an active tunnel, the URL accessibility check will always fail,
+    // so retrying wastes ~15s and 3 full script executions for nothing.
+    const devbridgeFailed = missing.includes('devbridge_tunnel');
     const hasRetryableFailure =
       !complete &&
-      (missing.includes('nginx_serving') || missing.includes('tunnel_url_accessible')) &&
+      (missing.includes('nginx_serving') || (missing.includes('tunnel_url_accessible') && !devbridgeFailed)) &&
       attempt < DEPLOY_CHECK_MAX_RETRIES - 1;
 
     if (!hasRetryableFailure) break;
@@ -1068,13 +1076,13 @@ fi
     uploadLog(
       `deployCheck: attempt ${attempt + 1}/${DEPLOY_CHECK_MAX_RETRIES} incomplete \u2014 retrying in ${DEPLOY_CHECK_RETRY_INTERVAL_MS}ms (${retryReason})`,
     );
-    await new Promise((r) => setTimeout(r, DEPLOY_CHECK_RETRY_INTERVAL_MS));
+    await _retryDelay(DEPLOY_CHECK_RETRY_INTERVAL_MS);
   }
 
   const { stdout, checks, scoreMatch, complete, missing, parseWarning, publicUrl, invalidUrlWarning } = lastParsed;
 
   // Build degradation warning when deploy_check is incomplete
-  const degradationWarning = !complete ? buildDeployCheckDegradation(missing, checks, publicUrl) : undefined;
+  const degradationWarning = !complete ? buildDeployCheckDegradation(missing, publicUrl) : undefined;
 
   return {
     ok: true,
@@ -1087,7 +1095,7 @@ fi
     parseWarning,
     invalidUrlWarning,
     degradationWarning,
-    retryAttempts: DEPLOY_CHECK_MAX_RETRIES,
+    retryAttempts: actualAttempts,
     rawOutput: parseWarning ? stdout.trim() : undefined,
     nextStep: !complete
       ? missing.includes('devbridge_tunnel') || missing.includes('tunnel_url_accessible')
@@ -1103,7 +1111,7 @@ fi
   };
 }
 
-function buildDeployCheckDegradation(missing, checks, publicUrl) {
+export function buildDeployCheckDegradation(missing, publicUrl) {
   const parts = [];
   if (missing.includes('nginx_serving')) {
     parts.push(
