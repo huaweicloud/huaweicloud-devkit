@@ -866,11 +866,29 @@ fi`;
   };
 }
 
+const DEPLOY_CHECK_MAX_RETRIES = 3;
+const DEPLOY_CHECK_RETRY_INTERVAL_MS = 5000;
+
+export function isValidPublicUrl(url) {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url);
+    if (!parsed.protocol || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) return false;
+    const host = parsed.hostname;
+    if (!host || host.startsWith('-') || host.includes('--')) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function deployCheck(
   workspaceId,
   { port, project, outputDir, frameworkType },
   username = 'root',
   timeoutMs = 30000,
+  _execOneShot = execOneShot,
+  _retryDelay = (ms) => new Promise((r) => setTimeout(r, ms)),
 ) {
   if (!workspaceId) {
     throw new Error('sandbox deploy check: workspace_id is required.');
@@ -927,8 +945,9 @@ export async function deployCheck(
     ``,
     `TOTAL=$((TOTAL+1))`,
     `TUNNEL_ID=$(devbridge list -j 2>/dev/null | grep -oP '"tunnelId":\\s*"\\K[^"]+' | head -1)`,
-    `TUNNEL_URL="https://\${TUNNEL_ID}-${port}.cn-north-4-bridge.myhuaweicloud.com"`,
-    `if [ -n "$TUNNEL_ID" ] && [ -n "$TUNNEL_URL" ]; then`,
+    `TUNNEL_URL=""`,
+    `if [ -n "$TUNNEL_ID" ]; then`,
+    `  TUNNEL_URL="https://\${TUNNEL_ID}-${port}.cn-north-4-bridge.myhuaweicloud.com"`,
     `  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
     `  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then`,
     `    echo "tunnel_url_accessible:PASS ($TUNNEL_URL -> $HTTP_CODE)"`,
@@ -937,7 +956,7 @@ export async function deployCheck(
     `    echo "tunnel_url_accessible:FAIL ($TUNNEL_URL -> HTTP $HTTP_CODE)"`,
     `  fi`,
     `else`,
-    `  echo "tunnel_url_accessible:FAIL (no tunnel URL)"`,
+    `  echo "tunnel_url_accessible:FAIL (no DevBridge tunnel established — run devbridge create first)"`,
     `fi`,
     ``,
     `${`
@@ -982,38 +1001,88 @@ fi
     .filter(Boolean)
     .join('\n');
 
-  const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
-  const stdout = String(result.stdout || '');
-  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
-  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
-  // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
-  const ESC = '\x1b';
-  const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
-  const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
-  const cleanStdout = stdout.replace(csiRe, '').replace(oscRe, '');
-  const checks = {};
-  const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
-  for (const line of lines) {
-    const trimmed = line.trim();
-    const m = trimmed.match(/^(\w+):(PASS|FAIL|SKIP)\b(.*)/);
-    if (m) checks[m[1]] = { status: m[2], detail: (m[3] || '').trim() };
-  }
-  const scoreMatch = cleanStdout.match(/SCORE:(\d+)\/(\d+)/);
-  const tunnelMatch = cleanStdout.match(/TUNNEL_URL:(https:\/\/[^\s]+)/);
-  const complete = /VERDICT:COMPLETE/.test(cleanStdout);
-
-  const missing = [];
-  if (!complete) {
-    for (const [key, val] of Object.entries(checks)) {
-      if (val.status === 'FAIL') missing.push(key);
+  let lastParsed = null;
+  let actualAttempts = 0;
+  for (let attempt = 0; attempt < DEPLOY_CHECK_MAX_RETRIES; attempt++) {
+    actualAttempts = attempt + 1;
+    const result = await _execOneShot(workspaceId, checkScript, username, timeoutMs);
+    const stdout = String(result.stdout || '');
+    // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
+    // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
+    // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
+    const ESC = '\x1b';
+    const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
+    const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
+    const cleanStdout = stdout.replace(csiRe, '').replace(oscRe);
+    const checks = {};
+    const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
+    for (const line of lines) {
+      const trimmed = line.trim();
+      const m = trimmed.match(/^(\w+):(PASS|FAIL|SKIP)\b(.*)/);
+      if (m) checks[m[1]] = { status: m[2], detail: (m[3] || '').trim() };
     }
+    const scoreMatch = cleanStdout.match(/SCORE:(\d+)\/(\d+)/);
+    const tunnelMatch = cleanStdout.match(/TUNNEL_URL:(https:\/\/[^\s]+)/);
+    const complete = /VERDICT:COMPLETE/.test(cleanStdout);
+
+    const missing = [];
+    if (!complete) {
+      for (const [key, val] of Object.entries(checks)) {
+        if (val.status === 'FAIL') missing.push(key);
+      }
+    }
+
+    // If checks is empty but score was found, parsing failed — return raw output for debugging
+    const parseWarning =
+      Object.keys(checks).length === 0 && scoreMatch
+        ? 'Check output parsing failed — individual check results could not be extracted. See rawOutput for details.'
+        : undefined;
+
+    // Validate publicUrl: reject URLs with invalid hosts (e.g. empty tunnel ID producing https://-port...)
+    const rawPublicUrl = tunnelMatch ? tunnelMatch[1] : undefined;
+    const publicUrl = isValidPublicUrl(rawPublicUrl) ? rawPublicUrl : undefined;
+    const invalidUrlWarning =
+      rawPublicUrl && !publicUrl
+        ? `Extracted tunnel URL "${rawPublicUrl}" has an invalid host — tunnel may not be established. publicUrl set to undefined to avoid returning an unreachable URL.`
+        : undefined;
+
+    lastParsed = {
+      stdout,
+      checks,
+      scoreMatch,
+      complete,
+      missing,
+      parseWarning,
+      publicUrl,
+      invalidUrlWarning,
+    };
+
+    // If complete or no retryable failures, break out of retry loop.
+    // Do NOT retry tunnel_url_accessible when devbridge_tunnel itself is FAIL —
+    // without an active tunnel, the URL accessibility check will always fail,
+    // so retrying wastes ~15s and 3 full script executions for nothing.
+    const devbridgeFailed = missing.includes('devbridge_tunnel');
+    const hasRetryableFailure =
+      !complete &&
+      (missing.includes('nginx_serving') || (missing.includes('tunnel_url_accessible') && !devbridgeFailed)) &&
+      attempt < DEPLOY_CHECK_MAX_RETRIES - 1;
+
+    if (!hasRetryableFailure) break;
+
+    // Retry: nginx or tunnel may still be starting up
+    const retryReason = missing.includes('nginx_serving')
+      ? 'nginx_serving=FAIL (nginx may still be starting)'
+      : 'tunnel_url_accessible=FAIL (DevBridge tunnel may still be establishing)';
+    uploadLog(
+      `deployCheck: attempt ${attempt + 1}/${DEPLOY_CHECK_MAX_RETRIES} incomplete \u2014 retrying in ${DEPLOY_CHECK_RETRY_INTERVAL_MS}ms (${retryReason})`,
+    );
+    await _retryDelay(DEPLOY_CHECK_RETRY_INTERVAL_MS);
   }
 
-  // If checks is empty but score was found, parsing failed — return raw output for debugging
-  const parseWarning =
-    Object.keys(checks).length === 0 && scoreMatch
-      ? 'Check output parsing failed — individual check results could not be extracted. See rawOutput for details.'
-      : undefined;
+  const { stdout, checks, scoreMatch, complete, missing, parseWarning, publicUrl, invalidUrlWarning } = lastParsed;
+
+  // Build degradation warning when deploy_check is incomplete
+  const degradationWarning = !complete ? buildDeployCheckDegradation(missing, publicUrl) : undefined;
 
   return {
     ok: true,
@@ -1021,9 +1090,12 @@ fi
     checkType: isCrossPlatform ? 'cross-platform' : 'standard',
     checks,
     score: scoreMatch ? { pass: parseInt(scoreMatch[1], 10), total: parseInt(scoreMatch[2], 10) } : null,
-    publicUrl: tunnelMatch ? tunnelMatch[1] : undefined,
+    publicUrl,
     missingSteps: missing.length > 0 ? missing.join(', ') : undefined,
     parseWarning,
+    invalidUrlWarning,
+    degradationWarning,
+    retryAttempts: actualAttempts,
     rawOutput: parseWarning ? stdout.trim() : undefined,
     nextStep: !complete
       ? missing.includes('devbridge_tunnel') || missing.includes('tunnel_url_accessible')
@@ -1037,6 +1109,31 @@ fi
               : 'review_checks'
       : 'complete',
   };
+}
+
+export function buildDeployCheckDegradation(missing, publicUrl) {
+  const parts = [];
+  if (missing.includes('nginx_serving')) {
+    parts.push(
+      'nginx is not serving on the expected port. Possible causes: (1) nginx config not applied \u2014 re-run huaweicloud_sandbox_deploy_nginx; (2) nginx process crashed \u2014 check "nginx -t" and "systemctl status nginx" on the sandbox; (3) wrong port specified.',
+    );
+  }
+  if (missing.includes('devbridge_tunnel')) {
+    parts.push(
+      'No active DevBridge tunnel. The sandbox preview cannot be accessed publicly without a tunnel. Ensure devbridge is installed and run "devbridge create" on the sandbox.',
+    );
+  }
+  if (missing.includes('tunnel_url_accessible')) {
+    parts.push(
+      publicUrl
+        ? `DevBridge tunnel exists but the URL ${publicUrl} is not reachable (HTTP non-200). The tunnel may still be initializing, or the sandbox-side nginx is not forwarding to the correct port.`
+        : 'No accessible tunnel URL. DevBridge tunnel is not established or tunnel ID is empty. Run "devbridge create" on the sandbox to expose the port.',
+    );
+  }
+  if (parts.length === 0) {
+    parts.push(`Deploy check incomplete. Failed checks: ${missing.join(', ')}. Review the checks output for details.`);
+  }
+  return parts.join(' ');
 }
 
 export async function closeSession(workspaceId, username) {
