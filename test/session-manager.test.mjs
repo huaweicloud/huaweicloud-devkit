@@ -7,6 +7,7 @@ import {
   UPLOAD_CHUNK_SIZE,
   getCurrentWorkspaceId,
   setWorkspaceId,
+  isValidPublicUrl,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
 
 test('ws-exec dynamic import uses file:// URL (Windows-safe)', async () => {
@@ -43,4 +44,40 @@ test('setWorkspaceId caches and updates env var', () => {
   assert.equal(getCurrentWorkspaceId(), testId);
   assert.equal(process.env.HW_WORKSPACE_ID, testId);
   setWorkspaceId(null);
+});
+
+// --- Issue #787: deploy_check publicUrl validation ---
+
+test('isValidPublicUrl accepts a well-formed https URL', () => {
+  assert.equal(isValidPublicUrl('https://abc123-8080.cn-north-4-bridge.myhuaweicloud.com'), true);
+});
+
+test('isValidPublicUrl accepts a well-formed http URL', () => {
+  assert.equal(isValidPublicUrl('http://example.com:8080'), true);
+});
+
+test('isValidPublicUrl rejects URL with empty tunnel ID (host starts with -)', () => {
+  // This is the exact invalid URL from Issue #787: https://-8080.cn-north-4...
+  assert.equal(isValidPublicUrl('https://-8080.cn-north-4-bridge.myhuaweicloud.com'), false);
+});
+
+test('isValidPublicUrl rejects undefined input', () => {
+  assert.equal(isValidPublicUrl(undefined), false);
+});
+
+test('isValidPublicUrl rejects empty string', () => {
+  assert.equal(isValidPublicUrl(''), false);
+});
+
+test('isValidPublicUrl rejects non-URL strings', () => {
+  assert.equal(isValidPublicUrl('not-a-url'), false);
+});
+
+test('isValidPublicUrl rejects URLs with non-http protocols', () => {
+  assert.equal(isValidPublicUrl('ftp://example.com'), false);
+  assert.equal(isValidPublicUrl('file:///etc/passwd'), false);
+});
+
+test('isValidPublicUrl rejects host containing double dashes (invalid hostname)', () => {
+  assert.equal(isValidPublicUrl('https://tunnel--8080.example.com'), false);
 });
