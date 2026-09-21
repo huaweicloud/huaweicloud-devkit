@@ -46,12 +46,12 @@ function redactString(text) {
       // Capture the separator ([:=]) to preserve it in the replacement so
       // `ak:value` stays `ak:<redacted>` instead of being rewritten to `ak=`.
       .replace(/\b(AK|SK)\s*([:=])\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1$2<redacted>')
-      // JSON string form: `"ak": "value"` / `"sk": "value"` — the quoted key
+      // JSON string form: `"ak": "value"` / `"sk": "value"` / `"token": "value"` — the quoted key
       // breaks the \b(AK|SK)\s*[:=] pattern above (a `"` sits between key and
       // separator). hcloud-probe.mjs:126 calls redactSecrets(stdout) directly
       // (not via redactOutput's JSON.parse path), so raw JSON ak/sk values
       // must be redacted at the string level too (#694 D2-4).
-      .replace(/"(ak|sk)"\s*:\s*("[^"]*"|'[^']*'|[^\s,;}]+)/gi, '"$1": "<redacted>"')
+      .replace(/"(ak|sk|token)"\s*:\s*("[^"]*"|'[^']*'|[^\s,;}]+)/gi, '"$1": "<redacted>"')
   );
 }
 
