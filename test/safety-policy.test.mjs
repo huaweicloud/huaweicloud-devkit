@@ -96,6 +96,15 @@ test('redactSecrets redacts JSON-format quoted "ak":/"sk": keys (#694 D2-4)', ()
   assert.match(out, /"sk": "<redacted>"/);
 });
 
+test('redactSecrets redacts JSON-format quoted "token" key (#694)', () => {
+  // JSON short-key "token" must be redacted alongside "ak"/"sk" — a bare
+  // "token": "value" pair in stdout must not leak the secret value (#694).
+  const out = redactSecrets('{"token": "abc123"}');
+  assert.doesNotMatch(out, /abc123/);
+  assert.match(out, /"token": "<redacted>"/);
+});
+
+
 test('redactSecrets redacts lowercase ak:/sk: colon-separated patterns (#694 D2-4)', () => {
   // Colon separator must be preserved (not rewritten to =).
   const out = redactSecrets('ak:mykey sk:mysecret');
