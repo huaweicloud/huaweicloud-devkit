@@ -1,10 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   classifyHcloudArgs,
   classifyTextCommand,
   redactSecrets,
+  computePolicyHash,
+  computePolicyDiff,
+  syncPolicyFromSource,
+  policyFilePath,
 } from '../plugins/huaweicloud-core/src/safety-policy.mjs';
 
 test('redactSecrets removes credential-shaped values recursively', () => {
@@ -306,4 +313,191 @@ test('existing credential and secret blocks still win before risk-rule warnings'
   const secretResult = classifyTextCommand('hcloud CSMS ShowSecretVersion --secret_name prod/db');
   assert.equal(secretResult.decision, 'deny');
   assert.equal(secretResult.risk, 'secret');
+});
+
+// --- Issue #685: runtime policy hash verification & auto-sync ---
+
+test('computePolicyHash returns a consistent SHA256 hex string', () => {
+  const hash = computePolicyHash(policyFilePath());
+  assert.equal(typeof hash, 'string');
+  assert.equal(hash.length, 64);
+  assert.match(hash, /^[0-9a-f]{64}$/);
+});
+
+test('computePolicyHash returns null for a missing file', () => {
+  const hash = computePolicyHash(join(tmpdir(), 'nonexistent-policy-' + Date.now() + '.json'));
+  assert.equal(hash, null);
+});
+
+test('computePolicyDiff detects added writeOperationPrefixes (#685)', () => {
+  const oldPolicy = {
+    version: '0.1.0',
+    writeOperationPrefixes: ['Create', 'Delete', 'Update'],
+    readOperationPrefixes: ['List', 'Show'],
+  };
+  const newPolicy = {
+    version: '0.1.0',
+    writeOperationPrefixes: ['Create', 'Delete', 'Update', 'Apply'],
+    readOperationPrefixes: ['List', 'Show'],
+  };
+  const diff = computePolicyDiff(oldPolicy, newPolicy);
+  assert.match(diff, /writeOperationPrefixes: 3→4/);
+  assert.match(diff, /\+Apply/);
+});
+
+test('computePolicyDiff detects removed prefixes', () => {
+  const oldPolicy = {
+    writeOperationPrefixes: ['Create', 'Delete', 'Apply'],
+    readOperationPrefixes: ['List', 'Show', 'Get'],
+  };
+  const newPolicy = {
+    writeOperationPrefixes: ['Create', 'Delete'],
+    readOperationPrefixes: ['List', 'Show', 'Get'],
+  };
+  const diff = computePolicyDiff(oldPolicy, newPolicy);
+  assert.match(diff, /writeOperationPrefixes: 3→2/);
+  assert.match(diff, /-Apply/);
+});
+
+test('computePolicyDiff returns empty string for identical policies', () => {
+  const policy = { writeOperationPrefixes: ['Create', 'Delete'], readOperationPrefixes: ['List'] };
+  assert.equal(computePolicyDiff(policy, policy), '');
+});
+
+test('computePolicyDiff returns empty string when oldPolicy is null (first install)', () => {
+  const newPolicy = { writeOperationPrefixes: ['Create'] };
+  assert.equal(computePolicyDiff(null, newPolicy), '');
+});
+
+test('computePolicyDiff reports version change', () => {
+  const oldPolicy = { version: '0.1.0', writeOperationPrefixes: ['Create'] };
+  const newPolicy = { version: '0.2.0', writeOperationPrefixes: ['Create'] };
+  const diff = computePolicyDiff(oldPolicy, newPolicy);
+  assert.match(diff, /version: 0\.1\.0→0\.2\.0/);
+});
+
+test('syncPolicyFromSource auto-syncs stale runtime policy and returns diff (#685)', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'policy-sync-'));
+  try {
+    const runtimePolicyPath = join(tmpDir, 'safety', 'policy.json');
+    const sourcePolicyPath = join(tmpDir, 'source', 'policy.json');
+
+    // Stale runtime policy (missing Apply → ApplyEip misclassified as read-only)
+    const stalePolicy = {
+      version: '0.1.0',
+      writeOperationPrefixes: ['Create', 'Delete', 'Update'],
+      readOperationPrefixes: ['List', 'Show', 'Get', 'Describe', 'NovaList', 'NovaShow'],
+      secretKeyNamePatterns: ['access[_-]?key'],
+      credentialFilePatterns: ['\\.hcloud'],
+      blockedConfigureSubcommands: ['show'],
+      blockedSecretOperations: ['ShowSecretVersion'],
+      safeTextReadCommands: ['rg'],
+      blockedSandboxCommands: ['rm\\s+-rf\\s+/'],
+      sandboxWriteTools: ['huaweicloud_sandbox_connect'],
+    };
+    // Source policy (includes Apply — the fix from #644)
+    const sourcePolicy = {
+      ...stalePolicy,
+      writeOperationPrefixes: ['Create', 'Delete', 'Update', 'Apply'],
+    };
+
+    mkdirSync(join(tmpDir, 'safety'), { recursive: true });
+    mkdirSync(join(tmpDir, 'source'), { recursive: true });
+    writeFileSync(runtimePolicyPath, JSON.stringify(stalePolicy, null, 2));
+    writeFileSync(sourcePolicyPath, JSON.stringify(sourcePolicy, null, 2));
+
+    const result = syncPolicyFromSource({
+      runtimePolicyPath,
+      sourcePolicyPath,
+      log: false,
+    });
+
+    assert.equal(result.synced, true);
+    assert.equal(result.reason, 'synced');
+    assert.match(result.diff, /\+Apply/);
+
+    // Verify the runtime file was actually overwritten with the source content
+    const synced = JSON.parse(readFileSync(runtimePolicyPath, 'utf8'));
+    assert.deepEqual(synced, sourcePolicy);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('syncPolicyFromSource skips sync when hashes match (in sync)', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'policy-sync-ok-'));
+  try {
+    const runtimePolicyPath = join(tmpDir, 'runtime', 'policy.json');
+    const sourcePolicyPath = join(tmpDir, 'source', 'policy.json');
+    const policy = {
+      version: '0.1.0',
+      writeOperationPrefixes: ['Create', 'Apply'],
+      readOperationPrefixes: ['List'],
+    };
+    mkdirSync(join(tmpDir, 'runtime'), { recursive: true });
+    mkdirSync(join(tmpDir, 'source'), { recursive: true });
+    writeFileSync(runtimePolicyPath, JSON.stringify(policy));
+    writeFileSync(sourcePolicyPath, JSON.stringify(policy));
+
+    const result = syncPolicyFromSource({ runtimePolicyPath, sourcePolicyPath, log: false });
+    assert.equal(result.synced, false);
+    assert.equal(result.reason, 'in_sync');
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('syncPolicyFromSource returns source_not_found when no source path resolves', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'policy-nosrc-'));
+  try {
+    const runtimePolicyPath = join(tmpDir, 'runtime', 'policy.json');
+    const missingSource = join(tmpDir, 'does-not-exist', 'policy.json');
+    mkdirSync(join(tmpDir, 'runtime'), { recursive: true });
+    writeFileSync(runtimePolicyPath, JSON.stringify({ writeOperationPrefixes: [] }));
+
+    const result = syncPolicyFromSource({
+      runtimePolicyPath,
+      sourcePolicyPath: missingSource,
+      log: false,
+    });
+    assert.equal(result.synced, false);
+    assert.equal(result.reason, 'source_not_found');
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('syncPolicyFromSource handles missing runtime policy (first launch) by syncing', () => {
+  const tmpDir = mkdtempSync(join(tmpdir(), 'policy-firstrun-'));
+  try {
+    const runtimePolicyPath = join(tmpDir, 'safety', 'policy.json');
+    const sourcePolicyPath = join(tmpDir, 'source', 'policy.json');
+    const sourcePolicy = {
+      version: '0.1.0',
+      writeOperationPrefixes: ['Create', 'Apply'],
+      readOperationPrefixes: ['List'],
+    };
+    mkdirSync(join(tmpDir, 'source'), { recursive: true });
+    writeFileSync(sourcePolicyPath, JSON.stringify(sourcePolicy));
+
+    const result = syncPolicyFromSource({
+      runtimePolicyPath,
+      sourcePolicyPath,
+      log: false,
+    });
+    assert.equal(result.synced, true);
+    assert.equal(result.reason, 'synced');
+    const synced = JSON.parse(readFileSync(runtimePolicyPath, 'utf8'));
+    assert.deepEqual(synced, sourcePolicy);
+  } finally {
+    rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test('ApplyEip is denied as write with the current (synced) policy (#685 D4-5)', () => {
+  // After auto-sync, the runtime policy must classify ApplyEip as deny/write.
+  // The source policy.json already includes Apply in writeOperationPrefixes.
+  const result = classifyHcloudArgs(['EIP', 'ApplyEip']);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.risk, 'write');
 });
