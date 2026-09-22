@@ -4,8 +4,13 @@ import test from 'node:test';
 import {
   classifyHcloudArgs,
   classifyTextCommand,
+  isSecretKeyName,
+  loadPolicy,
   redactSecrets,
+  redactString,
 } from '../plugins/huaweicloud-core/src/safety-policy.mjs';
+
+const DEFAULT_POLICY = loadPolicy();
 
 test('redactSecrets removes credential-shaped values recursively', () => {
   const redacted = redactSecrets({
@@ -306,4 +311,118 @@ test('existing credential and secret blocks still win before risk-rule warnings'
   const secretResult = classifyTextCommand('hcloud CSMS ShowSecretVersion --secret_name prod/db');
   assert.equal(secretResult.decision, 'deny');
   assert.equal(secretResult.risk, 'secret');
+});
+
+// --- #791: redactSecrets/redactString refactoring tests ---
+
+test('#791 isSecretKeyName recognizes bare "token" as a secret key', () => {
+  assert.equal(isSecretKeyName('token'), true);
+  assert.equal(isSecretKeyName('Token'), true);
+  assert.equal(isSecretKeyName('TOKEN'), true);
+});
+
+test('#791 isSecretKeyName does not match compound words like "tokenizer"', () => {
+  assert.equal(isSecretKeyName('tokenizer'), false);
+  assert.equal(isSecretKeyName('tokenCounter'), false);
+});
+
+test('#791 isSecretKeyName handles camelCase and dotted key names', () => {
+  assert.equal(isSecretKeyName('--server.adminPass'), true);
+  assert.equal(isSecretKeyName('secretAccessKey'), true);
+  assert.equal(isSecretKeyName('db_password'), true);
+  assert.equal(isSecretKeyName('normal_field'), false);
+});
+
+test('#791 redactString derives key names from policy, not hardcoded regex', () => {
+  const customPolicy = {
+    ...DEFAULT_POLICY,
+    secretKeyNamePatterns: ['mycustomsecret', 'user[_-]?data'],
+  };
+  // Custom key from policy gets redacted — proves patterns are derived, not hardcoded.
+  const out = redactString('mycustomsecret=value123\nnormal=output', customPolicy);
+  assert.match(out, /mycustomsecret=<redacted>/);
+  assert.doesNotMatch(out, /value123/);
+  assert.match(out, /normal=output/);
+  // Standard hardcoded keys are NOT present when policy doesn't list them.
+  const out2 = redactString('password=secret123', customPolicy);
+  assert.doesNotMatch(out2, /<redacted>/);
+  assert.match(out2, /secret123/);
+});
+
+test('#791 redactString uses unified separator handling for : and =', () => {
+  // Both colon and equals separators preserve the original delimiter.
+  const colonOut = redactString('password: mysecret');
+  assert.match(colonOut, /password: <redacted>/);
+  assert.doesNotMatch(colonOut, /mysecret/);
+
+  const eqOut = redactString('password=mysecret');
+  assert.match(eqOut, /password=<redacted>/);
+  assert.doesNotMatch(eqOut, /mysecret/);
+});
+
+test('#791 redactString word boundary prevents false positives in compound words', () => {
+  // 'ak' inside 'break' must not trigger redaction.
+  const out = redactString('break=foo\nflake=bar');
+  assert.doesNotMatch(out, /<redacted>/);
+  assert.match(out, /break=foo/);
+  assert.match(out, /flake=bar/);
+  // But 'ak' as a standalone key IS redacted.
+  const out2 = redactString('ak=AKID123\nsk=SKSECRET');
+  assert.match(out2, /ak=<redacted>/);
+  assert.match(out2, /sk=<redacted>/);
+  assert.doesNotMatch(out2, /AKID123|SKSECRET/);
+});
+
+test('#791 redactSecrets JSON string path reuses object redaction via isSecretKeyName', () => {
+  // JSON object string → parse → object redaction → stringify.
+  const jsonOut = redactSecrets('{"password":"secret123","normal":"visible"}');
+  const parsed = JSON.parse(jsonOut);
+  assert.equal(parsed.password, '<redacted>');
+  assert.equal(parsed.normal, 'visible');
+
+  // JSON with bare "token" key (previously required hardcoded regex).
+  const tokenOut = redactSecrets('{"token":"abc-xyz-123"}');
+  assert.equal(JSON.parse(tokenOut).token, '<redacted>');
+});
+
+test('#791 redactSecrets JSON array string path reuses object redaction', () => {
+  const arrOut = redactSecrets('[{"secret_key":"sk-xxx"},{"name":"keep"}]');
+  const parsed = JSON.parse(arrOut);
+  assert.equal(parsed[0].secret_key, '<redacted>');
+  assert.equal(parsed[1].name, 'keep');
+});
+
+test('#791 redactSecrets nested JSON string path recurses correctly', () => {
+  const nestedOut = redactSecrets('{"outer":{"password":"deep-secret","visible":"ok"}}');
+  const parsed = JSON.parse(nestedOut);
+  assert.equal(parsed.outer.password, '<redacted>');
+  assert.equal(parsed.outer.visible, 'ok');
+});
+
+test('#791 redactSecrets JSON parse failure falls back to redactString', () => {
+  // Starts with { but is not valid JSON → fallback to regex-based redactString.
+  const out = redactSecrets('{invalid json password=secret123}');
+  assert.match(out, /<redacted>/);
+  assert.doesNotMatch(out, /secret123/);
+});
+
+test('#791 redactSecrets non-JSON string still uses redactString', () => {
+  // Does not start with { or [ → straight to redactString.
+  const out = redactSecrets('log: password=hunter2 token=abc normal=text');
+  assert.match(out, /password=<redacted>/);
+  assert.match(out, /token=<redacted>/);
+  assert.match(out, /normal=text/);
+  assert.doesNotMatch(out, /hunter2|abc/);
+});
+
+test('#791 redactSecrets object path unchanged (regression guard)', () => {
+  const redacted = redactSecrets({
+    access_key: 'example-access-key',
+    token: 'bare-token-value',
+    nested: { secretAccessKey: 'example-secret-key', normal: 'visible' },
+  });
+  assert.equal(redacted.access_key, '<redacted>');
+  assert.equal(redacted.token, '<redacted>');
+  assert.equal(redacted.nested.secretAccessKey, '<redacted>');
+  assert.equal(redacted.nested.normal, 'visible');
 });

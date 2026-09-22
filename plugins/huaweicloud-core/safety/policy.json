@@ -8,6 +8,7 @@
     "authorization",
     "password",
     "passwd",
+    "admin[_-]?pass",
     "token",
     "credential",
     "private[_-]?key",
