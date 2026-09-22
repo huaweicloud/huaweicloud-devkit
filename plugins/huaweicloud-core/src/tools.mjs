@@ -33,6 +33,22 @@ import {
   hdkitVoucherClaim,
   hdkitGenerateUserHash,
 } from './sandbox/hdkitservice-api.mjs';
+import {
+  devboxCreate,
+  devboxConnect,
+  devboxKill,
+  devboxList,
+  devboxFs,
+  runCommand,
+  writeFile,
+  readFile,
+  uploadFile,
+  downloadFile,
+  setActiveConnection,
+  getActiveConnection,
+  clearActiveConnection,
+  redactedConnection,
+} from './sandbox/devbox-api.mjs';
 import { getCredentials } from './sandbox/hwlink-api.mjs';
 import { getAuthStatus, syncAuth } from './auth/service.mjs';
 import { validateIamCredentials } from './auth/credential-validator.mjs';
@@ -929,6 +945,67 @@ export const TOOL_DEFINITIONS = [
       required: ['action', 'bucket', 'region'],
     },
   },
+  {
+    name: 'huaweicloud_devbox_connect',
+    description:
+      'Manage Huawei Cloud DevBox (E2B-compatible) sandboxes. action=create (default) creates a sandbox and opens its data-plane connection; action=connect reconnects to an existing sandbox (requires sandbox_id); action=list enumerates sandboxes; action=kill deletes a sandbox (defaults to the currently connected one). On create/connect the connection is cached in-process so exec/fs need no credentials. Uses DEVBOX_API_KEY/E2B_API_KEY and DEVBOX_API_URL/E2B_API_URL environment variables.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['create', 'connect', 'list', 'kill'],
+          description: 'Lifecycle action (default: create).',
+        },
+        sandbox_id: { type: 'string', description: 'Sandbox id for connect/kill.' },
+        template: { type: 'string', description: 'Template name for create (default "default").' },
+        timeout: { type: 'number', description: 'Sandbox lifetime in seconds for create/connect (default 300).' },
+        envs: { type: 'object', description: 'Environment variables at creation.' },
+        metadata: { type: 'object', description: 'Metadata key/value pairs at creation.' },
+        api_key: { type: 'string', description: 'DevBox API key override (prefer the env var).' },
+        api_url: { type: 'string', description: 'DevBox management endpoint override.' },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_devbox_exec',
+    description:
+      'Run a command inside the connected DevBox sandbox (foreground by default, or background with background=true to return a pid). Returns exitCode, stdout, stderr, and pid.',
+    inputSchema: {
+      type: 'object',
+      required: ['command'],
+      properties: {
+        command: { type: 'string', description: 'Shell command to run.' },
+        cwd: { type: 'string', description: 'Working directory (absolute path).' },
+        envs: { type: 'object', description: 'Environment variables for this command.' },
+        background: { type: 'boolean', description: 'Return immediately with pid instead of waiting.' },
+        stdin: { type: 'boolean', description: 'Keep stdin open (used with background).' },
+        check: { type: 'boolean', description: 'Throw on non-zero exit code (default true).' },
+        timeoutMs: { type: 'number', description: 'Timeout in milliseconds (default 60000).' },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_devbox_fs',
+    description:
+      'File-system operations inside the connected DevBox sandbox. op must be one of: read, write, list, stat, mkdir, move, remove, upload, download. For write, pass either data (inline content) or local_path to upload; for read/download pass local_path to save downloaded bytes.',
+    inputSchema: {
+      type: 'object',
+      required: ['op', 'path'],
+      properties: {
+        op: {
+          type: 'string',
+          enum: ['read', 'write', 'list', 'stat', 'mkdir', 'move', 'remove', 'upload', 'download'],
+          description: 'File operation to perform.',
+        },
+        path: { type: 'string', description: 'Remote absolute path (source for move/upload).' },
+        destination: { type: 'string', description: 'Target path for move.' },
+        data: { type: 'string', description: 'Inline file content for op=write.' },
+        local_path: { type: 'string', description: 'Local file path for upload/download.' },
+        depth: { type: 'number', description: 'Directory listing depth (default 1).' },
+      },
+    },
+  },
 ];
 
 function toolInvokeValue(name, args) {
@@ -1458,6 +1535,87 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         );
       }
       return await diagChain(diagWsId, { hops: args.hops }, args.username || 'root', args.timeout_ms || 30000);
+    }
+    case 'huaweicloud_devbox_connect': {
+      const action = args.action || 'create';
+      if (action === 'list') {
+        return await devboxList({ apiKey: args.api_key, apiUrl: args.api_url });
+      }
+      if (action === 'kill') {
+        const id = args.sandbox_id || getActiveConnection()?.sandboxId;
+        if (!id) throw new Error('sandbox_id is required and no sandbox is currently connected.');
+        const result = await devboxKill(id, { apiKey: args.api_key, apiUrl: args.api_url });
+        if (getActiveConnection()?.sandboxId === id) clearActiveConnection();
+        return result;
+      }
+      let connection;
+      if (action === 'connect') {
+        if (!args.sandbox_id) throw new Error('sandbox_id is required for action=connect.');
+        connection = await devboxConnect(args.sandbox_id, {
+          timeout: args.timeout,
+          apiKey: args.api_key,
+          apiUrl: args.api_url,
+        });
+      } else {
+        connection = await devboxCreate({
+          template: args.template,
+          timeout: args.timeout,
+          envs: args.envs,
+          metadata: args.metadata,
+          apiKey: args.api_key,
+          apiUrl: args.api_url,
+        });
+      }
+      setActiveConnection(connection);
+      return { ok: true, connection: redactedConnection(connection) };
+    }
+    case 'huaweicloud_devbox_exec': {
+      const connection = getActiveConnection();
+      if (!connection) {
+        throw new Error('No DevBox sandbox connected — call huaweicloud_devbox_connect first.');
+      }
+      return await runCommand(connection, args.command, {
+        cwd: args.cwd,
+        envs: args.envs,
+        background: args.background,
+        stdin: args.stdin,
+        check: args.check,
+      });
+    }
+    case 'huaweicloud_devbox_fs': {
+      const connection = getActiveConnection();
+      if (!connection) {
+        throw new Error('No DevBox sandbox connected — call huaweicloud_devbox_connect first.');
+      }
+      switch (args.op) {
+        case 'read':
+          return { content: await readFile(connection, args.path) };
+        case 'write':
+          if (args.data === undefined && !args.local_path) {
+            throw new Error('data or local_path is required for op=write');
+          }
+          if (args.local_path) return await uploadFile(connection, args.local_path, args.path);
+          return await writeFile(connection, args.path, args.data);
+        case 'list':
+          return await devboxFs.listDir(connection, args.path, args.depth || 1);
+        case 'stat':
+          return await devboxFs.stat(connection, args.path);
+        case 'mkdir':
+          return await devboxFs.makeDir(connection, args.path);
+        case 'move':
+          if (!args.destination) throw new Error('destination is required for op=move');
+          return await devboxFs.move(connection, args.path, args.destination);
+        case 'remove':
+          return await devboxFs.remove(connection, args.path);
+        case 'upload':
+          if (!args.local_path) throw new Error('local_path is required for op=upload');
+          return await uploadFile(connection, args.local_path, args.path);
+        case 'download':
+          if (!args.local_path) throw new Error('local_path is required for op=download');
+          return await downloadFile(connection, args.path, args.local_path);
+        default:
+          throw new Error(`Unknown devbox fs op: ${args.op}`);
+      }
     }
     case 'huaweicloud_sandbox_check_user':
       return await hdkitCheckUser();
