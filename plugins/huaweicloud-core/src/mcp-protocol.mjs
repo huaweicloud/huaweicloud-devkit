@@ -27,6 +27,22 @@ export function _isHintConsumed(sessionId) {
   return Boolean(consumedBySession.get(sessionId));
 }
 
+// D9-4: MCP initialize lifecycle gating.
+// A session must complete the initialize handshake before sending any other
+// request. The server marks the session initialized on a successful
+// `initialize` response; the `notifications/initialized` client notification
+// reinforces this state. Requests before initialize return JSON-RPC -32002.
+const initializedSessions = new Map();
+export function _markInitialized(sessionId) {
+  initializedSessions.set(sessionId, true);
+}
+export function _isSessionInitialized(sessionId) {
+  return Boolean(initializedSessions.get(sessionId));
+}
+export function _resetInitializedSessions() {
+  initializedSessions.clear();
+}
+
 export async function dispatch(method, params, opts = {}) {
   const sessionId = opts?.sessionId || 'default';
   if (method === 'initialize') {
@@ -42,16 +58,31 @@ export async function dispatch(method, params, opts = {}) {
 
     const agent = detectAgent(ci);
     initTelemetry({ harness: agent.harness, version: agent.version });
+    // D9-4: a successful initialize response marks the session initialized.
+    // The client's subsequent `notifications/initialized` notification
+    // reinforces this state (handled by the transport layer).
+    _markInitialized(sessionId);
     return {
       protocolVersion: params.protocolVersion || '2024-11-05',
       capabilities: {
         tools: {},
+        // D9-9: declare cancellation capability so clients know the server
+        // honors `notifications/cancelled` for in-flight requests.
+        cancellation: {},
       },
       serverInfo: {
         name: 'huaweicloud-devkit',
         version: pkgVersion,
       },
     };
+  }
+
+  // D9-4: every non-initialize method requires an initialized session.
+  // Returns JSON-RPC -32002 (Server not initialized) per MCP spec.
+  if (!_isSessionInitialized(sessionId)) {
+    const notInitializedError = new Error('Server not initialized: call initialize first');
+    notInitializedError.code = -32002;
+    throw notInitializedError;
   }
 
   if (method === 'tools/list') {

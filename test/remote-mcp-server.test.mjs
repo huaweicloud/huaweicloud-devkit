@@ -39,6 +39,19 @@ async function rpc(method, params = {}, extraHeaders = {}) {
   return { status: res.status, contentType: res.headers.get('content-type'), body: await res.json() };
 }
 
+async function notify(method, extraHeaders = {}) {
+  const res = await fetch(`${base}/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      ...extraHeaders,
+    },
+    body: JSON.stringify({ jsonrpc: '2.0', method }),
+  });
+  return res.status;
+}
+
 test('remote MCP server initializes, lists tools, and plans CLI commands', async () => {
   const initialized = await rpc('initialize', {
     protocolVersion: '2024-11-05',
@@ -48,7 +61,7 @@ test('remote MCP server initializes, lists tools, and plans CLI commands', async
   assert.equal(initialized.status, 200);
   assert.equal(initialized.body.result.serverInfo.name, 'huaweicloud-devkit');
   assert.equal(initialized.body.result.protocolVersion, '2024-11-05');
-  assert.deepEqual(initialized.body.result.capabilities, { tools: {} });
+  assert.deepEqual(initialized.body.result.capabilities, { tools: {}, cancellation: {} });
 
   const listed = await rpc('tools/list');
   const toolNames = new Set(listed.body.result.tools.map((tool) => tool.name));
@@ -70,6 +83,54 @@ test('remote MCP server returns 202 for notifications/initialized', async () => 
     body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
   });
   assert.equal(res.status, 202);
+});
+
+test('remote MCP server returns -32002 for tools/list before initialize (#774 D9-4)', async () => {
+  // Use a unique session id that has not been initialized by other tests.
+  const listed = await rpc('tools/list', {}, { 'MCP-Session-Id': 'pre-init-774' });
+  assert.equal(listed.status, 200);
+  assert.ok(listed.body.error, 'expected an error response before initialize');
+  assert.equal(listed.body.error.code, -32002);
+  assert.match(listed.body.error.message, /not initialized/i);
+});
+
+test('remote MCP server declares cancellation capability (#774 D9-9)', async () => {
+  // Unique session to avoid interference with the shared default session.
+  const sid = 'cancellation-cap-774';
+  const initialized = await rpc(
+    'initialize',
+    {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    },
+    { 'MCP-Session-Id': sid },
+  );
+  assert.equal(initialized.status, 200);
+  assert.ok(
+    Object.hasOwn(initialized.body.result.capabilities, 'cancellation'),
+    'capabilities must include cancellation',
+  );
+  assert.ok(Object.hasOwn(initialized.body.result.capabilities, 'tools'), 'capabilities still includes tools');
+});
+
+test('remote MCP server accepts notifications/initialized with session id (#774 D9-4)', async () => {
+  const sid = 'notify-init-774';
+  // initialize first (marks session initialized), then send notification.
+  await rpc(
+    'initialize',
+    {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    },
+    { 'MCP-Session-Id': sid },
+  );
+  const status = await notify('notifications/initialized', { 'MCP-Session-Id': sid });
+  assert.equal(status, 202);
+  // Server remains functional.
+  const listed = await rpc('tools/list', {}, { 'MCP-Session-Id': sid });
+  assert.ok(Array.isArray(listed.body.result.tools), 'tools/list works after notification');
 });
 
 test('remote MCP server returns 400 for invalid JSON body', async () => {

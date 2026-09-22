@@ -5,7 +5,7 @@ import { resolve, dirname } from 'node:path';
 import { platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { dispatch } from './mcp-protocol.mjs';
+import { dispatch, _markInitialized } from './mcp-protocol.mjs';
 import { DEFAULT_PORT, DEFAULT_HOST } from './mcp-server-remote.mjs';
 import { getCachedUpdateInfo, readInstalledVersion } from './update-check.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
@@ -171,7 +171,12 @@ function runStdioServer() {
       return;
     }
     if (!Object.hasOwn(message, 'id')) {
-      if (message.method === 'notifications/initialized') return;
+      // D9-4: notifications/initialized reinforces the initialized state.
+      // initialize already marks the session, but strict MCP clients send
+      // this notification — honor it to stay spec-compliant.
+      if (message.method === 'notifications/initialized') {
+        _markInitialized('stdin');
+      }
       return;
     }
     try {
