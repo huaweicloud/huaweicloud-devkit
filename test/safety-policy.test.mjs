@@ -426,3 +426,120 @@ test('#791 redactSecrets object path unchanged (regression guard)', () => {
   assert.equal(redacted.nested.secretAccessKey, '<redacted>');
   assert.equal(redacted.nested.normal, 'visible');
 });
+
+// --- #791: PR #772 regression scenarios ---
+
+test('#791 redactSecrets redacts lowercase ak=/sk= patterns (#694 D2-4)', () => {
+  const out = redactSecrets('ak=AK123456 sk=SKsecret');
+  assert.doesNotMatch(out, /AK123456/);
+  assert.doesNotMatch(out, /SKsecret/);
+  assert.match(out, /ak=<redacted>/);
+  assert.match(out, /sk=<redacted>/);
+});
+
+test('#791 redactSecrets redacts mixed-case Ak=/sK= patterns', () => {
+  const out = redactSecrets('Ak=AK123456 sK=SKsecret');
+  assert.doesNotMatch(out, /AK123456/);
+  assert.doesNotMatch(out, /SKsecret/);
+  assert.match(out, /Ak=<redacted>/);
+  assert.match(out, /sK=<redacted>/);
+});
+
+test('#791 redactSecrets redacts uppercase AK=/SK= patterns (regression)', () => {
+  const out = redactSecrets('AK=HPUAI12345\nSK=abcdef');
+  assert.doesNotMatch(out, /HPUAI12345/);
+  assert.doesNotMatch(out, /abcdef/);
+  assert.match(out, /AK=<redacted>/);
+  assert.match(out, /SK=<redacted>/);
+});
+
+test('#791 redactSecrets preserves separator (colon) for ak/sk', () => {
+  const out = redactSecrets('ak:value sk:value');
+  assert.match(out, /ak:<redacted>/);
+  assert.match(out, /sk:<redacted>/);
+  assert.doesNotMatch(out, /ak=<redacted>/);
+});
+
+test('#791 redactSecrets does not falsely redact words ending in ak/sk', () => {
+  const safe = ['task=abc', 'mask=hello', 'leak=xxx', 'risk=high', 'break=stop', 'flask=hi', 'desk=top'];
+  for (const input of safe) {
+    const out = redactSecrets(input);
+    assert.doesNotMatch(out, /<redacted>/, `${input} should not be redacted`);
+  }
+});
+
+test('#791 redactSecrets redacts JSON-format quoted "ak":/"sk": keys (#694 original)', () => {
+  const out = redactSecrets('{"ak": "AKIDTEST", "sk": "SKTEST"}');
+  assert.doesNotMatch(out, /AKIDTEST/);
+  assert.doesNotMatch(out, /SKTEST/);
+  assert.match(out, /"ak":\s*"<redacted>"/);
+  assert.match(out, /"sk":\s*"<redacted>"/);
+});
+
+test('#791 redactSecrets redacts JSON-format quoted "token" key', () => {
+  const out = redactSecrets('{"token": "abc123"}');
+  assert.doesNotMatch(out, /abc123/);
+  assert.match(out, /"<redacted>"/);
+});
+
+// --- #791: hcloud-probe call site behavior ---
+
+test('#791 redactSecrets handles hcloud-probe stdout JSON with secrets', () => {
+  // Simulates hcloud-probe.mjs:126 calling redactSecrets(stdout) with JSON output
+  const stdout = JSON.stringify({
+    ak: 'AKIDTEST',
+    sk: 'SKTEST',
+    token: 'abc123',
+    region: 'cn-north-4',
+  });
+  const redacted = redactSecrets(stdout);
+  assert.doesNotMatch(redacted, /AKIDTEST/);
+  assert.doesNotMatch(redacted, /SKTEST/);
+  assert.doesNotMatch(redacted, /abc123/);
+  assert.match(redacted, /cn-north-4/);
+});
+
+test('#791 redactSecrets handles plain text hcloud-probe output without JSON', () => {
+  const stdout = 'KooCLI version: 7.2.12\nak=AKIDTEST sk=SKTEST';
+  const redacted = redactSecrets(stdout);
+  assert.doesNotMatch(redacted, /AKIDTEST/);
+  assert.doesNotMatch(redacted, /SKTEST/);
+  assert.match(redacted, /7\.2\.12/);
+});
+
+// --- #791: object/string path consistency ---
+
+test('#791 token is redacted consistently in object and string paths', () => {
+  assert.equal(redactSecrets({ token: 'abc' }).token, '<redacted>');
+  assert.match(redactSecrets('token=abc'), /token=<redacted>/);
+  const jsonOut = redactSecrets('{"token": "abc"}');
+  assert.doesNotMatch(jsonOut, /abc/);
+});
+
+test('#791 redactSecrets preserves original separator (: or =) uniformly', () => {
+  assert.match(redactSecrets('password=secret'), /password=<redacted>/);
+  assert.match(redactSecrets('password:secret'), /password:<redacted>/);
+  assert.match(redactSecrets('ak=AKID'), /ak=<redacted>/);
+  assert.match(redactSecrets('ak:AKID'), /ak:<redacted>/);
+});
+
+test('#791 redactSecrets redacts all policy-defined key names in key=value format', () => {
+  const cases = [
+    'access_key=AKID',
+    'secret_key=SKID',
+    'security_token=TOK',
+    'x_auth_token=TOK',
+    'authorization=Bearer xyz',
+    'password=pass',
+    'passwd=pass',
+    'adminPass=pass',
+    'admin_pass=pass',
+    'credential=cred',
+    'private_key=-----BEGIN',
+    'token=tok',
+  ];
+  for (const input of cases) {
+    const out = redactSecrets(input);
+    assert.match(out, /<redacted>/, `${input} should be redacted`);
+  }
+});
