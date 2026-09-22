@@ -227,6 +227,32 @@ test('workbuddy uninstall removes installed files', () => {
   }
 });
 
+test('workbuddy uninstall cleans a PostToolUse-only settings.json without crashing (#556)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.workbuddy', 'skills'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy', 'huaweicloud-plugins'), { recursive: true });
+    // Typical post-install state: settings.json hooks contains only PostToolUse.
+    writeFileSync(
+      join(home, '.workbuddy', 'settings.json'),
+      JSON.stringify({
+        hooks: { PostToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: 'python x', timeout: 3 }] }] },
+      }),
+    );
+    // Bug-02: deleting settings.hooks then reading settings.hooks.PostToolUse
+    // crashed the process; uninstall must complete and clean the hook.
+    const res = run('workbuddy', home, cwd, 'uninstall');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Uninstall complete/);
+    const settings = JSON.parse(readFileSync(join(home, '.workbuddy', 'settings.json'), 'utf8'));
+    assert.equal(settings.hooks, undefined, 'PostToolUse-only hooks must be removed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('workbuddy install is idempotent', () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));

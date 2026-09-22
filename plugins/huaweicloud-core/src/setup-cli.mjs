@@ -591,7 +591,10 @@ function installRuntimeDeps(pluginsDir) {
 function removeIfExists(p) {
   if (existsSync(p)) {
     try {
-      rmSync(p, { recursive: true, force: true });
+      // Retry transient EBUSY/EPERM/ENOTEMPTY (locked files on Windows) before
+      // giving up — uninstall should not leave a skill behind just because a
+      // handle was momentarily open (#556).
+      rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       return true;
     } catch (error) {
       console.log(`  \x1b[33m[WARN]\x1b[0m Could not remove ${p}: ${error.message}`);
@@ -850,8 +853,7 @@ function uninstallOpenCode() {
   if (existsSync(skills)) {
     for (const entry of readdirSync(skills, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skills, entry.name));
-        removed++;
+        if (removeIfExists(join(skills, entry.name))) removed++;
       }
     }
     console.log(`  Removed ${removed} skills`);
@@ -862,8 +864,7 @@ function uninstallOpenCode() {
   if (existsSync(commands)) {
     for (const entry of readdirSync(commands, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(commands, entry.name));
-        cmdRemoved++;
+        if (removeIfExists(join(commands, entry.name))) cmdRemoved++;
       }
     }
     if (cmdRemoved > 0) console.log(`  Removed ${cmdRemoved} commands`);
@@ -889,8 +890,7 @@ function pruneStale(targetDir, sourceDir) {
   for (const entry of readdirSync(targetDir, { withFileTypes: true })) {
     if (!entry.name.startsWith('huawei')) continue;
     if (!sourceNames.has(entry.name)) {
-      removeIfExists(join(targetDir, entry.name));
-      removed++;
+      if (removeIfExists(join(targetDir, entry.name))) removed++;
     }
   }
   return removed;
@@ -1037,8 +1037,7 @@ function uninstallOpenClaw() {
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     console.log(`  Removed ${removed} skills`);
@@ -1049,8 +1048,7 @@ function uninstallOpenClaw() {
   if (existsSync(cmdDir)) {
     for (const entry of readdirSync(cmdDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(cmdDir, entry.name));
-        cmdRemoved++;
+        if (removeIfExists(join(cmdDir, entry.name))) cmdRemoved++;
       }
     }
     if (cmdRemoved > 0) console.log(`  Removed ${cmdRemoved} commands`);
@@ -1196,8 +1194,7 @@ function uninstallCodexDesktop() {
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     console.log(`  Removed ${removed} skills`);
@@ -1208,8 +1205,7 @@ function uninstallCodexDesktop() {
   if (existsSync(cmdDir)) {
     for (const entry of readdirSync(cmdDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(cmdDir, entry.name));
-        cmdRemoved++;
+        if (removeIfExists(join(cmdDir, entry.name))) cmdRemoved++;
       }
     }
     if (cmdRemoved > 0) console.log(`  Removed ${cmdRemoved} commands`);
@@ -1353,8 +1349,7 @@ function uninstallCodeArts() {
     if (!existsSync(skillsDir)) continue;
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
   }
@@ -1514,8 +1509,7 @@ function uninstallCodeArtsWork() {
     let removed = 0;
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     if (removed > 0) console.log(`  Removed ${removed} skills`);
@@ -1802,8 +1796,7 @@ function uninstallWorkBuddy() {
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     if (removed > 0) console.log(`  Removed ${removed} skills`);
@@ -1839,9 +1832,10 @@ function uninstallWorkBuddy() {
     if (settings.hooks?.PostToolUse) {
       const before = settings.hooks.PostToolUse.length;
       settings.hooks.PostToolUse = settings.hooks.PostToolUse.filter((e) => e?.matcher !== '*');
-      if (settings.hooks.PostToolUse.length === 0) delete settings.hooks.PostToolUse;
+      const after = settings.hooks.PostToolUse.length;
+      if (after === 0) delete settings.hooks.PostToolUse;
       if (Object.keys(settings.hooks).length === 0) delete settings.hooks;
-      if (before !== settings.hooks.PostToolUse?.length) {
+      if (before !== after) {
         writeFileSync(settingsPath, JSON.stringify(settings, null, 4) + '\n');
         console.log(`  PostToolUse hook removed from ${settingsPath}`);
       }
@@ -1992,8 +1986,7 @@ function uninstallAtomCode() {
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     if (removed > 0) console.log(`  Removed ${removed} skills`);
@@ -2307,8 +2300,7 @@ function uninstallDsh() {
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     if (removed > 0) console.log(`  Removed ${removed} skills`);
@@ -2449,8 +2441,7 @@ function uninstallOfficeAce() {
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     if (removed > 0) console.log(`  Removed ${removed} skills`);
@@ -3033,8 +3024,7 @@ function uninstallHermes() {
   if (existsSync(skillsDir)) {
     for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
       if (entry.name.startsWith('huawei')) {
-        removeIfExists(join(skillsDir, entry.name));
-        removed++;
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
       }
     }
     if (removed > 0) console.log(`  Removed ${removed} skills`);
@@ -4175,7 +4165,7 @@ async function cmdDoctor() {
     console.log('\x1b[33mFix failures above, then restart your session.\x1b[0m');
   }
   if (fail === 0 && mcpConfigured) {
-    console.log('\n\x1b[32mAll checks passed.\x1b[0m Restart your session, then describe your Huawei Cloud task');
+    console.log('\n\x1b[32mAll checks passed.\x1b[0m You can now describe your Huawei Cloud task');
   }
 
   // Detect "installed but not restarted" — check all supported agents
