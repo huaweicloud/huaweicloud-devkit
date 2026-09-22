@@ -1750,10 +1750,52 @@ const SERVICE_EXAMPLES = {
   DCS: { list: 'DCS ListInstances', create: 'DCS CreateInstance', show: 'DCS ShowInstance' },
 };
 
+// DMS and DEW are Huawei Cloud aggregate service names that do not exist as
+// single KooCLI service identifiers. Each maps to real KooCLI sub-services.
+const AGGREGATE_SERVICE_MAP = {
+  DMS: ['Kafka', 'RabbitMQ', 'RocketMQ'],
+  DEW: ['KMS', 'CSMS'],
+};
+
 async function listOperations(service, options = {}) {
   const serviceName = String(service || '').trim();
   if (!/^[A-Za-z][A-Za-z0-9-]{1,63}$/.test(serviceName)) {
     throw new Error('service must be a KooCLI service name such as ECS, VPC, IMS, OBS, RDS, or CDN.');
+  }
+  const upperName = serviceName.toUpperCase();
+  const subServices = AGGREGATE_SERVICE_MAP[upperName];
+  if (subServices && subServices.length) {
+    const results = await Promise.all(
+      subServices.map(async (sub) => {
+        const r = await runHcloud([sub, '--help'], {
+          timeoutMs: options.timeoutMs,
+          maxRetries: 0,
+        });
+        let result = r;
+        if (!result.ok) {
+          result = await runHcloud([sub, 'help'], {
+            timeoutMs: options.timeoutMs,
+            maxRetries: 0,
+          });
+        }
+        return {
+          subService: sub,
+          command: `hcloud ${sub} --help`,
+          examples: SERVICE_EXAMPLES[sub.toUpperCase()] || {
+            note: `No cached examples for ${sub}. Use the help text above to discover available operations.`,
+          },
+          result,
+        };
+      }),
+    );
+    return {
+      service: serviceName,
+      aggregate: true,
+      aggregatedFrom: subServices,
+      selectionRule:
+        'DMS/DEW are aggregate service names. Use each sub-service help text below to select the exact KooCLI operation name.',
+      subServices: results,
+    };
   }
   const isObs = /^obs$/i.test(serviceName);
   const svc = isObs ? 'obs' : serviceName;
@@ -1772,7 +1814,7 @@ async function listOperations(service, options = {}) {
     service: serviceName,
     command: isObs ? 'hcloud obs help' : `hcloud ${svc} --help`,
     selectionRule: 'Use this help text to select the exact KooCLI operation name before planning any service command.',
-    examples: SERVICE_EXAMPLES[serviceName.toUpperCase()] || {
+    examples: SERVICE_EXAMPLES[upperName] || {
       note: `No cached examples for ${serviceName}. Use the help text above to discover available operations.`,
     },
     result,
