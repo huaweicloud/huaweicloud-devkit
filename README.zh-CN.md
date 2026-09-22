@@ -256,6 +256,8 @@ npx --yes huaweicloud-devkit uninstall --target atomcode
 
 > **遥测检测**：除上述专用安装目标外，遥测模块在 DevKit 工具从以下 Agent 中调用时会自动检测运行环境：Cursor、Claude Code、Cline、GitHub Copilot、Windsurf、Kimi、Gemini CLI、Augment CLI、Aider、通义灵码、Amazon Q、Continue。这些 Agent 仅用于遥测识别，没有专用的 `--target` 安装路径，请使用上方的通用 MCP 配置接入。
 
+<!-- -->
+
 > 像上面这种手动 MCP 注册方式，请勿在配置里写凭据。`HW_ACCESS_KEY`/`HW_SECRET_KEY` 是保留给**平台/CI 注入**的账号用的（例如 DevSpace 托管的默认账号）——自己的账号统一通过 `npx huaweicloud-devkit auth init` 配置（唯一入口），会话内切换账号用 `huaweicloud_auth_init` / `huaweicloud_auth_switch` MCP 工具。完整凭据解析优先级见 `plugins/huaweicloud-core/skills/huaweicloud-cli-and-auth/SKILL.md`。
 
 #### 通过 Remote（HTTP）连接
@@ -360,3 +362,4 @@ ECS、OBS、VPC、IAM、RDS、GaussDB、FunctionGraph、APIG、CCE、SMN/DMS、M
 ## 许可证
 
 本项目基于 Apache-2.0 许可证发布。详见 [LICENSE](LICENSE)。
+
