@@ -2406,6 +2406,11 @@ async function installOfficeAce() {
   // OFFICE_CLAW_CONFIG_ROOT env) still targets the same directory (#559).
   const resolvedRoot = officeaceCapabilitiesDir();
   if (resolvedRoot) writeOfficeaceRootMarker(resolvedRoot);
+  // Write the .installed marker so status/doctor detects the install (#797 D5-1).
+  // All other install*() functions and updateOfficeAce() write this marker;
+  // installOfficeAce() was the sole omission.
+  mkdirSync(pluginDest, { recursive: true });
+  writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
 }
 
 async function updateOfficeAce() {
