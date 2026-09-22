@@ -17,7 +17,13 @@ function regexFrom(pattern) {
   return new RegExp(pattern, 'i');
 }
 
-function isSecretKeyName(key, policy = DEFAULT_POLICY) {
+// Opaque blob keys (cloud-init user_data, metadata, private_key) carry
+// base64/scripts that may embed SSH keys, DB passwords, bootstrap tokens.
+// Redact the ENTIRE value of this arg — not just the first whitespace token.
+// These are pattern identifiers matching entries in policy.secretKeyNamePatterns.
+const OPAQUE_VALUE_PATTERNS = new Set(['user[_-]?data', 'metadata', 'private[_-]?key']);
+
+export function isSecretKeyName(key, policy = DEFAULT_POLICY) {
   const normalized = String(key)
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '');
@@ -31,19 +37,32 @@ function isSecretKeyName(key, policy = DEFAULT_POLICY) {
   return policy.secretKeyNamePatterns.some((pattern) => regexFrom(`^(${pattern})$`).test(key));
 }
 
-function redactString(text) {
-  return (
-    String(text)
-      // Opaque blob keys (cloud-init user_data, metadata, private_key) carry
-      // base64/scripts that may embed SSH keys, DB passwords, bootstrap tokens.
-      // Redact the ENTIRE value of this arg — not just the first whitespace token.
-      .replace(/((?:user[_-]?data|metadata|private[_-]?key)\s*[:=]\s*).*/gi, '$1<redacted>')
-      .replace(
-        /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|authorization|password|passwd|adminPass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-        '$1<redacted>',
-      )
-      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
-  );
+// (?<![A-Za-z0-9]) treats '_' as a boundary (unlike \b which counts _ as \w),
+// so 'password' inside 'db_password' still matches while 'ak' inside 'break' does not.
+const KEY_BOUNDARY = '(?<![A-Za-z0-9])';
+
+function buildStringRedactors(policy) {
+  const all = policy.secretKeyNamePatterns;
+  const opaque = all.filter((p) => OPAQUE_VALUE_PATTERNS.has(p));
+  const regular = all.filter((p) => !OPAQUE_VALUE_PATTERNS.has(p));
+  return {
+    opaqueRe: opaque.length ? new RegExp(`${KEY_BOUNDARY}((?:${opaque.join('|')})\\s*[:=]\\s*).*`, 'gi') : null,
+    regularRe: regular.length
+      ? new RegExp(`${KEY_BOUNDARY}((?:${regular.join('|')})\\s*[:=]\\s*)("[^"]*"|'[^']*'|[^\\s,;]+)`, 'gi')
+      : null,
+  };
+}
+
+export function redactString(text, policy = DEFAULT_POLICY) {
+  const { opaqueRe, regularRe } = buildStringRedactors(policy);
+  let result = String(text);
+  if (opaqueRe) {
+    result = result.replace(opaqueRe, '$1<redacted>');
+  }
+  if (regularRe) {
+    result = result.replace(regularRe, '$1<redacted>');
+  }
+  return result;
 }
 
 export function redactSecrets(value, policy = DEFAULT_POLICY) {
@@ -59,7 +78,20 @@ export function redactSecrets(value, policy = DEFAULT_POLICY) {
     );
   }
   if (typeof value === 'string') {
-    return redactString(value);
+    // JSON string path: parse → recurse through object redaction (reuses
+    // isSecretKeyName) → stringify. Falls back to regex-based redactString
+    // when the string is not valid JSON.
+    const firstChar = value.trimStart()[0];
+    if (firstChar === '{' || firstChar === '[') {
+      try {
+        const parsed = JSON.parse(value);
+        const redacted = redactSecrets(parsed, policy);
+        return JSON.stringify(redacted);
+      } catch {
+        // Not valid JSON — fall back to regex-based redaction below.
+      }
+    }
+    return redactString(value, policy);
   }
   return value;
 }
