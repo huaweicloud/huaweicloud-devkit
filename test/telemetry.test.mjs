@@ -178,3 +178,57 @@ test('ingestHookEvents handles empty or missing file', async () => {
     assert.doesNotThrow(() => ingestHookEvents());
   });
 });
+
+async function runDebugLoggedInit(envValue) {
+  const fs = await import('node:fs');
+  const path = await import('node:path');
+  const prevDebug = process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+  const prevEndpoint = process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT;
+  process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT = 'http://127.0.0.1:1';
+  const debugLogPath = path.join('plugins', 'huaweicloud-core', 'telemetry', 'telemetry-debug.log');
+  const pollLogFile = async (timeoutMs = 3000) => {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      if (fs.existsSync(debugLogPath)) {
+        return fs.readFileSync(debugLogPath, 'utf8');
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    return '';
+  };
+  const written = async () => {
+    await withIsolatedTelemetry(async ({ initTelemetry, trackToolInvoke }) => {
+      initTelemetry({ harness: 'test', version: '1.0.0' });
+      for (let i = 0; i < 100; i++) {
+        trackToolInvoke(`probe_${i}`);
+      }
+    });
+    return pollLogFile();
+  };
+  try {
+    if (envValue === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+    else process.env.HUAWEICLOUD_DEVKIT_DEBUG = envValue;
+    return await written();
+  } finally {
+    fs.rmSync(debugLogPath, { force: true });
+    if (prevDebug === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+    else process.env.HUAWEICLOUD_DEVKIT_DEBUG = prevDebug;
+    if (prevEndpoint === undefined) delete process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT;
+    else process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT = prevEndpoint;
+  }
+}
+
+test('HUAWEICLOUD_DEVKIT_DEBUG=1 时写 telemetry-debug.log', async () => {
+  const content = await runDebugLoggedInit('1');
+  assert.ok(content.includes('FLUSH'), `expected debug log content, got: ${content}`);
+});
+
+test('HUAWEICLOUD_DEVKIT_DEBUG=true 时写 telemetry-debug.log', async () => {
+  const content = await runDebugLoggedInit('true');
+  assert.ok(content.includes('FLUSH'), `expected debug log content, got: ${content}`);
+});
+
+test('HUAWEICLOUD_DEVKIT_DEBUG 未设置时不写 telemetry-debug.log', async () => {
+  const content = await runDebugLoggedInit(undefined);
+  assert.equal(content, '');
+});
