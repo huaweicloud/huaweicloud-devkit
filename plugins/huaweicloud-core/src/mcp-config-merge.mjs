@@ -130,3 +130,26 @@ export function applyUserDelta(entry, delta, style) {
   if (delta.enabled === false) merged.enabled = false;
   return merged;
 }
+
+// Collect user-owned environment variables from peer DevKit server entries in the
+// same MCP map (e.g. market-preset keys like `huaweicloud-devkit_1` that carry the
+// user's temporary STS credentials HW_ACCESS_KEY / HW_SECRET_KEY / HW_SECURITY_TOKEN).
+// When the installer writes a NEW `huaweicloud-devkit` entry these must be inherited
+// so the freshly installed key also has the user's credentials (the CodeArts Work
+// UI never surfaces them; they live only in mcp_settings.json).
+export function inheritPeerUserEnv(mcpMap) {
+  if (!isPlainObject(mcpMap)) return null;
+  const collected = {};
+  for (const [key, entry] of Object.entries(mcpMap)) {
+    if (key === 'huaweicloud-devkit') continue;
+    if (!/^huaweicloud-devkit(?:_|$)/i.test(key) && key !== 'HuaweiCloud DevKit') continue;
+    const env = isPlainObject(entry?.environment) ? entry.environment : isPlainObject(entry?.env) ? entry.env : null;
+    if (!env) continue;
+    for (const [k, v] of Object.entries(env)) {
+      if (REQUIRED_ENV_KEYS.has(k)) continue;
+      if (typeof v !== 'string' || v === '') continue;
+      if (!(k in collected)) collected[k] = v;
+    }
+  }
+  return Object.keys(collected).length > 0 ? collected : null;
+}

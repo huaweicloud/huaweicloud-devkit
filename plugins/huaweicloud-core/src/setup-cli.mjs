@@ -36,7 +36,13 @@ import {
   getProxySettings,
 } from './proxy/proxy-config.mjs';
 import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.mjs';
-import { mergeCommandStyle, mergeArgsStyle, extractUserDelta, applyUserDelta } from './mcp-config-merge.mjs';
+import {
+  mergeCommandStyle,
+  mergeArgsStyle,
+  extractUserDelta,
+  applyUserDelta,
+  inheritPeerUserEnv,
+} from './mcp-config-merge.mjs';
 import { readAgentDelta, saveAgentDelta, takeAgentDelta, purgeBackup } from './mcp-config-backup.mjs';
 import { isUsableOfficeaceRoot, readOfficeaceRootMarker, writeOfficeaceRootMarker } from './officeace-paths.mjs';
 import { queryDistTagsFetch, determineTarget, semverCompare } from './update-check.mjs';
@@ -123,7 +129,12 @@ function codeartsWorkSkillsDir() {
   return join(homedir(), '.codeartswork', 'skills');
 }
 function codeartsWorkMcpSettingsFile() {
-  return join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json');
+  // Post platform migration the marketplace presets the plugin under ~/.codearts
+  // (new layout); legacy ~/.codeartswork is kept as fallback while still in
+  // service. Default to the new dir when it exists, otherwise legacy.
+  const newDir = join(homedir(), '.codearts', 'mcp');
+  const legacy = join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json');
+  return existsSync(newDir) ? join(newDir, 'mcp_settings.json') : legacy;
 }
 function codeartsWorkPluginsDir() {
   return join(homedir(), '.codeartswork', 'huaweicloud-plugins');
@@ -1454,6 +1465,10 @@ function registerCodeartsWorkMcp() {
   config.mcp = config.mcp || {};
   let entry = mergeCommandStyle(undefined, { mcpPath }).entry;
   entry.environment = { ...environment };
+  // Inherit user-owned env (e.g. market-preset `huaweicloud-devkit_1` carrying the
+  // user's temporary STS credentials) so a freshly installed key also has them.
+  const peerEnv = inheritPeerUserEnv(config.mcp);
+  if (peerEnv) entry.environment = { ...peerEnv, ...entry.environment };
   // Restore user fields saved by a previous uninstall (issue #615).
   const delta = takeAgentDelta('codearts-work');
   if (delta) entry = applyUserDelta(entry, delta, 'command');

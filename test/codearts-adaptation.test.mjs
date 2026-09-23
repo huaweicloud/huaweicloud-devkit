@@ -297,3 +297,43 @@ test('codearts-work appears in help output', () => {
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test('codearts-work install inherits user STS env from market-preset ~/.codearts peer key', () => {
+  const home = mkdtempSync(join(tmpdir(), 'codearts-work-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'codearts-work-proj-'));
+  try {
+    const presetDir = join(home, '.codearts', 'mcp');
+    mkdirSync(presetDir, { recursive: true });
+    writeFileSync(
+      join(presetDir, 'mcp_settings.json'),
+      JSON.stringify({
+        mcp: {
+          'huaweicloud-devkit_1': {
+            type: 'local',
+            command: ['npx', '-y', '-p', 'huaweicloud-devkit@latest', 'huaweicloud-devkit-mcp'],
+            environment: {
+              HW_ACCESS_KEY: 'INHERIT_AK',
+              HW_SECRET_KEY: 'INHERIT_SK',
+              HW_SECURITY_TOKEN: 'INHERIT_TOKEN',
+              HW_REGION: 'cn-south-1',
+            },
+          },
+        },
+      }),
+      'utf8',
+    );
+    const res = runCli(home, cwd, ['install', '--target', 'codearts-work']);
+    assert.equal(res.status, 0, res.stderr);
+    const config = mcpConfig(join(home, '.codearts', 'mcp', 'mcp_settings.json'));
+    assert.ok(config, 'mcp_settings.json exists under ~/.codearts');
+    const server = config.mcp['huaweicloud-devkit'];
+    assert.ok(server, 'devkit-installed key exists alongside market-preset _1');
+    assert.equal(server.environment.HW_ACCESS_KEY, 'INHERIT_AK');
+    assert.equal(server.environment.HW_SECRET_KEY, 'INHERIT_SK');
+    assert.equal(server.environment.HW_SECURITY_TOKEN, 'INHERIT_TOKEN');
+    assert.equal(server.command[0], 'node');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

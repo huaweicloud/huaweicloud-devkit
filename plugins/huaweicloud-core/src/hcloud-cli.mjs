@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { findHcloudBin, resolveHcloudCommand } from './hcloud-probe.mjs';
+import { resolveCredentialsWithRuntime } from './auth/credentials.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
@@ -237,6 +238,28 @@ export function classifyUnsupported(service, metaDir) {
   return 'unknown';
 }
 
+// Build command-line credential-injection args when the current credentials are
+// temporary STS (carry a non-empty security token). KooCLI/obsutil do not read the
+// platform-injected HW_* env (link B reads only S2/S3 config), so for a live STS
+// credential set that R3 forbids writing to disk, we pass it per-command instead.
+// Zero-persist: nothing touches S1/S2/S3 and every invocation re-reads the current
+// value (stale as soon as the token is).
+export function resolveStsInjectArgs(rawArgs) {
+  const normalized = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  if (normalized.length === 0) return [];
+  let creds;
+  try {
+    creds = resolveCredentialsWithRuntime({ allowMissing: true });
+  } catch {
+    return [];
+  }
+  if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
+  const isObs = normalized[0].toUpperCase() === 'OBS';
+  return isObs
+    ? ['-i', creds.ak, '-k', creds.sk, '-t', creds.securityToken]
+    : ['--cli-access-key=' + creds.ak, '--cli-secret-key=' + creds.sk, '--cli-security-token=' + creds.securityToken];
+}
+
 export function planHcloudCommand(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const classification = classifyHcloudArgs(normalizedArgs, options);
@@ -298,6 +321,16 @@ export async function runHcloud(args, options = {}) {
     rawArgs: normalizedArgs,
   };
   assertAllowed(plan.classification);
+
+  // Link B: when the runtime/environment carries live temporary STS credentials
+  // (security token set), KooCLI/obsutil would not see them (they read S2/S3 only
+  // and R3 forbids writing them to disk). Inject per-command so hcloud actually
+  // authenticates with the platform-provided STS. Injection args are appended to
+  // the EXECUTED args only; classification/approval used the original args.
+  const stsInject = resolveStsInjectArgs(normalizedArgs);
+  if (stsInject.length > 0) {
+    plan.rawArgs = [...plan.rawArgs, ...stsInject];
+  }
 
   const metaDir = options.metaDir;
 

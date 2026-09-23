@@ -7,6 +7,7 @@ import {
   mergeMcpServersFile,
   extractUserDelta,
   applyUserDelta,
+  inheritPeerUserEnv,
 } from '../plugins/huaweicloud-core/src/mcp-config-merge.mjs';
 
 const MCP_PATH = '/home/u/.config/opencode/huaweicloud-plugins/src/mcp-server.mjs';
@@ -191,4 +192,43 @@ test('extractUserDelta keeps non-managed env keys as user assets', () => {
 test('applyUserDelta ignores non-object input', () => {
   const fresh = { command: 'node', args: [MCP_PATH] };
   assert.deepEqual(applyUserDelta(fresh, null, 'args'), fresh);
+});
+
+test('inheritPeerUserEnv collects user STS env from marketplace-preset peer keys', () => {
+  const mcpMap = {
+    'huaweicloud-devkit_1': {
+      command: ['npx', '-y', '-p', 'huaweicloud-devkit@latest', 'huaweicloud-devkit-mcp'],
+      environment: {
+        HW_ACCESS_KEY: 'AK_FROM_MARKET',
+        HW_SECRET_KEY: 'SK_FROM_MARKET',
+        HW_SECURITY_TOKEN: 'TOKEN_FROM_MARKET',
+        HW_REGION: 'cn-south-1',
+      },
+    },
+    'huaweicloud-devkit': { command: ['node', MCP_PATH], environment: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' } },
+  };
+  const inherited = inheritPeerUserEnv(mcpMap);
+  assert.deepEqual(inherited, {
+    HW_ACCESS_KEY: 'AK_FROM_MARKET',
+    HW_SECRET_KEY: 'SK_FROM_MARKET',
+    HW_SECURITY_TOKEN: 'TOKEN_FROM_MARKET',
+    HW_REGION: 'cn-south-1',
+  });
+});
+
+test('inheritPeerUserEnv ignores installer-managed keys and self entry', () => {
+  const mcpMap = {
+    'huaweicloud-devkit_1': {
+      environment: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local', HCLOUD_BIN: '/x/hcloud', HW_ACCESS_KEY: 'AK' },
+    },
+  };
+  const inherited = inheritPeerUserEnv(mcpMap);
+  assert.deepEqual(inherited, { HW_ACCESS_KEY: 'AK' });
+});
+
+test('inheritPeerUserEnv handles .env style peers and returns null when nothing to inherit', () => {
+  assert.equal(inheritPeerUserEnv({}), null);
+  assert.equal(inheritPeerUserEnv(null), null);
+  const envStyle = { 'huaweicloud-devkit_1': { env: { HW_ACCESS_KEY: 'AK2' } } };
+  assert.deepEqual(inheritPeerUserEnv(envStyle), { HW_ACCESS_KEY: 'AK2' });
 });

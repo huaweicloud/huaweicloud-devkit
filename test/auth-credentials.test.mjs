@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
@@ -11,6 +11,7 @@ import {
   getParentCwd,
   globalCredentialsPath,
   obsConfigPath,
+  parseStsExpiry,
   readGlobalCredentials,
   readLastSync,
   resolveCredentials,
@@ -583,4 +584,137 @@ test('50 onboarding scenario1: S1 exists + platform triplet → use S1 (not s1-m
     delete process.env.HW_SECRET_KEY;
     delete process.env.HW_SECURITY_TOKEN;
   });
+});
+
+test('resolveCredentials reads CodeArts Work new layout ~/.codearts with prefixed key', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+
+    const workDir = join(homedir(), '.codearts', 'mcp');
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(
+      join(workDir, 'mcp_settings.json'),
+      JSON.stringify({
+        mcp: {
+          'huaweicloud-devkit_1': {
+            type: 'local',
+            command: ['npx', '-y', '-p', 'huaweicloud-devkit@latest', 'huaweicloud-devkit-mcp'],
+            environment: {
+              HW_ACCESS_KEY: 'NEW_WORK_AK',
+              HW_SECRET_KEY: 'NEW_WORK_SK',
+              HW_SECURITY_TOKEN: 'NEW_WORK_TOKEN',
+              HW_REGION: 'cn-north-4',
+            },
+          },
+        },
+      }),
+      'utf8',
+    );
+
+    try {
+      const creds = resolveCredentials();
+      assert.equal(creds.ak, 'NEW_WORK_AK');
+      assert.equal(creds.sk, 'NEW_WORK_SK');
+      assert.equal(creds.securityToken, 'NEW_WORK_TOKEN');
+    } finally {
+      rmSync(join(homedir(), '.codearts'), { recursive: true, force: true });
+    }
+  });
+});
+
+test('resolveCredentials falls back to legacy ~/.codeartswork when new ~/.codearts absent', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+
+    const legacyDir = join(homedir(), '.codeartswork', 'mcp');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(
+      join(legacyDir, 'mcp_settings.json'),
+      JSON.stringify({
+        mcp: {
+          'huaweicloud-devkit': { environment: { HW_ACCESS_KEY: 'LEGACY_WORK_AK', HW_SECRET_KEY: 'LEGACY_WORK_SK' } },
+        },
+      }),
+      'utf8',
+    );
+
+    try {
+      const creds = resolveCredentials();
+      assert.equal(creds.ak, 'LEGACY_WORK_AK');
+      assert.equal(creds.sk, 'LEGACY_WORK_SK');
+    } finally {
+      rmSync(join(homedir(), '.codeartswork'), { recursive: true, force: true });
+    }
+  });
+});
+
+test('auth_status reports mcpSettingsConfigured and mcp-settings-injected onboarding', () => {
+  withTempHome(() => {
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+    const workDir = join(homedir(), '.codearts', 'mcp');
+    mkdirSync(workDir, { recursive: true });
+    writeFileSync(
+      join(workDir, 'mcp_settings.json'),
+      JSON.stringify({
+        mcp: {
+          'huaweicloud-devkit_1': {
+            environment: { HW_ACCESS_KEY: 'S4_AK', HW_SECRET_KEY: 'S4_SK', HW_SECURITY_TOKEN: 'S4_TOKEN' },
+          },
+        },
+      }),
+      'utf8',
+    );
+    try {
+      const status = getAuthStatus('all');
+      assert.equal(status.credentialsConfigured, false);
+      assert.equal(status.mcpSettingsConfigured, true);
+      assert.equal(status.onboarding.reason, 'mcp-settings-injected');
+      assert.equal(status.onboarding.needsSetup, false);
+    } finally {
+      rmSync(join(homedir(), '.codearts'), { recursive: true, force: true });
+    }
+  });
+});
+
+test('parseStsExpiry reads HW_EXPIRES_AT (epoch seconds and ISO8601)', () => {
+  assert.equal(parseStsExpiry({ expiresAtEnv: '1750000000' }), 1750000000 * 1000);
+  assert.equal(parseStsExpiry({ expiresAtEnv: '1750000000000' }), 1750000000000);
+  const iso = new Date('2026-10-01T00:00:00Z').getTime();
+  assert.equal(parseStsExpiry({ expiresAtEnv: '2026-10-01T00:00:00Z' }), iso);
+  assert.equal(parseStsExpiry({ expiresAtEnv: '' }), null);
+});
+
+test('parseStsExpiry decodes JWT payload exp', () => {
+  const exp = 1750000000;
+  const payload = Buffer.from(JSON.stringify({ exp })).toString('base64url');
+  const token = 'eyJhbGciOiJub25lIn0.' + payload + '.sig';
+  assert.equal(parseStsExpiry({ securityToken: token }), exp * 1000);
+});
+
+test('parseStsExpiry decodes bare URL-safe base64 JSON blob (timeout_at)', () => {
+  const timeoutAt = 1750000000;
+  const token = Buffer.from(JSON.stringify({ timeout_at: timeoutAt })).toString('base64url');
+  assert.equal(parseStsExpiry({ securityToken: token }), timeoutAt * 1000);
+});
+
+test('parseStsExpiry supports issued_at + duration fields', () => {
+  const issued = 1750000000;
+  const duration = 3600;
+  const token = Buffer.from(JSON.stringify({ issued_at: issued, duration })).toString('base64url');
+  assert.equal(parseStsExpiry({ securityToken: token }), (issued + duration) * 1000);
+});
+
+test('parseStsExpiry returns null for unparseable input', () => {
+  assert.equal(parseStsExpiry({}), null);
+  assert.equal(parseStsExpiry({ securityToken: 'not-a-token!' }), null);
+  assert.equal(parseStsExpiry({ securityToken: '' }), null);
+  assert.equal(parseStsExpiry({ securityToken: null }), null);
 });

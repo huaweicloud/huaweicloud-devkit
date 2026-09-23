@@ -9,6 +9,7 @@ import {
   createApprovalToken,
   hashArgs,
   planHcloudCommand,
+  resolveStsInjectArgs,
   runHcloud,
   extractApiError,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.mjs';
@@ -359,4 +360,58 @@ process.exit(1);
     rmSync(metaDir, { recursive: true, force: true });
     rmSync(join(script, '..'), { recursive: true, force: true });
   }
+});
+
+test('resolveStsInjectArgs returns empty for long-lived creds (no token)', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('AK_NO_TOKEN', 'SK_NO_TOKEN', '');
+  assert.deepEqual(resolveStsInjectArgs(['ECS', 'ListServersDetails']), []);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs injects STS args for live runtime tokens', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  const injected = resolveStsInjectArgs(['VPC', 'ListVpcs']);
+  assert.deepEqual(injected, ['--cli-access-key=STS_AK', '--cli-secret-key=STS_SK', '--cli-security-token=STS_TOKEN']);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs uses obsutil -i/-k/-t for OBS subcommands', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  const injected = resolveStsInjectArgs(['OBS', 'ls']);
+  assert.deepEqual(injected, ['-i', 'STS_AK', '-k', 'STS_SK', '-t', 'STS_TOKEN']);
+  clearRuntimeCredentials();
+});
+
+test('runHcloud appends STS args to executed command when runtime token is set', async () => {
+  await withTempAuthHome(async () => {
+    const script = fakeHcloudScript('console.log(JSON.stringify({ ok: true, args: process.argv.slice(2) }));');
+    clearRuntimeCredentials();
+    setRuntimeCredentials('RUN_AK', 'RUN_SK', 'RUN_TOKEN', 'cn-north-4');
+    const result = await runHcloud(['VPC', 'ListVpcs'], { executable: process.execPath, executableArgs: [script] });
+    assert.equal(result.ok, true);
+    const parsed = JSON.parse(result.stdout);
+    // Secret values are redacted to `<redacted>`; presence proves injection.
+    assert.ok(
+      parsed.args.some((a) => a.startsWith('--cli-security-token=')),
+      JSON.stringify(parsed.args),
+    );
+    assert.ok(parsed.args.some((a) => a.startsWith('--cli-access-key=')));
+    assert.ok(parsed.args.some((a) => a.startsWith('--cli-secret-key=')));
+    clearRuntimeCredentials();
+  });
+});
+
+test('runHcloud does NOT inject STS args for long-lived creds (no token)', async () => {
+  await withTempAuthHome(async () => {
+    const script = fakeHcloudScript('console.log(JSON.stringify({ ok: true, args: process.argv.slice(2) }));');
+    clearRuntimeCredentials();
+    const result = await runHcloud(['VPC', 'ListVpcs'], { executable: process.execPath, executableArgs: [script] });
+    assert.equal(result.ok, true);
+    const parsed = JSON.parse(result.stdout);
+    const injected = parsed.args.filter((a) => a.startsWith('--cli-security-token='));
+    assert.equal(injected.length, 0, JSON.stringify(parsed.args));
+  });
 });

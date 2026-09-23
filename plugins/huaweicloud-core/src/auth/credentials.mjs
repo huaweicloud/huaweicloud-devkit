@@ -85,6 +85,82 @@ function present(v) {
   return typeof v === 'string' && v.length > 0 && !isPlaceholder(v);
 }
 
+// Pick the Huawei Cloud DevKit MCP server entry from a map using prefix matching.
+// CodeArts Work marketplace presets keyed entries like `huaweicloud-devkit_1`
+// (suffix per installed instance); match by prefix so `_1`/`_2`/`HuaweiCloud DevKit`
+// all resolve without hardcoding an instance number.
+function pickDevkitMcpServer(mcpMap) {
+  if (!mcpMap || typeof mcpMap !== 'object') return null;
+  const keys = Object.keys(mcpMap);
+  const candidates = keys.filter((k) => /^huaweicloud-devkit(?:_|$)/i.test(k) || k === 'HuaweiCloud DevKit');
+  for (const k of candidates) {
+    if (mcpMap[k]) return mcpMap[k];
+  }
+  return null;
+}
+
+// Derive the expiry (epoch ms) of a temporary STS credential set.
+// Priority: 1) HW_EXPIRES_AT env (ISO8601 or epoch seconds); 2) decode the
+// security token (JWT payload or bare URL-safe base64 JSON) reading common
+// expiry fields (exp, timeout_at, expires_at, id_expires_at; issued_at+duration).
+// Returns null when unknown/unparseable. Never throws.
+export function parseStsExpiry({ securityToken, expiresAtEnv = process.env.HW_EXPIRES_AT } = {}) {
+  if (expiresAtEnv) {
+    const v = String(expiresAtEnv).trim();
+    if (!v) return null;
+    const asNum = Number(v);
+    if (Number.isFinite(asNum) && asNum > 0) return asNum > 1e12 ? asNum : asNum * 1000;
+    const t = Date.parse(v);
+    if (Number.isFinite(t)) return t;
+    return null;
+  }
+  if (!securityToken || typeof securityToken !== 'string') return null;
+  const token = String(securityToken).trim();
+  if (!token) return null;
+
+  const payload = (() => {
+    try {
+      if (token.includes('.')) {
+        const parts = token.split('.');
+        const b64 = parts.length >= 2 ? parts[1] : null;
+        if (!b64) return null;
+        const pad = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+        return JSON.parse(Buffer.from(pad.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+      }
+      const pad = token + '='.repeat((4 - (token.length % 4)) % 4);
+      return JSON.parse(Buffer.from(pad.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+    } catch {
+      return null;
+    }
+  })();
+  if (!payload || typeof payload !== 'object') return null;
+
+  const exp = Number(payload.exp ?? payload.expires_at ?? payload.timeout_at ?? Number.NaN);
+  if (Number.isFinite(exp) && exp > 0) return exp * 1000;
+  const issued = Number(payload.issued_at ?? payload.iat ?? Number.NaN);
+  const duration = Number(payload.duration ?? payload.expires_in ?? payload.lifetime ?? Number.NaN);
+  if (Number.isFinite(issued) && issued > 0 && Number.isFinite(duration) && duration > 0) {
+    return (issued + duration) * 1000;
+  }
+  return null;
+}
+
+function readWorkEnvironmentEntry(config) {
+  const server = pickDevkitMcpServer(config?.mcp);
+  if (!server?.environment) return null;
+  const ak = server.environment.HW_ACCESS_KEY;
+  const sk = server.environment.HW_SECRET_KEY;
+  if (present(ak) && present(sk)) {
+    return {
+      ak,
+      sk,
+      securityToken: present(server.environment.HW_SECURITY_TOKEN) ? server.environment.HW_SECURITY_TOKEN : '',
+      region: server.environment.HW_REGION || server.environment.HUAWEICLOUD_REGION || '',
+    };
+  }
+  return null;
+}
+
 export function writeGlobalCredentials(credentials = {}) {
   const path = globalCredentialsPath();
   mkdirSync(dirname(path), { recursive: true });
@@ -136,6 +212,7 @@ export function resolveCredentials(options = {}) {
   if (codeartsCreds) {
     if (!ak && codeartsCreds.ak) ak = codeartsCreds.ak;
     if (!sk && codeartsCreds.sk) sk = codeartsCreds.sk;
+    if (!securityToken && codeartsCreds.securityToken) securityToken = codeartsCreds.securityToken;
     if (!region && codeartsCreds.region) region = codeartsCreds.region;
   }
 
@@ -234,7 +311,8 @@ function isCodeArtsContext() {
   return (
     existsSync(join(process.cwd(), '.codeartsdoer')) ||
     existsSync(join(homedir(), '.codeartsdoer')) ||
-    existsSync(join(homedir(), '.codeartswork'))
+    existsSync(join(homedir(), '.codeartswork')) ||
+    existsSync(join(homedir(), '.codearts'))
   );
 }
 
@@ -248,7 +326,7 @@ export function readCodeArtsCredentials() {
     try {
       if (!existsSync(path)) continue;
       const config = JSON.parse(readFileSync(path, 'utf8'));
-      const server = config?.mcpServers?.['huaweicloud-devkit'] || config?.mcpServers?.['HuaweiCloud DevKit'];
+      const server = pickDevkitMcpServer(config?.mcpServers);
       if (!server?.env) continue;
 
       const ak = server.env.HW_ACCESS_KEY;
@@ -266,26 +344,20 @@ export function readCodeArtsCredentials() {
     }
   }
 
-  // CodeArts Work — user-level only
-  {
-    const path = join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json');
+  // CodeArts Work — user-level only.
+  // New layout (post platform migration): ~/.codearts/mcp/mcp_settings.json with
+  // prefixed keys like `huaweicloud-devkit_1`; legacy ~/.codeartswork kept as
+  // fallback while still in service.
+  const workPaths = [
+    join(homedir(), '.codearts', 'mcp', 'mcp_settings.json'),
+    join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json'),
+  ];
+  for (const path of workPaths) {
     try {
-      if (existsSync(path)) {
-        const config = JSON.parse(readFileSync(path, 'utf8'));
-        const server = config?.mcp?.['huaweicloud-devkit'] || config?.mcp?.['HuaweiCloud DevKit'];
-        if (server?.environment) {
-          const ak = server.environment.HW_ACCESS_KEY;
-          const sk = server.environment.HW_SECRET_KEY;
-          if (present(ak) && present(sk)) {
-            return {
-              ak,
-              sk,
-              securityToken: present(server.environment.HW_SECURITY_TOKEN) ? server.environment.HW_SECURITY_TOKEN : '',
-              region: server.environment.HW_REGION || server.environment.HUAWEICLOUD_REGION || '',
-            };
-          }
-        }
-      }
+      if (!existsSync(path)) continue;
+      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const entry = readWorkEnvironmentEntry(config);
+      if (entry) return entry;
     } catch {
       // mcp_settings.json missing or invalid — skip
     }

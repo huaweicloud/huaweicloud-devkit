@@ -8,6 +8,7 @@ import {
   globalCredentialsPath,
   isPlaceholder,
   obsConfigPath,
+  readCodeArtsCredentials,
   readGlobalCredentials,
   writeLastSync,
   writeObsConfig,
@@ -47,6 +48,8 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
   const creds = credentials ?? readGlobalCredentials();
   const scan = reconciled ?? exportStateForStatus();
   const s1Has = Boolean(creds?.ak && creds?.sk && !isPlaceholder(creds.ak) && !isPlaceholder(creds.sk));
+  const s4Creds = readCodeArtsCredentials();
+  const s4Has = Boolean(s4Creds?.ak && s4Creds?.sk);
   const injected = envHasRealTriplet();
   // env has real non-triplet creds that are NOT placeholders (e.g. devspace AK/SK w/o token)
   const envRealAk = !isPlaceholder(process.env.HW_ACCESS_KEY) && Boolean(process.env.HW_ACCESS_KEY);
@@ -70,6 +73,14 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
     scenario = 0;
     reason = 'platform-injected';
     message = 'Platform credentials are active; nothing to configure.';
+    return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
+  }
+  if (s4Has && !s1Has && !envHasCreds) {
+    // CodeArts Work/IDE carries the user's temporary STS credentials in the MCP
+    // settings file only (not surfaced in the UI, not in S1/env).
+    scenario = 0;
+    reason = 'mcp-settings-injected';
+    message = '已从码道 MCP settings 读取到临时凭证,MCP 工具可直接使用。';
     return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
   }
   if (s1Has && !envHasCreds) {
@@ -155,11 +166,14 @@ export function getAuthStatus(target = 'all') {
   const credentials = readGlobalCredentials();
   const reconciled = { ...exportStateForStatus(), runtimeActive: hasRuntimeCredentials() };
   const hcloud = probeHcloud();
+  const s4Creds = readCodeArtsCredentials();
   const onboarding = computeOnboarding({ credentials, reconciled });
   return {
     target,
     credentialsConfigured: Boolean(credentials?.ak && credentials?.sk),
     credentialsPath: globalCredentialsPath(),
+    mcpSettingsConfigured: Boolean(s4Creds?.ak && s4Creds?.sk),
+    mcpSettingsSource: s4Creds ? 'codearts' : null,
     obsConfigured: existsSync(obsConfigPath()),
     obsConfigPath: obsConfigPath(),
     kooCliInstalled: hcloud.installed,
