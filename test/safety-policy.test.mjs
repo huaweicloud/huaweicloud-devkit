@@ -49,6 +49,70 @@ test('redactSecrets handles string values with key=value patterns', () => {
   assert.doesNotMatch(out, /HPUAI12345/);
 });
 
+test('redactSecrets redacts lowercase ak=/sk= patterns (#694 D2-4)', () => {
+  // obsutilconfig uses lowercase ak=/sk= format — must be redacted.
+  const out = redactSecrets('ak=AK123456 sk=SKsecret');
+  assert.doesNotMatch(out, /AK123456/);
+  assert.doesNotMatch(out, /SKsecret/);
+  assert.match(out, /ak=<redacted>/);
+  assert.match(out, /sk=<redacted>/);
+});
+
+test('redactSecrets redacts mixed-case Ak=/sK= patterns (#694 D2-4)', () => {
+  const out = redactSecrets('Ak=MyAccessKey sK=MySecretKey');
+  assert.doesNotMatch(out, /MyAccessKey/);
+  assert.doesNotMatch(out, /MySecretKey/);
+});
+
+test('redactSecrets does not falsely redact access_key= or tokenize= (#694 D2-4)', () => {
+  // access_key= is handled by the earlier generic credential regex, not the AK/SK one.
+  // tokenize= must not be matched by the AK/SK pattern.
+  const out1 = redactSecrets('access_key=AKIDTEST');
+  assert.doesNotMatch(out1, /AKIDTEST/);
+  assert.match(out1, /access_key=<redacted>/);
+
+  const out2 = redactSecrets('tokenize=abc');
+  assert.equal(out2, 'tokenize=abc');
+});
+
+test('redactSecrets does not falsely redact words ending in ak/sk (#694 D2-4)', () => {
+  // \b word boundary ensures AK/SK only matches as a standalone token, not as a
+  // substring of words like task, mask, leak, risk, break, flask, desk.
+  const words = ['task=abc', 'mask=hello', 'leak=xxx', 'risk=high', 'break=stop', 'flask=app', 'desk=clean'];
+  for (const input of words) {
+    const out = redactSecrets(input);
+    assert.equal(out, input, `${input} should not be redacted`);
+  }
+});
+
+test('redactSecrets redacts JSON-format quoted "ak":/"sk": keys (#694 D2-4)', () => {
+  // hcloud-probe.mjs:126 calls redactSecrets(stdout) directly — without
+  // redactOutput's JSON.parse path — so raw JSON ak/sk values must be redacted
+  // at the string level. This is the original Issue #694 assertion.
+  const out = redactSecrets('{"ak": "AKIDTEST", "sk": "SKTEST"}');
+  assert.doesNotMatch(out, /AKIDTEST/);
+  assert.doesNotMatch(out, /SKTEST/);
+  assert.match(out, /"ak": "<redacted>"/);
+  assert.match(out, /"sk": "<redacted>"/);
+});
+
+test('redactSecrets redacts JSON-format quoted "token" key (#694)', () => {
+  // JSON short-key "token" must be redacted alongside "ak"/"sk" — a bare
+  // "token": "value" pair in stdout must not leak the secret value (#694).
+  const out = redactSecrets('{"token": "abc123"}');
+  assert.doesNotMatch(out, /abc123/);
+  assert.match(out, /"token": "<redacted>"/);
+});
+
+test('redactSecrets redacts lowercase ak:/sk: colon-separated patterns (#694 D2-4)', () => {
+  // Colon separator must be preserved (not rewritten to =).
+  const out = redactSecrets('ak:mykey sk:mysecret');
+  assert.doesNotMatch(out, /mykey/);
+  assert.doesNotMatch(out, /mysecret/);
+  assert.match(out, /ak:<redacted>/);
+  assert.match(out, /sk:<redacted>/);
+});
+
 test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) entirely', () => {
   const redacted = redactSecrets([
     'ECS',

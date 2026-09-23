@@ -14,7 +14,8 @@
     "integrations/opencode",
     "integrations/dsh",
     "integrations/workbuddy",
-    "integrations/atomcode"
+    "integrations/atomcode",
+    "INSTALL.md"
   ],
   "bin": {
     "huaweicloud-devkit": "./bin/setup.cjs",
