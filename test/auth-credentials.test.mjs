@@ -695,7 +695,8 @@ test('parseStsExpiry reads HW_EXPIRES_AT (epoch seconds and ISO8601)', () => {
 test('parseStsExpiry decodes JWT payload exp', () => {
   const exp = 1750000000;
   const payload = Buffer.from(JSON.stringify({ exp })).toString('base64url');
-  const token = 'eyJhbGciOiJub25lIn0.' + payload + '.sig';
+  const header = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
+  const token = [header, payload, 'sig'].join('.');
   assert.equal(parseStsExpiry({ securityToken: token }), exp * 1000);
 });
 
