@@ -396,7 +396,7 @@ export function classifyTextCommand(command, options = {}) {
 
   if (
     /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) &&
-    /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(text)
+    /HUAWEICLOUD|HWC_|HW_|HCLOUD|OS_/i.test(text)
   ) {
     return {
       decision: 'deny',
@@ -460,3 +460,4 @@ export function assertAllowed(result) {
   }
   return result;
 }
+
