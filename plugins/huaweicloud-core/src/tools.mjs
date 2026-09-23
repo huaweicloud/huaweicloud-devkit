@@ -8,7 +8,7 @@ import { createHmac, createHash } from 'node:crypto';
 
 import { evaluateArtifacts, evaluateCommandRisk, evaluateDeployPlan } from './risk-rule-engine.mjs';
 import { classifyTextCommand, redactSecrets } from './safety-policy.mjs';
-import { planHcloudCommand, runHcloud, consumeApprovalToken, hashArgs } from './hcloud-cli.mjs';
+import { planHcloudCommand, runHcloud, consumeApprovalToken, inspectApprovalToken, hashArgs } from './hcloud-cli.mjs';
 import { searchMarketplace } from './search-market.mjs';
 import { getServiceIcon } from './icon-library.mjs';
 import { detectFramework } from './detect-framework.mjs';
@@ -989,6 +989,11 @@ async function transferGitRepo(args, devStageId, connectResult) {
 }
 
 const pendingConfirms = new Map();
+// Tombstones for confirm tokens already consumed, so a repeat
+// huaweicloud_auth_confirm call can be classified as already_processed
+// instead of not_found (D4-24, #745). Kept in-memory only: confirm tokens
+// are session-scoped and never persisted across processes.
+const consumedConfirms = new Map();
 
 function readImportFile() {
   const path = join(dirname(globalCredentialsPath()), 'creds-import.json');
@@ -1256,9 +1261,18 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       return persisted;
     }
     case 'huaweicloud_auth_confirm': {
+      // D4-24 precise JSON contract (#745): a missing or already-consumed
+      // confirm token returns a structured result instead of throwing a
+      // generic Error string, mirroring runApprovedCommand's contract.
       const pending = pendingConfirms.get(args.token);
-      if (!pending) throw new Error('confirmToken not found or expired.');
+      if (!pending) {
+        if (args.token && consumedConfirms.has(args.token)) {
+          return { status: 'ok', outcome: 'already_processed' };
+        }
+        return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
+      }
       pendingConfirms.delete(args.token);
+      consumedConfirms.set(args.token, { consumedAt: Date.now() });
       if (args.decision === 's1') {
         return { status: 'ok', outcome: 'aborted', message: '保持 S1 现有账号，未覆盖。' };
       }
@@ -1784,9 +1798,33 @@ async function runApprovedCommand(args = {}) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
   const token = String(args.approvalToken || '');
+
+  // D4-24 precise JSON contract (#745): expired and already-consumed tokens
+  // return a structured result instead of throwing a generic Error string, so
+  // clients can machine-assert the two non-success states.
+  const inspection = inspectApprovalToken(token);
+  if (inspection.state === 'already_consumed') {
+    return { status: 'ok', outcome: 'already_processed' };
+  }
+  if (inspection.state === 'expired') {
+    return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
+  }
+  if (inspection.state === 'not_found') {
+    // A token that was never created (typo / unknown / pruned beyond the
+    // tombstone window) is still a rejection, but carries no expired/already
+    // semantics — surface a distinct code so clients can tell the cases apart.
+    return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
+  }
+
   const stored = consumeApprovalToken(token);
   if (!stored) {
-    throw new Error('Invalid or expired approval token. Please re-plan the command.');
+    // Defensive: inspectApprovalToken said 'valid' but consume returned null
+    // (e.g. raced and pruned between the two reads). Re-classify so we never
+    // return a misleading success.
+    const recheck = inspectApprovalToken(token);
+    if (recheck.state === 'expired') return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
+    if (recheck.state === 'already_consumed') return { status: 'ok', outcome: 'already_processed' };
+    return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
   }
   const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
   if (hashArgs(providedArgs) !== stored.argsHash) {
