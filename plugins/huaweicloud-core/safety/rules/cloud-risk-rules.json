@@ -36,7 +36,7 @@
           },
           {
             "field": "text",
-            "regex": "(HUAWEICLOUD|HWC_|HCLOUD|OS_)"
+            "regex": "(HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_)"
           }
         ]
       },
@@ -333,6 +333,27 @@
       },
       "message": "The generated plan may create high-cost or unbounded capacity.",
       "remediation": "Use small preview defaults, explicit quotas, budget labels, and user approval before creating high-cost resources."
+    },
+    {
+      "id": "hwc-command-secret-in-arg",
+      "title": "Plaintext secret in command argument",
+      "category": "secret",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "\\bhcloud\\b"
+          },
+          {
+            "field": "text",
+            "regex": "(--adminPass|--password|--secret|--token)\\s*[=:]\\s*[^\\s<]"
+          }
+        ]
+      },
+      "message": "The command passes a plaintext password or secret as a direct CLI argument, which may leak into shell history, logs, or process listings.",
+      "remediation": "Use environment variables, DEW secret references, or interactive prompts instead of passing secrets as command-line arguments."
     },
     {
       "id": "hwc-sandbox-destructive-command",
