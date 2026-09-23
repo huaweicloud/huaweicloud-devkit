@@ -201,6 +201,27 @@
       "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials for generated application workflows."
     },
     {
+      "id": "hwc-iam-broad-action-array",
+      "title": "Broad IAM action wildcard in CLI/array form",
+      "category": "iam",
+      "severity": "deny",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(IAM|policy|role|agency|actions?|Statement)"
+          },
+          {
+            "field": "text",
+            "regex": "[\"']?actions?[\"']?\\s*[=:]\\s*(\\[\\s*)?[\"']\\*(:\\*)?[\"']"
+          }
+        ]
+      },
+      "message": "The change grants wildcard IAM actions (actions=[\"*\"]), equivalent to administrator access.",
+      "remediation": "List explicit service actions instead of wildcard. Use least-privilege scopes and resource constraints."
+    },
+    {
       "id": "hwc-destructive-delete-force",
       "title": "Forced destructive operation",
       "category": "destructive",
