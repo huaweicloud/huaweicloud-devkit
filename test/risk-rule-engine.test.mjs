@@ -172,6 +172,32 @@ test('evaluateCommandRisk does not flag delete-protection toggles as destructive
   }
 });
 
+test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
+  for (const cmd of ['env | grep HW_', 'printenv | grep HW_ACCESS', 'env | grep HUAWEICLOUD']) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-env-dump');
+  }
+});
+
+test('evaluateCommandRisk warns on plaintext secret in CLI args (#561 D4-3)', () => {
+  const cases = [
+    'hcloud ECS CreateServers --adminPass=SuperSecret123!',
+    'hcloud RDS CreateInstance --password=DbPass456!',
+    'hcloud ECS CreateServers --secret=mysecret',
+    'hcloud ECS CreateServers --token=abc123',
+  ];
+  for (const cmd of cases) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'warn', `${cmd} should warn`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-secret-in-arg');
+    assert.doesNotMatch(JSON.stringify(result), /SuperSecret123!|DbPass456!|mysecret|abc123/);
+  }
+  // Placeholder values (e.g. <password>) should not trigger the rule.
+  const placeholder = evaluateCommandRisk('hcloud ECS CreateServers --adminPass=<password>');
+  assert.equal(placeholder.findings.length, 0);
+});
+
 test('evaluateCommandRisk fails closed on malformed input (#564)', () => {
   for (const bad of [null, undefined, 12345, { cmd: 'x' }, '', '   ']) {
     const result = evaluateCommandRisk(bad);
