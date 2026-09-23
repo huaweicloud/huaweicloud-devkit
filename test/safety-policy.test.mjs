@@ -136,6 +136,8 @@ test('classifyTextCommand blocks credential env-var references incl. HW_ prefix 
   assert.equal(benign.decision, 'allow');
   // Existing coverage keeps working.
   assert.equal(classifyTextCommand('env | grep HUAWEICLOUD').decision, 'deny');
+  // env dump gate catches HW_ prefix via cloud-risk-rules.json (#561 D4-2).
+  assert.equal(classifyTextCommand('env | grep HW_').decision, 'deny');
 });
 
 test('classifyTextCommand blocks HUAWEICLOUD_SECRET_ACCESS_KEY env-var references (#770 D4-2)', () => {
