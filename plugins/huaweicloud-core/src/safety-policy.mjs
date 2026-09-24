@@ -39,7 +39,12 @@ function redactString(text) {
       // Redact the ENTIRE value of this arg — not just the first whitespace token.
       .replace(/((?:user[_-]?data|metadata|private[_-]?key)\s*[:=]\s*).*/gi, '$1<redacted>')
       .replace(
-        /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|authorization|password|passwd|adminPass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        // HTTP auth schemes (Bearer/Basic/Digest/Token) carry sensitive
+        // payloads after a space. Without the scheme+token branch the value
+        // group stops at the scheme keyword, leaking the JWT/base64 token
+        // that follows (#809). The branch only fires after an auth key+sep
+        // prefix, so prose mentioning "Bearer" is not touched.
+        /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|authorization|password|passwd|adminPass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|(?:Bearer|Basic|Digest|Token)\s+[^\s,;]+|[^\s,;]+)/gi,
         '$1<redacted>',
       )
       .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
