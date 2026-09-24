@@ -271,6 +271,51 @@ test('classifyTextCommand blocks secret value patterns in shell commands', () =>
   assert.equal(classifyTextCommand('secret_string xxx').decision, 'deny');
 });
 
+test('redactSecrets redacts Authorization: Bearer <jwt> completely (#809)', () => {
+  // The value-match group previously stopped at the first whitespace token
+  // ("Bearer"), leaving the JWT eyJ... in cleartext. The scheme+token branch
+  // must capture the whole "Bearer <jwt>" pair.
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.signature';
+  const out = redactSecrets(`Authorization: Bearer ${jwt}`);
+  assert.doesNotMatch(out, /eyJ/);
+  assert.equal(out, 'Authorization: <redacted>');
+});
+
+test('redactSecrets redacts Authorization: Basic <base64> completely (#809)', () => {
+  // Same root cause as Bearer — Basic <base64> must be fully redacted, not
+  // just the "Basic" keyword with the base64 payload leaking after it.
+  const out = redactSecrets('Authorization: Basic dXNlcjpwYXNz');
+  assert.doesNotMatch(out, /dXNlcjpwYXNz/);
+  assert.equal(out, 'Authorization: <redacted>');
+});
+
+test('redactSecrets redacts Bearer <jwt> in multi-line text output (#809)', () => {
+  // redactOutput routes strings through redactString — the text path must not
+  // leak the JWT even when the Authorization header sits among other lines.
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJhZG1pbiJ9.sig';
+  const out = redactSecrets(`echo "starting"\nAuthorization: Bearer ${jwt}\ndone`);
+  assert.doesNotMatch(out, /eyJ/);
+  assert.match(out, /Authorization: <redacted>/);
+  assert.match(out, /echo "starting"/);
+  assert.match(out, /done/);
+});
+
+test('redactSecrets redacts Authorization JSON value via key-name detection (#809)', () => {
+  // The JSON path {"Authorization": "Bearer eyJ..."} is already covered by
+  // isSecretKeyName — this test guards against regression of that coverage.
+  const jwt = 'eyJhbGciOiJIUzI1NiJ9.payload.sig';
+  const redacted = redactSecrets({ Authorization: `Bearer ${jwt}` });
+  assert.equal(redacted.Authorization, '<redacted>');
+});
+
+test('redactSecrets does not match the word Bearer outside Authorization context (#809)', () => {
+  // The scheme+token branch only fires after an "authorization[:=]" prefix,
+  // so prose mentioning "Bearer" (docs, comments) must be left untouched.
+  const docs = 'See the Bearer token docs. The Bearer scheme is RFC 6750.';
+  const out = redactSecrets(docs);
+  assert.equal(out, docs);
+});
+
 test('classifyTextCommand blocks approved public admin port exposure', () => {
   const result = classifyTextCommand(
     'hcloud VPC CreateSecurityGroupRule --security_group_rule.protocol=tcp --security_group_rule.port_range_min=22 --security_group_rule.port_range_max=22 --security_group_rule.remote_ip_prefix=0.0.0.0/0',
