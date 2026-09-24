@@ -543,3 +543,12 @@ test('runHcloud redacts OBS STS args from returned plan.rawArgs', async () => {
     clearRuntimeCredentials();
   });
 });
+
+test('resolveStsInjectArgs skips when obsutil attached -iAK/-kSK/-tTOK present', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-iAK_VAL']), []);
+  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-kSK_VAL', '-tTOK_VAL']), []);
+  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-iAK_VAL', '-d']), []);
+  clearRuntimeCredentials();
+});

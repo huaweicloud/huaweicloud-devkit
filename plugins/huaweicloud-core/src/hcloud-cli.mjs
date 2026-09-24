@@ -309,7 +309,9 @@ export function resolveStsInjectArgs(rawArgs) {
   ) {
     return [];
   }
-  if (flat.some((a) => a === '-i' || a === '-k' || a === '-t')) return [];
+  // Explicit obsutil-style credentials already present — standalone (-i AK) or
+  // attached (-iAK) — should not be overridden by an extra injection.
+  if (flat.some((a) => a === '-i' || a === '-k' || a === '-t' || /^-[ikt][A-Za-z0-9]/.test(a))) return [];
 
   let creds;
   try {
