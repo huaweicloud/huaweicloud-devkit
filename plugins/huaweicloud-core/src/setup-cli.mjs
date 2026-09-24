@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   copyFileSync,
   existsSync,
   mkdirSync,
@@ -535,6 +536,22 @@ function copyFileVerified(src, dest) {
   );
 }
 
+// R5: write an MCP settings JSON file with least-privilege permissions
+// (parent dir 0700, file 0600) so the platform-injected temporary credentials
+// (HW_ACCESS_KEY/HW_SECRET_KEY/HW_SECURITY_TOKEN) are not world-readable.
+function writeMcpSettingsFile(configPath, config) {
+  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+  writeFileSync(configPath, JSON.stringify(config, null, 2), { encoding: 'utf8', mode: 0o600 });
+  try {
+    chmodSync(configPath, 0o600);
+    // Re-assert the parent dir mode too — later un-mode'd mkdirSync calls can
+    // produce a broader default (e.g. 0775) on existing trees.
+    chmodSync(dirname(configPath), 0o700);
+  } catch {
+    // best-effort; unsupported on some platforms
+  }
+}
+
 function copyDir(src, dest) {
   if (!existsSync(src)) return;
   mkdirSync(dest, { recursive: true });
@@ -636,7 +653,7 @@ function updateOpenCodeConfig(pluginDir) {
     }
     if (existing && changed) {
       config.mcp['huaweicloud-devkit'] = entry;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  OpenCode MCP config merged (user fields preserved): ${configPath}`);
       return;
     }
@@ -646,7 +663,7 @@ function updateOpenCodeConfig(pluginDir) {
   // Restore user fields saved by a previous uninstall (issue #615).
   const delta = takeAgentDelta('opencode');
   if (delta) config.mcp['huaweicloud-devkit'] = applyUserDelta(config.mcp['huaweicloud-devkit'], delta, 'command');
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeMcpSettingsFile(configPath, config);
   console.log(`  OpenCode config updated: ${configPath}`);
 }
 
@@ -677,7 +694,7 @@ function writeMcpServersFile(pluginDest, mcpPath, agentKey) {
     if (delta)
       next.mcpServers['huaweicloud-devkit'] = applyUserDelta(next.mcpServers['huaweicloud-devkit'], delta, 'args');
   }
-  writeFileSync(configPath, JSON.stringify(next, null, 2));
+  writeMcpSettingsFile(configPath, next);
   console.log(`  MCP Config -> ${configPath}`);
 }
 
@@ -706,7 +723,7 @@ function removeOpenCodeConfig() {
   if (delta) saveAgentDelta('opencode', delta);
   delete config.mcp['huaweicloud-devkit'];
   if (Object.keys(config.mcp).length === 0) delete config.mcp;
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeMcpSettingsFile(configPath, config);
   console.log(`  OpenCode MCP config cleaned: ${configPath}`);
 }
 
@@ -1278,7 +1295,7 @@ function registerCodeartsMcp(configPath, agentKey = 'codearts') {
       }
       config.mcpServers['huaweicloud-devkit'] = entry;
       mkdirSync(dirname(configPath), { recursive: true });
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  MCP config merged (user fields preserved): ${configPath}`);
       return;
     }
@@ -1291,7 +1308,7 @@ function registerCodeartsMcp(configPath, agentKey = 'codearts') {
   if (delta) entry = applyUserDelta(entry, delta, 'args');
   config.mcpServers['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeMcpSettingsFile(configPath, config);
   console.log(`  MCP config updated: ${configPath}`);
 }
 
@@ -1386,7 +1403,7 @@ function uninstallCodeArts() {
       if (delta) saveAgentDelta('codearts', delta);
       delete config.mcpServers['huaweicloud-devkit'];
       if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  Config cleaned: ${configPath}`);
     }
   }
@@ -1457,7 +1474,7 @@ function registerCodeartsWorkMcp() {
       }
       config.mcp['huaweicloud-devkit'] = merged;
       mkdirSync(dirname(configPath), { recursive: true });
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  MCP config merged (user fields preserved): ${configPath}`);
       return;
     }
@@ -1474,7 +1491,7 @@ function registerCodeartsWorkMcp() {
   if (delta) entry = applyUserDelta(entry, delta, 'command');
   config.mcp['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeMcpSettingsFile(configPath, config);
   console.log(`  MCP config updated: ${configPath}`);
 }
 
@@ -1545,7 +1562,7 @@ function uninstallCodeArtsWork() {
       if (delta) saveAgentDelta('codearts-work', delta);
       delete config.mcp['huaweicloud-devkit'];
       if (Object.keys(config.mcp).length === 0) delete config.mcp;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  Config cleaned: ${configPath}`);
     }
   }
@@ -1606,7 +1623,7 @@ function ensureWorkbuddyMcpConfig() {
       }
       config.mcpServers['huaweicloud-devkit'] = entry;
       mkdirSync(dirname(configPath), { recursive: true });
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  MCP config merged (user fields preserved): ${configPath}`);
       return true;
     }
@@ -1618,7 +1635,7 @@ function ensureWorkbuddyMcpConfig() {
   if (delta) entry = applyUserDelta(entry, delta, 'args');
   config.mcpServers['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeMcpSettingsFile(configPath, config);
   console.log(`  MCP config updated: ${configPath}`);
   return true;
 }
@@ -1832,7 +1849,7 @@ function uninstallWorkBuddy() {
       if (delta) saveAgentDelta('workbuddy', delta);
       delete config.mcpServers['huaweicloud-devkit'];
       if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  MCP config cleaned: ${configPath}`);
     }
   }
@@ -1938,7 +1955,7 @@ function ensureAtomcodeMcpConfig() {
       }
       config.mcpServers['huaweicloud-devkit'] = entry;
       mkdirSync(dirname(configPath), { recursive: true });
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  MCP config merged (user fields preserved): ${configPath}`);
       return true;
     }
@@ -1950,7 +1967,7 @@ function ensureAtomcodeMcpConfig() {
   if (delta) entry = applyUserDelta(entry, delta, 'args');
   config.mcpServers['huaweicloud-devkit'] = entry;
   mkdirSync(dirname(configPath), { recursive: true });
-  writeFileSync(configPath, JSON.stringify(config, null, 2));
+  writeMcpSettingsFile(configPath, config);
   console.log(`  MCP config updated: ${configPath}`);
   return true;
 }
@@ -2024,7 +2041,7 @@ function uninstallAtomCode() {
       if (delta) saveAgentDelta('atomcode', delta);
       delete config.mcpServers['huaweicloud-devkit'];
       if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
-      writeFileSync(configPath, JSON.stringify(config, null, 2));
+      writeMcpSettingsFile(configPath, config);
       console.log(`  MCP config cleaned: ${configPath}`);
     }
   }

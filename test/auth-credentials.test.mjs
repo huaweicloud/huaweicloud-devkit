@@ -12,6 +12,7 @@ import {
   globalCredentialsPath,
   obsConfigPath,
   parseStsExpiry,
+  pickDevkitMcpServer,
   readGlobalCredentials,
   readLastSync,
   resolveCredentials,
@@ -718,4 +719,35 @@ test('parseStsExpiry returns null for unparseable input', () => {
   assert.equal(parseStsExpiry({ securityToken: 'not-a-token!' }), null);
   assert.equal(parseStsExpiry({ securityToken: '' }), null);
   assert.equal(parseStsExpiry({ securityToken: null }), null);
+});
+
+test('pickDevkitMcpServer prefers canonical key over prefixed instances (R4)', () => {
+  const map = {
+    'huaweicloud-devkit_2': { environment: { HW_ACCESS_KEY: 'K2' } },
+    'huaweicloud-devkit': { environment: { HW_ACCESS_KEY: 'K0' } },
+    'huaweicloud-devkit_1': { environment: { HW_ACCESS_KEY: 'K1' } },
+  };
+  assert.equal(pickDevkitMcpServer(map).environment.HW_ACCESS_KEY, 'K0');
+});
+
+test('pickDevkitMcpServer falls back to HuaweiCloud DevKit then lowest _N (R4)', () => {
+  const map = {
+    'huaweicloud-devkit_3': { env: { HW_ACCESS_KEY: 'K3' } },
+    'HuaweiCloud DevKit': { env: { HW_ACCESS_KEY: 'KDK' } },
+  };
+  assert.equal(pickDevkitMcpServer(map).env.HW_ACCESS_KEY, 'KDK');
+  const map2 = {
+    'huaweicloud-devkit_3': { env: { HW_ACCESS_KEY: 'K3' } },
+    'huaweicloud-devkit_1': { env: { HW_ACCESS_KEY: 'K1' } },
+  };
+  assert.equal(pickDevkitMcpServer(map2).env.HW_ACCESS_KEY, 'K1');
+});
+
+test('pickDevkitMcpServer is order-independent and returns null for empty/non-object', () => {
+  const a = { 'huaweicloud-devkit_1': { environment: { HW_ACCESS_KEY: 'A' } } };
+  const b = { 'huaweicloud-devkit_1': { environment: { HW_ACCESS_KEY: 'A' } } };
+  assert.equal(pickDevkitMcpServer(a).environment.HW_ACCESS_KEY, pickDevkitMcpServer(b).environment.HW_ACCESS_KEY);
+  assert.equal(pickDevkitMcpServer({}), null);
+  assert.equal(pickDevkitMcpServer(null), null);
+  assert.equal(pickDevkitMcpServer(undefined), null);
 });

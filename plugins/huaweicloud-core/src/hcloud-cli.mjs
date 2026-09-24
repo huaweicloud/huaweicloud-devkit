@@ -7,7 +7,7 @@ import { dirname, join } from 'node:path';
 import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { findHcloudBin, resolveHcloudCommand } from './hcloud-probe.mjs';
-import { resolveCredentialsWithRuntime } from './auth/credentials.mjs';
+import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
@@ -296,6 +296,16 @@ export function resolveStsInjectArgs(rawArgs) {
     return [];
   }
   if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
+
+  // R3: if we can derive an expiry and the token is already at/within 60s of
+  // expiring, skip injection — using a dead token would make a doomed IAM round
+  // trip. If expiry is unknown/unparseable we keep the existing "inject anyway"
+  // behavior (can't prove it's stale).
+  const expiry = parseStsExpiry({ securityToken: creds.securityToken });
+  if (expiry !== null) {
+    const grace = 60 * 1000;
+    if (expiry <= Date.now() + grace) return [];
+  }
 
   const isObs = flat[0].toUpperCase() === 'OBS';
   return isObs

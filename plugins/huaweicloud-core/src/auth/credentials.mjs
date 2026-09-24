@@ -89,10 +89,23 @@ function present(v) {
 // CodeArts Work marketplace presets keyed entries like `huaweicloud-devkit_1`
 // (suffix per installed instance); match by prefix so `_1`/`_2`/`HuaweiCloud DevKit`
 // all resolve without hardcoding an instance number.
-function pickDevkitMcpServer(mcpMap) {
+// Deterministically choose the Huawei Cloud DevKit MCP server entry from a map.
+// Priority (stable, independent of object key order):
+//   1. exact `huaweicloud-devkit` (installer-managed key)
+//   2. `HuaweiCloud DevKit`
+//   3. prefixed instances `huaweicloud-devkit_N` sorted by ascending N
+export function pickDevkitMcpServer(mcpMap) {
   if (!mcpMap || typeof mcpMap !== 'object') return null;
   const keys = Object.keys(mcpMap);
-  const candidates = keys.filter((k) => /^huaweicloud-devkit(?:_|$)/i.test(k) || k === 'HuaweiCloud DevKit');
+  const rank = (k) => {
+    if (k === 'huaweicloud-devkit') return -2;
+    if (k === 'HuaweiCloud DevKit') return -1;
+    const m = /^huaweicloud-devkit_(\d+)$/i.exec(k);
+    return m ? Number(m[1]) : Number.MAX_SAFE_INTEGER;
+  };
+  const candidates = keys
+    .filter((k) => /^huaweicloud-devkit(?:_|$)/i.test(k) || k === 'HuaweiCloud DevKit')
+    .sort((a, b) => rank(a) - rank(b));
   for (const k of candidates) {
     if (mcpMap[k]) return mcpMap[k];
   }

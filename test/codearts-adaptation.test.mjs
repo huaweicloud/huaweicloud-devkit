@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -332,6 +341,25 @@ test('codearts-work install inherits user STS env from market-preset ~/.codearts
     assert.equal(server.environment.HW_SECRET_KEY, 'INHERIT_SK');
     assert.equal(server.environment.HW_SECURITY_TOKEN, 'INHERIT_TOKEN');
     assert.equal(server.command[0], 'node');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('codearts-work install writes mcp_settings with 0600 file / 0700 dir (R5)', () => {
+  if (process.platform === 'win32') return; // POSIX-only permission semantics
+  const home = mkdtempSync(join(tmpdir(), 'codearts-work-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'codearts-work-proj-'));
+  try {
+    const res = runCli(home, cwd, ['install', '--target', 'codearts-work']);
+    assert.equal(res.status, 0, res.stderr);
+    const file = join(home, '.codeartswork', 'mcp', 'mcp_settings.json');
+    assert.ok(existsSync(file));
+    const fmode = statSync(file).mode & 0o777;
+    assert.equal(fmode, 0o600, `expected 0600, got ${fmode.toString(8)}`);
+    const dmode = statSync(join(home, '.codeartswork', 'mcp')).mode & 0o777;
+    assert.equal(dmode, 0o700, `expected 0700, got ${dmode.toString(8)}`);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

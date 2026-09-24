@@ -475,3 +475,40 @@ test('runHcloud redacts injected STS from returned plan.rawArgs', async () => {
     clearRuntimeCredentials();
   });
 });
+
+test('resolveStsInjectArgs skips injection when security token is expired (R3)', () => {
+  clearRuntimeCredentials();
+  const past = Math.floor(Date.now() / 1000) - 120; // expired 2 min ago
+  const token = Buffer.from(JSON.stringify({ exp: past })).toString('base64url');
+  setRuntimeCredentials('STS_AK', 'STS_SK', token, 'cn-north-4');
+  assert.deepEqual(resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs skips injection when expiry is within 60s grace (R3)', () => {
+  clearRuntimeCredentials();
+  const soon = Math.floor(Date.now() / 1000) + 30; // expires in 30s
+  const token = Buffer.from(JSON.stringify({ exp: soon })).toString('base64url');
+  setRuntimeCredentials('STS_AK', 'STS_SK', token, 'cn-north-4');
+  assert.deepEqual(resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs still injects when expiry is unparseable (R3 fallback)', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'HSTANOTATOKEN', 'cn-north-4');
+  const injected = resolveStsInjectArgs(['VPC', 'ListVpcs']);
+  assert.ok(injected.length > 0);
+  assert.ok(injected.some((a) => a.startsWith('--cli-security-token=')));
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs injects when expiry is in the future (R3)', () => {
+  clearRuntimeCredentials();
+  const future = Math.floor(Date.now() / 1000) + 3600; // 1h out
+  const token = Buffer.from(JSON.stringify({ exp: future })).toString('base64url');
+  setRuntimeCredentials('STS_AK', 'STS_SK', token, 'cn-north-4');
+  const injected = resolveStsInjectArgs(['VPC', 'ListVpcs']);
+  assert.ok(injected.some((a) => a.startsWith('--cli-security-token=')));
+  clearRuntimeCredentials();
+});
