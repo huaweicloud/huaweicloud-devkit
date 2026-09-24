@@ -32,7 +32,11 @@ test('#746: tools/list returns every TOOL_DEFINITIONS entry with no filtering', 
   // 1. No tool is dropped or added by the protocol layer.
   assert.equal(tools.length, TOOL_DEFINITIONS.length, 'tools/list count must equal TOOL_DEFINITIONS count');
   // 2. The two sets are identical (order-independent).
-  assert.deepEqual([...listNames].sort(), [...defNames].sort(), 'tools/list names must match TOOL_DEFINITIONS');
+  assert.deepEqual(
+    [...listNames].sort((a, b) => a.localeCompare(b)),
+    [...defNames].sort((a, b) => a.localeCompare(b)),
+    'tools/list names must match TOOL_DEFINITIONS',
+  );
   // 3. The three tools flagged in #746 are present and reachable.
   for (const name of ['huaweicloud_check_update', 'huaweicloud_upgrade', 'huaweicloud_obs_set_website_config']) {
     assert.ok(listNames.includes(name), `tools/list must expose ${name}`);
