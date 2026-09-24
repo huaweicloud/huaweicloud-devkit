@@ -235,6 +235,76 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
   assert.notEqual(result.recommendedSkills[0], 'huawei-sandbox');
 });
 
+test('service_catalog splits compound Chinese intent to hit multiple services (#788)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', {
+    intent: '数据用 DDS 或 GaussDB 存储，部署到 OBS 静态托管',
+  });
+  assert.ok(result.recommendedSkills.includes('huawei-dds-dcs'), 'compound intent should hit DDS/DCS skill');
+  assert.ok(result.recommendedSkills.includes('huawei-gaussdb'), 'compound intent should hit GaussDB skill');
+  assert.ok(result.recommendedSkills.includes('huawei-obs'), 'compound intent should hit OBS skill');
+  assert.ok(result.recommendedServices.includes('DDS'), 'compound intent should include DDS in services');
+  assert.ok(result.recommendedServices.includes('GaussDB'), 'compound intent should include GaussDB in services');
+  assert.ok(result.recommendedServices.includes('OBS'), 'compound intent should include OBS in services');
+});
+
+test('service_catalog routes layered Chinese intent with phased recommendations (#788)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', {
+    intent: '先预览沙箱再上生产 ECS',
+  });
+  assert.ok(result.recommendedSkills.includes('huawei-sandbox'), 'layered intent should hit sandbox');
+  assert.ok(result.recommendedSkills.includes('huawei-ecs'), 'layered intent should hit ECS');
+  assert.ok(result.phasedRecommendations, 'layered intent should produce phasedRecommendations');
+  assert.equal(result.phasedRecommendations.length, 2);
+  assert.equal(result.phasedRecommendations[0].phase, 1);
+  assert.equal(result.phasedRecommendations[0].label, 'preview');
+  assert.ok(
+    result.phasedRecommendations[0].recommendedSkills.includes('huawei-sandbox'),
+    'phase 1 should recommend sandbox',
+  );
+  assert.equal(result.phasedRecommendations[1].phase, 2);
+  assert.equal(result.phasedRecommendations[1].label, 'production');
+  assert.ok(result.phasedRecommendations[1].recommendedSkills.includes('huawei-ecs'), 'phase 2 should recommend ECS');
+});
+
+test('service_catalog routes layered English intent with phased recommendations (#788)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', {
+    intent: 'first preview in sandbox then deploy to production ECS',
+  });
+  assert.ok(result.phasedRecommendations, 'English layered intent should produce phasedRecommendations');
+  assert.equal(result.phasedRecommendations.length, 2);
+  assert.ok(
+    result.phasedRecommendations[0].recommendedSkills.includes('huawei-sandbox'),
+    'phase 1 should recommend sandbox',
+  );
+  assert.ok(result.phasedRecommendations[1].recommendedSkills.includes('huawei-ecs'), 'phase 2 should recommend ECS');
+});
+
+test('service_catalog covers CJK keywords for core services (#788)', async () => {
+  const cases = [
+    { intent: '创建弹性云服务器', skill: 'huawei-ecs', service: 'ECS' },
+    { intent: '配置对象存储桶', skill: 'huawei-obs', service: 'OBS' },
+    { intent: '使用文档数据库', skill: 'huawei-dds-dcs', service: 'DDS' },
+    { intent: '创建高斯数据库', skill: 'huawei-gaussdb', service: 'GaussDB' },
+    { intent: '管理云监控告警', skill: 'huawei-cloud-eye', service: 'CES' },
+    { intent: '查看云审计追踪', skill: 'huawei-cts', service: 'CTS' },
+    { intent: '创建云备份快照', skill: 'huawei-cbr', service: 'CBR' },
+  ];
+  for (const { intent, skill, service } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(result.recommendedSkills.includes(skill), `intent "${intent}" should hit ${skill}`);
+    assert.ok(result.recommendedServices.includes(service), `intent "${intent}" should include ${service} in services`);
+  }
+});
+
+test('service_catalog English-only routing regression compatibility (#788)', async () => {
+  const en = await callTool('huaweicloud_service_catalog', { intent: 'create an ecs instance with vpc and eip' });
+  assert.ok(en.recommendedSkills.includes('huawei-ecs'), 'English ECS intent should still match');
+  assert.ok(en.recommendedSkills.includes('huawei-vpc'), 'English VPC intent should still match');
+  assert.ok(en.recommendedServices.includes('ECS'), 'English services should include ECS');
+  assert.ok(en.recommendedServices.includes('VPC'), 'English services should include VPC');
+  assert.ok(!en.phasedRecommendations, 'non-layered intent should not have phasedRecommendations');
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {

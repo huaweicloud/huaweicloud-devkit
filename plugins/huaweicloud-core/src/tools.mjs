@@ -1816,76 +1816,212 @@ function serviceCatalog(intent = '') {
   const it = String(intent).toLowerCase();
   const routeMap = [
     {
-      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image'],
+      keywords: [
+        'ecs',
+        'server',
+        'vm',
+        'instance',
+        'compute',
+        'flavor',
+        'image',
+        '弹性云服务器',
+        '云服务器',
+        '服务器',
+        '计算实例',
+      ],
       skills: ['huawei-ecs'],
       services: ['ECS'],
     },
     {
-      keywords: ['vpc', 'subnet', 'network', 'security group', 'eip', 'nat', 'vpn', 'bandwidth'],
+      keywords: [
+        'vpc',
+        'subnet',
+        'network',
+        'security group',
+        'eip',
+        'nat',
+        'vpn',
+        'bandwidth',
+        '虚拟私有云',
+        '子网',
+        '安全组',
+        '弹性公网',
+        '带宽',
+      ],
       skills: ['huawei-vpc'],
       services: ['VPC', 'EIP'],
     },
     {
-      keywords: ['obs', 'bucket', 'storage', 'object', 'static website', 'static site', 'hosting'],
+      keywords: [
+        'obs',
+        'bucket',
+        'storage',
+        'object',
+        'static website',
+        'static site',
+        'hosting',
+        '对象存储',
+        '存储桶',
+        '桶',
+        '静态网站托管',
+        '静态托管',
+        '对象存储服务',
+      ],
       skills: ['huawei-obs'],
       services: ['OBS'],
     },
     {
-      keywords: ['functiongraph', 'serverless', 'function', 'lambda', 'trigger', 'faas'],
+      keywords: [
+        'functiongraph',
+        'serverless',
+        'function',
+        'lambda',
+        'trigger',
+        'faas',
+        '函数工作流',
+        '无服务器',
+        '函数计算',
+        '函数',
+      ],
       skills: ['huawei-functiongraph'],
       services: ['FunctionGraph'],
     },
     {
-      keywords: ['cce', 'kubernetes', 'k8s', 'container', 'cluster', 'node pool', 'swr', 'docker', 'image registry'],
+      keywords: [
+        'cce',
+        'kubernetes',
+        'k8s',
+        'container',
+        'cluster',
+        'node pool',
+        'swr',
+        'docker',
+        'image registry',
+        '云容器引擎',
+        '容器',
+        '集群',
+        '节点池',
+        '容器镜像',
+      ],
       skills: ['huawei-cce'],
       services: ['CCE', 'SWR'],
     },
-    { keywords: ['apig', 'api gateway', 'publish', 'throttle'], skills: ['huawei-apig'], services: ['APIG'] },
-    { keywords: ['rds', 'mysql', 'postgresql', 'database', 'db'], skills: ['huawei-rds'], services: ['RDS'] },
     {
-      keywords: ['gaussdb', 'distributed', 'sharding', 'opengauss'],
+      keywords: ['apig', 'api gateway', 'publish', 'throttle', 'api网关', '网关', '流量控制'],
+      skills: ['huawei-apig'],
+      services: ['APIG'],
+    },
+    {
+      keywords: ['rds', 'mysql', 'postgresql', 'database', 'db', '云数据库', '关系型数据库', '数据库'],
+      skills: ['huawei-rds'],
+      services: ['RDS'],
+    },
+    {
+      keywords: ['gaussdb', 'distributed', 'sharding', 'opengauss', '高斯数据库', '分布式数据库', '分库分表'],
       skills: ['huawei-gaussdb'],
       services: ['GaussDB'],
     },
     {
-      keywords: ['iam', 'permission', 'policy', 'role', 'user', 'ak/sk', 'access key', 'agency'],
+      keywords: [
+        'iam',
+        'permission',
+        'policy',
+        'role',
+        'user',
+        'ak/sk',
+        'access key',
+        'agency',
+        '身份管理',
+        '权限',
+        '策略',
+        '角色',
+        '用户',
+        '访问密钥',
+        '委托',
+      ],
       skills: ['huawei-iam'],
       services: ['IAM'],
     },
     {
-      keywords: ['dew', 'secret', 'kms', 'encrypt', 'decrypt', 'certificate', 'csms'],
+      keywords: [
+        'dew',
+        'secret',
+        'kms',
+        'encrypt',
+        'decrypt',
+        'certificate',
+        'csms',
+        '密钥管理',
+        '加密',
+        '解密',
+        '证书',
+        '凭据管理',
+        '数据加密',
+      ],
       skills: ['huawei-dew'],
       services: ['CSMS', 'KMS'],
     },
     {
-      keywords: ['modelarts', 'ai', 'model', 'training', 'inference', 'machine learning'],
+      keywords: [
+        'modelarts',
+        'ai',
+        'model',
+        'training',
+        'inference',
+        'machine learning',
+        '模型训练',
+        '推理',
+        '机器学习',
+        '人工智能',
+        '模型',
+      ],
       skills: ['huawei-modelarts'],
       services: ['ModelArts'],
     },
     {
-      keywords: ['billing', 'cost', 'bill', 'budget', 'expense', 'bss'],
+      keywords: ['billing', 'cost', 'bill', 'budget', 'expense', 'bss', '计费', '成本', '账单', '预算', '费用'],
       skills: ['huawei-billing'],
       services: ['BSS'],
     },
     {
-      keywords: ['waf', 'aad', 'ddos', 'firewall', 'web protection'],
+      keywords: ['waf', 'aad', 'ddos', 'firewall', 'web protection', 'web应用防火墙', '防火墙', 'ddos防护'],
       skills: ['huawei-waf-aad'],
       services: ['WAF', 'AAD'],
     },
     {
-      keywords: ['smn', 'dms', 'notification', 'message', 'kafka', 'rabbitmq'],
+      keywords: ['smn', 'dms', 'notification', 'message', 'kafka', 'rabbitmq', '消息通知', '消息队列', '消息'],
       skills: ['huawei-smn-dms'],
       services: ['SMN', 'DMS'],
     },
     {
-      keywords: ['ces', 'monitor', 'alarm', 'metric', 'dashboard', 'cloud eye'],
+      keywords: [
+        'ces',
+        'monitor',
+        'alarm',
+        'metric',
+        'dashboard',
+        'cloud eye',
+        '云监控',
+        '监控',
+        '告警',
+        '指标',
+        '仪表盘',
+      ],
       skills: ['huawei-cloud-eye'],
       services: ['CES'],
     },
-    { keywords: ['cts', 'audit', 'trace', 'tracker'], skills: ['huawei-cts'], services: ['CTS'] },
-    { keywords: ['cbr', 'backup', 'restore', 'vault', 'snapshot'], skills: ['huawei-cbr'], services: ['CBR'] },
     {
-      keywords: ['deployment', 'deploy', 'ci/cd', 'pipeline', 'release'],
+      keywords: ['cts', 'audit', 'trace', 'tracker', '云审计', '审计', '追踪'],
+      skills: ['huawei-cts'],
+      services: ['CTS'],
+    },
+    {
+      keywords: ['cbr', 'backup', 'restore', 'vault', 'snapshot', '云备份', '备份', '恢复', '快照'],
+      skills: ['huawei-cbr'],
+      services: ['CBR'],
+    },
+    {
+      keywords: ['deployment', 'deploy', 'ci/cd', 'pipeline', 'release', '部署', '流水线', '发布', '持续交付'],
       skills: ['huawei-deployment'],
       services: ['CloudDeploy'],
     },
@@ -1904,12 +2040,27 @@ function serviceCatalog(intent = '') {
         '网站',
         '网页',
         '静态',
+        '沙箱',
+        '预览',
+        '开发环境',
+        '工作空间',
       ],
       skills: ['huawei-sandbox'],
       services: ['Sandbox', 'DevStation'],
     },
     {
-      keywords: ['dds', 'dcs', 'mongodb', 'redis', 'memcached', 'cache', 'document db'],
+      keywords: [
+        'dds',
+        'dcs',
+        'mongodb',
+        'redis',
+        'memcached',
+        'cache',
+        'document db',
+        '文档数据库',
+        '缓存',
+        '内存数据库',
+      ],
       skills: ['huawei-dds-dcs'],
       services: ['DDS', 'DCS'],
     },
@@ -1919,16 +2070,32 @@ function serviceCatalog(intent = '') {
       services: ['Incentive Voucher'],
     },
   ];
-  const matched = [];
-  const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
+
+  // Tokenize: split on whitespace, ASCII punctuation, CJK punctuation, and
+  // CJK↔ASCII boundaries so that English service names embedded in Chinese
+  // text (e.g. "先预览沙箱再上生产ECS") become standalone tokens.
+  const cjkPunct = '，。、；：？！（）【】《》「」';
+  const splitRe = new RegExp(
+    `[\\s,./\\-+|${cjkPunct}]+` + // whitespace + ASCII + CJK punctuation
+      `|(?<=[\\u4e00-\\u9fff])(?=[a-z0-9])` + // CJK → ASCII boundary
+      `|(?<=[a-z0-9])(?=[\\u4e00-\\u9fff])`, // ASCII → CJK boundary
+  );
+  const tokens = new Set(it.split(splitRe).filter((t) => t.length > 0));
   const cjk = /[\u4e00-\u9fff]/;
-  for (const route of routeMap) {
-    if (route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw) : tokens.has(kw)))) {
-      matched.push(route);
+
+  const matchRoutes = (text, tokenSet) => {
+    const results = [];
+    for (const route of routeMap) {
+      if (route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? text.includes(kw) : tokenSet.has(kw)))) {
+        results.push(route);
+      }
     }
-  }
+    return results;
+  };
+
+  const matched = matchRoutes(it, tokens);
   const recommendedSkills = [...new Set(matched.flatMap((r) => r.skills))];
-  const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
+  const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 10);
 
   // Deployment intent (deploy/host/publish a web app or static website) must never
   // default to a storage/other service — recommend the sandbox first.
@@ -1939,7 +2106,46 @@ function serviceCatalog(intent = '') {
     recommendedSkills.unshift('huawei-sandbox');
   }
 
-  return {
+  // Detect phased/layered intent: 先…再/然后/后…, first…then….
+  // Route each phase independently and return phased recommendations.
+  const phasedRe = /(?:先|首先)(.+?)(?:再|然后|之后|接着)(.+)/;
+  const firstThenRe = /first\s+(.+?)\s+then\s+(.+)/;
+  const phasedZh = it.match(phasedRe);
+  const phasedEn = !phasedZh && it.match(firstThenRe);
+  const phasedMatch = phasedZh || phasedEn;
+  let phasedRecommendations = null;
+  if (phasedMatch) {
+    const p1Text = phasedMatch[1];
+    const p2Text = phasedMatch[2];
+    const p1Tokens = new Set(p1Text.split(splitRe).filter((t) => t.length > 0));
+    const p2Tokens = new Set(p2Text.split(splitRe).filter((t) => t.length > 0));
+    const p1Matched = matchRoutes(p1Text, p1Tokens);
+    const p2Matched = matchRoutes(p2Text, p2Tokens);
+    if (p1Matched.length || p2Matched.length) {
+      phasedRecommendations = [
+        {
+          phase: 1,
+          label: 'preview',
+          intent: p1Text.trim(),
+          recommendedSkills: p1Matched.length
+            ? [...new Set(p1Matched.flatMap((r) => r.skills))]
+            : ['Use huaweicloud-core to route intent.'],
+          recommendedServices: p1Matched.length ? [...new Set(p1Matched.flatMap((r) => r.services))] : [],
+        },
+        {
+          phase: 2,
+          label: 'production',
+          intent: p2Text.trim(),
+          recommendedSkills: p2Matched.length
+            ? [...new Set(p2Matched.flatMap((r) => r.skills))]
+            : ['Use huaweicloud-core to route intent.'],
+          recommendedServices: p2Matched.length ? [...new Set(p2Matched.flatMap((r) => r.services))] : [],
+        },
+      ];
+    }
+  }
+
+  const result = {
     intent,
     recommendedSkills: recommendedSkills.length ? recommendedSkills : ['Use huaweicloud-core to route intent.'],
     recommendedServices: recommendedServices.length
@@ -1962,6 +2168,10 @@ function serviceCatalog(intent = '') {
       terraform: 'Keep low priority in V1; suggest it for reviewed infrastructure changes, not quick diagnosis.',
     },
   };
+  if (phasedRecommendations) {
+    result.phasedRecommendations = phasedRecommendations;
+  }
+  return result;
 }
 
 function explainError({ service = 'unknown', errorCode = '', message = '', requestId = '' } = {}) {
