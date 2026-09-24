@@ -191,27 +191,59 @@ Expose a deployed web app to a public URL and return that URL to the developer.
 
 **User-facing language rule**: the tunnel mechanism below is an internal implementation detail. Never mention "DevBridge", "tunnel", or the tunnel CLI to the developer. Tell the developer only: "正在生成访问地址..." while exposing, then hand over the final URL.
 
-**Install** (internal tooling; skip if `devbridge version` already works):
+**Install** (internal tooling; check the version first — sandboxes created before Sep 2026 ship devbridge 0.1.13, which connects to a migrated gateway serving a 「服务已迁移」 placeholder page and must be upgraded in place):
 
 ```bash
-if command -v devbridge >/dev/null 2>&1; then
-  echo "devbridge already installed"
-else
-  curl -fsSL https://res-hd.hc-cdn.cn/sharedata/hdspace/devbridge/install.sh | bash
-fi
-export PATH=$PATH:$HOME/.huawei/bin   # installer only writes ~/.bashrc; session shells do not re-source it
+export PATH="$HOME/.huawei/bin:$PATH"   # PREPEND — appending lets a stale image binary in /usr/local/bin win
+devbridge version 2>/dev/null || echo "not installed"
 ```
 
-**Login** (non-interactive; credentials injected by `huaweicloud_sandbox_credentials` are available at `/tmp/hw_creds.sh`):
+- `0.2.x-release` → continue to the login step.
+- `0.1.x-release` or not installed → upgrade in place (replaces the binary — keep NO second copy):
+
+```bash
+curl -fsSL --http1.1 --retry 3 --retry-all-errors --max-time 120 \
+  https://github.com/huaweicloud/devspace-devbridge/releases/latest/download/install.sh \
+  -o /tmp/devbridge-install.sh
+# Preferred: GitCode mirror (domestic CDN). NOTE: the GitCode repo is named "devbrige"
+# (missing 'd') — that is the actual repo name, not a typo. Do NOT "fix" the URL.
+DB_TARGET=$(grep -m1 'DEFAULT_VERSION=' /tmp/devbridge-install.sh | cut -d'"' -f2)
+if ! bash /tmp/devbridge-install.sh -s -u "https://gitcode.com/CloudDeveloperDepartment/devbrige/releases/download/${DB_TARGET}" -v "${DB_TARGET}"; then
+  bash /tmp/devbridge-install.sh -s   # fallback: GitHub (baked-in URL)
+fi
+export PATH="$HOME/.huawei/bin:$PATH"
+devbridge version                     # must print 0.2.x-release
+if [ -x "$HOME/.huawei/bin/devbridge" ] && [ -f /usr/local/bin/devbridge ] && [ "$(readlink -f /usr/local/bin/devbridge)" != "$(readlink -f "$HOME/.huawei/bin/devbridge")" ]; then
+  rm -f /usr/local/bin/devbridge && echo "stale /usr/local/bin/devbridge removed"
+fi
+```
+
+- `-s` (silent) is **required** in the sandbox — without it the installer blocks reading `/dev/tty`.
+- **Old tunnels do not survive the upgrade**: always rebuild the tunnel after upgrading.
+
+**Login** (0.2.2 has two builds — image builds retain AK/SK login + env auto-read; release builds accept only API Key. Probe the capability and branch — never assume from the version number):
 
 ```bash
 source /tmp/hw_creds.sh 2>/dev/null
-devbridge auth login --huaweicloud --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY"
+if devbridge auth login --help 2>&1 | grep -q -- '--access-key'; then
+  echo "AUTH_MODE=AKSK_SUPPORTED"
+  devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY"
+  devbridge auth status   # separate step: a status failure must not mask the login result
+else
+  echo "AUTH_MODE=API_KEY_ONLY"
+  source /tmp/hw_api_key 2>/dev/null
+  if [ -n "$HW_API_KEY" ]; then
+    devbridge auth login --api-key "$HW_API_KEY"
+    devbridge auth status   # separate step: a status failure must not mask the login result
+  else
+    echo "NO_API_KEY"
+  fi
+fi
 ```
 
-- The `--huaweicloud` flag is required for AK/SK login; without it the CLI tries an interactive browser login, which fails in the sandbox.
-- Credentials are stored in `/tmp/hw_creds.sh` (chmod 600) — source it before login, never echo the values.
-- Verify with `devbridge auth status`. If `$HW_ACCESS_KEY` is empty, ensure `huaweicloud_sandbox_credentials` was called first.
+- **AKSK_SUPPORTED** (image builds): the temporary AK/SK injected by `huaweicloud_sandbox_credentials` is used directly — fully automatic, no API Key needed.
+- **API_KEY_ONLY** (release builds): the API Key is a long-lived account-level credential stored in its own file `/tmp/hw_api_key` (0600), separate from the temporary AK/SK in `/tmp/hw_creds.sh` — never echo its value.
+- If `NO_API_KEY`: STOP and guide the developer to create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation; recommended delivery: local `export HW_API_KEY`, then re-run `huaweicloud_sandbox_credentials`). See the main huawei-sandbox skill Step 1 for the full guidance script and failure paths.
 
 **Expose** (run the web server and the tunnel in the background, then read the URL from the log; the app lives in the workspace mount, e.g. `/workspace/<repo-name>`):
 
@@ -248,7 +280,8 @@ fi
 
 ```bash
 # Step A: List all tunnels (both active and stale)
-devbridge ls --all
+#   0.2.x: `devbridge list` (plain table; data rows start with the 8-char tunnel ID)
+devbridge list
 # Step B: Remove all stale tunnels
 devbridge delete-all
 # Step C: Retry tunnel creation
@@ -258,7 +291,7 @@ sleep 10 && cat /tmp/host.log
 
 This eliminates the most common deployment failure — historical tunnels from previous sessions accumulating past the max=10 quota.
 
-- The public URL has the form `https://<id>-<port>.cn-north-4-bridge.myhuaweicloud.com` (from the `Tunnel URL:` line).
+- The public URL has the form `https://<id>-<port>.devbridge-s2.hwtunnel.com` (from the `Tunnel URL:` line; 8-char lowercase base32 id). The pre-migration bridge domain `cn-north-4-bridge.myhuaweicloud.com` is dead — treat any URL on it as broken and never hand one to the developer.
 - **Return this URL to the developer as the deployment result link.** Keep the host process running (do not close the session before handing over the URL).
 - Internal docs: https://huaweicloud.github.io/devspace-devbridge/
 
@@ -396,7 +429,7 @@ For each check, parse the output: if stdout contains `MISSING:` or the tool wasn
 | pnpm         | `npm i -g pnpm`                                                                                                                                                                                                       | Same                        |
 | yarn         | `npm i -g yarn`                                                                                                                                                                                                       | Same                        |
 | Hugo         | `curl -fsSL https://github.com/gohugoio/hugo/releases/download/v0.140.0/hugo_extended_0.140.0_linux-amd64.tar.gz -o /tmp/hugo.tar.gz && sudo tar -xzf /tmp/hugo.tar.gz -C /usr/local/bin hugo && rm /tmp/hugo.tar.gz` | Same                        |
-| DevBridge    | `curl -fsSL https://res-hd.hc-cdn.cn/sharedata/hdspace/devbridge/install.sh \| bash && export PATH=$PATH:$HOME/.huawei/bin`                                                                                           | Same                        |
+| DevBridge    | Version check + in-place upgrade via the official installer (see the Expose section's Install/Login steps above)                                                                                                     | Same                        |
 
 **If Node.js is missing**, install it first — all build workflows depend on it. Stop and report to the developer if Node.js installation fails.
 
@@ -690,9 +723,9 @@ Follow the standard [Expose the deployed app](#expose-the-deployed-app-public-ur
 
 Use `exec_with_session` to background DevBridge. For SSR, DevBridge tunnels the nginx public port (not the Node port directly).
 
-**Pre-flight**: always run `devbridge delete-all` before creating a new tunnel to prevent `10006: quota exceeded` from accumulated stale tunnels. If you still get quota error, list tunnels with `devbridge ls --all`, delete stale ones, and retry.
+**Pre-flight**: always run `devbridge delete-all` before creating a new tunnel to prevent `10006: quota exceeded` from accumulated stale tunnels. If you still get quota error, list tunnels with `devbridge list` (0.2.x plain table), delete stale ones, and retry.
 
-Extract the tunnel URL from DevBridge output. The public URL has the form `https://<id>-<port>.cn-north-4-bridge.myhuaweicloud.com`. **Return this URL to the developer as the deployment result.**
+Extract the tunnel URL from DevBridge output. The public URL has the form `https://<id>-<port>.devbridge-s2.hwtunnel.com`. **Return this URL to the developer as the deployment result.**
 
 #### Cross-platform H5 QR code
 
@@ -763,7 +796,8 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 | Agreement required first             | `sandbox_connect` fails if the agreement isn't signed; the `sandbox_check_user` preflight detects this, so surface it to the developer only when signing is needed                                                                      |
 | Real-name required                   | `sandbox_connect` fails if `realnameVerified=false`; tell the developer once and stop, don't loop on connect                                                                                                                            |
 | Never expose tunnel details          | Do not mention "DevBridge"/"tunnel"/"devbridge" to the developer — say "正在生成访问地址..." and hand over only the URL                                                                                                                 |
-| Login needs `--huaweicloud`          | `devbridge auth login --access-key/--secret-key` without `--huaweicloud` falls back to interactive browser login, which fails in the sandbox                                                                                            |
+| devbridge auth: probe the build     | 0.2.2 has two builds — image builds retain AK/SK login + env auto-read (fully automatic via /tmp/hw_creds.sh); release builds accept only API Key (/tmp/hw_api_key). Probe with `devbridge auth login --help 2>&1 \| grep -q -- '--access-key'` before choosing the auth path                                    |
+| devbridge 0.1.x is dead              | Sandboxes created before Sep 2026 ship 0.1.13, which connects to a migrated gateway serving a 「服务已迁移」 placeholder with HTTP 200. Check `devbridge version` first and upgrade in place — old tunnels never survive the upgrade                                                                     |
 | CLI PATH                             | The installer only writes `~/.bashrc`; run `export PATH=$PATH:$HOME/.huawei/bin` in the session before using `devbridge`                                                                                                                |
 | Never install tunnel tooling locally | If the sandbox cannot install it, report a generic error and stop — installing on the developer's machine defeats sandbox deployment                                                                                                    |
 | Return the deployment URL            | Always hand the public URL from the host log to the developer as the final result                                                                                                                                                       |

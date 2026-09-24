@@ -86,3 +86,63 @@ test('voucher claim passes through error code and message on non-2xx', async () 
     global.fetch = originalFetch;
   }
 });
+
+test('voucher status returns remediation when HDKIT_CRED_INVALID', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_CRED_INVALID', message: '凭证已失效' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const result = await hdkitVoucherStatus();
+    assert.equal(result.claimed, false);
+    assert.equal(result.code, 'HDKIT_CRED_INVALID');
+    assert.ok(result.remediation, 'expected remediation field to exist');
+    assert.equal(result.remediation.hint, '已保存的凭证(S1)可能已失效。请执行以下操作之一：');
+    assert.ok(Array.isArray(result.remediation.steps));
+    assert.equal(result.remediation.steps.length, 3);
+    assert.match(result.remediation.steps[0], /huaweicloud_auth_status/);
+    assert.match(result.remediation.steps[1], /huaweicloud_auth_switch action=clear/);
+    assert.match(result.remediation.steps[2], /auth init/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('voucher claim returns remediation when HDKIT_CRED_INVALID', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_CRED_INVALID', message: '凭证已失效' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const result = await hdkitVoucherClaim('some-domain');
+    assert.equal(result.claimed, false);
+    assert.equal(result.code, 'HDKIT_CRED_INVALID');
+    assert.ok(result.remediation, 'expected remediation field to exist');
+    assert.equal(result.remediation.hint, '已保存的凭证(S1)可能已失效。请执行以下操作之一：');
+    assert.ok(Array.isArray(result.remediation.steps));
+    assert.equal(result.remediation.steps.length, 3);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('voucher status does NOT include remediation for non-CRED_INVALID errors', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_INTERNAL', message: '服务内部错误' }), {
+      status: 500,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const result = await hdkitVoucherStatus();
+    assert.equal(result.claimed, false);
+    assert.equal(result.code, 'HDKIT_INTERNAL');
+    assert.equal(result.remediation, undefined);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

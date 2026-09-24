@@ -75,10 +75,10 @@ These tools should be available in the sandbox image. Verify with the pre-flight
 
 Tools that may need installation in the sandbox before building:
 
-| Tool      | Trigger                              | Install Command                                                                      |
-| --------- | ------------------------------------ | ------------------------------------------------------------------------------------ |
-| yarn      | `yarn.lock` detected                 | `npm i -g yarn`                                                                      |
-| Hugo      | `hugo.toml` / `config.toml` detected | Download Hugo extended binary (see below)                                            |
-| DevBridge | Tunnel exposure step                 | `curl -fsSL https://res-hd.hc-cdn.cn/sharedata/hdspace/devbridge/install.sh \| bash` |
+| Tool      | Trigger                              | Install Command                                                                                          |
+| --------- | ------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| yarn      | `yarn.lock` detected                 | `npm i -g yarn`                                                                                          |
+| Hugo      | `hugo.toml` / `config.toml` detected | Download Hugo extended binary (see below)                                                                |
+| DevBridge | Tunnel exposure step                 | Official installer with version check + in-place upgrade (see SKILL.md "Expose the deployed app" Step 0) |
 
 > Hugo download: `curl -fsSL https://github.com/gohugoio/hugo/releases/download/v0.140.0/hugo_extended_0.140.0_linux-amd64.tar.gz -o /tmp/hugo.tar.gz && sudo tar -xzf /tmp/hugo.tar.gz -C /usr/local/bin hugo && rm /tmp/hugo.tar.gz`

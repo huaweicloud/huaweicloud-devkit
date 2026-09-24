@@ -146,6 +146,24 @@ test('skill SKILL.md files meet minimum content quality bar', () => {
   }
 });
 
+test('huawei-deployment skill uses verified KooCLI service and operation names', () => {
+  const body = readFileSync(join(pluginRoot, 'skills', 'huawei-deployment', 'SKILL.md'), 'utf8');
+  assert.match(body, /CodeArtsDeploy/);
+  assert.match(body, /StartDeployTask/);
+  assert.match(body, /ListAllApp/);
+  assert.match(body, /DeleteDeployTask/);
+  assert.match(body, /Deploy\.00016902/);
+  assert.match(body, /APIGW\.0301/);
+  assert.match(body, /--app_id/);
+  assert.match(body, /DeleteApplication/);
+  assert.match(body, /deprecated since 2024-09-30/);
+  assert.doesNotMatch(body, /--application_id/);
+  assert.doesNotMatch(body, /\bStartTask\b/);
+  assert.doesNotMatch(body, /\bListTasks\b/);
+  assert.doesNotMatch(body, /\bCreateTask\b/);
+  assert.doesNotMatch(body, /\bDeleteTask\b/);
+});
+
 test('skills with references have non-empty reference files', () => {
   const skillsDir = join(pluginRoot, 'skills');
   const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
@@ -187,10 +205,93 @@ test('devbridge uses the valid `list` command, not the non-existent `ls`', () =>
   const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
 
   assert.doesNotMatch(sandbox, /devbridge ls\b/);
-  assert.match(sandbox, /devbridge list -j/);
+  assert.match(sandbox, /devbridge list\b/);
 
   assert.doesNotMatch(sessionManager, /devbridge ls\b/);
   assert.match(sessionManager, /devbridge list -j/);
+});
+
+test('huawei-sandbox skill documents devbridge description and host/connect traps', () => {
+  const body = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  assert.match(body, /only Chinese characters, digits, letters/);
+  assert.match(body, /Connection failed, retrying/);
+  assert.match(body, /devbridge host/);
+  assert.match(body, /expose_via_devbridge/);
+});
+
+test('devbridge tunnel handling is migrated to the s2 gateway domain', () => {
+  const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  // Code must construct tunnel URLs exclusively from the s2 gateway domain.
+  // The guard must also catch regex-literal occurrences where dots are escaped
+  // (`cn-north-4-bridge\.myhuaweicloud\.com`) — plain dot matching is blind to those.
+  assert.match(sessionManager, /devbridge-s2\.hwtunnel\.com/);
+  assert.doesNotMatch(sessionManager, /cn-north-4-bridge\\?\.myhuaweicloud\\?\.com/);
+
+  // A migrated gateway serves a placeholder page with HTTP 200 — the check must inspect the body.
+  assert.match(sessionManager, /服务已迁移/);
+
+  // The skill must teach the new URL form and the dead legacy form.
+  assert.match(sandbox, /devbridge-s2\.hwtunnel\.com/);
+  assert.doesNotMatch(sandbox, /https:\/\/<id>-<port>\.cn-north-4-bridge\.myhuaweicloud\.com/);
+});
+
+test('devbridge 0.2.x flow: auth capability probe, version detection, in-place upgrade guidance', () => {
+  const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+
+  // SKILL.md must never teach the removed 0.1.x login flow (--huaweicloud SSO flag is
+  // gone from every 0.2.x build), and the obsolete warning row must stay gone.
+  assert.doesNotMatch(sandbox, /auth login --huaweicloud/);
+  assert.doesNotMatch(sandbox, /Login needs --huaweicloud/);
+  assert.match(sandbox, /Never expose tunnel details/);
+
+  // Auth must be decided by probing the binary's capability, not by the version string —
+  // image builds retain AK/SK (auto), release builds accept only API Key.
+  assert.match(sandbox, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
+  assert.match(sandbox, /AUTH_MODE=AKSK_SUPPORTED/);
+  assert.match(sandbox, /AUTH_MODE=API_KEY_ONLY/);
+  assert.match(
+    sandbox,
+    /auth login --access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/,
+    'image-build branch must teach the direct AK/SK login',
+  );
+
+  // The API Key guidance (release-build branch) must survive, incl. version detection
+  // and the in-place upgrade.
+  assert.match(sandbox, /auth login --api-key "\$HW_API_KEY"/);
+  assert.match(sandbox, /devbridge version/);
+  assert.match(sandbox, /devbridge-install\.sh -s/);
+  assert.match(sandbox, /devstation\.connect\.huaweicloud\.com\/space\/devbridge\/apikey/);
+  assert.match(sandbox, /HW_API_KEY/);
+
+  // The credentials tool must support injecting the DevBridge API Key:
+  // - env-first precedence (keeps the long-lived key out of the conversation)
+  // - separate storage from the temporary AK/SK (/tmp/hw_api_key vs /tmp/hw_creds.sh)
+  assert.match(tools, /api_key/);
+  assert.match(tools, /process\.env\.HW_API_KEY \|\| args\.api_key/);
+  assert.match(tools, /\/tmp\/hw_api_key/);
+  assert.match(sandbox, /\/tmp\/hw_api_key/);
+
+  // The API Key must NOT be written into the shared AK/SK creds script.
+  const credsWrite = tools.match(/const credsScript = \[[\s\S]*?\]/);
+  assert.ok(credsWrite, 'credsScript block not found in tools.mjs');
+  assert.doesNotMatch(credsWrite[0], /HW_API_KEY/);
+
+  // The CodeArts Doer sidecopy must mirror the probe-branch flow and not regress
+  // to the removed 0.1.x flow either.
+  const sidecopy = readFileSync(join(root, '.codeartsdoer', 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  assert.doesNotMatch(sidecopy, /auth login --huaweicloud/);
+  assert.doesNotMatch(sidecopy, /res-hd\.hc-cdn\.cn/);
+  assert.doesNotMatch(sidecopy, /devbridge ls\b/);
+  assert.doesNotMatch(sidecopy, /https:\/\/<id>-<port>\.cn-north-4-bridge/);
+  assert.match(sidecopy, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
+  assert.match(sidecopy, /AUTH_MODE=AKSK_SUPPORTED/);
+  assert.match(sidecopy, /AUTH_MODE=API_KEY_ONLY/);
+  assert.match(sidecopy, /auth login --api-key "\$HW_API_KEY"/);
+  assert.match(sidecopy, /devbridge-s2\.hwtunnel\.com/);
+  assert.match(sidecopy, /\/tmp\/hw_api_key/);
 });
 
 test('all plugin manifests are valid JSON', () => {
@@ -668,4 +769,10 @@ test('cmdUpdate has no trailing unreachable reinstall; cmdReinstall keeps it', (
   );
   assert.match(cmdReinstallBody, /await cmdUninstall\(\)/);
   assert.match(cmdReinstallBody, /await cmdInstall\(\)/);
+});
+
+test('doctor success message does not demand a restart', () => {
+  const setupCli = readFileSync(join(root, 'plugins', 'huaweicloud-core', 'src', 'setup-cli.mjs'), 'utf8');
+  assert.match(setupCli, /You can now describe your Huawei Cloud task/);
+  assert.doesNotMatch(setupCli, /Restart your session, then describe/);
 });

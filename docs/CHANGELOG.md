@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.1.7-next.1 (2026-09-23)
+
+- style(sandbox): split devbridge login/status chain for clearer diagnostics
+- feat(sandbox): probe devbridge auth capability instead of assuming from version
+- style: prettier normalize plugin manifests
+- chore(release): 1.1.7-next.0 (advance dev prerelease line)
+
+## Unreleased
+
+- feat(sandbox): devbridge 认证改为运行时能力探测——`0.2.2-release` 存在两个构建（镜像版保留 AK/SK 登录 + env 自动读取；发布版仅支持 API Key），暴露流程按 `auth login --help` 探测结果自动分支：镜像版直接使用注入的 AK/SK（零介入），发布版走 API Key 引导；`.codeartsdoer` sidecopy 同步，守护测试覆盖双分支
+
+## 1.1.6-next.1 (2026-09-22)
+
+- feat(sandbox): migrate DevBridge flow to 0.2.x (s2 gateway + API Key auth) (#793)
+- fix(sandbox): proxy deploys no longer emit misleading port warnings
+- docs(deployment): correct ShowAppDetailById param and annotate deprecated ops
+- fix(sandbox): remediation cautions against stale port after drift
+- style: apply prettier
+- docs(sandbox): document devbridge host vs connect, description traps, and port drift
+- docs(deployment): fix KooCLI service/operation names verified against hcloud --help
+- fix(setup): doctor success message no longer demands a restart
+- feat(sandbox): deploy_check returns executable remediation for expose_via_devbridge
+- fix(sandbox): warn when port drift detaches an active DevBridge tunnel
+- fix(sandbox): deploy_check no longer reports malformed publicUrl without tunnel
+- fix(sandbox): port conflict warning reports real auto-assigned port
+- fix(setup): workbuddy uninstall crash + honest uninstall skill counts (#556)
+- fix(mcp): address #717 review — target allowlist, -32600, newline test
+- fix(mcp): survive malformed JSON frames (-32700) and Windows npm EINVAL (#643)
+- test(setup): make OfficeAce auto-detect hermetic in install tests (#654)
+- fix(mcp): return -32602 for tools/call missing required params or unknown tool (#704)
+
+## Unreleased
+
+- feat(sandbox): `huaweicloud_sandbox_credentials` 新增 `api_key` 参数（或本地 `HW_API_KEY` 透传），注入沙箱供 devbridge 0.2.x 使用
+- fix(sandbox): deploy_check/deploy_nginx 适配 DevBridge 0.2.x——网关迁移后隧道 URL 改用 `devbridge-s2.hwtunnel.com` 域名构造；「服务已迁移」占位页（HTTP 200）判为 FAIL，修复假 200 误判 complete
+- fix(sandbox): 隧道探测版本感知——0.1.x 用 `list -j` JSON，0.2.x（已移除 `-j`）解析纯文本表格数据行的 8 位 base32 tunnelId
+- docs(sandbox): SKILL.md 暴露流程重写——API Key 登录引导（获取入口/交付方式/失败路径/安全提示）、存量沙箱 0.1.x→0.2.x 原地单版本升级（官方 installer，GitCode 渠道优先 + GitHub 兜底 + `--http1.1` 规避 HTTP2 framing）、残留 `/usr/local/bin/devbridge` 清理、新域名格式说明
+- test: 新增 devbridge s2 域名迁移/API Key 认证/版本升级守护测试；改写 `list -j` 断言为版本感知表述
+- fix(sandbox): 审查加固——API Key（长期账号级凭据）与临时 AK/SK 分离存储（`/tmp/hw_api_key`，0600）；`api_key` 优先级改为本地 `HW_API_KEY` 环境变量优先；修复 PATH 追加写法导致旧镜像二进制抢占解析的问题（改为前置 + 显式比对清理残留）
+
 ## 1.1.6-next.0 (2026-09-16)
 
 - chore: sync README beta badge to 1.1.6

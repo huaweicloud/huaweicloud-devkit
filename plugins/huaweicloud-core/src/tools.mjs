@@ -671,7 +671,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_deploy_nginx',
     description:
-      'Deploy an nginx configuration on the sandbox and reload. Takes nginxType, port, project, outputDir from framework detection and writes the correct template (SPA try_files, SSR reverse proxy, or static). Also fixes directory traverse permissions on the project path. Use this instead of manually constructing nginx config — it handles permissions, template selection, and reload in one call.',
+      'Deploy an nginx configuration on the sandbox and reload. Takes nginxType, port, project, outputDir from framework detection and writes the correct template (SPA try_files, SSR reverse proxy, or static). Also fixes directory traverse permissions on the project path. Use this instead of manually constructing nginx config — it handles permissions, template selection, and reload in one call. If the requested port is already in use, the actual port is auto-incremented and returned in "port" alongside a warning.',
     inputSchema: {
       type: 'object',
       required: ['nginx_type', 'port', 'project', 'output_dir'],
@@ -708,7 +708,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_deploy_check',
     description:
-      'Run a deployment completeness check on the sandbox. Verifies nginx is serving, output directory exists, DevBridge tunnel is active and accessible, and QR code exists (cross-platform). Returns a score and nextStep to fix any missing items. Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
+      'Run a deployment completeness check on the sandbox. Verifies nginx is serving, output directory exists, DevBridge tunnel is active and accessible, and QR code exists (cross-platform). Returns a score, nextStep, and (when the DevBridge tunnel is missing) an executable "remediation" command string. Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
     inputSchema: {
       type: 'object',
       required: ['port', 'project', 'output_dir'],
@@ -784,7 +784,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_credentials',
     description:
-      'Configure temporary AK/SK for a sandbox via hdkitservice. Validates the current AK/SK against IAM before injecting (invalid SK is rejected here instead of failing later with APIGW.0301 during exec), then injects temporary credentials into the sandbox. The sandbox must be in RUNNING state.',
+      'Configure temporary AK/SK for a sandbox via hdkitservice. Validates the current AK/SK against IAM before injecting (invalid SK is rejected here instead of failing later with APIGW.0301 during exec), then injects temporary credentials into the sandbox. Also injects an optional DevBridge API Key — required for devbridge 0.2.x tunnel exposure because 0.2.x removed AK/SK login. The API Key is a long-lived account-level credential, so it is stored in a separate file (/tmp/hw_api_key, 0600) from the temporary AK/SK (/tmp/hw_creds.sh). Source of truth: local HW_API_KEY env first, then the api_key param. The sandbox must be in RUNNING state.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -795,6 +795,11 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Region used for IAM credential validation and project_id resolution (defaults to the configured region)',
+        },
+        api_key: {
+          type: 'string',
+          description:
+            'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
         },
       },
     },
@@ -1448,6 +1453,13 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const credResult = await hdkitCredentials(args.session_id, devStageId, args.enable_sts !== false);
       const sandboxWsIdCred = args.dev_stage_id || getCurrentWorkspaceId();
+      // The DevBridge API Key is a LONG-LIVED account-level credential (no expiry, manual
+      // revocation only) — unlike the temporary STS AK/SK. It is stored in its own file
+      // (/tmp/hw_api_key, 0600) so an accidental dump of /tmp/hw_creds.sh never exposes it,
+      // and the local HW_API_KEY env takes precedence over the tool param so the key can be
+      // delivered without entering the conversation.
+      const apiKey = process.env.HW_API_KEY || args.api_key || '';
+      const apiKeyFile = '/tmp/hw_api_key';
       if (sandboxWsIdCred) {
         try {
           const { ak, sk, securitytoken } = getCredentials();
@@ -1468,12 +1480,31 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
             15000,
           );
           await execWithSession(sandboxWsIdCred, `source ${credsFile} && echo "CREDS_SOURCED"`, 'root', 15000);
+          if (apiKey) {
+            await execOneShot(
+              sandboxWsIdCred,
+              `cat > ${apiKeyFile} << 'HWAPIKEY_EOF'\nexport HW_API_KEY='${apiKey}'\nHWAPIKEY_EOF\nchmod 600 ${apiKeyFile}`,
+              'root',
+              15000,
+            );
+          } else {
+            // Refresh with no key → drop any stale copy, same semantics as the creds file rewrite.
+            await execOneShot(sandboxWsIdCred, `rm -f ${apiKeyFile}`, 'root', 15000);
+          }
         } catch {}
       }
       const result = {
         ...credResult,
         credentialValidation: validation.warning ? 'passed-with-warning' : 'passed',
       };
+      if (sandboxWsIdCred) result.apiKeyInjected = Boolean(apiKey);
+      if (apiKey) {
+        result.apiKeyHint =
+          'DevBridge API Key written to /tmp/hw_api_key (0600, kept separate from the temporary AK/SK in /tmp/hw_creds.sh — it is a long-lived account-level credential). Release builds of devbridge 0.2.x use it via: source /tmp/hw_api_key && devbridge auth login --api-key "$HW_API_KEY". Image builds retain AK/SK login — the huawei-sandbox skill probes the capability at expose time. Never echo the key into logs.';
+      } else {
+        result.apiKeyHint =
+          'No DevBridge API Key provided — release builds of devbridge 0.2.x cannot log in with AK/SK (image builds retain AK/SK; the huawei-sandbox skill probes the build at expose time and uses the injected AK/SK directly when supported). For release builds, ask the user for an API Key (created at https://devstation.connect.huaweicloud.com/space/devbridge/apikey) and re-run with api_key, or set the local HW_API_KEY environment variable (preferred — keeps the key out of the conversation).';
+      }
       if (validation.projectId) result.projectId = validation.projectId;
       if (validation.warning) result.warning = validation.warning;
       if (validation.skipped) result.warning = validation.error;

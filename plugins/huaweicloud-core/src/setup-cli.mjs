@@ -4165,7 +4165,7 @@ async function cmdDoctor() {
     console.log('\x1b[33mFix failures above, then restart your session.\x1b[0m');
   }
   if (fail === 0 && mcpConfigured) {
-    console.log('\n\x1b[32mAll checks passed.\x1b[0m Restart your session, then describe your Huawei Cloud task');
+    console.log('\n\x1b[32mAll checks passed.\x1b[0m You can now describe your Huawei Cloud task');
   }
 
   // Detect "installed but not restarted" — check all supported agents
