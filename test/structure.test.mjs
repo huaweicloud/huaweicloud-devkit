@@ -237,19 +237,29 @@ test('devbridge tunnel handling is migrated to the s2 gateway domain', () => {
   assert.doesNotMatch(sandbox, /https:\/\/<id>-<port>\.cn-north-4-bridge\.myhuaweicloud\.com/);
 });
 
-test('devbridge 0.2.x flow: API Key auth, version detection, in-place upgrade guidance', () => {
+test('devbridge 0.2.x flow: auth capability probe, version detection, in-place upgrade guidance', () => {
   const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
 
-  // SKILL.md must never teach the removed 0.1.x AK/SK login flags.
+  // SKILL.md must never teach the removed 0.1.x login flow (--huaweicloud SSO flag is
+  // gone from every 0.2.x build), and the obsolete warning row must stay gone.
   assert.doesNotMatch(sandbox, /auth login --huaweicloud/);
-  assert.doesNotMatch(sandbox, /--access-key "\$HW_ACCESS_KEY"/);
-  // The obsolete "Login needs --huaweicloud" warning row must be gone, replaced by the
-  // API Key rows — while the pre-existing user-facing language rule row survives.
   assert.doesNotMatch(sandbox, /Login needs --huaweicloud/);
   assert.match(sandbox, /Never expose tunnel details/);
 
-  // SKILL.md must teach API Key login, version detection, and the in-place upgrade.
+  // Auth must be decided by probing the binary's capability, not by the version string —
+  // image builds retain AK/SK (auto), release builds accept only API Key.
+  assert.match(sandbox, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
+  assert.match(sandbox, /AUTH_MODE=AKSK_SUPPORTED/);
+  assert.match(sandbox, /AUTH_MODE=API_KEY_ONLY/);
+  assert.match(
+    sandbox,
+    /auth login --access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/,
+    'image-build branch must teach the direct AK/SK login',
+  );
+
+  // The API Key guidance (release-build branch) must survive, incl. version detection
+  // and the in-place upgrade.
   assert.match(sandbox, /auth login --api-key "\$HW_API_KEY"/);
   assert.match(sandbox, /devbridge version/);
   assert.match(sandbox, /devbridge-install\.sh -s/);
@@ -269,12 +279,16 @@ test('devbridge 0.2.x flow: API Key auth, version detection, in-place upgrade gu
   assert.ok(credsWrite, 'credsScript block not found in tools.mjs');
   assert.doesNotMatch(credsWrite[0], /HW_API_KEY/);
 
-  // The CodeArts Doer sidecopy must not regress to the removed 0.1.x flow either.
+  // The CodeArts Doer sidecopy must mirror the probe-branch flow and not regress
+  // to the removed 0.1.x flow either.
   const sidecopy = readFileSync(join(root, '.codeartsdoer', 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   assert.doesNotMatch(sidecopy, /auth login --huaweicloud/);
   assert.doesNotMatch(sidecopy, /res-hd\.hc-cdn\.cn/);
   assert.doesNotMatch(sidecopy, /devbridge ls\b/);
   assert.doesNotMatch(sidecopy, /https:\/\/<id>-<port>\.cn-north-4-bridge/);
+  assert.match(sidecopy, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
+  assert.match(sidecopy, /AUTH_MODE=AKSK_SUPPORTED/);
+  assert.match(sidecopy, /AUTH_MODE=API_KEY_ONLY/);
   assert.match(sidecopy, /auth login --api-key "\$HW_API_KEY"/);
   assert.match(sidecopy, /devbridge-s2\.hwtunnel\.com/);
   assert.match(sidecopy, /\/tmp\/hw_api_key/);

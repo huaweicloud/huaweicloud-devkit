@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/huaweicloud-devkit)](https://www.npmjs.com/package/huaweicloud-devkit)
-[![Beta](https://img.shields.io/badge/beta-v1.1.6-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.7-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **中文 | [English](README.md)**
 
@@ -325,6 +325,18 @@ npx --yes huaweicloud-devkit@latest update --target all
 ```
 
 `update` 是增量更新——只刷新已安装的文件，不动配置文件。请务必保留 `@latest`，确保 npm 获取最新版本而非本地缓存的旧版本。
+
+### 配置代理
+
+```bash
+npx --yes huaweicloud-devkit proxy init    # 配置代理（交互式）
+npx --yes huaweicloud-devkit proxy show    # 查看生效的代理设置
+npx --yes huaweicloud-devkit proxy clear   # 删除代理配置
+```
+
+为连接华为云服务配置 HTTP/HTTPS 代理（如企业内网环境）。配置保存在 `~/.config/huaweicloud/proxy.json`。
+
+环境变量 `HTTPS_PROXY`、`HTTP_PROXY`、`NO_PROXY` 优先级高于文件配置——可使用 `proxy show` 查看最终生效的设置。
 
 ## 功能特性
 

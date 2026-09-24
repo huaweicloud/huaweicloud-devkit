@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/huaweicloud-devkit)](https://www.npmjs.com/package/huaweicloud-devkit)
-[![Beta](https://img.shields.io/badge/beta-v1.1.6-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.7-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **[中文](README.zh-CN.md) | English**
 
@@ -331,6 +331,18 @@ npx --yes huaweicloud-devkit@latest update --target all
 `update` is incremental — it refreshes installed files without touching your
 config. Always keep `@latest` so npm fetches the newest version instead of a
 locally cached older one.
+
+### Configure Proxy
+
+```bash
+npx --yes huaweicloud-devkit proxy init    # configure proxy (interactive)
+npx --yes huaweicloud-devkit proxy show    # show effective proxy settings
+npx --yes huaweicloud-devkit proxy clear   # remove proxy configuration
+```
+
+Configures HTTP/HTTPS proxy for connections to Huawei Cloud services (e.g. enterprise intranet environments). Settings are saved to `~/.config/huaweicloud/proxy.json`.
+
+Environment variables `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` take precedence over the file configuration — use `proxy show` to inspect the effective settings.
 
 ## What It Does
 

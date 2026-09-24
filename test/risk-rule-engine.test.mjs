@@ -117,6 +117,23 @@ test('evidence snippets redact secret-shaped values', () => {
   assert.match(JSON.stringify(result), /<redacted>/);
 });
 
+test('evidence snippets redact admin-pass / admin_pass variants (#726 D4-27 v2)', () => {
+  // redactEvidence now uses admin[_-]?pass to cover hyphen/underscore forms.
+  const hyphen = evaluateCommandRisk(
+    'hcloud ECS CreateServers --server.admin-pass=HyphenSecret123! --security_group_rule.remote_ip_prefix=0.0.0.0/0 --security_group_rule.port_range_min=22',
+  );
+  assert.equal(hyphen.decision, 'deny');
+  assert.doesNotMatch(JSON.stringify(hyphen), /HyphenSecret123/);
+  assert.match(JSON.stringify(hyphen), /<redacted>/);
+
+  const underscore = evaluateCommandRisk(
+    'hcloud ECS CreateServers --server.admin_pass=UnderSecret123! --security_group_rule.remote_ip_prefix=0.0.0.0/0 --security_group_rule.port_range_min=22',
+  );
+  assert.equal(underscore.decision, 'deny');
+  assert.doesNotMatch(JSON.stringify(underscore), /UnderSecret123/);
+  assert.match(JSON.stringify(underscore), /<redacted>/);
+});
+
 test('evaluateCommandRisk warns on prefixed delete family (Nova*)', () => {
   for (const op of ['NovaDeleteServer', 'NovaDeleteKeypair', 'NovaDeleteServerGroup', 'NovaDeleteServerMetadataItem']) {
     const result = evaluateCommandRisk(`hcloud ECS ${op} --x=1`);

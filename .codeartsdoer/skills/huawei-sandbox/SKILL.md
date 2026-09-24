@@ -221,19 +221,28 @@ fi
 - `-s` (silent) is **required** in the sandbox — without it the installer blocks reading `/dev/tty`.
 - **Old tunnels do not survive the upgrade**: always rebuild the tunnel after upgrading.
 
-**Login** (devbridge 0.2.x removed AK/SK login — `--access-key/--secret-key/--huaweicloud` are gone; the only non-interactive auth is a DevBridge API Key):
+**Login** (0.2.2 has two builds — image builds retain AK/SK login + env auto-read; release builds accept only API Key. Probe the capability and branch — never assume from the version number):
 
 ```bash
 source /tmp/hw_creds.sh 2>/dev/null
-source /tmp/hw_api_key 2>/dev/null
-if [ -n "$HW_API_KEY" ]; then
-  devbridge auth login --api-key "$HW_API_KEY" && devbridge auth status
+if devbridge auth login --help 2>&1 | grep -q -- '--access-key'; then
+  echo "AUTH_MODE=AKSK_SUPPORTED"
+  devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY"
+  devbridge auth status   # separate step: a status failure must not mask the login result
 else
-  echo "NO_API_KEY"
+  echo "AUTH_MODE=API_KEY_ONLY"
+  source /tmp/hw_api_key 2>/dev/null
+  if [ -n "$HW_API_KEY" ]; then
+    devbridge auth login --api-key "$HW_API_KEY"
+    devbridge auth status   # separate step: a status failure must not mask the login result
+  else
+    echo "NO_API_KEY"
+  fi
 fi
 ```
 
-- The API Key is a long-lived account-level credential stored in its own file `/tmp/hw_api_key` (0600), separate from the temporary AK/SK in `/tmp/hw_creds.sh` — never echo its value.
+- **AKSK_SUPPORTED** (image builds): the temporary AK/SK injected by `huaweicloud_sandbox_credentials` is used directly — fully automatic, no API Key needed.
+- **API_KEY_ONLY** (release builds): the API Key is a long-lived account-level credential stored in its own file `/tmp/hw_api_key` (0600), separate from the temporary AK/SK in `/tmp/hw_creds.sh` — never echo its value.
 - If `NO_API_KEY`: STOP and guide the developer to create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation; recommended delivery: local `export HW_API_KEY`, then re-run `huaweicloud_sandbox_credentials`). See the main huawei-sandbox skill Step 1 for the full guidance script and failure paths.
 
 **Expose** (run the web server and the tunnel in the background, then read the URL from the log; the app lives in the workspace mount, e.g. `/workspace/<repo-name>`):
@@ -787,7 +796,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 | Agreement required first             | `sandbox_connect` fails if the agreement isn't signed; the `sandbox_check_user` preflight detects this, so surface it to the developer only when signing is needed                                                                      |
 | Real-name required                   | `sandbox_connect` fails if `realnameVerified=false`; tell the developer once and stop, don't loop on connect                                                                                                                            |
 | Never expose tunnel details          | Do not mention "DevBridge"/"tunnel"/"devbridge" to the developer — say "正在生成访问地址..." and hand over only the URL                                                                                                                 |
-| devbridge 0.2.x needs an API Key     | 0.2.x removed AK/SK login (`--access-key/--secret-key/--huaweicloud` are gone). Login with `--api-key "$HW_API_KEY"` from `/tmp/hw_api_key` (long-lived credential, stored separately from `/tmp/hw_creds.sh`). If missing, guide the developer to create one                                           |
+| devbridge auth: probe the build     | 0.2.2 has two builds — image builds retain AK/SK login + env auto-read (fully automatic via /tmp/hw_creds.sh); release builds accept only API Key (/tmp/hw_api_key). Probe with `devbridge auth login --help 2>&1 \| grep -q -- '--access-key'` before choosing the auth path                                    |
 | devbridge 0.1.x is dead              | Sandboxes created before Sep 2026 ship 0.1.13, which connects to a migrated gateway serving a 「服务已迁移」 placeholder with HTTP 200. Check `devbridge version` first and upgrade in place — old tunnels never survive the upgrade                                                                     |
 | CLI PATH                             | The installer only writes `~/.bashrc`; run `export PATH=$PATH:$HOME/.huawei/bin` in the session before using `devbridge`                                                                                                                |
 | Never install tunnel tooling locally | If the sandbox cannot install it, report a generic error and stop — installing on the developer's machine defeats sandbox deployment                                                                                                    |
