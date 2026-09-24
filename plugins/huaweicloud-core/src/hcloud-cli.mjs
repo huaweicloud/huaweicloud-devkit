@@ -244,6 +244,28 @@ export function classifyUnsupported(service, metaDir) {
 // credential set that R3 forbids writing to disk, we pass it per-command instead.
 // Zero-persist: nothing touches S1/S2/S3 and every invocation re-reads the current
 // value (stale as soon as the token is).
+// Redact executed args for MCP-visible output. Besides the generic key=value
+// redaction (--cli-access-key=...), obsutil-style standalone credential flags
+// (-i AK / -k SK / -t TOKEN) carry the temporary STS as following array elements,
+// which redactSecrets can't match. We scrub those explicitly.
+export function redactArgsWithObs(rawArgs) {
+  const arr = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  const out = [...arr];
+  for (let i = 0; i < out.length; i += 1) {
+    if (out[i] === '-i' || out[i] === '-k' || out[i] === '-t') {
+      if (i + 1 < out.length) out[i + 1] = '<redacted>';
+      i += 1;
+    } else if (/^-i[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-i<redacted>';
+    } else if (/^-k[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-k<redacted>';
+    } else if (/^-t[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-t<redacted>';
+    }
+  }
+  return redactSecrets(out);
+}
+
 export function resolveStsInjectArgs(rawArgs) {
   const normalized = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
   if (normalized.length === 0) return [];
@@ -501,7 +523,7 @@ function runHcloudOnce(plan, options) {
       // clients / agent conversation — redact before resolve. The live `plan`
       // object itself is left untouched so retries keep executing the real args.
       if (result.plan && Array.isArray(result.plan.rawArgs)) {
-        const redactedPlan = { ...result.plan, rawArgs: redactSecrets(result.plan.rawArgs) };
+        const redactedPlan = { ...result.plan, rawArgs: redactArgsWithObs(result.plan.rawArgs) };
         result.plan = redactedPlan;
       }
       resolve(result);

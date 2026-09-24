@@ -9,6 +9,7 @@ import {
   createApprovalToken,
   hashArgs,
   planHcloudCommand,
+  redactArgsWithObs,
   resolveStsInjectArgs,
   runHcloud,
   extractApiError,
@@ -511,4 +512,34 @@ test('resolveStsInjectArgs injects when expiry is in the future (R3)', () => {
   const injected = resolveStsInjectArgs(['VPC', 'ListVpcs']);
   assert.ok(injected.some((a) => a.startsWith('--cli-security-token=')));
   clearRuntimeCredentials();
+});
+
+test('redactArgsWithObs redacts obsutil -i/-k/-t standalone values', () => {
+  const out = redactArgsWithObs(['OBS', 'ls', '-i', 'SOME_AK', '-k', 'SOME_SK', '-t', 'SOME_TOKEN']);
+  assert.deepEqual(out, ['OBS', 'ls', '-i', '<redacted>', '-k', '<redacted>', '-t', '<redacted>']);
+});
+
+test('redactArgsWithObs redacts hcloud key=value form and leaves non-secrets', () => {
+  const out = redactArgsWithObs(['VPC', 'ListVpcs', '--cli-access-key=AK', '--cli-region=cn-south-1']);
+  assert.ok(out.some((a) => a === '--cli-access-key=<redacted>'));
+  assert.ok(out.includes('--cli-region=cn-south-1'));
+});
+
+test('runHcloud redacts OBS STS args from returned plan.rawArgs', async () => {
+  await withTempAuthHome(async () => {
+    const script = fakeHcloudScript('console.log(JSON.stringify({ ok: true }));');
+    clearRuntimeCredentials();
+    setRuntimeCredentials('OBS_AK', 'OBS_SK', 'OBS_TOKEN', 'cn-south-1');
+    const result = await runHcloud(['OBS', 'ls'], { executable: process.execPath, executableArgs: [script] });
+    assert.equal(result.ok, true);
+    const raw = result.plan.rawArgs;
+    // The injected OBS STS values must be redacted, not in cleartext.
+    const joined = raw.join(' ');
+    assert.ok(!joined.includes('OBS_AK'));
+    assert.ok(!joined.includes('OBS_SK'));
+    assert.ok(!joined.includes('OBS_TOKEN'));
+    // -i / -k / -t placeholders present.
+    assert.ok(joined.includes('-i <redacted>') || joined.includes('-i<redacted>'), JSON.stringify(raw));
+    clearRuntimeCredentials();
+  });
 });
