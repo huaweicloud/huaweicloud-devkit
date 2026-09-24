@@ -71,18 +71,23 @@ test('formatPortDriftWarning names both ports and the re-bind command', () => {
 test('buildExposeRemediation includes credential sourcing and host command with port', () => {
   const msg = buildExposeRemediation(82);
   assert.match(msg, /source \/tmp\/hw_creds\.sh/);
+  assert.match(msg, /source \/tmp\/hw_api_key/);
   assert.match(msg, /devbridge port create <tunnelId> -p 82 --protocol http -a/);
   assert.match(msg, /use THAT port instead/);
 });
 
 test('TUNNEL_URL_PATTERN matches a real tunnel URL', () => {
-  const m = 'TUNNEL_URL:https://c4rdv7bv-80.cn-north-4-bridge.myhuaweicloud.com'.match(TUNNEL_URL_PATTERN);
+  const m = 'TUNNEL_URL:https://c4rdv7bv-80.devbridge-s2.hwtunnel.com'.match(TUNNEL_URL_PATTERN);
   assert.ok(m, 'valid URL should match');
-  assert.equal(m[1], 'https://c4rdv7bv-80.cn-north-4-bridge.myhuaweicloud.com');
+  assert.equal(m[1], 'https://c4rdv7bv-80.devbridge-s2.hwtunnel.com');
 });
 
 test('TUNNEL_URL_PATTERN rejects URL with empty tunnel prefix', () => {
-  assert.equal('TUNNEL_URL:https://-80.cn-north-4-bridge.myhuaweicloud.com'.match(TUNNEL_URL_PATTERN), null);
+  assert.equal('TUNNEL_URL:https://-80.devbridge-s2.hwtunnel.com'.match(TUNNEL_URL_PATTERN), null);
+});
+
+test('TUNNEL_URL_PATTERN no longer matches the migrated legacy domain', () => {
+  assert.equal('TUNNEL_URL:https://c4rdv7bv-80.cn-north-4-bridge.myhuaweicloud.com'.match(TUNNEL_URL_PATTERN), null);
 });
 
 test('formatProxyPortWarning is undefined without drift', () => {

@@ -65,6 +65,16 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     err.code = code;
     err.status = resp.status;
     err.traceId = data.traceId;
+    if (code === 'HDKIT_CRED_INVALID') {
+      err.remediation = {
+        hint: '已保存的凭证(S1)可能已失效。请执行以下操作之一：',
+        steps: [
+          '运行 huaweicloud_auth_status 查看当前凭证状态（S1 指纹 vs 环境注入指纹）',
+          '若环境注入了有效凭证：运行 huaweicloud_auth_switch action=clear 清除 runtime 凭证，或删除 ~/.config/huaweicloud/credentials.json 让平台凭证接管',
+          '若需更新 S1：运行 npx huaweicloud-devkit auth init 重新配置有效 AK/SK',
+        ],
+      };
+    }
     throw err;
   }
 
@@ -119,6 +129,7 @@ export async function hdkitVoucherStatus(domainId) {
       claimed: false,
       message: error?.message || 'Incentive service unavailable, please try again later',
       code: error?.code,
+      ...(error?.remediation ? { remediation: error.remediation } : {}),
     };
   }
 }
@@ -132,6 +143,7 @@ export async function hdkitVoucherClaim(domainId) {
       claimed: false,
       message: error?.message || 'Incentive service unavailable, please try again later',
       code: error?.code,
+      ...(error?.remediation ? { remediation: error.remediation } : {}),
     };
   }
 }

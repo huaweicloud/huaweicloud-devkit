@@ -22,10 +22,17 @@ import { trackSandboxConnect, trackSandboxDisconnect } from '../telemetry/teleme
 
 const execFileAsync = promisify(execFile);
 
+// Public tunnel URL domain for the DevBridge s2 gateway. The pre-migration Huawei Cloud
+// bridge domain was retired in Sep 2026 and now serves a 「服务已迁移」 placeholder page with
+// HTTP 200 — never construct tunnel URLs from it.
+const DEVBRIDGE_TUNNEL_DOMAIN = 'devbridge-s2.hwtunnel.com';
+// Migration placeholder page marker — a tunnel URL returning this body must be treated as unreachable.
+const DEVBRIDGE_MIGRATION_MARKER = '服务已迁移';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const WS_EXEC_INDEX_URL = pathToFileURL(join(__dirname, '..', 'ws-exec', 'index.js')).href;
 
-export const TUNNEL_URL_PATTERN = /TUNNEL_URL:(https:\/\/[A-Za-z0-9_-]+-\d+\.cn-north-4-bridge\.myhuaweicloud\.com)/;
+export const TUNNEL_URL_PATTERN = /TUNNEL_URL:(https:\/\/[A-Za-z0-9_-]+-\d+\.devbridge-s2\.hwtunnel\.com)/;
 
 let currentWorkspaceId = process.env.HW_WORKSPACE_ID || null;
 
@@ -197,7 +204,7 @@ export function formatProxyPortWarning(basePort, targetPort) {
 }
 
 export function buildExposeRemediation(port) {
-  return `In the sandbox: source /tmp/hw_creds.sh; devbridge delete-all; devbridge create <name>; devbridge port create <tunnelId> -p ${port} --protocol http -a; nohup devbridge host <tunnelId> -p ${port} > /tmp/host.log 2>&1 & If deploy_nginx reported a different (auto-incremented) port in its "port" field, use THAT port instead of the one shown here. Full procedure in huawei-sandbox skill, Step 7 (Expose via DevBridge).`;
+  return `In the sandbox: source /tmp/hw_creds.sh; source /tmp/hw_api_key 2>/dev/null; devbridge delete-all; devbridge create <name>; devbridge port create <tunnelId> -p ${port} --protocol http -a; nohup devbridge host <tunnelId> -p ${port} > /tmp/host.log 2>&1 & If deploy_nginx reported a different (auto-incremented) port in its "port" field, use THAT port instead of the one shown here. Full procedure in huawei-sandbox skill, Step 7 (Expose via DevBridge).`;
 }
 
 export async function uploadFileWithSession(workspaceId, localPath, remotePath, username = 'root', timeoutMs = 30000) {
@@ -856,9 +863,11 @@ fi`;
 
   let tunnelActive = false;
   try {
+    // Version-aware: devbridge 0.1.x exposes JSON via `list -j`; 0.2.x removed -j and
+    // prints a table whose data rows start with the 8-char base32 tunnel ID.
     const tunnelCheck = await execOneShot(
       workspaceId,
-      'devbridge list -j 2>/dev/null | grep -q \'"tunnelId"\' && echo "ACTIVE" || echo "INACTIVE"',
+      '(devbridge list -j 2>/dev/null | grep -q \'"tunnelId"\' || devbridge list 2>/dev/null | grep -Eq \'^[a-z2-7]{8}[[:space:]]\') && echo "ACTIVE" || echo "INACTIVE"',
       username,
       10000,
     );
@@ -942,7 +951,13 @@ export async function deployCheck(
     `fi`,
     ``,
     `TOTAL=$((TOTAL+1))`,
+    `DB_TUNNEL_ACTIVE=0`,
     `if devbridge list -j 2>/dev/null | grep -q '"tunnelId"'; then`,
+    `  DB_TUNNEL_ACTIVE=1`,
+    `elif devbridge list 2>/dev/null | grep -Eq '^[a-z2-7]{8}[[:space:]]'; then`,
+    `  DB_TUNNEL_ACTIVE=1`,
+    `fi`,
+    `if [ "$DB_TUNNEL_ACTIVE" = "1" ]; then`,
     `  echo "devbridge_tunnel:PASS"`,
     `  PASS=$((PASS+1))`,
     `else`,
@@ -951,22 +966,29 @@ export async function deployCheck(
     ``,
     `TOTAL=$((TOTAL+1))`,
     `TUNNEL_ID=$(devbridge list -j 2>/dev/null | grep -oP '"tunnelId":\\s*"\\K[^"]+' | head -1)`,
-    `if [ -n "$TUNNEL_ID" ]; then`,
-    `  TUNNEL_URL="https://\${TUNNEL_ID}-${port}.cn-north-4-bridge.myhuaweicloud.com"`,
-    `else`,
-    `  TUNNEL_URL=""`,
+    `if [ -z "$TUNNEL_ID" ]; then`,
+    `  TUNNEL_ID=$(devbridge list 2>/dev/null | grep -E '^[a-z2-7]{8}[[:space:]]' | awk '{print $1}' | head -1)`,
     `fi`,
-    `if [ -n "$TUNNEL_ID" ] && [ -n "$TUNNEL_URL" ]; then`,
-    `  HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
-    `  if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then`,
-    `    echo "tunnel_url_accessible:PASS ($TUNNEL_URL -> $HTTP_CODE)"`,
-    `    PASS=$((PASS+1))`,
-    `  else`,
-    `    echo "tunnel_url_accessible:FAIL ($TUNNEL_URL -> HTTP $HTTP_CODE)"`,
-    `  fi`,
+    `TUNNEL_URL="https://\${TUNNEL_ID}-${port}.${DEVBRIDGE_TUNNEL_DOMAIN}"`,
+    `probe_tunnel() {`,
+    `  local url="$1" code`,
+    `  code=$(curl -s -o /tmp/.dc_tunnel_body -w "%{http_code}" --max-time 10 "$url" 2>/dev/null || echo "000")`,
+    `  [ "$code" = "000" ] && return 1`,
+    `  # A migrated gateway serves a placeholder page with HTTP 200 — treat it as unreachable.`,
+    `  if grep -q "${DEVBRIDGE_MIGRATION_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then return 1; fi`,
+    `  rm -f /tmp/.dc_tunnel_body`,
+    `  [ "$code" = "200" ] || [ "$code" = "304" ] || return 1`,
+    `  return 0`,
+    `}`,
+    `if [ -n "$TUNNEL_ID" ] && probe_tunnel "$TUNNEL_URL"; then`,
+    `  echo "tunnel_url_accessible:PASS ($TUNNEL_URL)"`,
+    `  PASS=$((PASS+1))`,
+    `elif [ -n "$TUNNEL_ID" ]; then`,
+    `  echo "tunnel_url_accessible:FAIL ($TUNNEL_URL -> unreachable, tunnel not found, or migration placeholder page)"`,
     `else`,
-    `  echo "tunnel_url_accessible:FAIL (no tunnel URL)"`,
+    `  echo "tunnel_url_accessible:FAIL (no tunnel)"`,
     `fi`,
+    `rm -f /tmp/.dc_tunnel_body 2>/dev/null || true`,
     ``,
     `${`
 TOTAL=$((TOTAL+1))
