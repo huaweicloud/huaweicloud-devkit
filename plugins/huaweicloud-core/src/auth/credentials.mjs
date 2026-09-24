@@ -100,11 +100,11 @@ function pickDevkitMcpServer(mcpMap) {
 }
 
 // Derive the expiry (epoch ms) of a temporary STS credential set.
-// Priority: 1) HW_EXPIRES_AT env (ISO8601 or epoch seconds); 2) decode the
+// Priority: 1) HW_STS_EXPIRES_AT env (ISO8601 or epoch seconds); 2) decode the
 // security token (JWT payload or bare URL-safe base64 JSON) reading common
 // expiry fields (exp, timeout_at, expires_at, id_expires_at; issued_at+duration).
 // Returns null when unknown/unparseable. Never throws.
-export function parseStsExpiry({ securityToken, expiresAtEnv = process.env.HW_EXPIRES_AT } = {}) {
+export function parseStsExpiry({ securityToken, expiresAtEnv = process.env.HW_STS_EXPIRES_AT } = {}) {
   if (expiresAtEnv) {
     const v = String(expiresAtEnv).trim();
     if (!v) return null;

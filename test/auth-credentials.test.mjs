@@ -684,7 +684,7 @@ test('auth_status reports mcpSettingsConfigured and mcp-settings-injected onboar
   });
 });
 
-test('parseStsExpiry reads HW_EXPIRES_AT (epoch seconds and ISO8601)', () => {
+test('parseStsExpiry reads HW_STS_EXPIRES_AT (epoch seconds and ISO8601)', () => {
   assert.equal(parseStsExpiry({ expiresAtEnv: '1750000000' }), 1750000000 * 1000);
   assert.equal(parseStsExpiry({ expiresAtEnv: '1750000000000' }), 1750000000000);
   const iso = new Date('2026-10-01T00:00:00Z').getTime();
