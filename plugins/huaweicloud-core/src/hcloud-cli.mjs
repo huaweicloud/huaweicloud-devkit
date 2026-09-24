@@ -247,6 +247,48 @@ export function classifyUnsupported(service, metaDir) {
 export function resolveStsInjectArgs(rawArgs) {
   const normalized = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
   if (normalized.length === 0) return [];
+  const flat = normalized.map(String);
+
+  // Explicit kill-switch (R2): CI/ops can disable argv-injection entirely so the
+  // temporary STS never appears in a process list.
+  const flag = process.env.HUAWEICLOUD_INJECT_STS_CMD;
+  if (flag === '0' || flag === 'false') return [];
+
+  // Never inject for help / metadata subcommands — the flags are meaningless there.
+  if (flat.some((a) => a === '--help' || a === '-h' || a === 'help')) return [];
+
+  // Wrapper invocation (bash -c / sudo / sh ...): our extra args would land in the
+  // wrapper's argv, not hcloud's — either ineffective or misleading. Skip them.
+  const WRAP = new Set([
+    'bash',
+    'sh',
+    'zsh',
+    'dash',
+    'bash.exe',
+    'sh.exe',
+    '/bin/bash',
+    '/bin/sh',
+    '/bin/zsh',
+    '/bin/dash',
+    'sudo',
+  ]);
+  const first = String(flat[0] || '').toLowerCase();
+  if (WRAP.has(first)) return [];
+
+  // KooCLI profile-management subcommands don't take --cli-security-token.
+  if (first === 'configure' || first === 'config') return [];
+
+  // If the caller already passed explicit credential flags, do not override them.
+  if (
+    flat.some(
+      (a) =>
+        a.startsWith('--cli-access-key=') || a.startsWith('--cli-secret-key=') || a.startsWith('--cli-security-token='),
+    )
+  ) {
+    return [];
+  }
+  if (flat.some((a) => a === '-i' || a === '-k' || a === '-t')) return [];
+
   let creds;
   try {
     creds = resolveCredentialsWithRuntime({ allowMissing: true });
@@ -254,7 +296,8 @@ export function resolveStsInjectArgs(rawArgs) {
     return [];
   }
   if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
-  const isObs = normalized[0].toUpperCase() === 'OBS';
+
+  const isObs = flat[0].toUpperCase() === 'OBS';
   return isObs
     ? ['-i', creds.ak, '-k', creds.sk, '-t', creds.securityToken]
     : ['--cli-access-key=' + creds.ak, '--cli-secret-key=' + creds.sk, '--cli-security-token=' + creds.securityToken];
@@ -443,6 +486,13 @@ function runHcloudOnce(plan, options) {
           result.outputFile = outputFile;
           result.stdout = String(result.stdout).slice(0, 2000) + `\n...(truncated, full output saved to ${outputFile})`;
         }
+      }
+      // Never surface raw args (may include the injected temporary STS) to MCP
+      // clients / agent conversation — redact before resolve. The live `plan`
+      // object itself is left untouched so retries keep executing the real args.
+      if (result.plan && Array.isArray(result.plan.rawArgs)) {
+        const redactedPlan = { ...result.plan, rawArgs: redactSecrets(result.plan.rawArgs) };
+        result.plan = redactedPlan;
       }
       resolve(result);
     }

@@ -415,3 +415,63 @@ test('runHcloud does NOT inject STS args for long-lived creds (no token)', async
     assert.equal(injected.length, 0, JSON.stringify(parsed.args));
   });
 });
+
+test('resolveStsInjectArgs skips help/metadata commands', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  assert.deepEqual(resolveStsInjectArgs(['--help']), []);
+  assert.deepEqual(resolveStsInjectArgs(['ECS', '--help']), []);
+  assert.deepEqual(resolveStsInjectArgs(['help']), []);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs skips bash/sudo wrapper invocations', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  assert.deepEqual(resolveStsInjectArgs(['bash', '-c', 'hcloud ECS ListServersDetails']), []);
+  assert.deepEqual(resolveStsInjectArgs(['sudo', 'hcloud', 'ECS', 'ListServersDetails']), []);
+  assert.deepEqual(resolveStsInjectArgs(['/bin/sh', '-c', 'hcloud ECS ListServersDetails']), []);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs skips configure/config and existing explicit creds', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  assert.deepEqual(resolveStsInjectArgs(['configure', 'set']), []);
+  assert.deepEqual(resolveStsInjectArgs(['config', 'list']), []);
+  assert.deepEqual(resolveStsInjectArgs(['ECS', 'ListServersDetails', '--cli-access-key=EXPLICIT']), []);
+  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-i', 'EXPLICIT']), []);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs honors HUAWEICLOUD_INJECT_STS_CMD=0 kill switch', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  const prev = process.env.HUAWEICLOUD_INJECT_STS_CMD;
+  try {
+    process.env.HUAWEICLOUD_INJECT_STS_CMD = '0';
+    assert.deepEqual(resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
+  } finally {
+    if (prev === undefined) delete process.env.HUAWEICLOUD_INJECT_STS_CMD;
+    else process.env.HUAWEICLOUD_INJECT_STS_CMD = prev;
+  }
+  clearRuntimeCredentials();
+});
+
+test('runHcloud redacts injected STS from returned plan.rawArgs', async () => {
+  await withTempAuthHome(async () => {
+    const script = fakeHcloudScript('console.log(JSON.stringify({ ok: true }));');
+    clearRuntimeCredentials();
+    setRuntimeCredentials('RUN_AK', 'RUN_SK', 'RUN_TOKEN', 'cn-north-4');
+    const result = await runHcloud(['VPC', 'ListVpcs'], { executable: process.execPath, executableArgs: [script] });
+    assert.equal(result.ok, true);
+    const redactedArgs = result.plan.rawArgs;
+    assert.ok(Array.isArray(redactedArgs));
+    // Injected STS must be redacted, not present in cleartext.
+    assert.ok(redactedArgs.some((a) => a.startsWith('--cli-security-token=')));
+    assert.ok(!redactedArgs.includes('--cli-security-token=RUN_TOKEN'));
+    assert.ok(!redactedArgs.includes('--cli-access-key=RUN_AK'));
+    assert.ok(!redactedArgs.includes('--cli-secret-key=RUN_SK'));
+    clearRuntimeCredentials();
+  });
+});
