@@ -7,6 +7,7 @@ import { dirname, join } from 'node:path';
 import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { findHcloudBin, resolveHcloudCommand } from './hcloud-probe.mjs';
+import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
@@ -237,6 +238,105 @@ export function classifyUnsupported(service, metaDir) {
   return 'unknown';
 }
 
+// Build command-line credential-injection args when the current credentials are
+// temporary STS (carry a non-empty security token). KooCLI/obsutil do not read the
+// platform-injected HW_* env (link B reads only S2/S3 config), so for a live STS
+// credential set that R3 forbids writing to disk, we pass it per-command instead.
+// Zero-persist: nothing touches S1/S2/S3 and every invocation re-reads the current
+// value (stale as soon as the token is).
+// Redact executed args for MCP-visible output. Besides the generic key=value
+// redaction (--cli-access-key=...), obsutil-style standalone credential flags
+// (-i AK / -k SK / -t TOKEN) carry the temporary STS as following array elements,
+// which redactSecrets can't match. We scrub those explicitly.
+export function redactArgsWithObs(rawArgs) {
+  const arr = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  const out = [...arr];
+  for (let i = 0; i < out.length; i += 1) {
+    if (out[i] === '-i' || out[i] === '-k' || out[i] === '-t') {
+      if (i + 1 < out.length) out[i + 1] = '<redacted>';
+      i += 1;
+    } else if (/^-i[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-i<redacted>';
+    } else if (/^-k[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-k<redacted>';
+    } else if (/^-t[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-t<redacted>';
+    }
+  }
+  return redactSecrets(out);
+}
+
+export function resolveStsInjectArgs(rawArgs) {
+  const normalized = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  if (normalized.length === 0) return [];
+  const flat = normalized.map(String);
+
+  // Explicit kill-switch (R2): CI/ops can disable argv-injection entirely so the
+  // temporary STS never appears in a process list.
+  const flag = process.env.HUAWEICLOUD_INJECT_STS_CMD;
+  if (flag === '0' || flag === 'false') return [];
+
+  // Never inject for help / metadata subcommands — the flags are meaningless there.
+  if (flat.some((a) => a === '--help' || a === '-h' || a === 'help')) return [];
+
+  // Wrapper invocation (bash -c / sudo / sh ...): our extra args would land in the
+  // wrapper's argv, not hcloud's — either ineffective or misleading. Skip them.
+  const WRAP = new Set([
+    'bash',
+    'sh',
+    'zsh',
+    'dash',
+    'bash.exe',
+    'sh.exe',
+    '/bin/bash',
+    '/bin/sh',
+    '/bin/zsh',
+    '/bin/dash',
+    'sudo',
+  ]);
+  const first = String(flat[0] || '').toLowerCase();
+  if (WRAP.has(first)) return [];
+
+  // KooCLI profile-management subcommands don't take --cli-security-token.
+  if (first === 'configure' || first === 'config') return [];
+
+  // If the caller already passed explicit credential flags, do not override them.
+  if (
+    flat.some(
+      (a) =>
+        a.startsWith('--cli-access-key=') || a.startsWith('--cli-secret-key=') || a.startsWith('--cli-security-token='),
+    )
+  ) {
+    return [];
+  }
+  // Explicit obsutil-style credentials already present — standalone (-i AK) or
+  // attached (-iAK) — should not be overridden by an extra injection.
+  if (flat.some((a) => a === '-i' || a === '-k' || a === '-t' || /^-[ikt][A-Za-z0-9]/.test(a))) return [];
+
+  let creds;
+  try {
+    creds = resolveCredentialsWithRuntime({ allowMissing: true });
+  } catch {
+    return [];
+  }
+  if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
+
+  // R3: if we can derive an expiry and the token is already at/within 60s of
+  // expiring, skip injection — using a dead token would make a doomed IAM round
+  // trip. If expiry is unknown/unparseable we keep the existing "inject anyway"
+  // behavior (can't prove it's stale).
+  const expiry = parseStsExpiry({ securityToken: creds.securityToken });
+  if (expiry !== null) {
+    const grace = 60 * 1000;
+    if (expiry <= Date.now() + grace) return [];
+  }
+
+  const isObs = flat[0].toUpperCase() === 'OBS';
+  return isObs
+    ? ['-i', creds.ak, '-k', creds.sk, '-t', creds.securityToken]
+    : ['--cli-access-key=' + creds.ak, '--cli-secret-key=' + creds.sk, '--cli-security-token=' + creds.securityToken];
+}
+
 export function planHcloudCommand(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const classification = classifyHcloudArgs(normalizedArgs, options);
@@ -298,6 +398,16 @@ export async function runHcloud(args, options = {}) {
     rawArgs: normalizedArgs,
   };
   assertAllowed(plan.classification);
+
+  // Link B: when the runtime/environment carries live temporary STS credentials
+  // (security token set), KooCLI/obsutil would not see them (they read S2/S3 only
+  // and R3 forbids writing them to disk). Inject per-command so hcloud actually
+  // authenticates with the platform-provided STS. Injection args are appended to
+  // the EXECUTED args only; classification/approval used the original args.
+  const stsInject = resolveStsInjectArgs(normalizedArgs);
+  if (stsInject.length > 0) {
+    plan.rawArgs = [...plan.rawArgs, ...stsInject];
+  }
 
   const metaDir = options.metaDir;
 
@@ -410,6 +520,13 @@ function runHcloudOnce(plan, options) {
           result.outputFile = outputFile;
           result.stdout = String(result.stdout).slice(0, 2000) + `\n...(truncated, full output saved to ${outputFile})`;
         }
+      }
+      // Never surface raw args (may include the injected temporary STS) to MCP
+      // clients / agent conversation — redact before resolve. The live `plan`
+      // object itself is left untouched so retries keep executing the real args.
+      if (result.plan && Array.isArray(result.plan.rawArgs)) {
+        const redactedPlan = { ...result.plan, rawArgs: redactArgsWithObs(result.plan.rawArgs) };
+        result.plan = redactedPlan;
       }
       resolve(result);
     }
