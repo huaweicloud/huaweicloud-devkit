@@ -1,5 +1,5 @@
 import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
-import { peekCachedUpdateInfo, applyUpdateHint, readInstalledVersion } from './update-check.mjs';
+import { getCachedUpdateInfo, peekCachedUpdateInfo, applyUpdateHint, readInstalledVersion } from './update-check.mjs';
 import { initTelemetry } from './telemetry/telemetry.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
 
@@ -27,8 +27,32 @@ export function _isHintConsumed(sessionId) {
   return Boolean(consumedBySession.get(sessionId));
 }
 
+// initialize 握手状态追踪：按会话隔离，未初始化时非 initialize 方法返回 -32600（MCP 协议时序约束 #814 D9-12）。
+const initializedBySession = new Map();
+export function _resetInitializedSessions() {
+  initializedBySession.clear();
+}
+export function _isSessionInitialized(sessionId) {
+  return Boolean(initializedBySession.get(sessionId));
+}
+
+// 测试可观测性：initialize 阶段是否触发了版本检查（getCachedUpdateInfo 调用 #814 D9-12 ③）。
+let versionCheckTriggered = false;
+export function _resetVersionCheckFlag() {
+  versionCheckTriggered = false;
+}
+export function _wasVersionChecked() {
+  return versionCheckTriggered;
+}
+
 export async function dispatch(method, params, opts = {}) {
   const sessionId = opts?.sessionId || 'default';
+  // MCP 协议时序约束：initialize 之前的非 initialize 请求应被拒（JSON-RPC -32600 #814 D9-12 ⑥）。
+  if (method !== 'initialize' && !initializedBySession.get(sessionId)) {
+    const notInitializedError = new Error('Server not initialized');
+    notInitializedError.code = -32600;
+    throw notInitializedError;
+  }
   if (method === 'initialize') {
     const ci = params.clientInfo || {};
 
@@ -42,6 +66,10 @@ export async function dispatch(method, params, opts = {}) {
 
     const agent = detectAgent(ci);
     initTelemetry({ harness: agent.harness, version: agent.version });
+    // 版本检查：异步、非阻塞、失败静默（与 mcp-server.mjs updatePrewarm 一致 #814 D9-12 ③）。
+    getCachedUpdateInfo(readInstalledVersion() || '0.0.0').catch(() => {});
+    versionCheckTriggered = true;
+    initializedBySession.set(sessionId, true);
     return {
       protocolVersion: params.protocolVersion || '2024-11-05',
       capabilities: {

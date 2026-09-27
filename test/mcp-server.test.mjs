@@ -310,6 +310,49 @@ test('MCP server reports version from plugin manifest in Codex cache layout (#57
   }
 });
 
+test('MCP server returns -32600 for tools/list before initialize (#814 D9-12 ⑥)', async () => {
+  const client = createClient();
+  try {
+    const response = await client.request('tools/list');
+    assert.ok(response.error, 'expected an error response before initialize');
+    assert.equal(response.error.code, -32600);
+    assert.match(response.error.message, /not initialized/i);
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server returns -32600 for tools/call before initialize (#814 D9-12 ⑥)', async () => {
+  const client = createClient();
+  try {
+    const response = await client.request('tools/call', {
+      name: 'huaweicloud_explain_error',
+      arguments: {},
+    });
+    assert.ok(response.error, 'expected an error response before initialize');
+    assert.equal(response.error.code, -32600);
+  } finally {
+    client.close();
+  }
+});
+
+test('MCP server serves tools/list normally after initialize (#814 D9-12)', async () => {
+  const client = createClient();
+  try {
+    const pre = await client.request('tools/list');
+    assert.equal(pre.error.code, -32600, 'pre-initialize tools/list must be -32600');
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    const post = await client.request('tools/list');
+    assert.ok(Array.isArray(post.result.tools), 'post-initialize tools/list must succeed');
+  } finally {
+    client.close();
+  }
+});
+
 test('MCP server waits for incomplete Content-Length frames instead of spinning', async () => {
   const client = createClient();
   try {
