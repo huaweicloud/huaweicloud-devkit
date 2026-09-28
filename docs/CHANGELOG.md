@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.7-next.1 (2026-09-23)
+
+- style(sandbox): split devbridge login/status chain for clearer diagnostics
+- feat(sandbox): probe devbridge auth capability instead of assuming from version
+- style: prettier normalize plugin manifests
+- chore(release): 1.1.7-next.0 (advance dev prerelease line)
+
 ## Unreleased
 
 - feat(sandbox): devbridge 认证改为运行时能力探测——`0.2.2-release` 存在两个构建（镜像版保留 AK/SK 登录 + env 自动读取；发布版仅支持 API Key），暴露流程按 `auth login --help` 探测结果自动分支：镜像版直接使用注入的 AK/SK（零介入），发布版走 API Key 引导；`.codeartsdoer` sidecopy 同步，守护测试覆盖双分支

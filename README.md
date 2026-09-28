@@ -332,6 +332,18 @@ npx --yes huaweicloud-devkit@latest update --target all
 config. Always keep `@latest` so npm fetches the newest version instead of a
 locally cached older one.
 
+### Configure Proxy
+
+```bash
+npx --yes huaweicloud-devkit proxy init    # configure proxy (interactive)
+npx --yes huaweicloud-devkit proxy show    # show effective proxy settings
+npx --yes huaweicloud-devkit proxy clear   # remove proxy configuration
+```
+
+Configures HTTP/HTTPS proxy for connections to Huawei Cloud services (e.g. enterprise intranet environments). Settings are saved to `~/.config/huaweicloud/proxy.json`.
+
+Environment variables `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY` take precedence over the file configuration — use `proxy show` to inspect the effective settings.
+
 ## What It Does
 
 - **Guided cloud operations** — agents get step-by-step guidance for 20+ commonly used Huawei Cloud services (ECS, OBS, VPC, RDS, GaussDB, FunctionGraph, APIG, CCE, and more)

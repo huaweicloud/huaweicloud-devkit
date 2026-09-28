@@ -23,7 +23,7 @@
     "huaweicloud[/\\\\](config|credentials)"
   ],
   "blockedConfigureSubcommands": ["show", "get", "list", "export", "init"],
-  "blockedSecretOperations": ["ShowSecretVersion", "DownloadSecret", "GetSecretValue"],
+  "blockedSecretOperations": ["ShowSecret", "ShowSecretVersion", "DownloadSecret", "GetSecretValue"],
   "writeOperationPrefixes": [
     "Create",
     "BatchCreate",

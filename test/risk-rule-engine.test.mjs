@@ -117,6 +117,23 @@ test('evidence snippets redact secret-shaped values', () => {
   assert.match(JSON.stringify(result), /<redacted>/);
 });
 
+test('evidence snippets redact admin-pass / admin_pass variants (#726 D4-27 v2)', () => {
+  // redactEvidence now uses admin[_-]?pass to cover hyphen/underscore forms.
+  const hyphen = evaluateCommandRisk(
+    'hcloud ECS CreateServers --server.admin-pass=HyphenSecret123! --security_group_rule.remote_ip_prefix=0.0.0.0/0 --security_group_rule.port_range_min=22',
+  );
+  assert.equal(hyphen.decision, 'deny');
+  assert.doesNotMatch(JSON.stringify(hyphen), /HyphenSecret123/);
+  assert.match(JSON.stringify(hyphen), /<redacted>/);
+
+  const underscore = evaluateCommandRisk(
+    'hcloud ECS CreateServers --server.admin_pass=UnderSecret123! --security_group_rule.remote_ip_prefix=0.0.0.0/0 --security_group_rule.port_range_min=22',
+  );
+  assert.equal(underscore.decision, 'deny');
+  assert.doesNotMatch(JSON.stringify(underscore), /UnderSecret123/);
+  assert.match(JSON.stringify(underscore), /<redacted>/);
+});
+
 test('evaluateCommandRisk warns on prefixed delete family (Nova*)', () => {
   for (const op of ['NovaDeleteServer', 'NovaDeleteKeypair', 'NovaDeleteServerGroup', 'NovaDeleteServerMetadataItem']) {
     const result = evaluateCommandRisk(`hcloud ECS ${op} --x=1`);
@@ -170,6 +187,61 @@ test('evaluateCommandRisk does not flag delete-protection toggles as destructive
     const result = evaluateCommandRisk(`hcloud ECS ${op} --server_id=x`);
     assert.equal(result.decision, 'allow', `${op} should not be flagged as destructive delete`);
   }
+});
+
+test('evaluateCommandRisk warns on IAM high-risk write operations (#725)', () => {
+  for (const op of ['CreateUser', 'CreatePolicy', 'CreateRole', 'CreateAgency']) {
+    const result = evaluateCommandRisk(`hcloud IAM ${op} --name admin`);
+    assert.equal(result.decision, 'warn', `IAM ${op} should warn`);
+    assert.equal(result.findings[0].ruleId, 'hwc-iam-highrisk-write');
+  }
+});
+
+test('evaluateCommandRisk warns on IAM CreateUser with name flag (#725)', () => {
+  const result = evaluateCommandRisk('hcloud IAM CreateUser --name admin');
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-highrisk-write');
+});
+
+test('evaluateCommandRisk warns on IAM CreatePolicy with wildcard action (#725)', () => {
+  const result = evaluateCommandRisk('hcloud IAM CreatePolicy --name admin --action "*"');
+  assert.equal(result.decision, 'warn');
+  const ids = result.findings.map((f) => f.ruleId);
+  assert.ok(ids.includes('hwc-iam-highrisk-write'), 'should include hwc-iam-highrisk-write');
+});
+
+test('evaluateCommandRisk still allows IAM read-only operations (#725)', () => {
+  for (const op of ['ListUsers', 'ShowUser', 'ListPolicies', 'ShowPolicy']) {
+    const result = evaluateCommandRisk(`hcloud IAM ${op} --limit=1`);
+    assert.equal(result.decision, 'allow', `IAM ${op} should be allowed`);
+    assert.equal(result.findings.length, 0, `IAM ${op} should have no findings`);
+  }
+});
+
+test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
+  for (const cmd of ['env | grep HW_', 'printenv | grep HW_ACCESS', 'env | grep HUAWEICLOUD']) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-env-dump');
+  }
+});
+
+test('evaluateCommandRisk warns on plaintext secret in CLI args (#561 D4-3)', () => {
+  const cases = [
+    'hcloud ECS CreateServers --adminPass=SuperSecret123!',
+    'hcloud RDS CreateInstance --password=DbPass456!',
+    'hcloud ECS CreateServers --secret=mysecret',
+    'hcloud ECS CreateServers --token=abc123',
+  ];
+  for (const cmd of cases) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'warn', `${cmd} should warn`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-secret-in-arg');
+    assert.doesNotMatch(JSON.stringify(result), /SuperSecret123!|DbPass456!|mysecret|abc123/);
+  }
+  // Placeholder values (e.g. <password>) should not trigger the rule.
+  const placeholder = evaluateCommandRisk('hcloud ECS CreateServers --adminPass=<password>');
+  assert.equal(placeholder.findings.length, 0);
 });
 
 test('evaluateCommandRisk fails closed on malformed input (#564)', () => {

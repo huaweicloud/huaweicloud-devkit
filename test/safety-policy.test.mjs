@@ -49,6 +49,45 @@ test('redactSecrets handles string values with key=value patterns', () => {
   assert.doesNotMatch(out, /HPUAI12345/);
 });
 
+test('redactSecrets redacts bare token= values (#726 D4-27)', () => {
+  const out = redactSecrets('token=TokenValueABCDEF123456');
+  assert.equal(out, 'token=<redacted>');
+  assert.doesNotMatch(out, /TokenValueABCDEF123456/);
+  // Long secret-token keys still redact (no regression, longest-match first).
+  assert.equal(redactSecrets('security_token=stABC123'), 'security_token=<redacted>');
+  assert.equal(redactSecrets('x_auth_token=xatABC123'), 'x_auth_token=<redacted>');
+  // Other secret keywords keep working alongside bare token.
+  assert.equal(
+    redactSecrets('token=t1\npassword=pw1\nadminPass=ap1\naccess_key=ak1'),
+    'token=<redacted>\npassword=<redacted>\nadminPass=<redacted>\naccess_key=<redacted>',
+  );
+  // Non-secret tokens (e.g. tokenize=) must NOT be redacted — the '=' boundary
+  // ensures 'token' is followed by '=' directly, not by 'ize'.
+  assert.equal(redactSecrets('tokenize=abc\ntokenizer=xyz'), 'tokenize=abc\ntokenizer=xyz');
+});
+
+test('redactSecrets redacts admin-pass / admin_pass / adminPass variants (#726 D4-27 v2)', () => {
+  // String path: redactString regex now uses admin[_-]?pass to cover all three
+  // shapes (camelCase / hyphen / underscore) under the /i flag.
+  assert.equal(redactSecrets('adminPass=Secret123!'), 'adminPass=<redacted>');
+  assert.equal(redactSecrets('admin-pass=Secret123!'), 'admin-pass=<redacted>');
+  assert.equal(redactSecrets('admin_pass=Secret123!'), 'admin_pass=<redacted>');
+  assert.equal(redactSecrets('ADMIN-PASS=Secret123!'), 'ADMIN-PASS=<redacted>');
+  assert.equal(redactSecrets('Admin_Pass=Secret123!'), 'Admin_Pass=<redacted>');
+  // admin-password also redacts (password keyword catches it) — regression guard.
+  assert.equal(redactSecrets('admin-password=Secret123!'), 'admin-password=<redacted>');
+  // Object key path: isSecretKeyName normalizes separators, so all variants
+  // are already secret-classified — regression guard.
+  const obj = redactSecrets({
+    adminPass: 'v1',
+    'admin-pass': 'v2',
+    admin_pass: 'v3',
+  });
+  assert.equal(obj.adminPass, '<redacted>');
+  assert.equal(obj['admin-pass'], '<redacted>');
+  assert.equal(obj.admin_pass, '<redacted>');
+});
+
 test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) entirely', () => {
   const redacted = redactSecrets([
     'ECS',
@@ -136,6 +175,49 @@ test('classifyTextCommand blocks credential env-var references incl. HW_ prefix 
   assert.equal(benign.decision, 'allow');
   // Existing coverage keeps working.
   assert.equal(classifyTextCommand('env | grep HUAWEICLOUD').decision, 'deny');
+  // env dump gate catches HW_ prefix directly in safety-policy.mjs (#770 D4-2).
+  const hwEnvDump = classifyTextCommand('env | grep HW_');
+  assert.equal(hwEnvDump.decision, 'deny');
+  assert.equal(hwEnvDump.reason, 'Dumping cloud credential environment variables is blocked.');
+});
+
+test('classifyTextCommand blocks HUAWEICLOUD_SECRET_ACCESS_KEY env-var references (#770 D4-2)', () => {
+  // AWS-style credential env names (HUAWEICLOUD_SECRET_ACCESS_KEY) previously
+  // fell through the SECRET_KEY alternation and returned allow.
+  const bypasses = [
+    'echo $HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'echo ${HUAWEICLOUD_SECRET_ACCESS_KEY}',
+    'printenv HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'grep $HUAWEICLOUD_SECRET_ACCESS_KEY ./file',
+    'echo $HW_SECRET_ACCESS_KEY',
+  ];
+  for (const cmd of bypasses) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'credential', cmd);
+  }
+  // Literal-name references (single-quoted / backslash-escaped) stay allowed.
+  assert.equal(classifyTextCommand("echo '$HUAWEICLOUD_SECRET_ACCESS_KEY'").decision, 'allow');
+  assert.equal(classifyTextCommand('echo \\$HUAWEICLOUD_SECRET_ACCESS_KEY').decision, 'allow');
+  // Non-credential HUAWEICLOUD_* variables are not blocked.
+  assert.equal(classifyTextCommand('echo $HUAWEICLOUD_SDK_CACHE').decision, 'allow');
+});
+
+test('classifyTextCommand blocks KMS ShowSecret retrieval (#770 D4-3)', () => {
+  const blocked = [
+    'hcloud KMS ShowSecret',
+    'hcloud KMS ShowSecret --key_id x',
+    'hcloud DEW ShowSecret --secret_name prod/db',
+    'ShowSecret --secret_name prod/db',
+  ];
+  for (const cmd of blocked) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'secret', cmd);
+  }
+  // Plain Show* read operations that are not secret retrieval keep working.
+  assert.equal(classifyTextCommand('hcloud KMS ShowKey').decision, 'allow');
+  assert.equal(classifyTextCommand('hcloud KMS ListSecrets').decision, 'allow');
 });
 
 test('classifyHcloudArgs unwraps shell-wrapped hcloud write commands (#650 D4-16)', () => {

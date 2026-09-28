@@ -149,3 +149,40 @@ test('python hook write-gate still allows read-only Nova ops', () => {
   assert.equal(result.status, 0);
   assert.equal(JSON.parse(result.stdout), null);
 });
+
+test('python hook blocks env dumps with HW_ prefix (#561 D4-2)', () => {
+  for (const cmd of ['env | grep HW_', 'printenv | grep HW_ACCESS', 'env | grep HUAWEICLOUD']) {
+    const result = runEvaluate('terminal', { command: cmd });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0);
+    const reason = JSON.parse(result.stdout);
+    assert.equal(typeof reason, 'string', `${cmd} should be blocked`);
+    assert.match(reason, /credential|env/i);
+  }
+});
+
+test('python hook blocks credential variable references incl. HW_ prefix (#561 D4-2)', () => {
+  const bypasses = [
+    'echo $HW_SECRET_KEY',
+    'printenv HW_ACCESS_KEY',
+    'echo ${HW_SECURITY_TOKEN}',
+    'echo $HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'echo $HW_SECRET_ACCESS_KEY',
+    'grep $HW_ACCESS_KEY ./file',
+  ];
+  for (const cmd of bypasses) {
+    const result = runEvaluate('terminal', { command: cmd });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0, `${cmd} should exit 0`);
+    const reason = JSON.parse(result.stdout);
+    assert.equal(typeof reason, 'string', `${cmd} should be blocked`);
+    assert.match(reason, /credential|env/i);
+  }
+  // Literal-name references (single-quoted / backslash-escaped) stay allowed.
+  for (const safe of ["echo '$HW_SECRET_KEY'", 'echo \\$HW_SECRET_KEY', 'echo $HW_CONFIG_PATH']) {
+    const result = runEvaluate('terminal', { command: safe });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout), null, `${safe} should be allowed`);
+  }
+});

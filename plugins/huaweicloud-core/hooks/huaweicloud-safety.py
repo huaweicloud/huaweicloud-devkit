@@ -51,7 +51,23 @@ def load_policy():
 load_policy()
 
 ENV_DUMP_RE = re.compile(
-    r"(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:).*(HUAWEICLOUD|HWC_|HCLOUD|OS_)", re.I,
+    r"(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:).*(HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_)", re.I,
+)
+# Credential variable references bypass the env-command gate above: HW_ is
+# the plugin's own documented credential prefix (HW_ACCESS_KEY/HW_SECRET_KEY/
+# HW_SECURITY_TOKEN), cloud environments also expose the AWS-style
+# HUAWEICLOUD_SECRET_ACCESS_KEY name, and `echo $HW_SECRET_KEY` /
+# `printenv HW_ACCESS_KEY` / `echo $HUAWEICLOUD_SECRET_ACCESS_KEY` previously
+# fell through to allow (#561 D4-2, #770 D4-2).
+#
+# The negative lookbehind exempts literal-NAME references — backslash-escaped
+# (\$HW_*) or single-quoted ('$HW_*', which the shell never expands) —
+# while unescaped `$HW_*` is a potential expansion/dump regardless of the
+# command. Aligned with safety-policy.mjs L419-423.
+CRED_VAR_REF_RE = re.compile(
+    r"(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)"
+    r"|(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)",
+    re.I,
 )
 HCLOUD_RE = re.compile(r"(^|\s)hcloud(\.exe)?\s+", re.I)
 READ_OPERATION_RE = re.compile(r"\b(List|Show|Get|Describe|NovaList|NovaShow)\w*", re.I)
@@ -177,6 +193,8 @@ def evaluate(tool_name, tool_input):
         return "reading Huawei Cloud credential/profile files can expose AK/SK or tokens. Use redacted toolkit tools."
     if ENV_DUMP_RE.search(text):
         return "dumping cloud credential environment variables is not allowed."
+    if CRED_VAR_REF_RE.search(text):
+        return "printing cloud credential environment variables is not allowed."
     if SECRET_READ_RE and SECRET_READ_RE.search(text):
         return "direct secret value retrieval would put plaintext secrets into the agent context."
     denied_rule = first_denied_command_rule(text)
