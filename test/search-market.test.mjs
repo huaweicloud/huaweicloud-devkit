@@ -43,3 +43,22 @@ test('F: buildSkillInstallCommand sanitizes skill name into the target dir name'
   assert.doesNotMatch(cmd, /\/\.\.\//);
   assert.match(cmd, /~\/\.skills\/my-skill----x/);
 });
+
+test('P4: buildSkillInstallCommand quotes and sanitizes the caller-supplied skills dir (injection-safe)', () => {
+  const cmd = buildSkillInstallCommand(SKILL, '~/.claude/skills; rm -rf /');
+  assert.doesNotMatch(cmd, /;/);
+  assert.doesNotMatch(cmd, /rm -rf /);
+  assert.match(cmd, /mkdir -p "~\/\.claude\/skills--rm--rf-\/"/);
+});
+
+test('P4: buildSkillInstallCommand keeps simple paths unquoted-safe (spaces become dashes)', () => {
+  const cmd = buildSkillInstallCommand(SKILL, '/home/user/my skills');
+  assert.doesNotMatch(cmd, /\/home\/user\/my skills/);
+  assert.match(cmd, /\/home\/user\/my-skills/);
+});
+
+test('P5: buildSkillInstallCommand only copies when the extracted folder has SKILL.md', () => {
+  const cmd = buildSkillInstallCommand(SKILL, '~/.claude/skills');
+  assert.match(cmd, /test -f "\$SKILL_SRC\/SKILL\.md"/);
+  assert.match(cmd, /SKILL_SRC_NOT_FOUND/);
+});

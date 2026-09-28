@@ -864,6 +864,8 @@ Use `exec_with_session` to background DevBridge. For SSR, DevBridge tunnels the 
 
 **Pre-flight**: always run `devbridge delete-all` before creating a new tunnel to prevent `10006: quota exceeded` from accumulated stale tunnels. If you still get quota error, list tunnels with `devbridge list` (0.2.x plain table; 0.1.x legacy `-j` JSON), delete stale ones, and retry.
 
+> **Concurrency warning**: `devbridge delete-all` and `pkill -f "devbridge host"` are GLOBAL operations scoped to the whole sandbox — if multiple sessions share the same sandbox, pre-cleaning can kill tunnels published by other sessions and invalidate URLs you handed out earlier. For shared sandboxes, prefer `devbridge list` and delete only stale/your-own tunnels instead of blanket `delete-all`, and re-expose only after confirming the target port is still served.
+
 Extract the tunnel URL from DevBridge output. The public URL has the form `https://<id>-<port>.devbridge-s2.hwtunnel.com`. **Return this URL to the developer as the deployment result.**
 
 #### Cross-platform H5 QR code

@@ -1143,7 +1143,7 @@ export function buildDevbridgeAuthProbe() {
 // URL, and health-check it. Mirrors the huaweicloud-sandbox skill's Expose flow:
 // pre-clean stale tunnels (quota 10006), start host in background, read
 // "Tunnel URL: ..." from /tmp/host.log, curl-check, retry once on unreachable.
-export function buildDevbridgeExposeScript(port, _attempts) {
+export function buildDevbridgeExposeScript(port) {
   const hostLog = '/tmp/host.log';
   return [
     `pkill -f "devbridge host" 2>/dev/null || true`,
@@ -1151,7 +1151,7 @@ export function buildDevbridgeExposeScript(port, _attempts) {
     `devbridge delete-all > /dev/null 2>&1 || true`,
     `nohup devbridge host -p ${port} -e 8 > ${hostLog} 2>&1 &`,
     `sleep 12`,
-    `TUNNEL_URL=$(grep -oP 'Tunnel URL: \\K.*' ${hostLog} | tail -1)`,
+    `TUNNEL_URL=$(sed -n 's/.*Tunnel URL: *//p' ${hostLog} | tail -1)`,
     `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
     `echo "DB_HOST_LOG="`,
     `tail -n 5 ${hostLog}`,
@@ -1175,6 +1175,19 @@ export function parseDevbridgeExposeOutput(stdout) {
   return { tunnelUrl, httpCode, quotaError, tunnelId };
 }
 
+// Parse and validate a TCP port number destined for shell interpolation. Returns
+// the integer when 1..65535; throws otherwise. Guards the `-p ${port}` shell
+// splice in buildDevbridgeExposeScript against non-numeric / out-of-range input.
+export function validateTunnelPort(port) {
+  const n = Number(port);
+  if (!Number.isSafeInteger(n) || n < 1 || n > 65535) {
+    throw new Error(
+      `sandbox expose tunnel: invalid port ${JSON.stringify(port)}. Expected an integer between 1 and 65535 (use the "port" value returned by sandbox_deploy_nginx).`,
+    );
+  }
+  return n;
+}
+
 // Expose a sandbox port to a public DevBridge tunnel URL. `port` MUST be the
 // ACTUAL port reported by deployNginx (deploy_nginx auto-increments on conflict),
 // otherwise the tunnel is bound to a dead port. Returns ok, publicUrl, port,
@@ -1183,9 +1196,7 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
   if (!workspaceId) {
     throw new Error('sandbox expose tunnel: workspace_id is required.');
   }
-  if (!port) {
-    throw new Error('sandbox expose tunnel: port is required. Use the actual "port" returned by sandbox_deploy_nginx.');
-  }
+  const validatedPort = validateTunnelPort(port);
 
   const authScript = buildDevbridgeAuthProbe();
   const authResult = await execOneShot(workspaceId, authScript, username, 30000);
@@ -1211,7 +1222,7 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
   const maxAttempts = 2;
   while (attempt < maxAttempts) {
     attempt += 1;
-    const exposeScript = buildDevbridgeExposeScript(port, attempt);
+    const exposeScript = buildDevbridgeExposeScript(validatedPort);
     result = await execOneShot(workspaceId, exposeScript, username, timeoutMs);
     const parsed = parseDevbridgeExposeOutput(result.stdout);
 
@@ -1247,7 +1258,7 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
     return {
       ok: true,
       publicUrl: parsed.tunnelUrl || undefined,
-      port,
+      port: validatedPort,
       tunnelId: parsed.tunnelId || undefined,
       authMode,
       httpCode: parsed.httpCode,

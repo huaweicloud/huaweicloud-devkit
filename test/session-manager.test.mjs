@@ -17,6 +17,7 @@ import {
   buildDevbridgeAuthProbe,
   buildDevbridgeExposeScript,
   parseDevbridgeExposeOutput,
+  validateTunnelPort,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
 
 test('ws-exec dynamic import uses file:// URL (Windows-safe)', async () => {
@@ -166,11 +167,11 @@ test('D: buildDevbridgeAuthProbe probes AKSK build before API-Key-only branch', 
 });
 
 test('D: buildDevbridgeExposeScript binds the host to the caller-provided port', () => {
-  const script = buildDevbridgeExposeScript(8081, 1);
+  const script = buildDevbridgeExposeScript(8081);
   assert.match(script, /devbridge host -p 8081 -e 8/);
   assert.match(script, /devbridge delete-all/);
   assert.match(script, /pkill -f "devbridge host"/);
-  assert.match(script, /grep -oP 'Tunnel URL: \\K.*' \/tmp\/host\.log/);
+  assert.match(script, /sed -n 's\/\.\*Tunnel URL: \*\/\/p' \/tmp\/host\.log/);
   assert.match(script, /DB_TUNNEL_URL=/);
   assert.match(script, /DB_HTTP_CODE=/);
 });
@@ -203,4 +204,17 @@ test('D: parseDevbridgeExposeOutput tolerates empty host log (no tunnel yet)', (
   assert.equal(parsed.tunnelUrl, '');
   assert.equal(parsed.httpCode, '');
   assert.equal(parsed.tunnelId, '');
+});
+
+test('P1: validateTunnelPort accepts integer ports in range', () => {
+  assert.equal(validateTunnelPort(8080), 8080);
+  assert.equal(validateTunnelPort('8081'), 8081);
+  assert.equal(validateTunnelPort(1), 1);
+  assert.equal(validateTunnelPort(65535), 65535);
+});
+
+test('P1: validateTunnelPort rejects strings, decimals, and out-of-range ports (shell-injection guard)', () => {
+  for (const bad of ['80;rm -rf /', 'abc', '', null, undefined, 0, -1, 65536, 1.5, '8080;true']) {
+    assert.throws(() => validateTunnelPort(bad), /invalid port/, `expected rejection for ${JSON.stringify(bad)}`);
+  }
 });
