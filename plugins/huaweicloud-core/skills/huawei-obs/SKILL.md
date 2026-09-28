@@ -123,7 +123,7 @@ See `references/single-file-share.md` for the full workflow to host one file and
 ## Cross-Skill References
 
 - **EIP**: See `huawei-vpc` for public network access
-- **DEW**: See `huawei-dew` for secret management
+- **DEW**: See `huawei-cloud-dew-key-management` for secret management
 
 ## References
 

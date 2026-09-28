@@ -16,5 +16,5 @@ Use when the user reports an issue with a previous routing decision.
 | ------------------------------------ | ------------------------ |
 | ECS for containers                   | CCE                      |
 | OBS for block storage                | EVS (via huawei-ecs)     |
-| RDS for cache                        | DCS (via huawei-dds-dcs) |
+| RDS for cache                        | DCS (via huawei-cloud-dds-dcs-instance-management) |
 | FunctionGraph for long-running tasks | ECS or CCE               |

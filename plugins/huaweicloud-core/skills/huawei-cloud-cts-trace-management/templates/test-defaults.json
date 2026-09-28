@@ -1,0 +1,84 @@
+{
+  "region": "cn-north-4",
+  "request_defaults": {
+    "note": "project_id/domain_id are NOT hardcoded here — KooCLI fills project_id from the authenticated profile, and domain_id (ListTraceResources) is resolved from the profile/IAM at runtime. See references/verification-method.md."
+  },
+  "test_cases": [
+    {
+      "id": "TC-01",
+      "name": "ListOperations - list cloud service operations",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListOperations --cli-region={region}",
+      "note": "project_id is filled from the authenticated hcloud profile; no hardcoded account IDs."
+    },
+    {
+      "id": "TC-02",
+      "name": "ListTrackers - list trackers",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListTrackers --cli-region={region}",
+      "note": "project_id is filled from the authenticated hcloud profile; no hardcoded account IDs."
+    },
+    {
+      "id": "TC-03",
+      "name": "ListTraces - query recent traces (limit 5)",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListTraces --cli-region={region} --trace_type=system --limit=5",
+      "note": "project_id is filled from the authenticated hcloud profile; no hardcoded account IDs."
+    },
+    {
+      "id": "TC-04",
+      "name": "ListNotifications - list SMN notifications",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListNotifications --cli-region={region} --notification_type=smn",
+      "note": "project_id is filled from the authenticated hcloud profile; no hardcoded account IDs."
+    },
+    {
+      "id": "TC-05",
+      "name": "ListTraceResources syntax check (--help only; live call needs --domain_id from the authenticated profile)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS ListTraceResources --cli-region={region} --help",
+      "note": "ListTraceResources requires --domain_id (account ID); the live form resolves it dynamically from the authenticated profile/IAM — never hardcoded."
+    },
+    {
+      "id": "TC-06",
+      "name": "CreateTracker syntax check (--help only, no live mutation)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS CreateTracker --cli-region={region} --help"
+    },
+    {
+      "id": "TC-07",
+      "name": "CreateNotification syntax check (--help only, no live mutation)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS CreateNotification --cli-region={region} --help"
+    },
+    {
+      "id": "TC-08",
+      "name": "DeleteTracker syntax check (--help only, no live mutation)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS DeleteTracker --cli-region={region} --help"
+    },
+    {
+      "id": "TC-09",
+      "name": "ListQuotas - list tracker quotas",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListQuotas --cli-region={region}",
+      "note": "Read-only R3 query. Verified against real hcloud KooCLI 7.2.12 (cn-north-4)."
+    },
+    {
+      "id": "TC-10",
+      "name": "CheckObsBuckets syntax check (--help only; live call needs OBS bucket name)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS CheckObsBuckets --cli-region={region} --help"
+    }
+  ]
+}

@@ -121,10 +121,10 @@ Fall back to hcloud CLI. State: "MCP unavailable, using local hcloud CLI."
 
 ## Cross-Skill References
 
-- **APIG trigger setup**: See `huawei-apig` for API group creation and publishing
+- **APIG trigger setup**: See `huawei-cloud-apig-instance-management` for API group creation and publishing
 - **OBS trigger setup**: See `huawei-obs` for bucket and object event configuration
-- **DEW secrets**: See `huawei-dew` for managing function secrets
-- **SMN notifications**: See `huawei-smn-dms` for notification topics
+- **DEW secrets**: See `huawei-cloud-dew-key-management` for managing function secrets
+- **SMN notifications**: See `huawei-cloud-smn-dms-message` for notification topics
 - **VPC configuration**: See `huawei-vpc` for network settings
 
 ## References

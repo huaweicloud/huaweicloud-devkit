@@ -3,9 +3,9 @@
   "exported_at": "2026-09-07T00:00:00Z",
   "skills": [
     {
-      "name": "huawei-apig",
+      "name": "huawei-cloud-apig-instance-management",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-apig",
+      "identifier": "official/huaweicloud/huawei-cloud-apig-instance-management",
       "category": "huaweicloud"
     },
     {
@@ -39,27 +39,27 @@
       "category": "huaweicloud"
     },
     {
-      "name": "huawei-cts",
+      "name": "huawei-cloud-cts-trace-management",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-cts",
+      "identifier": "official/huaweicloud/huawei-cloud-cts-trace-management",
       "category": "huaweicloud"
     },
     {
-      "name": "huawei-dds-dcs",
+      "name": "huawei-cloud-dds-dcs-instance-management",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-dds-dcs",
+      "identifier": "official/huaweicloud/huawei-cloud-dds-dcs-instance-management",
       "category": "huaweicloud"
     },
     {
-      "name": "huawei-deployment",
+      "name": "huawei-cloud-deployment-task-management",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-deployment",
+      "identifier": "official/huaweicloud/huawei-cloud-deployment-task-management",
       "category": "huaweicloud"
     },
     {
-      "name": "huawei-dew",
+      "name": "huawei-cloud-dew-key-management",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-dew",
+      "identifier": "official/huaweicloud/huawei-cloud-dew-key-management",
       "category": "huaweicloud"
     },
     {
@@ -75,9 +75,9 @@
       "category": "huaweicloud"
     },
     {
-      "name": "huawei-gaussdb",
+      "name": "huawei-cloud-gaussdb-instance-management",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-gaussdb",
+      "identifier": "official/huaweicloud/huawei-cloud-gaussdb-instance-management",
       "category": "huaweicloud"
     },
     {
@@ -117,9 +117,9 @@
       "category": "huaweicloud"
     },
     {
-      "name": "huawei-smn-dms",
+      "name": "huawei-cloud-smn-dms-message",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-smn-dms",
+      "identifier": "official/huaweicloud/huawei-cloud-smn-dms-message",
       "category": "huaweicloud"
     },
     {
@@ -129,9 +129,9 @@
       "category": "huaweicloud"
     },
     {
-      "name": "huawei-waf-aad",
+      "name": "huawei-cloud-waf-aad-rule-management",
       "source": "official",
-      "identifier": "official/huaweicloud/huawei-waf-aad",
+      "identifier": "official/huaweicloud/huawei-cloud-waf-aad-rule-management",
       "category": "huaweicloud"
     },
     {

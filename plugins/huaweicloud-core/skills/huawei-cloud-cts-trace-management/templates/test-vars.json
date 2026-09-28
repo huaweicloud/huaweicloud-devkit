@@ -1,0 +1,85 @@
+{
+  "region": "cn-north-4",
+  "test_cases": [
+    {
+      "id": "TC-01",
+      "name": "huawei_list_cts_operations - list cloud service operations",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListOperations --cli-region={region}",
+      "note": "Read-only R3 query. Verified against real hcloud KooCLI 7.2.12 (cn-north-4). project_id auto-filled from the authenticated profile."
+    },
+    {
+      "id": "TC-02",
+      "name": "huawei_list_cts_trackers - list trackers",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListTrackers --cli-region={region}",
+      "note": "Read-only R3 query. Verified against real hcloud KooCLI 7.2.12 (cn-north-4). project_id auto-filled from the authenticated profile."
+    },
+    {
+      "id": "TC-03",
+      "name": "huawei_list_cts_traces - query recent traces",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListTraces --cli-region={region} --trace_type=system --limit=5",
+      "note": "Read-only R3 query. Verified against real hcloud KooCLI 7.2.12 (cn-north-4)."
+    },
+    {
+      "id": "TC-04",
+      "name": "huawei_list_cts_notifications - list SMN notifications",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListNotifications --cli-region={region} --notification_type=smn",
+      "note": "Read-only R3 query. Verified against real hcloud KooCLI 7.2.12 (cn-north-4)."
+    },
+    {
+      "id": "TC-05",
+      "name": "huawei_list_cts_trace_resources syntax check (live call requires --domain_id)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS ListTraceResources --cli-region={region} --help",
+      "note": "--help syntax check (rc=0). Live form requires --domain_id (account ID): hcloud CTS ListTraceResources --cli-region={region} --domain_id={domain_id}, where {domain_id} is resolved from the authenticated profile / IAM at runtime (no hardcoded account ID)."
+    },
+    {
+      "id": "TC-06",
+      "name": "huawei_create_cts_tracker syntax check (--help only, no live mutation; R2 preview+confirm)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS CreateTracker --cli-region={region} --help",
+      "note": "Write op (R2). Live mutation gated by confirmation policy and framework ALLOW_WRITES + allow_writes.yaml. --help only."
+    },
+    {
+      "id": "TC-07",
+      "name": "huawei_create_cts_notification syntax check (--help only, no live mutation; R2 preview+confirm)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS CreateNotification --cli-region={region} --help",
+      "note": "Write op (R2). Live mutation gated by confirmation policy and framework ALLOW_WRITES + allow_writes.yaml. --help only."
+    },
+    {
+      "id": "TC-08",
+      "name": "huawei_delete_cts_tracker syntax check (--help only, no live mutation; R1 preview+confirm irreversible)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS DeleteTracker --cli-region={region} --help",
+      "note": "Write op (R1, irreversible). Live deletion gated by confirmation policy and framework ALLOW_WRITES + allow_writes.yaml. --help only."
+    },
+    {
+      "id": "TC-09",
+      "name": "huawei_list_cts_quotas - list tracker quotas",
+      "type": "query",
+      "executor": "cli",
+      "command": "hcloud CTS ListQuotas --cli-region={region}",
+      "note": "Read-only R3 query. Verified against real hcloud KooCLI 7.2.12 (cn-north-4)."
+    },
+    {
+      "id": "TC-10",
+      "name": "huawei_check_cts_obs_buckets syntax check (live call requires OBS bucket name)",
+      "type": "syntax",
+      "executor": "cli",
+      "command": "hcloud CTS CheckObsBuckets --cli-region={region} --help",
+      "note": "--help syntax check (rc=0). Live form: hcloud CTS CheckObsBuckets --cli-region={region} --bucket_name={obs_bucket_name}."
+    }
+  ]
+}

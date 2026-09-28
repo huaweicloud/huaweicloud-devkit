@@ -1,6 +1,6 @@
 ---
 name: huawei-rds
-description: 'Use when creating, configuring, managing, or troubleshooting RDS instances on Huawei Cloud. Covers MySQL, PostgreSQL, SQL Server. Triggers: RDS, MySQL, PostgreSQL, database instance, backup, read replica. NOT for: GaussDB (use huawei-gaussdb), DDS (use huawei-dds-dcs).'
+description: 'Use when creating, configuring, managing, or troubleshooting RDS instances on Huawei Cloud. Covers MySQL, PostgreSQL, SQL Server. Triggers: RDS, MySQL, PostgreSQL, database instance, backup, read replica. NOT for: GaussDB (use huawei-cloud-gaussdb-instance-management), DDS (use huawei-cloud-dds-dcs-instance-management).'
 version: 1
 ---
 
@@ -222,13 +222,13 @@ If a database client is not installed on the agent's machine, install one:
 
 - MUST use security groups, not open 0.0.0.0/0
 - MUST enable SSL for connections
-- MUST store passwords in DEW/CSMS (see `huawei-dew`)
+- MUST store passwords in DEW/CSMS (see `huawei-cloud-dew-key-management`)
 - SHOULD enable audit logs for compliance
 - SHOULD set backup policy with >= 7 day retention
 
 ## Cross-Skill References
 
 - VPC/Subnet/Security Group: `huawei-vpc`
-- DEW secrets: `huawei-dew`
+- DEW secrets: `huawei-cloud-dew-key-management`
 - EIP for public access: `huawei-vpc`
 - OBS for backup storage: `huawei-obs`

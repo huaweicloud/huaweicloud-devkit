@@ -99,7 +99,7 @@ Before creating a DEDICATEDGATEWAY (HTTP) trigger, verify these prerequisites ex
 # 1. Check for APIG dedicated instance
 hcloud APIG ListInstancesV2 --cli-region=<r>
 
-# 2. If no instance exists, create one (see huawei-apig skill)
+# 2. If no instance exists, create one (see huawei-cloud-apig-instance-management skill)
 #    Key: --spec_id=PROFESSIONAL --loadbalancer_provider=elb for public access
 #    Requires: VPC, subnet, security group, enterprise_project_id
 

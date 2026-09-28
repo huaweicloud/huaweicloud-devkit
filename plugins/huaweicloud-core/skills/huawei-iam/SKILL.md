@@ -1,6 +1,6 @@
 ---
 name: huawei-iam
-description: 'Use when managing IAM users, groups, roles, policies, agencies, projects, or access keys on Huawei Cloud. Covers IAM policy structure, least-privilege design, temporary credentials (STS), OneAccess integration, and security best practices. Triggers on: IAM, permission, policy, role, user, group, AK/SK, access key, agency, project, authorization. NOT for: DEW secret management (use huawei-dew).'
+description: 'Use when managing IAM users, groups, roles, policies, agencies, projects, or access keys on Huawei Cloud. Covers IAM policy structure, least-privilege design, temporary credentials (STS), OneAccess integration, and security best practices. Triggers on: IAM, permission, policy, role, user, group, AK/SK, access key, agency, project, authorization. NOT for: DEW secret management (use huawei-cloud-dew-key-management).'
 version: 1
 ---
 

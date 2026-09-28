@@ -1,6 +1,6 @@
 ---
 name: huawei-cloud-eye
-description: 'Use when setting up monitoring, alarms, dashboards, or event rules on Huawei Cloud Eye (CES). Triggers: Cloud Eye, CES, monitoring, alarm, metrics, dashboard, event monitoring. NOT for: CTS audit logs (use huawei-cts), AAD anti-DDoS (use huawei-waf-aad).'
+description: 'Use when setting up monitoring, alarms, dashboards, or event rules on Huawei Cloud Eye (CES). Triggers: Cloud Eye, CES, monitoring, alarm, metrics, dashboard, event monitoring. NOT for: CTS audit logs (use huawei-cloud-cts-trace-management), AAD anti-DDoS (use huawei-cloud-waf-aad-rule-management).'
 version: 1
 ---
 
@@ -28,7 +28,7 @@ Domain expertise for Cloud Eye (CES). Covers metric queries, alarm rules, dashbo
 
 - ECS instances need the **Telescope agent** installed for detailed metrics (memory, disk, network)
 - Without agent: only SYS.ECS namespace metrics available (CPU, network bytes, disk read/write)
-- Alarm notifications require an SMN topic (see `huawei-smn-dms`)
+- Alarm notifications require an SMN topic (see `huawei-cloud-smn-dms-message`)
 
 ## Common Workflows
 
@@ -86,5 +86,5 @@ For event alarms: `cycle_decrease`, `cycle_increase`, `cycle_wave`.
 
 ## Cross-Skill References
 
-- **SMN topics**: See `huawei-smn-dms` for alarm notification setup
+- **SMN topics**: See `huawei-cloud-smn-dms-message` for alarm notification setup
 - **ECS monitoring**: See `huawei-ecs` for instance creation

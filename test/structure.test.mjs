@@ -132,10 +132,7 @@ test('skill SKILL.md files meet minimum content quality bar', () => {
     'huaweicloud-api-and-sdk',
     'huaweicloud-safety',
     'huaweicloud-troubleshooting',
-    'huawei-deployment',
     'huawei-getting-started',
-    'huawei-apig',
-    'huawei-gaussdb',
   ]);
 
   for (const name of skillNames) {
@@ -146,22 +143,32 @@ test('skill SKILL.md files meet minimum content quality bar', () => {
   }
 });
 
-test('huawei-deployment skill uses verified KooCLI service and operation names', () => {
-  const body = readFileSync(join(pluginRoot, 'skills', 'huawei-deployment', 'SKILL.md'), 'utf8');
+test('huawei-cloud-deployment-task-management skill uses verified KooCLI service and operation names', () => {
+  const body = readFileSync(
+    join(pluginRoot, 'skills', 'huawei-cloud-deployment-task-management', 'SKILL.md'),
+    'utf8',
+  );
   assert.match(body, /CodeArtsDeploy/);
   assert.match(body, /StartDeployTask/);
   assert.match(body, /ListAllApp/);
   assert.match(body, /DeleteDeployTask/);
+  assert.match(body, /ListDeployTasks/);
+  assert.match(body, /ShowDeployTaskDetail/);
+  assert.match(body, /ListDeployTaskHistoryByDate/);
+  assert.match(body, /CheckIsDuplicateAppName/);
+  assert.match(body, /CreateApp/);
+  assert.match(body, /CreateDeployTaskByTemplate/);
   assert.match(body, /Deploy\.00016902/);
-  assert.match(body, /APIGW\.0301/);
-  assert.match(body, /--app_id/);
-  assert.match(body, /DeleteApplication/);
-  assert.match(body, /deprecated since 2024-09-30/);
-  assert.doesNotMatch(body, /--application_id/);
+  // Service name is CodeArtsDeploy; CloudDeploy/Deploy are NOT valid KooCLI service names.
+  assert.match(body, /CloudDeploy` and `Deploy` are \*\*not\*\* supported service names/);
+  // ShowDeployTaskDetail is the deprecated-but-still-maintained detail operation.
+  assert.match(body, /deprecated after 2024-09-30/);
+  // No legacy or invented operation names.
   assert.doesNotMatch(body, /\bStartTask\b/);
   assert.doesNotMatch(body, /\bListTasks\b/);
   assert.doesNotMatch(body, /\bCreateTask\b/);
   assert.doesNotMatch(body, /\bDeleteTask\b/);
+  assert.doesNotMatch(body, /\bDeleteApplication\b/);
 });
 
 test('skills with references have non-empty reference files', () => {

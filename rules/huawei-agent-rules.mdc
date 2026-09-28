@@ -15,7 +15,7 @@
 
 ## Secret Safety
 
-- **MUST load the `huawei-dew` skill** first for any secret, credential, API key, token, or password task.
+- **MUST load the `huawei-cloud-dew-key-management` skill** first for any secret, credential, API key, token, or password task.
 - **MUST NOT call** `hcloud csms download-secret` or `hcloud csms show-secret` directly.
 - **MUST NOT call** `hcloud kms decrypt` directly.
 - **MUST use** `{{resolve:csms:secret-id:SecretString:key}}` with the MCP proxy — secrets resolve at runtime, never enter agent context.
