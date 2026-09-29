@@ -189,11 +189,11 @@
           },
           {
             "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
+            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|\\\"?Action\\\"?\\s*[=:]\\s*\\\"?(\\*|\\*:\\*)\\\"?|AdministratorAccess|FullAccess)"
           },
           {
             "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
+            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|\\\"?Effect\\\"?\\s*[=:]\\s*\\\"?Allow\\\"?)"
           }
         ]
       },
