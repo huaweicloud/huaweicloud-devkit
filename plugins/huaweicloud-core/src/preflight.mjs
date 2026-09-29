@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
-import { createWriteStream, mkdirSync } from 'node:fs';
-import { homedir, platform } from 'node:os';
+import { createWriteStream, existsSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -10,6 +10,13 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 
 export function kooCliInstallLogPath() {
   return join(homedir(), '.config', 'huaweicloud', 'logs', 'koocli-install.log');
+}
+
+// Repo-top executable that dispatches `install-hcloud` into src/setup-cli.mjs.
+// preflight lives at plugins/huaweicloud-core/src/, so the repo-top-level bin
+// is three levels up.
+export function resolvePreinstallCliEntry() {
+  return join(__dirname, '..', '..', '..', 'bin', 'setup.cjs');
 }
 
 let installStarted = false;
@@ -27,10 +34,12 @@ export function maybePreinstallKooCli({ force = false } = {}) {
   }
 
   installStarted = true;
-  // bin/setup.cjs is the published CLI entry that dispatches `install-hcloud`
-  // into src/setup-cli.mjs. preflight lives at plugins/huaweicloud-core/src/,
-  // so the repo-top-level bin is two levels up.
-  const entry = pathToFileURL(join(__dirname, '..', '..', 'bin', 'setup.cjs')).href;
+  const entryPath = resolvePreinstallCliEntry();
+  if (!existsSync(entryPath)) {
+    console.error(`[preflight] install entry missing: ${entryPath}`);
+    return { launched: false, reason: `install entry missing: ${entryPath}` };
+  }
+  const entry = pathToFileURL(entryPath).href;
   const logDir = dirname(kooCliInstallLogPath());
   try {
     mkdirSync(logDir, { recursive: true });
@@ -46,5 +55,6 @@ export function maybePreinstallKooCli({ force = false } = {}) {
     log.write(`[preflight] spawn failed: ${err.message}\n`);
     log.end();
   });
+  child.on('close', () => log.end());
   return { launched: true, reason: 'background install started' };
 }

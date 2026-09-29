@@ -4,7 +4,11 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { maybePreinstallKooCli, kooCliInstallLogPath } from '../plugins/huaweicloud-core/src/preflight.mjs';
+import {
+  maybePreinstallKooCli,
+  kooCliInstallLogPath,
+  resolvePreinstallCliEntry,
+} from '../plugins/huaweicloud-core/src/preflight.mjs';
 
 // NOTE: preflight reads findHcloudBin() which relies on HCLOUD_BIN env + fixed
 // install dirs. Tests use HCLOUD_BIN pointing at a fake binary to simulate
@@ -31,13 +35,24 @@ function withPreinstallEnv(fn) {
 
 test('preinstall skips when HCLOUD_BIN already exists (installed)', () => {
   withPreinstallEnv(() => {
-    const fakeBin = join(mkdtempSync(join(tmpdir(), 'preflight-bin-')), 'hcloud');
-    writeFileSync(fakeBin, '#!/usr/bin/env node\nconsole.log("7.2.12")', 'utf8');
-    process.env.HCLOUD_BIN = fakeBin;
-    const { launched, reason } = maybePreinstallKooCli();
-    assert.equal(launched, false);
-    assert.match(reason, /already installed/i);
+    const fakeBinDir = mkdtempSync(join(tmpdir(), 'preflight-bin-'));
+    const fakeBin = join(fakeBinDir, 'hcloud');
+    try {
+      writeFileSync(fakeBin, '#!/usr/bin/env node\nconsole.log("7.2.12")', 'utf8');
+      process.env.HCLOUD_BIN = fakeBin;
+      const { launched, reason } = maybePreinstallKooCli();
+      assert.equal(launched, false);
+      assert.match(reason, /already installed/i);
+    } finally {
+      rmSync(fakeBinDir, { recursive: true, force: true });
+    }
   });
+});
+
+test('preinstall spawn entry resolves to an existing repo-top bin/setup.cjs (no download)', () => {
+  const entry = resolvePreinstallCliEntry();
+  assert.ok(entry.endsWith(join('bin', 'setup.cjs')), entry);
+  assert.ok(existsSync(entry), `spawn entry missing: ${entry}`);
 });
 
 test('preinstall is disabled by HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL=1', () => {
