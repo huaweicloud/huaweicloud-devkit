@@ -67,9 +67,10 @@ curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/lat
 
 **No restart needed after install**: DevKit locates `hcloud` dynamically on every
 call — it checks `HCLOUD_BIN`, then the fixed install dirs (`~/.local/bin/hcloud`
-on Linux/macOS, `~/hcloud/hcloud.exe` on Windows), then PATH. Once `install-hcloud`
-or the background auto-install writes the binary to one of those dirs, the very next
-`check_cli` / `run_*` call uses it. Do not tell users to restart the agent.
+on Linux, `/usr/local/bin/hcloud` on macOS, `~/hcloud/hcloud.exe` on Windows),
+then PATH. Once `install-hcloud` or the background auto-install writes the binary
+to one of those dirs, the very next `check_cli` / `run_*` call uses it. Do not
+tell users to restart the agent.
 
 Agent processes find executables through `PATH`; `HCLOUD_BIN` overrides it. DevKit re-locates hcloud on every call, so an updated `PATH` or `HCLOUD_BIN` is picked up by the next `check_cli` / `run_*` call without restarting the agent. (Only process-start-time reads, e.g. a fresh shell that has not re-sourced `~/.bashrc`, may still miss a newly installed binary.)
 

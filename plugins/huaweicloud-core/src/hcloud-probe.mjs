@@ -14,7 +14,11 @@ export function findHcloudBin() {
   const candidates =
     process.platform === 'win32'
       ? [join(homedir(), 'hcloud', 'hcloud.exe')]
-      : [join(homedir(), '.local', 'bin', 'hcloud'), join(homedir(), 'hcloud', 'hcloud')];
+      : [
+          join(homedir(), '.local', 'bin', 'hcloud'),
+          join(homedir(), 'hcloud', 'hcloud'),
+          join('/', 'usr', 'local', 'bin', 'hcloud'),
+        ];
   const found = candidates.find((candidate) => existsSync(candidate));
   if (found) return found;
 
