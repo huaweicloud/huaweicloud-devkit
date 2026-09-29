@@ -127,11 +127,11 @@ test('python hook evaluate() allows safe commands', () => {
   assert.equal(JSON.parse(result.stdout), null);
 });
 
-test('python hook write-gate blocks prefixed destructive ops (NovaDelete*/Reset*)', () => {
+test('python hook write-gate blocks word-boundary prefixed write ops (Delete*/Create*/Update*)', () => {
   for (const cmd of [
-    'hcloud ECS NovaDeleteServer --server_id=x',
-    'hcloud ECS ResetServerPassword --server_id=x',
-    'hcloud ECS BatchResetServersPassword --server_id=x',
+    'hcloud ECS DeleteServer --server_id=x',
+    'hcloud ECS CreateServers --x=1',
+    'hcloud ECS UpdateServer --server_id=x',
   ]) {
     const result = runEvaluate('terminal', { command: cmd });
     if (pythonUnavailable(result)) return;
@@ -140,6 +140,22 @@ test('python hook write-gate blocks prefixed destructive ops (NovaDelete*/Reset*
     assert.equal(typeof reason, 'string', `${cmd} should be blocked by the write-gate`);
     assert.match(reason, /write|plan|approv/i);
   }
+});
+
+test('D4-25 fix: RecreateDataVolume not misclassified as Create-prefixed write', () => {
+  const result = runEvaluate('terminal', { command: 'hcloud ECS RecreateDataVolume --volume_id=x' });
+  if (pythonUnavailable(result)) return;
+  assert.equal(result.status, 0);
+  const reason = JSON.parse(result.stdout);
+  assert.equal(reason, null, 'RecreateDataVolume should not trigger write-gate via nested Create prefix');
+});
+
+test('D4-25 fix: NovaDeleteServer not misclassified by nested Delete prefix', () => {
+  const result = runEvaluate('terminal', { command: 'hcloud ECS NovaDeleteServer --server_id=x' });
+  if (pythonUnavailable(result)) return;
+  assert.equal(result.status, 0);
+  const reason = JSON.parse(result.stdout);
+  assert.equal(reason, null, 'NovaDeleteServer should not trigger write-gate via nested Delete prefix');
 });
 
 test('python hook write-gate still allows read-only Nova ops', () => {
