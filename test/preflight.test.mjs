@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -49,9 +49,9 @@ test('preinstall skips when HCLOUD_BIN already exists (installed)', () => {
   });
 });
 
-test('preinstall spawn entry resolves to an existing repo-top bin/setup.cjs (no download)', () => {
+test('preinstall spawn entry resolves to an existing sibling src/setup-cli.mjs (no download)', () => {
   const entry = resolvePreinstallCliEntry();
-  assert.ok(entry.endsWith(join('bin', 'setup.cjs')), entry);
+  assert.ok(entry.endsWith(join('src', 'setup-cli.mjs')), entry);
   assert.ok(existsSync(entry), `spawn entry missing: ${entry}`);
 });
 

@@ -12,11 +12,11 @@ export function kooCliInstallLogPath() {
   return join(homedir(), '.config', 'huaweicloud', 'logs', 'koocli-install.log');
 }
 
-// Repo-top executable that dispatches `install-hcloud` into src/setup-cli.mjs.
-// preflight lives at plugins/huaweicloud-core/src/, so the repo-top-level bin
-// is three levels up.
+// Entry that dispatches `install-hcloud` into this file's own `main()` on import,
+// exactly like bin/setup.cjs — but resolved as a sibling (src/setup-cli.mjs) so it
+// works in copied install trees where the repo-top bin/ directory is absent.
 export function resolvePreinstallCliEntry() {
-  return join(__dirname, '..', '..', '..', 'bin', 'setup.cjs');
+  return join(__dirname, 'setup-cli.mjs');
 }
 
 let installStarted = false;
