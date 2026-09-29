@@ -46,8 +46,8 @@ test('F: buildSkillInstallCommand sanitizes skill name into the target dir name'
 
 test('P4: buildSkillInstallCommand quotes and sanitizes the caller-supplied skills dir (injection-safe)', () => {
   const cmd = buildSkillInstallCommand(SKILL, '~/.claude/skills; rm -rf /');
-  assert.doesNotMatch(cmd, /;/);
-  assert.doesNotMatch(cmd, /rm -rf /);
+  assert.doesNotMatch(cmd, /rm -rf/);
+  assert.doesNotMatch(cmd, /skills; /);
   assert.match(cmd, /mkdir -p "~\/\.claude\/skills--rm--rf-\/"/);
 });
 
@@ -61,4 +61,13 @@ test('P5: buildSkillInstallCommand only copies when the extracted folder has SKI
   const cmd = buildSkillInstallCommand(SKILL, '~/.claude/skills');
   assert.match(cmd, /test -f "\$SKILL_SRC\/SKILL\.md"/);
   assert.match(cmd, /SKILL_SRC_NOT_FOUND/);
+});
+
+test('P5: missing skill folder/skill.md short-circuits the && chain (no cp -r)', () => {
+  // The gate branch must end with a failing command, otherwise `echo` (exit 0)
+  // would let the && chain continue into mkdir && cp -r.
+  const cmd = buildSkillInstallCommand(SKILL, '~/.claude/skills');
+  assert.match(cmd, /\(test -d "\$SKILL_SRC" \|\| \{ echo "SKILL_SRC_NOT_FOUND"; false; \}\)/);
+  assert.match(cmd, /\(test -f "\$SKILL_SRC\/SKILL\.md" \|\| \{ echo "SKILL_SRC_NOT_FOUND"; false; \}\)/);
+  assert.match(cmd, /false;\s*\}\).*&& mkdir -p/s);
 });

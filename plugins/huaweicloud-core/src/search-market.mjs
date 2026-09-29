@@ -175,9 +175,10 @@ export function buildSkillInstallCommand(skill, skillsDirHint = '<your-agent-ski
   return [
     '(curl -fsSL https://gitcode.com/huaweicloud/huaweicloud-skills/-/archive/master/huaweicloud-skills-master.zip -o /tmp/hw-skills.zip && unzip -oq /tmp/hw-skills.zip -d /tmp/hw-skills-net) || (curl -fsSL https://github.com/huaweicloud/huaweicloud-skills/archive/refs/heads/master.zip -o /tmp/hw-skills.zip && unzip -oq /tmp/hw-skills.zip -d /tmp/hw-skills-net)',
     `&& ${findSrc}`,
-    `&& (test -d "$SKILL_SRC" || echo "SKILL_SRC_NOT_FOUND")`,
-    // P5: only copy when the located folder is actually a skill (has SKILL.md).
-    `&& (test -f "$SKILL_SRC/SKILL.md" || echo "SKILL_SRC_NOT_FOUND")`,
+    // P5: short-circuit the && chain on a missing / non-skill folder — `echo`
+    // exits 0, so the branch must end with `false` or cp -r would still run.
+    `&& (test -d "$SKILL_SRC" || { echo "SKILL_SRC_NOT_FOUND"; false; })`,
+    `&& (test -f "$SKILL_SRC/SKILL.md" || { echo "SKILL_SRC_NOT_FOUND"; false; })`,
     `&& mkdir -p "${targetDir}" && cp -r "$SKILL_SRC" "${targetDir}/${name}"`,
   ].join(' ');
 }
