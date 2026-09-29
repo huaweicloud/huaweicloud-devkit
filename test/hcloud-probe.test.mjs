@@ -47,3 +47,12 @@ test('hcloud probe classifies executable not found', () => {
   assert.equal(result.errorCode, 'HCLOUD_NOT_FOUND');
   assert.match(hcloudProbeNextStep(result), /install KooCLI/i);
 });
+
+test('not_found nextStep is friendly and points at auto-install + log path', () => {
+  const result = classifyHcloudProbe({ error: { code: 'ENOENT' }, stdout: '', stderr: '' });
+  const msg = hcloudProbeNextStep(result);
+  assert.match(msg, /install KooCLI/i);
+  assert.match(msg, /auto/i);
+  assert.match(msg, /koocli-install\.log/);
+  assert.doesNotMatch(msg, /restart the agent/i);
+});

@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { compareVersion, getKooCliVersion, parseHcloudVersion } from './koocli-version.mjs';
+import { kooCliInstallLogPath } from './preflight.mjs';
 import { redactSecrets } from './safety-policy.mjs';
 
 const VERSION_RE = /KooCLI|Current.*version|当前KooCLI/i;
@@ -148,7 +149,7 @@ export function hcloudProbeNextStep(probe) {
     return 'KooCLI requires accepting its one-time privacy agreement. Run hcloud version in a real terminal and accept the prompt, then restart the agent.';
   }
   if (probe.status === 'not_found') {
-    return 'hcloud executable not found. Set HCLOUD_BIN to the full hcloud path, or install KooCLI: npx huaweicloud-devkit install-hcloud. Then restart the agent.';
+    return 'KooCLI is not installed yet. If background auto-install is enabled, it is downloading now (~30s); otherwise install KooCLI with: npx huaweicloud-devkit install-hcloud. DevKit locates hcloud automatically after install — no agent restart needed. Install progress: ' + kooCliInstallLogPath();
   }
   return 'Install Huawei Cloud KooCLI: npx huaweicloud-devkit install-hcloud. Configure credentials outside the agent conversation.';
 }

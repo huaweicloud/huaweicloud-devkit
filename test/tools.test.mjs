@@ -40,7 +40,8 @@ test('runVersionCheck returns installed:false and errorCode on ENOENT', async ()
   });
   assert.equal(result.installed, false);
   assert.equal(result.errorCode, 'HCLOUD_NOT_FOUND');
-  assert.match(result.nextStep, /HCLOUD_BIN/);
+  assert.match(result.nextStep, /koocli-install\.log/);
+  assert.doesNotMatch(result.nextStep, /restart the agent/i);
 });
 
 test('runVersionCheck reports versionMismatch when installed version differs from kooCliVersion', async () => {
