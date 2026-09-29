@@ -278,3 +278,61 @@ test('evaluateDeployPlan fails closed on malformed input (#564)', () => {
   assert.equal(evaluateDeployPlan({ app: 'x' }).decision !== 'deny', true);
   assert.equal(evaluateDeployPlan('deploy a static site').decision !== 'deny', true);
 });
+
+// ===== #733 D4-3: ShowSecret interception =====
+
+test('evaluateCommandRisk denies hcloud KMS ShowSecret (#733 D4-3)', () => {
+  const result = evaluateCommandRisk('hcloud KMS ShowSecret --secret_id=xxx');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
+  assert.equal(result.findings[0].category, 'secret');
+});
+
+test('evaluateCommandRisk still denies ShowSecretVersion and DownloadSecret (#733 D4-3 regression)', () => {
+  for (const op of ['ShowSecretVersion', 'DownloadSecret', 'GetSecretValue']) {
+    const result = evaluateCommandRisk(`hcloud KMS ${op} --secret_id=xxx`);
+    assert.equal(result.decision, 'deny', `${op} should be denied`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
+  }
+});
+
+// ===== #733 D4-6: adminPass exposure in artifact/deploy_plan stages =====
+// Note: #773 hwc-command-secret-in-arg covers the command stage for
+// --adminPass/--password/--secret/--token (requires \bhcloud\b + value).
+// This rule covers artifact (Terraform admin_pass) and deploy_plan (JSON
+// adminPass) stages where hcloud does not appear in the text. The stages
+// are intentionally disjoint to avoid semantic overlap.
+
+test('evaluateArtifacts warns on admin_pass in Terraform files (#733 D4-6)', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'terraform.tf',
+      content: 'resource "huaweicloud_compute_instance" "web" {\n  admin_pass = "MyP@ssword1"\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+  assert.equal(result.findings[0].category, 'secret');
+  assert.equal(result.findings[0].severity, 'warn');
+});
+
+test('evaluateArtifacts warns on adminPass and admin-password variants (#733 D4-6)', () => {
+  for (const [variant, content] of [
+    ['adminPass', 'resource "x" "y" {\n  adminPass = "Secret1"\n}'],
+    ['admin-password', 'resource "x" "y" {\n  admin-password = "Secret2"\n}'],
+  ]) {
+    const result = evaluateArtifacts([{ path: 'main.tf', content }]);
+    assert.equal(result.decision, 'warn', `${variant} should trigger adminpass rule`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+  }
+});
+
+test('evaluateDeployPlan warns when plan contains adminPass field (#733 D4-6)', () => {
+  const result = evaluateDeployPlan({
+    service: 'ECS',
+    action: 'CreateServers',
+    params: { adminPass: 'P@ssw0rd123!' },
+  });
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+});
