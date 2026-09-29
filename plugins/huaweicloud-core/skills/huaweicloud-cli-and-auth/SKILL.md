@@ -71,7 +71,7 @@ on Linux/macOS, `~/hcloud/hcloud.exe` on Windows), then PATH. Once `install-hclo
 or the background auto-install writes the binary to one of those dirs, the very next
 `check_cli` / `run_*` call uses it. Do not tell users to restart the agent.
 
-Agent processes find executables through `PATH`. If OpenCode/Codex cannot find `hcloud`, restart after updating `PATH`, or set `HCLOUD_BIN`.
+Agent processes find executables through `PATH`; `HCLOUD_BIN` overrides it. DevKit re-locates hcloud on every call, so an updated `PATH` or `HCLOUD_BIN` is picked up by the next `check_cli` / `run_*` call without restarting the agent. (Only process-start-time reads, e.g. a fresh shell that has not re-sourced `~/.bashrc`, may still miss a newly installed binary.)
 
 ## Configure Credentials Outside Chat
 
