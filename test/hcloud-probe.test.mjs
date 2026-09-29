@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { classifyHcloudProbe, findHcloudBin, hcloudProbeNextStep } from '../plugins/huaweicloud-core/src/hcloud-probe.mjs';
+import {
+  classifyHcloudProbe,
+  findHcloudBin,
+  hcloudProbeNextStep,
+} from '../plugins/huaweicloud-core/src/hcloud-probe.mjs';
 import { getKooCliVersion } from '../plugins/huaweicloud-core/src/koocli-version.mjs';
 
 test('hcloud probe classifies matching KooCLI version as ok', () => {

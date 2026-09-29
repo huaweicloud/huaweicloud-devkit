@@ -149,7 +149,10 @@ export function hcloudProbeNextStep(probe) {
     return 'KooCLI requires accepting its one-time privacy agreement. Run hcloud version in a real terminal and accept the prompt, then restart the agent.';
   }
   if (probe.status === 'not_found') {
-    return 'KooCLI is not installed yet. If background auto-install is enabled, it is downloading now (~30s); otherwise install KooCLI with: npx huaweicloud-devkit install-hcloud. DevKit locates hcloud automatically after install — no agent restart needed. Install progress: ' + kooCliInstallLogPath();
+    return (
+      'KooCLI is not installed yet. If background auto-install is enabled, it is downloading now (~30s); otherwise install KooCLI with: npx huaweicloud-devkit install-hcloud. DevKit locates hcloud automatically after install — no agent restart needed. Install progress: ' +
+      kooCliInstallLogPath()
+    );
   }
   return 'Install Huawei Cloud KooCLI: npx huaweicloud-devkit install-hcloud. Configure credentials outside the agent conversation.';
 }
