@@ -37,7 +37,7 @@ function invokeMcpTools(mcpServerPath, env, timeout = 15000) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [mcpServerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env,
+      env: { HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL: '1', ...env },
       timeout,
     });
     let buffer = '';
@@ -99,7 +99,7 @@ function invokeMcpToolCall(mcpServerPath, env, toolName, toolArgs, timeout = 150
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [mcpServerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
-      env,
+      env: { HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL: '1', ...env },
       timeout,
     });
     let buffer = '';
