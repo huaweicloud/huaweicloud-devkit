@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.1.8-next.0 (2026-09-29)
+
+- chore: set version-override to 1.1.8 (prepare 1.1.8-next) (#829)
+- fix(safety): #733 rebase to dev, keep D4-3 ShowSecret + D4-6 adminPass artifact/deploy_plan
+- Fix review feedback from #819 (P1-P5) (#820)
+- feat: git-free HTTP skill installs + manual fallback (F)
+- feat: sandbox_expose_tunnel tool + port-consistency guidance (D+H)
+- feat: BSS identity notes + --help discovery discipline (E+I)
+- feat: credential expiry UX (A+B+G+J) — CREDENTIAL_EXPIRED fast-fail, credential panel 3-state, explain_error expiry mapping
+- fix(#740): D3-C3 tunnel non-000 PASS + CRA react-scripts tighten + win32 execPath
+- fix(#740): D3-B7/C3/B5 — approved exec result fields, nginx_serving check, framework detection
+- fix: #767 Windows test injection — shebang→process.execPath+HCLOUD_BIN_ARGS_JSON
+- feat: #767 add CIDR matching to no_proxy + DMS/DEW aggregate service mapping
+- style: #760 prettier 格式化 safety-policy.mjs cred-var 正则块 + 清理 EOF 多空行
+- fix: #760 修复 sudo hcloud 前缀放行回归 + 补 Windows wrapper 覆盖
+- fix(safety): detect shell-wrapped hcloud writes + prompt injection + publish rules (#758)
+- chore: re-trigger CI after base retarget main→dev (#773)
+- fix(safety): add ShowSecret to blockedSecretOperations (#773)
+- feat(catalog): add Chinese intent keywords across routeMap services (#770)
+- fix(safety): block HUAWEICLOUD_SECRET_ACCESS_KEY env dumps and KMS ShowSecret (#770)
+- docs: #742 add proxy command documentation to READMEs (#744)
+- chore(release): 1.1.7-next.2 (#811)
+- feat(auth): codearts STS credential handling + link-B per-command injection (#807)
+- fix(safety): redact bare token= values in redactSecrets/redactOutput (#726) (#729)
+- fix: #725 修复 Prettier 格式问题（stages 内联格式 + 测试文件末尾换行）
+- test: #725 add test cases for hwc-iam-highrisk-write rule
+- feat: #725 add hwc-iam-highrisk-write rule to cloud-risk-rules.json
+- test(#721): add remediation field test cases for HDKIT_CRED_INVALID
+- fix(#721): attach remediation guidance to HDKIT_CRED_INVALID errors
+
 ## 1.1.7-next.1 (2026-09-23)
 
 - style(sandbox): split devbridge login/status chain for clearer diagnostics
