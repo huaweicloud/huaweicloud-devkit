@@ -188,6 +188,42 @@ test('evaluateCommandRisk blocks IAM CreatePolicy with actions=["*"] CLI flag', 
   assert.equal(result.findings[0].ruleId, 'hwc-iam-broad-action-array');
 });
 
+test('D4-21/D4-7 fix: evaluateArtifacts detects HCL quoted Action = "*" with quoted Effect = "Allow"', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'main.tf',
+      content: 'resource "huaweicloud_identity_policy" "admin" {\n  name = "admin-all"\n  policy = "{\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\"}]}"\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
+test('D4-21/D4-7 fix: evaluateArtifacts detects HCL lowercase effect = "Allow" with action = "*"', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'policy.tf',
+      content: 'action = "*"\neffect = "Allow"',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
+test('D4-21/D4-7 fix: evaluateArtifacts detects HCL quoted-key "Action" = "*" with "Effect" = "Allow"', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'quoted.tf',
+      content: '"Action" = "*"\n"Effect" = "Allow"',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
 test('evaluateCommandRisk warns on batch reset family (BatchReset*)', () => {
   const cases = [
     ['ECS', 'BatchResetServersPassword'],
