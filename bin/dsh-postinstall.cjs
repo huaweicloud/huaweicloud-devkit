@@ -23,9 +23,9 @@ const packageRoot = path.resolve(__dirname, '..');
 // is started outside the profile directory. Idempotent: absolute paths are kept.
 const bundledPatch = path.join(packageRoot, 'cordis.patch.yml');
 if (fs.existsSync(bundledPatch)) {
-  const relativeArg = './node_modules/huaweicloud-devkit/plugins/huaweicloud-core/src/mcp-server.mjs';
+  const relativeArg = './node_modules/huaweicloud-devkit/plugins/huaweicloud-core/dist/mcp-server.js';
   const absoluteArg = path
-    .join(packageRoot, 'plugins', 'huaweicloud-core', 'src', 'mcp-server.mjs')
+    .join(packageRoot, 'plugins', 'huaweicloud-core', 'dist', 'mcp-server.js')
     .replace(/\\/g, '/')
     .replace(/'/g, "''");
   const patch = fs.readFileSync(bundledPatch, 'utf8');

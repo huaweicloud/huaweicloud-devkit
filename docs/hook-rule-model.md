@@ -86,12 +86,12 @@ Agent 在**执行前**应主动调用以下 MCP 工具进行风险检查：
 
 ### 第 3 层：共享规则引擎
 
-`src/risk-rule-engine.mjs` 实现了规则匹配引擎，被多个组件复用：
+`src/risk-rule-engine.ts`（编译为 `dist/risk-rule-engine.js`）实现了规则匹配引擎，被多个组件复用：
 
 - **MCP 工具**：`huaweicloud_hook_check_*` 调用 `evaluateCommandRisk` / `evaluateArtifacts` / `evaluateDeployPlan`
-- **Node Hook**：`huaweicloud-safety.mjs` 通过 `src/safety-policy.mjs` 复用 `src/risk-rule-engine.mjs`，供 Codex 原生插件使用
+- **Node Hook**：`huaweicloud-safety.mjs` 通过 `dist/safety-policy.js`（源码 `src/safety-policy.ts`）复用 `dist/risk-rule-engine.js`，供 Codex 原生插件使用
 - **Python Hook**：`huaweicloud-safety.py` 独立加载 `cloud-risk-rules.json`，供 Hermes/Python hook 场景使用
-- **安全策略检查**：`src/safety-policy.mjs` 读取 `policy.json` 进行凭证/写操作分类
+- **安全策略检查**：`src/safety-policy.ts` 读取 `policy.json` 进行凭证/写操作分类
 
 三者共享同一套规则定义，确保策略一致性。
 

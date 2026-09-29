@@ -4,6 +4,8 @@
 
 ```bash
 npm test                 # all tests (node --test)
+npm run build            # compile plugins/huaweicloud-core/src (TS) → dist/
+npm run typecheck        # tsc --noEmit type gate
 npm run lint             # ESLint + markdownlint
 npm run lint:js          # ESLint only
 npm run lint:md          # markdownlint only
@@ -11,11 +13,11 @@ npm run format           # Prettier format all files
 npm run format:check     # Prettier check (no write)
 npm run validate         # structural validation + README beta badge sync check
 npm run badge:sync       # rewrite README beta badge to the next stable version
-node --test test/structure.test.mjs   # single test file
+node --test test/structure.test.ts    # single test file
 node ./scripts/validate-package.mjs   # validation alone
 ```
 
-No build step, no typecheck. One runtime dependency (undici for proxy support).
+TypeScript sources under `plugins/huaweicloud-core/src` compile to `dist/`, and every runtime entry point reads `dist/` (`bin/setup.cjs` → `dist/setup-cli.js`, `.mcp.json` → `dist/mcp-server.js`, the Node hook imports `dist/safety-policy.js`). `npm run typecheck` is the type gate. Tests run `.ts` directly, so development needs Node >= 22.18; the published `engines` stays `>= 22`. One runtime dependency (undici for proxy support).
 
 ## Architecture
 
@@ -24,7 +26,8 @@ This is an **agent guidance + safety package**, not a service encyclopedia. Six 
 ```
 plugins/huaweicloud-core/
   skills/           ← 6 meta-skills + service skills
-  src/              ← Node.js MCP server (stdio/remote JSON-RPC, 39 tools in tools.mjs)
+  src/              ← TypeScript MCP server sources (stdio/remote JSON-RPC, 39 tools in tools.ts)
+  dist/             ← tsc output; every runtime entry point loads this
   safety/           ← shared policy.json + risk rules
   hooks/            ← PreToolUse hook (Node huaweicloud-safety.mjs, wired via hooks.json; .py variant kept for compatibility)
   .codex-plugin/    ← Codex plugin manifest
@@ -42,8 +45,8 @@ Also in the repo:
 
 - `bin/setup.cjs` — interactive installer (`huaweicloud-devkit`); dispatches to each agent's plugin dir.
 - `integrations/` — per-agent adapter configs (opencode, dsh, hermes, workbuddy, atomcode), separate from the plugin.
-- `src/tools.mjs` — 39 MCP tool definitions (hcloud CLI, hooks, catalog, auth, sandbox, voucher, update). `src/mcp-server-remote.mjs` — remote (HTTP) transport alongside stdio.
-- `src/setup-cli.mjs` — KooCLI install/doctor logic; honors `HCLOUD_BIN`.
+- `src/tools.ts` — 39 MCP tool definitions (hcloud CLI, hooks, catalog, auth, sandbox, voucher, update). `src/mcp-server-remote.ts` — remote (HTTP) transport alongside stdio. Both compile to `dist/`.
+- `src/setup-cli.ts` — KooCLI install/doctor logic; honors `HCLOUD_BIN`. Compiles to `dist/setup-cli.js`, the entry `bin/setup.cjs` loads.
 - `scripts/*.mjs` — validation, version sync, packaging, release helpers.
 - `.superpowers/` + `docs/superpowers/` — planning/spec workflow used for larger changes.
 
@@ -52,7 +55,7 @@ Also in the repo:
 - **Meta-skills** (`huaweicloud-*`, 6 required): horizontal capability skills such as routing, discovery, CLI/auth, API/SDK, safety, troubleshooting. Agent always starts here.
 - **Service skills** (`huawei-*`): vertical domain knowledge for specific Huawei Cloud services (ecs, obs, vpc, iam, dew, etc.). Loaded via `huaweicloud_retrieve_skill` after routing by the core meta-skill.
 
-Required meta-skills (tethered to `test/structure.test.mjs`):
+Required meta-skills (tethered to `test/structure.test.ts`):
 `huaweicloud-api-and-sdk`, `huaweicloud-capability-discovery`, `huaweicloud-cli-and-auth`, `huaweicloud-core`, `huaweicloud-safety`, `huaweicloud-troubleshooting`
 
 ## File Naming: Design Docs vs Implementation
@@ -61,10 +64,10 @@ Required meta-skills (tethered to `test/structure.test.mjs`):
 
 ## Creating or Editing Skills
 
-- Every `SKILL.md` must start with `---\nname: huaweicloud-<name>` or `---\nname: huawei-<name>` YAML frontmatter (validated by both `npm run validate` and `structure.test.mjs`)
+- Every `SKILL.md` must start with `---\nname: huaweicloud-<name>` or `---\nname: huawei-<name>` YAML frontmatter (validated by both `npm run validate` and `structure.test.ts`)
 - No `TODO` or `[TODO]` markers in committed files (also validated)
-- The 6 meta-skills must always exist. Service skills can be added freely. `test/structure.test.mjs` enforces a minimum of 6 skills and `scripts/validate-package.mjs` a minimum of 5; the installed set is not an exact count.
-- Update `test/structure.test.mjs` if introducing new testable invariants (e.g., new required sections in SKILL.md)
+- The 6 meta-skills must always exist. Service skills can be added freely. `test/structure.test.ts` enforces a minimum of 6 skills and `scripts/validate-package.mjs` a minimum of 5; the installed set is not an exact count.
+- Update `test/structure.test.ts` if introducing new testable invariants (e.g., new required sections in SKILL.md)
 - Add `node --test` tests if introducing new measurable invariants
 
 ### Skill Design Principles
@@ -133,28 +136,28 @@ Service skills may skip steps 1-2 when the correct service name and operation ar
 
 Write-capable `hcloud` commands are blocked by default. The only write path for hcloud command I/O is `huaweicloud_run_approved_command`, which requires `args` + `approvalToken` + `approvedByUser: true`. Non-hcloud tools that mutate state by design (e.g., `huaweicloud_auth_init`, `huaweicloud_voucher_claim`, `huaweicloud_sandbox_connect`, `huaweicloud_upgrade`) do not require approval.
 
-Policy vocabulary lives in `plugins/huaweicloud-core/safety/policy.json`. Both `src/safety-policy.mjs` and `hooks/huaweicloud-safety.py` read from it. If you add a blocked pattern, update the policy JSON, not just one enforcement layer.
+Policy vocabulary lives in `plugins/huaweicloud-core/safety/policy.json`. Both `src/safety-policy.ts` and `hooks/huaweicloud-safety.py` read from it. If you add a blocked pattern, update the policy JSON, not just one enforcement layer.
 
 ## Before You Commit
 
 ```bash
 npm run lint            # markdownlint + ESLint
-npm test                # node --test (includes structure.test.mjs)
+npm test                # node --test (includes structure.test.ts)
 npm run validate        # package/version/skill/kooCli pairing checks
 npm run format          # prettier --write
 npm run pack:verify     # simulate npm pack, catch missing files (e.g. new manifests)
 ```
 
-If you changed a SKILL.md, add or update a guard in `test/structure.test.mjs` and the corresponding test. If you changed the paired KooCLI version, run `npm run validate` to confirm every pinned URL matches. Release process: see `docs/RELEASING.md`.
+If you changed a SKILL.md, add or update a guard in `test/structure.test.ts` and the corresponding test. If you changed the paired KooCLI version, run `npm run validate` to confirm every pinned URL matches. Release process: see `docs/RELEASING.md`.
 
 ## Common Gotchas
 
 - KooCLI 7.x uses `--param=value`, not space-separated. Array params are 1-indexed (`nics.1.subnet_id`, not `.0`).
-- KooCLI's English service catalog (`~/.hcloud/metaRepo/services_en.json`) is incomplete (~70 services, incl. BSS). `Unsupported service: X` usually means the en catalog lacks the service — `hcloud-cli.mjs` detects the cause and advises the global switch `hcloud configure set --cli-lang=cn`. KooCLI rejects a per-command `--cli-lang` flag, so never append one; keep `classifyUnsupported`/`readServiceCatalogs` presence semantics (file missing → `unknown`, not `lang-missing`).
+- KooCLI's English service catalog (`~/.hcloud/metaRepo/services_en.json`) is incomplete (~70 services, incl. BSS). `Unsupported service: X` usually means the en catalog lacks the service — `hcloud-cli.ts` detects the cause and advises the global switch `hcloud configure set --cli-lang=cn`. KooCLI rejects a per-command `--cli-lang` flag, so never append one; keep `classifyUnsupported`/`readServiceCatalogs` presence semantics (file missing → `unknown`, not `lang-missing`).
 - `hcloud` must be in PATH or `HCLOUD_BIN` set. Agent processes inherit the environment of their launcher.
 - Codex and WorkBuddy manifests (`plugin.json`) must NOT include a `hooks` field — Codex fails schema validation, WorkBuddy triggers manual trust prompts.
 - `npm version` only bumps `package.json`. Run `node scripts/sync-version.mjs` to sync the 5 plugin manifests (`.codex-plugin`, `.claude-plugin`, `.cursor-plugin`, `.workbuddy-plugin`, `.hermes-plugin`). `npm run validate` enforces version parity across 7 files and will fail if root `plugin.json` or `openclaw.plugin.json` is out of sync.
-- KooCLI version is paired via `kooCliVersion` in `package.json` (single source of truth). Install URLs in `src/setup-cli.mjs` and skills must pin `cli/<kooCliVersion>`; the `hcloud_install.sh` one-liner is the only allowed `cli/latest` (it cannot be pinned). `npm run validate` enforces this — before releasing, confirm whether `kooCliVersion` should bump to the latest KooCLI. `check_cli`/`doctor` warn (soft, non-blocking) when the installed `hcloud version` does not exactly match.
+- KooCLI version is paired via `kooCliVersion` in `package.json` (single source of truth). Install URLs in `src/setup-cli.ts` and skills must pin `cli/<kooCliVersion>`; the `hcloud_install.sh` one-liner is the only allowed `cli/latest` (it cannot be pinned). `npm run validate` enforces this — before releasing, confirm whether `kooCliVersion` should bump to the latest KooCLI. `check_cli`/`doctor` warn (soft, non-blocking) when the installed `hcloud version` does not exactly match.
 - Skills are compact routing workflows, not service docs. Do not copy Huawei Cloud documentation into them. Point to `support.huaweicloud.com` instead.
 - For complex params (nested objects, arrays with special characters), prefer `--cli-jsonInput=<file>` over inline quoting to avoid shell escaping traps.
 - `HCLOUD_BIN` must be respected consistently across ALL tools and scripts (check_cli, doctor, runHcloud, etc.). Use `process.env.HCLOUD_BIN || 'hcloud'` everywhere, never hardcode `'hcloud'`.
@@ -163,4 +166,4 @@ If you changed a SKILL.md, add or update a guard in `test/structure.test.mjs` an
 - `InvokeFunction` / `Execute` / `Trigger` / `Deploy` operations are classified as write (require approval) — they have execution side effects even without data mutation.
 - Codex plugin marketplace name is read from `.agents/plugins/marketplace.json`. `getMarketplaceName()` must match, never hardcode.
 - OpenCode integration lives in `integrations/opencode/` (separate from the plugin).
-- Node >= 22 required, ESM only.
+- Node >= 22 required, ESM only. Running the `.ts` test suite directly needs Node >= 22.18 (type stripping); the published `engines` stays `>= 22`.

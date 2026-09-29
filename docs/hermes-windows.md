@@ -22,7 +22,7 @@ hermes config set mcp_servers.huaweicloud-devkit.args '["--no-deprecation", "<se
 
 Run `hermes config get mcp_servers.huaweicloud-devkit` to verify.
 
-The server path is printed by `doctor --target hermes` (typically `~/.hermes/huaweicloud-plugins/src/mcp-server.mjs`, i.e., `%USERPROFILE%\.hermes\huaweicloud-plugins\src\mcp-server.mjs` on Windows).
+The server path is printed by `doctor --target hermes` (typically `~/.hermes/huaweicloud-plugins/dist/mcp-server.js`, i.e., `%USERPROFILE%\.hermes\huaweicloud-plugins\dist\mcp-server.js` on Windows).
 
 ## Issue 3: Manual MCP Server Workaround (When Stdio Fails)
 
@@ -32,7 +32,7 @@ If the MCP server keeps dying despite all fixes (`doctor` passes, `--no-deprecat
 import subprocess, json
 
 proc = subprocess.Popen(
-    ["node", "--no-deprecation", "mcp-server.mjs"],
+    ["node", "--no-deprecation", "dist/mcp-server.js"],
     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
     env={"HW_ACCESS_KEY": ak, "HW_SECRET_KEY": sk}
 )

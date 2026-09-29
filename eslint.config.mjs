@@ -4,12 +4,19 @@ import importPlugin from 'eslint-plugin-import-x';
 import unicornPlugin from 'eslint-plugin-unicorn';
 import prettier from 'eslint-config-prettier';
 import globals from 'globals';
+import tseslint from 'typescript-eslint';
+
+// Scope every typescript-eslint config to TS sources. Recommended applies
+// globally by default, which would run TS-only rules (no-require-imports,
+// no-unused-vars) against the repo's .mjs files.
+const tsFiles = ['**/*.ts', '**/*.tsx', '**/*.mts', '**/*.cts'];
 
 export default [
   {
-    ignores: ['node_modules/', 'dist/', '.codeartsdoer/', '*.zst', '*.db'],
+    ignores: ['node_modules/', '**/dist/**', '.codeartsdoer/', '*.zst', '*.db'],
   },
   js.configs.recommended,
+  ...tseslint.configs.recommended.map((config) => ({ ...config, files: config.files ?? tsFiles })),
   nodePlugin.configs['flat/recommended'],
   prettier,
   {
@@ -24,13 +31,13 @@ export default [
     settings: {
       'import/resolver': {
         node: {
-          extensions: ['.js', '.mjs', '.cjs'],
+          extensions: ['.js', '.mjs', '.cjs', '.ts'],
         },
       },
     },
     rules: {
       // --- Import rules ---
-      'import/extensions': ['error', 'ignorePackages', { js: 'always', mjs: 'always', cjs: 'always' }],
+      'import/extensions': ['error', 'ignorePackages', { js: 'always', mjs: 'always', cjs: 'always', ts: 'always' }],
       'import/no-unresolved': ['error', { ignore: ['^node:'] }],
       'import/order': [
         'warn',
@@ -72,13 +79,26 @@ export default [
     },
   },
   {
-    files: ['plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs'],
+    files: ['**/*.ts'],
+    rules: {
+      // TypeScript resolves types itself, and eslint-plugin-n does not resolve
+      // explicit ".ts" specifiers. Keep both out of the .ts path.
+      'no-undef': 'off',
+      'n/no-missing-import': 'off',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' },
+      ],
+    },
+  },
+  {
+    files: ['plugins/huaweicloud-core/src/sandbox/hdkitservice-api.ts'],
     rules: {
       'n/no-missing-import': ['error', { allowModules: ['undici'] }],
     },
   },
   {
-    files: ['plugins/huaweicloud-core/src/proxy/proxy-agent.mjs'],
+    files: ['plugins/huaweicloud-core/src/proxy/proxy-agent.ts'],
     rules: {
       'n/prefer-node-protocol': 'off',
       'n/no-missing-import': ['error', { allowModules: ['undici'] }],
@@ -88,7 +108,8 @@ export default [
     files: [
       'scripts/**/*.mjs',
       'bin/*.cjs',
-      'plugins/huaweicloud-core/src/setup-cli.mjs',
+      'plugins/huaweicloud-core/src/setup-cli.ts',
+      'plugins/huaweicloud-core/src/mcp-server.ts',
       'test/huaweicloud-agent-toolkit-test/scripts/invoke-mcp.mjs',
       'test/fixtures/**',
     ],
@@ -98,7 +119,7 @@ export default [
     },
   },
   {
-    files: ['test/**/*.mjs'],
+    files: ['test/**/*.ts'],
     rules: {
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
     },

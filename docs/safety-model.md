@@ -16,7 +16,7 @@ The toolkit assumes coding agents can accidentally expose secrets or perform exp
 - `huaweicloud_hook_check_command`, `huaweicloud_hook_check_artifacts`, and `huaweicloud_hook_check_deploy_plan` let MCP-capable agents proactively inspect planned work.
 - `plugins/huaweicloud-core/hooks/huaweicloud-safety.mjs` blocks command-stage deny rules for Codex native hooks without requiring Python.
 - `plugins/huaweicloud-core/hooks/huaweicloud-safety.py` remains available for Hermes/Python hook compatibility.
-- `plugins/huaweicloud-core/src/safety-policy.mjs` handles Codex/OpenCode MCP paths and merges existing command safety with public cloud risk rules.
+- `plugins/huaweicloud-core/src/safety-policy.ts` (compiled to `dist/safety-policy.js`) handles Codex/OpenCode MCP paths and merges existing command safety with public cloud risk rules.
 - `plugins/huaweicloud-core/safety/policy.json` stores hard safety vocabulary.
 - `plugins/huaweicloud-core/safety/rules/cloud-risk-rules.json` stores generalized cloud risk rules.
 

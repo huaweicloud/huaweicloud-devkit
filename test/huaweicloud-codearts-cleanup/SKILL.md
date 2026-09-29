@@ -108,7 +108,7 @@ Get-Content "$env:USERPROFILE\.codeartsdoer\codearts-data\storage\permission\con
 全部检查返回 False/无结果/`sandbox` 后，即可重新安装：
 
 ```bash
-node plugins/huaweicloud-core/src/setup-cli.mjs install --target codearts
+node plugins/huaweicloud-core/dist/setup-cli.js install --target codearts
 ```
 
 ## 边界与注意事项

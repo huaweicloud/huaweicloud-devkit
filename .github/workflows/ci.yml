@@ -41,6 +41,39 @@ jobs:
       - run: npm ci
       - run: npm run lint
 
+  typecheck:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+
+  # Proves the documented development floor. The test matrix uses '22', which
+  # resolves to the newest 22.x and never exercises the pinned minimum.
+  floor:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22.18.0
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run validate
+
   test:
     needs: [lint]
     strategy:
@@ -79,7 +112,8 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: node --test test/agent-install.test.mjs test/cross-platform-*.test.mjs
+      - run: npm run build
+      - run: node --test test/agent-install.test.ts test/cross-platform-*.test.ts
 
   pack:
     runs-on: ubuntu-24.04

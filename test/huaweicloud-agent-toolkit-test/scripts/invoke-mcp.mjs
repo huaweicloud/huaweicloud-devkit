@@ -11,8 +11,8 @@ const MCP = join(
   '..',
   'plugins',
   'huaweicloud-core',
-  'src',
-  'mcp-server.mjs',
+  'dist',
+  'mcp-server.js',
 );
 const toolName = process.argv[2];
 const args = JSON.parse(process.argv[3] || '{}');

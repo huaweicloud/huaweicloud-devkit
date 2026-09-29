@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 
-import { classifyTextCommand } from '../src/safety-policy.mjs';
+import { classifyTextCommand } from '../dist/safety-policy.js';
 
 const DENY_PREFIX = 'Huawei Cloud safety hook blocked this action: ';
 

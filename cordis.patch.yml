@@ -6,7 +6,7 @@
         transport: stdio
         command: node
         args:
-          - './node_modules/huaweicloud-devkit/plugins/huaweicloud-core/src/mcp-server.mjs'
+          - './node_modules/huaweicloud-devkit/plugins/huaweicloud-core/dist/mcp-server.js'
         env:
           HUAWEICLOUD_AGENT_TOOLKIT_MODE: local
           HDKITSERVICE_ENDPOINT: ''

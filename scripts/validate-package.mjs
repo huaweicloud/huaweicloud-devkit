@@ -123,7 +123,7 @@ function walk(dir, acc = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     const full = join(dir, entry.name);
     if (entry.isDirectory()) walk(full, acc);
-    else if (/\.(md|mjs|cjs)$/.test(entry.name)) acc.push(full);
+    else if (/\.(md|mjs|cjs|ts)$/.test(entry.name)) acc.push(full);
   }
   return acc;
 }

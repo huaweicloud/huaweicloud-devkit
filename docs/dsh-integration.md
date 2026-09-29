@@ -43,7 +43,7 @@ The installer owns only the block between these markers:
         transport: stdio
         command: node
         args:
-          - '<DSH_HOME>/huaweicloud-plugins/src/mcp-server.mjs'
+          - '<DSH_HOME>/huaweicloud-plugins/dist/mcp-server.js'
         env:
           HUAWEICLOUD_AGENT_TOOLKIT_MODE: local
           HDKITSERVICE_ENDPOINT: ''

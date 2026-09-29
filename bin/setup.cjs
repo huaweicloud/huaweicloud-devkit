@@ -2,7 +2,7 @@
 'use strict';
 const path = require('node:path');
 const fileUrl = require('node:url').pathToFileURL(
-  path.join(__dirname, '..', 'plugins', 'huaweicloud-core', 'src', 'setup-cli.mjs'),
+  path.join(__dirname, '..', 'plugins', 'huaweicloud-core', 'dist', 'setup-cli.js'),
 ).href;
 
 import(fileUrl).catch((error) => {

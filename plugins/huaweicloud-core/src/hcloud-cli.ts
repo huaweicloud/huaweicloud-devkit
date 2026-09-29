@@ -1,0 +1,847 @@
+import { spawn, spawnSync } from 'node:child_process';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+import { classifyHcloudArgs, redactSecrets, assertAllowed, type ClassifyOptions } from './safety-policy.ts';
+import type { RiskDecision } from './risk-rule-engine.ts';
+import { getProxySettings } from './proxy/proxy-config.ts';
+import { findHcloudBin, resolveHcloudCommand } from './hcloud-probe.ts';
+import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.ts';
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
+const DEFAULT_MAX_RETRIES = 1;
+const APPROVAL_TTL_MS = 5 * 60_000;
+const LARGE_OUTPUT_THRESHOLD = 50_000;
+const OUTPUT_DIR = join('/tmp', 'huaweicloud-devkit');
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
+}
+
+// Boundary narrowing for credential-shaped values: only string fields survive,
+// so callers keep truthiness checks and string plumbing.
+interface CredentialLike {
+  ak?: string;
+  sk?: string;
+  securityToken?: string;
+}
+
+function asCreds(value: unknown): CredentialLike | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const result: CredentialLike = {};
+  if (typeof record.ak === 'string') result.ak = record.ak;
+  if (typeof record.sk === 'string') result.sk = record.sk;
+  if (typeof record.securityToken === 'string') result.securityToken = record.securityToken;
+  return result;
+}
+
+// Approval tokens must survive a process boundary: plan and run land in
+// different MCP sessions/processes (and headless subprocesses), so the old
+// in-memory Map lost the token and plan→approve→run became unreachable (#578).
+// Persist to a per-user JSON file as the single source of truth. Only the
+// sha256 of the args plus the redacted form are stored — never the raw args,
+// which may carry --adminPass / --server.user_data secrets.
+interface ApprovalEntry {
+  argsHash: string;
+  argsRedacted: unknown;
+  createdAt: number;
+}
+
+type ApprovalMap = Record<string, ApprovalEntry>;
+
+function approvalFilePath(): string {
+  return join(process.env.HUAWEICLOUD_HOME || homedir(), '.config', 'huaweicloud', 'approvals.json');
+}
+
+function sha256Hex(data: string): string {
+  return createHash('sha256').update(data).digest('hex');
+}
+
+export function hashArgs(args: unknown): string {
+  return sha256Hex(JSON.stringify(args));
+}
+
+function readApprovals(): ApprovalMap {
+  try {
+    const path = approvalFilePath();
+    if (!existsSync(path)) return {};
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const result: ApprovalMap = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.argsHash !== 'string' || typeof entry.createdAt !== 'number') continue;
+      result[key] = { argsHash: entry.argsHash, argsRedacted: entry.argsRedacted, createdAt: entry.createdAt };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+function writeApprovals(map: ApprovalMap): void {
+  try {
+    const path = approvalFilePath();
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.${process.pid}.tmp`;
+    writeFileSync(tmp, JSON.stringify(map), { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // Best-effort: an in-file failure degrades cross-process persistence but a
+    // token created/consumed within one process still works.
+  }
+}
+
+function pruneStale(map: ApprovalMap, now = Date.now()): boolean {
+  let changed = false;
+  for (const [key, value] of Object.entries(map)) {
+    if (now - value.createdAt > APPROVAL_TTL_MS) {
+      delete map[key];
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+export function createApprovalToken(rawArgs: unknown): string {
+  const token = randomUUID();
+  const map = readApprovals();
+  map[token] = {
+    argsHash: hashArgs(rawArgs),
+    argsRedacted: redactSecrets(rawArgs),
+    createdAt: Date.now(),
+  };
+  pruneStale(map);
+  writeApprovals(map);
+  return token;
+}
+
+export function consumeApprovalToken(token: string): ApprovalEntry | null {
+  const map = readApprovals();
+  const entry = map[token];
+  if (!entry) return null;
+  if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) {
+    delete map[token];
+    writeApprovals(map);
+    return null;
+  }
+  delete map[token];
+  writeApprovals(map);
+  return entry;
+}
+
+function saveLargeOutput(rawStdout: string): string | null {
+  if (rawStdout.length <= LARGE_OUTPUT_THRESHOLD) return null;
+  try {
+    mkdirSync(OUTPUT_DIR, { recursive: true });
+    const filePath = join(OUTPUT_DIR, `output-${Date.now()}.json`);
+    writeFileSync(filePath, rawStdout, { encoding: 'utf8' });
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+export interface SgFinding {
+  severity: 'warn' | 'deny';
+  title: string;
+  message: string;
+}
+
+function preflightSecurityGroupCheck(normalizedArgs: string[]): SgFinding[] {
+  const service = normalizedArgs[0];
+  const operation = normalizedArgs[1];
+  if (service !== 'ECS' || !/CreateServers|RunInstances/i.test(operation)) return [];
+
+  const sgIds: string[] = [];
+  for (const arg of normalizedArgs) {
+    const m = arg.match(/^(?:--security_group_id(?:\.\d+)?|--server\.security_groups(?:\.\d+)?\.id)=(.+)/);
+    if (m) sgIds.push(m[1]);
+  }
+  if (sgIds.length === 0) return [];
+
+  const regionArg = normalizedArgs.find((a) => a.startsWith('--cli-region='));
+  const findings: SgFinding[] = [];
+  for (const sgId of sgIds) {
+    try {
+      const { executable, argsPrefix } = resolveHcloudCommand();
+      const spawnArgs = ['VPC', 'ListSecurityGroupRules', `--security_group_id.1=${sgId}`];
+      if (regionArg) spawnArgs.push(regionArg);
+      const r = spawnSync(executable, [...argsPrefix, ...spawnArgs], {
+        shell: false,
+        windowsHide: true,
+        stdio: 'pipe',
+        timeout: 20000,
+      });
+      const stdout = (r.stdout || '').toString();
+      if (r.status !== 0 || !stdout.includes('security_group_rules')) continue;
+
+      const bracketIdx = stdout.indexOf('{');
+      const jsonText = bracketIdx >= 0 ? stdout.slice(bracketIdx) : stdout;
+      const data: unknown = JSON.parse(jsonText);
+      const rulesValue = asRecord(data).security_group_rules;
+      const rules = Array.isArray(rulesValue) ? rulesValue : [];
+
+      for (const rule of rules) {
+        const record = asRecord(rule);
+        const direction = asString(record.direction) ?? '';
+        const remoteIp = asString(record.remote_ip_prefix) ?? asString(record.remote_address_group_id) ?? '';
+        const portMin = String(record.port_range_min || record.multiport || '');
+        const portMax = String(record.port_range_max || record.multiport || '');
+        const protocol = (asString(record.protocol) ?? '').toLowerCase();
+        if (direction !== 'ingress') continue;
+        if (remoteIp !== '0.0.0.0/0' && remoteIp !== '::/0') continue;
+        if (protocol === 'icmp' || protocol === 'icmpv6') {
+          findings.push({
+            severity: 'warn',
+            title: `Security group ${sgId}: ICMP open to public`,
+            message: `安全组 ${sgId} 对公网开放了 ICMP (ping)，可能被用于探测。是否继续？`,
+          });
+          continue;
+        }
+        const sensitivePorts = ['22', '3389', '3306', '5432', '6379', '9200', '27017', '8080', '8443'];
+        const port = portMin || portMax;
+        if (port && sensitivePorts.includes(port)) {
+          findings.push({
+            severity: 'deny',
+            title: `Security group ${sgId}: port ${port} open to public`,
+            message: `安全组 ${sgId} 已对公网开放 ${port} 端口（${protocol || 'TCP'}）。确认继续创建 ECS？`,
+          });
+        }
+      }
+    } catch (error) {
+      // Preflight failed silently; don't block the plan
+    }
+  }
+  return findings;
+}
+
+function applyPreflightFindings(classification: RiskDecision, sgFindings: SgFinding[]): RiskDecision {
+  if (!sgFindings || sgFindings.length === 0) return classification;
+  const hasDeny = sgFindings.some((f) => f.severity === 'deny');
+  if (hasDeny) {
+    return {
+      ...classification,
+      decision: 'deny',
+      risk: 'public_exposure',
+      reason: sgFindings[0].message,
+    };
+  }
+  return classification;
+}
+
+const OBS_WRITE_SUBCOMMANDS = new Set(['mb', 'cp', 'mv', 'rm', 'chattri', 'restore']);
+
+function obsWriteHint(args: unknown): string | null {
+  if (!Array.isArray(args) || args.length < 2) return null;
+  if (String(args[0]).toUpperCase() !== 'OBS') return null;
+  if (!OBS_WRITE_SUBCOMMANDS.has(String(args[1]).toLowerCase())) return null;
+  return 'OBS write operations are obsutil-style and always write-class. Before executing, present the full resource manifest (bucket/object list) to the user for ONE batch approval, then run each command through plan → approve (see huawei-iac skill, Provisioning Rules).';
+}
+
+const CATALOG_TTL_MS = 5 * 60 * 1000;
+
+interface ServiceCatalogLoad {
+  present: boolean;
+  set: Set<string>;
+}
+
+export interface ServiceCatalogCache {
+  dir: string | null;
+  t: number;
+  cn: Set<string>;
+  en: Set<string>;
+  cnPresent?: boolean;
+  enPresent?: boolean;
+}
+
+let _catalogCache: ServiceCatalogCache = { dir: null, t: 0, cn: new Set(), en: new Set() };
+
+export function readServiceCatalogs(metaDir = join(homedir(), '.hcloud', 'metaRepo')): ServiceCatalogCache {
+  const now = Date.now();
+  if (_catalogCache.dir === metaDir && now - _catalogCache.t < CATALOG_TTL_MS) return _catalogCache;
+  const load = (f: string): ServiceCatalogLoad => {
+    try {
+      const p = join(metaDir, f);
+      if (!existsSync(p)) return { present: false, set: new Set<string>() };
+      const d: unknown = JSON.parse(readFileSync(p, 'utf8'));
+      const items = asRecord(d).items;
+      // Normalize to uppercase on load: catalog entries are mixed-case
+      // (DevStar, CloudTable, MapDS, ...) while lookups use uppercase.
+      return {
+        present: true,
+        set: new Set(
+          (Array.isArray(items) ? items : [])
+            .map((i) => {
+              const text = asRecord(asRecord(i).Service).Text;
+              return typeof text === 'string' ? text.toUpperCase() : undefined;
+            })
+            .filter((text): text is string => Boolean(text)),
+        ),
+      };
+    } catch {
+      return { present: false, set: new Set<string>() };
+    }
+  };
+  const cn = load('services_cn.json');
+  const en = load('services_en.json');
+  _catalogCache = { dir: metaDir, t: now, cn: cn.set, en: en.set, cnPresent: cn.present, enPresent: en.present };
+  return _catalogCache;
+}
+
+export type UnsupportedCause = 'other' | 'lang-missing' | 'not-found' | 'unknown';
+
+export function classifyUnsupported(service: unknown, metaDir?: string): UnsupportedCause {
+  const { cn, en, cnPresent, enPresent } = readServiceCatalogs(metaDir);
+  const s = String(service || '').toUpperCase();
+  if (!s) return 'other';
+  if (cnPresent && enPresent) {
+    if (cn.has(s) && !en.has(s)) return 'lang-missing';
+    if (!cn.has(s) && !en.has(s)) return 'not-found';
+    return 'other';
+  }
+  // One or both catalog files are missing locally — we cannot distinguish
+  // "service missing from the en catalog" from "en catalog not downloaded".
+  return 'unknown';
+}
+
+// Build command-line credential-injection args when the current credentials are
+// temporary STS (carry a non-empty security token). KooCLI/obsutil do not read the
+// platform-injected HW_* env (link B reads only S2/S3 config), so for a live STS
+// credential set that R3 forbids writing to disk, we pass it per-command instead.
+// Zero-persist: nothing touches S1/S2/S3 and every invocation re-reads the current
+// value (stale as soon as the token is).
+// Redact executed args for MCP-visible output. Besides the generic key=value
+// redaction (--cli-access-key=...), obsutil-style standalone credential flags
+// (-i AK / -k SK / -t TOKEN) carry the temporary STS as following array elements,
+// which redactSecrets can't match. We scrub those explicitly.
+export function redactArgsWithObs(rawArgs: unknown): string[] {
+  const arr = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  const out = [...arr];
+  for (let i = 0; i < out.length; i += 1) {
+    if (out[i] === '-i' || out[i] === '-k' || out[i] === '-t') {
+      if (i + 1 < out.length) out[i + 1] = '<redacted>';
+      i += 1;
+    } else if (/^-i[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-i<redacted>';
+    } else if (/^-k[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-k<redacted>';
+    } else if (/^-t[A-Za-z0-9]/.test(out[i])) {
+      out[i] = '-t<redacted>';
+    }
+  }
+  // redactSecrets maps arrays element-wise; the per-string overload keeps the
+  // result honestly typed as string[].
+  return out.map((item) => redactSecrets(item));
+}
+
+export function resolveStsInjectArgs(rawArgs: unknown): string[] {
+  const normalized = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
+  if (normalized.length === 0) return [];
+  const flat = normalized.map(String);
+
+  // Explicit kill-switch (R2): CI/ops can disable argv-injection entirely so the
+  // temporary STS never appears in a process list.
+  const flag = process.env.HUAWEICLOUD_INJECT_STS_CMD;
+  if (flag === '0' || flag === 'false') return [];
+
+  // Never inject for help / metadata subcommands — the flags are meaningless there.
+  if (flat.some((a) => a === '--help' || a === '-h' || a === 'help')) return [];
+
+  // Wrapper invocation (bash -c / sudo / sh ...): our extra args would land in the
+  // wrapper's argv, not hcloud's — either ineffective or misleading. Skip them.
+  const WRAP = new Set([
+    'bash',
+    'sh',
+    'zsh',
+    'dash',
+    'bash.exe',
+    'sh.exe',
+    '/bin/bash',
+    '/bin/sh',
+    '/bin/zsh',
+    '/bin/dash',
+    'sudo',
+  ]);
+  const first = String(flat[0] || '').toLowerCase();
+  if (WRAP.has(first)) return [];
+
+  // KooCLI profile-management subcommands don't take --cli-security-token.
+  if (first === 'configure' || first === 'config') return [];
+
+  // If the caller already passed explicit credential flags, do not override them.
+  if (
+    flat.some(
+      (a) =>
+        a.startsWith('--cli-access-key=') || a.startsWith('--cli-secret-key=') || a.startsWith('--cli-security-token='),
+    )
+  ) {
+    return [];
+  }
+  // Explicit obsutil-style credentials already present — standalone (-i AK) or
+  // attached (-iAK) — should not be overridden by an extra injection.
+  if (flat.some((a) => a === '-i' || a === '-k' || a === '-t' || /^-[ikt][A-Za-z0-9]/.test(a))) return [];
+
+  const creds = asCreds(resolveCredentialsWithRuntime({ allowMissing: true }));
+  if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
+
+  // R3: if we can derive an expiry and the token is already at/within 60s of
+  // expiring, skip injection — using a dead token would make a doomed IAM round
+  // trip. If expiry is unknown/unparseable we keep the existing "inject anyway"
+  // behavior (can't prove it's stale).
+  const expiry = parseStsExpiry({ securityToken: creds.securityToken });
+  if (expiry !== null) {
+    const grace = 60 * 1000;
+    if (expiry <= Date.now() + grace) return [];
+  }
+
+  const isObs = flat[0].toUpperCase() === 'OBS';
+  return isObs
+    ? ['-i', creds.ak, '-k', creds.sk, '-t', creds.securityToken]
+    : ['--cli-access-key=' + creds.ak, '--cli-secret-key=' + creds.sk, '--cli-security-token=' + creds.securityToken];
+}
+
+export interface HcloudPlan {
+  executable: string;
+  args: string[];
+  command: string;
+  executableBlock: string;
+  warnings: Array<string | SgFinding>;
+  classification: RiskDecision;
+  sgFindings: SgFinding[];
+  approvalToken: string;
+  safeToRun: boolean;
+}
+
+export interface HcloudPlanWithArgs extends HcloudPlan {
+  rawArgs: string[];
+}
+
+export interface HcloudRunResult {
+  ok: boolean;
+  code?: string;
+  error?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  exitCode?: number | null;
+  signal?: NodeJS.Signals | null;
+  stdout?: string;
+  stderr?: string;
+  plan?: HcloudPlanWithArgs;
+  outputFile?: string;
+  retries?: number;
+  attempts?: number;
+  authWarning?: string | null;
+  langCause?: UnsupportedCause;
+  langHint?: string;
+  langNextStep?: string;
+}
+
+export function planHcloudCommand(args: unknown, options: ClassifyOptions = {}): HcloudPlan {
+  const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
+  const classification = classifyHcloudArgs(normalizedArgs, options);
+  const command = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
+  const warnings: Array<string | SgFinding> = planningWarnings(normalizedArgs);
+  const obsHint = obsWriteHint(normalizedArgs);
+  if (obsHint) warnings.push(obsHint);
+  const sgFindings = preflightSecurityGroupCheck(normalizedArgs);
+  if (sgFindings.length > 0) {
+    for (const f of sgFindings) warnings.push(f);
+  }
+  const paramValidation = validateRequiredParams(normalizedArgs);
+  if (paramValidation.missing.length > 0) {
+    warnings.push('Missing required parameters: ' + paramValidation.missing.join(', '));
+    if (paramValidation.hints && paramValidation.hints.length > 0) {
+      warnings.push('Find valid values: ' + paramValidation.hints.join('; '));
+    }
+  }
+  return {
+    executable: 'hcloud',
+    args: normalizedArgs.map((arg) => redactSecrets(arg)),
+    command: redactOutput(command),
+    executableBlock: redactOutput(command),
+    warnings,
+    classification: applyPreflightFindings(classification, sgFindings),
+    sgFindings,
+    approvalToken: createApprovalToken(normalizedArgs),
+    safeToRun: classification.decision === 'allow',
+  };
+}
+
+const UNSUPPORTED_SERVICE_RE = /Unsupported service:\s*([A-Za-z0-9_-]+)/i;
+
+function appendLangHint(result: HcloudRunResult, service: string, metaDir?: string): HcloudRunResult {
+  const cause = classifyUnsupported(service, metaDir);
+  if (cause === 'lang-missing' || cause === 'unknown') {
+    const nextStep =
+      'KooCLI switches language only via global config: hcloud configure set --cli-lang=cn (changes CLI output language; BSS requires Chinese mode).';
+    return {
+      ...result,
+      langCause: cause,
+      langHint: `Unsupported service: ${service}. ${nextStep}`,
+      langNextStep: nextStep,
+    };
+  }
+  const nextStep = 'Check the service name, or refresh KooCLI metadata (hcloud upgrade / configure).';
+  return {
+    ...result,
+    langCause: cause,
+    langHint: `Unsupported service: ${service}. ${nextStep}`,
+    langNextStep: nextStep,
+  };
+}
+
+export interface HcloudRunOptions extends ClassifyOptions {
+  metaDir?: string;
+  timeoutMs?: number;
+  forceKillAfterMs?: number;
+  maxRetries?: number;
+  retryBaseDelayMs?: number;
+  cwd?: string;
+  stdin?: string | ((_stream: NodeJS.WritableStream) => void);
+  executable?: string;
+  executableArgs?: unknown;
+  env?: Record<string, string | undefined>;
+}
+
+export async function runHcloud(args: unknown, options: HcloudRunOptions = {}): Promise<HcloudRunResult> {
+  const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
+  const plan: HcloudPlanWithArgs = {
+    ...planHcloudCommand(normalizedArgs, options),
+    rawArgs: normalizedArgs,
+  };
+  assertAllowed(plan.classification);
+
+  // Link B: when the runtime/environment carries live temporary STS credentials
+  // (security token set), KooCLI/obsutil would not see them (they read S2/S3 only
+  // and R3 forbids writing them to disk). Inject per-command so hcloud actually
+  // authenticates with the platform-provided STS. Injection args are appended to
+  // the EXECUTED args only; classification/approval used the original args.
+  const stsInject = resolveStsInjectArgs(normalizedArgs);
+  if (stsInject.length > 0) {
+    plan.rawArgs = [...plan.rawArgs, ...stsInject];
+  }
+
+  const metaDir = options.metaDir;
+
+  // KooCLI only switches language globally (`hcloud configure set --cli-lang=cn`); there is no
+  // per-command `--cli-lang` flag (it is rejected as "不正确的参数:cli-lang"). So we never mutate
+  // the command — we run it as-is and annotate `Unsupported service` with an actionable cause.
+  const result = await runHcloudOnceWithRetries(plan, options);
+  const text = `${result.stderr || ''}\n${result.stdout || ''}`;
+  const match = text.match(UNSUPPORTED_SERVICE_RE);
+  if (match && !result.ok) {
+    return appendLangHint(result, match[1], metaDir);
+  }
+  return result;
+}
+
+async function runHcloudOnceWithRetries(plan: HcloudPlanWithArgs, options: HcloudRunOptions): Promise<HcloudRunResult> {
+  const maxRetries = options.maxRetries ?? DEFAULT_MAX_RETRIES;
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const result = await runHcloudOnce(plan, options);
+    if (result.ok || attempt >= maxRetries || !isRetryableNetworkError(result)) {
+      const merged: HcloudRunResult = {
+        ...result,
+        retries: attempt,
+        attempts: attempt + 1,
+      };
+      if (merged.ok) {
+        const warning = await runtimeCurrentMismatchWarning();
+        return warning ? { ...merged, authWarning: warning } : merged;
+      }
+      return merged;
+    }
+    await wait((options.retryBaseDelayMs ?? 500) * 2 ** attempt);
+  }
+  throw new Error('Unreachable retry state.');
+}
+
+async function runtimeCurrentMismatchWarning(): Promise<string | null> {
+  try {
+    const { hasRuntimeCredentials, scanState } = await import('./auth/reconcile.ts');
+    if (!hasRuntimeCredentials()) return null;
+    const scan = scanState();
+    const { runtimeFingerprint, currentFingerprint } = scan.stores;
+    if (runtimeFingerprint && currentFingerprint && runtimeFingerprint !== currentFingerprint) {
+      return '会话内临时账号与 KooCLI current 档不一致：hcloud 命令仍使用 current 档账号。如需对齐请用 huaweicloud_auth_switch action=persist。';
+    }
+    return null;
+  } catch {
+    // reconcile unavailable → no warning, never block the command
+    return null;
+  }
+}
+
+function discoverHcloudPath(): string | null {
+  return findHcloudBin();
+}
+
+function runHcloudOnce(plan: HcloudPlanWithArgs, options: HcloudRunOptions): Promise<HcloudRunResult> {
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const forceKillAfterMs = options.forceKillAfterMs ?? DEFAULT_FORCE_KILL_AFTER_MS;
+  const executable = options.executable || options.env?.HCLOUD_BIN || discoverHcloudPath() || 'hcloud';
+  const executableArgs = Array.isArray(options.executableArgs) ? options.executableArgs.map(String) : [];
+  const cwd = options.cwd || undefined;
+  const stdin = options.stdin ?? 'y\n';
+  const childOptions: HcloudRunOptions = { ...options };
+  delete childOptions.metaDir;
+  const childEnv = { ...process.env, ...childOptions.env };
+
+  return new Promise<HcloudRunResult>((resolve) => {
+    const proxySettings = getProxySettings();
+    const proxyEnv: Record<string, string> = {};
+    if (proxySettings) {
+      if (proxySettings.https_proxy) proxyEnv.HTTPS_PROXY = proxySettings.https_proxy;
+      if (proxySettings.http_proxy) proxyEnv.HTTP_PROXY = proxySettings.http_proxy;
+      if (proxySettings.no_proxy) proxyEnv.NO_PROXY = proxySettings.no_proxy;
+    }
+    const child = spawn(executable, [...executableArgs, ...plan.rawArgs], {
+      shell: false,
+      windowsHide: true,
+      cwd,
+      env: {
+        ...process.env,
+        ...proxyEnv,
+        ...childEnv,
+      },
+    });
+    if (stdin) {
+      if (typeof stdin === 'function') {
+        stdin(child.stdin);
+      } else {
+        child.stdin.write(String(stdin));
+        child.stdin.end();
+      }
+    }
+    let stdout = '';
+    let stderr = '';
+    let timedOut = false;
+    let settled = false;
+    let forceTimer: NodeJS.Timeout | undefined;
+    let settleTimer: NodeJS.Timeout | undefined;
+
+    function finish(result: HcloudRunResult): void {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearTimeout(forceTimer);
+      clearTimeout(settleTimer);
+      if (result.stdout && String(result.stdout).length > LARGE_OUTPUT_THRESHOLD) {
+        const outputFile = saveLargeOutput(stdout);
+        if (outputFile) {
+          result.outputFile = outputFile;
+          result.stdout = String(result.stdout).slice(0, 2000) + `\n...(truncated, full output saved to ${outputFile})`;
+        }
+      }
+      // Never surface raw args (may include the injected temporary STS) to MCP
+      // clients / agent conversation — redact before resolve. The live `plan`
+      // object itself is left untouched so retries keep executing the real args.
+      if (result.plan && Array.isArray(result.plan.rawArgs)) {
+        const redactedPlan: HcloudPlanWithArgs = {
+          ...result.plan,
+          rawArgs: redactArgsWithObs(result.plan.rawArgs),
+        };
+        result.plan = redactedPlan;
+      }
+      resolve(result);
+    }
+
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill('SIGTERM');
+      forceTimer = setTimeout(() => child.kill('SIGKILL'), forceKillAfterMs);
+      settleTimer = setTimeout(() => {
+        finish({
+          ok: false,
+          code: 'TIMEOUT',
+          error: `hcloud command timed out after ${timeoutMs} ms.`,
+          stdout: redactOutput(stdout),
+          stderr: redactOutput(stderr),
+          plan,
+        });
+      }, forceKillAfterMs + 500);
+    }, timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk.toString('utf8');
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString('utf8');
+    });
+    child.on('error', (error) => {
+      finish({
+        ok: false,
+        code: 'SPAWN_ERROR',
+        error: error.message,
+        plan,
+      });
+    });
+    child.on('close', (code, signal) => {
+      if (timedOut) {
+        finish({
+          ok: false,
+          code: 'TIMEOUT',
+          error: `hcloud command timed out after ${timeoutMs} ms.`,
+          exitCode: code,
+          signal,
+          stdout: redactOutput(stdout),
+          stderr: redactOutput(stderr),
+          plan,
+        });
+        return;
+      }
+      const apiError = extractApiError(stdout);
+      if (apiError) {
+        finish({
+          ok: false,
+          exitCode: code,
+          signal,
+          errorCode: apiError.errorCode,
+          errorMessage: apiError.errorMessage,
+          stdout: redactOutput(stdout),
+          stderr: redactOutput(stderr),
+          plan,
+        });
+        return;
+      }
+      finish({
+        ok:
+          code === 0 ||
+          (code !== 0 &&
+            /successfully|succ?ess.*\[200\]|create bucket successfully|upload successfully/i.test(stdout + stderr)),
+        exitCode: code,
+        signal,
+        stdout: redactOutput(stdout),
+        stderr: redactOutput(stderr),
+        plan,
+      });
+    });
+  });
+}
+
+function isRetryableNetworkError(result: HcloudRunResult): boolean {
+  if (result.code === 'TIMEOUT') return false;
+  const text = `${result.error || ''}\n${result.stdout || ''}\n${result.stderr || ''}`;
+  return /\[NETWORK_ERROR\]|connection timed out|ECONNRESET|ETIMEDOUT|temporary failure|TLS handshake timeout/i.test(
+    text,
+  );
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function quoteShellArg(value: unknown): string {
+  const text = String(value);
+  if (!text) return '""';
+  if (/^[A-Za-z0-9_./:=@-]+$/.test(text)) return text;
+  return `"${text.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+function planningWarnings(args: string[]): string[] {
+  const joined = args.join(' ');
+  const warnings: string[] = [];
+  if (/admin[_-]?pass|password|passwd|secret|token/i.test(joined)) {
+    warnings.push(
+      'This command appears to contain a password or secret field. Do not leave plaintext secrets in shell history; prefer local-only input or a runtime injection pattern.',
+    );
+  }
+  return warnings;
+}
+
+const REQUIRED_PARAMS: Record<string, string[]> = {
+  'ECS CreateServers': ['server.flavorRef', 'server.imageRef', 'server.nics.1.subnet_id'],
+  'VPC CreateVpc': ['vpc.cidr'],
+  'VPC CreateSubnet': ['subnet.vpc_id', 'subnet.cidr'],
+  'VPC CreateSecurityGroupRule': [
+    'security_group_rule.security_group_id',
+    'security_group_rule.direction',
+    'security_group_rule.protocol',
+  ],
+  'EIP CreatePublicip': ['bandwidth.share_type', 'publicip.type'],
+  'FunctionGraph CreateFunction': ['func_name', 'runtime', 'handler', 'memory_size', 'package', 'timeout'],
+  'FunctionGraph CreateFunctionTrigger': ['function_urn', 'trigger_type_code'],
+  'APIG CreateInstanceV2': ['spec_id'],
+  'OBS mb': ['obs://'],
+  'OBS rm': ['obs://'],
+};
+
+const PARAM_VALUE_HINTS: Record<string, string> = {
+  'server.flavorRef': 'Run `hcloud ECS ListFlavors --cli-region=<r>` to find valid flavors',
+  'server.imageRef': 'Run `hcloud IMS ListImages --cli-region=<r> --__imagetype=gold` to find valid image IDs',
+  'server.nics.1.subnet_id': 'Run `hcloud VPC ListSubnets --cli-region=<r>` to find subnet IDs',
+  'subnet.vpc_id': 'Run `hcloud VPC ListVpcs --cli-region=<r>` to find VPC IDs',
+  func_name: 'Function name must be unique within project',
+  runtime: 'Run `hcloud FunctionGraph ListRuntimes` to see available runtimes',
+  spec_id: 'APIG spec: BASIC (no public IP) or PROFESSIONAL (requires --loadbalancer_provider)',
+  'obs://': 'Bucket name must be globally unique and DNS-compliant (lowercase, numbers, hyphens only)',
+};
+
+function validateRequiredParams(args: string[]): { valid: boolean; missing: string[]; hints: string[] } {
+  if (!args || args.length < 2) return { valid: true, missing: [], hints: [] };
+  const key = `${args[0]} ${args[1]}`;
+  const required = REQUIRED_PARAMS[key];
+  if (!required) return { valid: true, missing: [], hints: [] };
+  const argsStr = args.join(' ');
+  const missing = required.filter((param) => !argsStr.includes(param));
+  const hints = missing.map((param) => PARAM_VALUE_HINTS[param]).filter(Boolean);
+  return { valid: missing.length === 0, missing, hints };
+}
+
+export interface ApiErrorInfo {
+  errorCode: string;
+  errorMessage: string;
+}
+
+export function extractApiError(stdout: unknown): ApiErrorInfo | null {
+  let text = String(stdout || '');
+  // Strip KooCLI multi-version prefix lines (e.g. "ListVpcs有多个版本,默认使用该API版本v3…")
+  const bracketIdx = text.indexOf('{');
+  if (bracketIdx > 0) text = text.substring(bracketIdx);
+  try {
+    const parsed: unknown = JSON.parse(text);
+    const record = asRecord(parsed);
+    const errorCode = asString(record.error_code) ?? asString(record.errorCode);
+    if (errorCode) {
+      return {
+        errorCode,
+        errorMessage: asString(record.error_msg) ?? asString(record.errorMsg) ?? asString(record.message) ?? '',
+      };
+    }
+    const errorValue = record.error;
+    if (errorValue && typeof errorValue === 'object') {
+      const errorRecord = asRecord(errorValue);
+      return {
+        errorCode: asString(errorRecord.code) ?? asString(errorRecord.error_code) ?? 'UNKNOWN',
+        errorMessage: asString(errorRecord.message) ?? asString(errorRecord.error_msg) ?? '',
+      };
+    }
+  } catch {}
+  const ecMatch = text.match(/"error_code"\s*:\s*"([^"]+)"/);
+  const emMatch = text.match(/"error_msg"\s*:\s*"([^"]+)"/);
+  if (ecMatch) {
+    return { errorCode: ecMatch[1], errorMessage: emMatch ? emMatch[1] : '' };
+  }
+  return null;
+}
+
+export function redactOutput(output: unknown): string {
+  let text = String(output || '');
+  const bracketIdx = text.indexOf('{');
+  if (bracketIdx > 0) text = text.substring(bracketIdx);
+  try {
+    return JSON.stringify(redactSecrets(JSON.parse(text)), null, 2);
+  } catch {
+    return redactSecrets(text);
+  }
+}

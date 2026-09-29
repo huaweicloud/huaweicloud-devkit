@@ -18,7 +18,7 @@
   ],
   "bin": {
     "huaweicloud-devkit": "./bin/setup.cjs",
-    "huaweicloud-devkit-mcp": "./plugins/huaweicloud-core/src/mcp-server.mjs"
+    "huaweicloud-devkit-mcp": "./plugins/huaweicloud-core/dist/mcp-server.js"
   },
   "repository": {
     "type": "git",
@@ -30,7 +30,11 @@
     }
   },
   "scripts": {
-    "test": "node --experimental-test-module-mocks --test \"test/*.test.mjs\"",
+    "build": "node ./scripts/build-plugin.mjs",
+    "typecheck": "tsc -p plugins/huaweicloud-core/tsconfig.json --noEmit",
+    "pretest": "npm run build",
+    "prepack": "npm run build",
+    "test": "node --experimental-test-module-mocks --test \"test/*.test.ts\"",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.git\" \"#test/**\" \"#docs/**\" \"#.superpowers/**\"",
@@ -46,6 +50,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@types/node": "^22.20.4",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import-x": "^4.17.1",
@@ -53,7 +58,9 @@
     "eslint-plugin-unicorn": "^73.0.0",
     "globals": "^17.11.0",
     "markdownlint-cli2": "^0.23.2",
-    "prettier": "^3.9.6"
+    "prettier": "^3.9.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.70.1"
   },
   "overrides": {
     "smol-toml": "1.8.0"
