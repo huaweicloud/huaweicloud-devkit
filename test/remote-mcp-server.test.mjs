@@ -48,7 +48,7 @@ test('remote MCP server initializes, lists tools, and plans CLI commands', async
   assert.equal(initialized.status, 200);
   assert.equal(initialized.body.result.serverInfo.name, 'huaweicloud-devkit');
   assert.equal(initialized.body.result.protocolVersion, '2024-11-05');
-  assert.deepEqual(initialized.body.result.capabilities, { tools: {} });
+  assert.deepEqual(initialized.body.result.capabilities, { tools: {}, cancellation: {} });
 
   const listed = await rpc('tools/list');
   const toolNames = new Set(listed.body.result.tools.map((tool) => tool.name));

@@ -188,6 +188,12 @@ function capabilityFromKey(key) {
 
 export function sanitizeValue(value) {
   if (typeof value !== 'string') value = value == null ? '' : String(value);
+  value = value
+    .replace(
+      /\b(AK|SK|AccessKey|SecretKey|SecretAccessKey|SecurityToken|X-Auth-Token|Authorization)\s*[:=]\s*(Bearer\s+)?[A-Za-z0-9+/=_-]{8,}/gi,
+      '$1=<redacted>',
+    )
+    .replace(/\btoken\s*[:=]\s*[A-Za-z0-9+/=_-]{8,}/gi, 'token=<redacted>');
   value = value.replace(/[\r\n\t]+/g, ' ').trim();
   if (value.length > MAX_VALUE_LENGTH) {
     value = value.slice(0, MAX_VALUE_LENGTH - 3) + '...';

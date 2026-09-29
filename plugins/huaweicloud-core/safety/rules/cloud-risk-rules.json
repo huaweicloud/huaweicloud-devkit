@@ -189,16 +189,37 @@
           },
           {
             "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
+            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|\\\"?Action\\\"?\\s*[=:]\\s*\\\"?(\\*|\\*:\\*)\\\"?|AdministratorAccess|FullAccess)"
           },
           {
             "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
+            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|\\\"?Effect\\\"?\\s*[=:]\\s*\\\"?Allow\\\"?)"
           }
         ]
       },
       "message": "The change appears to grant broad administrator permissions.",
       "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials for generated application workflows."
+    },
+    {
+      "id": "hwc-iam-broad-action-array",
+      "title": "Broad IAM action wildcard in CLI/array form",
+      "category": "iam",
+      "severity": "deny",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(IAM|policy|role|agency|actions?|Statement)"
+          },
+          {
+            "field": "text",
+            "regex": "[\"']?actions?[\"']?\\s*[=:]\\s*(\\[\\s*)?[\"']\\*(:\\*)?[\"']"
+          }
+        ]
+      },
+      "message": "The change grants wildcard IAM actions (actions=[\"*\"]), equivalent to administrator access.",
+      "remediation": "List explicit service actions instead of wildcard. Use least-privilege scopes and resource constraints."
     },
     {
       "id": "hwc-destructive-delete-force",
