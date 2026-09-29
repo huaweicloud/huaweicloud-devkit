@@ -65,6 +65,12 @@ One-liner (installs `latest`, may drift from v7.2.12):
 curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/latest/hcloud_install.sh -o ./hcloud_install.sh && bash ./hcloud_install.sh -y
 ```
 
+**No restart needed after install**: DevKit locates `hcloud` dynamically on every
+call — it checks `HCLOUD_BIN`, then the fixed install dirs (`~/.local/bin/hcloud`
+on Linux/macOS, `~/hcloud/hcloud.exe` on Windows), then PATH. Once `install-hcloud`
+or the background auto-install writes the binary to one of those dirs, the very next
+`check_cli` / `run_*` call uses it. Do not tell users to restart the agent.
+
 Agent processes find executables through `PATH`. If OpenCode/Codex cannot find `hcloud`, restart after updating `PATH`, or set `HCLOUD_BIN`.
 
 ## Configure Credentials Outside Chat

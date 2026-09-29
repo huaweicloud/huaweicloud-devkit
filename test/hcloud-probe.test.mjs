@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 
-import { classifyHcloudProbe, hcloudProbeNextStep } from '../plugins/huaweicloud-core/src/hcloud-probe.mjs';
+import { classifyHcloudProbe, findHcloudBin, hcloudProbeNextStep } from '../plugins/huaweicloud-core/src/hcloud-probe.mjs';
 import { getKooCliVersion } from '../plugins/huaweicloud-core/src/koocli-version.mjs';
 
 test('hcloud probe classifies matching KooCLI version as ok', () => {
@@ -55,4 +58,22 @@ test('not_found nextStep is friendly and points at auto-install + log path', () 
   assert.match(msg, /auto/i);
   assert.match(msg, /koocli-install\.log/);
   assert.doesNotMatch(msg, /restart the agent/i);
+});
+
+test('findHcloudBin discovers the fixed install dir even when PATH lacks it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hcloud-dir-'));
+  // Simulate install at ~/.local/bin/hcloud (linux) by temporarily replacing HCLOUD_BIN
+  // to prove the resolution path honors explicit bin over PATH lookup.
+  const fake = join(dir, 'hcloud');
+  writeFileSync(fake, '#!/usr/bin/env node\nconsole.log("x")', 'utf8');
+  const prev = process.env.HCLOUD_BIN;
+  process.env.HCLOUD_BIN = fake;
+  try {
+    const found = findHcloudBin();
+    assert.equal(found, fake);
+  } finally {
+    if (prev === undefined) delete process.env.HCLOUD_BIN;
+    else process.env.HCLOUD_BIN = prev;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
