@@ -45,6 +45,7 @@ export function maybePreinstallKooCli({ force = false } = {}) {
     mkdirSync(logDir, { recursive: true });
   } catch {}
   const log = createWriteStream(kooCliInstallLogPath(), { flags: 'a' });
+  log.on('error', () => {});
   const child = spawn(process.execPath, [entry, 'install-hcloud'], {
     stdio: ['ignore', log, log],
     detached: true,
