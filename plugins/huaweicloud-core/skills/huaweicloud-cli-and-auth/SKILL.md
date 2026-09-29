@@ -72,7 +72,7 @@ then PATH. Once `install-hcloud` or the background auto-install writes the binar
 to one of those dirs, the very next `check_cli` / `run_*` call uses it. Do not
 tell users to restart the agent.
 
-Agent processes find executables through `PATH`; `HCLOUD_BIN` overrides it. DevKit re-locates hcloud on every call, so an updated `PATH` or `HCLOUD_BIN` is picked up by the next `check_cli` / `run_*` call without restarting the agent. (Only process-start-time reads, e.g. a fresh shell that has not re-sourced `~/.bashrc`, may still miss a newly installed binary.)
+Agent processes find executables through `PATH`; `HCLOUD_BIN` overrides it. DevKit re-locates hcloud from its **fixed install dirs** on every call, so a freshly installed binary (`~/.local/bin` on Linux, `/usr/local/bin` on macOS, `~/hcloud` on Windows) or a re-set `HCLOUD_BIN` is picked up by the next `check_cli` / `run_*` call without restarting the agent. A custom `PATH` entry is only honored via `HCLOUD_BIN` or the PATH locator fallback, and shell `PATH` changes take effect only for processes started after the update.
 
 ## Configure Credentials Outside Chat
 

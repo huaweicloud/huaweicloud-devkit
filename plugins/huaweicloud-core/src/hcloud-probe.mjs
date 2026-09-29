@@ -154,7 +154,7 @@ export function hcloudProbeNextStep(probe) {
   }
   if (probe.status === 'not_found') {
     return (
-      'KooCLI is not installed yet. If background auto-install is enabled, it is downloading now (~30s); otherwise install KooCLI with: npx huaweicloud-devkit install-hcloud. DevKit locates hcloud automatically after install — no agent restart needed. Install progress: ' +
+      'KooCLI is not installed yet. Background auto-install may be running — please retry shortly instead of assuming failure. To install now: npx huaweicloud-devkit install-hcloud. DevKit picks up the binary from its fixed install dirs (~/.local/bin on Linux, /usr/local/bin on macOS, ~/hcloud on Windows) or HCLOUD_BIN on the next call — no agent restart needed. Install progress: ' +
       kooCliInstallLogPath()
     );
   }
