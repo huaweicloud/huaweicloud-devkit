@@ -9,6 +9,7 @@ import { dispatch } from './mcp-protocol.mjs';
 import { DEFAULT_PORT, DEFAULT_HOST } from './mcp-server-remote.mjs';
 import { getCachedUpdateInfo, readInstalledVersion } from './update-check.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
+import { maybePreinstallKooCli } from './preflight.mjs';
 
 const transportIdx = process.argv.indexOf('--transport');
 const transport = transportIdx > -1 && process.argv[transportIdx + 1] ? process.argv[transportIdx + 1] : 'stdio';
@@ -51,6 +52,14 @@ try {
   const pluginDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const marker = resolve(pluginDir, '.installed');
   if (existsSync(marker)) rmSync(marker, { force: true });
+} catch {}
+
+// First-use UX: if KooCLI is missing, kick off a background install so the first
+// cloud command doesn't hit a bare "command not found". Non-blocking + log-backed.
+// Runs at import time (before the transport branch below) so both the stdio and
+// remote transports benefit, and `HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL=1` disables it.
+try {
+  maybePreinstallKooCli();
 } catch {}
 
 if (transport === 'remote') {

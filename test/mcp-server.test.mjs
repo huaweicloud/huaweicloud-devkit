@@ -6,6 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
 
+// Never trigger a real background KooCLI preinstall from spawned servers here
+// (the preinstall hook runs at mcp-server.mjs import time).
+process.env.HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL = '1';
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const serverPath = join(root, 'plugins', 'huaweicloud-core', 'src', 'mcp-server.mjs');
 
