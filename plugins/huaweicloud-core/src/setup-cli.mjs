@@ -21,7 +21,7 @@ import { getAuthStatus, syncAuth } from './auth/service.mjs';
 import { resolveAndApplyProjectId } from './auth/project-id.mjs';
 import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.mjs';
 import { fingerprint, readKooCliProfiles, resolveManagedProfile } from './auth/reconcile.mjs';
-import { redactSecrets } from './safety-policy.mjs';
+import { redactSecrets, computePolicyDiff } from './safety-policy.mjs';
 import {
   globalCredentialsPath,
   readGlobalCredentials,
@@ -566,6 +566,23 @@ function copyDir(src, dest) {
   }
 }
 
+function copySafetyPolicy(safetySrcDir, destDir) {
+  const destPolicyPath = join(destDir, 'policy.json');
+  let oldPolicy = null;
+  try {
+    oldPolicy = JSON.parse(readFileSync(destPolicyPath, 'utf8'));
+  } catch {}
+  copyDir(safetySrcDir, destDir);
+  let newPolicy = null;
+  try {
+    newPolicy = JSON.parse(readFileSync(destPolicyPath, 'utf8'));
+  } catch {}
+  const diff = computePolicyDiff(oldPolicy, newPolicy);
+  if (diff) {
+    console.log(`  Safety Policy diff: ${diff}`);
+  }
+}
+
 function installRuntimeDeps(pluginsDir) {
   const pkgJson = {
     name: 'huaweicloud-devkit',
@@ -864,7 +881,7 @@ async function installOpenCode() {
   console.log(`  Commands -> ${opencodeCommandsDir()}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
   mkdirSync(opcPlugins, { recursive: true });
@@ -943,7 +960,7 @@ async function updateOpenCode() {
   );
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
   mkdirSync(opcPlugins, { recursive: true });
@@ -1043,7 +1060,7 @@ async function installOpenClaw() {
   console.log(`  Commands -> ${join(homedir(), '.agents', 'commands')}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
@@ -1103,7 +1120,7 @@ async function updateOpenClaw() {
   console.log(`  Commands updated -> ${join(homedir(), '.agents', 'commands')}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
 
   const mcpServerAbsPath = join(pluginDest, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
@@ -1133,7 +1150,7 @@ async function installCodexDesktop() {
   console.log(`  Commands -> ${join(pluginDest, 'commands')}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   // Copy assets (icons, logos) for Codex Desktop plugin UI
@@ -1191,7 +1208,7 @@ async function updateCodexDesktop() {
   );
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
 
   // Copy assets (icons, logos) for Codex Desktop plugin UI
@@ -1326,7 +1343,7 @@ async function installCodeArts() {
   const pluginDest = codeartsPluginsDir();
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   const codeartsHookDir = join(homedir(), '.codeartsdoer', 'plugins');
@@ -1355,7 +1372,7 @@ async function updateCodeArts() {
   }
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
 
   const codeartsHookDir = join(homedir(), '.codeartsdoer', 'plugins');
@@ -1510,7 +1527,7 @@ async function installCodeArtsWork() {
   const pluginDest = codeartsWorkPluginsDir();
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   registerCodeartsWorkMcp();
@@ -1527,7 +1544,7 @@ async function updateCodeArtsWork() {
   console.log(`  Skills updated -> ${codeartsWorkSkillsDir()}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   registerCodeartsWorkMcp();
   mkdirSync(pluginDest, { recursive: true });
@@ -1790,7 +1807,7 @@ async function installWorkBuddy() {
 
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   ensureWorkbuddyMcpConfig();
@@ -1812,7 +1829,7 @@ async function updateWorkBuddy() {
   console.log(`  Skills updated -> ${workbuddySkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   ensureWorkbuddyMcpConfig();
   mkdirSync(pluginDest, { recursive: true });
@@ -1983,7 +2000,7 @@ async function installAtomCode() {
 
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   ensureAtomcodeMcpConfig();
@@ -2003,7 +2020,7 @@ async function updateAtomCode() {
   console.log(`  Skills updated -> ${atomcodeSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   ensureAtomcodeMcpConfig();
   deployAtomcodeHooks();
@@ -2292,7 +2309,7 @@ async function installDsh() {
   console.log(`  Skills -> ${dshSkillsDir()}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
   console.log(`  Hook Plugin -> ${join(pluginDest, 'hook-plugin.mjs')}`);
@@ -2315,7 +2332,7 @@ async function updateDsh() {
   console.log(`  Skills updated -> ${dshSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
   console.log(`  Hook Plugin updated -> ${join(pluginDest, 'hook-plugin.mjs')}`);
@@ -2423,7 +2440,7 @@ async function installOfficeAce() {
 
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
 
   installRuntimeDeps(pluginDest);
@@ -2451,7 +2468,7 @@ async function updateOfficeAce() {
   console.log(`  Skills updated -> ${officeaceSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   installRuntimeDeps(pluginDest);
   if (ensureOfficeaceMcpInSqlite() === 'owner-missing') {
@@ -2948,7 +2965,7 @@ async function installHermes() {
     copyDir(srcDir, join(pluginDest, 'src'));
     console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   }
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
   console.log(`  Safety Hooks -> ${join(pluginDest, 'hooks')}`);
@@ -2979,7 +2996,7 @@ async function updateHermes() {
   console.log(`  Skills updated -> ${hermesSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
   console.log(`  Safety Hooks updated -> ${join(pluginDest, 'hooks')}`);
