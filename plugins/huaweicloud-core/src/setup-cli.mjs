@@ -4566,27 +4566,33 @@ async function cmdInstallHcloud() {
       const hcloudBin = join(installDir, 'hcloud.exe');
 
       // Ask user before accepting the privacy agreement — never auto-accept.
-      const rl = createInterface({ input: process.stdin, output: process.stdout });
-      const agree = await new Promise((resolve) => {
-        rl.question('\n  KooCLI requires accepting its privacy agreement. Do you accept? (y/N) ', (answer) => {
-          rl.close();
-          resolve(/^\s*y\s*$/i.test(answer));
+      // Under non-TTY (e.g. preflight spawns with stdin 'ignore'), rl.question()
+      // never resolves — skip the prompt and let the user accept manually.
+      if (process.stdin.isTTY && process.stdout.isTTY) {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const agree = await new Promise((resolve) => {
+          rl.question('\n  KooCLI requires accepting its privacy agreement. Do you accept? (y/N) ', (answer) => {
+            rl.close();
+            resolve(/^\s*y\s*$/i.test(answer));
+          });
         });
-      });
-      if (agree) {
-        const r = spawnSync(hcloudBin, ['version'], {
-          input: 'y\n',
-          encoding: 'utf8',
-          timeout: 10000,
-          windowsHide: true,
-        });
-        if (r.status === 0) {
-          console.log('  \x1b[32mPrivacy agreement accepted. KooCLI ready.\x1b[0m');
+        if (agree) {
+          const r = spawnSync(hcloudBin, ['version'], {
+            input: 'y\n',
+            encoding: 'utf8',
+            timeout: 10000,
+            windowsHide: true,
+          });
+          if (r.status === 0) {
+            console.log('  \x1b[32mPrivacy agreement accepted. KooCLI ready.\x1b[0m');
+          } else {
+            console.log('  \x1b[33m无法写入配置目录。请在普通终端运行: echo "y" | hcloud version\x1b[0m');
+          }
         } else {
-          console.log('  \x1b[33m无法写入配置目录。请在普通终端运行: echo "y" | hcloud version\x1b[0m');
+          console.log('  \x1b[33m请手动接受隐私协议：在终端运行 hcloud version 并按提示操作\x1b[0m');
         }
       } else {
-        console.log('  \x1b[33m请手动接受隐私协议：在终端运行 hcloud version 并按提示操作\x1b[0m');
+        console.log('  \x1b[33m非交互会话：请稍后在终端运行 hcloud version 并按提示接受隐私协议\x1b[0m');
       }
 
       console.log('  Or restart terminal and: hcloud version');
