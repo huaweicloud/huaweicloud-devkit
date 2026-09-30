@@ -827,3 +827,158 @@ test('J: getAuthStatus credentialPanel unknown status when temp STS expiry canno
     clearRuntimeCredentials();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Issue #837: STS 过期 → 自动回退 S1 持久化凭证（无感降级）
+// resolveCredentials 在 CodeArts STS 过期时，若 S1 持久化凭证存在则回退到 S1。
+// ---------------------------------------------------------------------------
+
+/** Write a CodeArts mcp_settings.json with STS creds into the project dir. */
+function writeCodeArtsStsSettings({ ak, sk, securityToken, region }) {
+  const codeartsDir = join(process.cwd(), '.codeartsdoer', 'mcp');
+  mkdirSync(codeartsDir, { recursive: true });
+  writeFileSync(
+    join(codeartsDir, 'mcp_settings.json'),
+    JSON.stringify({
+      mcpServers: {
+        'huaweicloud-devkit': {
+          env: {
+            HW_ACCESS_KEY: ak,
+            HW_SECRET_KEY: sk,
+            HW_SECURITY_TOKEN: securityToken,
+            HW_REGION: region,
+          },
+        },
+      },
+    }),
+    'utf8',
+  );
+  return codeartsDir;
+}
+
+/** Build a JWT-like security token with the given epoch-second expiry. */
+function makeStsToken(expEpochSeconds) {
+  const payload = Buffer.from(JSON.stringify({ exp: expEpochSeconds })).toString('base64url');
+  const header = Buffer.from(JSON.stringify({ alg: 'none' })).toString('base64url');
+  return [header, payload, 'sig'].join('.');
+}
+
+test('#837: STS expired + S1 exists → resolveCredentials returns S1 persistent credentials', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+
+    // S1 persistent credentials exist
+    writeGlobalCredentials({ ak: 'S1_AK', sk: 'S1_SK', region: 'cn-north-4' });
+
+    // CodeArts STS expired token
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    const token = makeStsToken(past);
+    const codeartsDir = writeCodeArtsStsSettings({
+      ak: 'STS_AK',
+      sk: 'STS_SK',
+      securityToken: token,
+      region: 'cn-south-1',
+    });
+
+    try {
+      const creds = resolveCredentials();
+      assert.equal(creds.ak, 'S1_AK', 'should fall back to S1 ak');
+      assert.equal(creds.sk, 'S1_SK', 'should fall back to S1 sk');
+      assert.equal(creds.securityToken, '', 'S1 is permanent — no security token');
+      assert.equal(creds.region, 'cn-north-4', 'should use S1 region');
+    } finally {
+      rmSync(codeartsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('#837: STS expired + S1 absent → resolveCredentials keeps STS (CREDENTIAL_EXPIRED fast-fail downstream)', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+
+    // No S1 vault — only expired CodeArts STS
+    const past = Math.floor(Date.now() / 1000) - 3600;
+    const token = makeStsToken(past);
+    const codeartsDir = writeCodeArtsStsSettings({
+      ak: 'STS_AK',
+      sk: 'STS_SK',
+      securityToken: token,
+      region: 'cn-south-1',
+    });
+
+    try {
+      const creds = resolveCredentials();
+      // No S1 to fall back to → keeps the expired STS creds so runHcloud
+      // isTemporaryStsExpired() can fast-fail with CREDENTIAL_EXPIRED.
+      assert.equal(creds.ak, 'STS_AK');
+      assert.equal(creds.sk, 'STS_SK');
+      assert.equal(creds.securityToken, token);
+    } finally {
+      rmSync(codeartsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('#837: STS not expired → resolveCredentials uses STS (behavior unchanged)', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+
+    // S1 exists but STS is still valid → should NOT fall back
+    writeGlobalCredentials({ ak: 'S1_AK', sk: 'S1_SK', region: 'cn-north-4' });
+
+    const future = Math.floor(Date.now() / 1000) + 7200;
+    const token = makeStsToken(future);
+    const codeartsDir = writeCodeArtsStsSettings({
+      ak: 'STS_AK',
+      sk: 'STS_SK',
+      securityToken: token,
+      region: 'cn-south-1',
+    });
+
+    try {
+      const creds = resolveCredentials();
+      assert.equal(creds.ak, 'STS_AK', 'valid STS should be used, not S1');
+      assert.equal(creds.sk, 'STS_SK');
+      assert.equal(creds.securityToken, token);
+      assert.equal(creds.region, 'cn-south-1');
+    } finally {
+      rmSync(codeartsDir, { recursive: true, force: true });
+    }
+  });
+});
+
+test('#837: STS expiry unparseable (null) → resolveCredentials keeps STS (no false fallback)', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+
+    writeGlobalCredentials({ ak: 'S1_AK', sk: 'S1_SK', region: 'cn-north-4' });
+
+    // Unparseable token → parseStsExpiry returns null → must NOT fall back
+    const codeartsDir = writeCodeArtsStsSettings({
+      ak: 'STS_AK',
+      sk: 'STS_SK',
+      securityToken: 'NOT_A_VALID_TOKEN',
+      region: 'cn-south-1',
+    });
+
+    try {
+      const creds = resolveCredentials();
+      assert.equal(creds.ak, 'STS_AK', 'unparseable expiry → keep STS');
+      assert.equal(creds.securityToken, 'NOT_A_VALID_TOKEN');
+    } finally {
+      rmSync(codeartsDir, { recursive: true, force: true });
+    }
+  });
+});

@@ -229,6 +229,26 @@ export function resolveCredentials(options = {}) {
     if (!region && codeartsCreds.region) region = codeartsCreds.region;
   }
 
+  // Issue #837: STS 过期 → 自动回退 S1 持久化凭证（无感降级）。
+  // 当 CodeArts 注入的临时 STS 已过期且 S1 持久化凭证（auth init / persist）
+  // 存在时，回退到 S1 永久 AK/SK，使用户长会话不受 STS 过期影响。
+  // S1 不存在时保持现有行为（runHcloud 层 CREDENTIAL_EXPIRED 快速失败）。
+  // parseStsExpiry 返回 null（过期时间不可解析）时当作未过期处理，不回退。
+  if (codeartsCreds && securityToken) {
+    const stsExpiry = parseStsExpiry({ securityToken });
+    if (stsExpiry !== null && stsExpiry <= Date.now()) {
+      const s1 = readGlobalCredentials();
+      if (s1 && present(s1.ak) && present(s1.sk)) {
+        ak = s1.ak;
+        sk = s1.sk;
+        securityToken = present(s1.securityToken) ? s1.securityToken : '';
+        // S1 is the new source of truth — override region too (the STS region
+        // may differ from the user's permanent account region).
+        region = s1.region || region;
+      }
+    }
+  }
+
   const stored = readGlobalCredentials();
   if (stored) {
     // R11: skip placeholder/masked values from the vault too (templates must
