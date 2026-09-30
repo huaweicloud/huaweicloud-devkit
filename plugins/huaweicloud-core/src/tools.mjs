@@ -1977,6 +1977,7 @@ function serviceCatalog(intent = '') {
         'image',
         '弹性云服务器',
         '云服务器',
+        '云主机',
         '服务器',
         '虚拟机',
         '镜像',
@@ -2039,6 +2040,9 @@ function serviceCatalog(intent = '') {
         '触发器',
         '无服务器',
         '函数计算',
+        '定时',
+        '定时任务',
+        '定时触发',
       ],
       skills: ['huawei-functiongraph'],
       services: ['FunctionGraph'],
@@ -2157,6 +2161,8 @@ function serviceCatalog(intent = '') {
         'web app',
         'webapp',
         'hosting',
+        '沙箱',
+        '预览',
         '网站',
         '网页',
         '静态',
@@ -2190,6 +2196,28 @@ function serviceCatalog(intent = '') {
       skills: ['huawei-voucher'],
       services: ['Incentive Voucher'],
     },
+    {
+      keywords: [
+        'explain error',
+        'explain_error',
+        'error',
+        'errorcode',
+        'failed',
+        'failure',
+        'diagnose',
+        'diagnosis',
+        'troubleshoot',
+        'debug',
+        '排障',
+        '排查',
+        '诊断',
+        '故障',
+        '报错',
+        '错误码',
+      ],
+      skills: ['huaweicloud-troubleshooting'],
+      services: [],
+    },
   ];
   const matched = [];
   const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
@@ -2213,12 +2241,19 @@ function serviceCatalog(intent = '') {
     recommendedSkills.unshift('huawei-sandbox');
   }
 
+  // Troubleshooting/diagnostics intent: recommend the explain_error tool alongside
+  // the troubleshooting skill so the agent knows to call it for structured error
+  // diagnosis (#815: explain_error tool existed but serviceCatalog never routed to it).
+  const troubleshootingIntent = recommendedSkills.includes('huaweicloud-troubleshooting');
+  const recommendedTools = troubleshootingIntent ? ['huaweicloud_explain_error'] : [];
+
   return {
     intent,
     recommendedSkills: recommendedSkills.length ? recommendedSkills : ['Use huaweicloud-core to route intent.'],
     recommendedServices: recommendedServices.length
       ? recommendedServices
       : ['Run hcloud --help to list available services.'],
+    recommendedTools,
     capabilityOrder: [
       'Huawei Cloud Skills for task-specific workflows and examples',
       'KooCLI hcloud for local authenticated operations and quick inspection',

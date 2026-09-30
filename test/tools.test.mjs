@@ -307,6 +307,55 @@ test('service_catalog routes all documented Chinese-intent eval cases >= 80% (#7
   assert.ok(accuracy >= 0.8, `Chinese-intent routing accuracy ${accuracy.toFixed(3)} < 0.8`);
 });
 
+test('service_catalog routes D3 Chinese scenarios correctly (#815)', async () => {
+  // D3-S1: ECS read-only intent with 云主机 alias
+  const d3s1 = await callTool('huaweicloud_service_catalog', { intent: '帮我查一下我账号在华北北京四有哪些云主机' });
+  assert.ok(d3s1.recommendedServices.includes('ECS'), 'D3-S1: 云主机 should route to ECS');
+
+  // D3-S3: Sandbox/preview deployment intent in Chinese
+  const d3s3 = await callTool('huaweicloud_service_catalog', { intent: '部署应用到沙箱预览' });
+  assert.ok(d3s3.recommendedSkills.includes('huawei-sandbox'), 'D3-S3: 沙箱 should route to huawei-sandbox');
+
+  // D3-S6: FunctionGraph timer/scheduled task intent
+  const d3s6 = await callTool('huaweicloud_service_catalog', { intent: '创建一个定时任务函数' });
+  assert.ok(d3s6.recommendedServices.includes('FunctionGraph'), 'D3-S6: 定时任务 should route to FunctionGraph');
+
+  // D3-S8: Sandbox preview intent
+  const d3s8 = await callTool('huaweicloud_service_catalog', { intent: '在沙箱中预览我的应用' });
+  assert.ok(d3s8.recommendedSkills.includes('huawei-sandbox'), 'D3-S8: 沙箱预览 should route to huawei-sandbox');
+});
+
+test('service_catalog routes troubleshooting/diagnostics intent to explain_error tool (#815)', async () => {
+  // Chinese diagnostics intent
+  const zhDiag = await callTool('huaweicloud_service_catalog', { intent: '排查云服务器启动失败的问题' });
+  assert.ok(
+    zhDiag.recommendedSkills.includes('huaweicloud-troubleshooting'),
+    '排障 should route to huaweicloud-troubleshooting',
+  );
+  assert.ok(
+    zhDiag.recommendedTools.includes('huaweicloud_explain_error'),
+    'troubleshooting intent should recommend huaweicloud_explain_error tool',
+  );
+
+  // English diagnostics intent
+  const enDiag = await callTool('huaweicloud_service_catalog', { intent: 'diagnose APIGW.0301 error' });
+  assert.ok(
+    enDiag.recommendedSkills.includes('huaweicloud-troubleshooting'),
+    'diagnose should route to huaweicloud-troubleshooting',
+  );
+  assert.ok(
+    enDiag.recommendedTools.includes('huaweicloud_explain_error'),
+    'troubleshooting intent should recommend huaweicloud_explain_error tool',
+  );
+
+  // Non-troubleshooting intent should NOT recommend explain_error
+  const normal = await callTool('huaweicloud_service_catalog', { intent: '查询云服务器列表' });
+  assert.ok(
+    !normal.recommendedTools.includes('huaweicloud_explain_error'),
+    'non-troubleshooting intent should not recommend explain_error',
+  );
+});
+
 test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)', async () => {
   // `it` is lowercased before matching; keywords containing ASCII letters
   // (弹性公网IP / NAT网关) must match the lowercased intent.
