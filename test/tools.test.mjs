@@ -282,6 +282,7 @@ test('service_catalog routes all documented Chinese-intent eval cases >= 80% (#7
   // recommendedServices.
   const cases = [
     { id: 'EXP-E01', intent: '查询我的云服务器状态', expect: ['ECS'] },
+    { id: 'EXP-E01b', intent: '帮我查一下我账号在华北北京四有哪些云主机', expect: ['ECS'] },
     { id: 'EXP-E02', intent: '创建一台弹性云服务器', expect: ['ECS'] },
     { id: 'EXP-E03', intent: '部署静态网站到对象存储', expect: ['OBS'] },
     { id: 'EXP-E04', intent: '申请一个弹性公网IP', expect: ['EIP', 'VPC'] },
