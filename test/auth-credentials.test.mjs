@@ -827,3 +827,28 @@ test('J: getAuthStatus credentialPanel unknown status when temp STS expiry canno
     clearRuntimeCredentials();
   });
 });
+
+// #844 D1-68: HUAWEICLOUD_REGION takes priority over HW_REGION
+test('resolveCredentials prefers HUAWEICLOUD_REGION over HW_REGION (#844 D1-68)', () => {
+  withTempHome(() => {
+    process.env.HW_ACCESS_KEY = 'AKTEST';
+    process.env.HW_SECRET_KEY = 'SKTEST';
+    process.env.HW_REGION = 'cn-south-1';
+    process.env.HUAWEICLOUD_REGION = 'cn-north-4';
+
+    const creds = resolveCredentials();
+    assert.equal(creds.region, 'cn-north-4', 'HUAWEICLOUD_REGION should win over HW_REGION');
+  });
+});
+
+test('resolveCredentials falls back to HW_REGION when HUAWEICLOUD_REGION unset (#844 D1-68)', () => {
+  withTempHome(() => {
+    process.env.HW_ACCESS_KEY = 'AKTEST';
+    process.env.HW_SECRET_KEY = 'SKTEST';
+    process.env.HW_REGION = 'cn-south-1';
+    delete process.env.HUAWEICLOUD_REGION;
+
+    const creds = resolveCredentials();
+    assert.equal(creds.region, 'cn-south-1', 'should fall back to HW_REGION');
+  });
+});

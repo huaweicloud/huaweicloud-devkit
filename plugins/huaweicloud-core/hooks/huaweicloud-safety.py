@@ -46,10 +46,11 @@ def load_policy():
             SECRET_READ_RE = re.compile("|".join(re.escape(op) for op in blocked_secrets), re.I)
         write_prefixes = policy.get("writeOperationPrefixes", [])
         if write_prefixes:
-            # D4-25: use \b word boundary so space-separated write verbs (e.g.
-            # "hcloud ECS CreateServers") match correctly. The old [A-Za-z0-9]
-            # class failed when the verb was preceded by a space.
-            WRITE_OPERATION_RE = re.compile(r"\b(" + "|".join(write_prefixes) + r")\w*", re.I)
+            # D4-25: use (^|[\sA-Za-z0-9]) prefix class so space-separated write
+            # verbs (e.g. "hcloud ECS CreateServers") match correctly, while
+            # prefixed verbs (e.g. NovaDeleteServer) still match via the
+            # alphanumeric branch. The old (^|[A-Za-z0-9]) failed on spaces.
+            WRITE_OPERATION_RE = re.compile(r"(^|[\sA-Za-z0-9])(" + "|".join(write_prefixes) + r")\w*", re.I)
     except Exception:
         pass
 
