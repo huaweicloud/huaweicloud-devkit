@@ -168,7 +168,7 @@ function readWorkEnvironmentEntry(config) {
       ak,
       sk,
       securityToken: present(server.environment.HW_SECURITY_TOKEN) ? server.environment.HW_SECURITY_TOKEN : '',
-      region: server.environment.HW_REGION || server.environment.HUAWEICLOUD_REGION || '',
+      region: server.environment.HUAWEICLOUD_REGION || server.environment.HW_REGION || '',
     };
   }
   return null;
@@ -219,7 +219,8 @@ export function resolveCredentials(options = {}) {
   let ak = present(process.env.HW_ACCESS_KEY) ? process.env.HW_ACCESS_KEY : '';
   let sk = present(process.env.HW_SECRET_KEY) ? process.env.HW_SECRET_KEY : '';
   let securityToken = present(process.env.HW_SECURITY_TOKEN) ? process.env.HW_SECURITY_TOKEN : '';
-  let region = process.env.HW_REGION || process.env.HUAWEICLOUD_REGION || '';
+  // D1-68: HUAWEICLOUD_REGION takes priority over HW_REGION (contract alignment).
+  let region = process.env.HUAWEICLOUD_REGION || process.env.HW_REGION || '';
 
   const codeartsCreds = isCodeArtsContext() ? readCodeArtsCredentials() : null;
   if (codeartsCreds) {
@@ -349,7 +350,7 @@ export function readCodeArtsCredentials() {
           ak,
           sk,
           securityToken: present(server.env.HW_SECURITY_TOKEN) ? server.env.HW_SECURITY_TOKEN : '',
-          region: server.env.HW_REGION || server.env.HUAWEICLOUD_REGION || '',
+          region: server.env.HUAWEICLOUD_REGION || server.env.HW_REGION || '',
         };
       }
     } catch {

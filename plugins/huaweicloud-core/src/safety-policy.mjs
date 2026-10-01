@@ -42,6 +42,12 @@ function redactString(text) {
         /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
         '$1<redacted>',
       )
+      // CLI flags with space-separated values: --password VALUE, --access-key VALUE, etc.
+      // Handles the common hcloud/obsutil pattern where the flag and value are separate tokens.
+      .replace(
+        /((?:--?(?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential|admin[_-]?pass(?:word)?))\s+)([^\s,;]+)/gi,
+        '$1<redacted>',
+      )
       .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
   );
 }

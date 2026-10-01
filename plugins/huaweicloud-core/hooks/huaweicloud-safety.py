@@ -21,7 +21,10 @@ DENY_PREFIX = "Huawei Cloud safety hook blocked this action: "
 RULES_PATH = Path(__file__).resolve().parents[1] / "safety" / "rules" / "cloud-risk-rules.json"
 POLICY_PATH = Path(__file__).resolve().parents[1] / "safety" / "policy.json"
 
-PLUGIN_DIR = Path(__file__).resolve().parents[2]
+# D4-25: PLUGIN_DIR must point to huaweicloud-core/ (parents[1] from hooks/),
+# so TELEMETRY_DIR matches the Node-side AGENT_TELEMETRY_DIR (join(PLUGIN_DIR,
+# 'telemetry') in telemetry.mjs L20-21).
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
 TELEMETRY_DIR = PLUGIN_DIR / "telemetry"
 HOOK_EVENTS_PATH = TELEMETRY_DIR / "hook-events.jsonl"
 
@@ -43,7 +46,10 @@ def load_policy():
             SECRET_READ_RE = re.compile("|".join(re.escape(op) for op in blocked_secrets), re.I)
         write_prefixes = policy.get("writeOperationPrefixes", [])
         if write_prefixes:
-            WRITE_OPERATION_RE = re.compile(r"(^|[A-Za-z0-9])(" + "|".join(write_prefixes) + r")\w*", re.I)
+            # D4-25: use \b word boundary so space-separated write verbs (e.g.
+            # "hcloud ECS CreateServers") match correctly. The old [A-Za-z0-9]
+            # class failed when the verb was preceded by a space.
+            WRITE_OPERATION_RE = re.compile(r"\b(" + "|".join(write_prefixes) + r")\w*", re.I)
     except Exception:
         pass
 
