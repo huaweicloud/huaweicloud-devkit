@@ -336,3 +336,30 @@ test('evaluateDeployPlan warns when plan contains adminPass field (#733 D4-6)', 
   assert.equal(result.decision, 'warn');
   assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
 });
+
+// #844 D4-26: evidence must redact credential values (password/AK/SK/token)
+test('evaluateCommandRisk redacts credentials in findings evidence (#844 D4-26)', () => {
+  // Use a command that triggers a deny finding (public SSH exposure) and
+  // also contains credential patterns to verify evidence redaction.
+  const result = evaluateCommandRisk(
+    'hcloud VPC CreateSecurityGroupRule --security_group_rule.port_range_min=22 --security_group_rule.remote_ip_prefix=0.0.0.0/0 --access_key=AKEXAMPLE --secret_key=SKEXAMPLE password=pwtest123 token=TokSecretValue',
+  );
+  assert.ok(result.findings.length > 0, 'should have findings');
+  for (const finding of result.findings) {
+    assert.doesNotMatch(finding.evidence, /AKEXAMPLE/, 'access_key must be redacted');
+    assert.doesNotMatch(finding.evidence, /SKEXAMPLE/, 'secret_key must be redacted');
+    assert.doesNotMatch(finding.evidence, /pwtest123/, 'password must be redacted');
+    assert.doesNotMatch(finding.evidence, /TokSecretValue/, 'token must be redacted');
+  }
+});
+
+test('evaluateCommandRisk redacts AK/SK in findings evidence (#844 D4-26)', () => {
+  const result = evaluateCommandRisk(
+    'hcloud VPC CreateSecurityGroupRule --security_group_rule.port_range_min=22 --security_group_rule.remote_ip_prefix=0.0.0.0/0 AK=AKIDTEST123 SK=SKSECRET456',
+  );
+  assert.ok(result.findings.length > 0, 'should have findings');
+  for (const finding of result.findings) {
+    assert.doesNotMatch(finding.evidence, /AKIDTEST123/, 'AK value must be redacted');
+    assert.doesNotMatch(finding.evidence, /SKSECRET456/, 'SK value must be redacted');
+  }
+});

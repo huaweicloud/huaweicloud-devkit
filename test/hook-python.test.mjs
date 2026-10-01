@@ -179,10 +179,49 @@ test('python hook blocks credential variable references incl. HW_ prefix (#561 D
     assert.match(reason, /credential|env/i);
   }
   // Literal-name references (single-quoted / backslash-escaped) stay allowed.
-  for (const safe of ["echo '$HW_SECRET_KEY'", 'echo \\$HW_SECRET_KEY', 'echo $HW_CONFIG_PATH']) {
+  for (const safe of ["echo '$HW_SECRET_KEY'", 'echo \\\\$HW_SECRET_KEY', 'echo $HW_CONFIG_PATH']) {
     const result = runEvaluate('terminal', { command: safe });
     if (pythonUnavailable(result)) return;
     assert.equal(result.status, 0);
     assert.equal(JSON.parse(result.stdout), null, `${safe} should be allowed`);
   }
+});
+
+// #844 D4-25: WRITE_OPERATION_RE uses \b word boundary so space-separated
+// write verbs match correctly (previously [A-Za-z0-9] prefix failed on spaces)
+test('python hook write-gate blocks space-separated Create verbs (#844 D4-25)', () => {
+  const result = runEvaluate('terminal', { command: 'hcloud ECS CreateServers --server.flavorRef=xxx' });
+  if (pythonUnavailable(result)) return;
+  assert.equal(result.status, 0);
+  const reason = JSON.parse(result.stdout);
+  assert.equal(typeof reason, 'string', 'CreateServers should be blocked by write-gate');
+  assert.match(reason, /write|plan|approv/i);
+});
+
+test('python hook write-gate blocks Delete verb after space (#844 D4-25)', () => {
+  const result = runEvaluate('terminal', { command: 'hcloud ECS DeleteServer --server_id=test-id' });
+  if (pythonUnavailable(result)) return;
+  assert.equal(result.status, 0);
+  const reason = JSON.parse(result.stdout);
+  assert.equal(typeof reason, 'string', 'DeleteServer should be blocked by write-gate');
+  assert.match(reason, /write|plan|approv/i);
+});
+
+// #844 D4-25: PLUGIN_DIR points to huaweicloud-core/ (parents[1]) so
+// TELEMETRY_DIR matches Node-side AGENT_TELEMETRY_DIR
+test('python hook PLUGIN_DIR resolves to huaweicloud-core (#844 D4-25)', () => {
+  const probe = [
+    'import importlib.util, json',
+    `spec = importlib.util.spec_from_file_location("hws", ${JSON.stringify(hookPath)})`,
+    'm = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(m)',
+    'print(json.dumps({"plugin_dir": str(m.PLUGIN_DIR), "telemetry_dir": str(m.TELEMETRY_DIR)}))',
+  ].join('; ');
+  const result = spawnSync(pythonBin, ['-c', probe], { encoding: 'utf8' });
+  if (pythonUnavailable(result)) return;
+  assert.equal(result.status, 0);
+  const info = JSON.parse(result.stdout);
+  // PLUGIN_DIR should end with huaweicloud-core (not the repo root)
+  assert.ok(info.plugin_dir.endsWith('huaweicloud-core'), `PLUGIN_DIR should be huaweicloud-core, got: ${info.plugin_dir}`);
+  assert.ok(info.telemetry_dir.endsWith('telemetry'), `TELEMETRY_DIR should end with telemetry, got: ${info.telemetry_dir}`);
 });

@@ -316,6 +316,13 @@ test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)
   assert.ok(nat.recommendedServices.includes('VPC'));
 });
 
+test('service_catalog routes 「云主机」 intent to ECS (#844 D3-S1)', async () => {
+  // 口语化中文「云主机」是 ECS 的常见别名，之前 routeMap keywords 缺失导致路由 MISS。
+  const result = await callTool('huaweicloud_service_catalog', { intent: '帮我查一下我账号有哪些云主机' });
+  assert.ok(result.recommendedServices.includes('ECS'), '云主机 should route to ECS');
+  assert.ok(result.recommendedSkills.includes('huawei-ecs'), '云主机 should route to huawei-ecs skill');
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
