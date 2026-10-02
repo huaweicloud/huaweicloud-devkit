@@ -13,6 +13,7 @@
     "private[_-]?key",
     "user[_-]?data",
     "metadata",
+    "access[_-]?token",
     "ak",
     "sk"
   ],
@@ -22,8 +23,16 @@
     "hcloud[/\\\\](config|credentials)",
     "huaweicloud[/\\\\](config|credentials)"
   ],
-  "blockedConfigureSubcommands": ["show", "get", "list", "export", "init"],
-  "blockedSecretOperations": ["ShowSecretVersion", "DownloadSecret", "GetSecretValue"],
+  "blockedConfigureSubcommands": ["show", "get", "list", "export", "init", "import"],
+  "blockedSecretOperations": [
+    "ShowSecretVersion",
+    "DownloadSecret",
+    "GetSecretValue",
+    "GetToken",
+    "get-token",
+    "show-secret",
+    "decrypt-data"
+  ],
   "writeOperationPrefixes": [
     "Create",
     "BatchCreate",

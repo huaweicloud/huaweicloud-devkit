@@ -166,6 +166,18 @@ test('sanitizeValue coerces non-strings and nulls safely', async () => {
   assert.equal(sanitizeValue(123), '123');
 });
 
+test('#845 D8-9 sanitizeValue redacts credential fields via redactSecrets', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  // Credential key=value patterns in telemetry values are redacted.
+  assert.doesNotMatch(sanitizeValue('access_key=AKIDxxx'), /AKIDxxx/);
+  assert.match(sanitizeValue('access_key=AKIDxxx'), /<redacted>/);
+  assert.doesNotMatch(sanitizeValue('token=BearerSecret'), /BearerSecret/);
+  // JSON credential pairs also redacted.
+  assert.doesNotMatch(sanitizeValue('{"secret_key":"SKxxx"}'), /SKxxx/);
+  // Non-credential values pass through unchanged (after whitespace/length trim).
+  assert.equal(sanitizeValue('hcloud ECS ListServers'), 'hcloud ECS ListServers');
+});
+
 test('cacheUserHash writes to filesystem', async () => {
   await withIsolatedTelemetry(async ({ cacheUserHash }) => {
     assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));
