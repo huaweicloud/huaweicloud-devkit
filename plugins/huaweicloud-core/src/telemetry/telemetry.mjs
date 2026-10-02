@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { fetchWithProxy } from '../proxy/proxy-agent.mjs';
+import { redactSecrets } from '../safety-policy.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -188,6 +189,7 @@ function capabilityFromKey(key) {
 
 export function sanitizeValue(value) {
   if (typeof value !== 'string') value = value == null ? '' : String(value);
+  value = redactSecrets(value);
   value = value.replace(/[\r\n\t]+/g, ' ').trim();
   if (value.length > MAX_VALUE_LENGTH) {
     value = value.slice(0, MAX_VALUE_LENGTH - 3) + '...';

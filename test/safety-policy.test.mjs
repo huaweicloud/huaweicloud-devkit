@@ -5,6 +5,7 @@ import {
   classifyHcloudArgs,
   classifyTextCommand,
   redactSecrets,
+  redactString,
 } from '../plugins/huaweicloud-core/src/safety-policy.mjs';
 
 test('redactSecrets removes credential-shaped values recursively', () => {
@@ -345,4 +346,106 @@ test('existing credential and secret blocks still win before risk-rule warnings'
   const secretResult = classifyTextCommand('hcloud CSMS ShowSecretVersion --secret_name prod/db');
   assert.equal(secretResult.decision, 'deny');
   assert.equal(secretResult.risk, 'secret');
+});
+
+// ---------------------------------------------------------------------------
+// Issue #845: safety-policy security detection coverage gaps
+// P0×5 + P1×4 daily-test regressions — redactString / isSecretKeyName /
+// blockedSecretOperations / credential-file / env-dump / echo coverage.
+// ---------------------------------------------------------------------------
+
+test('#845 D2-4/D4-27 redactString redacts lowercase ak=/sk= short forms', () => {
+  assert.equal(redactString('ak=AKIDxxx sk=Secretxxx'), 'ak=<redacted> sk=<redacted>');
+  assert.equal(redactString('AK=HPUAI12345 SK=abcdef'), 'AK=<redacted> SK=<redacted>');
+  // Mixed-case variants covered by the i flag.
+  assert.equal(redactString('Ak=xxx Sk=yyy'), 'Ak=<redacted> Sk=<redacted>');
+});
+
+test('#845 D2-4 redactString does not false-positive on ak/sk inside words', () => {
+  // Lookbehind boundary ensures AK/SK substrings inside longer identifiers
+  // (MASK, TASK, BAKE, flask) are NOT redacted even when followed by =.
+  assert.equal(redactString('mask=secret'), 'mask=secret');
+  assert.equal(redactString('task=value'), 'task=value');
+  assert.equal(redactString('flask=water'), 'flask=water');
+  assert.equal(redactString('BAKE=pie'), 'BAKE=pie');
+});
+
+test('#845 D2-4 redactString redacts JSON "key":"value" credential pairs', () => {
+  const out = redactString('{"access_key":"AKIDxxx","normal":"keep"}');
+  assert.match(out, /<redacted>/);
+  assert.doesNotMatch(out, /AKIDxxx/);
+  assert.match(out, /"normal":"keep"/);
+  // JSON with spaces around colon.
+  const out2 = redactString('{"secret_key" : "SKxxx"}');
+  assert.doesNotMatch(out2, /SKxxx/);
+  assert.match(out2, /<redacted>/);
+  // JSON ak/sk short keys.
+  const out3 = redactString('{"ak":"AKIDxxx","sk":"SKxxx"}');
+  assert.doesNotMatch(out3, /AKIDxxx|SKxxx/);
+});
+
+test('#845 D2-4 redactString preserves JSON structure for opaque blob keys', () => {
+  const out = redactString('{"user_data":"ZXhwb3J0IEFQUF9TRUNSRVQ=","metadata":"secret"}');
+  assert.match(out, /"user_data":"<redacted>"/);
+  assert.match(out, /"metadata":"<redacted>"/);
+  assert.doesNotMatch(out, /ZXhwb3J0|secret/);
+});
+
+test('#845 D4-24 redactSecrets redacts access_token field (isSecretKeyName)', () => {
+  assert.equal(redactSecrets({ access_token: 'accxxx' }).access_token, '<redacted>');
+  assert.equal(redactSecrets({ accessToken: 'accxxx' }).accessToken, '<redacted>');
+  assert.equal(redactSecrets({ 'access-token': 'accxxx' })['access-token'], '<redacted>');
+});
+
+test('#845 D2-11 classifyTextCommand blocks sts get-token (secret)', () => {
+  const result = classifyTextCommand('sts get-token');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.risk, 'secret');
+});
+
+test('#845 D2-16 classifyTextCommand blocks configure import --file (credential)', () => {
+  const result = classifyTextCommand('configure import --file creds.json');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.risk, 'credential');
+  // hcloud-prefixed variant also blocked via blockedConfigureSubcommands.
+  const hcloudResult = classifyHcloudArgs(['configure', 'import', '--file', 'creds.json']);
+  assert.equal(hcloudResult.decision, 'deny');
+  assert.equal(hcloudResult.risk, 'credential');
+});
+
+test('#845 D4-2 classifyTextCommand blocks env dump with HW_ prefix', () => {
+  assert.equal(classifyTextCommand('env | grep HW_').decision, 'deny');
+  assert.equal(classifyTextCommand('printenv | grep HW_').decision, 'deny');
+  // Existing HUAWEICLOUD/HWC_/HCLOUD coverage must not regress.
+  assert.equal(classifyTextCommand('env | grep HUAWEICLOUD').decision, 'deny');
+  assert.equal(classifyTextCommand('env | grep HWC_').decision, 'deny');
+});
+
+test('#845 D4-3 classifyTextCommand blocks csms show-secret and kms decrypt-data', () => {
+  const csmsResult = classifyTextCommand('csms show-secret');
+  assert.equal(csmsResult.decision, 'deny');
+  assert.equal(csmsResult.risk, 'secret');
+
+  const kmsResult = classifyTextCommand('kms decrypt-data');
+  assert.equal(kmsResult.decision, 'deny');
+  assert.equal(kmsResult.risk, 'secret');
+
+  // hcloud-prefixed variants also blocked.
+  assert.equal(classifyHcloudArgs(['CSMS', 'show-secret']).decision, 'deny');
+  assert.equal(classifyHcloudArgs(['KMS', 'decrypt-data']).decision, 'deny');
+});
+
+test('#845 D4-3 list/show-only operations on csms/kms remain allowed', () => {
+  // Secret-reading operations are blocked, but list/show only operations stay allow.
+  assert.equal(classifyHcloudArgs(['CSMS', 'ListSecrets']).decision, 'allow');
+  assert.equal(classifyHcloudArgs(['KMS', 'ListKeys']).decision, 'allow');
+  assert.equal(classifyTextCommand('csms list-secrets').risk, 'not_huaweicloud');
+});
+
+test('#845 D4-4 classifyTextCommand blocks echo $HW_ACCESS_KEY (regression guard)', () => {
+  // Already handled by the HW_ credential-variable gate — guard against regression.
+  assert.equal(classifyTextCommand('echo $HW_ACCESS_KEY').decision, 'deny');
+  assert.equal(classifyTextCommand('echo $HW_SECRET_KEY').decision, 'deny');
+  assert.equal(classifyTextCommand('echo $HW_SECURITY_TOKEN').decision, 'deny');
+  assert.equal(classifyTextCommand('printenv HW_ACCESS_KEY').decision, 'deny');
 });
