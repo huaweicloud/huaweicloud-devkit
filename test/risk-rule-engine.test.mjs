@@ -223,3 +223,43 @@ test('evaluateDeployPlan fails closed on malformed input (#564)', () => {
   assert.equal(evaluateDeployPlan({ app: 'x' }).decision !== 'deny', true);
   assert.equal(evaluateDeployPlan('deploy a static site').decision !== 'deny', true);
 });
+
+// ── #841 daily-test defect fixes ──
+
+test('D2-11: evaluateCommandRisk denies STS GetToken (#841)', () => {
+  const result = evaluateCommandRisk('hcloud STS GetToken');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-sts-credential');
+});
+
+test('D4-3: evaluateCommandRisk denies KMS DecryptData (#841)', () => {
+  const result = evaluateCommandRisk('hcloud KMS DecryptData --key_id=x --ciphertext_blob=y');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
+});
+
+test('D4-3: evaluateCommandRisk denies CSMS ShowSecret (#841)', () => {
+  const result = evaluateCommandRisk('hcloud CSMS ShowSecret --secret_name=prod/db');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
+});
+
+test('D4-2: evaluateCommandRisk unwraps shell-wrapped env dumps (#841)', () => {
+  // sh -c "env|grep HW_" — env is inside quotes, unwrapped via unwrapShellCommand.
+  const result = evaluateCommandRisk('sh -c "env | grep HW_"');
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-command-env-dump'));
+});
+
+test('D4-2: evaluateCommandRisk blocks env|grep HW_ directly (#841)', () => {
+  const result = evaluateCommandRisk('env | grep HW_');
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-command-env-dump'));
+});
+
+test('D2-11: evaluateCommandRisk denies STS AssumeAgency as credential exposure (#841)', () => {
+  // Severity upgraded from warn to deny for all STS credential operations.
+  const result = evaluateCommandRisk('hcloud STS AssumeAgency --agency_name=x');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-sts-credential');
+});

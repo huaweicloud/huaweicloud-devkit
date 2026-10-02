@@ -235,6 +235,21 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
   assert.notEqual(result.recommendedSkills[0], 'huawei-sandbox');
 });
 
+test('EXP-E01: service_catalog routes 云主机/主机 to ECS (#841)', async () => {
+  const r1 = await callTool('huaweicloud_service_catalog', { intent: '查云主机' });
+  assert.ok(r1.recommendedSkills.includes('huawei-ecs'));
+  assert.ok(r1.recommendedServices.includes('ECS'));
+
+  const r2 = await callTool('huaweicloud_service_catalog', { intent: '创建主机' });
+  assert.ok(r2.recommendedSkills.includes('huawei-ecs'));
+
+  const r3 = await callTool('huaweicloud_service_catalog', { intent: '云服务器列表' });
+  assert.ok(r3.recommendedSkills.includes('huawei-ecs'));
+
+  const r4 = await callTool('huaweicloud_service_catalog', { intent: '弹性云服务器扩容' });
+  assert.ok(r4.recommendedSkills.includes('huawei-ecs'));
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {

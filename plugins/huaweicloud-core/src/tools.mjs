@@ -1816,7 +1816,7 @@ function serviceCatalog(intent = '') {
   const it = String(intent).toLowerCase();
   const routeMap = [
     {
-      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image'],
+      keywords: ['ecs', 'server', 'vm', 'instance', 'compute', 'flavor', 'image', '云主机', '主机', '云服务器', '弹性云服务器'],
       skills: ['huawei-ecs'],
       services: ['ECS'],
     },
