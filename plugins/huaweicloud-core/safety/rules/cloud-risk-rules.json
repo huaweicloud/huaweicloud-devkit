@@ -36,7 +36,7 @@
           },
           {
             "field": "text",
-            "regex": "(HUAWEICLOUD|HWC_|HCLOUD|OS_)"
+            "regex": "(HUAWEICLOUD|HWC_|HW_|HCLOUD|OS_)"
           }
         ]
       },
@@ -53,32 +53,36 @@
         "any": [
           {
             "field": "text",
-            "regex": "(ShowSecretVersion|DownloadSecret|GetSecretValue)"
+            "regex": "(ShowSecretVersion|DownloadSecret|GetSecretValue|ShowSecret\\b|DecryptData)"
           },
           {
             "field": "text",
             "regex": "(secret_string|secret_binary|secretString|secretBinary)"
+          },
+          {
+            "field": "text",
+            "regex": "hcloud\\s+(KMS|CSMS)\\s+(DecryptData|ShowSecret)\\b"
           }
         ]
       },
-      "message": "The command appears to retrieve plaintext secret values.",
+      "message": "The command appears to retrieve plaintext secret values or decrypt ciphertext into plaintext.",
       "remediation": "Use runtime secret references, user-side inspection, or redacted metadata checks instead of returning secret values to the agent."
     },
     {
       "id": "hwc-command-sts-credential",
       "title": "Temporary credential exposure",
       "category": "credential",
-      "severity": "warn",
+      "severity": "deny",
       "stages": ["command"],
       "match": {
         "any": [
           {
             "field": "text",
-            "regex": "hcloud\\s+STS\\s+(AssumeAgency|GetCallerIdentity|GetTemporaryCredential)\\b"
+            "regex": "hcloud\\s+STS\\s+(AssumeAgency|GetCallerIdentity|GetTemporaryCredential|GetToken)\\b"
           }
         ]
       },
-      "message": "此操作将返回临时 AK/SK 和 SecurityToken。注意敏感数据保密，不要将凭证输出到日志或分享给第三方。",
+      "message": "此操作将返回临时 AK/SK 和 SecurityToken，拦截以防止凭证明文进入 agent 上下文。",
       "remediation": "临时凭证仅用于当前会话，使用完毕后及时销毁，不要持久化存储。"
     },
     {

@@ -42,7 +42,11 @@ function redactString(text) {
         /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
         '$1<redacted>',
       )
-      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
+      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>')
+      .replace(
+        /"((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential))"\s*:\s*("[^"]*"|'[^']*'|[^\s,;}\]])/gi,
+        '"$1":"<redacted>"',
+      )
   );
 }
 
@@ -237,7 +241,7 @@ export function classifyHcloudArgs(args, options = {}) {
     };
   }
 
-  if (/secret[_-]?string|secret[_-]?binary|showsecretversion|getsecretvalue/i.test(joined)) {
+  if (/secret[_-]?string|secret[_-]?binary|showsecretversion|getsecretvalue|decryptdata|showsecret\b/i.test(joined)) {
     return {
       decision: 'deny',
       risk: 'secret',
@@ -385,6 +389,15 @@ export function classifyTextCommand(command, options = {}) {
   const policy = options.policy || DEFAULT_POLICY;
   const text = String(command || '');
 
+  // Strip shell wrappers (sh -c '...', bash -c "...", sudo ...) so inner
+  // credential-dump patterns behind a wrapper are inspected (#841 D4-2/D4-4).
+  // splitSimpleCommand tokenizes the text; stripExecutable unwraps the
+  // -c payload. The inner text is used alongside the original for env-dump
+  // detection (which does not rely on quote-context lookbehinds).
+  const innerTokens = stripExecutable(splitSimpleCommand(text));
+  const innerText = innerTokens.join(' ');
+  const combinedEnvText = `${text}\n${innerText}`;
+
   if (matchesAny(text, policy.credentialFilePatterns)) {
     return {
       decision: 'deny',
@@ -395,8 +408,8 @@ export function classifyTextCommand(command, options = {}) {
   }
 
   if (
-    /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) &&
-    /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(text)
+    /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(combinedEnvText) &&
+    /HUAWEICLOUD|HWC_|HW_|HCLOUD|OS_/i.test(combinedEnvText)
   ) {
     return {
       decision: 'deny',
@@ -414,9 +427,14 @@ export function classifyTextCommand(command, options = {}) {
   // (`\$HW_*`) or single-quoted (`'$HW_*'`, which the shell never expands) —
   // while unescaped `$HW_*` is a potential expansion/dump regardless of the
   // command. No command-name whitelist, so no false negative (#650 review).
+  //
+  // Bare $AK/$SK/$ACCESS_KEY/$SECRET_KEY (without the HW_ prefix) are also
+  // caught — `echo $AK` previously fell through to allow (#841 D4-4).
   if (
     /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text) ||
-    /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text)
+    /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(text) ||
+    /(?<!['\\])\$\{?(?:AK|SK|ACCESS_KEY|SECRET_KEY)\b/i.test(text) ||
+    /(?:^|\s)printenv\s+(?:AK|SK|ACCESS_KEY|SECRET_KEY)\b/i.test(text)
   ) {
     return {
       decision: 'deny',
@@ -429,7 +447,7 @@ export function classifyTextCommand(command, options = {}) {
     return classifyHcloudArgs(splitSimpleCommand(text), { ...options, rawCommand: text });
   }
 
-  if (/ShowSecretVersion|GetSecretValue|secret_string|secret_binary/i.test(text)) {
+  if (/ShowSecretVersion|GetSecretValue|secret_string|secret_binary|DecryptData|ShowSecret\b/i.test(text)) {
     return {
       decision: 'deny',
       risk: 'secret',

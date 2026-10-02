@@ -346,3 +346,101 @@ test('existing credential and secret blocks still win before risk-rule warnings'
   assert.equal(secretResult.decision, 'deny');
   assert.equal(secretResult.risk, 'secret');
 });
+
+// ── #841 daily-test defect fixes ──
+
+test('D2-4: redactString redacts lowercase ak=/sk= (#841)', () => {
+  const out = redactSecrets('ak=HPUAI12345\nsk=abcdef\nnormal output');
+  assert.match(out, /<redacted>/);
+  assert.doesNotMatch(out, /HPUAI12345|abcdef/);
+  assert.match(out, /normal output/);
+  // Mixed-case variants also redacted.
+  assert.equal(redactSecrets('Ak=secret1'), 'Ak=<redacted>');
+  assert.equal(redactSecrets('sK=secret2'), 'sK=<redacted>');
+  assert.equal(redactSecrets('AK=secret3'), 'AK=<redacted>');
+  assert.equal(redactSecrets('SK=secret4'), 'SK=<redacted>');
+});
+
+test('D2-4: redactString redacts JSON "key":"value" credential structures (#841)', () => {
+  const json = '{"access_key":"ak-plaintext","secret_key":"sk-plaintext","normal":"keep"}';
+  const out = redactSecrets(json);
+  assert.doesNotMatch(out, /ak-plaintext|sk-plaintext/);
+  assert.match(out, /<redacted>/);
+  assert.match(out, /"normal":"keep"/);
+});
+
+test('D4-24: redactSecrets redacts access_token field (#841)', () => {
+  // Object key path — isSecretKeyName catches access_token via policy pattern.
+  const obj = redactSecrets({ access_token: 'acc-xxx', normal: 'keep' });
+  assert.equal(obj.access_token, '<redacted>');
+  assert.equal(obj.normal, 'keep');
+  // String path — token alternation already catches access_token=...,
+  // but verify the full key is preserved.
+  const str = redactSecrets('access_token=accxxx');
+  assert.doesNotMatch(str, /accxxx/);
+  assert.match(str, /access_token=<redacted>/);
+});
+
+test('D2-11: classifyHcloudArgs blocks STS GetToken (#841)', () => {
+  const result = classifyHcloudArgs(['STS', 'GetToken']);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.risk, 'secret');
+});
+
+test('D4-3: classifyHcloudArgs blocks KMS DecryptData (#841)', () => {
+  const result = classifyHcloudArgs(['KMS', 'DecryptData', '--key_id=x', '--ciphertext_blob=y']);
+  assert.equal(result.decision, 'deny');
+  assert.match(result.risk, /secret/);
+});
+
+test('D4-3: classifyHcloudArgs blocks CSMS ShowSecret (#841)', () => {
+  const result = classifyHcloudArgs(['CSMS', 'ShowSecret', '--secret_name=prod/db']);
+  assert.equal(result.decision, 'deny');
+  assert.match(result.risk, /secret/);
+});
+
+test('D4-3: classifyTextCommand blocks KMS DecryptData and CSMS ShowSecret in text (#841)', () => {
+  assert.equal(classifyTextCommand('hcloud KMS DecryptData --key_id=x').decision, 'deny');
+  assert.equal(classifyTextCommand('hcloud CSMS ShowSecret --secret_name=x').decision, 'deny');
+});
+
+test('D2-16: classifyHcloudArgs blocks configure import (#841)', () => {
+  const result = classifyHcloudArgs(['configure', 'import', '--file=creds.json']);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.risk, 'credential');
+});
+
+test('D4-2: classifyTextCommand blocks env|grep HW_ (#841)', () => {
+  // HW_ is the plugin's own credential prefix — must be in the env-dump regex.
+  assert.equal(classifyTextCommand('env | grep HW_').decision, 'deny');
+  assert.equal(classifyTextCommand('env|grep HW_ACCESS_KEY').decision, 'deny');
+  assert.equal(classifyTextCommand('printenv | grep HW_').decision, 'deny');
+});
+
+test('D4-2: classifyTextCommand blocks shell-wrapped env dumps via stripExecutable (#841)', () => {
+  // sh -c wrapper — env is inside quotes, unwrapped via stripExecutable.
+  assert.equal(classifyTextCommand('sh -c "env|grep HW_"').decision, 'deny');
+  assert.equal(classifyTextCommand('bash -c "env | grep HW_"').decision, 'deny');
+  assert.equal(classifyTextCommand("sh -c 'printenv HW_ACCESS_KEY'").decision, 'deny');
+});
+
+test('D4-4: classifyTextCommand blocks echo $AK / $SK / $ACCESS_KEY (#841)', () => {
+  // Bare credential variable references without HW_ prefix.
+  assert.equal(classifyTextCommand('echo $AK').decision, 'deny');
+  assert.equal(classifyTextCommand('echo $SK').decision, 'deny');
+  assert.equal(classifyTextCommand('echo $ACCESS_KEY').decision, 'deny');
+  assert.equal(classifyTextCommand('echo $SECRET_KEY').decision, 'deny');
+  assert.equal(classifyTextCommand('printenv AK').decision, 'deny');
+  // Shell-wrapped echo $AK.
+  assert.equal(classifyTextCommand('sh -c "echo $AK"').decision, 'deny');
+});
+
+test('D4-4: classifyTextCommand still allows non-credential $AK-like substrings (#841)', () => {
+  // $AKIA (AWS key prefix) should NOT be blocked — \b boundary prevents it.
+  assert.equal(classifyTextCommand('echo $AKIAEXAMPLE').decision, 'allow');
+  // tokenize= should not be blocked (token, not AK).
+  assert.equal(classifyTextCommand('tokenize=abc').decision, 'allow');
+  // Escaped/literal-quoted credential names still allowed (existing #650 behavior).
+  assert.equal(classifyTextCommand("rg '$ACCESS_KEY' ./").decision, 'allow');
+  assert.equal(classifyTextCommand("grep '\\$AK' src/").decision, 'allow');
+});

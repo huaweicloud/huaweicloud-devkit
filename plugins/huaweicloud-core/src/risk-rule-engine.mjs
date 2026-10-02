@@ -22,7 +22,7 @@ function redactEvidence(text) {
       /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
       '$1<redacted>',
     )
-    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>');
+    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>');
 }
 
 function normalizeText(value) {
@@ -140,11 +140,33 @@ function invalidRiskResult(stage, reason) {
   };
 }
 
+function unwrapShellCommand(text) {
+  let current = String(text || '');
+  for (let depth = 0; depth < 5; depth++) {
+    const m = current.match(
+      /^\s*(?:sudo\s+)?(?:[^\s/]*\/)?(?:bash|sh|zsh|dash|bash\.exe|sh\.exe)\s+-c\s+(['"])([\s\S]*)\1\s*$/,
+    );
+    if (m) {
+      current = m[2];
+      continue;
+    }
+    const s = current.match(/^\s*sudo\s+([\s\S]+)$/);
+    if (s) {
+      current = s[1];
+      continue;
+    }
+    break;
+  }
+  return current;
+}
+
 export function evaluateCommandRisk(command, options = {}) {
   if (!isNonEmptyString(command)) {
     return invalidRiskResult('command', 'command must be a non-empty string.');
   }
-  return evaluate('command', { command }, options);
+  const unwrapped = unwrapShellCommand(command);
+  const inputs = unwrapped !== command ? [{ command }, { command: unwrapped }] : { command };
+  return evaluate('command', inputs, options);
 }
 
 export function evaluateArtifacts(artifacts, options = {}) {
