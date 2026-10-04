@@ -487,3 +487,52 @@ test('auth_switch persist(mode=import) with STS token is rejected and clears imp
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test('service_catalog routes D3-S7 composite intent (部署 Web 应用 + RDS) to deployment + sandbox + RDS (#762)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', { intent: '部署 Web 应用 + RDS' });
+  assert.ok(
+    result.recommendedSkills.includes('huawei-cloud-deployment-task-management'),
+    'deployment skill must be recommended for 部署 intent',
+  );
+  assert.ok(
+    result.recommendedSkills.includes('huawei-sandbox'),
+    'sandbox skill must be recommended for Web 应用 intent',
+  );
+  assert.ok(result.recommendedSkills.includes('huawei-rds'), 'RDS skill must be recommended for RDS intent');
+  assert.ok(result.recommendedServices.includes('RDS'));
+});
+
+test('service_catalog matches deployment CJK keywords 部署/发布/上线 (#762)', async () => {
+  const deploy = await callTool('huaweicloud_service_catalog', { intent: '部署应用到华为云' });
+  assert.ok(
+    deploy.recommendedSkills.includes('huawei-cloud-deployment-task-management'),
+    '部署 must route to deployment skill',
+  );
+  assert.ok(deploy.recommendedSkills.includes('huawei-sandbox'), '部署 + 应用 must also route to sandbox');
+
+  const release = await callTool('huaweicloud_service_catalog', { intent: '发布上线我的服务' });
+  assert.ok(
+    release.recommendedSkills.includes('huawei-cloud-deployment-task-management'),
+    '发布/上线 must route to deployment skill',
+  );
+});
+
+test('service_catalog matches sandbox 应用 and web keywords (#762)', async () => {
+  const webApp = await callTool('huaweicloud_service_catalog', { intent: 'host a web app for preview' });
+  assert.ok(webApp.recommendedSkills.includes('huawei-sandbox'), 'web app must route to sandbox');
+
+  const zhApp = await callTool('huaweicloud_service_catalog', { intent: '预览我的应用' });
+  assert.ok(zhApp.recommendedSkills.includes('huawei-sandbox'), '应用 must route to sandbox');
+});
+
+test('service_catalog deploymentIntent adds deployment skill even when deployment route misses (#762)', async () => {
+  // "上线我的网站" contains 上线 (deploymentIntent) and 网站 (sandbox route) but
+  // does NOT contain any deployment route keyword beyond what deploymentIntent catches.
+  // The deploymentIntent fallback must add huawei-cloud-deployment-task-management.
+  const result = await callTool('huaweicloud_service_catalog', { intent: '上线我的网站' });
+  assert.ok(
+    result.recommendedSkills.includes('huawei-cloud-deployment-task-management'),
+    'deploymentIntent fallback must add deployment skill when 部署/发布/上线 detected',
+  );
+  assert.ok(result.recommendedSkills.includes('huawei-sandbox'), '网站 must route to sandbox');
+});
