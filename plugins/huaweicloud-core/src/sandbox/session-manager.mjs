@@ -940,6 +940,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `echo "=== DEPLOY CHECK ==="`,
     `PASS=0`,
     `TOTAL=0`,
+    `ACTUAL_PORT="${port}"`,
     ``,
     `TOTAL=$((TOTAL+1))`,
     `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null)`,
@@ -947,8 +948,23 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `  echo "nginx_serving:PASS (port ${port}, HTTP \${HTTP_CODE})"`,
     `  PASS=$((PASS+1))`,
     `else`,
-    `  echo "nginx_serving:FAIL (port ${port}, no HTTP response)"`,
+    `  # Fallback: deploy_nginx may have auto-incremented the port (basePort occupied).`,
+    `  # Probe nginx's actual listen port via ss and retry on the detected port.`,
+    `  DETECTED_PORT=$(ss -tlnp 2>/dev/null | grep -i nginx | grep -oP ':\\K\\d+(?=\\s)' | head -1)`,
+    `  if [ -n "$DETECTED_PORT" ] && [ "$DETECTED_PORT" != "${port}" ]; then`,
+    `    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:\${DETECTED_PORT} 2>/dev/null)`,
+    `    if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then`,
+    `      ACTUAL_PORT="$DETECTED_PORT"`,
+    `      echo "nginx_serving:PASS (port \${DETECTED_PORT}, auto-detected — requested port ${port} was auto-incremented, HTTP \${HTTP_CODE})"`,
+    `      PASS=$((PASS+1))`,
+    `    else`,
+    `      echo "nginx_serving:FAIL (port ${port}, no HTTP response; detected port \${DETECTED_PORT} also unresponsive)"`,
+    `    fi`,
+    `  else`,
+    `    echo "nginx_serving:FAIL (port ${port}, no HTTP response)"`,
+    `  fi`,
     `fi`,
+    `echo "ACTUAL_PORT:$ACTUAL_PORT"`,
     ``,
     `TOTAL=$((TOTAL+1))`,
     `if [ -d "${outputPath}" ] && ls -A "${outputPath}" 2>/dev/null | grep -q .; then`,
@@ -962,7 +978,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `FINGERPRINT_FILE="${outputPath}/.deploy_fingerprint"`,
     `FINGERPRINT_EXPECTED=$(cat "$FINGERPRINT_FILE" 2>/dev/null)`,
     `if [ -n "$FINGERPRINT_EXPECTED" ]; then`,
-    `  FINGERPRINT_ACTUAL=$(curl -s http://localhost:${port}/.deploy_fingerprint 2>/dev/null)`,
+    `  FINGERPRINT_ACTUAL=$(curl -s http://localhost:\${ACTUAL_PORT}/.deploy_fingerprint 2>/dev/null)`,
     `  if [ "$FINGERPRINT_EXPECTED" = "$FINGERPRINT_ACTUAL" ]; then`,
     `    echo "content_verified:PASS"`,
     `    PASS=$((PASS+1))`,
@@ -993,7 +1009,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `if [ -z "$TUNNEL_ID" ]; then`,
     `  TUNNEL_ID=$(devbridge list 2>/dev/null | grep -E '^[a-z2-7]{8}[[:space:]]' | awk '{print $1}' | head -1)`,
     `fi`,
-    `TUNNEL_URL="https://\${TUNNEL_ID}-${port}.${DEVBRIDGE_TUNNEL_DOMAIN}"`,
+    `TUNNEL_URL="https://\${TUNNEL_ID}-\${ACTUAL_PORT}.${DEVBRIDGE_TUNNEL_DOMAIN}"`,
     `probe_tunnel() {`,
     `  local url="$1" code`,
     `  code=$(curl -s -o /tmp/.dc_tunnel_body -w "%{http_code}" --max-time 10 "$url" 2>/dev/null)`,
@@ -1077,6 +1093,9 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
   }
   const scoreMatch = cleanStdout.match(/SCORE:(\d+)\/(\d+)/);
   const tunnelMatch = cleanStdout.match(TUNNEL_URL_PATTERN);
+  const actualPortMatch = cleanStdout.match(/^ACTUAL_PORT:(.+)$/m);
+  const detectedPort = actualPortMatch ? actualPortMatch[1].trim() : undefined;
+  const portShifted = detectedPort && detectedPort !== String(port);
   const complete = /VERDICT:COMPLETE/.test(cleanStdout);
 
   const missing = [];
@@ -1111,11 +1130,15 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
     checks,
     score: scoreMatch ? { pass: parseInt(scoreMatch[1], 10), total: parseInt(scoreMatch[2], 10) } : null,
     publicUrl: tunnelMatch ? tunnelMatch[1] : undefined,
+    detectedPort: portShifted ? detectedPort : undefined,
+    portWarning: portShifted
+      ? `Requested port ${port} was auto-incremented to ${detectedPort} by deploy_nginx. Use ${detectedPort} for DevBridge tunnel.`
+      : undefined,
     missingSteps: missing.length > 0 ? missing.join(', ') : undefined,
     parseWarning,
     rawOutput: parseWarning ? String(stdout || '').trim() : undefined,
     nextStep: nextStepValue,
-    remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(port) : undefined,
+    remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(detectedPort || port) : undefined,
   };
 }
 

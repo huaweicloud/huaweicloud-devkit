@@ -241,3 +241,61 @@ test('P1: validateTunnelPort rejects strings, decimals, and out-of-range ports (
     assert.throws(() => validateTunnelPort(bad), /invalid port/, `expected rejection for ${JSON.stringify(bad)}`);
   }
 });
+
+test('D3-S3: buildDeployCheckScript includes ACTUAL_PORT and ss-based port fallback (#762 defect 6)', () => {
+  const script = buildDeployCheckScript({
+    port: 8080,
+    project: 'myapp',
+    outputPath: '/workspace/myapp/dist',
+    isCrossPlatform: false,
+  });
+  assert.ok(script.includes('ACTUAL_PORT="8080"'), 'must initialize ACTUAL_PORT to requested port');
+  assert.ok(script.includes('ss -tlnp'), 'must probe nginx listen port via ss');
+  assert.ok(script.includes('DETECTED_PORT'), 'must extract detected port');
+  assert.ok(script.includes('ACTUAL_PORT:$ACTUAL_PORT'), 'must export ACTUAL_PORT for parser');
+  // Fingerprint and tunnel URL must use ACTUAL_PORT, not the hardcoded requested port
+  assert.ok(script.includes('localhost:${ACTUAL_PORT}/.deploy_fingerprint'), 'fingerprint must use ACTUAL_PORT');
+  assert.ok(script.includes('${TUNNEL_ID}-${ACTUAL_PORT}.'), 'tunnel URL must use ACTUAL_PORT');
+});
+
+test('D3-S3: parseDeployCheckOutput extracts detectedPort when ACTUAL_PORT differs from requested (#762 defect 6)', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8081, auto-detected — requested port 8080 was auto-incremented, HTTP 200)',
+    'ACTUAL_PORT:8081',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:PASS (https://abc-8081.devbridge-s2.hwtunnel.com)',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:4/4',
+    'TUNNEL_URL:https://abc-8081.devbridge-s2.hwtunnel.com',
+    'VERDICT:COMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.nginx_serving.status, 'PASS');
+  assert.equal(result.detectedPort, '8081', 'detectedPort must be 8081 (shifted from 8080)');
+  assert.equal(
+    result.portWarning,
+    'Requested port 8080 was auto-incremented to 8081 by deploy_nginx. Use 8081 for DevBridge tunnel.',
+  );
+  assert.equal(result.complete, true);
+});
+
+test('D3-S3: parseDeployCheckOutput detectedPort is undefined when port did not shift (#762 defect 6)', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8080, HTTP 200)',
+    'ACTUAL_PORT:8080',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:PASS (https://abc-8080.devbridge-s2.hwtunnel.com)',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:4/4',
+    'TUNNEL_URL:https://abc-8080.devbridge-s2.hwtunnel.com',
+    'VERDICT:COMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.detectedPort, undefined, 'detectedPort must be undefined when port unchanged');
+  assert.equal(result.portWarning, undefined, 'portWarning must be undefined when port unchanged');
+  assert.equal(result.complete, true);
+});

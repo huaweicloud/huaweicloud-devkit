@@ -2141,7 +2141,7 @@ function serviceCatalog(intent = '') {
       services: ['CBR'],
     },
     {
-      keywords: ['deployment', 'deploy', 'ci/cd', 'pipeline', 'release'],
+      keywords: ['deployment', 'deploy', 'ci/cd', 'pipeline', 'release', '部署', '发布', '上线'],
       skills: ['huawei-cloud-deployment-task-management'],
       services: ['CloudDeploy'],
     },
@@ -2156,10 +2156,12 @@ function serviceCatalog(intent = '') {
         'website',
         'web app',
         'webapp',
+        'web',
         'hosting',
         '网站',
         '网页',
         '静态',
+        '应用',
       ],
       skills: ['huawei-sandbox'],
       services: ['Sandbox', 'DevStation'],
@@ -2206,11 +2208,20 @@ function serviceCatalog(intent = '') {
 
   // Deployment intent (deploy/host/publish a web app or static website) must never
   // default to a storage/other service — recommend the sandbox first.
-  const deploymentIntent = /deploy|host|hosting|publish|website|web app|preview|部署|托管|发布|网站|网页/.test(it);
+  const deploymentIntent = /deploy|host|hosting|publish|website|web app|preview|部署|托管|发布|网站|网页|上线/.test(it);
   if (deploymentIntent && recommendedSkills.includes('huawei-sandbox')) {
     const idx = recommendedSkills.indexOf('huawei-sandbox');
     recommendedSkills.splice(idx, 1);
     recommendedSkills.unshift('huawei-sandbox');
+  }
+  // When deployment intent is detected (部署/发布/上线/deploy) but the deployment
+  // route did not match (no huawei-cloud-deployment-task-management in skills),
+  // add it so composite intents like "部署 Web 应用 + RDS" include the deployment target.
+  if (deploymentIntent && !recommendedSkills.includes('huawei-cloud-deployment-task-management')) {
+    recommendedSkills.push('huawei-cloud-deployment-task-management');
+    if (!recommendedServices.includes('CloudDeploy')) {
+      recommendedServices.push('CloudDeploy');
+    }
   }
 
   return {
