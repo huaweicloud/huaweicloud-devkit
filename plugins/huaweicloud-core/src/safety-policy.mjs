@@ -31,7 +31,7 @@ function isSecretKeyName(key, policy = DEFAULT_POLICY) {
   return policy.secretKeyNamePatterns.some((pattern) => regexFrom(`^(${pattern})$`).test(key));
 }
 
-function redactString(text) {
+export function redactString(text) {
   return (
     String(text)
       // Opaque blob keys (cloud-init user_data, metadata, private_key) carry
@@ -42,7 +42,15 @@ function redactString(text) {
         /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
         '$1<redacted>',
       )
-      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
+      // JSON "key":"value" pairs — the closing quote after the key name blocks
+      // the [:=] branch above. Match quoted-key form separately (#845 D2-4).
+      .replace(
+        /"((?:user[_-]?data|metadata|private[_-]?key|access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential|ak|sk))"\s*:\s*(?:"[^"]*"|'[^']*'|[^\s,};\]]+)/gi,
+        '"$1":"<redacted>"',
+      )
+      // AK/SK short forms — case-insensitive with a leading boundary so substrings
+      // inside longer words (MASK, TASK, flask, BAKE) are not false-positive (#845 D4-27).
+      .replace(/(?<![a-z])(ak|sk)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>')
   );
 }
 
@@ -237,7 +245,11 @@ export function classifyHcloudArgs(args, options = {}) {
     };
   }
 
-  if (/secret[_-]?string|secret[_-]?binary|showsecretversion|getsecretvalue/i.test(joined)) {
+  if (
+    /secret[_-]?string|secret[_-]?binary|showsecretversion|getsecretvalue|show[_-]?secret|decrypt[_-]?data|get[_-]?token/i.test(
+      joined,
+    )
+  ) {
     return {
       decision: 'deny',
       risk: 'secret',
@@ -396,12 +408,26 @@ export function classifyTextCommand(command, options = {}) {
 
   if (
     /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) &&
-    /HUAWEICLOUD|HWC_|HCLOUD|OS_/i.test(text)
+    /HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_|access[_-]?key|secret[_-]?key|access[_-]?token|secret[_-]?token|security[_-]?token/i.test(
+      text,
+    )
   ) {
     return {
       decision: 'deny',
       risk: 'credential',
       reason: 'Dumping cloud credential environment variables is blocked.',
+    };
+  }
+
+  // hcloud configure import reads a credential file and may expose plaintext
+  // AK/SK. Block it at the text level (the hcloud-arg path is covered by
+  // blockedConfigureSubcommands in policy.json) (#845 D2-16).
+  if (/\bconfigure\s+import\b/i.test(text) && !/(^|\s)--help\b|(^|\s)-h\b/i.test(text)) {
+    return {
+      decision: 'deny',
+      risk: 'credential',
+      reason:
+        'Importing hcloud credentials from a file may expose plaintext secrets. Use redacted toolkit tools instead.',
     };
   }
 
@@ -429,7 +455,11 @@ export function classifyTextCommand(command, options = {}) {
     return classifyHcloudArgs(splitSimpleCommand(text), { ...options, rawCommand: text });
   }
 
-  if (/ShowSecretVersion|GetSecretValue|secret_string|secret_binary/i.test(text)) {
+  if (
+    /ShowSecretVersion|GetSecretValue|secret_string|secret_binary|show[_-]?secret|decrypt[_-]?data|get[_-]?token/i.test(
+      text,
+    )
+  ) {
     return {
       decision: 'deny',
       risk: 'secret',
