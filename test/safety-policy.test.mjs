@@ -449,3 +449,12 @@ test('#845 D4-4 classifyTextCommand blocks echo $HW_ACCESS_KEY (regression guard
   assert.equal(classifyTextCommand('echo $HW_SECURITY_TOKEN').decision, 'deny');
   assert.equal(classifyTextCommand('printenv HW_ACCESS_KEY').decision, 'deny');
 });
+
+test('#845 D4-2 (Spec v2) classifyTextCommand blocks env dump with bare credential keywords', () => {
+  // The env-dump regex now matches bare access_key/secret_key/access_token/
+  // secret_token/security_token keywords — not just cloud-vendor prefixes.
+  assert.equal(classifyTextCommand('env | grep access_key').decision, 'deny');
+  assert.equal(classifyTextCommand('printenv secret_key').decision, 'deny');
+  assert.equal(classifyTextCommand('env | grep access_token').decision, 'deny');
+  assert.equal(classifyTextCommand('printenv security_token').decision, 'deny');
+});

@@ -223,3 +223,58 @@ test('evaluateDeployPlan fails closed on malformed input (#564)', () => {
   assert.equal(evaluateDeployPlan({ app: 'x' }).decision !== 'deny', true);
   assert.equal(evaluateDeployPlan('deploy a static site').decision !== 'deny', true);
 });
+
+// ---------------------------------------------------------------------------
+// #845 Spec v2 — 6 additional findings (D4-2/D4-21/D4-6/D4-26/D8-9/D10-4)
+// ---------------------------------------------------------------------------
+
+test('#845 D4-26 redactEvidence redacts JSON quoted-key secret values', () => {
+  // JSON "adminPass":"PlainText456" — the quote between key and colon
+  // previously blocked the [:=] regex branch in redactEvidence.
+  // Use a policy artifact that triggers hwc-iam-admin-policy (so evidence is
+  // generated) AND contains JSON quoted-key secrets to verify redaction.
+  const content = '{"Statement":[{"Effect":"Allow","Action":"*"}],"secret_key":"AKIDxxx","adminPass":"PlainText456"}';
+  const result = evaluateArtifacts([{ path: 'iam.json', content }]);
+  assert.equal(result.decision, 'deny');
+  // JSON quoted-key secret values must be redacted in the serialized output.
+  assert.doesNotMatch(JSON.stringify(result), /AKIDxxx/);
+  assert.doesNotMatch(JSON.stringify(result), /PlainText456/);
+  assert.match(JSON.stringify(result), /<redacted>/);
+});
+
+test('#845 D4-21 evaluateArtifacts blocks HCL broad IAM actions list', () => {
+  // HCL form: actions = ["*"] — lowercase plural with bracket list.
+  // The rule match.all requires (IAM|policy|role|…) + broad-action + Effect=Allow.
+  // HCL effect is typically unquoted: Effect = Allow
+  const hclContent = 'resource "huaweicloud_identity_policy" "admin" {\n  actions = ["*"]\n  Effect = Allow\n}';
+  const result = evaluateArtifacts([{ path: 'policy.tf', content: hclContent }]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(
+    result.findings.some((f) => f.ruleId === 'hwc-iam-admin-policy'),
+    'Should flag HCL actions = ["*"] as broad IAM',
+  );
+});
+
+test('#845 D4-21 evaluateArtifacts blocks AdministratorFullAccess managed policy', () => {
+  const content = '{"policy_name": "AdministratorFullAccess", "Statement": [{"Effect": "Allow", "Action": "*"}]}';
+  const result = evaluateArtifacts([{ path: 'iam.json', content }]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(
+    result.findings.some((f) => f.ruleId === 'hwc-iam-admin-policy'),
+    'Should flag AdministratorFullAccess managed policy',
+  );
+});
+
+test('#845 D4-6 evaluateCommandRisk warns on --admin-pass in command stage', () => {
+  const result = evaluateCommandRisk('hcloud ECS CreateServers --admin-pass=MySecret123!');
+  assert.equal(result.decision, 'warn');
+  assert.ok(
+    result.findings.some((f) => f.ruleId === 'hwc-command-adminpass-exposure'),
+    'Should warn on --admin-pass in command stage',
+  );
+});
+
+test('#845 D10-4 cloud risk rules count is 19 (synced assertion)', () => {
+  const catalog = loadRiskRules();
+  assert.equal(catalog.rules.length, 19, 'Rule count should be 19 after Spec v2 additions');
+});

@@ -17,12 +17,20 @@ export function loadRiskRules(options = {}) {
 }
 
 function redactEvidence(text) {
-  return String(text)
-    .replace(
-      /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      '$1<redacted>',
-    )
-    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>');
+  return (
+    String(text)
+      .replace(
+        /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        '$1<redacted>',
+      )
+      // JSON "key":"value" pairs — the closing quote after the key name blocks
+      // the [:=] branch above. Match quoted-key form separately (#845 D4-26).
+      .replace(
+        /"((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|adminPass|credential))"\s*:\s*(?:"[^"]*"|'[^']*'|[^\s,};\]]+)/gi,
+        '"$1":"<redacted>"',
+      )
+      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
+  );
 }
 
 function normalizeText(value) {

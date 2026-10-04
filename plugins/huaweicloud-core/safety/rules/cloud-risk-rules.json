@@ -78,8 +78,8 @@
           }
         ]
       },
-      "message": "此操作将返回临时 AK/SK 和 SecurityToken。注意敏感数据保密，不要将凭证输出到日志或分享给第三方。",
-      "remediation": "临时凭证仅用于当前会话，使用完毕后及时销毁，不要持久化存储。"
+      "message": "\u6b64\u64cd\u4f5c\u5c06\u8fd4\u56de\u4e34\u65f6 AK/SK \u548c SecurityToken\u3002\u6ce8\u610f\u654f\u611f\u6570\u636e\u4fdd\u5bc6\uff0c\u4e0d\u8981\u5c06\u51ed\u8bc1\u8f93\u51fa\u5230\u65e5\u5fd7\u6216\u5206\u4eab\u7ed9\u7b2c\u4e09\u65b9\u3002",
+      "remediation": "\u4e34\u65f6\u51ed\u8bc1\u4ec5\u7528\u4e8e\u5f53\u524d\u4f1a\u8bdd\uff0c\u4f7f\u7528\u5b8c\u6bd5\u540e\u53ca\u65f6\u9500\u6bc1\uff0c\u4e0d\u8981\u6301\u4e45\u5316\u5b58\u50a8\u3002"
     },
     {
       "id": "hwc-command-encoded-shell-exec",
@@ -189,7 +189,7 @@
           },
           {
             "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
+            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|actions\\s*=\\s*\\[\\s*\\\"\\*\\\"\\s*\\]|AdministratorAccess|AdministratorFullAccess|FullAccess)"
           },
           {
             "field": "text",
@@ -378,6 +378,69 @@
       },
       "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",
       "remediation": "Use targeted deletions instead of recursive root removal. Avoid disk format, fork bombs, and system shutdown commands in sandbox terminals."
+    },
+    {
+      "id": "hwc-command-adminpass-exposure",
+      "title": "Admin password exposure in command",
+      "category": "secret",
+      "severity": "warn",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "--admin[_-]?pass(word)?\\s*[=:]\\s*\\S+"
+          },
+          {
+            "field": "text",
+            "regex": "admin[_-]?pass(word)?\\s*[=:]\\s*[\"']?[^\"'\\s]+"
+          }
+        ]
+      },
+      "message": "The command or artifact contains a plaintext admin password argument that may be exposed in logs or command history.",
+      "remediation": "Use password-from-file references, secret manager integration, or prompt-based password input instead of passing admin passwords as command arguments."
+    },
+    {
+      "id": "hwc-iam-highrisk-write",
+      "title": "High-risk IAM write operation",
+      "category": "iam",
+      "severity": "warn",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "hcloud\\s+IAM\\s+(CreateRole|CreatePolicy|AssignRoleToUser|CreateAgency|UpdatePolicy|UpdateRole|UpdateAgency)\\b"
+          },
+          {
+            "field": "text",
+            "regex": "(CreatePolicy|UpdatePolicy|CreateRole|UpdateRole|CreateAgency|UpdateAgency).* AdministratorAccess"
+          }
+        ]
+      },
+      "message": "This IAM operation modifies roles, policies, or agencies with potentially broad permissions. Review the scope of granted permissions carefully.",
+      "remediation": "Follow least-privilege principles when creating or updating IAM roles, policies, and agencies. Avoid wildcard actions and prefer scoped, service-specific permissions."
+    },
+    {
+      "id": "hwc-command-secret-in-arg",
+      "title": "Secret value passed as command argument",
+      "category": "secret",
+      "severity": "warn",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "--(access[_-]?key|secret[_-]?key|security[_-]?token|password|passwd|admin[_-]?pass)\\s*[=:]\\s*\\S+"
+          },
+          {
+            "field": "text",
+            "regex": "--(sk|ak)\\s*[=:]\\s*\\S+"
+          }
+        ]
+      },
+      "message": "A credential or secret value appears to be passed directly as a command-line argument, which may be visible in process listings or command history.",
+      "remediation": "Pass secrets via environment variables, credential files with restricted permissions, or interactive prompts. Avoid exposing secrets in command-line arguments."
     }
   ]
 }

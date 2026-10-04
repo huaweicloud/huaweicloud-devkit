@@ -408,7 +408,9 @@ export function classifyTextCommand(command, options = {}) {
 
   if (
     /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(text) &&
-    /HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_/i.test(text)
+    /HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_|access[_-]?key|secret[_-]?key|access[_-]?token|secret[_-]?token|security[_-]?token/i.test(
+      text,
+    )
   ) {
     return {
       decision: 'deny',
