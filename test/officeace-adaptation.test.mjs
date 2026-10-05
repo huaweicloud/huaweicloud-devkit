@@ -101,6 +101,7 @@ test('officeace install copies skills, MCP server, and safety policy', () => {
     assert.ok(existsSync(join(pd, 'src', 'mcp-server.mjs')));
     assert.ok(existsSync(join(pd, 'src', 'tools.mjs')));
     assert.ok(existsSync(join(pd, 'safety', 'policy.json')));
+    assert.ok(existsSync(join(pd, '.installed')), '.installed marker written by installOfficeAce (#797 D5-1)');
     assert.equal(
       JSON.parse(readFileSync(join(pd, 'package.json'), 'utf8')).version,
       pkg.version,

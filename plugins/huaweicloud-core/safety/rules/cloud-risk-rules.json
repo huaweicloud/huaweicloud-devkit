@@ -378,6 +378,31 @@
       },
       "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",
       "remediation": "Use targeted deletions instead of recursive root removal. Avoid disk format, fork bombs, and system shutdown commands in sandbox terminals."
+    },
+    {
+      "id": "hwc-command-substitution-exec",
+      "title": "Shell command substitution or ANSI-C quoting in cloud command",
+      "category": "execution",
+      "severity": "deny",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "\\$\\("
+          },
+          {
+            "field": "text",
+            "regex": "`"
+          },
+          {
+            "field": "text",
+            "regex": "\\$'"
+          }
+        ]
+      },
+      "message": "The command embeds shell command substitution ($(...), backticks) or ANSI-C quoting ($'...'), which can execute arbitrary subcommands or encode payloads to bypass safety rules.",
+      "remediation": "Expand the substitution into an explicit, reviewable value before constructing the hcloud command. Never pass $(...), backticks, or $'...' inside cloud CLI arguments."
     }
   ]
 }

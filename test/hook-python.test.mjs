@@ -149,3 +149,32 @@ test('python hook write-gate still allows read-only Nova ops', () => {
   assert.equal(result.status, 0);
   assert.equal(JSON.parse(result.stdout), null);
 });
+
+test('python hook evaluate() blocks credential variable references incl. HW_ prefix (#797 D4-8)', () => {
+  // Mirrors the Node classifyTextCommand credential-variable gate (#650 D4-2):
+  // unescaped `$HW_*` / `printenv HW_ACCESS_KEY` must be blocked in the Python
+  // hook too, not just the Node hook.
+  const bypasses = [
+    'echo $HW_SECRET_KEY',
+    'printenv HW_ACCESS_KEY',
+    'echo ${HW_SECURITY_TOKEN}',
+    'echo $HUAWEICLOUD_ACCESS_KEY',
+    'cat <<EOF $HW_ACCESS_KEY EOF',
+  ];
+  for (const cmd of bypasses) {
+    const result = runEvaluate('terminal', { command: cmd });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0, cmd);
+    const reason = JSON.parse(result.stdout);
+    assert.equal(typeof reason, 'string', `${cmd} should be blocked`);
+    assert.match(reason, /credential/i, cmd);
+  }
+  // Non-credential HW_ variables and escaped literal-name searches must not be blocked.
+  const benign1 = runEvaluate('terminal', { command: 'echo $HW_CONFIG_PATH' });
+  if (pythonUnavailable(benign1)) return;
+  assert.equal(JSON.parse(benign1.stdout), null, 'non-credential HW_ var allowed');
+
+  const benign2 = runEvaluate('terminal', { command: "rg '$HW_SECRET_KEY' ./" });
+  if (pythonUnavailable(benign2)) return;
+  assert.equal(JSON.parse(benign2.stdout), null, 'single-quoted literal-name search allowed');
+});
