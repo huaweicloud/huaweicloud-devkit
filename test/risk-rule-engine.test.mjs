@@ -223,3 +223,45 @@ test('evaluateDeployPlan fails closed on malformed input (#564)', () => {
   assert.equal(evaluateDeployPlan({ app: 'x' }).decision !== 'deny', true);
   assert.equal(evaluateDeployPlan('deploy a static site').decision !== 'deny', true);
 });
+
+test('evaluateCommandRisk denies $(...) command substitution (#797 D4-17)', () => {
+  const result = evaluateCommandRisk('hcloud ECS CreateServers --server.name=$(whoami)');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-substitution-exec');
+});
+
+test('evaluateCommandRisk denies backtick command substitution (#797 D4-17)', () => {
+  const result = evaluateCommandRisk('hcloud ECS ListServers --limit=`id`');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-substitution-exec');
+});
+
+test("evaluateCommandRisk denies ANSI-C quoting $'...' (#797 D4-17)", () => {
+  const result = evaluateCommandRisk("hcloud OBS cp $'\\x72\\x6d' obs://bucket/file");
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-substitution-exec');
+});
+
+test('evaluateCommandRisk fail-closed fallback denies $(...) when no rule matches (#797)', () => {
+  const minimalCatalog = { version: '0.0.1', rules: [] };
+  const result = evaluateCommandRisk('hcloud ECS ListServers --x=$(cat /etc/passwd)', {
+    catalog: minimalCatalog,
+  });
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-substitution-fallback');
+});
+
+test('evaluateCommandRisk fail-closed fallback denies backticks when no rule matches (#797)', () => {
+  const minimalCatalog = { version: '0.0.1', rules: [] };
+  const result = evaluateCommandRisk('hcloud ECS ListServers --x=`whoami`', {
+    catalog: minimalCatalog,
+  });
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-substitution-fallback');
+});
+
+test('evaluateCommandRisk still allows read-only commands without substitution (#797)', () => {
+  const result = evaluateCommandRisk('hcloud ECS NovaListServers --limit=1');
+  assert.equal(result.decision, 'allow');
+  assert.equal(result.findings.length, 0);
+});

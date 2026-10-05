@@ -76,6 +76,12 @@ function excerpt(text) {
   return `${compact.slice(0, 237)}...`;
 }
 
+// Shell command substitution ($(...), backticks) and ANSI-C quoting ($'...')
+// can execute arbitrary subcommands or encode payloads to bypass safety rules.
+// When no explicit rule matched but the input still contains these patterns,
+// fail closed (deny) instead of defaulting to allow (#797 D4-17 P0 fail-open).
+const COMMAND_SUBSTITUTION_RE = /\$\(|`|\$'/;
+
 function evaluate(stage, inputs, options = {}) {
   const catalog = options.catalog || loadRiskRules(options);
   const items = Array.isArray(inputs) ? inputs : [inputs];
@@ -96,6 +102,28 @@ function evaluate(stage, inputs, options = {}) {
         source: input?.path || stage,
         evidence: excerpt(context.text),
       });
+    }
+  }
+
+  // Fail-closed: command substitution that slips past all catalog rules must
+  // never default to allow (#797 D4-17 P0 fail-open). We synthesize a deny
+  // finding so the bypass is visible through the tool response.
+  if (stage === 'command' && findings.length === 0) {
+    for (const input of items) {
+      const ctx = evaluationContext(stage, input || {});
+      if (COMMAND_SUBSTITUTION_RE.test(String(ctx.text || ''))) {
+        findings.push({
+          ruleId: 'hwc-command-substitution-fallback',
+          title: 'Unmatched shell command substitution',
+          category: 'execution',
+          severity: 'deny',
+          message:
+            "The command embeds shell command substitution ($(...), backticks) or ANSI-C quoting ($'...') but no explicit rule matched. Denying to prevent command-execution bypasses.",
+          remediation: 'Expand the substitution into an explicit, reviewable value before constructing the command.',
+          source: input?.path || stage,
+          evidence: excerpt(ctx.text),
+        });
+      }
     }
   }
 
