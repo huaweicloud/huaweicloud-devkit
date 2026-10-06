@@ -14,7 +14,9 @@
     "user[_-]?data",
     "metadata",
     "ak",
-    "sk"
+    "sk",
+    "access[_-]?token",
+    "sec[_-]?token"
   ],
   "credentialFilePatterns": [
     "\\.hcloud",

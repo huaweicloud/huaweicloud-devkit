@@ -19,10 +19,18 @@ export function loadRiskRules(options = {}) {
 function redactEvidence(text) {
   return String(text)
     .replace(
-      /((?:access[_-]?key|secret[_-]?key|secret|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      /((?:access[_-]?key|secret[_-]?key|secret|security[_-]?token|x[_-]?auth[_-]?token|access[_-]?token|sec[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
       '$1<redacted>',
     )
-    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>');
+    // JSON "key":"value" structure — covers {"ak":"...","sk":"...","token":"..."}
+    // where short keys bypass the key:=value regex above (#857 D4-27).
+    .replace(
+      /"((?:access[_-]?key|secret[_-]?key|secret|security[_-]?token|x[_-]?auth[_-]?token|access[_-]?token|sec[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential|ak|sk))"\s*:\s*("[^"]*"|'[^']*')/gi,
+      '"$1":"<redacted>"',
+    )
+    // Standalone AK/SK keys (case-insensitive) — negative lookbehind avoids
+    // false positives inside words like flake/mask/break (#857 D2-4).
+    .replace(/(?<![a-z])(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>');
 }
 
 function normalizeText(value) {

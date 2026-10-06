@@ -39,10 +39,19 @@ function redactString(text) {
       // Redact the ENTIRE value of this arg — not just the first whitespace token.
       .replace(/((?:user[_-]?data|metadata|private[_-]?key)\s*[:=]\s*).*/gi, '$1<redacted>')
       .replace(
-        /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|access[_-]?token|sec[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
         '$1<redacted>',
       )
-      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
+      // JSON "key":"value" structure — covers {"ak":"...","sk":"...","token":"..."}
+      // where short keys (ak/sk) and quoted keys bypass the key:=value regex above.
+      // Runs before the AK/SK regex so JSON structure is preserved (#857 D4-27).
+      .replace(
+        /"((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|access[_-]?token|sec[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential|ak|sk))"\s*:\s*("[^"]*"|'[^']*')/gi,
+        '"$1":"<redacted>"',
+      )
+      // Standalone AK/SK keys (case-insensitive) — e.g. AK=..., ak=..., "AK":"...".
+      // Negative lookbehind avoids false positives inside words like flake/mask/break.
+      .replace(/(?<![a-z])(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>')
   );
 }
 
