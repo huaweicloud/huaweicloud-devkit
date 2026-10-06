@@ -1977,6 +1977,7 @@ function serviceCatalog(intent = '') {
         'image',
         '弹性云服务器',
         '云服务器',
+        '云主机',
         '服务器',
         '虚拟机',
         '镜像',
@@ -1999,6 +2000,7 @@ function serviceCatalog(intent = '') {
         '网络',
         '安全组',
         '弹性公网IP',
+        '公网IP',
         'NAT网关',
         'VPN网关',
         '带宽',
@@ -2021,7 +2023,9 @@ function serviceCatalog(intent = '') {
         '存储',
         '对象',
         '静态网站',
+        '静态站点',
         '静态托管',
+        '静态网页',
       ],
       skills: ['huawei-obs'],
       services: ['OBS'],
@@ -2054,7 +2058,16 @@ function serviceCatalog(intent = '') {
       services: ['APIG'],
     },
     {
-      keywords: ['rds', 'mysql', 'postgresql', 'database', 'db', '关系型数据库', '数据库'],
+      keywords: [
+        'rds',
+        'mysql',
+        'postgresql',
+        'database',
+        'db',
+        '关系型数据库',
+        '云数据库',
+        '数据库',
+      ],
       skills: ['huawei-rds'],
       services: ['RDS'],
     },
@@ -2111,7 +2124,7 @@ function serviceCatalog(intent = '') {
       services: ['ModelArts'],
     },
     {
-      keywords: ['billing', 'cost', 'bill', 'budget', 'expense', 'bss', '计费', '费用', '账单', '预算', '开销'],
+      keywords: ['billing', 'cost', 'bill', 'budget', 'expense', 'bss', '计费', '费用', '账单', '消费', '预算', '开销'],
       skills: ['huawei-billing'],
       services: ['BSS'],
     },
@@ -2136,7 +2149,7 @@ function serviceCatalog(intent = '') {
       services: ['CTS'],
     },
     {
-      keywords: ['cbr', 'backup', 'restore', 'vault', 'snapshot', '备份', '恢复', '快照', '存储库'],
+      keywords: ['cbr', 'backup', 'restore', 'vault', 'snapshot', '备份', '备份策略', '每日备份', '恢复', '快照', '存储库'],
       skills: ['huawei-cbr'],
       services: ['CBR'],
     },
@@ -2181,7 +2194,7 @@ function serviceCatalog(intent = '') {
       services: ['DDS', 'DCS'],
     },
     {
-      keywords: ['elb', 'load balancer', '负载均衡', '弹性负载均衡', '监听器', '证书'],
+      keywords: ['elb', 'load balancer', 'loadbalancer', '负载均衡', '弹性负载均衡', '监听器', '证书', 'HTTPS证书'],
       skills: ['huawei-vpc'],
       services: ['ELB'],
     },
@@ -2211,6 +2224,16 @@ function serviceCatalog(intent = '') {
     const idx = recommendedSkills.indexOf('huawei-sandbox');
     recommendedSkills.splice(idx, 1);
     recommendedSkills.unshift('huawei-sandbox');
+  }
+
+  // Static-website hosting intent prefers OBS over sandbox — the user wants a
+  // public static site on object storage, not a preview sandbox. Runs after the
+  // sandbox-priority block so OBS wins for 静态网站/静态站点/static website (#857 E03).
+  const staticWebsiteIntent = /static\s*website|static\s*site|静态网站|静态站点|静态网页/.test(it);
+  if (staticWebsiteIntent && recommendedSkills.includes('huawei-obs')) {
+    const idx = recommendedSkills.indexOf('huawei-obs');
+    recommendedSkills.splice(idx, 1);
+    recommendedSkills.unshift('huawei-obs');
   }
 
   return {

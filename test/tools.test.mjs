@@ -257,14 +257,16 @@ test('huaweicloud_hook_check_deploy_plan warns on sandbox without ttl', async ()
   assert.equal(result.findings[0].ruleId, 'hwc-sandbox-missing-ttl');
 });
 
-test('service_catalog recommends sandbox first for static website deployment intent', async () => {
+test('service_catalog prefers OBS for static-website intent, sandbox for web-app preview (#857)', async () => {
+  // Static-website hosting → OBS first (production public hosting use case).
   const en = await callTool('huaweicloud_service_catalog', { intent: 'deploy a static website' });
-  assert.equal(en.recommendedSkills[0], 'huawei-sandbox');
-  assert.ok(en.recommendedSkills.includes('huawei-obs'));
+  assert.equal(en.recommendedSkills[0], 'huawei-obs');
+  assert.ok(en.recommendedSkills.includes('huawei-sandbox'));
 
   const zh = await callTool('huaweicloud_service_catalog', { intent: '部署静态网站到华为云' });
-  assert.equal(zh.recommendedSkills[0], 'huawei-sandbox');
+  assert.equal(zh.recommendedSkills[0], 'huawei-obs');
 
+  // Web-app preview → sandbox first (unchanged).
   const webApp = await callTool('huaweicloud_service_catalog', { intent: 'host a web app for preview' });
   assert.equal(webApp.recommendedSkills[0], 'huawei-sandbox');
 });
