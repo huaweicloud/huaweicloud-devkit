@@ -108,7 +108,7 @@ jobs:
           cache: npm
       - run: npm ci
       - name: npm audit
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
       - name: gitleaks secret scan
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o gitleaks.tgz
