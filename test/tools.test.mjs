@@ -316,6 +316,33 @@ test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)
   assert.ok(nat.recommendedServices.includes('VPC'));
 });
 
+test('service_catalog routes ASCII service names embedded in CJK full-sentence (#865)', async () => {
+  // Natural-language full sentence glued together (no ASCII separators; full-width
+  // comma) must still extract the embedded ASCII service name. The old token-only
+  // match split the whole sentence into one token, so "vpc" was never found.
+  const vpc = await callTool('huaweicloud_service_catalog', { intent: '删除测试VPC，先列命令确认' });
+  assert.ok(
+    vpc.recommendedServices.includes('VPC'),
+    `删除测试VPC should route to VPC, got ${JSON.stringify(vpc.recommendedServices)}`,
+  );
+
+  // Delete intent must still go through the confirm-approval flow (write/deny
+  // classification) — verified separately, here we only assert routing.
+  assert.ok(vpc.recommendedSkills.includes('huawei-vpc'));
+});
+
+test('service_catalog word-boundary match avoids false positives for short ASCII keywords (#865)', async () => {
+  // Short lowercase abbreviations (ces/ai/nat) must NOT substring-match inside
+  // English words ("access"/"available"/"natural"). Word boundaries prevent
+  // over-matching once token-only matching is replaced by word-boundary matching.
+  const notCes = await callTool('huaweicloud_service_catalog', { intent: 'access keys' });
+  assert.ok(!notCes.recommendedServices.includes('CES'));
+  const notAi = await callTool('huaweicloud_service_catalog', { intent: 'explain available options' });
+  assert.ok(!notAi.recommendedServices.includes('ModelArts'));
+  const notNat = await callTool('huaweicloud_service_catalog', { intent: 'natural language processing' });
+  assert.ok(!notNat.recommendedServices.includes('VPC'));
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
