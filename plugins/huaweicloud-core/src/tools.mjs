@@ -2192,11 +2192,15 @@ function serviceCatalog(intent = '') {
     },
   ];
   const matched = [];
-  const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
   const cjk = /[\u4e00-\u9fff]/;
+  const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   for (const route of routeMap) {
     if (
-      route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw.toLowerCase()) : tokens.has(kw)))
+      route.keywords.some((kw) =>
+        kw.includes(' ') || cjk.test(kw)
+          ? it.includes(kw.toLowerCase())
+          : new RegExp(`\\b${escapeRegExp(kw)}\\b`, 'i').test(it),
+      )
     ) {
       matched.push(route);
     }
