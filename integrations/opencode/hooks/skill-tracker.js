@@ -1,6 +1,7 @@
 import { appendFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 
 const DEBUG = process.env.HUAWEICLOUD_DEVKIT_DEBUG === 'true';
 
@@ -98,19 +99,91 @@ function getHooks() {
   };
 }
 
-// ── Export: function-as-object serves both IDE and CLI ────────
-//
-//  IDE : plugin.default()      -> returns hooks
-//  CLI : plugin.default.server -> returns hooks (via { id, server })
+// ── V2 setup: register hooks on their owning domains via the context. ──────
+//    `tool.execute.before` → ctx.tool.hook("execute.before", ...) whose single
+//    event carries `.tool` (name) and `.input` (args), replacing V1's (input, output).
+//    `event` → ctx.event.subscribe(AsyncIterable of { type, properties }).
+async function setupV2(ctx) {
+  await ctx.tool.hook('execute.before', (event) => {
+    try {
+      debugLog(`HOOK tool.execute.before tool=${event?.tool}`);
+      if (event?.tool === 'skill') {
+        const name = event?.input?.name ?? event?.args?.name;
+        debugLog(`SKILL name=${name}`);
+        if (isHuaweiCloudSkill(name)) {
+          writeEvent('skill:retrieve', name);
+          debugLog(`SKILL TRACKED: ${name}`);
+        }
+        return;
+      }
+      if (event?.tool === 'bash') {
+        const cmd = event?.input?.command ?? event?.args?.command ?? '';
+        if (!cmd) return;
+        const result = classifyHcloud(cmd);
+        if (result) writeEvent(result.key, result.value, { capability: 'cli' });
+      }
+    } catch (error) {
+      debugLog(`HOOK ERROR: ${error?.message || error}`);
+    }
+  });
 
-function plugin() {
-  debugLog('=== PLUGIN EXPORT CALLED ===');
-  return getHooks();
+  const controller = new AbortController();
+  void (async () => {
+    try {
+      for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+        if (event?.type === 'message.part.updated') {
+          const text = event?.properties?.part?.text;
+          if (typeof text === 'string') {
+            const m = text.match(/Base directory for this skill:\s*.*?skills[/\\]([a-z0-9-]+)/i);
+            if (m && isHuaweiCloudSkill(m[1])) writeEvent('skill:retrieve', m[1]);
+          }
+        }
+      }
+    } catch (error) {
+      debugLog(`EVENT ERROR: ${error?.message || error}`);
+    }
+  })();
+
+  return () => controller.abort();
 }
 
-plugin.id = 'huaweicloud-skill-tracker';
-plugin.server = async () => getHooks();
+// ── Dual export: one default object serves OpenCode V1 and V2 ───────────────
+//    V1 loader reads `server()` (returns legacy string-keyed hooks).
+//    V2 loader reads `id` + `setup(ctx)` (registers hooks on the context domains).
+//    `Plugin.define` is a type/runtime helper injected lazily so a V1 host that
+//    lacks `@opencode/plugin` still loads (fallback to an identity define).
+let Plugin = { define: (def) => def };
+try {
+  const require = createRequire(import.meta.url);
+  for (const pkg of ['@opencode/plugin', '@opencode-ai/plugin']) {
+    try {
+      const mod = require(pkg);
+      if (mod?.Plugin?.define) {
+        Plugin = mod.Plugin;
+        break;
+      }
+      if (typeof mod?.define === 'function') {
+        Plugin = mod;
+        break;
+      }
+    } catch {
+      // not installed in this host; keep the identity define
+    }
+  }
+} catch {
+  // createRequire unavailable; keep the identity define
+}
 
-export default plugin;
+export default {
+  ...Plugin.define({
+    id: 'huaweicloud-skill-tracker',
+    async setup(ctx) {
+      return setupV2(ctx);
+    },
+  }),
+  async server() {
+    return getHooks();
+  },
+};
 
 debugLog('=== PLUGIN INIT DONE ===');

@@ -5,6 +5,8 @@ import {
   mergeCommandStyle,
   mergeArgsStyle,
   mergeMcpServersFile,
+  detectOpenCodeEra,
+  mergeOpenCodeEntry,
   extractUserDelta,
   applyUserDelta,
   inheritPeerUserEnv,
@@ -231,4 +233,96 @@ test('inheritPeerUserEnv handles .env style peers and returns null when nothing 
   assert.equal(inheritPeerUserEnv(null), null);
   const envStyle = { 'huaweicloud-devkit_1': { env: { HW_ACCESS_KEY: 'AK2' } } };
   assert.deepEqual(inheritPeerUserEnv(envStyle), { HW_ACCESS_KEY: 'AK2' });
+});
+
+// ── OpenCode era detection + V2 entry shape ──────────────────
+
+test('detectOpenCodeEra classifies v2 (mcp.servers), v1 (flat mcp), and unknown', () => {
+  assert.equal(detectOpenCodeEra(undefined), 'unknown');
+  assert.equal(detectOpenCodeEra(null), 'unknown');
+  assert.equal(detectOpenCodeEra({}), 'unknown');
+  assert.equal(detectOpenCodeEra({ mcp: {} }), 'unknown');
+  assert.equal(detectOpenCodeEra({ mcp: { servers: {} } }), 'v2');
+  assert.equal(detectOpenCodeEra({ mcp: { servers: { x: {} } } }), 'v2');
+  assert.equal(detectOpenCodeEra({ mcp: { 'huaweicloud-devkit': { type: 'local' } } }), 'v1');
+});
+
+test('mergeCommandStyle (v2): fresh entry omits enabled and timeout', () => {
+  const { entry, changed } = mergeCommandStyle(undefined, { mcpPath: MCP_PATH, era: 'v2' });
+  assert.equal(changed, true);
+  assert.deepEqual(entry, { type: 'local', command: ['node', MCP_PATH] });
+});
+
+test('mergeCommandStyle (v2): strips flat enabled/timeout but keeps disabled/environment/extra args', () => {
+  const existing = {
+    type: 'local',
+    command: ['node', '/old/mcp-server.mjs', '--flag'],
+    enabled: true,
+    timeout: 600000,
+    disabled: true,
+    environment: { FOO: 'bar' },
+    toast: 'keep-me',
+  };
+  const { entry, changed } = mergeCommandStyle(existing, { mcpPath: MCP_PATH, era: 'v2' });
+  assert.equal(changed, true);
+  assert.equal(entry.enabled, undefined);
+  assert.equal(entry.timeout, undefined);
+  assert.equal(entry.disabled, true);
+  assert.deepEqual(entry.environment, { FOO: 'bar' });
+  assert.equal(entry.toast, 'keep-me');
+  assert.deepEqual(entry.command, ['node', MCP_PATH, '--flag']);
+});
+
+test('mergeCommandStyle (v2): preserves nested timeout object as-is', () => {
+  const existing = {
+    type: 'local',
+    command: ['node', MCP_PATH],
+    timeout: { catalog: 300000, execution: 600000 },
+    disabled: false,
+  };
+  const { entry, changed } = mergeCommandStyle(existing, { mcpPath: MCP_PATH, era: 'v2' });
+  assert.equal(changed, false);
+  assert.deepEqual(entry.timeout, { catalog: 300000, execution: 600000 });
+});
+
+test('mergeOpenCodeEntry (v2): places entry under mcp.servers and cleans flat stray', () => {
+  const config = { mcp: { 'huaweicloud-devkit': { type: 'local', command: ['node', '/old'] } } };
+  const { config: next, existing, changed } = mergeOpenCodeEntry(config, { mcpPath: MCP_PATH, era: 'v2' });
+  assert.equal(existing, true);
+  assert.equal(changed, true);
+  assert.equal(next.mcp['huaweicloud-devkit'], undefined);
+  assert.deepEqual(next.mcp.servers['huaweicloud-devkit'].command, ['node', MCP_PATH]);
+});
+
+test('mergeOpenCodeEntry (v1): keeps flat placement', () => {
+  const config = { mcp: { other: { type: 'local' } } };
+  const { config: next, existing } = mergeOpenCodeEntry(config, { mcpPath: MCP_PATH, era: 'v1' });
+  assert.equal(existing, false);
+  assert.equal(next.mcp['huaweicloud-devkit'].enabled, true);
+  assert.equal(next.mcp['huaweicloud-devkit'].timeout, 300000);
+  assert.deepEqual(next.mcp['other'], { type: 'local' });
+});
+
+test('extractUserDelta reads V2 environment/disabled fields canonically', () => {
+  const entry = {
+    type: 'local',
+    command: ['node', MCP_PATH, '--x'],
+    environment: { FOO: '1' },
+    disabled: true,
+  };
+  const delta = extractUserDelta(entry, 'command');
+  assert.deepEqual(delta.commandExtra, ['--x']);
+  assert.deepEqual(delta.env, { FOO: '1' });
+  assert.equal(delta.enabled, false);
+});
+
+test('applyUserDelta (v2) writes environment and disabled instead of env/enabled', () => {
+  const fresh = { type: 'local', command: ['node', MCP_PATH] };
+  const delta = { commandExtra: ['--x'], env: { FOO: '1' }, enabled: false };
+  const restored = applyUserDelta(fresh, delta, 'command', 'v2');
+  assert.deepEqual(restored.command, ['node', MCP_PATH, '--x']);
+  assert.deepEqual(restored.environment, { FOO: '1' });
+  assert.equal(restored.disabled, true);
+  assert.equal(restored.enabled, undefined);
+  assert.equal(restored.env, undefined);
 });

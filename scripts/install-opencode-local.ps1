@@ -49,12 +49,12 @@ if ($LASTEXITCODE -ne 0) {
 Write-Host ""
 Write-Host "Add the following MCP section to your OpenCode config ($OpenCodeConfigRoot\opencode.json):"
 Write-Host '{
-  "mcpServers": {
-    "huaweicloud": {
-      "type": "local",
-      "command": "node",
-      "args": ["'$targetBase\src\mcp-server.mjs'"],
-      "enabled": true
+  "mcp": {
+    "servers": {
+      "huaweicloud-devkit": {
+        "type": "local",
+        "command": ["node", "'$targetBase\src\mcp-server.mjs'"]
+      }
     }
   }
 }'

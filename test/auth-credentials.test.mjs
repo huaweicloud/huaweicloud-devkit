@@ -156,6 +156,26 @@ test('agent registration detects OpenCode MCP config', () => {
   });
 });
 
+test('agent registration detects OpenCode V2 native mcp.servers config', () => {
+  withTempHome((home) => {
+    const cfgDir = join(home, '.config', 'opencode');
+    mkdirSync(cfgDir, { recursive: true });
+    writeFileSync(
+      join(cfgDir, 'opencode.jsonc'),
+      JSON.stringify({
+        mcp: {
+          servers: {
+            'huaweicloud-devkit': { type: 'local', command: ['node', '/x/mcp-server.mjs'] },
+          },
+        },
+      }),
+      'utf8',
+    );
+    const status = getAgentRegistrationStatuses('opencode');
+    assert.equal(status.agents.opencode.configured, true);
+  });
+});
+
 test('agent registration detects DSH cordis patch config', () => {
   withTempHome((home) => {
     const profileDir = join(home, '.dsh', 'profiles', 'web');

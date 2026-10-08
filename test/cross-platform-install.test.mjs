@@ -37,7 +37,7 @@ test('install creates opencode config with normalized forward-slash paths', () =
   const home = mkdtempSync(join(tmpdir(), 'cp-platform-'));
   const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
   try {
-    const res = runCli(home, cwd, ['install', '--target', 'opencode']);
+    const res = runCli(home, cwd, ['install', '--target', 'opencode', '--opencode-mcp-era', 'v1']);
     assert.equal(res.status, 0, `stderr: ${res.stderr}`);
     const config = readJson(join(home, '.config', 'opencode', 'opencode.json'));
     const cmd = config.mcp['huaweicloud-devkit'].command;
@@ -121,7 +121,7 @@ test('MCP server path is normalized to forward slashes', () => {
   const home = mkdtempSync(join(tmpdir(), 'cp-mcp-'));
   const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
   try {
-    runCli(home, cwd, ['install', '--target', 'opencode']);
+    runCli(home, cwd, ['install', '--target', 'opencode', '--opencode-mcp-era', 'v1']);
     const cfg = readJson(join(home, '.config', 'opencode', 'opencode.json'));
     const serverPath = cfg.mcp['huaweicloud-devkit'].command[1];
     assert.match(serverPath, /mcp-server\.mjs$/);
