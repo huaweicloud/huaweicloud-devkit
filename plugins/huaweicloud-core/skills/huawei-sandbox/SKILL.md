@@ -264,36 +264,40 @@ fi
 - **Old tunnels do not survive the upgrade**: 0.1.x-created tunnels are not registered on the s2 gateway — always rebuild the tunnel after upgrading (the expose flow below does this via pre-cleanup).
 - If `10006: quota exceeded` appears after upgrading, stale pre-upgrade tunnels still count against the quota — `devbridge delete-all` and retry.
 
-### Step 1: Authenticate — probe the build's auth capability first
+### Step 1: Authenticate — verified waterfall, keyring first
 
-`0.2.2-release` ships as **two different builds** with identical version strings:
+Authentication tries three credential sources in order, each verified with a real login + `auth status` before use; a failure falls through to the next tier:
 
-- **Image builds** (sandboxes created 2026-09+): retain AK/SK login (`--access-key/--secret-key`) AND auto-read `HW_ACCESS_KEY`/`HW_SECRET_KEY` env vars — fully automatic, no API Key needed.
-- **Release builds** (GitHub/GitCode downloads, incl. the Step 0 upgrade artifact): AK/SK removed, only API Key works.
+- **Tier 1 — keyring API Key** (preferred): recent sandbox images (hd-space-ai-shell line) get `HW_DEVBRIDGE_API_KEY` auto-injected by the platform into the sandbox keyring — **zero user action, long-lived key**. Read it via `hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1` (⚠ the value goes to **stderr** — `2>&1` is mandatory or you silently capture an empty string) and accept only values starting with `devbridge_` (`(not found)` and error text are rejected). If the first read fails, a light revive (restart the D-Bus session bus at `unix:path=/run/dbus-session`, replace a locked keyring daemon with `printf '\n' | gnome-keyring-daemon --unlock`) retries once — no package installs.
+- **Tier 2 — AK/SK** (image builds, legacy sandboxes): image builds keep `--access-key/--secret-key`. STS credentials **must** include `--security-token "$HW_SECURITY_TOKEN"` or the gateway rejects the request with 401 `APIGW.0301`. 0.1.x binaries additionally need `--huaweicloud` (only when their help advertises it).
+- **Tier 3 — `/tmp/hw_api_key`** (release builds, user-provided one-time): the file is written by `huaweicloud_sandbox_credentials` from the local `HW_API_KEY` env (preferred) or the `api_key` param.
 
-Version numbers cannot distinguish them — **probe the binary's capability at runtime** and branch:
+`huaweicloud_sandbox_expose_tunnel` runs this waterfall automatically and reports the winning mode (`API_KEY_KEYRING` / `AKSK_SUPPORTED` / `API_KEY_FILE`) or `NO_CREDENTIAL` with a non-sensitive per-tier `attempts` diagnostic. Manual equivalent:
 
 ```bash
 export PATH="$HOME/.huawei/bin:$PATH"
-source /tmp/hw_creds.sh 2>/dev/null
-if devbridge auth login --help 2>&1 | grep -q -- '--access-key'; then
-  echo "AUTH_MODE=AKSK_SUPPORTED"
-  devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY"
-  devbridge auth status   # separate step: a status failure must not mask the login result
-else
-  echo "AUTH_MODE=API_KEY_ONLY"
-  source /tmp/hw_api_key 2>/dev/null
-  if [ -n "$HW_API_KEY" ]; then
-    devbridge auth login --api-key "$HW_API_KEY"
-    devbridge auth status   # separate step: a status failure must not mask the login result
-  else
-    echo "NO_API_KEY"
-  fi
-fi
+export HOME="${HOME:-/root}"
+# Tier 1: platform-injected keyring key (stderr! prefix filter!)
+export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus-session}"
+HW_DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)
+case "$HW_DB_KEY" in
+  devbridge_*) devbridge auth login --api-key "$HW_DB_KEY" ;;
+  *) # Tier 2: AK/SK (image builds; STS needs --security-token)
+    source /tmp/hw_creds.sh 2>/dev/null
+    if devbridge auth login --help 2>&1 | grep -q -- '--access-key'; then
+      devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" \
+        ${HW_SECURITY_TOKEN:+--security-token "$HW_SECURITY_TOKEN"}
+    else # Tier 3: user-provided API Key file
+      source /tmp/hw_api_key 2>/dev/null
+      if [ -n "$HW_API_KEY" ]; then devbridge auth login --api-key "$HW_API_KEY"; fi
+    fi ;;
+esac
+devbridge auth status   # separate step: a status failure must not mask the login result
 ```
 
-- **`AUTH_MODE=AKSK_SUPPORTED`** → done. The temporary AK/SK injected by `huaweicloud_sandbox_credentials` is used directly (validated against IAM before injection). If login fails, surface the CLI error — AK/SK was IAM-validated at injection time, so failures here are rare (expired STS token → re-run `huaweicloud_sandbox_credentials`).
-- **`AUTH_MODE=API_KEY_ONLY`** → the API Key is a long-lived account-level credential stored in its own file `/tmp/hw_api_key`, separate from the temporary AK/SK in `/tmp/hw_creds.sh` — never echo its value. On `NO_API_KEY`, STOP and guide the developer through creating one (wait for the key before continuing):
+- **`API_KEY_KEYRING`** → done, nothing was asked of the user (recent images only; the platform injects and rotates the key).
+- **`AKSK_SUPPORTED`** → done. The temporary AK/SK injected by `huaweicloud_sandbox_credentials` is used directly (validated against IAM before injection). If login fails, surface the CLI error — expired STS token → re-run `huaweicloud_sandbox_credentials`.
+- **`NO_CREDENTIAL`** → first re-run `huaweicloud_sandbox_credentials` and retry (refreshes STS, most common quick fix). Still failing means an older sandbox whose image cannot auto-acquire (images are frozen at sandbox creation and cannot be upgraded in place) — guide the developer through a one-time API Key creation (wait for the key before continuing):
 
 1. **Why (one sentence)**: "沙箱的地址生成服务发布版构建已移除 AK/SK 登录，仅支持 API Key（镜像内置构建仍支持 AK/SK，Agent 已自动探测）。API Key 按账号管理，创建一次长期可用、所有沙箱通用。"
 2. **Where (exact steps)**: open https://devstation.connect.huaweicloud.com/space/devbridge/apikey → 登录控制台 → 选择 DevBridge 场景 → 点击"创建"。**完整值仅在创建时展示一次，立即复制**（`devbridge_` 开头）。

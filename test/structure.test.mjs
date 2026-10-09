@@ -264,15 +264,21 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.match(sandbox, /Never expose tunnel details/);
 
   // Auth must be decided by probing the binary's capability, not by the version string —
-  // image builds retain AK/SK (auto), release builds accept only API Key.
+  // the verified waterfall prefers the platform-injected keyring key (API_KEY_KEYRING),
+  // falls back to image-build AK/SK (AKSK_SUPPORTED), then to the user-provided file
+  // (API_KEY_FILE). STS credentials carry --security-token (401 APIGW.0301 without it).
   assert.match(sandbox, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
-  assert.match(sandbox, /AUTH_MODE=AKSK_SUPPORTED/);
-  assert.match(sandbox, /AUTH_MODE=API_KEY_ONLY/);
+  assert.match(sandbox, /API_KEY_KEYRING/);
+  assert.match(sandbox, /AKSK_SUPPORTED/);
+  assert.match(sandbox, /API_KEY_FILE|NO_CREDENTIAL/);
+  assert.match(sandbox, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/, 'keyring read must capture stderr');
+  assert.match(sandbox, /devbridge_/);
   assert.match(
     sandbox,
     /auth login --access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/,
     'image-build branch must teach the direct AK/SK login',
   );
+  assert.match(sandbox, /--security-token "\$HW_SECURITY_TOKEN"/, 'STS login must include the security token');
 
   // The API Key guidance (release-build branch) must survive, incl. version detection
   // and the in-place upgrade.

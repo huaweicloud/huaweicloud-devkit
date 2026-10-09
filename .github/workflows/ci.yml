@@ -107,8 +107,14 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - name: npm audit
-        run: npm audit --omit=dev --audit-level=high
+      # Blocking gate: production dependencies only (what ships to consumers).
+      # Dev-only advisories cannot reach users of this package; the full audit
+      # below keeps them visible without blocking PRs.
+      - name: npm audit (production dependencies)
+        run: npm audit --audit-level=high --omit=dev
+      - name: npm audit (all dependencies, informational)
+        run: npm audit --audit-level=high
+        continue-on-error: true
       - name: gitleaks secret scan
         run: |
           curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o gitleaks.tgz

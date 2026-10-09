@@ -1131,28 +1131,124 @@ export async function closeSession(workspaceId, username) {
   return true;
 }
 
-// Build a shell snippet that authenticates devbridge by probing the binary build:
-// image builds (2026-09+) keep `--access-key/--secret-key`, release builds accept
-// only `--api-key`. Uses injected files written by huaweicloud_sandbox_credentials
-// (/tmp/hw_creds.sh for AK/SK, /tmp/hw_api_key for the long-lived API Key).
+// Build a shell snippet that authenticates devbridge via a verified waterfall:
+//   Tier 1  keyring API Key  — hwcloud keyring get HW_DEVBRIDGE_API_KEY (platform-injected
+//           on hd-space-ai-shell images; the value goes to STDERR so 2>&1 is mandatory and
+//           the devbridge_ prefix filters "(not found)" / error text). A light revive step
+//           (restart the D-Bus session bus + re-unlock the keyring daemon, no dnf) retries
+//           once when the first read fails. Preferred: devbridge is deprecating AK/SK auth.
+//   Tier 2  AK/SK            — image builds keep --access-key/--secret-key; STS credentials
+//           from /tmp/hw_creds.sh need --security-token or the gateway rejects with 401
+//           APIGW.0301; 0.1.x binaries additionally advertise --huaweicloud in help.
+//   Tier 3  /tmp/hw_api_key  — release builds accept only --api-key; the file is written by
+//           huaweicloud_sandbox_credentials from HW_API_KEY / the api_key param.
+// Every tier performs a real `devbridge auth login` and verifies with `auth status`
+// (must print "Logged in"); on failure the waterfall falls through to the next tier.
+// DB_ATTEMPT_* lines are non-sensitive diagnostics for support escalation.
 export function buildDevbridgeAuthProbe() {
   return [
     `export PATH="$HOME/.huawei/bin:$PATH"`,
-    `source /tmp/hw_creds.sh 2>/dev/null`,
-    `if devbridge auth login --help 2>&1 | grep -q -- '--access-key'; then`,
-    `  echo "DB_AUTH_MODE=AKSK_SUPPORTED"`,
-    `  devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" > /tmp/db_auth.log 2>&1`,
+    `export HOME="\${HOME:-/root}"`,
+    `DB_OK=0`,
+    `db_login_ok() { devbridge auth status 2>/dev/null | grep -q "Logged in"; }`,
+    `db_diag() { echo "DB_ATTEMPT_$1=$2"; }`,
+    ``,
+    `# ---- Tier 1: API Key from the sandbox keyring (platform auto-injection) ----`,
+    `HW_DB_KEY=""`,
+    `if command -v hwcloud >/dev/null 2>&1; then`,
+    `  export DBUS_SESSION_BUS_ADDRESS="\${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus-session}"`,
+    `  HW_DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `  case "$HW_DB_KEY" in`,
+    `    "devbridge_"*) : ;;`,
+    `    *)`,
+    `      # Light revive: bus down or a locked/absent keyring daemon — restart both, retry once.`,
+    `      if ! pgrep -x dbus-daemon >/dev/null 2>&1 && command -v dbus-daemon >/dev/null 2>&1; then`,
+    `        dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --fork --nopidfile >/dev/null 2>&1 || true`,
+    `        sleep 1`,
+    `      fi`,
+    `      if command -v gnome-keyring-daemon >/dev/null 2>&1; then`,
+    `        pkill -f gnome-keyring-daemon 2>/dev/null || true`,
+    `        sleep 1`,
+    `        printf '\\n' | gnome-keyring-daemon --unlock >/dev/null 2>&1 || true`,
+    `        sleep 1`,
+    `        HW_DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `      fi`,
+    `      case "$HW_DB_KEY" in "devbridge_"*) : ;; *) HW_DB_KEY="";; esac`,
+    `      ;;`,
+    `  esac`,
     `else`,
-    `  echo "DB_AUTH_MODE=API_KEY_ONLY"`,
-    `  source /tmp/hw_api_key 2>/dev/null`,
-    `  if [ -n "$HW_API_KEY" ]; then`,
-    `    devbridge auth login --api-key "$HW_API_KEY" > /tmp/db_auth.log 2>&1`,
+    `  db_diag KEYRING "hwcloud-not-installed"`,
+    `fi`,
+    `if [ -n "$HW_DB_KEY" ]; then`,
+    `  devbridge auth login --api-key "$HW_DB_KEY" >/tmp/db_auth.log 2>&1`,
+    `  if db_login_ok; then`,
+    `    echo "DB_AUTH_MODE=API_KEY_KEYRING"`,
+    `    DB_OK=1`,
     `  else`,
-    `    echo "DB_AUTH_MODE=NO_API_KEY"`,
+    `    db_diag KEYRING "login-failed"`,
+    `  fi`,
+    `else`,
+    `  db_diag KEYRING "no-valid-key"`,
+    `fi`,
+    ``,
+    `# ---- Tier 2: AK/SK from /tmp/hw_creds.sh (image builds; STS needs --security-token) ----`,
+    `if [ "$DB_OK" -eq 0 ]; then`,
+    `  source /tmp/hw_creds.sh 2>/dev/null`,
+    `  if devbridge auth login --help 2>&1 | grep -q -- '--access-key' && [ -n "$HW_ACCESS_KEY" ]; then`,
+    `    DB_TOKEN_ARGS=""`,
+    `    [ -n "$HW_SECURITY_TOKEN" ] && DB_TOKEN_ARGS="--security-token \\"$HW_SECURITY_TOKEN\\""`,
+    `    if devbridge auth login --help 2>&1 | grep -q -- '--huaweicloud'; then`,
+    `      devbridge auth login --huaweicloud --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
+    `    else`,
+    `      devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
+    `    fi`,
+    `    if db_login_ok; then`,
+    `      echo "DB_AUTH_MODE=AKSK_SUPPORTED"`,
+    `      DB_OK=1`,
+    `    else`,
+    `      db_diag AKSK "login-failed"`,
+    `    fi`,
+    `  else`,
+    `    db_diag AKSK "binary-or-creds-unavailable"`,
     `  fi`,
     `fi`,
+    ``,
+    `# ---- Tier 3: API Key from /tmp/hw_api_key (release builds, user-provided) ----`,
+    `if [ "$DB_OK" -eq 0 ]; then`,
+    `  source /tmp/hw_api_key 2>/dev/null`,
+    `  if [ -n "$HW_API_KEY" ]; then`,
+    `    devbridge auth login --api-key "$HW_API_KEY" >/tmp/db_auth.log 2>&1`,
+    `    if db_login_ok; then`,
+    `      echo "DB_AUTH_MODE=API_KEY_FILE"`,
+    `      DB_OK=1`,
+    `    else`,
+    `      db_diag APIKEY_FILE "login-failed"`,
+    `    fi`,
+    `  else`,
+    `    db_diag APIKEY_FILE "no-file"`,
+    `  fi`,
+    `fi`,
+    ``,
+    `if [ "$DB_OK" -eq 0 ]; then`,
+    `  echo "DB_AUTH_MODE=NO_CREDENTIAL"`,
+    `fi`,
+    `unset HW_DB_KEY HW_API_KEY DB_TOKEN_ARGS 2>/dev/null`,
     `devbridge auth status > /tmp/db_status.log 2>&1 || true`,
   ].join('\n');
+}
+
+// Parse the raw stdout of buildDevbridgeAuthProbe into { authMode, attempts }.
+// authMode is the LAST DB_AUTH_MODE line; attempts collects the non-sensitive
+// DB_ATTEMPT_* diagnostics emitted by tiers that failed and fell through.
+export function parseDevbridgeAuthOutput(stdout) {
+  const text = String(stdout || '');
+  const modes = text.match(/DB_AUTH_MODE=([A-Z_]+)/g) || [];
+  const authMode = modes.length > 0 ? modes[modes.length - 1].split('=')[1] : '';
+  const attempts = {};
+  for (const m of text.matchAll(/^DB_ATTEMPT_([A-Z_]+)=(\S+)$/gm)) {
+    attempts[m[1]] = m[2];
+  }
+  return { authMode, attempts };
 }
 
 // Start (or replace) a devbridge host bound to a single port, extract the public
@@ -1216,19 +1312,24 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
 
   const authScript = buildDevbridgeAuthProbe();
   const authResult = await execOneShot(workspaceId, authScript, username, 30000);
-  const authModes = String(authResult.stdout || '').match(/DB_AUTH_MODE=([A-Z_]+)/g) || [];
-  const authMode = authModes.length > 0 ? authModes[authModes.length - 1].split('=')[1] : '';
+  const { authMode, attempts } = parseDevbridgeAuthOutput(authResult.stdout);
 
-  if (authMode === 'NO_API_KEY' || (!authMode && !String(authResult.stdout || '').includes('AKSK_SUPPORTED'))) {
+  if (authMode !== 'API_KEY_KEYRING' && authMode !== 'AKSK_SUPPORTED' && authMode !== 'API_KEY_FILE') {
     const loginOutput = String(authResult.stdout || '') + String(authResult.stderr || '');
     return {
       ok: false,
-      error: 'DevBridge authentication failed: the release build requires an API Key that has not been injected.',
+      error: 'DevBridge authentication failed: no usable credential in the sandbox.',
       authMode: authMode || 'UNKNOWN',
+      attempts,
       hint:
-        'Create an API Key at https://devstation.connect.huaweicloud.com/space/devbridge/apikey, set it locally via ' +
-        '`export HW_API_KEY=<key>`, then re-run huaweicloud_sandbox_credentials so it is injected into the sandbox. ' +
-        'Then call huaweicloud_sandbox_expose_tunnel again.',
+        'No DevBridge credential is available in this sandbox. Suggested next steps:\n' +
+        '1) Re-run huaweicloud_sandbox_credentials once, then retry huaweicloud_sandbox_expose_tunnel — ' +
+        'this refreshes the temporary AK/SK (most common quick fix when they simply expired) and rewrites /tmp/hw_creds.sh.\n' +
+        '2) If it still fails, this sandbox was created on an older image and cannot auto-acquire an API Key ' +
+        '(the image cannot be upgraded in place). One-time manual fallback: create an API Key at ' +
+        'https://devstation.connect.huaweicloud.com/space/devbridge/apikey, run `export HW_API_KEY=<key>` locally, ' +
+        're-run huaweicloud_sandbox_credentials, then retry.\n' +
+        '3) The "attempts" field shows which tiers were tried and why they failed — include it when escalating to the platform team.',
       loginOutput,
     };
   }

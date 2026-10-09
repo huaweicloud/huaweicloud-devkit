@@ -15,6 +15,7 @@ import {
   buildDeployCheckScript,
   parseDeployCheckOutput,
   buildDevbridgeAuthProbe,
+  parseDevbridgeAuthOutput,
   buildDevbridgeExposeScript,
   parseDevbridgeExposeOutput,
   validateTunnelPort,
@@ -178,15 +179,58 @@ test('D3-C3: parseDeployCheckOutput returns nginx_serving FAIL when no response'
   assert.ok(result.missingSteps.includes('nginx_serving'));
 });
 
-test('D: buildDevbridgeAuthProbe probes AKSK build before API-Key-only branch', () => {
+test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → AK/SK → file)', () => {
   const script = buildDevbridgeAuthProbe();
+  // Tier 1: keyring API Key — stderr capture (2>&1), devbridge_ prefix filter, env self-heal
+  assert.match(script, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/);
+  assert.match(script, /"devbridge_"\*\)/);
+  assert.match(script, /DB_AUTH_MODE=API_KEY_KEYRING/);
+  assert.match(script, /DBUS_SESSION_BUS_ADDRESS.*unix:path=\/run\/dbus-session/);
+  assert.match(script, /HOME.*:-\/root/);
+  // Tier 1 light revive: bus restart + unlocked keyring daemon, no package installs
+  assert.match(script, /dbus-daemon --session/);
+  assert.match(script, /gnome-keyring-daemon --unlock/);
+  assert.ok(!script.includes('dnf install'), 'waterfall must not install packages at runtime');
+  // Tier 2: AK/SK — STS token is mandatory (401 APIGW.0301 without it), 0.1.x --huaweicloud is conditional
   assert.match(script, /devbridge auth login --help.*--access-key/s);
   assert.match(script, /--access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/);
+  assert.match(script, /DB_TOKEN_ARGS="--security-token \\"\$HW_SECURITY_TOKEN\\""|DB_TOKEN_ARGS=.*--security-token/);
+  assert.match(script, /grep -q -- '--huaweicloud'/);
   assert.match(script, /DB_AUTH_MODE=AKSK_SUPPORTED/);
-  assert.match(script, /--api-key "\$HW_API_KEY"/);
-  assert.match(script, /DB_AUTH_MODE=NO_API_KEY/);
+  // Tier 3: user-provided file fallback
   assert.match(script, /source \/tmp\/hw_creds\.sh/);
   assert.match(script, /source \/tmp\/hw_api_key/);
+  assert.match(script, /--api-key "\$HW_API_KEY"/);
+  assert.match(script, /DB_AUTH_MODE=API_KEY_FILE/);
+  // All tiers verified via real login + auth status; diagnostics emitted; final failure mode
+  assert.match(script, /db_login_ok\(\) \{ devbridge auth status.*Logged in/);
+  assert.match(script, /DB_ATTEMPT_/);
+  assert.match(script, /DB_AUTH_MODE=NO_CREDENTIAL/);
+  // Secrets are not left in the environment after the probe
+  assert.match(script, /unset HW_DB_KEY HW_API_KEY DB_TOKEN_ARGS/);
+});
+
+test('D: parseDevbridgeAuthOutput extracts the final auth mode and per-tier attempt diagnostics', () => {
+  const stdout = [
+    'DB_ATTEMPT_KEYRING=no-valid-key',
+    'DB_ATTEMPT_AKSK=binary-or-creds-unavailable',
+    'DB_ATTEMPT_APIKEY_FILE=no-file',
+    'DB_AUTH_MODE=NO_CREDENTIAL',
+  ].join('\n');
+  const parsed = parseDevbridgeAuthOutput(stdout);
+  assert.equal(parsed.authMode, 'NO_CREDENTIAL');
+  assert.equal(parsed.attempts.KEYRING, 'no-valid-key');
+  assert.equal(parsed.attempts.AKSK, 'binary-or-creds-unavailable');
+  assert.equal(parsed.attempts.APIKEY_FILE, 'no-file');
+
+  const success = parseDevbridgeAuthOutput('DB_ATTEMPT_KEYRING=no-valid-key\nDB_AUTH_MODE=AKSK_SUPPORTED\n');
+  assert.equal(success.authMode, 'AKSK_SUPPORTED');
+  assert.equal(success.attempts.KEYRING, 'no-valid-key');
+  assert.deepEqual(success.attempts.AKSK, undefined);
+
+  const empty = parseDevbridgeAuthOutput('');
+  assert.equal(empty.authMode, '');
+  assert.deepEqual(empty.attempts, {});
 });
 
 test('D: buildDevbridgeExposeScript binds the host to the caller-provided port', () => {

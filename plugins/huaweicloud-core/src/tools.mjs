@@ -1556,10 +1556,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       if (sandboxWsIdCred) result.apiKeyInjected = Boolean(apiKey);
       if (apiKey) {
         result.apiKeyHint =
-          'DevBridge API Key written to /tmp/hw_api_key (0600, kept separate from the temporary AK/SK in /tmp/hw_creds.sh — it is a long-lived account-level credential). Release builds of devbridge 0.2.x use it via: source /tmp/hw_api_key && devbridge auth login --api-key "$HW_API_KEY". Image builds retain AK/SK login — the huawei-sandbox skill probes the capability at expose time. Never echo the key into logs.';
+          'DevBridge API Key written to /tmp/hw_api_key (0600, kept separate from the temporary AK/SK in /tmp/hw_creds.sh — it is a long-lived account-level credential). At expose time the auth waterfall prefers the platform-injected keyring key (API_KEY_KEYRING), falls back to AK/SK, then to this file (API_KEY_FILE). Never echo the key into logs.';
       } else {
         result.apiKeyHint =
-          'No DevBridge API Key provided — release builds of devbridge 0.2.x cannot log in with AK/SK (image builds retain AK/SK; the huawei-sandbox skill probes the build at expose time and uses the injected AK/SK directly when supported). For release builds, ask the user for an API Key (created at https://devstation.connect.huaweicloud.com/space/devbridge/apikey) and re-run with api_key, or set the local HW_API_KEY environment variable (preferred — keeps the key out of the conversation).';
+          'No DevBridge API Key provided locally — that is fine on recent sandbox images (hd-space-ai-shell line): the platform auto-injects the key into the sandbox keyring (HW_DEVBRIDGE_API_KEY via hwcloud) and the expose-time auth waterfall picks it up with zero user action. Only older sandboxes (created before the injection existed, image not upgradeable in place) need the one-time manual fallback: create an API Key at https://devstation.connect.huaweicloud.com/space/devbridge/apikey, set the local HW_API_KEY environment variable (preferred — keeps the key out of the conversation), and re-run this tool to inject it as /tmp/hw_api_key.';
       }
       if (validation.projectId) result.projectId = validation.projectId;
       if (validation.warning) result.warning = validation.warning;
