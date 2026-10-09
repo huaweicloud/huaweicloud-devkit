@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.8-next.2 (2026-10-09)
+
+- fix(security): resolve npm audit failures and scope the CI gate to shipped deps
+- style: prettier formatting for the auth waterfall files
+- feat(sandbox): auto-acquire DevBridge API Key from the sandbox keyring
+- feat(skills): rename 8 service skills to huawei-cloud-* prefix (#834)
+- chore(release): 1.1.8-next.1
+- KooCLI first-use experience: background auto-install + friendly hint + no-restart hot-reload (#832)
+- refactor(sandbox): rename resolveProxyNodePort 2nd param to nginxListenPort (#738)
+- fix(sandbox): proxy nginx listens on targetPort with collision-safe nodePort (#738)
+- fix(approval): implement D4-24 precise JSON contract for token expiry/replay (#745)
+
 ## 1.1.8-next.0 (2026-09-29)
 
 - chore: set version-override to 1.1.8 (prepare 1.1.8-next) (#829)
