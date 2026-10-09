@@ -351,10 +351,12 @@ HuaweiCloud DevKit collects **anonymous** telemetry to understand usage patterns
 ### What We Collect
 
 - **Installation ID** — a SHA-256 hash derived from a machine fingerprint (hostname + MAC address + OS type + home directory). The raw values are never sent or stored.
+- **User hash** — a server-generated user identifier hash (produced by the Huawei Cloud backend `check-user` / `generatorUserIDHash` API). It is cached locally and sent with every event; it is not derived from any local PII.
 - **Plugin version** — the installed `huaweicloud-devkit` version.
 - **Agent harness** — which AI coding agent is running (e.g. `opencode`, `codex`, `codearts`).
 - **Agent version** — the agent's version string.
 - **OS type and version** — e.g. `Linux`, `Darwin`, `Windows_NT`.
+- **Capability** — how the event was triggered: `mcp` (MCP tool invocation) or `cli` (CLI command), derived from the event key.
 - **Event type** — what happened, e.g. `plugin:install`, `plugin:first_use`, `dau:active_today` (daily active), `tool:<tool_name>`, `skill:retrieve`, `sandbox:connect`.
 - **Event value** — a short sanitized string (max 255 chars, newlines/tabs stripped). For tool events this is typically `1`; for skill retrieval it is the skill name.
 

@@ -345,10 +345,12 @@ HuaweiCloud DevKit 收集**匿名**遥测数据，以了解使用模式并改进
 ### 收集哪些数据
 
 - **安装 ID** — 基于机器指纹（主机名 + MAC 地址 + OS 类型 + home 目录）生成的 SHA-256 哈希。原始值不会被发送或存储。
+- **用户哈希** — 服务端生成的用户标识哈希（由华为云后端 `check-user` / `generatorUserIDHash` API 生成）。本地缓存后随每次事件发送，非本地 PII 派生。
 - **插件版本** — 已安装的 `huaweicloud-devkit` 版本。
 - **Agent harness** — 正在运行的 AI 编码助手（如 `opencode`、`codex`、`codearts`）。
 - **Agent 版本** — Agent 版本号。
 - **OS 类型和版本** — 如 `Linux`、`Darwin`、`Windows_NT`。
+- **Capability** — 事件触发方式：`mcp`（MCP 工具调用）或 `cli`（CLI 命令），由事件 key 派生。
 - **事件类型** — 发生了什么，如 `plugin:install`（安装）、`plugin:first_use`（首次使用）、`dau:active_today`（日活）、`tool:<工具名>`（工具调用）、`skill:retrieve`（技能加载）、`sandbox:connect`（沙箱连接）。
 - **事件值** — 简短的脱敏字符串（最长 255 字符，换行符/制表符已清除）。工具事件通常为 `1`；技能加载事件为技能名称。
 
