@@ -226,6 +226,48 @@ test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
   }
 });
 
+test('evaluateCommandRisk decodes ANSI-C quoting before rule matching (#866 D4-15)', () => {
+  // `$'...'` ANSI-C strings decode \xNN/\uNNNN/octal escapes at execution time;
+  // the engine must decode them before matching or the inner command escapes
+  // every rule (#866 D4-15).
+  const payloads = [
+    // \x72='r', \x2d='-' → decoded: rm -rf /
+    `bash -c $'\\x72m -\\x72f /'`,
+    // octal \162='r' → decoded: rm -rf /
+    `bash -c $'\\162m -rf /'`,
+    // multiple ANSI-C segments concatenate in the shell
+    `bash -c $'mkfs '\\'' /dev/sda1'`,
+  ];
+  for (const cmd of payloads) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny after ANSI-C decode`);
+    assert.equal(result.findings[0].ruleId, 'hwc-sandbox-destructive-command', cmd);
+  }
+
+  // Decoded hcloud destructive writes still hit the destructive-operation rule.
+  const del = evaluateCommandRisk(`bash -c $'\\u0068cloud ECS DeleteServers --cli-region=cn-north-4'`);
+  assert.equal(del.decision, 'warn');
+  assert.ok(
+    del.findings.some((f) => f.ruleId === 'hwc-destructive-delete-operation'),
+    'decoded hcloud Delete should match destructive rule',
+  );
+
+  // Benign ANSI-C strings must not trigger findings (no false positives).
+  for (const cmd of [`echo $'hello world'`, `bash -c $'ls -la /workspace'`, `echo $'\\x41\\x42\\x43'`]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'allow', `${cmd} should stay allowed`);
+    assert.equal(result.findings.length, 0, `${cmd} should have no findings`);
+  }
+});
+
+test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
+  for (const cmd of ['env | grep HW_', 'printenv | grep HW_ACCESS', 'env | grep HUAWEICLOUD']) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-env-dump');
+  }
+});
+
 test('evaluateCommandRisk warns on plaintext secret in CLI args (#561 D4-3)', () => {
   const cases = [
     'hcloud ECS CreateServers --adminPass=SuperSecret123!',
