@@ -171,6 +171,45 @@ test('D4-7: evaluateArtifacts denies broad IAM actions=["*:*"] in JSON array for
   assert.equal(result.findings[0].ruleId, 'hwc-iam-broad-action-array');
 });
 
+test('D4-21: evaluateArtifacts detects HCL/Terraform native actions = ["*"] in huaweicloud_iam_policy resource', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'main.tf',
+      content:
+        'resource "huaweicloud_iam_policy" "overprivileged" {\n  name = "broad"\n  policy_document = jsonencode({\n    Statement = [{ Effect = "Allow", Action = ["*"], Resource = ["*"] }]\n  })\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0, 'findings must be non-empty');
+  assert.ok(
+    result.findings.some((finding) => finding.ruleId === 'hwc-iam-broad-action-array'),
+    'must match hwc-iam-broad-action-array',
+  );
+});
+
+test('D4-21: evaluateArtifacts denies Terraform actions = ["*:*"] array grant inside policy block', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'policy.tf',
+      content: 'resource "huaweicloud_iam_policy" "p" {\n  actions = ["*:*"]\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-broad-action-array');
+});
+
+test('evaluateArtifacts does not flag scoped Terraform actions = ["ecs:servers:list"]', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'scoped.tf',
+      content: 'resource "huaweicloud_iam_policy" "p" {\n  actions = ["ecs:servers:list"]\n  expires_at = "2026-01-01T00:00:00Z"\n  owner = "team-a"\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'allow');
+  assert.equal(result.findings.length, 0);
+});
+
 test('evaluateArtifacts does not flag scoped IAM actions like actions=["ecs:servers:list"]', () => {
   const result = evaluateArtifacts([
     {
