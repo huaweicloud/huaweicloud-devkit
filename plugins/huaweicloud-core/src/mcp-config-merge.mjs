@@ -32,26 +32,74 @@ function withDefaultTimeout(entry, defaultTimeout) {
   return entry;
 }
 
-// OpenCode style entry: { type, command: ['node', mcpPath, ...userArgs], ... }
-export function mergeCommandStyle(existing, { mcpPath, defaultTimeout = 300000 } = {}) {
+// OpenCode style entry: { type, command: ['node', mcpPath, ...userArgs], ... }.
+// era 'v1' writes the legacy shape (enabled + flat timeout); era 'v2' writes the
+// native V2 shape (no flat `enabled`/`timeout` — V2 uses `disabled` and a nested
+// timeout object, so both are left to OpenCode defaults unless the user set them).
+export function mergeCommandStyle(existing, { mcpPath, defaultTimeout = 300000, era = 'v1' } = {}) {
+  const v2 = era === 'v2';
+  const freshDefault = () =>
+    v2
+      ? { type: 'local', command: ['node', mcpPath] }
+      : withDefaultTimeout({ type: 'local', command: ['node', mcpPath], enabled: true }, defaultTimeout);
+
   if (!isPlainObject(existing)) {
-    return {
-      entry: withDefaultTimeout({ type: 'local', command: ['node', mcpPath], enabled: true }, defaultTimeout),
-      changed: true,
-    };
+    return { entry: freshDefault(), changed: true };
   }
   const commandIsNodeStyle = Array.isArray(existing.command) && existing.command[0] === 'node';
   if (!commandIsNodeStyle) {
     // Foreign wrapper entry: keep current overwrite behavior.
-    return {
-      entry: withDefaultTimeout({ type: 'local', command: ['node', mcpPath], enabled: true }, defaultTimeout),
-      changed: true,
-    };
+    return { entry: freshDefault(), changed: true };
   }
   const merged = { ...existing, type: 'local', command: ['node', mcpPath, ...existing.command.slice(2)] };
-  if (merged.timeout === undefined && defaultTimeout) merged.timeout = defaultTimeout;
-  if (merged.enabled === undefined) merged.enabled = true;
+  if (v2) {
+    // Native V2 shape: drop V1-only flat `enabled`/`timeout`; `disabled`,
+    // `environment`, and any nested timeout object are preserved via the spread.
+    delete merged.enabled;
+    if (typeof merged.timeout !== 'object' || merged.timeout === null || Array.isArray(merged.timeout)) {
+      delete merged.timeout;
+    }
+  } else {
+    if (merged.timeout === undefined && defaultTimeout) merged.timeout = defaultTimeout;
+    if (merged.enabled === undefined) merged.enabled = true;
+  }
   return { entry: merged, changed: !sameJson(merged, existing) };
+}
+
+// Classify an existing OpenCode config by which MCP form the DevKit entry uses:
+// `mcp.servers.*` (native V2) vs a flat `mcp.<name>` (legacy V1). Returns 'unknown'
+// when the config has no MCP section or no recognizable server entry.
+export function detectOpenCodeEra(config) {
+  if (!isPlainObject(config) || !isPlainObject(config.mcp)) return 'unknown';
+  if (isPlainObject(config.mcp.servers)) return 'v2';
+  if (Object.keys(config.mcp).some((key) => key !== 'servers' && isPlainObject(config.mcp[key]))) return 'v1';
+  return 'unknown';
+}
+
+// Place (or merge) the DevKit entry into an OpenCode config at the correct level
+// for the target era. Returns the new config plus whether an entry pre-existed and
+// whether anything changed, so callers can skip writes and restore backup deltas.
+export function mergeOpenCodeEntry(config, { mcpPath, era = 'v1' } = {}) {
+  const base = isPlainObject(config) ? config : {};
+  const key = 'huaweicloud-devkit';
+  const next = { ...base, mcp: { ...(isPlainObject(base.mcp) ? base.mcp : {}) } };
+
+  if (era === 'v2') {
+    const servers = isPlainObject(next.mcp.servers) ? { ...next.mcp.servers } : {};
+    // An entry may live in the native `servers` map or the legacy flat map; merge
+    // from whichever is present so user fields survive an era switch.
+    const existing = servers[key] ?? next.mcp[key];
+    const { entry } = mergeCommandStyle(existing, { mcpPath, era: 'v2' });
+    servers[key] = entry;
+    if (isPlainObject(next.mcp[key])) delete next.mcp[key];
+    next.mcp.servers = servers;
+    return { config: next, entry, changed: !existing || !sameJson(entry, existing), existing: Boolean(existing) };
+  }
+
+  const existing = next.mcp[key];
+  const { entry, changed } = mergeCommandStyle(existing, { mcpPath, era: 'v1' });
+  next.mcp[key] = entry;
+  return { config: next, entry, changed: !existing || changed, existing: Boolean(existing) };
 }
 
 // WorkBuddy/AtomCode/CodeArts style entry: { command: 'node', args: [mcpPath, ...userArgs], env, ... }
@@ -105,17 +153,19 @@ export function extractUserDelta(entry, style) {
   } else {
     return null;
   }
-  if (isPlainObject(entry.env)) {
-    const userEnv = Object.fromEntries(Object.entries(entry.env).filter(([key]) => !REQUIRED_ENV_KEYS.has(key)));
+  const env = isPlainObject(entry.env) ? entry.env : isPlainObject(entry.environment) ? entry.environment : null;
+  if (env) {
+    const userEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !REQUIRED_ENV_KEYS.has(key)));
     if (Object.keys(userEnv).length > 0) delta.env = userEnv;
   }
   if (entry.timeout !== undefined && entry.timeout !== 300000) delta.timeout = entry.timeout;
-  if (entry.enabled === false) delta.enabled = false;
+  // Canonical "disabled" marker: V1 uses `enabled:false`, V2 uses `disabled:true`.
+  if (entry.enabled === false || entry.disabled === true) delta.enabled = false;
   return Object.keys(delta).length > 0 ? delta : null;
 }
 
 // Apply a previously saved delta onto a freshly written default entry.
-export function applyUserDelta(entry, delta, style) {
+export function applyUserDelta(entry, delta, style, era = 'v1') {
   if (!isPlainObject(entry) || !isPlainObject(delta)) return entry;
   const merged = { ...entry };
   if (style === 'command' && Array.isArray(delta.commandExtra)) {
@@ -124,10 +174,24 @@ export function applyUserDelta(entry, delta, style) {
     merged.args = [...entry.args, ...delta.argsExtra];
   }
   if (isPlainObject(delta.env)) {
-    merged.env = { ...(isPlainObject(entry.env) ? entry.env : {}), ...delta.env };
+    // V2 native entries use `environment`; V1 (and args-style agents) use `env`.
+    if (style === 'command' && era === 'v2') {
+      merged.environment = { ...(isPlainObject(merged.environment) ? merged.environment : {}), ...delta.env };
+      delete merged.env;
+    } else {
+      merged.env = { ...(isPlainObject(merged.env) ? merged.env : {}), ...delta.env };
+    }
   }
   if (delta.timeout !== undefined) merged.timeout = delta.timeout;
-  if (delta.enabled === false) merged.enabled = false;
+  if (delta.enabled === false) {
+    // Canonical disabled marker → era-appropriate field.
+    if (style === 'command' && era === 'v2') {
+      merged.disabled = true;
+      delete merged.enabled;
+    } else {
+      merged.enabled = false;
+    }
+  }
   return merged;
 }
 
