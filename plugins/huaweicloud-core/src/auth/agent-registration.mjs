@@ -40,7 +40,8 @@ function readJsonSafe(path) {
 function opencodeRegistered() {
   const path = opencodeConfigFile();
   const cfg = readJsonSafe(path);
-  return Boolean(cfg?.mcp?.['huaweicloud-devkit']);
+  // V2 native (`mcp.servers.*`) or V1 legacy (`mcp.*`) form.
+  return Boolean(cfg?.mcp?.['huaweicloud-devkit'] || cfg?.mcp?.servers?.['huaweicloud-devkit']);
 }
 
 function codexDesktopRegistered() {

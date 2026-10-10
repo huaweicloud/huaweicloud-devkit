@@ -197,7 +197,9 @@ const targets = [
     hasServer: (p) => {
       if (!existsSync(p)) return false;
       try {
-        return Boolean(JSON.parse(readFileSync(p, 'utf8')).mcp?.['huaweicloud-devkit']);
+        const cfg = JSON.parse(readFileSync(p, 'utf8'));
+        // V2 native (mcp.servers) or V1 legacy (mcp.<name>) form.
+        return Boolean(cfg.mcp?.['huaweicloud-devkit'] || cfg.mcp?.servers?.['huaweicloud-devkit']);
       } catch {
         return false;
       }
