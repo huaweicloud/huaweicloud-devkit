@@ -830,6 +830,20 @@ test('READMEs recommend @latest for updates', () => {
   assert.match(zh, /huaweicloud-devkit@latest update --target all/);
 });
 
+test('READMEs disclose telemetry with opt-out method (#871)', () => {
+  const en = readFileSync(join(root, 'README.md'), 'utf8');
+  assert.match(en, /## Telemetry/);
+  assert.match(en, /HUAWEICLOUD_DEVKIT_TELEMETRY=off/);
+  assert.match(en, /do\s+not/i); // "What We Do Not Collect"
+  assert.match(en, /SHA-256/);
+
+  const zh = readFileSync(join(root, 'README.zh-CN.md'), 'utf8');
+  assert.match(zh, /## 遥测/);
+  assert.match(zh, /HUAWEICLOUD_DEVKIT_TELEMETRY=off/);
+  assert.match(zh, /不.*收集/); // "不收集哪些数据"
+  assert.match(zh, /SHA-256/);
+});
+
 test('cmdUpdate has no trailing unreachable reinstall; cmdReinstall keeps it', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
   // cmdUpdate（'update'/'upgrade' 入口）本身不得做"卸载+重装"；各 target 分支均 return。
