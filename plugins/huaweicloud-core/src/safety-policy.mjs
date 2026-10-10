@@ -533,12 +533,19 @@ export function classifyTextCommand(command, options = {}) {
   // (`\$HW_*`) or single-quoted (`'$HW_*'`, which the shell never expands) —
   // while unescaped `$HW_*` is a potential expansion/dump regardless of the
   // command. No command-name whitelist, so no false negative (#650 review).
+  //
+  // Windows cmd has no `$VAR` expansion: it uses `%VAR%` (and `!VAR!` under
+  // delayed expansion) plus `set VAR` to print a single variable. The branches
+  // below cover that syntax so `echo %HW_ACCESS_KEY%` and `set HW_SECRET_KEY`
+  // are denied like their Unix counterparts (#866 D4-2). `set VAR=value`
+  // assignments are exempted via the negative lookahead (no read happens).
   for (const candidate of candidates) {
     if (
       /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(
         candidate,
       ) ||
-      /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(
+      /%(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)%/i.test(candidate) ||
+      /(?:^|\s)(?:printenv|set)\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)(?![\w=])/i.test(
         candidate,
       )
     ) {
