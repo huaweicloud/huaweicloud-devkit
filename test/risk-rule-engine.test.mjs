@@ -164,6 +164,122 @@ test('evaluateCommandRisk blocks IAM admin policy creation via CLI flag', () => 
   assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
 });
 
+test('D4-21: evaluateArtifacts detects broad IAM actions=["*"] in CLI array form', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'iam-policy.json',
+      content: 'actions=["*"] effect=Allow',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0, 'findings must be non-empty');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-broad-action-array');
+});
+
+test('D4-7: evaluateArtifacts denies broad IAM actions=["*:*"] in JSON array form', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'agency-policy.json',
+      content: '{"actions":["*:*"],"effect":"Allow"}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-broad-action-array');
+});
+
+test('D4-21: evaluateArtifacts detects HCL/Terraform native actions = ["*"] in huaweicloud_iam_policy resource', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'main.tf',
+      content:
+        'resource "huaweicloud_iam_policy" "overprivileged" {\n  name = "broad"\n  policy_document = jsonencode({\n    Statement = [{ Effect = "Allow", Action = ["*"], Resource = ["*"] }]\n  })\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0, 'findings must be non-empty');
+  assert.ok(
+    result.findings.some((finding) => finding.ruleId === 'hwc-iam-broad-action-array'),
+    'must match hwc-iam-broad-action-array',
+  );
+});
+
+test('D4-21: evaluateArtifacts denies Terraform actions = ["*:*"] array grant inside policy block', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'policy.tf',
+      content: 'resource "huaweicloud_iam_policy" "p" {\n  actions = ["*:*"]\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-broad-action-array');
+});
+
+test('evaluateArtifacts does not flag scoped Terraform actions = ["ecs:servers:list"]', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'scoped.tf',
+      content: 'resource "huaweicloud_iam_policy" "p" {\n  actions = ["ecs:servers:list"]\n  expires_at = "2026-01-01T00:00:00Z"\n  owner = "team-a"\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'allow');
+  assert.equal(result.findings.length, 0);
+});
+
+test('evaluateArtifacts does not flag scoped IAM actions like actions=["ecs:servers:list"]', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'scoped-policy.json',
+      content: 'actions=["ecs:servers:list"] effect=Allow',
+    },
+  ]);
+  assert.equal(result.decision, 'allow');
+  assert.equal(result.findings.length, 0);
+});
+
+test('evaluateCommandRisk blocks IAM CreatePolicy with actions=["*"] CLI flag', () => {
+  const result = evaluateCommandRisk('hcloud IAM CreatePolicy --policy.name=broad --actions=["*"] --effect=Allow');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-broad-action-array');
+});
+
+test('D4-21/D4-7 fix: evaluateArtifacts detects HCL quoted Action = "*" with quoted Effect = "Allow"', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'main.tf',
+      content: 'resource "huaweicloud_identity_policy" "admin" {\n  name = "admin-all"\n  policy = "{\"Statement\":[{\"Effect\":\"Allow\",\"Action\":\"*\"}]}"\n}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
+test('D4-21/D4-7 fix: evaluateArtifacts detects HCL lowercase effect = "Allow" with action = "*"', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'policy.tf',
+      content: 'action = "*"\neffect = "Allow"',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
+test('D4-21/D4-7 fix: evaluateArtifacts detects HCL quoted-key "Action" = "*" with "Effect" = "Allow"', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'quoted.tf',
+      content: '"Action" = "*"\n"Effect" = "Allow"',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.length > 0);
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
 test('evaluateCommandRisk warns on batch reset family (BatchReset*)', () => {
   const cases = [
     ['ECS', 'BatchResetServersPassword'],

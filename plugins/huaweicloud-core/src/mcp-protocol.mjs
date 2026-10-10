@@ -5,6 +5,11 @@ import { detectAgent } from './telemetry/agent-detect.mjs';
 
 const pkgVersion = readInstalledVersion() || '0.0.0';
 
+const SUPPORTED_PROTOCOL_VERSIONS = ['2024-11-05', '2025-03-26'];
+const LATEST_PROTOCOL_VERSION = SUPPORTED_PROTOCOL_VERSIONS[SUPPORTED_PROTOCOL_VERSIONS.length - 1];
+
+const initializedSessions = new Set();
+
 // 会话内首个非 check/upgrade 工具调用附加 _updateInfo，只消费一次。
 // 按会话隔离：同进程内不同会话(A/B)各自首次提示；stdio 用固定 'stdin'。
 const consumedBySession = new Map();
@@ -26,6 +31,15 @@ export function _resetHintConsumption() {
 export function _isHintConsumed(sessionId) {
   return Boolean(consumedBySession.get(sessionId));
 }
+export function _resetInitializedSessions() {
+  initializedSessions.clear();
+}
+export function _isSessionInitialized(sessionId) {
+  return initializedSessions.has(sessionId);
+}
+export function _getSupportedProtocolVersions() {
+  return [...SUPPORTED_PROTOCOL_VERSIONS];
+}
 
 export async function dispatch(method, params, opts = {}) {
   const sessionId = opts?.sessionId || 'default';
@@ -42,16 +56,38 @@ export async function dispatch(method, params, opts = {}) {
 
     const agent = detectAgent(ci);
     initTelemetry({ harness: agent.harness, version: agent.version });
+    const requestedVersion = params.protocolVersion;
+    const protocolVersion = SUPPORTED_PROTOCOL_VERSIONS.includes(requestedVersion)
+      ? requestedVersion
+      : LATEST_PROTOCOL_VERSION;
+    initializedSessions.add(sessionId);
     return {
-      protocolVersion: params.protocolVersion || '2024-11-05',
+      protocolVersion,
       capabilities: {
         tools: {},
+        cancellation: {},
       },
       serverInfo: {
         name: 'huaweicloud-devkit',
         version: pkgVersion,
       },
     };
+  }
+
+  if (method === 'notifications/initialized') {
+    return;
+  }
+
+  if (method === 'notifications/cancelled') {
+    return;
+  }
+
+  if (method === 'tools/list' || method === 'tools/call') {
+    if (!initializedSessions.has(sessionId)) {
+      const notInitError = new Error(`Server has not been initialized. Call "initialize" before "${method}".`);
+      notInitError.code = -32002;
+      throw notInitError;
+    }
   }
 
   if (method === 'tools/list') {

@@ -172,10 +172,23 @@ function runStdioServer() {
     }
     if (!Object.hasOwn(message, 'id')) {
       if (message.method === 'notifications/initialized') return;
+      if (message.method === 'notifications/cancelled') return;
       return;
     }
     try {
-      const result = await dispatch(message.method, message.params || {}, { sessionId: 'stdin' });
+      const REQUEST_TIMEOUT_MS = 60_000;
+      const result = await Promise.race([
+        dispatch(message.method, message.params || {}, { sessionId: 'stdin' }),
+        new Promise((_, reject) => {
+          setTimeout(() => {
+            const timeoutErr = new Error(
+              `Request timeout: ${message.method} did not complete within ${REQUEST_TIMEOUT_MS}ms`,
+            );
+            timeoutErr.code = -32000;
+            reject(timeoutErr);
+          }, REQUEST_TIMEOUT_MS);
+        }),
+      ]);
       writeMessage({ jsonrpc: '2.0', id: message.id, result });
     } catch (error) {
       writeMessage({

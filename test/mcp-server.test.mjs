@@ -326,3 +326,74 @@ test('MCP server waits for incomplete Content-Length frames instead of spinning'
     client.close();
   }
 });
+
+test('D9-4: tools/list is rejected before initialize', async () => {
+  const client = createClient();
+  try {
+    const response = await client.request('tools/list');
+    assert.ok(response.error, 'expected an error response before initialize');
+    assert.equal(response.error.code, -32002);
+    assert.match(response.error.message, /not been initialized/i);
+  } finally {
+    client.close();
+  }
+});
+
+test('D9-4: tools/call is rejected before initialize', async () => {
+  const client = createClient();
+  try {
+    const response = await client.request('tools/call', {
+      name: 'huaweicloud_explain_error',
+      arguments: {},
+    });
+    assert.ok(response.error, 'expected an error response before initialize');
+    assert.equal(response.error.code, -32002);
+    assert.match(response.error.message, /not been initialized/i);
+  } finally {
+    client.close();
+  }
+});
+
+test('D9-7: unsupported protocolVersion negotiates down to latest supported', async () => {
+  const client = createClient();
+  try {
+    const initialized = await client.request('initialize', {
+      protocolVersion: '2099-01-01',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    assert.ok(initialized.result.protocolVersion, 'must return a protocolVersion');
+    assert.notEqual(initialized.result.protocolVersion, '2099-01-01');
+    assert.match(initialized.result.protocolVersion, /^\d{4}-\d{2}-\d{2}$/);
+  } finally {
+    client.close();
+  }
+});
+
+test('D9-7: supported protocolVersion is echoed back', async () => {
+  const client = createClient();
+  try {
+    const initialized = await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    assert.equal(initialized.result.protocolVersion, '2024-11-05');
+  } finally {
+    client.close();
+  }
+});
+
+test('D9-9: capabilities declares cancellation support', async () => {
+  const client = createClient();
+  try {
+    const initialized = await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    assert.ok(initialized.result.capabilities.cancellation, 'capabilities must declare cancellation support');
+  } finally {
+    client.close();
+  }
+});

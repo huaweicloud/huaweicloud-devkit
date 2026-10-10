@@ -1918,6 +1918,34 @@ function serviceCatalog(intent = '') {
       skills: ['huawei-voucher'],
       services: ['Incentive Voucher'],
     },
+    {
+      keywords: [
+        'error',
+        'fail',
+        'failed',
+        'failure',
+        'troubleshoot',
+        'debug',
+        'diagnose',
+        'diagnostic',
+        '排障',
+        '错误',
+        '失败',
+        '异常',
+        'exception',
+        'panic',
+        'crash',
+        'timeout',
+        '400',
+        '401',
+        '403',
+        '404',
+        '500',
+      ],
+      skills: [],
+      services: [],
+      tools: ['huaweicloud_explain_error'],
+    },
   ];
   const matched = [];
   const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
@@ -1929,6 +1957,7 @@ function serviceCatalog(intent = '') {
   }
   const recommendedSkills = [...new Set(matched.flatMap((r) => r.skills))];
   const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
+  const recommendedTools = [...new Set(matched.flatMap((r) => r.tools || []))];
 
   // Deployment intent (deploy/host/publish a web app or static website) must never
   // default to a storage/other service — recommend the sandbox first.
@@ -1945,6 +1974,7 @@ function serviceCatalog(intent = '') {
     recommendedServices: recommendedServices.length
       ? recommendedServices
       : ['Run hcloud --help to list available services.'],
+    recommendedTools: recommendedTools.length ? recommendedTools : [],
     capabilityOrder: [
       'Huawei Cloud Skills for task-specific workflows and examples',
       'KooCLI hcloud for local authenticated operations and quick inspection',
