@@ -20,14 +20,15 @@ The plugin already collects anonymous telemetry via
 ### Functional
 
 1. **README.md** — add a `## Telemetry` section (English) disclosing:
-   - What data is collected (installation ID, plugin version, agent harness,
-     agent version, OS type/version, event keys and sanitized values)
+   - What data is collected (installation ID, user hash, plugin version, agent harness,
+     agent version, OS type/version, capability, event keys and sanitized values)
    - What data is **not** collected (no AK/SK, no credentials, no user input,
      no code content, no IP addresses)
    - How data is collected and transmitted (in-memory queue, batched HTTP POST
      to the Huawei Cloud telemetry endpoint, respects proxy settings)
    - Privacy protections (installation ID is a SHA-256 hash of machine
-     fingerprint, values sanitized/truncated, no raw PII)
+     fingerprint, user hash is server-generated not local PII,
+     values sanitized/truncated, no raw PII)
    - How to opt out (`HUAWEICLOUD_DEVKIT_TELEMETRY=off`)
    - How to debug (`HUAWEICLOUD_DEVKIT_DEBUG=true`)
 
