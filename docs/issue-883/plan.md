@@ -2,12 +2,12 @@
 
 ## 改动点
 
-| # | 文件 | 改动 |
-|---|------|------|
-| 1 | `plugins/huaweicloud-core/src/auth/credentials.mjs` | 抽取 `missingCredentialsError()`（复用原 `resolveCredentials` 的 HDKIT_CRED_MISSING 构造）；新增模块级 `runtimeCleared` 哨兵：`setRuntimeCredentials` 置 false、`clearRuntimeCredentials` 置 true；`resolveCredentialsWithRuntime` 归口三分支语义 |
-| 2 | `plugins/huaweicloud-core/src/tools.mjs` | `auth_init clear` / `auth_switch action=clear` 返回文案改为不承诺 env/file 回退 |
-| 3 | `test/auth-credentials.test.mjs` | 'prioritizes runtime > env > vault' 重排（env/vault 段不再位于 clear 之后，结尾 clear 清理 runtime）；'set and clear workflow' 改为断言 clear 后抛 `HDKIT_CRED_MISSING` + `allowMissing→null` + 重新 set 生效；新增 'clear blocks env/vault fallback (D3-C14 probe semantics)' 用例 |
-| 4 | `test/hdkitservice-api.test.mjs` | 'voucher status returns CRED_MISSING' 用例移至文件末尾（其 clear 会锁定本进程 runtime 语义，需置于依赖 env 凭证的 mock fetch 用例之后） |
+| #   | 文件                                                | 改动                                                                                                                                                                                                                                                                                |
+| --- | --------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `plugins/huaweicloud-core/src/auth/credentials.mjs` | 抽取 `missingCredentialsError()`（复用原 `resolveCredentials` 的 HDKIT_CRED_MISSING 构造）；新增模块级 `runtimeCleared` 哨兵：`setRuntimeCredentials` 置 false、`clearRuntimeCredentials` 置 true；`resolveCredentialsWithRuntime` 归口三分支语义                                   |
+| 2   | `plugins/huaweicloud-core/src/tools.mjs`            | `auth_init clear` / `auth_switch action=clear` 返回文案改为不承诺 env/file 回退                                                                                                                                                                                                     |
+| 3   | `test/auth-credentials.test.mjs`                    | 'prioritizes runtime > env > vault' 重排（env/vault 段不再位于 clear 之后，结尾 clear 清理 runtime）；'set and clear workflow' 改为断言 clear 后抛 `HDKIT_CRED_MISSING` + `allowMissing→null` + 重新 set 生效；新增 'clear blocks env/vault fallback (D3-C14 probe semantics)' 用例 |
+| 4   | `test/hdkitservice-api.test.mjs`                    | 'voucher status returns CRED_MISSING' 用例移至文件末尾（其 clear 会锁定本进程 runtime 语义，需置于依赖 env 凭证的 mock fetch 用例之后）                                                                                                                                             |
 
 ## 不改动
 
