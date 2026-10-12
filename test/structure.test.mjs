@@ -219,6 +219,47 @@ test('huawei-sandbox skill documents devbridge description and host/connect trap
   assert.match(body, /expose_via_devbridge/);
 });
 
+test('sandbox workflow has a mandatory deploy_check finalize step gating the returned URL', () => {
+  const body = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+
+  // Workflow must have an explicit Step 11 after expose (Step 10), marked MANDATORY,
+  // that runs deploy_check automatically — no manual/developer trigger.
+  const step10 = body.match(/^10\. \*\*Expose the deployed app.*$/m);
+  const step11 = body.match(/^11\. \*\*Deployment completeness check.*$/m);
+  assert.ok(step10, 'Workflow Step 10 (Expose) not found');
+  assert.ok(step11, 'Workflow Step 11 (deploy_check finalize) not found');
+  assert.ok(step10.index < step11.index, 'Step 11 must come after Step 10');
+  assert.match(step11[0], /MANDATORY finalize step — do not skip/);
+  assert.match(step11[0], /huaweicloud_sandbox_deploy_check/);
+  assert.match(step11[0], /automatically/);
+  assert.match(step11[0], /complete: true/);
+  assert.match(step11[0], /terminate the finalize flow — do NOT return the URL/i);
+
+  // The Deployment Completion Check section must be a hard gate, not a recommendation:
+  // complete:true is the only condition for returning the URL; complete:false terminates.
+  const gate = body.match(
+    /#### Deployment Completion Check \[REQUIRED[^\]]*\]\n\n\*\*This is the mandatory finalize step[\s\S]*?```/,
+  );
+  assert.ok(gate, 'Deployment Completion Check hard-gate intro not found');
+  assert.match(gate[0], /not an optional verification the agent may skip/i);
+  assert.match(gate[0], /step the developer must trigger manually/i);
+  const semantics = body.match(/\*\*Hard gate semantics\*\*[\s\S]*?\n\n/);
+  assert.ok(semantics, 'Hard gate semantics paragraph not found');
+  assert.match(semantics[0], /only condition under which the deployment URL may be returned/);
+  assert.match(semantics[0], /terminate the finalize flow — do NOT return the deployment URL/i);
+  assert.match(semantics[0], /workflow violation/);
+
+  // Pitfall rows must stay aligned with the mandatory step — no "recommended" wording left.
+  const pitfall = body.match(/\| Call deploy_check before success\s*\|([^|]+)\|/);
+  assert.ok(pitfall, 'Pitfall row "Call deploy_check before success" not found');
+  assert.match(pitfall[1], /MANDATORY finalize step \(Workflow Step 11\)/);
+  assert.match(pitfall[1], /never skipped/i);
+  assert.doesNotMatch(pitfall[1], /^\s*Always call/i);
+  const nginxRow = body.match(/\| Deploy is not just nginx\s*\|([^|]+)\|/);
+  assert.ok(nginxRow, 'Pitfall row "Deploy is not just nginx" not found');
+  assert.match(nginxRow[1], /\b11 \(deploy_check, MANDATORY finalize\)/);
+});
+
 test('devbridge tunnel handling is migrated to the s2 gateway domain', () => {
   const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
