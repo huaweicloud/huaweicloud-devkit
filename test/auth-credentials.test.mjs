@@ -221,16 +221,8 @@ test('agent registration detects DSH_HOME cordis patch config', () => {
 
 test('resolveCredentialsWithRuntime prioritizes runtime > env > vault', () => {
   withTempHome(() => {
-    clearRuntimeCredentials();
     writeGlobalCredentials({ ak: 'VAULT_AK', sk: 'VAULT_SK', region: 'cn-north-4' });
 
-    setRuntimeCredentials('RT_AK', 'RT_SK', '', 'cn-north-1');
-    const fromRuntime = resolveCredentialsWithRuntime();
-    assert.equal(fromRuntime.ak, 'RT_AK');
-    assert.equal(fromRuntime.sk, 'RT_SK');
-    assert.equal(fromRuntime.region, 'cn-north-1');
-
-    clearRuntimeCredentials();
     process.env.HW_ACCESS_KEY = 'ENV_AK';
     process.env.HW_SECRET_KEY = 'ENV_SK';
     const fromEnv = resolveCredentialsWithRuntime();
@@ -242,24 +234,59 @@ test('resolveCredentialsWithRuntime prioritizes runtime > env > vault', () => {
     const fromVault = resolveCredentialsWithRuntime();
     assert.equal(fromVault.ak, 'VAULT_AK');
     assert.equal(fromVault.sk, 'VAULT_SK');
+
+    setRuntimeCredentials('RT_AK', 'RT_SK', '', 'cn-north-1');
+    const fromRuntime = resolveCredentialsWithRuntime();
+    assert.equal(fromRuntime.ak, 'RT_AK');
+    assert.equal(fromRuntime.sk, 'RT_SK');
+    assert.equal(fromRuntime.region, 'cn-north-1');
+    clearRuntimeCredentials();
   });
 });
 
 test('resolveCredentialsWithRuntime set and clear workflow', () => {
   withTempHome(() => {
-    clearRuntimeCredentials();
     writeGlobalCredentials({ ak: 'VAULT_AK', sk: 'VAULT_SK' });
-
-    const before = resolveCredentialsWithRuntime();
-    assert.equal(before.ak, 'VAULT_AK');
 
     setRuntimeCredentials('SWITCH_AK', 'SWITCH_SK');
     const after = resolveCredentialsWithRuntime();
     assert.equal(after.ak, 'SWITCH_AK');
 
+    // D3-C14: an explicit clear must not fall back to env/CodeArts/S1 file
+    // credentials — resolveCredentialsWithRuntime must throw HDKIT_CRED_MISSING
+    // even though a vault file exists.
     clearRuntimeCredentials();
-    const reverted = resolveCredentialsWithRuntime();
-    assert.equal(reverted.ak, 'VAULT_AK');
+    assert.throws(
+      () => resolveCredentialsWithRuntime(),
+      (err) => err.code === 'HDKIT_CRED_MISSING',
+    );
+    // allowMissing keeps the cleared state tolerable for optional consumers.
+    assert.equal(resolveCredentialsWithRuntime({ allowMissing: true }), null);
+    // A fresh set re-enables runtime auth (and resets the cleared flag).
+    setRuntimeCredentials('RESWITCH_AK', 'RESWITCH_SK');
+    const reswitched = resolveCredentialsWithRuntime();
+    assert.equal(reswitched.ak, 'RESWITCH_AK');
+    clearRuntimeCredentials();
+  });
+});
+
+test('resolveCredentialsWithRuntime clear blocks env/vault fallback (D3-C14 probe semantics)', () => {
+  withTempHome(() => {
+    writeGlobalCredentials({ ak: 'VAULT_AK', sk: 'VAULT_SK' });
+    setRuntimeCredentials('RT_AK', 'RT_SK', '', 'cn-north-1');
+
+    clearRuntimeCredentials();
+    process.env.HW_ACCESS_KEY = 'ENV_AK';
+    process.env.HW_SECRET_KEY = 'ENV_SK';
+    try {
+      assert.throws(
+        () => resolveCredentialsWithRuntime(),
+        (err) => err.code === 'HDKIT_CRED_MISSING' && !/ENV_AK|VAULT_AK/.test(err.message),
+      );
+    } finally {
+      delete process.env.HW_ACCESS_KEY;
+      delete process.env.HW_SECRET_KEY;
+    }
   });
 });
 

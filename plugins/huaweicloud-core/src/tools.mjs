@@ -1203,7 +1203,11 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       if (args.clear) {
         clearRuntimeCredentials();
         refreshUserHashAfterAuthChange({ regenerate: false });
-        return { status: 'cleared', message: 'Runtime credentials cleared. Fallback to env/file.' };
+        return {
+          status: 'cleared',
+          message:
+            'Runtime credentials cleared. Runtime auth disabled until next set; env/file fallback no longer applies after explicit clear.',
+        };
       }
       if (!args.ak || !args.sk) {
         throw new Error('ak and sk are required. Set clear=true to clear runtime credentials.');
@@ -1216,7 +1220,11 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       if (action === 'clear') {
         clearRuntimeCredentials();
         refreshUserHashAfterAuthChange({ regenerate: false });
-        return { status: 'cleared', message: 'Runtime credentials cleared. Fallback to env/file/S1.' };
+        return {
+          status: 'cleared',
+          message:
+            'Runtime credentials cleared. Runtime auth disabled until next set; env/file fallback no longer applies after explicit clear.',
+        };
       }
 
       let ak = args.ak || '';
