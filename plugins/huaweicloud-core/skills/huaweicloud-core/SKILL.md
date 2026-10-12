@@ -52,7 +52,7 @@ Do not rely on training data for facts. Huawei Cloud services, pricing, quotas, 
 | troubleshoot  | Troubleshooting Routing | error, bug, failed, AccessDenied, quota                                                                                                     | Handoff to huaweicloud-troubleshooting                                                                                                                                                                         |
 | api-sdk       | API/SDK Routing         | API call, SDK, REST, integration, code example                                                                                              | Handoff to huaweicloud-api-and-sdk                                                                                                                                                                             |
 | report-issue  | Issue Reporting         | wrong service, you picked wrong, incorrect                                                                                                  | Read references/report-issue.md                                                                                                                                                                                |
-| voucher       | Voucher Routing         | 领券, 代金券, 优惠券, 激励金, 领取, voucher, coupon, incentive                                                                              | Handoff to huawei-voucher                                                                                                                                                                                      |
+| voucher       | Voucher Routing         | 领券, 代金券, 优惠券, 激励金, 领取, voucher, coupon, incentive, 华为开发者大赛, 小红书, skill创新赛, 大赛代金券, 赛事代金券, 比赛领券       | Handoff to huawei-voucher                                                                                                                                                                                      |
 
 ## Service Map
 
@@ -81,6 +81,7 @@ Do not rely on training data for facts. Huawei Cloud services, pricing, quotas, 
 | Temporary runtime / web app preview              | Sandbox (DevStation) | huawei-sandbox                           |
 | Getting started                                  | Account setup        | huaweicloud-cli-and-auth                 |
 | Incentive voucher                                | Voucher              | huawei-voucher                           |
+| Competition voucher (小红书skill创新赛)          | Voucher              | huawei-voucher                           |
 
 **Web app scenario layering**: for "deploy a web app", prefer `huawei-sandbox` for free/quick try (hello world, prototype, demo, temporary preview — temporary runtime + public URL (runtime lifetime not exposed via API); credential expiry see `expiresAt` from `connect`/`credentials`, zero billed resources); route to `huawei-functiongraph` / `huawei-ecs` (or `huawei-cce`) for production / long-term / custom-domain / high-availability hosting. When the chosen target requires **multiple purchased resources** (e.g. VPC + subnet + ECS + EIP + RDS, or OBS + CDN + DNS) or the user asks for an architecture/cost proposal first, hand off to `huawei-iac` for orchestrated provisioning with a mandatory cost gate.
 

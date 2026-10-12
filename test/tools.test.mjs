@@ -105,6 +105,7 @@ test('TOOL_DEFINITIONS includes all required tools including sandbox', () => {
     'huaweicloud_sandbox_expose_tunnel',
     'huaweicloud_voucher_status',
     'huaweicloud_voucher_claim',
+    'huaweicloud_competition_voucher_claim',
   ];
   for (const name of required) {
     assert.ok(names.includes(name), `Missing tool: ${name}`);

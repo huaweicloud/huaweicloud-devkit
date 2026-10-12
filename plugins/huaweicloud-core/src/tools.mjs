@@ -31,6 +31,7 @@ import {
   hdkitCredentials,
   hdkitVoucherStatus,
   hdkitVoucherClaim,
+  hdkitCompetitionVoucherClaim,
   hdkitGenerateUserHash,
 } from './sandbox/hdkitservice-api.mjs';
 import { getCredentials } from './sandbox/hwlink-api.mjs';
@@ -857,6 +858,20 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'huaweicloud_competition_voucher_claim',
+    description:
+      '领取华为开发者大赛·小红书skill创新赛专属华为云代金券。前置条件：用户已完成该赛事报名（后端自动校验，未报名返回 code=HDKIT_NOT_SIGNED_UP）。仅当用户明确要求领取该赛事代金券时调用，不要主动提示。重复领取会返回已领取。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        domain_id: {
+          type: 'string',
+          description: 'Optional. Leave empty in production — account is resolved from IAM automatically.',
+        },
+      },
+    },
+  },
+  {
     name: 'huaweicloud_check_update',
     description:
       '检查 huaweicloud-devkit 插件是否有新版本。结果含 currentVersion / latestStable / latestNext / targetVersion / updateAvailable / dismissExpiresAt / result。支持 dismiss:true 记录用户拒绝（3 天冷却，新版本会重新提醒）。',
@@ -1578,6 +1593,8 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       return await hdkitVoucherStatus(args.domain_id);
     case 'huaweicloud_voucher_claim':
       return await hdkitVoucherClaim(args.domain_id);
+    case 'huaweicloud_competition_voucher_claim':
+      return await hdkitCompetitionVoucherClaim(args.domain_id);
     case 'huaweicloud_check_update':
       return await handleCheckUpdate(args, { sessionId: opts?.sessionId, doQuery: opts?.doQuery });
     case 'huaweicloud_upgrade':
