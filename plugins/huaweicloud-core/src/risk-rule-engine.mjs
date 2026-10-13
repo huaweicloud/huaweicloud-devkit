@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { redactSecrets } from './safety-policy.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultRulesPath = join(__dirname, '..', 'safety', 'rules', 'cloud-risk-rules.json');
 
@@ -22,7 +24,7 @@ function redactEvidence(text) {
       /((?:access[_-]?key|secret[_-]?key|secret|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
       '$1<redacted>',
     )
-    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>');
+    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>');
 }
 
 function normalizeText(value) {
@@ -71,7 +73,11 @@ function ruleMatches(rule, context) {
 }
 
 function excerpt(text) {
-  const compact = redactEvidence(String(text).replace(/\s+/g, ' ').trim());
+  // D4-26: evidence must be redacted via the shared redactSecrets policy so
+  // password/AK/SK/token values never leak into findings. The local
+  // redactEvidence helper is retained as a second-pass safety net for any
+  // patterns the policy regex may miss.
+  const compact = redactEvidence(redactSecrets(String(text).replace(/\s+/g, ' ').trim()));
   if (compact.length <= 240) return compact;
   return `${compact.slice(0, 237)}...`;
 }
