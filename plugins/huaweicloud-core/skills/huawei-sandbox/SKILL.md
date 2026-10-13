@@ -916,9 +916,14 @@ The tool checks:
 - **tunnel_url_accessible** — tunnel URL returns 200/304 with real content; a gateway migration placeholder page (「服务已迁移」 with HTTP 200) counts as FAIL
 - **qr_code** (cross-platform only) — QR image exists in output dir
 
-Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
+Returns `complete: true/false`, `score`, and `nextStep` to fix missing items. It also returns a structured conclusion summary for downstream automation and human review:
 
-**If `complete` is false, follow `nextStep` to resolve before reporting success.** Do not return a deployment URL until `complete: true`.
+- **`status`** — `"pass"` / `"fail"` (mapped from `complete`)
+- **`checks.nginx` / `checks.devbridge` / `checks.url` / `checks.fingerprint`** — each `{ok, detail}`; fingerprint gracefully skips (`ok: true, detail: "skipped (SSR proxy)"`) for SSR proxy deployments
+- **`publicUrl`** — tunnel public address, or `null` when no tunnel is established (never fabricated)
+- **`summary`** — one-line human-readable conclusion (lists failing checks when `status: "fail"`)
+
+**If `complete` is false, follow `nextStep` to resolve before reporting success.** Do not return a deployment URL until `complete: true` (equivalently, `status: "pass"`).
 
 | Framework Type              | Must Return               |
 | --------------------------- | ------------------------- |
