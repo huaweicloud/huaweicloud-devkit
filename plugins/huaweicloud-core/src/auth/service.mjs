@@ -1,11 +1,10 @@
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
 
 import { getAgentRegistrationStatuses } from './agent-registration.mjs';
 import { resolveAndApplyProjectId } from './project-id.mjs';
 import {
   globalCredentialsPath,
+  isCodeArtsContext,
   isPlaceholder,
   obsConfigPath,
   parseStsExpiry,
@@ -15,6 +14,7 @@ import {
   writeLastSync,
   writeObsConfig,
 } from './credentials.mjs';
+import { buildOnboardingSteps } from './guidance.mjs';
 import {
   fingerprint,
   exportStateForStatus,
@@ -23,14 +23,6 @@ import {
   runHcloudConfigure,
 } from './reconcile.mjs';
 import { hcloudProbeNextStep, probeHcloud } from '../hcloud-probe.mjs';
-
-function isCodeArtsHome() {
-  return (
-    existsSync(join(process.cwd(), '.codeartsdoer')) ||
-    existsSync(join(homedir(), '.codeartsdoer')) ||
-    existsSync(join(homedir(), '.codeartswork'))
-  );
-}
 
 function envHasRealTriplet() {
   return (
@@ -57,7 +49,9 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
   const envRealAk = !isPlaceholder(process.env.HW_ACCESS_KEY) && Boolean(process.env.HW_ACCESS_KEY);
   const envRealSk = !isPlaceholder(process.env.HW_SECRET_KEY) && Boolean(process.env.HW_SECRET_KEY);
   const envHasCreds = envRealAk && envRealSk;
-  const codeArts = isCodeArtsHome();
+  // Same context detector the resolveCredentials failure path uses (#900): the
+  // codearts flag must select the identical builder variant on both paths.
+  const codeArts = isCodeArtsContext();
   const accountHint = s1Has ? fingerprint(creds.ak, creds.sk) : null;
 
   let scenario;
@@ -133,32 +127,12 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
     scenario = 4;
     reason = 'import-injected';
     message = '检测到配置中已有有效账号,可导入为正式凭证。';
-    steps = [
-      {
-        order: 1,
-        action: 'switch-persist',
-        args: { mode: codeArts ? 'mcp-config' : 'import', action: 'persist' },
-        label: '导入该账号',
-      },
-    ];
+    steps = buildOnboardingSteps(4, { codearts: codeArts });
   } else {
     scenario = 3;
     reason = 's1-missing';
     message = '未配置华为云凭证,需要完成登录后才能使用云能力。';
-    steps = [
-      { order: 1, action: 'obtain-aksk', target: 'console', label: '获取 AK/SK(华为云控制台)' },
-      ...(codeArts
-        ? [
-            {
-              order: 2,
-              action: 'write-import',
-              target: join(homedir(), '.config', 'huaweicloud', 'creds-import.json'),
-              label: '把 AK/SK 写入 creds-import.json',
-            },
-            { order: 3, action: 'auth_switch', args: { mode: 'import', action: 'persist' }, label: '执行导入完成配置' },
-          ]
-        : [{ order: 2, action: 'auth-init', args: {}, label: '运行 npx huaweicloud-devkit auth init' }]),
-    ];
+    steps = buildOnboardingSteps(3, { codearts: codeArts });
   }
 
   return { needsSetup: true, scenario, reason, message, steps, accountHint };

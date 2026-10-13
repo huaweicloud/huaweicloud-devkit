@@ -894,31 +894,27 @@ test('#900: failure-path error carries unified shape (messageZh Chinese + execut
   });
 });
 
-// #900 cross-path drift guard — SKIPPED until Task 3 rewires computeOnboarding
-// (service.mjs) to buildOnboardingSteps. Today the status path still hand-builds
-// scenario-3 CodeArts steps with auth_switch mode "import" where the shared
-// builder emits "mcp-config" (and scenario 4 uses action "switch-persist" vs the
-// builder's "auth_switch") — the exact drift issue #900 reported. Task 3 removes
-// this skip so both paths are asserted identical.
-test(
-  '#900: failure-path steps equal status-path steps for scenario 3 (same source)',
-  { skip: 'enable after computeOnboarding uses buildOnboardingSteps (Task 3, #900)' },
-  () => {
-    withTempHome(() => {
-      clearRuntimeCredentials();
-      let thrown;
-      try {
-        resolveCredentials();
-      } catch (error) {
-        thrown = error;
-      }
-      assert.ok(thrown, 'expected HDKIT_CRED_MISSING');
-      const status = computeOnboarding({ credentials: null, reconciled: minimalReconciledStub() });
-      assert.equal(status.scenario, 3);
-      assert.deepEqual(thrown.onboarding.steps, status.steps, 'failure path and status path must be identical');
-    });
-  },
-);
+// #900 cross-path drift guard — both paths now consume the same builder
+// (buildOnboardingSteps in guidance.mjs): the failure path inside
+// resolveCredentials and the status path inside computeOnboarding. This was the
+// exact drift issue #900 reported (the status path hand-built auth_switch mode
+// "import" / action "switch-persist" where the builder emits "mcp-config" /
+// "auth_switch"); the deepEqual below asserts the two stay identical.
+test('#900: failure-path steps equal status-path steps for scenario 3 (same source)', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    let thrown;
+    try {
+      resolveCredentials();
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown, 'expected HDKIT_CRED_MISSING');
+    const status = computeOnboarding({ credentials: null, reconciled: minimalReconciledStub() });
+    assert.equal(status.scenario, 3);
+    assert.deepEqual(thrown.onboarding.steps, status.steps, 'failure path and status path must be identical');
+  });
+});
 
 function minimalReconciledStub() {
   // keep it cheap like the old failure path did — stub the reconcile state
