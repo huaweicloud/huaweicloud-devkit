@@ -179,6 +179,82 @@ test('D3-C3: parseDeployCheckOutput returns nginx_serving FAIL when no response'
   assert.ok(result.missingSteps.includes('nginx_serving'));
 });
 
+test('#888: parseDeployCheckOutput emits structured pass conclusion (status/checks/publicUrl/summary)', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8080, HTTP 200)',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'content_verified:PASS',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:PASS (https://c4rdv7bv-8080.devbridge-s2.hwtunnel.com -> 200)',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:5/5',
+    'TUNNEL_URL:https://c4rdv7bv-8080.devbridge-s2.hwtunnel.com',
+    'VERDICT:COMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.complete, true, 'legacy complete field must be preserved');
+  assert.equal(result.checks.nginx.ok, true);
+  assert.match(result.checks.nginx.detail, /HTTP 200/);
+  assert.equal(result.checks.devbridge.ok, true);
+  assert.equal(result.checks.url.ok, true);
+  assert.match(result.checks.url.detail, /devbridge-s2\.hwtunnel\.com/);
+  assert.equal(result.checks.fingerprint.ok, true);
+  assert.equal(result.publicUrl, 'https://c4rdv7bv-8080.devbridge-s2.hwtunnel.com');
+  assert.match(result.summary, /^Deployment complete:/);
+  assert.match(result.summary, /fingerprint verified/);
+});
+
+test('#888: parseDeployCheckOutput emits structured fail conclusion with failing items', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8080, HTTP 200)',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'content_verified:PASS',
+    'devbridge_tunnel:FAIL',
+    'tunnel_url_accessible:FAIL (no tunnel)',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:3/5',
+    'VERDICT:INCOMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.status, 'fail');
+  assert.equal(result.complete, false);
+  assert.equal(result.checks.nginx.ok, true);
+  assert.equal(result.checks.devbridge.ok, false);
+  assert.equal(result.checks.url.ok, false);
+  assert.equal(result.publicUrl, null, 'no tunnel established — publicUrl must be null, never fabricated');
+  assert.match(result.summary, /^Deployment check failed:/);
+  assert.match(result.summary, /devbridge/);
+  assert.match(result.summary, /url/);
+});
+
+test('#888: fingerprint check gracefully skips for SSR proxy framework type', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 3000, HTTP 200)',
+    'output_dir:PASS (/workspace/myapp/.next)',
+    'content_verified:SKIP (no fingerprint file)',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:PASS (https://c4rdv7bv-3000.devbridge-s2.hwtunnel.com -> 200)',
+    'SCORE:4/4',
+    'TUNNEL_URL:https://c4rdv7bv-3000.devbridge-s2.hwtunnel.com',
+    'VERDICT:COMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 3000, isCrossPlatform: false, frameworkType: 'ssr' });
+  assert.equal(result.status, 'pass');
+  assert.equal(result.checks.fingerprint.ok, true, 'SSR proxy fingerprint skip must count as ok');
+  assert.equal(result.checks.fingerprint.detail, 'skipped (SSR proxy)');
+});
+
+test('#888: missing raw check line is reported as not passing in structured output', () => {
+  const stdout = ['=== DEPLOY CHECK ===', 'SCORE:0/0', 'VERDICT:COMPLETE'].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.nginx.ok, false);
+  assert.match(result.checks.nginx.detail, /not reported/);
+});
+
 test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → AK/SK → file)', () => {
   const script = buildDevbridgeAuthProbe();
   // Tier 1: keyring API Key — stderr capture (2>&1), devbridge_ prefix filter, env self-heal
