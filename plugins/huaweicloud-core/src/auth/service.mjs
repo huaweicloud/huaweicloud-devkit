@@ -14,7 +14,7 @@ import {
   writeLastSync,
   writeObsConfig,
 } from './credentials.mjs';
-import { buildOnboardingSteps } from './guidance.mjs';
+import { buildOnboardingSteps, errorFromTable } from './guidance.mjs';
 import {
   fingerprint,
   exportStateForStatus,
@@ -198,17 +198,28 @@ export function getAuthStatus(target = 'all') {
 export function syncAuth(target = 'all') {
   const credentials = readGlobalCredentials();
   if (!credentials?.ak || !credentials?.sk) {
+    // #900: unified error shape from the shared ERROR_TABLE.
+    const e = errorFromTable('HDKIT_CRED_MISSING');
     return {
       ok: false,
-      error: 'Global credentials are not configured.',
-      nextStep: 'Run "npx huaweicloud-devkit auth init" first.',
+      error: e.messageZh,
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      nextStep: e.nextStep,
     };
   }
   if (hasRuntimeCredentials()) {
+    // R10: runtime credentials suppress auto-sync. The codename stays in code
+    // comments only, never in user-facing strings (#900).
+    const e = errorFromTable('HDKIT_SYNC_SKIPPED_RUNTIME');
     return {
       ok: false,
-      error: 'Runtime credentials are active; auto-sync suppressed (R10).',
-      nextStep: 'Run huaweicloud_auth_switch action=clear or action=persist first.',
+      error: e.messageZh,
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      nextStep: e.nextStep,
     };
   }
 
@@ -238,14 +249,22 @@ export function syncAuth(target = 'all') {
 
   const hcloud = probeHcloud();
   if (!hcloud.ok) {
+    // #900: three probe states share the table code; the detail distinguishes.
+    const detail =
+      hcloud.status === 'sandbox_home_failure'
+        ? '无法解析用户主目录'
+        : hcloud.status === 'privacy_pending'
+          ? '隐私协议待同意'
+          : '';
+    const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', detail);
     return {
       ok: false,
-      error:
-        hcloud.status === 'sandbox_home_failure'
-          ? 'KooCLI detected but cannot resolve the user home directory in this agent sandbox.'
-          : hcloud.status === 'privacy_pending'
-            ? 'KooCLI privacy agreement is pending.'
-            : 'KooCLI not ready.',
+      error: e.messageZh,
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      // State-specific guidance (version mismatch, privacy prompt, …) beats the
+      // generic table action here, so the existing nextStep key is preserved.
       nextStep: hcloudProbeNextStep(hcloud),
       obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
     };
@@ -253,10 +272,23 @@ export function syncAuth(target = 'all') {
 
   const { ok, error } = runHcloudConfigure(profile, credentials.ak, credentials.sk, credentials.region);
   if (!ok) {
+    // #900: `hcloud configure set` failures are usually a missing/invalid
+    // project_id for the target region; anything else keeps the raw (already
+    // redacted) stderr as the detail argument.
+    const detail = String(error || '').trim();
+    const projectIdCause = /project[_\s-]?id/i.test(detail);
+    const e = projectIdCause
+      ? errorFromTable('HDKIT_PROJECT_ID_MISSING', detail)
+      : errorFromTable('HDKIT_KOOCLI_NOT_READY', detail || 'KooCLI 配置同步失败');
     return {
       ok: false,
-      error: error || 'KooCLI config sync failed',
-      nextStep: 'Run "npx huaweicloud-devkit auth init" in a real terminal to refresh the KooCLI config.',
+      error: e.messageZh,
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      nextStep: projectIdCause
+        ? e.nextStep
+        : 'Run "npx huaweicloud-devkit auth init" in a real terminal to refresh the KooCLI config.',
       obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
     };
   }

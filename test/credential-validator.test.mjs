@@ -68,6 +68,10 @@ test('validateIamCredentials rejects invalid SK (HTTP 401)', async () => {
   assert.equal(result.projectId, null);
   assert.match(result.error, /401/);
   assert.match(result.error, /Authentication failed/);
+  // #900: unified table shape alongside the long-standing English detail.
+  assert.equal(result.code, 'HDKIT_CRED_INVALID');
+  assert.match(result.messageZh, /[\u4e00-\u9fff]/);
+  assert.equal(result.action, 'npx huaweicloud-devkit auth status');
 });
 
 test('validateIamCredentials treats 403 as valid credentials without project', async () => {
@@ -81,6 +85,8 @@ test('validateIamCredentials treats 403 as valid credentials without project', a
   assert.equal(result.valid, true);
   assert.equal(result.projectId, null);
   assert.match(result.warning, /403/);
+  assert.equal(result.code, 'HDKIT_CRED_FORBIDDEN');
+  assert.match(result.messageZh, /[\u4e00-\u9fff]/);
 });
 
 test('validateIamCredentials marks infrastructure errors as skipped', async () => {
@@ -91,6 +97,8 @@ test('validateIamCredentials marks infrastructure errors as skipped', async () =
     assert.equal(result.valid, false);
     assert.equal(result.skipped, true);
     assert.ok(result.error);
+    assert.equal(result.code, 'HDKIT_CRED_UNEXPECTED');
+    assert.match(result.messageZh, /[\u4e00-\u9fff]/);
   } finally {
     if (previous === undefined) delete process.env.HW_IAM_ENDPOINT;
     else process.env.HW_IAM_ENDPOINT = previous;
@@ -101,4 +109,5 @@ test('validateIamCredentials fails fast without AK/SK', async () => {
   const result = await validateIamCredentials({ ak: '', sk: '' });
   assert.equal(result.valid, false);
   assert.match(result.error, /AK and SK/);
+  assert.equal(result.code, 'HDKIT_CRED_MISSING');
 });

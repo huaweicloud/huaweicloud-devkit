@@ -84,7 +84,12 @@ test('readKooCliProfiles parses current + profiles with fingerprint/mtime', () =
 test('readKooCliProfiles handles missing config', () => {
   withTempHome(() => {
     const res = readKooCliProfiles();
-    assert.equal(res.error, 'KooCLI config not found');
+    // #900: unified shape — table code + Chinese message, old English text kept
+    // only as the distinguishing detail.
+    assert.equal(res.code, 'HDKIT_KOOCLI_NOT_READY');
+    assert.match(res.error, /KooCLI config not found/);
+    assert.match(res.error, /[\u4e00-\u9fff]/);
+    assert.equal(res.action, 'npx huaweicloud-devkit install-hcloud');
   });
 });
 

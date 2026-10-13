@@ -154,8 +154,11 @@ test('04 syncAuth is rejected (R10) while runtime credentials are active', () =>
     setRuntimeCredentials('E2E4_RT_AK', 'E2E4_RT_SK');
     const res = syncAuth('all');
     assert.equal(res.ok, false);
-    assert.match(res.error, /R10/);
-    assert.match(res.error, /auto-sync suppressed/);
+    // #900: unified Chinese message from ERROR_TABLE; the R10 codename lives in
+    // code comments only, never in user-facing strings.
+    assert.equal(res.code, 'HDKIT_SYNC_SKIPPED_RUNTIME');
+    assert.match(res.error, /自动同步已跳过/);
+    assert.doesNotMatch(res.error, /R\d+/);
   });
 });
 
@@ -195,7 +198,8 @@ test('06 auth_switch temporary activates runtime; auth_sync is then rejected (R1
 
     const sync = await callTool('huaweicloud_auth_sync', { target: 'all' });
     assert.equal(sync.ok, false);
-    assert.match(sync.error, /R10/);
+    assert.equal(sync.code, 'HDKIT_SYNC_SKIPPED_RUNTIME');
+    assert.match(sync.error, /自动同步已跳过/);
   });
 });
 
@@ -425,7 +429,8 @@ test('15 active runtime shows in scanState and suppresses auto-write (R10)', () 
 
     const res = syncAuth('all');
     assert.equal(res.ok, false);
-    assert.match(res.error, /R10/);
+    assert.equal(res.code, 'HDKIT_SYNC_SKIPPED_RUNTIME');
+    assert.match(res.error, /自动同步已跳过/);
   });
 });
 

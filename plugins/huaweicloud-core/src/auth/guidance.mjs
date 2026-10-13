@@ -71,6 +71,19 @@ export const ERROR_TABLE = {
     messageZh: 'KooCLI 配置缺少 project_id,导致同步失败。',
     action: 'hcloud configure set --cli-project-id=<id>',
   },
+  // Runtime credentials (in-process, set via auth_init/auth_switch) suppress
+  // auto-sync (rule R10). No `auth sync --force` flag exists; the real unblock
+  // is clearing the runtime store first, then re-running the sync.
+  HDKIT_SYNC_SKIPPED_RUNTIME: {
+    messageZh: '运行时凭证生效,自动同步已跳过。',
+    action: 'huaweicloud_auth_switch action=clear',
+  },
+  // IAM returned something other than 200/401/403 (or the request itself
+  // failed). The canonical debug hint lives in the cli-and-auth skill.
+  HDKIT_CRED_UNEXPECTED: {
+    messageZh: '凭证校验遇到异常响应,请开启调试排查。',
+    action: 'hcloud <Service> <Op> --cli-debug=true',
+  },
 };
 
 export function errorFromTable(code, detail) {

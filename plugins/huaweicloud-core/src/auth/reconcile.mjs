@@ -12,6 +12,7 @@ import {
   readLastSync,
   resolveCredentialsWithRuntime,
 } from './credentials.mjs';
+import { errorFromTable } from './guidance.mjs';
 import { resolveHcloudCommand } from '../hcloud-probe.mjs';
 import { redactSecrets } from '../safety-policy.mjs';
 
@@ -43,7 +44,12 @@ export function isManualModified(path) {
 
 export function readKooCliProfiles() {
   const configPath = kooCliConfigPath();
-  if (!existsSync(configPath)) return { error: 'KooCLI config not found' };
+  if (!existsSync(configPath)) {
+    // #900: bare string replaced by the unified ERROR_TABLE shape; the old
+    // English text survives only as the distinguishing detail argument.
+    const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', 'KooCLI config not found');
+    return { error: e.messageZh, code: e.code, messageZh: e.messageZh, action: e.action, nextStep: e.nextStep };
+  }
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf8'));
     const current = String(raw.current || 'default');
@@ -72,7 +78,9 @@ export function readKooCliProfiles() {
       ),
     };
   } catch {
-    return { error: 'KooCLI config parse failed' };
+    // #900: bare string replaced by the unified ERROR_TABLE shape.
+    const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', 'KooCLI config parse failed');
+    return { error: e.messageZh, code: e.code, messageZh: e.messageZh, action: e.action, nextStep: e.nextStep };
   }
 }
 

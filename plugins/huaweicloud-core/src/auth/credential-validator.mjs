@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
+import { errorFromTable } from './guidance.mjs';
 
 function iamBaseUrl() {
   return process.env.HW_IAM_ENDPOINT || 'https://iam.myhuaweicloud.com';
@@ -81,15 +82,28 @@ function projectForRegion(projects, region) {
  * SDK-HMAC-SHA256 request signing. A wrong SK produces an invalid signature,
  * which IAM rejects with HTTP 401 before any project data is returned.
  *
- * Returns { valid, projectId, error, warning }:
+ * Returns { valid, projectId, error, warning, code, messageZh, action, nextStep }:
  * - valid: true when IAM verified the signature (or the rejection is not
  *   authentication-related), false when the credentials are unusable.
  * - projectId: first project matching `region`, else the first visible project.
  * - warning: set when credentials passed but project discovery was denied.
+ * - code/messageZh/action/nextStep: unified #900 shape from the shared
+ *   ERROR_TABLE (guidance.mjs). The English `error`/`warning` detail text is
+ *   intentionally kept — existing consumers (tools.mjs sandbox_credentials,
+ *   external string-matching tests) rely on it.
  */
 export async function validateIamCredentials({ ak, sk, securityToken, region, timeoutMs = 15000 } = {}) {
   if (!ak || !sk) {
-    return { valid: false, projectId: null, error: 'AK and SK are both required for credential validation.' };
+    const e = errorFromTable('HDKIT_CRED_MISSING');
+    return {
+      valid: false,
+      projectId: null,
+      error: 'AK and SK are both required for credential validation.',
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      nextStep: e.nextStep,
+    };
   }
 
   const base = iamBaseUrl();
@@ -115,11 +129,16 @@ export async function validateIamCredentials({ ak, sk, securityToken, region, ti
       resp = await fetch(url, fetchOpts);
     }
   } catch (error) {
+    const e = errorFromTable('HDKIT_CRED_UNEXPECTED', error.message);
     return {
       valid: false,
       projectId: null,
       skipped: true,
       error: `IAM validation request failed (treating credentials as unverified): ${error.message}`,
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      nextStep: e.nextStep,
     };
   } finally {
     clearTimeout(timer);
@@ -138,26 +157,42 @@ export async function validateIamCredentials({ ak, sk, securityToken, region, ti
 
   if (resp.status === 401) {
     const msg = data?.error?.message || text.slice(0, 200);
+    const e = errorFromTable('HDKIT_CRED_INVALID', `HTTP 401: ${msg}`);
     return {
       valid: false,
       projectId: null,
       error: `IAM rejected the credentials (HTTP 401: ${msg}). The AK/SK is invalid - check the SK for typos or expired security tokens.`,
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      nextStep: e.nextStep,
     };
   }
 
   if (resp.status === 403) {
+    const msg = data?.error?.message || text.slice(0, 200);
+    const e = errorFromTable('HDKIT_CRED_FORBIDDEN', `HTTP 403: ${msg}`);
     return {
       valid: true,
       projectId: null,
       error: null,
       warning: `Credentials signed successfully but project listing was denied (HTTP 403). Continuing without project_id.`,
+      code: e.code,
+      messageZh: e.messageZh,
+      action: e.action,
+      nextStep: e.nextStep,
     };
   }
 
+  const e = errorFromTable('HDKIT_CRED_UNEXPECTED', `HTTP ${resp.status}`);
   return {
     valid: false,
     projectId: null,
     skipped: true,
     error: `Unexpected IAM response (HTTP ${resp.status}): ${text.slice(0, 200)}`,
+    code: e.code,
+    messageZh: e.messageZh,
+    action: e.action,
+    nextStep: e.nextStep,
   };
 }
