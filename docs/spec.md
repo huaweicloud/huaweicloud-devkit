@@ -24,8 +24,14 @@
 - 方案：规则匹配前增加 ANSI-C 引号解码预处理层——解析 `$'...'` 内转义（`\xNN`、`\uNNNN`、`\UNNNNNNNN`、八进制、`\cX`、C 简写转义），将解码结果追加到待匹配文本，再执行全部 hook 风险规则。
 - 验收：D4-15 payload（如 `bash -c $'rm -\x72f /'`、`echo $'\x68cloud IAM DeleteUser'`）→ deny/warn 拦截；正常命令不误报（`echo $'hello'` → allow）。
 
+### #3b【security】D4-15 step 2 hook 绕过：$(...) 命令替换内层命令未解码
+
+- 现状：PR #880 仅修复 ANSI-C 引号解码（`$'\xNN'`），未覆盖 `$(printf '\x72\x6d')` 和 `$(echo '...' | base64 -d)` 命令替换内层命令解析——编码后的内层命令逃过规则匹配。
+- 方案：规则匹配前增加 `$(...)` 命令替换内层命令解析层——提取 `$(...)` 内层命令文本，解码 `printf '\xNN'`/`'\uNNNN'`/八进制转义（复用 `decodeAnsiCBody`）和 `echo '...' | base64 -d` 载荷，将解码结果追加到待匹配文本，再执行全部 hook 风险规则。
+- 验收：D4-15 step 2 payload（如 `$(printf '\x72\x6d -\x72\x66 /')` → deny `hwc-sandbox-destructive-command`；`$(echo 'cm0gLXJmIC8=' | base64 -d)` → deny；`$(printf '\x68cloud ECS DeleteServers --x=1')` → warn `hwc-destructive-delete-operation`）；正常 `$(...)` 不误报（`$(echo hello)` → allow）。
+
 ## 测试计划
 
 - `test/safety-policy.test.mjs`：新增 Windows `%VAR%` deny/不误报用例。
 - `test/tools.test.mjs`：阈值升至 0.9，新增中文自然语言意图用例。
-- `test/risk-rule-engine.test.mjs`：新增 ANSI-C 解码 deny 拦截 + 不误报用例。
+- `test/risk-rule-engine.test.mjs`：新增 ANSI-C 解码 deny 拦截 + 不误报用例；新增 `$(...)` 命令替换解码 deny/warn 拦截 + 不误报用例。
