@@ -3201,12 +3201,8 @@ function hermesStatus() {
   console.log(
     `  Telemetry Hook: ${existsSync(join(pluginDir, 'hooks', 'huaweicloud-telemetry.py')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
-  console.log(
-    `  Hook allowlist: ${hermesHookAllowlisted() ? `${GRN}Approved${RST}` : `${RED}Not allowlisted${RST}`}`,
-  );
-  console.log(
-    `  Hook plugin: ${hermesHookPluginInstalled() ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
-  );
+  console.log(`  Hook allowlist: ${hermesHookAllowlisted() ? `${GRN}Approved${RST}` : `${RED}Not allowlisted${RST}`}`);
+  console.log(`  Hook plugin: ${hermesHookPluginInstalled() ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`);
   console.log(`  MCP Python SDK: ${hermesMcpSdkOk() ? `${GRN}Ready${RST}` : `${RED}Missing${RST}`}`);
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -3910,9 +3906,7 @@ function openclawStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(
-    `  Skills: ${cdSkillCount > 0 ? `${GRN}${cdSkillCount} installed${RST}` : `${RED}Not installed${RST}`}`,
-  );
+  console.log(`  Skills: ${cdSkillCount > 0 ? `${GRN}${cdSkillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
 }
 
 function codexSectionStatus() {
