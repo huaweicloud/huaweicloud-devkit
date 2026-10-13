@@ -10,6 +10,7 @@ import {
   clearRuntimeCredentials,
   getParentCwd,
   globalCredentialsPath,
+  isCodeArtsContext,
   obsConfigPath,
   parseStsExpiry,
   pickDevkitMcpServer,
@@ -24,7 +25,8 @@ import {
   writeObsConfig,
 } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 import { getAgentRegistrationStatuses } from '../plugins/huaweicloud-core/src/auth/agent-registration.mjs';
-import { getAuthStatus, syncAuth } from '../plugins/huaweicloud-core/src/auth/service.mjs';
+import { buildOnboardingSteps } from '../plugins/huaweicloud-core/src/auth/guidance.mjs';
+import { computeOnboarding, getAuthStatus, syncAuth } from '../plugins/huaweicloud-core/src/auth/service.mjs';
 
 const FAKE_HCLOUD = fileURLToPath(new URL('./fixtures/fake-hcloud.mjs', import.meta.url));
 
@@ -95,7 +97,8 @@ test('resolveCredentials prefers environment and falls back to vault', () => {
     delete process.env.HW_SECRET_KEY;
 
     rmSync(globalCredentialsPath(), { force: true });
-    assert.throws(() => resolveCredentials({}), /auth init/);
+    // #900: HDKIT_CRED_MISSING now carries the unified Chinese messageZh.
+    assert.throws(() => resolveCredentials({}), /未配置华为云凭证/);
     assert.ok(!home.includes('\0'));
   });
 });
@@ -847,3 +850,77 @@ test('J: getAuthStatus credentialPanel unknown status when temp STS expiry canno
     clearRuntimeCredentials();
   });
 });
+
+test('#900: failure-path onboarding steps come from the shared guidance builder (scenario 3)', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    let thrown;
+    try {
+      resolveCredentials();
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown, 'expected HDKIT_CRED_MISSING');
+    assert.equal(thrown.code, 'HDKIT_CRED_MISSING');
+    assert.ok(thrown.onboarding);
+    assert.equal(thrown.onboarding.scenario, 3);
+    // THE guard: same steps as the pure builder. The codearts flag is derived
+    // from the same context detector the failure path uses (the repo carries a
+    // tracked .codeartsdoer/ dir, so tests here run in CodeArts context).
+    assert.deepEqual(
+      thrown.onboarding.steps,
+      buildOnboardingSteps(3, { codearts: isCodeArtsContext() }),
+      'failure path must use the single steps builder',
+    );
+  });
+});
+
+test('#900: failure-path error carries unified shape (messageZh Chinese + executable action)', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    let thrown;
+    try {
+      resolveCredentials();
+    } catch (error) {
+      thrown = error;
+    }
+    assert.ok(thrown, 'expected HDKIT_CRED_MISSING');
+    assert.equal(thrown.code, 'HDKIT_CRED_MISSING');
+    assert.match(thrown.message, /[\u4e00-\u9fff]/, 'top-level message must be Chinese');
+    assert.ok(!/Huawei Cloud credentials are not configured/.test(thrown.message));
+    assert.equal(thrown.messageZh, thrown.message);
+    assert.equal(thrown.action, 'npx huaweicloud-devkit auth init');
+    assert.equal(thrown.nextStep, thrown.action);
+  });
+});
+
+// #900 cross-path drift guard — SKIPPED until Task 3 rewires computeOnboarding
+// (service.mjs) to buildOnboardingSteps. Today the status path still hand-builds
+// scenario-3 CodeArts steps with auth_switch mode "import" where the shared
+// builder emits "mcp-config" (and scenario 4 uses action "switch-persist" vs the
+// builder's "auth_switch") — the exact drift issue #900 reported. Task 3 removes
+// this skip so both paths are asserted identical.
+test(
+  '#900: failure-path steps equal status-path steps for scenario 3 (same source)',
+  { skip: 'enable after computeOnboarding uses buildOnboardingSteps (Task 3, #900)' },
+  () => {
+    withTempHome(() => {
+      clearRuntimeCredentials();
+      let thrown;
+      try {
+        resolveCredentials();
+      } catch (error) {
+        thrown = error;
+      }
+      assert.ok(thrown, 'expected HDKIT_CRED_MISSING');
+      const status = computeOnboarding({ credentials: null, reconciled: minimalReconciledStub() });
+      assert.equal(status.scenario, 3);
+      assert.deepEqual(thrown.onboarding.steps, status.steps, 'failure path and status path must be identical');
+    });
+  },
+);
+
+function minimalReconciledStub() {
+  // keep it cheap like the old failure path did — stub the reconcile state
+  return { runtimeActive: false, envIsPlaceholder: false };
+}

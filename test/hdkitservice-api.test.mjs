@@ -57,7 +57,9 @@ test('voucher status returns CRED_MISSING when credentials are absent', async ()
     const result = await hdkitVoucherStatus();
     assert.equal(result.claimed, false);
     assert.equal(result.code, 'HDKIT_CRED_MISSING');
-    assert.match(result.message, /credentials are not configured/);
+    // #900: resolveCredentials now throws the unified Chinese messageZh, which
+    // hdkitVoucherStatus's catch maps into result.message.
+    assert.match(result.message, /未配置华为云凭证/);
   } finally {
     if (savedAk === undefined) delete process.env.HW_ACCESS_KEY;
     else process.env.HW_ACCESS_KEY = savedAk;
