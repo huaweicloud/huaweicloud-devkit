@@ -1265,7 +1265,7 @@ async function installCodexDesktop() {
 
   // Register in personal marketplace (Codex discovers plugins from ~/.agents/plugins/marketplace.json)
   ensureCodexMarketplaceEntry();
-  console.log(`  \${YEL}请到插件 → 个人 → HuaweiCloud DevKit → 安装\${RST}`);
+  console.log(`  ${YEL}请到插件 → 个人 → HuaweiCloud DevKit → 安装${RST}`);
 
   // Clean up old install locations from pre-marketplace era
   removeIfExists(join(homedir(), '.agents', 'skills'));
@@ -1524,10 +1524,10 @@ function uninstallCodeArts() {
 function codeartsStatus() {
   const pluginDir = codeartsPluginsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let skillCount = 0;
   if (existsSync(codeartsSkillsDir())) {
@@ -1535,12 +1535,12 @@ function codeartsStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
   if (existsSync(codeartsMcpSettingsFile())) {
     try {
       const config = JSON.parse(readFileSync(codeartsMcpSettingsFile(), 'utf8'));
       console.log(
-        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? `\${GRN}Configured\${RST}` : `\${RED}Not configured\${RST}`}`,
+        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? `${GRN}Configured${RST}` : `${RED}Not configured${RST}`}`,
       );
     } catch {
       console.log(`  MCP config: ${RED}Invalid${RST}`);
@@ -1683,10 +1683,10 @@ function uninstallCodeArtsWork() {
 function codeartsWorkStatus() {
   const pluginDir = codeartsWorkPluginsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let skillCount = 0;
   if (existsSync(codeartsWorkSkillsDir())) {
@@ -1694,12 +1694,12 @@ function codeartsWorkStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
   if (existsSync(codeartsWorkMcpSettingsFile())) {
     try {
       const config = JSON.parse(readFileSync(codeartsWorkMcpSettingsFile(), 'utf8'));
       console.log(
-        `  MCP config: ${config.mcp?.['huaweicloud-devkit'] ? `\${GRN}Configured\${RST}` : `\${RED}Not configured\${RST}`}`,
+        `  MCP config: ${config.mcp?.['huaweicloud-devkit'] ? `${GRN}Configured${RST}` : `${RED}Not configured${RST}`}`,
       );
     } catch {
       console.log(`  MCP config: ${RED}Invalid${RST}`);
@@ -1762,7 +1762,7 @@ function resolveWorkBuddyPython() {
   for (const p of candidates) {
     if (existsSync(p)) return p.replace(/\\/g, '/');
   }
-  console.log(`  \${YEL}[WARN]\${RST} No WorkBuddy managed Python found; PostToolUse telemetry hook not installed.`);
+  console.log(`  ${YEL}[WARN]${RST} No WorkBuddy managed Python found; PostToolUse telemetry hook not installed.`);
   return null;
 }
 
@@ -2003,10 +2003,10 @@ function workbuddyStatus() {
   const pluginDir = workbuddyPluginsDir();
   const skillsDir = workbuddySkillsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -2014,13 +2014,13 @@ function workbuddyStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
   const configPath = workbuddyMcpConfigFile();
   if (existsSync(configPath)) {
     try {
       const config = JSON.parse(readFileSync(configPath, 'utf8'));
       console.log(
-        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? `\${GRN}Configured\${RST}` : `\${RED}Not configured\${RST}`}`,
+        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? `${GRN}Configured${RST}` : `${RED}Not configured${RST}`}`,
       );
     } catch {
       console.log(`  MCP config: ${RED}Invalid${RST}`);
@@ -2036,7 +2036,7 @@ function workbuddyStatus() {
   }
   const hookTrackerInstalled = existsSync(join(homedir(), '.codebuddy', 'hooks', 'telemetry-tracker.py'));
   console.log(
-    `  Telemetry Hook: ${hookConfigured && hookTrackerInstalled ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Telemetry Hook: ${hookConfigured && hookTrackerInstalled ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
 }
 
@@ -2163,10 +2163,10 @@ function atomcodeStatus() {
   const pluginDir = atomcodePluginsDir();
   const skillsDir = atomcodeSkillsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -2174,13 +2174,13 @@ function atomcodeStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
   const configPath = atomcodeMcpConfigFile();
   if (existsSync(configPath)) {
     try {
       const config = JSON.parse(readFileSync(configPath, 'utf8'));
       console.log(
-        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? `\${GRN}Configured\${RST}` : `\${RED}Not configured\${RST}`}`,
+        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? `${GRN}Configured${RST}` : `${RED}Not configured${RST}`}`,
       );
     } catch {
       console.log(`  MCP config: ${RED}Invalid${RST}`);
@@ -2384,7 +2384,7 @@ function tryInstallDshMcpClient() {
       return true;
     }
   }
-  console.log(`  \${YEL}[WARN]\${RST} DSH MCP client package not detected.`);
+  console.log(`  ${YEL}[WARN]${RST} DSH MCP client package not detected.`);
   console.log('  Manual: npx @deepseek-ai/dsh plugin --profile web add @deepseek-ai/dsh-mcp-client');
   console.log('  If pnpm is missing, run: corepack enable pnpm');
   return false;
@@ -2469,13 +2469,13 @@ function dshStatus() {
   const pluginDir = dshPluginsDir();
   const skillsDir = dshSkillsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Hook Plugin: ${existsSync(join(pluginDir, 'hook-plugin.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Hook Plugin: ${existsSync(join(pluginDir, 'hook-plugin.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -2483,10 +2483,10 @@ function dshStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
-  console.log(`  DSH patch: ${dshPatchConfigured() ? `\${GRN}Configured\${RST}` : `\${RED}Not configured\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
+  console.log(`  DSH patch: ${dshPatchConfigured() ? `${GRN}Configured${RST}` : `${RED}Not configured${RST}`}`);
   console.log(
-    `  DSH MCP client package: ${dshMcpClientAvailable() ? `\${GRN}Detected\${RST}` : `\${YEL}Check DSH profile\${RST}`}`,
+    `  DSH MCP client package: ${dshMcpClientAvailable() ? `${GRN}Detected${RST}` : `${YEL}Check DSH profile${RST}`}`,
   );
 }
 
@@ -2496,7 +2496,7 @@ async function promptOfficeaceInstallDir() {
   while (true) {
     const path = (await ask('  Install directory: ')).trim();
     if (!path) {
-      console.log(`  \${YEL}Path cannot be empty.\${RST}`);
+      console.log(`  ${YEL}Path cannot be empty.${RST}`);
       continue;
     }
     const capFile = join(path, '.office-claw', 'capabilities.json');
@@ -2512,13 +2512,13 @@ async function promptOfficeaceInstallDir() {
 async function installOfficeAce() {
   if (!officeaceCapabilitiesDir()) {
     if (process.stdin.isTTY) {
-      console.log(`  \${YEL}OfficeAce install directory not found automatically.\${RST}`);
+      console.log(`  ${YEL}OfficeAce install directory not found automatically.${RST}`);
       console.log('  Please enter the OfficeAce install directory.');
       const entered = await promptOfficeaceInstallDir();
       process.env.OFFICE_CLAW_CONFIG_ROOT = join(entered, '.office-claw');
     } else {
       console.log(
-        `  \${RED}OfficeAce install directory not found. Please set OFFICE_CLAW_CONFIG_ROOT env var and retry.\${RST}`,
+        `  ${RED}OfficeAce install directory not found. Please set OFFICE_CLAW_CONFIG_ROOT env var and retry.${RST}`,
       );
       return;
     }
@@ -2608,10 +2608,10 @@ function officeaceStatus() {
   const pluginDir = officeacePluginsDir();
   const skillsDir = officeaceSkillsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -2619,7 +2619,7 @@ function officeaceStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
   const dbPath = officeaceSqlitePath();
   if (existsSync(dbPath)) {
     try {
@@ -2627,7 +2627,7 @@ function officeaceStatus() {
       const row = db.prepare("SELECT enabled, status FROM mcp_connectors WHERE name = 'huaweicloud-devkit'").get();
       db.close();
       if (row) {
-        const statusIcon = row.status === 'connected' ? `\${GRN}` : `\${YEL}`;
+        const statusIcon = row.status === 'connected' ? `${GRN}` : `${YEL}`;
         console.log(`  MCP config: ${statusIcon}${row.status}${RST} (enabled: ${row.enabled ? 'yes' : 'no'})`);
       } else {
         console.log(`  MCP config: ${RED}Not configured${RST}`);
@@ -3012,7 +3012,7 @@ function ensureHermesMcpSdk() {
   try {
     const r = spawnSync(pythonBin, ['-c', 'import mcp; print("ok")'], { encoding: 'utf8', timeout: 5000 });
     if (r.status === 0 && r.stdout.trim() === 'ok') {
-      console.log(`  MCP Python SDK: \${GRN}Already installed\${RST}`);
+      console.log(`  MCP Python SDK: ${GRN}Already installed${RST}`);
       return true;
     }
   } catch {}
@@ -3020,7 +3020,7 @@ function ensureHermesMcpSdk() {
   try {
     const pip = spawnSync(pythonBin, ['-m', 'pip', 'install', 'mcp', '--quiet'], { encoding: 'utf8', timeout: 60000 });
     if (pip.status === 0) {
-      console.log(`  MCP Python SDK: \${GRN}Installed\${RST}`);
+      console.log(`  MCP Python SDK: ${GRN}Installed${RST}`);
       return true;
     }
     console.log(`  MCP Python SDK: ${YEL}Install failed${RST}`);
@@ -3190,39 +3190,39 @@ function hermesStatus() {
   const pluginDir = hermesPluginsDir();
   const skillsDir = hermesSkillsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Hooks: ${existsSync(join(pluginDir, 'hooks', 'huaweicloud-safety.py')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Hooks: ${existsSync(join(pluginDir, 'hooks', 'huaweicloud-safety.py')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Telemetry Hook: ${existsSync(join(pluginDir, 'hooks', 'huaweicloud-telemetry.py')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Telemetry Hook: ${existsSync(join(pluginDir, 'hooks', 'huaweicloud-telemetry.py')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Hook allowlist: ${hermesHookAllowlisted() ? `\${GRN}Approved\${RST}` : `\${RED}Not allowlisted\${RST}`}`,
+    `  Hook allowlist: ${hermesHookAllowlisted() ? `${GRN}Approved${RST}` : `${RED}Not allowlisted${RST}`}`,
   );
   console.log(
-    `  Hook plugin: ${hermesHookPluginInstalled() ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Hook plugin: ${hermesHookPluginInstalled() ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
-  console.log(`  MCP Python SDK: ${hermesMcpSdkOk() ? `\${GRN}Ready\${RST}` : `\${RED}Missing\${RST}`}`);
+  console.log(`  MCP Python SDK: ${hermesMcpSdkOk() ? `${GRN}Ready${RST}` : `${RED}Missing${RST}`}`);
   let skillCount = 0;
   if (existsSync(skillsDir)) {
     skillCount = readdirSync(skillsDir, { withFileTypes: true }).filter(
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
   const configPath = hermesConfigFile();
   if (existsSync(configPath)) {
     try {
       const config = readFileSync(configPath, 'utf8');
       const mcpConfigured = config.includes('mcp_servers:') && config.includes('huaweicloud-devkit');
       const hooksConfigured = config.includes('hooks:') && config.includes('huaweicloud-safety.py');
-      console.log(`  MCP config: ${mcpConfigured ? `\${GRN}Configured\${RST}` : `\${RED}Not configured\${RST}`}`);
-      console.log(`  Hooks config: ${hooksConfigured ? `\${GRN}Configured\${RST}` : `\${RED}Not configured\${RST}`}`);
+      console.log(`  MCP config: ${mcpConfigured ? `${GRN}Configured${RST}` : `${RED}Not configured${RST}`}`);
+      console.log(`  Hooks config: ${hooksConfigured ? `${GRN}Configured${RST}` : `${RED}Not configured${RST}`}`);
     } catch {
       console.log(`  MCP config: ${RED}Invalid${RST}`);
       console.log(`  Hooks config: ${RED}Invalid${RST}`);
@@ -3237,10 +3237,10 @@ function opencodeStatus() {
   const pluginDir = opencodePluginsDir();
   const skillsDir = opencodeSkillsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let skillCount = 0;
   if (existsSync(skillsDir)) {
@@ -3248,7 +3248,7 @@ function opencodeStatus() {
       (d) => d.isDirectory() && d.name.startsWith('huawei'),
     ).length;
   }
-  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`);
+  console.log(`  Skills: ${skillCount > 0 ? `${GRN}${skillCount} installed${RST}` : `${RED}Not installed${RST}`}`);
   const configPath = opencodeConfigFile();
   if (existsSync(configPath)) {
     try {
@@ -3256,8 +3256,8 @@ function opencodeStatus() {
       console.log(
         `  MCP config: ${
           config.mcp?.['huaweicloud-devkit'] || config.mcp?.servers?.['huaweicloud-devkit']
-            ? `\${GRN}Configured\${RST}`
-            : `\${RED}Not configured\${RST}`
+            ? `${GRN}Configured${RST}`
+            : `${RED}Not configured${RST}`
         }`,
       );
     } catch {
@@ -3640,7 +3640,7 @@ async function cmdInstall() {
         }
         console.log(`  ${YEL}Codex CLI not found. Skipping Codex.${RST}`);
         if (process.platform === 'win32') {
-          console.log(`  \${YEL}Tip: try --target codex-desktop for Codex Desktop on Windows\${RST}`);
+          console.log(`  ${YEL}Tip: try --target codex-desktop for Codex Desktop on Windows${RST}`);
         } else {
           console.log('  Install Codex CLI to enable: npx huaweicloud-devkit install --target codex');
         }
@@ -3654,7 +3654,7 @@ async function cmdInstall() {
     console.log(`\n${RED}Installation failed for: ${installFailures.join(', ')}${RST}`);
     if (target === 'all') {
       console.log(
-        `\${YEL}Some targets may have been installed before the failure. Re-run status/doctor per target.\${RST}`,
+        `${YEL}Some targets may have been installed before the failure. Re-run status/doctor per target.${RST}`,
       );
     }
     process.exit(1);
@@ -3814,7 +3814,7 @@ async function cmdUninstall() {
     uninstallCodexDesktop();
     if (target === 'codex' || target === 'all') {
       if (!hasCodexCLI()) {
-        console.log(`  \${YEL}Codex CLI not found. Run "npm uninstall -g codex" to fully remove.\${RST}`);
+        console.log(`  ${YEL}Codex CLI not found. Run "npm uninstall -g codex" to fully remove.${RST}`);
       } else {
         uninstallCodex();
       }
@@ -3899,10 +3899,10 @@ function openclawStatus() {
   const cdPluginDir = openclawPluginsDir();
   const cdSkillsDir = openclawSkillsDir();
   console.log(
-    `  MCP Server: ${existsSync(join(cdPluginDir, 'src', 'mcp-server.mjs')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  MCP Server: ${existsSync(join(cdPluginDir, 'src', 'mcp-server.mjs')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   console.log(
-    `  Safety Policy: ${existsSync(join(cdPluginDir, 'safety', 'policy.json')) ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Safety Policy: ${existsSync(join(cdPluginDir, 'safety', 'policy.json')) ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`,
   );
   let cdSkillCount = 0;
   if (existsSync(cdSkillsDir)) {
@@ -3911,15 +3911,15 @@ function openclawStatus() {
     ).length;
   }
   console.log(
-    `  Skills: ${cdSkillCount > 0 ? `${GRN}${cdSkillCount} installed${RST}` : `\${RED}Not installed\${RST}`}`,
+    `  Skills: ${cdSkillCount > 0 ? `${GRN}${cdSkillCount} installed${RST}` : `${RED}Not installed${RST}`}`,
   );
 }
 
 function codexSectionStatus() {
   if (!hasCodexCLI()) {
-    console.log(`  \${YEL}Codex CLI not found.\${RST}`);
+    console.log(`  ${YEL}Codex CLI not found.${RST}`);
   } else {
-    console.log(`  Plugin: ${codexStatus() ? `\${GRN}Installed\${RST}` : `\${RED}Not installed\${RST}`}`);
+    console.log(`  Plugin: ${codexStatus() ? `${GRN}Installed${RST}` : `${RED}Not installed${RST}`}`);
   }
 }
 
@@ -4302,14 +4302,14 @@ async function cmdDoctor() {
 
   if (mcpConfigured && !hcloudOk) {
     console.log(
-      `\n\${YEL}MCP is configured but hcloud is not installed. Install hcloud then restart your session.\${RST}`,
+      `\n${YEL}MCP is configured but hcloud is not installed. Install hcloud then restart your session.${RST}`,
     );
   }
   if (fail > 0) {
-    console.log(`\${YEL}Fix failures above, then restart your session.\${RST}`);
+    console.log(`${YEL}Fix failures above, then restart your session.${RST}`);
   }
   if (fail === 0 && mcpConfigured) {
-    console.log(`\n\${GRN}All checks passed.\${RST} You can now describe your Huawei Cloud task`);
+    console.log(`\n${GRN}All checks passed.${RST} You can now describe your Huawei Cloud task`);
   }
 
   // Detect "installed but not restarted" — check all supported agents
@@ -4342,7 +4342,7 @@ async function cmdUpdate() {
 
   if (target === 'opencode') {
     if (!existsSync(join(opencodePluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[OpenCode]');
@@ -4354,7 +4354,7 @@ async function cmdUpdate() {
 
   if (target === 'codex-desktop') {
     if (!existsSync(join(codexDesktopPluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[Codex Desktop]');
@@ -4383,7 +4383,7 @@ async function cmdUpdate() {
 
   if (target === 'codearts') {
     if (!existsSync(join(codeartsPluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[CodeArts]');
@@ -4395,7 +4395,7 @@ async function cmdUpdate() {
 
   if (target === 'codearts-work') {
     if (!existsSync(join(codeartsWorkPluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[CodeArts Work]');
@@ -4407,7 +4407,7 @@ async function cmdUpdate() {
 
   if (target === 'workbuddy') {
     if (!existsSync(join(workbuddyPluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[WorkBuddy]');
@@ -4419,7 +4419,7 @@ async function cmdUpdate() {
 
   if (target === 'dsh') {
     if (!existsSync(join(dshPluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[DSH]');
@@ -4431,7 +4431,7 @@ async function cmdUpdate() {
 
   if (target === 'officeace') {
     if (!existsSync(join(officeacePluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[OfficeAce]');
@@ -4443,7 +4443,7 @@ async function cmdUpdate() {
 
   if (target === 'hermes') {
     if (!existsSync(join(hermesPluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[Hermes Agent]');
@@ -4455,7 +4455,7 @@ async function cmdUpdate() {
 
   if (target === 'openclaw') {
     if (!existsSync(join(codexDesktopPluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[OpenClaw]');
@@ -4467,7 +4467,7 @@ async function cmdUpdate() {
 
   if (target === 'atomcode') {
     if (!existsSync(join(atomcodePluginsDir(), 'src', 'mcp-server.mjs'))) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log('[AtomCode]');
@@ -4535,7 +4535,7 @@ async function cmdUpdate() {
       updatedAny = true;
     }
     if (!updatedAny) {
-      console.log(`\${YEL}Not installed. Use "install" command first.\${RST}`);
+      console.log(`${YEL}Not installed. Use "install" command first.${RST}`);
       return;
     }
     console.log(`\n${GRN}Update complete.${RST}`);
@@ -4662,15 +4662,15 @@ async function cmdInstallHcloud() {
             windowsHide: true,
           });
           if (r.status === 0) {
-            console.log(`  \${GRN}Privacy agreement accepted. KooCLI ready.\${RST}`);
+            console.log(`  ${GRN}Privacy agreement accepted. KooCLI ready.${RST}`);
           } else {
-            console.log(`  \${YEL}无法写入配置目录。请在普通终端运行: echo "y" | hcloud version\${RST}`);
+            console.log(`  ${YEL}无法写入配置目录。请在普通终端运行: echo "y" | hcloud version${RST}`);
           }
         } else {
-          console.log(`  \${YEL}请手动接受隐私协议：在终端运行 hcloud version 并按提示操作\${RST}`);
+          console.log(`  ${YEL}请手动接受隐私协议：在终端运行 hcloud version 并按提示操作${RST}`);
         }
       } else {
-        console.log(`  \${YEL}非交互会话：请稍后在终端运行 hcloud version 并按提示接受隐私协议\${RST}`);
+        console.log(`  ${YEL}非交互会话：请稍后在终端运行 hcloud version 并按提示接受隐私协议${RST}`);
       }
 
       console.log('  Or restart terminal and: hcloud version');
@@ -4761,14 +4761,14 @@ async function cmdInstallHcloud() {
             });
             console.log(
               r.status === 0
-                ? `  \${GRN}Privacy agreement accepted. KooCLI ready.\${RST}`
-                : `  \${YEL}无法写入配置目录。请在终端运行: hcloud version 并按提示操作\${RST}`,
+                ? `  ${GRN}Privacy agreement accepted. KooCLI ready.${RST}`
+                : `  ${YEL}无法写入配置目录。请在终端运行: hcloud version 并按提示操作${RST}`,
             );
           } else {
-            console.log(`  \${YEL}请手动接受隐私协议：在终端运行 hcloud version 并按提示操作\${RST}`);
+            console.log(`  ${YEL}请手动接受隐私协议：在终端运行 hcloud version 并按提示操作${RST}`);
           }
         } else {
-          console.log(`  \${YEL}非交互会话：请稍后在终端运行 hcloud version 并按提示接受隐私协议\${RST}`);
+          console.log(`  ${YEL}非交互会话：请稍后在终端运行 hcloud version 并按提示接受隐私协议${RST}`);
         }
       } catch (error) {
         console.log(`\n${YEL}Auto-install failed: ${error.message}${RST}`);
@@ -4781,7 +4781,7 @@ async function cmdInstallHcloud() {
   }
 
   console.log('\nAfter install, set HCLOUD_BIN if hcloud is not on PATH.');
-  console.log(`\n\${BOLD}\${YEL}=== Configure credentials SAFELY ===\${RST}`);
+  console.log(`\n${BOLD}${YEL}=== Configure credentials SAFELY ===${RST}`);
   console.log('  Unified credentials (recommended): npx huaweicloud-devkit auth init');
   console.log('  NEVER: hcloud configure set --cli-access-key=xxx  (AK/SK in shell history!)');
   console.log('\nThen run: npx huaweicloud-devkit doctor');
@@ -4890,7 +4890,7 @@ function printAuthStatus(status) {
 async function cmdAuthInit() {
   console.log(BANNER);
   console.log('HuaweiCloud DevKit Unified Authentication Setup\n');
-  console.log(`\${BOLD}获取 AK/SK（如果还没有）：\${RST}`);
+  console.log(`${BOLD}获取 AK/SK（如果还没有）：${RST}`);
   console.log('  1. 打开华为云"访问密钥"页签：');
   console.log('     https://console.huaweicloud.com/iam/?region=cn-north-4#/mine/accessKey');
   console.log('  2. 点击"新增访问密钥"，完成身份验证');
@@ -4915,7 +4915,7 @@ async function cmdAuthInit() {
   const interactive = process.stdin.isTTY && process.stdout.isTTY;
   if (!interactive && (!ak || !sk)) {
     console.error(
-      `\${RED}Non-interactive session detected. Provide credentials via environment variables instead:\${RST}`,
+      `${RED}Non-interactive session detected. Provide credentials via environment variables instead:${RST}`,
     );
     console.error(
       '  export HW_ACCESS_KEY=<ak> HW_SECRET_KEY=<sk>   then re-run "npx huaweicloud-devkit auth init" to continue',
@@ -4987,7 +4987,7 @@ async function cmdAuthReconcile() {
   const interactive = process.stdin.isTTY && process.stdout.isTTY;
   if (!interactive) {
     console.error(
-      `\${RED}Non-interactive session. Cannot run interactive reconciliation. Use "npx huaweicloud-devkit auth sync" or run reconciliation in a real terminal.\${RST}`,
+      `${RED}Non-interactive session. Cannot run interactive reconciliation. Use "npx huaweicloud-devkit auth sync" or run reconciliation in a real terminal.${RST}`,
     );
     process.exitCode = 1;
     return;
@@ -5074,7 +5074,7 @@ async function cmdProxyInit() {
   const interactive = process.stdin.isTTY && process.stdout.isTTY;
 
   if (!interactive) {
-    console.error(`\${RED}Non-interactive session. Set proxy via environment variables:\${RST}`);
+    console.error(`${RED}Non-interactive session. Set proxy via environment variables:${RST}`);
     console.error('  HTTPS_PROXY=http://proxy:port');
     console.error('  HTTP_PROXY=http://proxy:port');
     console.error('  NO_PROXY=localhost,127.0.0.1');

@@ -14,6 +14,10 @@ const SCRIPT_BIN = process.platform === 'linux' && existsSync('/usr/bin/script')
 const ESC_CSI = String.fromCharCode(27) + '[';
 const hasAnsi = (s) => s.includes(ESC_CSI);
 
+// Literal `${...}` leak: escaped template interpolation (e.g. `\${GRN}`) renders as
+// literal text instead of the color constant, polluting output in every color mode.
+const hasLiteralInterpolation = (s) => s.includes('${');
+
 function makeEnv(home, extra = {}) {
   return {
     ...process.env,
@@ -52,6 +56,8 @@ test('#902 NO_COLOR=1: stdout and stderr contain no ANSI escapes (non-TTY)', () 
     assert.equal(res.status, 0, `stderr: ${res.stderr}`);
     assert.ok(!hasAnsi(res.stdout), 'stdout must not contain ANSI escapes under NO_COLOR');
     assert.ok(!hasAnsi(res.stderr), 'stderr must not contain ANSI escapes under NO_COLOR');
+    assert.ok(!hasLiteralInterpolation(res.stdout), 'stdout must not leak literal ${...} interpolation');
+    assert.ok(!hasLiteralInterpolation(res.stderr), 'stderr must not leak literal ${...} interpolation');
   });
 });
 
@@ -61,6 +67,8 @@ test('#902 NO_COLOR takes priority over FORCE_COLOR', () => {
     assert.equal(res.status, 0, `stderr: ${res.stderr}`);
     assert.ok(!hasAnsi(res.stdout), 'NO_COLOR must win over FORCE_COLOR');
     assert.ok(!hasAnsi(res.stderr), 'NO_COLOR must win over FORCE_COLOR');
+    assert.ok(!hasLiteralInterpolation(res.stdout), 'stdout must not leak literal ${...} interpolation');
+    assert.ok(!hasLiteralInterpolation(res.stderr), 'stderr must not leak literal ${...} interpolation');
   });
 });
 
@@ -70,6 +78,8 @@ test('#902 non-TTY (piped) default run contains no ANSI escapes', () => {
     assert.equal(res.status, 0, `stderr: ${res.stderr}`);
     assert.ok(!hasAnsi(res.stdout), 'piped stdout must be de-colored automatically');
     assert.ok(!hasAnsi(res.stderr), 'piped stderr must be de-colored automatically');
+    assert.ok(!hasLiteralInterpolation(res.stdout), 'stdout must not leak literal ${...} interpolation');
+    assert.ok(!hasLiteralInterpolation(res.stderr), 'stderr must not leak literal ${...} interpolation');
   });
 });
 
@@ -78,6 +88,7 @@ test('#902 FORCE_COLOR=1 forces ANSI escapes back on (color path preserved)', ()
     const res = runCli(home, { FORCE_COLOR: '1' });
     assert.equal(res.status, 0, `stderr: ${res.stderr}`);
     assert.ok(hasAnsi(res.stdout), 'FORCE_COLOR must re-enable colored output');
+    assert.ok(!hasLiteralInterpolation(res.stdout), 'colored stdout must not leak literal ${...} interpolation');
   });
 });
 
@@ -86,6 +97,7 @@ test('#902 empty NO_COLOR does not disable colors when FORCE_COLOR is set', () =
     const res = runCli(home, { NO_COLOR: '', FORCE_COLOR: '1' });
     assert.equal(res.status, 0, `stderr: ${res.stderr}`);
     assert.ok(hasAnsi(res.stdout), 'empty NO_COLOR must not disable coloring');
+    assert.ok(!hasLiteralInterpolation(res.stdout), 'stdout must not leak literal ${...} interpolation');
   });
 });
 
@@ -100,5 +112,6 @@ test('#902 default TTY run still emits colors (pty via util-linux script)', { sk
     });
     assert.equal(res.status, 0, `output: ${res.stdout}\nstderr: ${res.stderr}`);
     assert.ok(hasAnsi(res.stdout), 'default TTY output must keep ANSI colors');
+    assert.ok(!hasLiteralInterpolation(res.stdout), 'TTY stdout must not leak literal ${...} interpolation');
   });
 });
