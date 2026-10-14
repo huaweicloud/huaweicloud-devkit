@@ -3516,7 +3516,8 @@ function parseTarget() {
 
 async function checkForUpdate() {
   if (pkgVersion === '0.0.0') return;
-  const distTags = await queryDistTagsFetch({ timeoutMs: 15000 });
+  // 不显式传 timeoutMs：走 queryDistTagsFetch 的 5000ms 默认值（#911 慢响应 5s 收敛）
+  const distTags = await queryDistTagsFetch();
   const target = determineTarget(pkgVersion, distTags ?? {});
   if (target && semverCompare(target, pkgVersion) > 0) {
     const tag = distTags.next && semverCompare(target, distTags.next) === 0 ? 'next' : 'latest';
