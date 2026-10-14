@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { errorFromTable } from './auth/guidance.mjs';
 import { compareVersion, getKooCliVersion, parseHcloudVersion } from './koocli-version.mjs';
 import { kooCliInstallLogPath } from './preflight.mjs';
 import { redactSecrets } from './safety-policy.mjs';
@@ -140,23 +141,42 @@ export function probeHcloud(options = {}) {
   };
 }
 
-export function hcloudProbeNextStep(probe) {
-  if (probe.status === 'ok')
+// #900 (issue comment Required 1): every not-ready probe state routes through
+// the shared ERROR_TABLE.HDKIT_KOOCLI_NOT_READY so nextStep is always a
+// directly executable command (d11-41-nextstep-actionable). The verbose
+// English guidance is preserved verbatim in hcloudProbeRaw() — a docs/debug
+// side-channel — and must never leak back into the top-level nextStep.
+export function hcloudProbeRaw(probe) {
+  if (probe?.status === 'ok')
     return 'Use huaweicloud_show_profile_redacted to inspect the active KooCLI profile safely.';
-  if (probe.status === 'version_mismatch') {
+  if (probe?.status === 'version_mismatch') {
     return `KooCLI version mismatch: installed ${probe.installedVersion}, this plugin is paired with ${probe.requiredVersion}. Reinstall the pinned version (see huaweicloud-cli-and-auth skill) and restart the agent.`;
   }
-  if (probe.status === 'sandbox_home_failure') {
+  if (probe?.status === 'sandbox_home_failure') {
     return 'KooCLI was found, but this agent sandbox cannot resolve the Windows user home directory. Set HCLOUD_BIN to the full hcloud path, restart Codex, or verify from a normal terminal.';
   }
-  if (probe.status === 'privacy_pending') {
+  if (probe?.status === 'privacy_pending') {
     return 'KooCLI requires accepting its one-time privacy agreement. Run hcloud version in a real terminal and accept the prompt, then restart the agent.';
   }
-  if (probe.status === 'not_found') {
+  if (probe?.status === 'not_found') {
     return (
       'KooCLI is not installed yet. Background auto-install may be running — please retry shortly instead of assuming failure. To install now: npx huaweicloud-devkit install-hcloud. DevKit picks up the binary from its fixed install dirs (~/.local/bin on Linux, /usr/local/bin on macOS, ~/hcloud on Windows) or HCLOUD_BIN on the next call — no agent restart needed. Install progress: ' +
       kooCliInstallLogPath()
     );
   }
   return 'Install Huawei Cloud KooCLI: npx huaweicloud-devkit install-hcloud. Configure credentials outside the agent conversation.';
+}
+
+export function hcloudProbeNextStep(probe) {
+  if (probe?.status === 'ok') return 'huaweicloud_show_profile_redacted';
+  const detail =
+    probe?.status === 'version_mismatch'
+      ? `版本不匹配(已装 ${probe?.installedVersion ?? '未知'},插件配套 ${probe?.requiredVersion ?? '未知'})`
+      : probe?.status === 'sandbox_home_failure'
+        ? '无法解析用户主目录'
+        : probe?.status === 'privacy_pending'
+          ? '隐私协议待同意'
+          : '';
+  const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', detail);
+  return e.nextStep;
 }

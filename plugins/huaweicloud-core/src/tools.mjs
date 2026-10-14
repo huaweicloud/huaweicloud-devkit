@@ -64,7 +64,7 @@ import {
   resolveSkipFilePath,
   upgradePackage,
 } from './update-check.mjs';
-import { hcloudProbeNextStep, probeHcloud } from './hcloud-probe.mjs';
+import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud } from './hcloud-probe.mjs';
 import { isUsableOfficeaceRoot, readOfficeaceRootMarker } from './officeace-paths.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1645,6 +1645,7 @@ export async function runVersionCheck(options = {}) {
     installedVersion: result.installedVersion || undefined,
     versionMismatch: Boolean(result.versionMismatch),
     nextStep: hcloudProbeNextStep(result),
+    raw: hcloudProbeRaw(result),
     authHint:
       'If hcloud is installed but commands fail with "配置文件中不存在配置项", run `npx huaweicloud-devkit auth init` outside agent chat to configure credentials.',
   };

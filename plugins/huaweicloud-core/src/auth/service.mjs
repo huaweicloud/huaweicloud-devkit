@@ -22,7 +22,7 @@ import {
   resolveManagedProfile,
   runHcloudConfigure,
 } from './reconcile.mjs';
-import { hcloudProbeNextStep, probeHcloud } from '../hcloud-probe.mjs';
+import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud } from '../hcloud-probe.mjs';
 
 function envHasRealTriplet() {
   return (
@@ -189,6 +189,7 @@ export function getAuthStatus(target = 'all') {
     kooCliInstalled: hcloud.installed,
     kooCliStatus: hcloud.status,
     kooCliNextStep: hcloudProbeNextStep(hcloud),
+    kooCliRaw: hcloudProbeRaw(hcloud),
     reconciled,
     onboarding,
     agents: getAgentRegistrationStatuses(target).agents,
@@ -263,9 +264,10 @@ export function syncAuth(target = 'all') {
       code: e.code,
       messageZh: e.messageZh,
       action: e.action,
-      // State-specific guidance (version mismatch, privacy prompt, …) beats the
-      // generic table action here, so the existing nextStep key is preserved.
+      // #900 issue comment: nextStep is the executable table action; the
+      // verbose English guidance survives only in the `raw` side-channel.
       nextStep: hcloudProbeNextStep(hcloud),
+      raw: hcloudProbeRaw(hcloud),
       obs: { configured: true, path: obs.path, endpoint: obs.endpoint },
     };
   }

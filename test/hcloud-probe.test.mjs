@@ -8,6 +8,7 @@ import {
   classifyHcloudProbe,
   findHcloudBin,
   hcloudProbeNextStep,
+  hcloudProbeRaw,
 } from '../plugins/huaweicloud-core/src/hcloud-probe.mjs';
 import { getKooCliVersion } from '../plugins/huaweicloud-core/src/koocli-version.mjs';
 
@@ -25,7 +26,9 @@ test('hcloud probe classifies version mismatch separately from not installed', (
   assert.equal(result.installed, true);
   assert.equal(result.ok, true);
   assert.equal(result.versionMismatch, true);
-  assert.match(hcloudProbeNextStep(result), /version mismatch/i);
+  // #900: top-level nextStep is an executable command; English detail only in raw.
+  assert.match(hcloudProbeNextStep(result), /^npx /);
+  assert.match(hcloudProbeRaw(result), /version mismatch/i);
 });
 
 test('hcloud probe classifies privacy agreement pending', () => {
@@ -34,7 +37,8 @@ test('hcloud probe classifies privacy agreement pending', () => {
   assert.equal(result.installed, true);
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'HCLOUD_PRIVACY_PENDING');
-  assert.match(hcloudProbeNextStep(result), /privacy/i);
+  assert.match(hcloudProbeNextStep(result), /^npx /);
+  assert.match(hcloudProbeRaw(result), /privacy/i);
 });
 
 test('hcloud probe classifies Codex Windows sandbox home failures', () => {
@@ -43,7 +47,8 @@ test('hcloud probe classifies Codex Windows sandbox home failures', () => {
   assert.equal(result.installed, true);
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'HCLOUD_SANDBOX_HOME_FAILURE');
-  assert.match(hcloudProbeNextStep(result), /HCLOUD_BIN|Codex|sandbox/i);
+  assert.match(hcloudProbeNextStep(result), /^npx /);
+  assert.match(hcloudProbeRaw(result), /HCLOUD_BIN|Codex|sandbox/i);
 });
 
 test('hcloud probe classifies executable not found', () => {
@@ -55,14 +60,26 @@ test('hcloud probe classifies executable not found', () => {
   assert.match(hcloudProbeNextStep(result), /install-hcloud/i);
 });
 
-test('not_found nextStep is friendly and points at auto-install + log path', () => {
+test('not_found nextStep is an executable command routed through ERROR_TABLE (#900)', () => {
   const result = classifyHcloudProbe({ error: { code: 'ENOENT' }, stdout: '', stderr: '' });
   const msg = hcloudProbeNextStep(result);
-  assert.match(msg, /install-hcloud/i); // P3: no hardcoded ~30s wait; direct command present
-  assert.match(msg, /auto/i);
-  assert.match(msg, /koocli-install\.log/);
-  assert.doesNotMatch(msg, /restart the agent/i);
-  assert.doesNotMatch(msg, /~30s/); // P3: install duration is network-dependent
+  // d11-41-nextstep-actionable: nextStep must start with npx/hcloud, not English prose.
+  assert.match(msg, /^(npx |hcloud )/);
+  assert.equal(msg, 'npx huaweicloud-devkit install-hcloud');
+  assert.doesNotMatch(msg, /KooCLI is not installed/); // no English sentence at top level
+  // Verbose English guidance lives only in the raw side-channel.
+  const raw = hcloudProbeRaw(result);
+  assert.match(raw, /install-hcloud/i); // direct command present
+  assert.match(raw, /auto/i);
+  assert.match(raw, /koocli-install\.log/);
+  assert.doesNotMatch(raw, /restart the agent/i);
+  assert.doesNotMatch(raw, /~30s/); // install duration is network-dependent
+});
+
+test('ok probe nextStep is a directly callable tool name, not English prose (#900)', () => {
+  const result = classifyHcloudProbe({ status: 0, stdout: `当前KooCli版本:${getKooCliVersion()}`, stderr: '' });
+  assert.equal(hcloudProbeNextStep(result), 'huaweicloud_show_profile_redacted');
+  assert.match(hcloudProbeRaw(result), /show_profile_redacted/);
 });
 
 test('findHcloudBin discovers the fixed install dir even when PATH lacks it', () => {
