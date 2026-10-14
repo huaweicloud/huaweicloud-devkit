@@ -25,6 +25,12 @@ test('scenario 3 codearts variant has write-import + auth_switch persist steps',
   assert.ok(actions.has('obtain-aksk'));
   assert.ok(actions.has('write-import'));
   assert.ok(actions.has('auth_switch'));
+  // QA #905 Required: the import step must READ the file step 2 wrote
+  // (mode:'import' → creds-import.json). mode:'mcp-config' would read the
+  // CodeArts injected environment, which is empty in scenario 3.
+  const importStep = steps.find((s) => s.action === 'auth_switch');
+  assert.equal(importStep.args.mode, 'import');
+  assert.equal(importStep.args.action, 'persist');
 });
 
 test('scenario 4 steps (import path) match guidance contract', () => {

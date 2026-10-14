@@ -22,7 +22,11 @@ export function buildOnboardingSteps(scenario, { codearts = false } = {}) {
           {
             order: 3,
             action: 'auth_switch',
-            args: { mode: 'mcp-config', action: 'persist' },
+            // QA #905 Required: scenario-3 codearts flow writes creds-import.json
+            // in step 2, so the import must READ that file (mode:'import').
+            // mode:'mcp-config' reads the CodeArts injected environment, which
+            // is empty/placeholder in scenario 3 — the channel would not close.
+            args: { mode: 'import', action: 'persist' },
             label: '执行导入完成配置',
           },
         ];
