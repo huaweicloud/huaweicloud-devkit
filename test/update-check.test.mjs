@@ -227,6 +227,78 @@ test('queryDistTagsSync 失败时在 DEBUG 下输出日志而非静默', () => {
   );
 });
 
+test('queryDistTagsFetch 超时中断: signal 传递后慢响应在 timeoutMs 边界内返回 null', async () => {
+  // 慢服务器: 收到请求后保持连接不响应, 只有 abort signal 能中断 in-flight fetch
+  const { default: http } = await import('node:http');
+  const server = http.createServer(() => {
+    // 故意不响应、不结束连接
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const prev = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const before = Date.now();
+    const result = await queryDistTagsFetch({ timeoutMs: 300 });
+    const elapsed = Date.now() - before;
+    assert.equal(result, null); // 超时静默降级 null, 无未捕获异常
+    // signal 未传递时 fetch 会挂起到默认 15s/连接超时; 传递后应在 300ms + 合理误差内
+    assert.ok(elapsed < 2000, `expected timeout-bounded <2000ms, got ${elapsed}ms`);
+  } finally {
+    if (prev === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = prev;
+    server.close();
+  }
+});
+
+test('queryDistTagsFetch 默认超时收敛至 5000ms', async () => {
+  const { default: http } = await import('node:http');
+  const server = http.createServer(() => {});
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const prev = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const before = Date.now();
+    const result = await queryDistTagsFetch(); // 不传 timeoutMs → 默认值
+    const elapsed = Date.now() - before;
+    assert.equal(result, null);
+    // 5s 边界 + 合理误差 (旧默认 15000ms 会显著超出)
+    assert.ok(elapsed <= 5300, `expected default timeout ≈5000ms, got ${elapsed}ms`);
+    assert.ok(elapsed >= 4500, `expected wait near 5000ms, got ${elapsed}ms`);
+  } finally {
+    if (prev === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = prev;
+    server.close();
+  }
+});
+
+test('queryDistTagsFetch 超时日志输出明确错误信息而非 [object Object]', async () => {
+  const { default: http } = await import('node:http');
+  const server = http.createServer(() => {});
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const prevRegistry = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  const prevDebug = process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+  const logs = [];
+  const origErr = console.error;
+  console.error = (msg) => logs.push(String(msg));
+  process.env.HUAWEICLOUD_NPM_REGISTRY = `http://127.0.0.1:${server.address().port}`;
+  process.env.HUAWEICLOUD_DEVKIT_DEBUG = '1';
+  try {
+    const result = await queryDistTagsFetch({ timeoutMs: 200 });
+    assert.equal(result, null);
+  } finally {
+    console.error = origErr;
+    if (prevRegistry === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = prevRegistry;
+    if (prevDebug === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+    else process.env.HUAWEICLOUD_DEVKIT_DEBUG = prevDebug;
+    server.close();
+  }
+  const line = logs.find((l) => l.includes('[debug] queryDistTagsFetch'));
+  assert.ok(line, `expected debug log, got: ${logs}`);
+  assert.ok(!line.includes('[object Object]'), `log must not stringify to [object Object]: ${line}`);
+  assert.match(line, /queryDistTagsFetch: .+/);
+});
+
 test('getCachedUpdateInfo 单飞: 并发只查一次', async () => {
   invalidateUpdateCache();
   let calls = 0;
