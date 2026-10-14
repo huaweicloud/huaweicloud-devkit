@@ -54,10 +54,37 @@ hcloud OBS config -i
 
 KooCLI OBS **不支持** `SetBucketWebsite` 命令。配置静态网站托管需要：
 
-1. **REST API**: `PUT /?website` 到桶的 endpoint
-2. **控制台**: OBS 控制台 → 桶 → 静态网站托管 → 开启
+1. **MCP 工具**: `huaweicloud_obs_set_website_config`（插件内置，AWS4 签名处理，action=set/get/delete，实测可用）
+2. **REST API**: `PUT /?website` 到桶的 endpoint
+3. **控制台**: OBS 控制台 → 桶 → 静态网站托管 → 开启
 
-插件只能完成"上传文件 + 设置 ACL"，静态托管开关需用户手动完成。
+## Content-Disposition 强制下载陷阱（2022-01-01 后创建的桶）
+
+**实测发现（2026-10，cn-north-4）**：2022 年 1 月 1 日之后创建的 OBS 桶，对象 **GET 响应被 OBS 强制注入 `Content-Disposition: attachment`**——浏览器访问 HTML 一律下载而不是渲染，静态网站托管端点（`<bucket>.obs-website.<region>.myhuaweicloud.com`）也不例外，与对象元数据无关。
+
+| 请求方式                | 返回的 Content-Disposition   | 说明                       |
+| ----------------------- | ---------------------------- | -------------------------- |
+| GET（浏览器、在线预览） | `attachment`（OBS 强制注入） | 网页被下载，无法渲染       |
+| HEAD                    | 元数据中的值（如 inline）    | 会误导诊断，不是浏览器行为 |
+
+**避坑方法**：
+
+1. **验证网页行为必须用 GET 直连**（`curl -s -D - -o NUL <url>` 或浏览器）——HEAD 和代理层会给出假象
+2. **官方解法**：绑定自定义域名接入 **CDN**，在"CDN 控制台 > 域名管理 > 高级设置 > HTTP header 配置"设置 `Content-Disposition: inline`（参见华为云 CDN 文档《如何在浏览器中在线预览 OBS 中的对象？》）
+3. 跨云对照：阿里云 OSS 同样策略（Bucket 域名访问 HTML 强制下载，绑定自定义域名即可在线预览）
+
+**对静态托管的结论**：2022 年后创建的桶，裸 OBS（含 obs-website 端点）**无法交付可渲染的 web 站点**；自定义域名 + CDN（+ header 配置 inline）是**必要条件**，不是增强项。
+
+## obsutil 元数据大小写陷阱
+
+`cp -meta=content-disposition:inline`（小写）会被存为用户自定义元数据 `x-amz-meta-content-disposition`，**不命中标准头**；标准 HTTP 头（Content-Type、Content-Disposition、Cache-Control 等）必须按标准大小写书写：
+
+```bash
+# 错误：存为 x-amz-meta-content-disposition，浏览器不识别
+hcloud OBS cp index.html obs://<bucket>/ -meta=content-disposition:inline
+# 正确：命中标准 Content-Disposition 头
+hcloud OBS cp index.html obs://<bucket>/ -meta=Content-Disposition:inline
+```
 
 ## 权限模型（三层）
 
