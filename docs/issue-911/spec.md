@@ -6,7 +6,7 @@ v1.1.8 版本全量测试发现 `queryDistTagsFetch`（plugins/huaweicloud-core/
 
 1. **AbortController signal 未传递**：创建了 `controller` 与超时 `timer`，但调用 `fetchWithProxy(url)` 时未传 `{ signal: controller.signal }`，超时 abort 无法中断 in-flight fetch，慢响应场景查询不会被 5s/15s 超时截断。
 2. **默认超时 15000ms 过长**：验收标准要求收敛至 5000ms 边界。
-3. **错误日志输出 `[object Object]`**：`debugLog(\`${error?.message || error}\`)` 当 error 无 `message` 属性时模板字符串化输出 `[object Object]`。
+3. **错误日志输出 `[object Object]`**：`debugLog(\`${error?.message || error}\`)`当 error 无`message`属性时模板字符串化输出`[object Object]`。
 
 ## 目标
 

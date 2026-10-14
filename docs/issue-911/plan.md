@@ -26,10 +26,14 @@ export function queryDistTagsFetch({ timeoutMs = 15000 } = {}) {
    ```js
    function errorText(error) {
      if (error?.message) return error.message;
-     try { return JSON.stringify(error); } catch { return String(error); }
+     try {
+       return JSON.stringify(error);
+     } catch {
+       return String(error);
+     }
    }
    ```
-   catch 中改用 `debugLog(\`queryDistTagsFetch: ${errorText(error)}\`)`。JSON.stringify 对普通对象输出结构化文本（非 `[object Object]`）；循环引用兜底 `String(error)`。
+   catch 中改用 `debugLog` 拼接 `errorText(error)` 的返回值。JSON.stringify 对普通对象输出结构化文本（非 [object Object]）；循环引用兜底 String(error)。
 
 ## 测试方案（test/update-check.test.mjs 新增）
 
