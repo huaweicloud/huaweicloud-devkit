@@ -147,3 +147,17 @@ export async function hdkitVoucherClaim(domainId) {
     };
   }
 }
+
+export async function hdkitCompetitionVoucherClaim(domainId) {
+  try {
+    const body = domainId ? { domain_id: domainId } : {};
+    return await hdkitRequest('POST', 'competition/voucher/claim', body);
+  } catch (error) {
+    return {
+      claimed: false,
+      message: error?.message || 'Competition voucher service unavailable, please try again later',
+      code: error?.code,
+      ...(error?.remediation ? { remediation: error.remediation } : {}),
+    };
+  }
+}

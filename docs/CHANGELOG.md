@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.8-next.3 (2026-10-12)
+
+- style(skills): prettier table alignment for voucher SKILL.md (CI format)
+- feat(voucher): competition voucher claim tool for xiaohongshu skill competition
+- feat: OpenCode V2 install support with V1/V2 dual compatibility (#863)
+- fix: #871 disclose userHash and capability fields in telemetry README
+- feat: #871 disclose telemetry mechanism in README
+
 ## 1.1.8-next.2 (2026-10-09)
 
 - fix(security): resolve npm audit failures and scope the CI gate to shipped deps
