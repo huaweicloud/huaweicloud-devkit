@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.9-next.0 (2026-10-14)
+
+- chore: set version-override to 1.1.9 + sync badge (prepare 1.1.9-next.0) (#913)
+- fix(auth): unify onboarding guidance + error surface — root-cause fix for #900 (#905)
+- docs(huawei-obs): document OBS Content-Disposition forced-download trap from real test (#899)
+- docs(voucher): add HDKIT_COMPETITION_NOT_CONFIGURED UX row for competition voucher
+
 ## 1.1.8-next.3 (2026-10-12)
 
 - style(skills): prettier table alignment for voucher SKILL.md (CI format)
