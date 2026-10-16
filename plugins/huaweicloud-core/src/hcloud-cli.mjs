@@ -799,8 +799,22 @@ export function extractApiError(stdout) {
   return null;
 }
 
+// A4 (#935): KooCLI 7.2.x prints a version-upgrade banner on EVERY command
+// output (e.g. 「可执行 hcloud update 更新至 7.3.12」), which floods agent
+// conversations and drowns the actual result. Banner lines are stripped from
+// command output here; the only upgrade hint DevKit emits is check_cli/doctor's
+// soft, one-shot mismatch hint — kooCliVersion in package.json is the single
+// source of truth for the paired version, and check_cli/doctor keep their
+// non-blocking semantics.
+export function stripKooCliUpdateBanner(output) {
+  return String(output || '')
+    .split('\n')
+    .filter((line) => !(/hcloud\s+update/i.test(line) && /更新至|update to/i.test(line)))
+    .join('\n');
+}
+
 export function redactOutput(output) {
-  let text = String(output || '');
+  let text = stripKooCliUpdateBanner(String(output || ''));
   const bracketIdx = text.indexOf('{');
   if (bracketIdx > 0) text = text.substring(bracketIdx);
   try {

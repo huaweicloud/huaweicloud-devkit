@@ -83,6 +83,22 @@ Domain expertise for Huawei Cloud Identity and Access Management (IAM). Covers u
 
 Agencies allow one service to act on behalf of another. Common use cases:
 
+### STS 自委托需预创建（实测 #935 报告4 问题6）
+
+生成 STS 临时凭证时报**委托不存在**时（如 `agency SELF_VERIFY not found`），需先预创建名为 `SELF_VERIFY` 的 IAM 自委托（agency）—— 活动/新环境默认**不预置**该委托：
+
+```bash
+# 1. 预创建自委托（信任本账号自身）
+hcloud IAM CreateAgency --agency.name=SELF_VERIFY --agency.trust_domain_name=<本账号domain_name>
+
+# 2. 授予基础权限（按需最小化）
+hcloud IAM AssociateAgencyWithDomainPermission --agency_id=<agency-id> --role_id=<role-id>
+
+# 3. 之后重试生成 STS 临时凭证
+```
+
+排查顺序：先 `hcloud IAM ListAgencies` 确认 `SELF_VERIFY` 是否存在，不存在再按上面步骤预创建，创建后重试 STS 调用。
+
 ### FunctionGraph Agency (VPC Access)
 
 FunctionGraph needs an agency to access VPC resources (RDS, DCS, etc.):

@@ -2279,8 +2279,18 @@ function explainError({ service = 'unknown', errorCode = '', message = '', reque
     fgs: 'FSS',
     ecs: 'Ecs',
     ECS: 'Ecs',
+    kps: 'Kps',
+    KPS: 'Kps',
   };
-  const patternKey = SERVICE_ALIASES[svc] || service;
+  // #935 E2E-B1: real MCP calls pass only errorCode (e.g. Ecs.0019, KPS.9004)
+  // with no service — derive the service key from the dotted-code prefix so the
+  // service-keyed mapping table is hit. Explicit service behavior is unchanged.
+  let resolvedService = service;
+  if ((!service || svc === 'unknown') && /^[A-Za-z]+\.\w+/.test(errorCode)) {
+    const prefix = errorCode.split('.')[0].toLowerCase();
+    resolvedService = SERVICE_ALIASES[prefix] || errorCode.split('.')[0].toUpperCase();
+  }
+  const patternKey = SERVICE_ALIASES[svc] || resolvedService;
 
   const hwErrorPatterns = {
     OBS: {
@@ -2309,12 +2319,26 @@ function explainError({ service = 'unknown', errorCode = '', message = '', reque
     Ecs: {
       'Ecs.0707':
         'The flavor + image-type combination does not exist ("the product does not exist") — the error does not say which side is wrong, so check BOTH (#922): (1) the flavor is abandoned/sellout in this region/AZ (check os_extra_specs.cond:operation:status and cond:operation:az; see the huawei-ecs skill references/flavors.md for the AZ-vs-global-status conflict rule); (2) the image TYPE is incompatible with the flavor — market-type images fail with KunPeng flavors (kc1/kc2 etc.). Fix: switch the image to a gold-type image or switch to a compatible general-purpose flavor (verified: kc2.small.2 + market Ubuntu → Ecs.0707; s6.medium.2 + gold Ubuntu works), re-listing with hcloud ECS ListFlavors / hcloud IMS ListImages --__imagetype=gold first.',
+      // #935 (report 4 problem 1 / report 1 坑5): real-world ECS order failures
+      // with no mapping — flavor offline, AZ capacity, balance, keypair restriction.
+      'Ecs.0019':
+        'The flavor has been taken offline (Ecs.0019). Run `hcloud ECS ListFlavors --cli-region=<region>` to query currently on-sale flavors and switch to a replacement flavor (see the huawei-ecs skill references/flavors.md for the cond:operation:status field rules — a flavor marked 卖光/下线 keeps failing until you pick an on-sale one), then recreate.',
+      'Ecs.0319':
+        'The requested flavor has insufficient capacity in the selected availability zone (Ecs.0319). Fix: retry in a different availability zone, or switch to a replacement flavor (list on-sale flavors with `hcloud ECS ListFlavors --cli-region=<region>`), then recreate.',
+      'Ecs.0067':
+        'Order submission rejected for balance reasons (Ecs.0067). Check the cash balance with `hcloud BSS ShowCustomerAccountBalances --cli-region=cn-north-1` and top up if needed — pay-per-use order risk control checks the CASH balance only (代金券/vouchers do NOT participate in order risk control; they only offset the bill at settlement). Also settle any historical arrears, however small, before retrying.',
     },
     APIGW: {
       'APIGW.0301':
         'Incorrect IAM authentication information. The AK/SK is invalid (check the SK for typos), the security token is missing or expired, or the profile lacks project_id. Fix: re-run "npx huaweicloud-devkit auth init" (it auto-sets project_id), or set it manually: hcloud configure set --cli-project-id=<project_id> after finding it via hcloud IAM KeystoneListProjects --cli-region=<region> --name=<region>.',
       'APIGW.0802':
         'The current IAM user has no permissions in the requested region. Go to IAM console → Users → Permissions → add the target region, or switch to a different region.',
+    },
+    // #935 (report 1 坑5): KPS keypair creation has its own restriction code —
+    // the Kps service had no entry at all, so the error fell through to generic advice.
+    Kps: {
+      'KPS.9004':
+        'Keypair creation rejected for account restrictions (KPS.9004). Check the cash balance with `hcloud BSS ShowCustomerAccountBalances --cli-region=cn-north-1` and top up if needed, and settle any historical arrears (even a small unpaid amount triggers this) — then retry `hcloud ECS NovaCreateKeypair` or create the keypair in the console.',
     },
   };
   if (hwErrorPatterns[patternKey] && hwErrorPatterns[patternKey][errorCode]) {

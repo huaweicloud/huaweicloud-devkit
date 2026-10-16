@@ -25,3 +25,19 @@
 - Nginx修改后 nginx -t 再 reload
 - 按量付费停机仍计费
 - 删除实例时 --delete_publicip=true --delete_volume=true
+
+## 作品提交链接（api_link）校验规则（实测 #935 报告2 问题4/5、报告4 问题3）
+
+① 提交路径必须包含 `/hc-activity/` 与 `index.html`，否则服务端返回 400 `OPENSERVICE_PARAM_ERROR 作品链接格式不合法`。
+
+② 客户端正则与服务端规则存在不一致（客户端较宽松）—— 提交前以服务端严格规则为准做本地校验，避免提交才被拒：
+
+```bash
+# 本地预校验（服务端严格规则：路径须含 /hc-activity/ 且指向 index.html）
+case "$LINK" in
+  */hc-activity/*index.html) echo "OK: passes server-side validation" ;;
+  *) echo "INVALID: link must contain /hc-activity/ and index.html (server returns OPENSERVICE_PARAM_ERROR)" ;;
+esac
+```
+
+③ 返回「**作品链接无效**」时区分语义：可能为服务端尚未探活成功（隧道/站点刚上线，服务端探测未完成），并非格式错误 —— 先确认隧道可达（curl 实测 HTTP 200），然后等 1-2 分钟后重试，不要立即改链接格式。

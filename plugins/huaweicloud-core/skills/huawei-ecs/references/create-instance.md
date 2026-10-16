@@ -34,6 +34,16 @@ hcloud VPC ListVpcs --cli-region=<region>
 hcloud VPC ListSubnets --vpc_id=<vpc-id> --cli-region=<region>
 If no VPC/subnet exists: load `huawei-vpc` skill → create VPC → create subnet (with DNS) → create security group → return here.
 
+**子网 DNS 前置修复（实测 #935 坑4）**：模板/预置子网的 `dnsList` 可能为空 —— 这会让 cloud-init 域名解析与 yum/dnf 安装**静默失败**（表现为下载/安装卡死且无明确报错，或 `Could not resolve host`）。创建 ECS 前先检查并补充华为云内网 DNS：
+
+```bash
+hcloud VPC ShowSubnet --subnet_id=<subnet-id> --cli-region=<region>   # 查看 dnsList
+# dnsList 为空（或缺少内网 DNS）时先修复再建实例：
+hcloud VPC UpdateSubnet --subnet_id=<subnet-id> --subnet.dnsList.1=100.125.1.250 --subnet.dnsList.2=100.125.129.250
+```
+
+`100.125.1.250` / `100.125.129.250` 是华为云内网 DNS（各区域通用）。实例内自救兜底见下方 user_data 模板的「DNS 兜底」注释，但**修复子网 DNS 是唯一能让 cloud-init 首次开机就正常解析的路径**（user_data 只在 first boot 执行，错过即需人工补救）。
+
 ## 5. Create keypair (recommended over adminPass)
 
 **MCP 环境下必须用"本地生成 + 导入"流程**——`NovaCreateKeypair` 返回的 `private_key` 会被 MCP 脱敏管道替换为 `<redacted>`，而私钥仅此一次机会，读不到即作废：
@@ -128,6 +138,22 @@ hcloud ECS CreateServers ... --server.user_data=$user_data
 > 1. Fix the root cause (e.g., update subnet DNS via `VPC UpdateSubnet`)
 > 2. Either: SSH into the instance and run the setup commands manually (see `huawei-ecs` → SSH Connection Verification → Running Commands Inside the Instance)
 > 3. Or: Delete the instance and recreate with corrected user_data (fresh boot)
+
+### Update site content on an already-running instance (no rebuild)
+
+user_data/cloud-init 方式**仅适用于创建时写入** —— 已运行实例更新站点内容不要重建实例，直接上传 + reload：
+
+```bash
+# 上传新产物（Windows 路径：references/windows-ssh.md §2）
+scp -i <key> ./dist.tar.gz root@<eip>:/root/
+# 或 rsync（增量，仅传变化文件）
+rsync -avz --delete -e "ssh -i <key>" ./dist/ root@<eip>:/var/www/site/
+
+# SSH 内解压并热加载 nginx（无需重建实例）
+ssh -i <key> root@<eip> 'tar -xzf /root/dist.tar.gz -C /var/www/site/ && nginx -t && nginx -s reload'
+```
+
+要点：`nginx -s reload` 热加载配置与静态内容，连接不断；`nginx -t` 先验证配置再 reload，避免 reload 一个坏配置。Node 应用则重启进程（`pm2 reload` 或 kill + nohup 重启）。
 
 ## 7. EIP (two methods)
 

@@ -294,7 +294,7 @@ fi
 Authentication tries three credential sources in order, each verified with a real login + `auth status` before use; a failure falls through to the next tier:
 
 - **Tier 1 — keyring API Key** (preferred): recent sandbox images (hd-space-ai-shell line) get `HW_DEVBRIDGE_API_KEY` auto-injected by the platform into the sandbox keyring — **zero user action, long-lived key**. Read it via `hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1` (⚠ the value goes to **stderr** — `2>&1` is mandatory or you silently capture an empty string) and accept only values starting with `devbridge_` (`(not found)` and error text are rejected). If the first read fails, a light revive (restart the D-Bus session bus at `unix:path=/run/dbus-session`, replace a locked keyring daemon with `printf '\n' | gnome-keyring-daemon --unlock`) retries once — no package installs.
-- **Tier 2 — AK/SK** (image builds, legacy sandboxes): image builds keep `--access-key/--secret-key`. STS credentials **must** include `--security-token "$HW_SECURITY_TOKEN"` or the gateway rejects the request with 401 `APIGW.0301`. 0.1.x binaries additionally need `--huaweicloud` (only when their help advertises it).
+- **Tier 2 — AK/SK** (image builds, legacy sandboxes): image builds keep `--access-key/--secret-key`. STS credentials **must** include `--security-token "$HW_SECURITY_TOKEN"` or the gateway rejects the request with 401 `APIGW.0301`. **The `--huaweicloud` SSO login flag does NOT exist in sandbox devbridge 0.2.x binaries (e.g. 0.2.2)** — 文档超前于二进制：不要尝试 `--huaweicloud`，直接使用 `devbridge auth login --access-key/--secret-key`（上方脚本以 `auth login --help` 探测为准）。0.1.x binaries additionally advertised `--huaweicloud` (use it only when their help advertises it).
 - **Tier 3 — `/tmp/hw_api_key`** (release builds, user-provided one-time): the file is written by `huaweicloud_sandbox_credentials` from the local `HW_API_KEY` env (preferred) or the `api_key` param.
 
 `huaweicloud_sandbox_expose_tunnel` runs this waterfall automatically and reports the winning mode (`API_KEY_KEYRING` / `AKSK_SUPPORTED` / `API_KEY_FILE`) or `NO_CREDENTIAL` with a non-sensitive per-tier `attempts` diagnostic. Manual equivalent:
@@ -323,6 +323,11 @@ devbridge auth status   # separate step: a status failure must not mask the logi
 - **`API_KEY_KEYRING`** → done, nothing was asked of the user (recent images only; the platform injects and rotates the key).
 - **`AKSK_SUPPORTED`** → done. The temporary AK/SK injected by `huaweicloud_sandbox_credentials` is used directly (validated against IAM before injection). If login fails, surface the CLI error — expired STS token → re-run `huaweicloud_sandbox_credentials`.
 - **`NO_CREDENTIAL`** → first re-run `huaweicloud_sandbox_credentials` and retry (refreshes STS, most common quick fix). Still failing means an older sandbox whose image cannot auto-acquire (images are frozen at sandbox creation and cannot be upgraded in place) — guide the developer through a one-time API Key creation (wait for the key before continuing):
+
+**沙箱凭证与 devbridge 版本差异陷阱（实测 #935 坑2/坑3）**：
+
+- 沙箱内 devbridge 0.2.2 无技能文档所述 `--huaweicloud` 登录标志（文档超前于二进制）—— 应直接使用 `devbridge auth login --access-key/--secret-key`（`auth login --help` 探测到 `--access-key` 支持时走该分支，见上方手动等价脚本）。
+- 沙箱内 MCP 注入的 STS 凭证为 obsutil 加密态存储：devbridge 读到密文凭证会报 `APIGW.0301`。需先上传本地 DevKit 明文凭证库（AK 20 位 / SK 40 位，通过 `huaweicloud_sandbox_credentials` 注入），再创建隧道。
 
 1. **Why (one sentence)**: "沙箱的地址生成服务发布版构建已移除 AK/SK 登录，仅支持 API Key（镜像内置构建仍支持 AK/SK，Agent 已自动探测）。API Key 按账号管理，创建一次长期可用、所有沙箱通用。"
 2. **Where (exact steps)**: open https://devstation.connect.huaweicloud.com/space/devbridge/apikey → 登录控制台 → 选择 DevBridge 场景 → 点击"创建"。**完整值仅在创建时展示一次，立即复制**（`devbridge_` 开头）。
@@ -402,6 +407,8 @@ This eliminates the most common deployment failure — historical tunnels from p
 ## Web Application Deployment
 
 When deploying a web application to the sandbox, build the app inside the sandbox before exposing it. Source code is uploaded, dependencies installed, and the framework built in the sandbox environment.
+
+**沙箱无 systemd（实测 #935 报告3 问题3）**：沙箱为无 systemd 的容器环境，`systemctl` 全部失效（`System has not been booted with systemd`）—— 不要用 `systemctl start/reload/restart nginx`。Nginx 配置变更直接使用 `nginx -t` 验证 + `nginx -s reload` 热加载，或直接执行 nginx 二进制（`sudo nginx` 启动 / `nginx -s stop` 停止）。`huaweicloud_sandbox_deploy_nginx` 工具返回的 nextStep 文案与该语义一致（配置写入后自动回验存在性与 `nginx -t`，通过后即生效，无需 systemctl）。
 
 ### Step 1: Detect Framework Locally
 

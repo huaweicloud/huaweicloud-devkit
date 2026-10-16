@@ -981,3 +981,70 @@ test('find-skills marks npx skills add as broken and keeps the git clone bypass 
   assert.match(skill, /npx skills add/);
   assert.match(skill, /git clone/);
 });
+
+test('1024-batch2 (#935): skill docs carry the verified trap guidance', () => {
+  const readRef = (skill, file) => readFileSync(join(pluginRoot, 'skills', skill, 'references', file), 'utf8');
+  const readSkill = (skill) => readFileSync(join(pluginRoot, 'skills', skill, 'SKILL.md'), 'utf8');
+
+  // B1: subnet DNS pre-fix — empty dnsList breaks cloud-init/yum silently;
+  // both files must teach the UpdateSubnet fix with the Huawei internal DNS IPs.
+  const createInstance = readRef('huawei-ecs', 'create-instance.md');
+  assert.match(createInstance, /100\.125\.1\.250/);
+  assert.match(createInstance, /100\.125\.129\.250/);
+  assert.match(createInstance, /UpdateSubnet/);
+  const iac = readSkill('huawei-iac');
+  assert.match(iac, /UpdateSubnet/);
+
+  // B2/B9: proxy egress IP trap — NoProxy detection + /32 precise rules.
+  const windowsSsh = readRef('huawei-ecs', 'windows-ssh.md');
+  assert.match(windowsSsh, /NoProxy/);
+  assert.match(windowsSsh, /\/32/);
+
+  // B3/B4: firewalld on EulerOS 3.0; delete polling uses ListServersDetails —
+  // NovaShowJob must appear only as a non-existent correction, never as a
+  // recommended polling operation.
+  const troubleshooting = readRef('huawei-ecs', 'troubleshooting.md');
+  assert.match(troubleshooting, /firewalld/);
+  assert.match(troubleshooting, /ListServersDetails/);
+  for (const line of troubleshooting.split('\n')) {
+    if (line.includes('NovaShowJob')) {
+      assert.match(line, /不存在/, `NovaShowJob must only be documented as non-existent, found: ${line.trim()}`);
+    }
+  }
+
+  // B5/B6: sandbox has no systemd; devbridge 0.2.x has no --huaweicloud flag;
+  // STS ciphertext → APIGW.0301 with the plaintext-store upload remedy.
+  const sandbox = readSkill('huawei-sandbox');
+  assert.match(sandbox, /systemctl/);
+  assert.match(sandbox, /无 systemd|nginx -s reload/);
+  assert.match(sandbox, /devbridge auth login --access-key/);
+  assert.match(sandbox, /APIGW\.0301/);
+  // The removed 0.1.x login flow must not be taught as the 0.2.x path.
+  assert.doesNotMatch(sandbox, /auth login --huaweicloud/);
+
+  // B7: stage-5 cost gate carries the cash-balance + arrears semantics.
+  assert.match(iac, /现金余额/);
+  assert.match(iac, /欠费/);
+  const stage5 = iac.split('\n').find((line) => line.includes('Cost + balance gate'));
+  assert.ok(stage5, 'stage-5 cost gate row missing');
+  assert.ok(
+    stage5.includes('现金余额') && stage5.includes('欠费'),
+    'stage-5 gate must carry the cash-balance + arrears risk-control semantics',
+  );
+
+  // B8: content updates on an already-running instance (scp/rsync + reload).
+  assert.match(createInstance, /scp|rsync/);
+  assert.match(createInstance, /nginx -s reload/);
+
+  // B10: SELF_VERIFY self-agency pre-creation in the IAM skill.
+  const iam = readSkill('huawei-iam');
+  assert.match(iam, /SELF_VERIFY/);
+
+  // B11: hc-activity api_link validation rules.
+  const hcActivity = readRef('huawei-ecs', 'hc-activity.md');
+  assert.match(hcActivity, /hc-activity/);
+  assert.match(hcActivity, /OPENSERVICE_PARAM_ERROR/);
+  assert.match(hcActivity, /index\.html/);
+  assert.match(hcActivity, /作品链接无效/);
+  assert.match(hcActivity, /1-2 分钟/);
+});

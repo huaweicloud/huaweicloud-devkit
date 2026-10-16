@@ -729,6 +729,56 @@ export async function uploadProjectWithSession(
   };
 }
 
+// A1 (#935): normalize the deploy_nginx configName to a bare filename. A value
+// carrying path separators (e.g. `/root/hc-activity.conf`, `./x/y.conf`) used to
+// be spliced verbatim into `/etc/nginx/conf.d/${configName}.conf`, producing the
+// broken path `/etc/nginx/conf.d//root/hc-activity.conf` (nginx never serves it,
+// the tunnel answers 502). Only the basename is kept and the `.conf` suffix is
+// stripped before the path is rebuilt as `/etc/nginx/conf.d/<name>.conf`. A
+// pure filename (no separators) keeps the previous behavior unchanged.
+export function resolveNginxConfigPath(configName, project) {
+  const raw = String(configName || project || '');
+  const base = raw.split(/[\\/]/).filter(Boolean).pop() || '';
+  const name = base.replace(/\.conf$/i, '') || 'default';
+  return `/etc/nginx/conf.d/${name}.conf`;
+}
+
+// A1 (#935): parse the write-verification block appended to the deploy_nginx
+// script. The old flow returned ok:true whenever the deploy script exited 0,
+// even when the tee write silently failed — the config file never existed and
+// the tunnel answered 502. The verification block emits explicit markers:
+//   DB_NGINX_CONFIG_MISSING=1  — the target config file does not exist
+//   DB_NGINX_T=PASS|FAIL       — nginx -t verdict, with failure output echoed
+//                                as `DB_NGINX_T_OUTPUT: ...` lines
+export function parseDeployNginxVerifyOutput(stdout) {
+  const text = String(stdout || '');
+  const configMissing = /DB_NGINX_CONFIG_MISSING=1/.test(text);
+  const nginxTest = (text.match(/^DB_NGINX_T=(\w+)$/m) || [])[1] || '';
+  const nginxTestOutput = (text.match(/^DB_NGINX_T_OUTPUT: .*$/gm) || [])
+    .map((line) => line.replace(/^DB_NGINX_T_OUTPUT: /, ''))
+    .join('\n');
+  return { configMissing, nginxTest, nginxTestOutput };
+}
+
+// A1 (#935): the deploy verdict. A deploy script exit of 0 alone is NOT proof
+// of success — the tee write can fail silently (broken pipe) and nginx -t can
+// reject the config. Returns ok:false with an explicit, actionable error for
+// any verification failure; a pure function so the verdict is unit-testable.
+export function evaluateDeployNginxVerify(result, verify, configPath) {
+  const exitCode = result?.exitCode;
+  const writeVerified = exitCode === 0 && !verify.configMissing && verify.nginxTest === 'PASS';
+  if (writeVerified) return { ok: true };
+  const problems = [];
+  if (exitCode !== 0) problems.push(`deploy script exited with code ${exitCode}`);
+  if (verify.configMissing) problems.push(`nginx config file ${configPath} was not created (tee write failed)`);
+  if (verify.nginxTest !== 'PASS')
+    problems.push(`nginx -t did not pass${verify.nginxTestOutput ? ` — ${verify.nginxTestOutput}` : ''}`);
+  return {
+    ok: false,
+    error: `sandbox deploy nginx: configuration write verification failed — ${problems.join('; ')}.`,
+  };
+}
+
 export async function deployNginx(
   workspaceId,
   { nginxType, port, project, outputDir, nodePort, publicPort, configName },
@@ -863,10 +913,14 @@ fi`;
     throw new Error(`sandbox deploy nginx: unknown nginxType "${nginxType}". Must be one of: spa, proxy, static`);
   }
 
+  // A1 (#935): configName is normalized to a bare filename so a path-shaped
+  // value can never produce `/etc/nginx/conf.d//root/xxx.conf` again.
+  const configPath = resolveNginxConfigPath(configName, project);
+
   const cmd = [
     resolveScript,
     `sudo mkdir -p /etc/nginx/conf.d`,
-    `sudo tee /etc/nginx/conf.d/${configName || project}.conf > /dev/null << 'NGINX_EOF'`,
+    `sudo tee ${configPath} > /dev/null << 'NGINX_EOF'`,
     config,
     `NGINX_EOF`,
     `# Resolve symlinks for chmod (chmod does not follow symlinks on Linux)`,
@@ -875,6 +929,11 @@ fi`;
     `find "$REAL_PROJECT" -type f -path "*/node_modules/.bin/*" -exec chmod +x {} \\; 2>/dev/null || true`,
     `if pgrep -x nginx > /dev/null 2>&1; then sudo killall -9 nginx 2>/dev/null; sleep 1; fi
     sudo nginx`,
+    `# A1 (#935): verify the config write took effect before reporting success`,
+    `NGINX_CONFIG_PATH=${configPath}`,
+    `if [ ! -f "$NGINX_CONFIG_PATH" ]; then echo "DB_NGINX_CONFIG_MISSING=1"; fi`,
+    `NGINX_T_OUTPUT=$(sudo nginx -t 2>&1 || true)`,
+    `if echo "$NGINX_T_OUTPUT" | grep -Eq "syntax is ok|test is successful"; then echo "DB_NGINX_T=PASS"; else echo "DB_NGINX_T=FAIL"; echo "$NGINX_T_OUTPUT" | sed "s/^/DB_NGINX_T_OUTPUT: /"; fi`,
   ].join('\n');
 
   const result = await execOneShot(workspaceId, cmd, username, timeoutMs);
@@ -901,13 +960,36 @@ fi`;
   const driftWarning = tunnelActive ? formatPortDriftWarning(basePort, targetPort) : undefined;
   if (driftWarning) warnings.push(driftWarning);
 
+  // A1 (#935): verify the config write before reporting success. Any
+  // verification failure returns ok:false with an explicit, actionable error.
+  const verify = parseDeployNginxVerifyOutput(result.stdout);
+  const verdict = evaluateDeployNginxVerify(result, verify, configPath);
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      error: verdict.error,
+      nginxType,
+      port: targetPort,
+      nodePort: effectiveNodePort || undefined,
+      outputPath,
+      projectPath,
+      configPath,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      nextStep: 'fix_and_retry',
+      warning: warnings.length > 0 ? warnings.join(' | ') : undefined,
+    };
+  }
+
   return {
-    ok: result.exitCode === 0,
+    ok: true,
     nginxType,
     port: targetPort,
     nodePort: effectiveNodePort || undefined,
     outputPath,
     projectPath,
+    configPath,
+    verification: { configPath, nginxTest: verify.nginxTest },
     exitCode: result.exitCode,
     stdout: result.stdout,
     nextStep: 'expose_via_devbridge',
@@ -1278,9 +1360,19 @@ export function buildDevbridgeExposeScript(port, expiryHours = DEVBRIDGE_HOST_EX
     // not abort the script.
     `if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host -p ${port} -e ${expiryHours} > ${hostLog} 2>&1 < /dev/null & else nohup devbridge host -p ${port} -e ${expiryHours} > ${hostLog} 2>&1 < /dev/null & fi`,
     `disown 2>/dev/null || true`,
-    `sleep 12`,
+    `sleep 6`,
     `TUNNEL_URL=$(sed -n 's/.*Tunnel URL: *//p' ${hostLog} | tail -1)`,
-    `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
+    `# A2 (#935): probe with retries + backoff — 502/000 before the gateway is`,
+    `# ready is not a failure; the LAST probe decides reachability.`,
+    `HTTP_CODE="000"`,
+    `if [ -n "$TUNNEL_URL" ]; then`,
+    `  for i in 1 2 3 4; do`,
+    `    HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
+    `    echo "DB_PROBE_$i=$HTTP_CODE"`,
+    `    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then break; fi`,
+    `    if [ "$i" != "4" ]; then sleep 5; fi`,
+    `  done`,
+    `fi`,
     `echo "DB_HOST_LOG="`,
     `tail -n 5 ${hostLog}`,
     `echo "DB_TUNNEL_URL=$TUNNEL_URL"`,
@@ -1314,6 +1406,30 @@ export function buildDevbridgeVerifyScript(tunnelUrl) {
     `echo "DB_VERIFY_HTTP_CODE=$VERIFY_CODE"`,
     `echo "DB_VERIFY_NOT_FOUND=$VERIFY_NOT_FOUND"`,
   ].join('\n');
+}
+
+// A2 (#935): parse the probe sequence emitted by buildDevbridgeExposeScript.
+// Each probe echo is `DB_PROBE_<n>=<code>`; reachability is decided by the
+// LAST probe — intermediate 502/000 probes are gateway-not-ready noise, not
+// failures, so they must not leak into the tool's verdict.
+export function parseDevbridgeProbeSequence(stdout) {
+  const text = String(stdout || '');
+  const probes = [];
+  for (const m of text.matchAll(/^DB_PROBE_(\d+)=(\S*)$/gm)) {
+    probes.push({ attempt: Number(m[1]), httpCode: m[2] });
+  }
+  const finalHttpCode = probes.length > 0 ? probes[probes.length - 1].httpCode : '';
+  return { probes, finalHttpCode };
+}
+
+// A2 (#935): the reachability warning must come from the LAST probe's HTTP
+// status, not from a single early curl — the old single-shot check warned
+// "Tunnel reachable check returned HTTP (expected 200/304)" while the same
+// log showed DB_HTTP_CODE=200. 200/304 = no warning; anything else surfaces
+// as-is.
+export function formatTunnelReachabilityWarning(httpCode) {
+  if (httpCode === '200' || httpCode === '304') return undefined;
+  return `Tunnel reachable check returned HTTP ${httpCode || '000'} (expected 200/304). The URL may not be serving yet — the final probe decides.`;
 }
 
 // Parse the raw stdout of buildDevbridgeExposeScript into structured fields.
@@ -1474,11 +1590,11 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
       }
     }
 
-    if (parsed.httpCode !== '200' && parsed.httpCode !== '304') {
-      warnings.push(
-        `Tunnel reachable check returned HTTP ${parsed.httpCode} (expected 200/304). The URL may not be serving yet.`,
-      );
-    }
+    // A2 (#935): the reachability warning uses the FINAL probe's HTTP status —
+    // intermediate 502/000 probes (gateway not ready yet) must not leak into
+    // the verdict, and a sequence of 502/000 → 200 must NOT warn.
+    const reachabilityWarning = formatTunnelReachabilityWarning(parsed.httpCode);
+    if (reachabilityWarning) warnings.push(reachabilityWarning);
     const expiresAt =
       parsed.expiryHours !== undefined
         ? new Date(Date.now() + parsed.expiryHours * 3_600_000).toISOString()
