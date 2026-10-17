@@ -394,7 +394,13 @@ function splitSimpleCommand(command) {
   return (
     String(command)
       .match(/"[^"]*"|'[^']*'|\S+/g)
-      ?.map((part) => part.replace(/^['"]|['"]$/g, '')) || []
+      // Strip ALL quote characters (not just the outer pair): POSIX shells
+      // remove quotes before executing, so an embedded-quote form like
+      // `hcloud ECS De'leteServer …` actually runs `DeleteServer`. Stripping
+      // only outer quotes left `De'leteServer` in the token and let the write/
+      // secret/execution matchers miss it (#927). This hcloud classification
+      // path only — credential-var lookbehind still sees raw text with quotes.
+      .map((part) => part.replace(/['"]/g, '')) || []
   );
 }
 
@@ -478,12 +484,37 @@ export function extractInnerCommand(text, depth = 0) {
 // ^hcloud still catches wrapped commands and prompt-injections using
 // separators. sudo\s+ preserves the dev-baseline behaviour where
 // `sudo hcloud …` is treated as a real command, not documentation (#760 P0).
+// Keyword-locator pattern shared by the raw-text match and the quote-stripped
+// retry in extractHcloudSubcommand (`im` flag, no `g` — no lastIndex state).
+const HCLOUD_KEYWORD_PATTERN = /(?:^|[;|&]\s*|\$\(\s*|`\s*|sudo\s+|\r?\n\s*)(hcloud(?:\.exe)?\b)/im;
+
 function extractHcloudSubcommand(text) {
   const t = String(text || '');
-  const match = /(?:^|[;|&]\s*|\$\(\s*|`\s*|sudo\s+)(hcloud(?:\.exe)?\b)/i.exec(t);
-  if (!match) return null;
-  const hcloudIndex = match.index + match[0].length - match[1].length;
-  return t.slice(hcloudIndex);
+  // `m` flag + newline in the separator class: a hcloud command at the start
+  // of any line (not just the first) must be located and fully classified —
+  // previously `echo hello\nhcloud ECS DeleteServer …` fell through as
+  // not_huaweicloud allow (#927).
+  const match = HCLOUD_KEYWORD_PATTERN.exec(t);
+  if (match) {
+    const hcloudIndex = match.index + match[0].length - match[1].length;
+    return t.slice(hcloudIndex);
+  }
+  // Keyword-embedded quotes fallback (#927 B1): POSIX shells strip quotes
+  // before execution, so `hc'loud ECS DeleteServer …` runs `hcloud …` — but
+  // the literal match above never sees the keyword through the quotes and the
+  // command fell through as not_huaweicloud allow (its de-quoted form is
+  // DENY). Retry on a quote-stripped COPY used only for hcloud keyword
+  // location; the returned subcommand is the de-quoted text, matching the
+  // de-quote semantics splitSimpleCommand already applies to tokens.
+  // Credential/env-var checks in classifyTextCommand still run on the raw
+  // text — the two paths stay independent — and natural-language mentions
+  // ("see hcloud docs", "echo hcloud is a CLI") match the same anchored
+  // pattern, so no new false positives are introduced.
+  const stripped = t.replace(/['"]/g, '');
+  const strippedMatch = HCLOUD_KEYWORD_PATTERN.exec(stripped);
+  if (!strippedMatch) return null;
+  const hcloudIndex = strippedMatch.index + strippedMatch[0].length - strippedMatch[1].length;
+  return stripped.slice(hcloudIndex);
 }
 
 export function classifyTextCommand(command, options = {}) {

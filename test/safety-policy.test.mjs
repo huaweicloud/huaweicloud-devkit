@@ -534,3 +534,142 @@ test('existing credential and secret blocks still win before risk-rule warnings'
   assert.equal(secretResult.decision, 'deny');
   assert.equal(secretResult.risk, 'secret');
 });
+
+test('classifyTextCommand normalizes embedded quotes in hcloud operations (#927)', () => {
+  // Embedded-quote forms execute the de-quoted operation in POSIX shells
+  // (`De'leteServer` runs `DeleteServer`), but the classifier previously
+  // stripped only outer quotes and let the token escape write/secret/execution
+  // matching (#927). All five PoCs below were allow before the fix.
+  const quotedBypasses = [
+    { cmd: "hcloud ECS De'leteServer --server_id=i-123", risk: 'write' },
+    { cmd: "hcloud DEW Show'Secret'Version --secret_name=kms-cred", risk: 'secret' },
+    { cmd: "hcloud IAM Dele'teUser --user_id=u-1", risk: 'write' },
+    { cmd: "hcloud ECS Re'bootServer --server_id=i-1", risk: 'execution' },
+  ];
+  for (const { cmd, risk } of quotedBypasses) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, risk, cmd);
+  }
+  // Baseline controls: the bare (unquoted) forms were already DENY and stay DENY.
+  const bareControls = [
+    { cmd: 'hcloud ECS DeleteServer --server_id=i-123', risk: 'write' },
+    { cmd: 'hcloud DEW ShowSecretVersion --secret_name=kms-cred', risk: 'secret' },
+    { cmd: 'hcloud IAM DeleteUser --user_id=u-1', risk: 'write' },
+    { cmd: 'hcloud ECS RebootServer --server_id=i-1', risk: 'execution' },
+  ];
+  for (const { cmd, risk } of bareControls) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, risk, cmd);
+  }
+});
+
+test('classifyTextCommand keeps quoted hcloud decisions no looser than de-quoted (#927)', () => {
+  // Equivalence invariant: for any command C containing quotes, the decision
+  // for C must not be more permissive than the decision for its de-quoted
+  // form (all ' and " characters removed) — quoted allow + bare deny is forbidden.
+  const equivalents = [
+    ['hcloud ECS De"lete"Server --server_id=i-123', 'hcloud ECS DeleteServer --server_id=i-123'],
+    ["hcloud ECS De'leteServer --server_id=i-123", 'hcloud ECS DeleteServer --server_id=i-123'],
+    ['hcloud DEW Show"Secret"Version --secret_name=kms-cred', 'hcloud DEW ShowSecretVersion --secret_name=kms-cred'],
+    ["hcloud DEW Show'Secret'Version --secret_name=kms-cred", 'hcloud DEW ShowSecretVersion --secret_name=kms-cred'],
+    ['hcloud IAM De"lete"User --user_id=u-1', 'hcloud IAM DeleteUser --user_id=u-1'],
+    ["hcloud IAM Dele'teUser --user_id=u-1", 'hcloud IAM DeleteUser --user_id=u-1'],
+    ['hcloud ECS Re"boot"Server --server_id=i-1', 'hcloud ECS RebootServer --server_id=i-1'],
+    ["hcloud ECS Re'bootServer --server_id=i-1", 'hcloud ECS RebootServer --server_id=i-1'],
+  ];
+  for (const [quoted, bare] of equivalents) {
+    const quotedResult = classifyTextCommand(quoted);
+    const bareResult = classifyTextCommand(bare);
+    assert.equal(bareResult.decision, 'deny', bare);
+    assert.equal(quotedResult.decision, 'deny', `${quoted} must stay as strict as ${bare}`);
+  }
+});
+
+test('classifyTextCommand detects keyword-embedded quote hcloud bypasses (#927 B1)', () => {
+  // POSIX shells strip quotes before execution, so `hc'loud` runs `hcloud`.
+  // The hcloud keyword locator in extractHcloudSubcommand previously matched
+  // only the literal keyword on raw text (after splitSimpleCommand's quote
+  // stripping), so these forms fell through as not_huaweicloud (allow) while
+  // their de-quoted forms are DENY. The locator now retries on a
+  // quote-stripped COPY used only for keyword location, so the forms below
+  // enter the full hcloud classification path and follow de-quoted semantics.
+  const keywordQuoteBypasses = [
+    { cmd: "hc'loud ECS DeleteServer --server_id=i-123", risk: 'write' },
+    { cmd: "h'cloud ECS DeleteServer --server_id=i-123", risk: 'write' },
+    { cmd: "hc'loud DEW ShowSecretVersion --secret_name=kms-cred", risk: 'secret' },
+  ];
+  for (const { cmd, risk } of keywordQuoteBypasses) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, risk, cmd);
+  }
+  // Equivalence invariant: keyword-embedded-quote decisions must not be more
+  // permissive than the decision for the de-quoted form.
+  const equivalents = [
+    ["hc'loud ECS DeleteServer --server_id=i-123", 'hcloud ECS DeleteServer --server_id=i-123'],
+    ["h'cloud ECS DeleteServer --server_id=i-123", 'hcloud ECS DeleteServer --server_id=i-123'],
+    ["hc'loud DEW ShowSecretVersion --secret_name=kms-cred", 'hcloud DEW ShowSecretVersion --secret_name=kms-cred'],
+  ];
+  for (const [quoted, bare] of equivalents) {
+    const quotedResult = classifyTextCommand(quoted);
+    const bareResult = classifyTextCommand(bare);
+    assert.equal(bareResult.decision, 'deny', bare);
+    assert.equal(quotedResult.decision, 'deny', `${quoted} must stay as strict as ${bare}`);
+  }
+  // The sudo variant locates through the quotes via the same sudo\s+ anchor.
+  const sudoVariant = classifyTextCommand("sudo h'cloud ECS DeleteServer --server_id=i-1");
+  assert.equal(sudoVariant.decision, 'deny');
+  assert.equal(sudoVariant.risk, 'write');
+
+  // Natural-language / echo hcloud mentions keep their allow — the fallback
+  // uses the same anchored pattern, so no new false positives (#758 D4-11 P1).
+  assert.equal(classifyTextCommand('see hcloud docs').decision, 'allow');
+  assert.equal(classifyTextCommand('echo hcloud is a CLI').decision, 'allow');
+});
+
+test('classifyTextCommand detects hcloud commands at any line start (#927)', () => {
+  // extractHcloudSubcommand used `^` without the `m` flag and no newline in
+  // the separator class, so a hcloud command on a non-first line with no
+  // preceding ; | & ` sudo was never located and fell through as
+  // not_huaweicloud allow (#927).
+  const result = classifyTextCommand('echo hello\nhcloud ECS DeleteServer --server_id=i-123');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.risk, 'write');
+
+  // A line-start hcloud READ must enter the hcloud classification path
+  // (read_only), not the not_huaweicloud fallback.
+  const readResult = classifyTextCommand('echo hello\nhcloud ECS ListServers');
+  assert.equal(readResult.decision, 'allow');
+  assert.equal(readResult.risk, 'read_only');
+
+  // CRLF line endings and indentation are covered too.
+  const crlfResult = classifyTextCommand('echo hello\r\n  hcloud ECS DeleteServer --server_id=i-1');
+  assert.equal(crlfResult.decision, 'deny');
+  assert.equal(crlfResult.risk, 'write');
+});
+
+test('hcloud classification quote normalization preserves existing exemptions (#927)', () => {
+  // Credential literal-name references stay exempt: the negative lookbehind
+  // in classifyTextCommand still sees the raw text with quotes (#650 D4-2 /
+  // #770 D4-2 semantics unchanged).
+  assert.equal(classifyTextCommand("echo '$HW_SECRET_KEY'").decision, 'allow');
+  assert.equal(classifyTextCommand('echo \\$HW_SECRET_KEY').decision, 'allow');
+  assert.equal(classifyTextCommand("echo '$HUAWEICLOUD_SECRET_ACCESS_KEY'").decision, 'allow');
+  // Backslash-escaped HUAWEICLOUD literal stays exempt too — same lookbehind
+  // path as the $HW_ backslash case above.
+  assert.equal(classifyTextCommand('echo \\$HUAWEICLOUD_SECRET_ACCESS_KEY').decision, 'allow');
+
+  // Natural-language / echo hcloud mentions stay allowed (#758 D4-11 P1).
+  assert.equal(classifyTextCommand('see hcloud docs').decision, 'allow');
+  assert.equal(classifyTextCommand('echo hcloud is a CLI').decision, 'allow');
+
+  // OBS obsutil subcommands and quoted --cli-jsonInput parameters keep their
+  // existing classification.
+  assert.equal(classifyHcloudArgs(['obs', 'mb', 'obs://bucket']).decision, 'deny');
+  assert.equal(classifyHcloudArgs(['obs', 'ls']).decision, 'allow');
+  const jsonInput = classifyTextCommand('hcloud ECS CreateServers --cli-jsonInput="servers.json"');
+  assert.equal(jsonInput.decision, 'deny');
+  assert.equal(jsonInput.risk, 'write');
+});
