@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { asText } from './lib/as-text.ts';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultRulesPath = join(__dirname, '..', 'safety', 'rules', 'cloud-risk-rules.json');
 
@@ -164,7 +166,7 @@ function evaluationContext(stage: string, input: unknown): EvaluationContext {
     return { text: command, command };
   }
   if (stage === 'artifact') {
-    const path = String(record.path || '');
+    const path = asText(record.path || '');
     const content = normalizeText(record.content || '');
     return { text: `${path}\n${content}`, path, content };
   }
@@ -301,7 +303,8 @@ export function evaluateDeployPlan(plan: unknown, options: RiskRuleOptions = {})
 export function mergeRiskDecision(base: RiskDecision, risk: RiskEvaluation): RiskDecision {
   if (!risk || !risk.findings?.length) return base;
   if (risk.decision === 'deny') {
-    const topFinding = risk.findings[0];
+    // findings was checked non-empty at the top of this function.
+    const topFinding = risk.findings[0]!;
     return {
       ...base,
       decision: 'deny',

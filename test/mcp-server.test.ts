@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -9,7 +9,33 @@ import test from 'node:test';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const serverPath = join(root, 'plugins', 'huaweicloud-core', 'src', 'mcp-server.ts');
 
-function frame(message) {
+// The version-layout fixtures below copy the generated skills tree (the
+// server fail-fasts without it), so the whole file needs it present. One
+// guided precondition instead of a raw ENOENT on a fresh checkout.
+assert.ok(
+  existsSync(join(root, 'plugins', 'huaweicloud-core', 'skills')),
+  'generated skills tree missing — run: npm run build',
+);
+
+interface ToolDescriptor {
+  name: string;
+  inputSchema: { properties: Record<string, unknown> };
+}
+
+interface JsonRpcResult {
+  serverInfo: { name: string; version: string };
+  tools: ToolDescriptor[];
+  isError: boolean;
+  content: { text: string }[];
+}
+
+interface JsonRpcResponse {
+  id: number | string | null;
+  result: JsonRpcResult;
+  error: { code: number; message: string };
+}
+
+function frame(message: unknown) {
   const json = JSON.stringify(message);
   return `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
 }
@@ -18,10 +44,22 @@ function createClient(server = serverPath) {
   const child = spawn(process.execPath, [server], {
     cwd: root,
     stdio: ['pipe', 'pipe', 'pipe'],
+    // Hermetic boot: without these, every spawned server's initialize
+    // handshake awaits a REAL hdkitGenerateUserHash fetch (3s race against
+    // devkit.huaweicloud.com) and fires telemetry POSTs — a real-network
+    // latency spike under full-suite load delayed initialize past the
+    // split-frame test's 2s deadline (the 2026-10-16 flake). Port 1 on
+    // localhost refuses in milliseconds; the hash prewarm is best-effort.
+    env: {
+      ...process.env,
+      HDKITSERVICE_ENDPOINT: 'http://127.0.0.1:1/',
+      HUAWEICLOUD_DEVKIT_TELEMETRY: 'off',
+      HUAWEICLOUD_DEVKIT_SKIP_UPDATE: '1',
+    },
   });
   let buffer = Buffer.alloc(0);
-  const pending = new Map();
-  const frames = [];
+  const pending = new Map<number | string | null, (payload: JsonRpcResponse) => void>();
+  const frames: JsonRpcResponse[] = [];
 
   child.stdout.on('data', (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -35,7 +73,7 @@ function createClient(server = serverPath) {
       const bodyStart = headerEnd + 4;
       const bodyEnd = bodyStart + length;
       if (buffer.length < bodyEnd) return;
-      const payload = JSON.parse(buffer.subarray(bodyStart, bodyEnd).toString('utf8'));
+      const payload: JsonRpcResponse = JSON.parse(buffer.subarray(bodyStart, bodyEnd).toString('utf8'));
       buffer = buffer.subarray(bodyEnd);
       frames.push(payload);
       pending.get(payload.id)?.(payload);
@@ -43,7 +81,7 @@ function createClient(server = serverPath) {
   });
 
   return {
-    raw(data) {
+    raw(data: string) {
       child.stdin.write(data);
     },
     frames() {
@@ -52,11 +90,14 @@ function createClient(server = serverPath) {
     isAlive() {
       return child.exitCode === null;
     },
-    request(method, params = {}) {
+    request(method: string, params: Record<string, unknown> = {}) {
       const id = Math.floor(Math.random() * 1_000_000);
       child.stdin.write(frame({ jsonrpc: '2.0', id, method, params }));
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${method}`)), 2000);
+      // The server cold-boots through type stripping (~1.5s observed) plus
+      // tool registration; 10s leaves real margin for loaded CI runners
+      // (2s produced load-dependent initialize timeouts).
+      return new Promise<JsonRpcResponse>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`Timed out waiting for ${method}`)), 10_000);
         pending.set(id, (payload) => {
           clearTimeout(timer);
           pending.delete(id);
@@ -64,7 +105,7 @@ function createClient(server = serverPath) {
         });
       });
     },
-    requestInChunks(method, params = {}, bodyBytesInFirstChunk = 1) {
+    requestInChunks(method: string, params: Record<string, unknown> = {}, bodyBytesInFirstChunk: number = 1) {
       const id = Math.floor(Math.random() * 1_000_000);
       const payload = frame({ jsonrpc: '2.0', id, method, params });
       const bodyStart = payload.indexOf('\r\n\r\n') + 4;
@@ -73,8 +114,10 @@ function createClient(server = serverPath) {
       const second = payload.slice(splitAt);
       child.stdin.write(first);
       setTimeout(() => child.stdin.write(second), 50);
-      return new Promise((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`Timed out waiting for split ${method}`)), 2000);
+      return new Promise<JsonRpcResponse>((resolve, reject) => {
+        // Same cold-boot cost the request() helper documents: 2s produced
+        // load-dependent timeouts here too once the tool registry grew.
+        const timer = setTimeout(() => reject(new Error(`Timed out waiting for split ${method}`)), 10_000);
         pending.set(id, (message) => {
           clearTimeout(timer);
           pending.delete(id);
@@ -110,7 +153,7 @@ test('MCP server initializes, lists tools, and plans CLI commands', async () => 
     assert.ok(toolNames.has('huaweicloud_sandbox_connect'));
 
     const runReadonly = listed.result.tools.find((tool) => tool.name === 'huaweicloud_run_readonly_command');
-    assert.ok(Object.hasOwn(runReadonly.inputSchema.properties, 'timeoutMs'));
+    assert.ok(Object.hasOwn(runReadonly!.inputSchema.properties, 'timeoutMs'));
 
     const planned = await client.request('tools/call', {
       name: 'huaweicloud_plan_cli_command',
@@ -150,7 +193,10 @@ test('MCP server returns -32700 and keeps serving after a malformed frame (#643)
     });
     client.raw('Content-Length: 5\r\n\r\n{bad!');
 
-    const deadline = Date.now() + 3000;
+    // Same budget class as request()/requestInChunks above: the server
+    // cold-boots through type stripping and under machine load a 3s poll
+    // deadline produced load-dependent flakes in full-suite runs.
+    const deadline = Date.now() + 10_000;
     let parseError;
     while (Date.now() < deadline) {
       parseError = client.frames().find((p) => p.error && p.error.code === -32700);
@@ -178,7 +224,10 @@ test('MCP server returns -32700 for a malformed newline-delimited frame (#643)',
   });
   try {
     child.stdin.write('{bad!\n');
-    const deadline = Date.now() + 3000;
+    // Same budget class as request()/requestInChunks above: the server
+    // cold-boots through type stripping and under machine load a 3s poll
+    // deadline produced load-dependent flakes in full-suite runs.
+    const deadline = Date.now() + 10_000;
     let line = '';
     while (Date.now() < deadline) {
       line = out.split('\n').find((l) => l.includes('-32700')) || '';
@@ -264,6 +313,9 @@ test('MCP server reports version from plugin package.json in installed layout', 
     const pluginRoot = join(dir, 'huaweicloud-plugins');
     cpSync(join(root, 'plugins', 'huaweicloud-core', 'dist'), join(pluginRoot, 'dist'), { recursive: true });
     cpSync(join(root, 'plugins', 'huaweicloud-core', 'safety'), join(pluginRoot, 'safety'), { recursive: true });
+    // The server fail-fasts on a missing skills tree (verifySkillTree), so
+    // a bootable fixture models the full payload a real install ships.
+    cpSync(join(root, 'plugins', 'huaweicloud-core', 'skills'), join(pluginRoot, 'skills'), { recursive: true });
     writeFileSync(
       join(pluginRoot, 'package.json'),
       JSON.stringify({ name: 'huaweicloud-plugins', version: '9.9.9-test' }),
@@ -293,6 +345,9 @@ test('MCP server reports version from plugin manifest in Codex cache layout (#57
     mkdirSync(codexRoot, { recursive: true });
     cpSync(join(root, 'plugins', 'huaweicloud-core', 'dist'), join(codexRoot, 'dist'), { recursive: true });
     cpSync(join(root, 'plugins', 'huaweicloud-core', 'safety'), join(codexRoot, 'safety'), { recursive: true });
+    // The server fail-fasts on a missing skills tree (verifySkillTree), so
+    // a bootable fixture models the full payload a real install ships.
+    cpSync(join(root, 'plugins', 'huaweicloud-core', 'skills'), join(codexRoot, 'skills'), { recursive: true });
     mkdirSync(join(codexRoot, '.codex-plugin'), { recursive: true });
     writeFileSync(
       join(codexRoot, '.codex-plugin', 'plugin.json'),
@@ -343,7 +398,10 @@ test('MCP server returns -32600 for valid JSON that is not a request object', as
     client.raw(frame(null));
     client.raw(frame([1, 2, 3]));
 
-    const deadline = Date.now() + 3000;
+    // Same budget class as request()/requestInChunks above: the server
+    // cold-boots through type stripping and under machine load a 3s poll
+    // deadline produced load-dependent flakes in full-suite runs.
+    const deadline = Date.now() + 10_000;
     let invalidRequest;
     while (Date.now() < deadline) {
       invalidRequest = client.frames().find((p) => p.error && p.error.code === -32600);
@@ -358,7 +416,7 @@ test('MCP server returns -32600 for valid JSON that is not a request object', as
     // not silence (the SDK would drop it and the client would hang). The
     // reply echoes the request id so the failure is correlatable.
     client.raw(frame({ jsonrpc: '2.0', id: 42 }));
-    const deadline2 = Date.now() + 3000;
+    const deadline2 = Date.now() + 10_000;
     let methodNotFound;
     while (Date.now() < deadline2) {
       methodNotFound = client.frames().find((p) => p.error && p.error.code === -32601);
@@ -394,7 +452,10 @@ test('MCP server waits for a frame header split across chunks', async () => {
     client.raw(framed.slice(0, splitAt));
     setTimeout(() => client.raw(framed.slice(splitAt)), 50);
 
-    const deadline = Date.now() + 3000;
+    // Same budget class as request()/requestInChunks above: the server
+    // cold-boots through type stripping and under machine load a 3s poll
+    // deadline produced load-dependent flakes in full-suite runs.
+    const deadline = Date.now() + 10_000;
     let response;
     while (Date.now() < deadline) {
       response = client.frames().find((p) => p.id === 77);

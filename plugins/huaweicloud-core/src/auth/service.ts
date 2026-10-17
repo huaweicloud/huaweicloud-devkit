@@ -10,6 +10,8 @@ import {
   obsConfigPath,
   readCodeArtsCredentials,
   readGlobalCredentials,
+  readGlobalCredentialsResolved,
+  readGlobalCredentialsStrict,
   writeLastSync,
   writeObsConfig,
 } from './credentials.ts';
@@ -80,14 +82,31 @@ export interface OnboardingResult {
   accountHint: string | null;
 }
 
+// Display paths (status/onboarding) degrade to the raw S1 read when a
+// secret:// ref cannot resolve — scanState surfaces the failure as
+// s1RefError, and a broken vault must not take auth_status down with it.
+// Propagation paths (syncAuth) use the strict resolved read instead: writing
+// a literal ref string into ~/.obsutilconfig or a KooCLI profile would
+// corrupt both mirrors.
+function readGlobalCredentialsForStatus(): CredentialRecord | null {
+  try {
+    return asCredentialRecord(readGlobalCredentialsResolved());
+  } catch {
+    return asCredentialRecord(readGlobalCredentials());
+  }
+}
+
 // Onboarding guidance (scenarios 1-4) for credential setup.
 // scenario: 1=S1 exists, no env/…; 2=conflict (S1 vs injected); 3=everything
 // missing (fresh user); 4=S1 empty but injected creds exist (import candidate).
 export function computeOnboarding({
   credentials,
   reconciled,
-}: { credentials?: CredentialRecord | null; reconciled?: { hasRuntime?: boolean } } = {}): OnboardingResult {
-  const creds = credentials ?? asCredentialRecord(readGlobalCredentials());
+}: {
+  credentials?: CredentialRecord | null;
+  reconciled?: { hasRuntime?: boolean; s1RefError?: string | null };
+} = {}): OnboardingResult {
+  const creds = credentials ?? readGlobalCredentialsForStatus();
   const scan = reconciled ?? exportStateForStatus();
   const s1Has = Boolean(creds?.ak && creds?.sk && !isPlaceholder(creds.ak) && !isPlaceholder(creds.sk));
   const s4Creds = asCredentialRecord(readCodeArtsCredentials());
@@ -98,7 +117,10 @@ export function computeOnboarding({
   const envRealSk = !isPlaceholder(process.env.HW_SECRET_KEY) && Boolean(process.env.HW_SECRET_KEY);
   const envHasCreds = envRealAk && envRealSk;
   const codeArts = isCodeArtsHome();
-  const accountHint = s1Has ? fingerprint(creds?.ak, creds?.sk) : null;
+  // A broken vault link makes the raw-ref fingerprint meaningless — the same
+  // account shows a different hint when the vault works.
+  const s1RefError = typeof scan.s1RefError === 'string' && scan.s1RefError ? scan.s1RefError : null;
+  const accountHint = s1Has && !s1RefError ? fingerprint(creds?.ak, creds?.sk) : null;
 
   let scenario: number;
   let reason: string;
@@ -128,7 +150,7 @@ export function computeOnboarding({
   if (s1Has && !envHasCreds) {
     scenario = 1;
     reason = 's1-only';
-    message = `已保存账号(指纹 ${accountHint})可直接使用。`;
+    message = accountHint ? `已保存账号(指纹 ${accountHint})可直接使用。` : '已保存账号可直接使用。';
     steps = [
       { order: 1, action: 'use-s1', args: {}, label: '直接使用已保存账号' },
       { order: 2, action: 'switch-new', args: { mode: 'import', action: 'persist' }, label: '改用新账号(导入)' },
@@ -140,7 +162,9 @@ export function computeOnboarding({
     if (injected) {
       scenario = 1;
       reason = 's1-with-platform-injected';
-      message = `已保存账号(指纹 ${accountHint})优先于平台注入,可直接使用。`;
+      message = accountHint
+        ? `已保存账号(指纹 ${accountHint})优先于平台注入,可直接使用。`
+        : '已保存账号优先于平台注入,可直接使用。';
       steps = [
         { order: 1, action: 'use-s1', args: {}, label: '使用已保存账号' },
         {
@@ -201,11 +225,26 @@ export function computeOnboarding({
     ];
   }
 
+  if (s1RefError) {
+    // S1 is configured but every value consumer throws: the "可直接使用"
+    // claims above are false until the vault link is fixed. Annotate instead
+    // of silently reporting a healthy account.
+    message = `${message} ⚠ S1 中的 secret:// 引用无法解析:${s1RefError}`;
+    steps = [
+      ...steps,
+      {
+        order: steps.length + 1,
+        action: 'fix-vault',
+        args: {},
+        label: '修复 vault(终端运行 npx huaweicloud-devkit secret list 检查)或将 S1 中的引用换回明文',
+      },
+    ];
+  }
   return { needsSetup: true, scenario, reason, message, steps, accountHint };
 }
 
 export function getAuthStatus(target = 'all') {
-  const credentials = asCredentialRecord(readGlobalCredentials());
+  const credentials = readGlobalCredentialsForStatus();
   const reconciled = { ...exportStateForStatus(), runtimeActive: hasRuntimeCredentials() };
   const hcloud = probeHcloud();
   const s4Creds = asCredentialRecord(readCodeArtsCredentials());
@@ -254,7 +293,15 @@ export interface SyncAuthSuccess {
 export type SyncAuthResult = SyncAuthSuccess | SyncAuthFailure;
 
 export function syncAuth(target = 'all'): SyncAuthResult {
-  const credentials = asCredentialRecord(readGlobalCredentials());
+  // Strict resolved read through the shared seam: refs must become plaintext
+  // BEFORE fanning out to S2/S3 (a literal secret:// string in
+  // ~/.obsutilconfig or a KooCLI profile breaks both), and an unresolvable
+  // ref fails the sync loud.
+  const strict = readGlobalCredentialsStrict();
+  if (!strict.ok) {
+    return { ok: false, error: strict.error, nextStep: strict.nextStep };
+  }
+  const credentials = asCredentialRecord(strict.credentials);
   if (!credentials?.ak || !credentials?.sk) {
     return {
       ok: false,

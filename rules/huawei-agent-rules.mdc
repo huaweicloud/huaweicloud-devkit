@@ -7,7 +7,7 @@
 ## Core Principles
 
 - **Always use the Huawei MCP server first** (sandboxed, observable, auditable). Fall back to `hcloud` CLI only when MCP is unavailable.
-- **Before any task, check for available skills.** Use `huaweicloud_search_docs` or `huaweicloud_retrieve_skill` via MCP. Follow skill procedures over general knowledge.
+- **Before any task, check for available skills.** Use `huaweicloud_list_skills` or `huaweicloud_search_docs` via MCP, then load with `huaweicloud_retrieve_skill` — or, when the list_skills payload carries `skillRoot` (stdio sessions) and your file tools reach it, read the skill files directly under that root. Follow skill procedures over general knowledge.
 - **When uncertain** about API parameters, quotas, limits, or error codes — search documentation via MCP. Do not guess.
 - **Prefer IaC over direct CLI calls** for infrastructure creation (Terraform for Huawei Cloud, or CloudFormation equivalent).
 - **Never use em dashes in resource names/tags.** Use hyphens only.
@@ -64,7 +64,7 @@
 ## Skill Discovery Priority
 
 1. **`huaweicloud-core`** — always check first for routing
-2. **Service-specific skills** — load after routing via `huaweicloud_retrieve_skill`
+2. **Service-specific skills** — load after routing via `huaweicloud_retrieve_skill`, or read them directly under the `skillRoot` the stdio `huaweicloud_list_skills` payload discloses
 3. **Knowledge cards** (`references/`) — quick facts without full skill load
 
 ## Red Flags — STOP and Re-evaluate

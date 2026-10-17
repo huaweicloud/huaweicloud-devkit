@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -9,6 +9,10 @@ import { PACKS, PACK_TOOL_HANDLERS } from '../plugins/huaweicloud-core/src/packs
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const pluginRoot = join(root, 'plugins', 'huaweicloud-core');
+
+// The skills-claim tests below read the generated tree (a build artifact);
+// one guided precondition instead of a raw ENOENT on a fresh checkout.
+assert.ok(existsSync(join(pluginRoot, 'skills')), 'generated skills tree missing — run: npm run build');
 
 test('no tool name appears in two pack tool lists', () => {
   const owner = new Map<string, string>();
@@ -30,7 +34,7 @@ test('pack tool counts match the P0 grouping', () => {
   // huaweicloud-cli is a mixed pack: the twenty service skills plus the seven
   // KooCLI execution tools sunk from core.
   const expected = {
-    core: 11,
+    core: 12,
     'huaweicloud-cli': 7,
     sandbox: 11,
     auth: 5,
@@ -39,13 +43,14 @@ test('pack tool counts match the P0 grouping', () => {
     update: 2,
     discovery: 3,
     'huaweicloud-open-mcp': 3,
+    secrets: 3,
   };
   let total = 0;
   for (const pack of PACKS) {
     assert.equal(pack.tools.length, expected[pack.id], `${pack.id} tool count`);
     total += pack.tools.length;
   }
-  assert.equal(total, 46);
+  assert.equal(total, 50);
 });
 
 test('the central pack handler map keys equal the pack-owned tool names', () => {
@@ -59,7 +64,7 @@ test('the central pack handler map keys equal the pack-owned tool names', () => 
   );
   const mapKeys = Object.keys(PACK_TOOL_HANDLERS).sort((a, b) => a.localeCompare(b));
   assert.deepEqual(mapKeys, packOwned);
-  assert.equal(mapKeys.length, 35);
+  assert.equal(mapKeys.length, 38);
 });
 
 test('every skills/ directory is claimed by exactly one pack', () => {

@@ -35,10 +35,11 @@ npm install
 # local checks
 npm test          # run all tests
 npm run validate  # structural validation
-npm run lint      # markdown lint
+npm run lint      # markdownlint + ESLint
+npm run lint:dup  # jscpd duplication scan (full report; CI gates new clones only)
 ```
 
-Requires Node.js >= 22.
+Requires Node.js >= 22.18.
 
 ## Code of Conduct
 
@@ -77,7 +78,7 @@ Pull request titles must follow the same convention (enforced by CI).
 Every pull request runs automated checks. All must pass before merging:
 
 - **PR Lint** — conventional commit title
-- **CI** — markdownlint, `npm test`, `npm run validate`, `npm audit`, gitleaks secret scan
+- **CI** — markdownlint, `npm test`, `npm run validate`, jscpd new-duplication gate, `npm audit`, gitleaks secret scan
 - **CodeQL** — static security analysis
 
 Do not bypass, disable, or relax these checks. If a check fails, fix the underlying issue.
@@ -95,21 +96,21 @@ Do not bypass, disable, or relax these checks. If a check fails, fix the underly
 - **Do not** run `npm publish`, `npm version`, or `npm dist-tag`.
 - **Do not** modify the `version` field in `package.json`, `package-lock.json`, or `**/plugin.json`.
 - **Do not** create or push git tags manually.
-- The `dev` branch version must always be a prerelease (`0.1.x-dev.n`). Formal versions (`0.1.x`) are produced only by the `main` release flow.
+- The repo `package.json` always carries the latest **stable** version; prerelease numbers (`X.Y.Z-next.N`) exist only transiently during a publish.
 
-To request a release, trigger the appropriate workflow in GitHub Actions:
+To request a release, use the two live workflows:
 
-- Test package: `Publish Dev (next)` on the `dev` branch → publishes as dist-tag `next`.
-- Formal package: `Prepare Release` + `Publish Release` on `main` → publishes as dist-tag `latest`.
+- **Release** (`release.yml`, on push to `main` — dev pushes only tag): tags `v<version>` and opens a release PR that bumps every versioned manifest plus the changelog (`scripts/bump-version.mjs` proposes, `scripts/create-release-pr.mjs` writes).
+- **Publish npm** (`npm-publish.yml`, manual dispatch from a `v*` tag): the only publish path — re-runs `npm test`, `npm run validate`, and `scripts/pack-verify.mjs`, then publishes through the `npm-publish` environment approval (`latest` for stable versions, `next` for prereleases).
 
 ## Release Process
 
-Two channels, fully managed by GitHub Actions:
+| Channel    | dist-tag | Version        | Path                                                                                                           |
+| ---------- | -------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
+| Stable     | `latest` | `X.Y.Z`        | merge the Release PR → tag `vX.Y.Z` → dispatch **Publish npm** on that tag                                     |
+| Prerelease | `next`   | `X.Y.Z-next.N` | manual flow in [docs/RELEASING.md](docs/RELEASING.md) §4 → dispatch **Publish npm** on the `vX.Y.Z-next.N` tag |
 
-| Channel | Branch | Workflow                              | dist-tag | Version       |
-| ------- | ------ | ------------------------------------- | -------- | ------------- |
-| Test    | `dev`  | `Publish Dev (next)`                  | `next`   | `0.1.x-dev.n` |
-| Stable  | `main` | `Prepare Release` / `Publish Release` | `latest` | `0.1.x`       |
+The full release policy — version semantics, the prerelease workflow, and the phase plan — lives in [docs/RELEASING.md](docs/RELEASING.md).
 
 ## Reporting Bugs
 

@@ -41,7 +41,9 @@ try {
       process.env.HTTP_PROXY = process.env.HTTP_PROXY || proxyConfig.http_proxy || proxyConfig.HTTP_PROXY;
     }
   }
-} catch {}
+} catch {
+  // best-effort: unreadable proxy config means no proxy env; the server still starts
+}
 
 // The MCP server is now loaded by a live agent session. Clear the install marker
 // in this plugin dir so `doctor` no longer reports "restart needed".
@@ -49,12 +51,16 @@ try {
   const pluginDir = resolve(dirname(fileURLToPath(import.meta.url)), '..');
   const marker = resolve(pluginDir, '.installed');
   if (existsSync(marker)) rmSync(marker, { force: true });
-} catch {}
+} catch {
+  // best-effort: a leftover marker only costs doctor a spurious restart hint
+}
 
 if (transport === 'remote') {
   const { startRemoteServer } = await import('./mcp-server-remote.ts');
-  startRemoteServer({ port: remotePort, host: remoteHost }).catch((error) => {
-    process.stderr.write(`Failed to start MCP remote server: ${error.message}\n`);
+  startRemoteServer({ port: remotePort, host: remoteHost }).catch((error: unknown) => {
+    process.stderr.write(
+      `Failed to start MCP remote server: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
     process.exit(1);
   });
 } else {

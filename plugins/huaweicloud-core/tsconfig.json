@@ -10,6 +10,9 @@
     "rootDir": "src",
     "outDir": "dist",
     "noEmitOnError": true,
+    "noUncheckedIndexedAccess": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },

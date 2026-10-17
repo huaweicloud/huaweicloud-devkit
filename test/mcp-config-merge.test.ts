@@ -100,8 +100,9 @@ test('mergeArgsStyle: user values win over required env keys', () => {
     mcpPath: MCP_PATH,
     env: { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local', HCLOUD_BIN: '/found/hcloud' },
   });
-  assert.equal(entry.env.HUAWEICLOUD_AGENT_TOOLKIT_MODE, 'custom');
-  assert.equal(entry.env.HCLOUD_BIN, '/my/hcloud');
+  const env = entry.env as Record<string, unknown>;
+  assert.equal(env.HUAWEICLOUD_AGENT_TOOLKIT_MODE, 'custom');
+  assert.equal(env.HCLOUD_BIN, '/my/hcloud');
   assert.deepEqual(entry.args, [MCP_PATH, '--x']);
 });
 
@@ -109,7 +110,7 @@ test('mergeArgsStyle: adds missing required env keys', () => {
   const existing = { command: 'node', args: [MCP_PATH], timeout: 300000 };
   const { entry, changed } = mergeArgsStyle(existing, { mcpPath: MCP_PATH, env: { MODE: 'local' } });
   assert.equal(changed, true);
-  assert.equal(entry.env.MODE, 'local');
+  assert.equal((entry.env as Record<string, unknown>).MODE, 'local');
 });
 
 test('mergeArgsStyle: missing entry produces default with env', () => {
@@ -121,7 +122,7 @@ test('mergeArgsStyle: missing entry produces default with env', () => {
 test('mergeMcpServersFile: creates entry in empty config without timeout field', () => {
   const { config, changed } = mergeMcpServersFile(undefined, { mcpPath: MCP_PATH, env: { MODE: 'local' } });
   assert.equal(changed, true);
-  assert.deepEqual(config.mcpServers['huaweicloud-devkit'], {
+  assert.deepEqual((config.mcpServers as Record<string, unknown>)['huaweicloud-devkit'], {
     command: 'node',
     args: [MCP_PATH],
     env: { MODE: 'local' },
@@ -137,11 +138,13 @@ test('mergeMcpServersFile: preserves other servers and user fields', () => {
   };
   const { config: next, changed } = mergeMcpServersFile(config, { mcpPath: MCP_PATH, env: { MODE: 'local' } });
   assert.equal(changed, true);
-  assert.deepEqual(next.mcpServers['other-server'], { command: 'foo' });
-  const entry = next.mcpServers['huaweicloud-devkit'];
+  const servers = next.mcpServers as Record<string, unknown>;
+  assert.deepEqual(servers['other-server'], { command: 'foo' });
+  const entry = servers['huaweicloud-devkit'] as Record<string, unknown>;
   assert.deepEqual(entry.args, [MCP_PATH, '--keep']);
-  assert.equal(entry.env.X, 'y');
-  assert.equal(entry.env.MODE, 'local');
+  const env = entry.env as Record<string, unknown>;
+  assert.equal(env.X, 'y');
+  assert.equal(env.MODE, 'local');
 });
 
 test('extractUserDelta + applyUserDelta roundtrip (command style)', () => {
@@ -160,7 +163,7 @@ test('extractUserDelta + applyUserDelta roundtrip (command style)', () => {
   assert.equal(delta.enabled, false);
 
   const fresh = { type: 'local', command: ['node', '/new/path/mcp-server.mjs'], enabled: true, timeout: 300000 };
-  const restored = applyUserDelta(fresh, delta, 'command');
+  const restored = applyUserDelta(fresh, delta, 'command') as Record<string, unknown>;
   assert.deepEqual(restored.command, ['node', '/new/path/mcp-server.mjs', '--hdkitservice-endpoint', 'http://test']);
   assert.deepEqual(restored.env, { FOO: '1' });
   assert.equal(restored.timeout, 600000);

@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
+import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 import test from 'node:test';
 
 import { validateIamCredentials } from '../plugins/huaweicloud-core/src/auth/credential-validator.ts';
 
-async function withIamServer(handler, fn) {
+async function withIamServer<T>(
+  handler: (req: IncomingMessage, res: ServerResponse) => void,
+  fn: (endpoint: string, server: Server) => Promise<T>,
+): Promise<T> {
   const server = createServer(handler);
-  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address !== null && typeof address !== 'string');
+  const endpoint = `http://127.0.0.1:${address.port}`;
   const previous = process.env.HW_IAM_ENDPOINT;
   process.env.HW_IAM_ENDPOINT = endpoint;
   try {
@@ -19,8 +25,14 @@ async function withIamServer(handler, fn) {
   }
 }
 
+interface SeenRequest {
+  auth?: string;
+  sdkDate?: string | string[];
+  url?: string;
+}
+
 test('validateIamCredentials accepts valid signature and resolves region project', async () => {
-  let seen = {};
+  let seen: SeenRequest = {};
   const result = await withIamServer(
     (req, res) => {
       seen = { auth: req.headers.authorization, sdkDate: req.headers['x-sdk-date'], url: req.url };
@@ -39,9 +51,9 @@ test('validateIamCredentials accepts valid signature and resolves region project
   assert.equal(result.valid, true);
   assert.equal(result.projectId, 'proj-target');
   assert.equal(result.error, null);
-  assert.match(seen.auth, /^SDK-HMAC-SHA256 Access=TESTAK,/);
+  assert.match(seen.auth ?? '', /^SDK-HMAC-SHA256 Access=TESTAK,/);
   assert.ok(seen.sdkDate);
-  assert.match(seen.url, /name=cn-north-4/);
+  assert.match(seen.url ?? '', /name=cn-north-4/);
 });
 
 test('validateIamCredentials falls back to first project without region', async () => {
@@ -66,8 +78,8 @@ test('validateIamCredentials rejects invalid SK (HTTP 401)', async () => {
   );
   assert.equal(result.valid, false);
   assert.equal(result.projectId, null);
-  assert.match(result.error, /401/);
-  assert.match(result.error, /Authentication failed/);
+  assert.match(result.error ?? '', /401/);
+  assert.match(result.error ?? '', /Authentication failed/);
 });
 
 test('validateIamCredentials treats 403 as valid credentials without project', async () => {
@@ -80,7 +92,7 @@ test('validateIamCredentials treats 403 as valid credentials without project', a
   );
   assert.equal(result.valid, true);
   assert.equal(result.projectId, null);
-  assert.match(result.warning, /403/);
+  assert.match(result.warning ?? '', /403/);
 });
 
 test('validateIamCredentials marks infrastructure errors as skipped', async () => {
@@ -100,5 +112,5 @@ test('validateIamCredentials marks infrastructure errors as skipped', async () =
 test('validateIamCredentials fails fast without AK/SK', async () => {
   const result = await validateIamCredentials({ ak: '', sk: '' });
   assert.equal(result.valid, false);
-  assert.match(result.error, /AK and SK/);
+  assert.match(result.error ?? '', /AK and SK/);
 });

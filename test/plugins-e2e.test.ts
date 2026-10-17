@@ -9,39 +9,77 @@ import test from 'node:test';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 
-function makeEnv(home, _cwd) {
-  return {
+function makeEnv(home: string, _cwd: string): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
+    // The update-warmup child (npm view) outlives the killed MCP server and
+    // writes into the fake HOME's cold .npm — racing the test's rmSync
+    // teardown into ENOTEMPTY flakes. The skip switch kills the warmup.
+    HUAWEICLOUD_DEVKIT_SKIP_UPDATE: '1',
   };
+  // cleanupNativeDirs() runs inside every install and reconciles EVERY
+  // target's native dir (not just the installed one), each resolved from
+  // its own ambient override — the full clear list applies. HUAWEICLOUD_HOME
+  // additionally keys takeAgentDelta's pending-backup reads.
+  for (const key of [
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+    'HERMES_HOME',
+    'DSH_HOME',
+    'ATOMCODE_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'HUAWEICLOUD_HOME',
+    'DEVKIT_PACKS',
+  ]) {
+    delete env[key];
+  }
+  return env;
 }
 
-function runCli(home, cwd, args) {
+function runCli(home: string, cwd: string, args: string[]) {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd,
     env: makeEnv(home, cwd),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 240000,
   });
 }
 
-function countSkills(dir) {
+function countSkills(dir: string): number {
   if (!existsSync(dir)) return 0;
   return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith('huawei')).length;
 }
 
-function invokeMcpTools(mcpServerPath, env, timeout = 15000) {
-  return new Promise((resolve, reject) => {
+interface McpTool {
+  name: string;
+  description: string;
+  inputSchema: { type: string; properties: Record<string, unknown> };
+}
+
+interface JsonRpcResponse {
+  id?: number | string | null;
+  result: {
+    serverInfo: { name: string };
+    tools: McpTool[];
+    content: Array<{ text?: string }>;
+    isError: boolean;
+  };
+  error?: unknown;
+}
+
+function invokeMcpTools(mcpServerPath: string, env: NodeJS.ProcessEnv, timeout = 15000): Promise<JsonRpcResponse[]> {
+  return new Promise<JsonRpcResponse[]>((resolve, reject) => {
     const child = spawn(process.execPath, [mcpServerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       timeout,
     });
     let buffer = '';
-    const responses = [];
+    const responses: JsonRpcResponse[] = [];
     let seq = 0;
     const timer = setTimeout(() => {
       child.kill();
@@ -51,11 +89,11 @@ function invokeMcpTools(mcpServerPath, env, timeout = 15000) {
     child.stdout.on('data', (chunk) => {
       buffer += chunk.toString();
       const lines = buffer.split('\n');
-      buffer = lines.pop();
+      buffer = lines.pop() ?? '';
       for (const line of lines) {
         if (line.trim()) {
           try {
-            const msg = JSON.parse(line);
+            const msg = JSON.parse(line) as JsonRpcResponse;
             if (msg.id !== undefined && msg.id !== null) {
               responses.push(msg);
               if (responses.length === 1) {
@@ -73,7 +111,9 @@ function invokeMcpTools(mcpServerPath, env, timeout = 15000) {
                 resolve(responses);
               }
             }
-          } catch {}
+          } catch {
+            // skip a non-JSON stdout line; only the counted responses drive the handshake
+          }
         }
       }
     });
@@ -95,15 +135,21 @@ function invokeMcpTools(mcpServerPath, env, timeout = 15000) {
   });
 }
 
-function invokeMcpToolCall(mcpServerPath, env, toolName, toolArgs, timeout = 15000) {
-  return new Promise((resolve, reject) => {
+function invokeMcpToolCall(
+  mcpServerPath: string,
+  env: NodeJS.ProcessEnv,
+  toolName: string,
+  toolArgs: Record<string, unknown>,
+  timeout = 15000,
+): Promise<JsonRpcResponse[]> {
+  return new Promise<JsonRpcResponse[]>((resolve, reject) => {
     const child = spawn(process.execPath, [mcpServerPath], {
       stdio: ['pipe', 'pipe', 'pipe'],
       env,
       timeout,
     });
     let buffer = '';
-    const responses = [];
+    const responses: JsonRpcResponse[] = [];
     let seq = 0;
     const timer = setTimeout(() => {
       child.kill();
@@ -113,11 +159,11 @@ function invokeMcpToolCall(mcpServerPath, env, toolName, toolArgs, timeout = 150
     child.stdout.on('data', (chunk) => {
       buffer += chunk.toString();
       const lines = buffer.split('\n');
-      buffer = lines.pop();
+      buffer = lines.pop() ?? '';
       for (const line of lines) {
         if (line.trim()) {
           try {
-            const msg = JSON.parse(line);
+            const msg = JSON.parse(line) as JsonRpcResponse;
             if (msg.id !== undefined && msg.id !== null) {
               responses.push(msg);
               if (responses.length === 1) {
@@ -135,7 +181,9 @@ function invokeMcpToolCall(mcpServerPath, env, toolName, toolArgs, timeout = 150
                 resolve(responses);
               }
             }
-          } catch {}
+          } catch {
+            // skip a non-JSON stdout line; only the counted responses drive the handshake
+          }
         }
       }
     });
@@ -172,6 +220,7 @@ const REQUIRED_TOOLS = [
   'huaweicloud_get_regional_availability',
   'huaweicloud_list_packs',
   'huaweicloud_pack_info',
+  'huaweicloud_list_skills',
   'huaweicloud_packs_configure',
 ];
 
@@ -218,13 +267,14 @@ const targets = [
   {
     name: 'opencode',
     banner: /\[OpenCode\]/,
-    pluginsDir: (h) => join(h, '.config', 'opencode', 'huaweicloud-plugins'),
-    skillsDir: (h) => join(h, '.config', 'opencode', 'huaweicloud-plugins', 'skills'),
-    configPath: (h) => join(h, '.config', 'opencode', 'opencode.json'),
-    hasServer: (p) => {
+    pluginsDir: (h: string) => join(h, '.config', 'opencode', 'huaweicloud-plugins'),
+    skillsDir: (h: string) => join(h, '.config', 'opencode', 'huaweicloud-plugins', 'skills'),
+    configPath: (h: string) => join(h, '.config', 'opencode', 'opencode.json'),
+    hasServer: (p: string) => {
       if (!existsSync(p)) return false;
       try {
-        return Boolean(JSON.parse(readFileSync(p, 'utf8')).mcp?.['huaweicloud-devkit']);
+        const config = JSON.parse(readFileSync(p, 'utf8')) as { mcp?: Record<string, unknown> };
+        return Boolean(config.mcp?.['huaweicloud-devkit']);
       } catch {
         return false;
       }
@@ -233,13 +283,13 @@ const targets = [
   {
     name: 'codex-desktop',
     banner: /\[Codex Desktop\]/,
-    pluginsDir: (h) => join(h, 'plugins', 'huaweicloud-devkit'),
-    skillsDir: (h) => join(h, 'plugins', 'huaweicloud-devkit', 'skills'),
-    configPath: (h) => join(h, '.agents', 'plugins', 'marketplace.json'),
-    hasServer: (p) => {
+    pluginsDir: (h: string) => join(h, 'plugins', 'huaweicloud-devkit'),
+    skillsDir: (h: string) => join(h, 'plugins', 'huaweicloud-devkit', 'skills'),
+    configPath: (h: string) => join(h, '.agents', 'plugins', 'marketplace.json'),
+    hasServer: (p: string) => {
       if (!existsSync(p)) return false;
       try {
-        const mp = JSON.parse(readFileSync(p, 'utf8'));
+        const mp = JSON.parse(readFileSync(p, 'utf8')) as { plugins: { name?: string }[] };
         return mp.plugins && mp.plugins.some((e) => e.name === 'huaweicloud-devkit');
       } catch {
         return false;
@@ -249,13 +299,14 @@ const targets = [
   {
     name: 'workbuddy',
     banner: /\[WorkBuddy\]/,
-    pluginsDir: (h) => join(h, '.workbuddy', 'huaweicloud-plugins'),
-    skillsDir: (h) => join(h, '.workbuddy', 'huaweicloud-plugins', 'skills'),
-    configPath: (h) => join(h, '.workbuddy', 'mcp.json'),
-    hasServer: (p) => {
+    pluginsDir: (h: string) => join(h, '.workbuddy', 'huaweicloud-plugins'),
+    skillsDir: (h: string) => join(h, '.workbuddy', 'huaweicloud-plugins', 'skills'),
+    configPath: (h: string) => join(h, '.workbuddy', 'mcp.json'),
+    hasServer: (p: string) => {
       if (!existsSync(p)) return false;
       try {
-        return Boolean(JSON.parse(readFileSync(p, 'utf8')).mcpServers?.['huaweicloud-devkit']);
+        const config = JSON.parse(readFileSync(p, 'utf8')) as { mcpServers?: Record<string, unknown> };
+        return Boolean(config.mcpServers?.['huaweicloud-devkit']);
       } catch {
         return false;
       }
@@ -350,14 +401,14 @@ test('MCP tools/list includes all required core tools with valid schemas', async
     for (const required of REQUIRED_TOOLS) {
       assert.ok(toolNames.includes(required), `Missing tool: ${required}`);
     }
-    // Plus every optional-pack tool: tools/list must carry the full 46.
+    // Plus every optional-pack tool: tools/list must carry the full 47.
     const perPackNames = Object.values(PER_PACK_TOOLS).flat();
     for (const name of perPackNames) {
       assert.ok(toolNames.includes(name), `Missing tool: ${name}`);
     }
     assert.equal(
       REQUIRED_TOOLS.length + perPackNames.length,
-      46,
+      47,
       'always-on + per-pack lists must cover the full registry',
     );
     assert.ok(toolNames.length >= 25, `Expected >= 25 tools, got ${toolNames.length}`);
@@ -372,10 +423,10 @@ test('MCP tools/list includes all required core tools with valid schemas', async
 
     // Verify run tools expose cwd parameter (aligned with tools.test.mjs)
     const readonlyTool = tools.find((t) => t.name === 'huaweicloud_run_readonly_command');
-    assert.ok(Object.hasOwn(readonlyTool.inputSchema.properties, 'cwd'), 'run_readonly_command should have cwd param');
+    assert.ok(Object.hasOwn(readonlyTool!.inputSchema.properties, 'cwd'), 'run_readonly_command should have cwd param');
 
     const approvedTool = tools.find((t) => t.name === 'huaweicloud_run_approved_command');
-    assert.ok(Object.hasOwn(approvedTool.inputSchema.properties, 'cwd'), 'run_approved_command should have cwd param');
+    assert.ok(Object.hasOwn(approvedTool!.inputSchema.properties, 'cwd'), 'run_approved_command should have cwd param');
 
     // Verify proactive hook check tools are present (aligned with tools.test.mjs)
     const nameSet = new Set(toolNames);
@@ -388,7 +439,7 @@ test('MCP tools/list includes all required core tools with valid schemas', async
   }
 });
 
-test('DEVKIT_PACKS=sandbox trims tools/list to core 11 + sandbox 11', async () => {
+test('DEVKIT_PACKS=sandbox trims tools/list to core 12 + sandbox 11', async () => {
   const home = mkdtempSync(join(tmpdir(), 'mcp-trim-'));
   const cwd = mkdtempSync(join(tmpdir(), 'mcp-trim-proj-'));
   try {
@@ -397,13 +448,13 @@ test('DEVKIT_PACKS=sandbox trims tools/list to core 11 + sandbox 11', async () =
 
     const mcpServerPath = join(home, '.config', 'opencode', 'huaweicloud-plugins', 'dist', 'mcp-server.js');
     // DEVKIT_PACKS rides the spawn env into the stdio server; without it the
-    // suite's other tests above still see the full 46.
+    // suite's other tests above still see the full 47.
     const responses = await invokeMcpTools(mcpServerPath, { ...makeEnv(home, cwd), DEVKIT_PACKS: 'sandbox' });
 
     assert.ok(responses[0].result, 'initialize returned result');
     assert.ok(responses[1].result, 'tools/list returned result');
     const toolNames = responses[1].result.tools.map((t) => t.name);
-    assert.equal(toolNames.length, 22, `expected core 11 + sandbox 11, got ${toolNames.length}`);
+    assert.equal(toolNames.length, 23, `expected core 12 + sandbox 11, got ${toolNames.length}`);
 
     // The always-on core surface survives any trimming...
     for (const required of REQUIRED_TOOLS) {
@@ -426,7 +477,7 @@ test('DEVKIT_PACKS=sandbox trims tools/list to core 11 + sandbox 11', async () =
   }
 });
 
-test('DEVKIT_PACKS=huaweicloud-open-mcp trims tools/list to core 11 + gateway 3', async () => {
+test('DEVKIT_PACKS=huaweicloud-open-mcp trims tools/list to core 12 + gateway 3', async () => {
   const home = mkdtempSync(join(tmpdir(), 'mcp-trim-open-mcp-'));
   const cwd = mkdtempSync(join(tmpdir(), 'mcp-trim-open-mcp-proj-'));
   try {
@@ -442,7 +493,7 @@ test('DEVKIT_PACKS=huaweicloud-open-mcp trims tools/list to core 11 + gateway 3'
     assert.ok(responses[0].result, 'initialize returned result');
     assert.ok(responses[1].result, 'tools/list returned result');
     const toolNames = responses[1].result.tools.map((t) => t.name);
-    assert.equal(toolNames.length, 14, `expected core 11 + gateway 3, got ${toolNames.length}`);
+    assert.equal(toolNames.length, 15, `expected core 12 + gateway 3, got ${toolNames.length}`);
 
     for (const required of REQUIRED_TOOLS) {
       assert.ok(toolNames.includes(required), `Missing core tool: ${required}`);
@@ -488,7 +539,7 @@ test('huaweicloud_search_docs returns relevant skill results', async () => {
     assert.ok(text.length > 0, 'search results text should not be empty');
 
     // Verify response is valid JSON with results (relaxed: check structure, not specific skill text)
-    const parsed = JSON.parse(text);
+    const parsed = JSON.parse(text) as { query?: string; results?: unknown[]; length?: number };
     assert.ok(parsed, 'search response should be valid JSON');
     // Query echo: the response should reflect what was searched
     if (parsed.query !== undefined) {
@@ -504,7 +555,7 @@ test('huaweicloud_search_docs returns relevant skill results', async () => {
     });
     assert.ok(!obsResponses[1].error, `OBS search should not error: ${JSON.stringify(obsResponses[1].error)}`);
     const obsText = obsResponses[1].result.content.map((c) => c.text || '').join('');
-    const obsParsed = JSON.parse(obsText);
+    const obsParsed = JSON.parse(obsText) as { query?: string; results?: unknown[]; length?: number };
     const obsCount = obsParsed.results?.length ?? obsParsed.length ?? (Array.isArray(obsParsed) ? obsParsed.length : 0);
     assert.ok(obsCount > 0, `search for OBS should return > 0 results, got ${obsCount}`);
   } finally {
@@ -528,7 +579,7 @@ test('huaweicloud_service_catalog returns capability recommendations', async () 
     });
     assert.ok(!enResponses[1].error, `English intent should not error: ${JSON.stringify(enResponses[1].error)}`);
     const enText = enResponses[1].result.content.map((c) => c.text || '').join('');
-    const enResult = JSON.parse(enText);
+    const enResult = JSON.parse(enText) as { recommendedSkills: string[] };
     assert.ok(enResult.recommendedSkills, 'result should have recommendedSkills');
     assert.ok(
       enResult.recommendedSkills.includes('huawei-sandbox'),
@@ -545,7 +596,7 @@ test('huaweicloud_service_catalog returns capability recommendations', async () 
     });
     assert.ok(!zhResponses[1].error, `Chinese intent should not error: ${JSON.stringify(zhResponses[1].error)}`);
     const zhText = zhResponses[1].result.content.map((c) => c.text || '').join('');
-    const zhResult = JSON.parse(zhText);
+    const zhResult = JSON.parse(zhText) as { recommendedSkills: string[] };
     assert.ok(
       zhResult.recommendedSkills.includes('huawei-sandbox'),
       'Chinese static website intent should also recommend sandbox',
@@ -560,7 +611,7 @@ test('huaweicloud_service_catalog returns capability recommendations', async () 
       `Storage intent should not error: ${JSON.stringify(storageResponses[1].error)}`,
     );
     const storageText = storageResponses[1].result.content.map((c) => c.text || '').join('');
-    const storageResult = JSON.parse(storageText);
+    const storageResult = JSON.parse(storageText) as { recommendedSkills: string[] };
     assert.ok(storageResult.recommendedSkills.includes('huawei-obs'), 'storage intent should include OBS');
     assert.notEqual(
       storageResult.recommendedSkills[0],

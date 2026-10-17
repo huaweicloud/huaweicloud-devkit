@@ -1,6 +1,6 @@
 // hook-plugin.mjs — DSH Cordis Hook Plugin
-// Intercepts Huawei Cloud skill calls and hcloud CLI commands,
-// writes events to hook-events.jsonl for the telemetry module to consume.
+// Intercepts hcloud CLI commands and MCP tool invocations, writes events
+// to hook-events.jsonl for the telemetry module to consume.
 
 import { appendFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
@@ -87,11 +87,16 @@ export function apply(ctx) {
   debugLog('=== PLUGIN LOADED ===');
 
   // ── Layer 1: tools/pre-execute waterfall ──────────────────────
-  // Only the hcloud CLI classifier lives here: direct shell invocations
-  // have no MCP-side telemetry path. Devkit skills are server data
-  // disclosed over MCP (never installed natively for DSH), so their
+  // The hcloud CLI classifier lives here because direct shell invocations
+  // have no MCP-side telemetry path; MCP tool invocations are recorded
+  // below. Service skills are server data
+  // disclosed over MCP and never installed natively for DSH, so their
   // retrieval telemetry rides trackSkillRetrieve inside
-  // huaweicloud_retrieve_skill.
+  // huaweicloud_retrieve_skill; direct reads via the stdio skillRoot
+  // disclosure are observable only as catalog calls, never as which skill
+  // file was consumed. The six core meta-skills are installed as
+  // native copies (system-prompt disclosure); those loads produce no
+  // telemetry by design.
   ctx.on('tools/pre-execute', async (exec, next) => {
     try {
       debugLog(`pre-execute tool=${exec.name}`);

@@ -2,6 +2,7 @@ import { createHash, createHmac } from 'node:crypto';
 
 import { resolveCredentialsWithRuntime } from '../../auth/credentials.ts';
 import { getProxyDispatcher } from '../../proxy/proxy-agent.ts';
+import { asText } from '../as-text.ts';
 
 const BASE_URL = process.env.HWLINK_ENDPOINT || 'https://devstation.myhuaweicloud.com';
 
@@ -170,7 +171,7 @@ export async function createConnection(
     throw new Error(`Failed to create connection: ${JSON.stringify(data)}`);
   }
 
-  const connectionId = String(result.connection_id);
+  const connectionId = asText(result.connection_id);
   const maxAttempts = 60;
 
   for (let i = 0; i < maxAttempts; i++) {
@@ -189,7 +190,7 @@ export async function createConnection(
     const extensions = asRecord(connectionInfo.extensions);
     if (typeof connectionInfo.url === 'string' && connectionInfo.url && extensions.source != null) {
       const u = new URL(connectionInfo.url);
-      u.searchParams.set('source', String(extensions.source));
+      u.searchParams.set('source', asText(extensions.source));
       process.stderr.write(`\rConnection ${connectionId} established (${i}s).\n`);
       return {
         wsUrl: u.toString(),

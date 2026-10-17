@@ -71,6 +71,13 @@ test('hdkitservice connect parses backend traceId (camelCase) on error', async (
   }
 });
 
+type VoucherResult = {
+  claimed: boolean;
+  code: unknown;
+  message: string;
+  remediation?: { hint: string; steps: string[] };
+};
+
 test('voucher status returns CRED_MISSING when credentials are absent', async () => {
   const savedAk = process.env.HW_ACCESS_KEY;
   const savedSk = process.env.HW_SECRET_KEY;
@@ -82,7 +89,7 @@ test('voucher status returns CRED_MISSING when credentials are absent', async ()
     process.env.HUAWEICLOUD_HOME = tmpHome;
     clearRuntimeCredentials();
 
-    const result = await hdkitVoucherStatus();
+    const result = (await hdkitVoucherStatus()) as VoucherResult;
     assert.equal(result.claimed, false);
     assert.equal(result.code, 'HDKIT_CRED_MISSING');
     assert.match(result.message, /credentials are not configured/);
@@ -106,7 +113,7 @@ test('voucher claim passes through error code and message on non-2xx', async () 
       headers: { 'Content-Type': 'application/json' },
     });
   try {
-    const result = await hdkitVoucherClaim('some-domain');
+    const result = (await hdkitVoucherClaim('some-domain')) as VoucherResult;
     assert.equal(result.claimed, false);
     assert.equal(result.code, 'HDKIT_INTERNAL');
     assert.match(result.message, /HDKIT_INTERNAL/);
@@ -123,7 +130,7 @@ test('voucher status returns remediation when HDKIT_CRED_INVALID', async () => {
       headers: { 'Content-Type': 'application/json' },
     });
   try {
-    const result = await hdkitVoucherStatus();
+    const result = (await hdkitVoucherStatus()) as VoucherResult;
     assert.equal(result.claimed, false);
     assert.equal(result.code, 'HDKIT_CRED_INVALID');
     assert.ok(result.remediation, 'expected remediation field to exist');
@@ -146,7 +153,7 @@ test('voucher claim returns remediation when HDKIT_CRED_INVALID', async () => {
       headers: { 'Content-Type': 'application/json' },
     });
   try {
-    const result = await hdkitVoucherClaim('some-domain');
+    const result = (await hdkitVoucherClaim('some-domain')) as VoucherResult;
     assert.equal(result.claimed, false);
     assert.equal(result.code, 'HDKIT_CRED_INVALID');
     assert.ok(result.remediation, 'expected remediation field to exist');
@@ -166,7 +173,7 @@ test('voucher status does NOT include remediation for non-CRED_INVALID errors', 
       headers: { 'Content-Type': 'application/json' },
     });
   try {
-    const result = await hdkitVoucherStatus();
+    const result = (await hdkitVoucherStatus()) as VoucherResult;
     assert.equal(result.claimed, false);
     assert.equal(result.code, 'HDKIT_INTERNAL');
     assert.equal(result.remediation, undefined);

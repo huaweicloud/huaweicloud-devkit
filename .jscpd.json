@@ -1,0 +1,5 @@
+{
+  "formats": ["typescript", "javascript"],
+  "ignore": ["**/dist/**", "**/*.d.mts", "test/fixtures/**", "test/huaweicloud-*/**"],
+  "reporters": ["console"]
+}

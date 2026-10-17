@@ -6,7 +6,7 @@
 import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
@@ -37,7 +37,9 @@ function makeDecoder(onMessage) {
         if (line) {
           try {
             onMessage(JSON.parse(line));
-          } catch {}
+          } catch {
+            // skip a non-JSON line so the decoder keeps draining stdout
+          }
         }
         continue;
       }
@@ -54,7 +56,9 @@ function makeDecoder(onMessage) {
       buffer = buffer.slice(sep + 4 + len);
       try {
         onMessage(JSON.parse(body));
-      } catch {}
+      } catch {
+        // skip a malformed frame so the decoder keeps draining stdout
+      }
     }
   };
 }
@@ -157,7 +161,9 @@ export async function probe({
         log('call done', call.name);
       }
     }
-  } catch {}
+  } catch {
+    // a mid-session RPC failure still writes the transcript; the verdict checks which responses arrived
+  }
 
   await new Promise((res) => {
     const timer = setTimeout(res, settleMs);
@@ -172,7 +178,10 @@ export async function probe({
 }
 
 // CLI mode: node scripts/mcp-probe.mjs <out.json> [--framing nl] [--call name=json]...
-const invokedDirectly = process.argv[1] && import.meta.url === new URL('file://' + process.argv[1]).href;
+// pathToFileURL, not `new URL('file://' + argv[1])`: the string form never
+// matches import.meta.url on Windows (backslash, drive-letter paths), which
+// would silently turn this CLI mode into a no-op there.
+const invokedDirectly = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (invokedDirectly) {
   const args = process.argv.slice(2);
   const out = args[0] ?? '/tmp/opencode/probe-transcript.json';

@@ -12,14 +12,18 @@ function debugLog(msg) {
   if (!DEBUG) return;
   try {
     appendFileSync(join(agentDir, 'plugin-debug.log'), `${new Date().toISOString()} ${msg}\n`);
-  } catch (_) {}
+  } catch (_) {
+    // best-effort: debug logging must never break the hook itself
+  }
 }
 
 function writeEvent(key, value, extra = {}) {
   const data = JSON.stringify({ key, value, ...extra }) + '\n';
   try {
     appendFileSync(join(agentDir, 'hook-events.jsonl'), data);
-  } catch (_) {}
+  } catch (_) {
+    // best-effort: telemetry must never break the tool call it observes
+  }
 }
 
 // ── CLI command classification ────────────────────────────────
@@ -55,10 +59,15 @@ function classifyHcloud(text) {
 // ── Shared hooks ──────────────────────────────────────────────
 //
 // Only the bash hcloud classifier lives here: direct shell invocations have
-// no MCP-side telemetry path. Skill-load telemetry used to ride the native
-// skill branches below, but devkit skills are no longer installed natively —
-// they are server data disclosed over MCP, and their retrieval is tracked by
-// trackSkillRetrieve inside huaweicloud_retrieve_skill.
+// no MCP-side telemetry path. Service skills are server data disclosed over
+// MCP and never installed natively, so their retrieval telemetry rides
+// trackSkillRetrieve inside huaweicloud_retrieve_skill. Direct reads via the
+// skillRoot the stdio list_skills payload discloses are observable only as
+// catalog calls (tool:huaweicloud_list_skills), never as which skill file
+// was consumed — the same blind spot native loads have, by design. The six
+// core meta-skills are additionally installed as native copies
+// (system-prompt disclosure), and those native loads produce no telemetry by
+// design.
 
 function getHooks() {
   return {

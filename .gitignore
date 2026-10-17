@@ -4,6 +4,8 @@ npm-debug.log*
 coverage/
 dist/
 dist.new/
+plugins/huaweicloud-core/skills.new-*/
+plugins/huaweicloud-core/skills/
 __pycache__/
 *.pyc
 .env
@@ -29,3 +31,6 @@ docs/mcp-remote-transport.md
 
 # Runtime logs written by MCP servers run from the repo root during local testing
 logs/
+
+# E2E agent-suite reports (E2E_REPORT-style output, never committed)
+.e2e-results/

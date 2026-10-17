@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { classifyHcloudArgs, redactSecrets, assertAllowed, type ClassifyOptions } from './safety-policy.ts';
 import { createApprovalToken } from './lib/approval-tokens.ts';
+import { asText } from './lib/as-text.ts';
 import type { RiskDecision } from './risk-rule-engine.ts';
 import { getProxySettings } from './proxy/proxy-config.ts';
 import { resolveHcloudCommand } from './hcloud-probe.ts';
@@ -27,6 +28,11 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined;
+}
+
+// Port fields arrive from the VPC API as JSON numbers or strings; both must stringify.
+function asPortText(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : '';
 }
 
 // Boundary narrowing for credential-shaped values: only string fields survive,
@@ -73,13 +79,13 @@ export interface SgFinding {
 
 function preflightSecurityGroupCheck(normalizedArgs: string[]): SgFinding[] {
   const service = normalizedArgs[0];
-  const operation = normalizedArgs[1];
+  const operation = normalizedArgs[1] ?? '';
   if (service !== 'ECS' || !/CreateServers|RunInstances/i.test(operation)) return [];
 
   const sgIds: string[] = [];
   for (const arg of normalizedArgs) {
     const m = arg.match(/^(?:--security_group_id(?:\.\d+)?|--server\.security_groups(?:\.\d+)?\.id)=(.+)/);
-    if (m) sgIds.push(m[1]);
+    if (m) sgIds.push(m[1]!);
   }
   if (sgIds.length === 0) return [];
 
@@ -109,8 +115,8 @@ function preflightSecurityGroupCheck(normalizedArgs: string[]): SgFinding[] {
         const record = asRecord(rule);
         const direction = asString(record.direction) ?? '';
         const remoteIp = asString(record.remote_ip_prefix) ?? asString(record.remote_address_group_id) ?? '';
-        const portMin = String(record.port_range_min || record.multiport || '');
-        const portMax = String(record.port_range_max || record.multiport || '');
+        const portMin = asPortText(record.port_range_min || record.multiport || '');
+        const portMax = asPortText(record.port_range_max || record.multiport || '');
         const protocol = (asString(record.protocol) ?? '').toLowerCase();
         if (direction !== 'ingress') continue;
         if (remoteIp !== '0.0.0.0/0' && remoteIp !== '::/0') continue;
@@ -143,11 +149,12 @@ function applyPreflightFindings(classification: RiskDecision, sgFindings: SgFind
   if (!sgFindings || sgFindings.length === 0) return classification;
   const hasDeny = sgFindings.some((f) => f.severity === 'deny');
   if (hasDeny) {
+    // Non-empty was checked at the top of this function; index 0 is defined.
     return {
       ...classification,
       decision: 'deny',
       risk: 'public_exposure',
-      reason: sgFindings[0].message,
+      reason: sgFindings[0]!.message,
     };
   }
   return classification;
@@ -216,7 +223,7 @@ export type UnsupportedCause = 'other' | 'lang-missing' | 'not-found' | 'unknown
 
 export function classifyUnsupported(service: unknown, metaDir?: string): UnsupportedCause {
   const { cn, en, cnPresent, enPresent } = readServiceCatalogs(metaDir);
-  const s = String(service || '').toUpperCase();
+  const s = asText(service || '').toUpperCase();
   if (!s) return 'other';
   if (cnPresent && enPresent) {
     if (cn.has(s) && !en.has(s)) return 'lang-missing';
@@ -242,14 +249,16 @@ export function redactArgsWithObs(rawArgs: unknown): string[] {
   const arr = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
   const out = [...arr];
   for (let i = 0; i < out.length; i += 1) {
-    if (out[i] === '-i' || out[i] === '-k' || out[i] === '-t') {
+    // The loop condition bounds i; out[i] is defined.
+    const arg = out[i]!;
+    if (arg === '-i' || arg === '-k' || arg === '-t') {
       if (i + 1 < out.length) out[i + 1] = '<redacted>';
       i += 1;
-    } else if (/^-i[A-Za-z0-9]/.test(out[i])) {
+    } else if (/^-i[A-Za-z0-9]/.test(arg)) {
       out[i] = '-i<redacted>';
-    } else if (/^-k[A-Za-z0-9]/.test(out[i])) {
+    } else if (/^-k[A-Za-z0-9]/.test(arg)) {
       out[i] = '-k<redacted>';
-    } else if (/^-t[A-Za-z0-9]/.test(out[i])) {
+    } else if (/^-t[A-Za-z0-9]/.test(arg)) {
       out[i] = '-t<redacted>';
     }
   }
@@ -318,7 +327,8 @@ export function resolveStsInjectArgs(rawArgs: unknown): string[] {
     if (expiry <= Date.now() + grace) return [];
   }
 
-  const isObs = flat[0].toUpperCase() === 'OBS';
+  // flat mirrors normalized, which returned early above when empty.
+  const isObs = flat[0]!.toUpperCase() === 'OBS';
   return isObs
     ? ['-i', creds.ak, '-k', creds.sk, '-t', creds.securityToken]
     : ['--cli-access-key=' + creds.ak, '--cli-secret-key=' + creds.sk, '--cli-security-token=' + creds.securityToken];
@@ -454,7 +464,8 @@ export async function runHcloud(args: unknown, options: HcloudRunOptions = {}): 
   const text = `${result.stderr || ''}\n${result.stdout || ''}`;
   const match = text.match(UNSUPPORTED_SERVICE_RE);
   if (match && !result.ok) {
-    return appendLangHint(result, match[1], metaDir);
+    // UNSUPPORTED_SERVICE_RE's capture group always participates on a match.
+    return appendLangHint(result, match[1]!, metaDir);
   }
   return result;
 }
@@ -589,10 +600,10 @@ function runHcloudOnce(plan: HcloudPlanWithArgs, options: HcloudRunOptions): Pro
       }, forceKillAfterMs + 500);
     }, timeoutMs);
 
-    child.stdout.on('data', (chunk) => {
+    child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString('utf8');
     });
-    child.stderr.on('data', (chunk) => {
+    child.stderr.on('data', (chunk: Buffer) => {
       stderr += chunk.toString('utf8');
     });
     child.on('error', (error) => {
@@ -711,7 +722,7 @@ function validateRequiredParams(args: string[]): { valid: boolean; missing: stri
   if (!required) return { valid: true, missing: [], hints: [] };
   const argsStr = args.join(' ');
   const missing = required.filter((param) => !argsStr.includes(param));
-  const hints = missing.map((param) => PARAM_VALUE_HINTS[param]).filter(Boolean);
+  const hints = missing.map((param) => PARAM_VALUE_HINTS[param]).filter((hint): hint is string => Boolean(hint));
   return { valid: missing.length === 0, missing, hints };
 }
 
@@ -721,7 +732,7 @@ export interface ApiErrorInfo {
 }
 
 export function extractApiError(stdout: unknown): ApiErrorInfo | null {
-  let text = String(stdout || '');
+  let text = asText(stdout || '');
   // Strip KooCLI multi-version prefix lines (e.g. "ListVpcs有多个版本,默认使用该API版本v3…")
   const bracketIdx = text.indexOf('{');
   if (bracketIdx > 0) text = text.substring(bracketIdx);
@@ -743,17 +754,19 @@ export function extractApiError(stdout: unknown): ApiErrorInfo | null {
         errorMessage: asString(errorRecord.message) ?? asString(errorRecord.error_msg) ?? '',
       };
     }
-  } catch {}
+  } catch {
+    // non-JSON stdout: fall through to the regex scan for an embedded error_code below
+  }
   const ecMatch = text.match(/"error_code"\s*:\s*"([^"]+)"/);
   const emMatch = text.match(/"error_msg"\s*:\s*"([^"]+)"/);
   if (ecMatch) {
-    return { errorCode: ecMatch[1], errorMessage: emMatch ? emMatch[1] : '' };
+    return { errorCode: ecMatch[1]!, errorMessage: emMatch ? emMatch[1]! : '' };
   }
   return null;
 }
 
 export function redactOutput(output: unknown): string {
-  let text = String(output || '');
+  let text = asText(output || '');
   const bracketIdx = text.indexOf('{');
   if (bracketIdx > 0) text = text.substring(bracketIdx);
   try {

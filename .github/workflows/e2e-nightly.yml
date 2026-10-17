@@ -1,0 +1,68 @@
+name: e2e-nightly
+
+# Agent-level E2E suite (test/e2e/): a real opencode run with a real LLM
+# drives the tarball-installed devkit against the fake Huawei Cloud
+# boundary. Runs OUTSIDE the PR gate by design — cost and latency belong in
+# the nightly lane. The ONLY required repository setting is the secret
+# E2E_TEST_MODEL_APIKEY (a dedicated E2E key, never a personal auth file);
+# provider/model/baseURL default to the committed values (mirroring
+# test/e2e/.env's non-secret model config) and stay overridable via the
+# E2E_TEST_PROVIDER_ID / E2E_TEST_PROVIDER_BASEURL / E2E_TEST_MODEL vars.
+
+on:
+  schedule:
+    - cron: '0 19 * * *' # 03:00 Asia/Shanghai
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - name: Preflight E2E configuration
+        env:
+          E2E_APIKEY: ${{ secrets.E2E_TEST_MODEL_APIKEY }}
+          E2E_PROVIDER_ID: ${{ vars.E2E_TEST_PROVIDER_ID || 'maas' }}
+          E2E_PROVIDER_BASEURL: ${{ vars.E2E_TEST_PROVIDER_BASEURL || 'https://api.modelarts-maas.com/openai/v1' }}
+          E2E_MODEL: ${{ vars.E2E_TEST_MODEL || 'glm-5.2' }}
+        run: |
+          if [ -z "$E2E_APIKEY" ]; then
+            echo "::error::E2E config incomplete — set secret E2E_TEST_MODEL_APIKEY (the only required setting; provider/model/baseURL default to the committed values)"
+            exit 1
+          fi
+          echo "E2E configuration present (provider: $E2E_PROVIDER_ID, model: $E2E_MODEL)"
+      - name: Install opencode (pinned)
+        run: npm install -g opencode-ai@1.19.0
+      - name: Run agent-level E2E suite
+        env:
+          E2E_ENABLE: '1'
+          E2E_APIKEY: ${{ secrets.E2E_TEST_MODEL_APIKEY }}
+          E2E_PROVIDER_ID: ${{ vars.E2E_TEST_PROVIDER_ID || 'maas' }}
+          E2E_PROVIDER_BASEURL: ${{ vars.E2E_TEST_PROVIDER_BASEURL || 'https://api.modelarts-maas.com/openai/v1' }}
+          E2E_MODEL: ${{ vars.E2E_TEST_MODEL || 'glm-5.2' }}
+        # The workflow file ships to main ahead of the suite branch so
+        # GitHub registers it (discovery/dispatch/cron all read the default
+        # branch). On refs where the suite is not merged yet, fail loud as
+        # a no-op instead of erroring on a missing script.
+        run: |
+          if ! grep -q '"test:e2e"' package.json; then
+            echo "test:e2e is not defined on this ref — the E2E suite is not merged here yet; nothing to run."
+            exit 0
+          fi
+          npm run test:e2e
+      - name: Upload E2E report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-report
+          path: .e2e-results/
+          retention-days: 30

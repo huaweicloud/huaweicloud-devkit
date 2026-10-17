@@ -4,7 +4,7 @@ import { getAuthStatus, syncAuth } from '../../auth/service.ts';
 import {
   setRuntimeCredentials,
   clearRuntimeCredentials,
-  readGlobalCredentials,
+  readGlobalCredentialsStrict,
   backupGlobalCredentials,
   readCodeArtsCredentials,
 } from '../../auth/credentials.ts';
@@ -16,6 +16,7 @@ import {
   pendingConfirms,
   refreshUserHashAfterAuthChange,
 } from '../../lib/credentials.ts';
+import { resolveSecretValue } from '../../lib/secret-vault/store.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 
@@ -41,7 +42,14 @@ async function handleAuthInit(args: ToolArgs = {}, _opts: CallToolOptions = {}) 
   if (!args.ak || !args.sk) {
     throw new Error('ak and sk are required. Set clear=true to clear runtime credentials.');
   }
-  setRuntimeCredentials(args.ak, args.sk, undefined, args.region);
+  // Incoming values may be secret:// refs. Resolve them so the runtime store
+  // carries usable credentials (same contract as auth_switch and the CLI's
+  // auth init); an unresolvable ref throws VaultError with its own
+  // remediation.
+  const ak = resolveSecretValue(args.ak) ?? args.ak;
+  const sk = resolveSecretValue(args.sk) ?? args.sk;
+  const region = resolveSecretValue(args.region) ?? args.region;
+  setRuntimeCredentials(ak, sk, undefined, region);
   refreshUserHashAfterAuthChange();
   return { status: 'ok', message: 'Runtime credentials set for this MCP session.' };
 }
@@ -78,6 +86,15 @@ async function handleAuthSwitch(args: ToolArgs = {}, _opts: CallToolOptions = {}
     }
   }
 
+  // Incoming values may be secret:// refs (mode=memory with refs, or an
+  // import file carrying them). Resolve before any comparison or fan-out:
+  // the conflict check and displayed fingerprints must compare plaintext,
+  // and persistCredentials' mirrors must never see a literal ref string.
+  // An unresolvable ref throws VaultError with its own remediation.
+  ak = resolveSecretValue(ak) ?? ak;
+  sk = resolveSecretValue(sk) ?? sk;
+  securityToken = resolveSecretValue(securityToken) ?? securityToken;
+
   if (!ak || !sk) {
     throw new Error('ak and sk are required (or provide creds-import.json for mode=import).');
   }
@@ -103,7 +120,13 @@ async function handleAuthSwitch(args: ToolArgs = {}, _opts: CallToolOptions = {}
   }
 
   // action === 'persist'
-  const prev = readGlobalCredentials();
+  // Strict resolved read through the shared seam: the conflict check and
+  // displayed fingerprints must compare plaintext against plaintext when S1
+  // holds secret:// refs, and an unresolvable ref fails loud instead of
+  // fingerprinting the ref string.
+  const prevRead = readGlobalCredentialsStrict();
+  if (!prevRead.ok) throw new Error(`${prevRead.error} Next: ${prevRead.nextStep}`);
+  const prev = prevRead.credentials;
   const conflict = prev?.ak && prev.ak !== ak;
   if (conflict) {
     backupGlobalCredentials();

@@ -106,7 +106,9 @@ class HwlinkTunnelChannel {
       if (subConn && subConn.socket && !subConn.socket.destroyed) {
         try {
           subConn.socket.end();
-        } catch {}
+        } catch {
+          // best-effort end: the sub-connection is discarded right below regardless of the close result
+        }
       }
       this.subConnections.delete(packet.identifier);
       this._unregisterSubId(packet.identifier);

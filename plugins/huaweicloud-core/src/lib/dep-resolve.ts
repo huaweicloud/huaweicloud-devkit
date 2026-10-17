@@ -6,7 +6,7 @@ import { basename, join } from 'node:path';
 import type { DependencyResolution } from './dependency-model.ts';
 
 // The single resolution chain for host binaries, consumed by install-time
-// provisioning (src/dep-provision.ts) and spawn-time resolution
+// provisioning (src/dep/provision.ts) and spawn-time resolution
 // (src/packs/huaweicloud-open-mcp/sidecar.ts, src/hcloud-probe.ts) alike, so
 // the binary that was installed is the binary that runs. Like
 // dependency-model.ts, this module's runtime import graph stays at zero
@@ -49,7 +49,8 @@ function platformHome(env: NodeJS.ProcessEnv): string {
 function pathLookupName(resolution: DependencyResolution): string | null {
   const candidates = process.platform === 'win32' ? resolution.candidates.win32 : resolution.candidates.unix;
   if (candidates.length === 0) return null;
-  const raw = basename(candidates[0]);
+  // Length was just checked; index 0 is defined.
+  const raw = basename(candidates[0]!);
   return process.platform === 'win32' && raw.endsWith('.exe') ? raw.slice(0, -4) : raw;
 }
 

@@ -5,8 +5,6 @@ import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-const isWin = process.platform === 'win32';
-
 import {
   backupGlobalCredentials,
   clearRuntimeCredentials,
@@ -28,6 +26,8 @@ import {
 import { getAgentRegistrationStatuses } from '../plugins/huaweicloud-core/src/auth/agent-registration.ts';
 import { getAuthStatus, syncAuth } from '../plugins/huaweicloud-core/src/auth/service.ts';
 
+const isWin = process.platform === 'win32';
+
 const FAKE_HCLOUD = fileURLToPath(new URL('./fixtures/fake-hcloud.ts', import.meta.url));
 
 // CodeArts project isolation. isCodeArtsContext() detects CodeArts by a
@@ -38,7 +38,7 @@ const FAKE_HCLOUD = fileURLToPath(new URL('./fixtures/fake-hcloud.ts', import.me
 // throwing). These tests run from a temp project dir with CODEARTS_PROJECT_DIR
 // pointing at it, which exercises the same lookup without the shared-state
 // leak.
-function withCodeArtsProject(fn) {
+function withCodeArtsProject(fn: (projectDir: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-codearts-'));
   const prevCwd = process.cwd();
   const prevProjectDir = process.env.CODEARTS_PROJECT_DIR;
@@ -60,22 +60,33 @@ function withCodeArtsProject(fn) {
 // true everywhere for the write window, and readCodeArtsCredentials() then
 // resolves the injected S4 credentials in unrelated tests (cred-reconcile-e2e
 // "clear", hcloud-cli "no STS injection"). os.homedir() reads $HOME at call
-// time, so pointing HOME at a temp dir keeps the marker process-private while
-// the join(homedir(), ...) reads below keep exercising the real lookup paths.
-function withCodeArtsHome(fn) {
+// time on POSIX and $USERPROFILE on Windows, so BOTH must be redirected or
+// the isolation is a no-op on Windows (every sibling spawned-CLI test mirrors
+// the same trio).
+function withCodeArtsHome(fn: (home: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-codearts-home-'));
-  const prevHome = process.env.HOME;
+  const saved = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    HOMEDRIVE: process.env.HOMEDRIVE,
+    HOMEPATH: process.env.HOMEPATH,
+  };
   process.env.HOME = dir;
+  process.env.USERPROFILE = dir;
+  process.env.HOMEDRIVE = dir.slice(0, 2);
+  process.env.HOMEPATH = dir.slice(2);
   try {
     return fn(dir);
   } finally {
-    if (prevHome === undefined) delete process.env.HOME;
-    else process.env.HOME = prevHome;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 }
 
-function withTempHome(fn) {
+function withTempHome(fn: (home: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-auth-'));
   const previous = {
     HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
@@ -118,9 +129,9 @@ test('global credentials round-trip with secure file path', () => {
   withTempHome((home) => {
     const path = writeGlobalCredentials({ ak: 'AK123', sk: 'SK456', region: 'cn-north-4' });
     assert.equal(path, globalCredentialsPath());
-    assert.equal(readGlobalCredentials().ak, 'AK123');
-    assert.equal(readGlobalCredentials().sk, 'SK456');
-    assert.equal(readGlobalCredentials().region, 'cn-north-4');
+    assert.equal(readGlobalCredentials()?.ak, 'AK123');
+    assert.equal(readGlobalCredentials()?.sk, 'SK456');
+    assert.equal(readGlobalCredentials()?.region, 'cn-north-4');
     assert.ok(globalCredentialsPath().startsWith(home));
   });
 });
@@ -129,15 +140,15 @@ test('resolveCredentials prefers environment and falls back to vault', () => {
   withTempHome((home) => {
     writeGlobalCredentials({ ak: 'VAULT_AK', sk: 'VAULT_SK', region: 'cn-north-4' });
     const fromVault = resolveCredentials();
-    assert.equal(fromVault.ak, 'VAULT_AK');
-    assert.equal(fromVault.sk, 'VAULT_SK');
-    assert.equal(fromVault.region, 'cn-north-4');
+    assert.equal(fromVault?.ak, 'VAULT_AK');
+    assert.equal(fromVault?.sk, 'VAULT_SK');
+    assert.equal(fromVault?.region, 'cn-north-4');
 
     process.env.HW_ACCESS_KEY = 'ENV_AK';
     process.env.HW_SECRET_KEY = 'ENV_SK';
     const fromEnv = resolveCredentials();
-    assert.equal(fromEnv.ak, 'ENV_AK');
-    assert.equal(fromEnv.sk, 'ENV_SK');
+    assert.equal(fromEnv?.ak, 'ENV_AK');
+    assert.equal(fromEnv?.sk, 'ENV_SK');
     delete process.env.HW_ACCESS_KEY;
     delete process.env.HW_SECRET_KEY;
 
@@ -313,7 +324,7 @@ process.exit(0);
 // payload dir, hermes layout). os.homedir() reads $HOME at call time, so
 // pointing HOME at a temp dir keeps these process-private; USERPROFILE is
 // redirected alongside it for Windows runs.
-function withAgentHome(fn) {
+function withAgentHome(fn: (home: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-agent-home-'));
   const prevHome = process.env.HOME;
   const prevProfile = process.env.USERPROFILE;
@@ -385,22 +396,22 @@ test('resolveCredentialsWithRuntime prioritizes runtime > env > vault', () => {
 
     setRuntimeCredentials('RT_AK', 'RT_SK', '', 'cn-north-1');
     const fromRuntime = resolveCredentialsWithRuntime();
-    assert.equal(fromRuntime.ak, 'RT_AK');
-    assert.equal(fromRuntime.sk, 'RT_SK');
-    assert.equal(fromRuntime.region, 'cn-north-1');
+    assert.equal(fromRuntime?.ak, 'RT_AK');
+    assert.equal(fromRuntime?.sk, 'RT_SK');
+    assert.equal(fromRuntime?.region, 'cn-north-1');
 
     clearRuntimeCredentials();
     process.env.HW_ACCESS_KEY = 'ENV_AK';
     process.env.HW_SECRET_KEY = 'ENV_SK';
     const fromEnv = resolveCredentialsWithRuntime();
-    assert.equal(fromEnv.ak, 'ENV_AK');
-    assert.equal(fromEnv.sk, 'ENV_SK');
+    assert.equal(fromEnv?.ak, 'ENV_AK');
+    assert.equal(fromEnv?.sk, 'ENV_SK');
     delete process.env.HW_ACCESS_KEY;
     delete process.env.HW_SECRET_KEY;
 
     const fromVault = resolveCredentialsWithRuntime();
-    assert.equal(fromVault.ak, 'VAULT_AK');
-    assert.equal(fromVault.sk, 'VAULT_SK');
+    assert.equal(fromVault?.ak, 'VAULT_AK');
+    assert.equal(fromVault?.sk, 'VAULT_SK');
   });
 });
 
@@ -410,15 +421,15 @@ test('resolveCredentialsWithRuntime set and clear workflow', () => {
     writeGlobalCredentials({ ak: 'VAULT_AK', sk: 'VAULT_SK' });
 
     const before = resolveCredentialsWithRuntime();
-    assert.equal(before.ak, 'VAULT_AK');
+    assert.equal(before?.ak, 'VAULT_AK');
 
     setRuntimeCredentials('SWITCH_AK', 'SWITCH_SK');
     const after = resolveCredentialsWithRuntime();
-    assert.equal(after.ak, 'SWITCH_AK');
+    assert.equal(after?.ak, 'SWITCH_AK');
 
     clearRuntimeCredentials();
     const reverted = resolveCredentialsWithRuntime();
-    assert.equal(reverted.ak, 'VAULT_AK');
+    assert.equal(reverted?.ak, 'VAULT_AK');
   });
 });
 
@@ -448,9 +459,9 @@ test('resolveCredentials reads CodeArts project mcp_settings.json', () => {
       );
 
       const creds = resolveCredentials();
-      assert.equal(creds.ak, 'CODEARTS_AK');
-      assert.equal(creds.sk, 'CODEARTS_SK');
-      assert.equal(creds.region, 'cn-south-1');
+      assert.equal(creds?.ak, 'CODEARTS_AK');
+      assert.equal(creds?.sk, 'CODEARTS_SK');
+      assert.equal(creds?.region, 'cn-south-1');
     });
   });
 });
@@ -480,7 +491,7 @@ test('resolveCredentials uses env vars over CodeArts mcp_settings.json', () => {
       );
 
       const creds = resolveCredentials();
-      assert.equal(creds.ak, 'ENV_AK');
+      assert.equal(creds?.ak, 'ENV_AK');
     });
   });
 });
@@ -518,10 +529,10 @@ test('resolveCredentials prefers auth-init vault over env STS temporary credenti
     process.env.HW_REGION = 'cn-south-1';
 
     const creds = resolveCredentials();
-    assert.equal(creds.ak, 'VAULT_AK');
-    assert.equal(creds.sk, 'VAULT_SK');
-    assert.equal(creds.securityToken, '');
-    assert.equal(creds.region, 'cn-north-4');
+    assert.equal(creds?.ak, 'VAULT_AK');
+    assert.equal(creds?.sk, 'VAULT_SK');
+    assert.equal(creds?.securityToken, '');
+    assert.equal(creds?.region, 'cn-north-4');
   });
 });
 
@@ -534,10 +545,10 @@ test('resolveCredentials keeps env STS when no auth-init vault exists', () => {
     process.env.HW_REGION = 'cn-south-1';
 
     const creds = resolveCredentials();
-    assert.equal(creds.ak, 'STS_AK');
-    assert.equal(creds.sk, 'STS_SK');
-    assert.equal(creds.securityToken, 'STS_TOKEN');
-    assert.equal(creds.region, 'cn-south-1');
+    assert.equal(creds?.ak, 'STS_AK');
+    assert.equal(creds?.sk, 'STS_SK');
+    assert.equal(creds?.securityToken, 'STS_TOKEN');
+    assert.equal(creds?.region, 'cn-south-1');
   });
 });
 
@@ -549,8 +560,8 @@ test('resolveCredentials keeps permanent env over vault (no security token)', ()
     process.env.HW_SECRET_KEY = 'ENV_PERM_SK';
 
     const creds = resolveCredentials();
-    assert.equal(creds.ak, 'ENV_PERM_AK');
-    assert.equal(creds.sk, 'ENV_PERM_SK');
+    assert.equal(creds?.ak, 'ENV_PERM_AK');
+    assert.equal(creds?.sk, 'ENV_PERM_SK');
   });
 });
 
@@ -593,9 +604,9 @@ test('resolveCredentials reads CodeArts credentials from CODEARTS_PROJECT_DIR', 
       process.chdir(cwdDir);
 
       const creds = resolveCredentials();
-      assert.equal(creds.ak, 'PROJECT_DIR_AK');
-      assert.equal(creds.sk, 'PROJECT_DIR_SK');
-      assert.equal(creds.region, 'cn-east-3');
+      assert.equal(creds?.ak, 'PROJECT_DIR_AK');
+      assert.equal(creds?.sk, 'PROJECT_DIR_SK');
+      assert.equal(creds?.region, 'cn-east-3');
     } finally {
       process.chdir(prevCwd);
       if (prevProjectDir === undefined) delete process.env.CODEARTS_PROJECT_DIR;
@@ -620,8 +631,8 @@ test('last_sync write/read round-trip', () => {
 
 test('last_sync old timestamp-only format remains readable', () => {
   withTempHome((_home) => {
-    mkdirSync(join(process.env.HUAWEICLOUD_HOME, '.config', 'huaweicloud'), { recursive: true });
-    writeFileSync(join(process.env.HUAWEICLOUD_HOME, '.config', 'huaweicloud', '.last_sync'), '{"ts":12345}', 'utf8');
+    mkdirSync(join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud'), { recursive: true });
+    writeFileSync(join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', '.last_sync'), '{"ts":12345}', 'utf8');
     assert.deepEqual(readLastSync(), { ts: 12345 });
   });
 });
@@ -629,9 +640,9 @@ test('last_sync old timestamp-only format remains readable', () => {
 test('writeGlobalCredentials persists configuredBySession flag', () => {
   withTempHome((_home) => {
     writeGlobalCredentials({ ak: 'AK1', sk: 'SK1', configuredBySession: true });
-    assert.equal(readGlobalCredentials().configuredBySession, true);
+    assert.equal(readGlobalCredentials()!.configuredBySession, true);
     writeGlobalCredentials({ ak: 'AK1', sk: 'SK1' });
-    assert.equal(readGlobalCredentials().configuredBySession, undefined);
+    assert.equal(readGlobalCredentials()!.configuredBySession, undefined);
   });
 });
 
@@ -651,9 +662,9 @@ test('backup and restore global credentials', () => {
     const bak = backupGlobalCredentials();
     assert.ok(bak && bak.endsWith('credentials.json.bak'));
     writeGlobalCredentials({ ak: 'AK_NEW', sk: 'SK_NEW' });
-    assert.equal(readGlobalCredentials().ak, 'AK_NEW');
+    assert.equal(readGlobalCredentials()?.ak, 'AK_NEW');
     assert.equal(restoreGlobalCredentialsBackup(), true);
-    assert.equal(readGlobalCredentials().ak, 'AK_ORIG');
+    assert.equal(readGlobalCredentials()?.ak, 'AK_ORIG');
   });
 });
 
@@ -746,7 +757,7 @@ test('49 huaweicloud_auth_status onboarding does not leak AK (fingerprint only)'
     writeGlobalCredentials({ ak: 'OB_SECRET_AK', sk: 'OB_SECRET_SK', region: 'cn-north-4' });
     const status = getAuthStatus('all');
     assert.doesNotMatch(JSON.stringify(status), /OB_SECRET_AK|OB_SECRET_SK/);
-    assert.match(status.onboarding.accountHint, /^[0-9a-f]{8}$/);
+    assert.match(status.onboarding.accountHint ?? '', /^[0-9a-f]{8}$/);
   });
 });
 
@@ -797,9 +808,9 @@ test('resolveCredentials reads CodeArts Work new layout ~/.codearts with prefixe
       );
 
       const creds = resolveCredentials();
-      assert.equal(creds.ak, 'NEW_WORK_AK');
-      assert.equal(creds.sk, 'NEW_WORK_SK');
-      assert.equal(creds.securityToken, 'NEW_WORK_TOKEN');
+      assert.equal(creds?.ak, 'NEW_WORK_AK');
+      assert.equal(creds?.sk, 'NEW_WORK_SK');
+      assert.equal(creds?.securityToken, 'NEW_WORK_TOKEN');
     });
   });
 });
@@ -825,8 +836,8 @@ test('resolveCredentials falls back to legacy ~/.codeartswork when new ~/.codear
       );
 
       const creds = resolveCredentials();
-      assert.equal(creds.ak, 'LEGACY_WORK_AK');
-      assert.equal(creds.sk, 'LEGACY_WORK_SK');
+      assert.equal(creds?.ak, 'LEGACY_WORK_AK');
+      assert.equal(creds?.sk, 'LEGACY_WORK_SK');
     });
   });
 });
@@ -895,13 +906,17 @@ test('parseStsExpiry returns null for unparseable input', () => {
   assert.equal(parseStsExpiry({ securityToken: null }), null);
 });
 
+type EnvironmentServerEntry = { environment: { HW_ACCESS_KEY: string } };
+type EnvServerEntry = { env: { HW_ACCESS_KEY: string } };
+
 test('pickDevkitMcpServer prefers canonical key over prefixed instances (R4)', () => {
   const map = {
     'huaweicloud-devkit_2': { environment: { HW_ACCESS_KEY: 'K2' } },
     'huaweicloud-devkit': { environment: { HW_ACCESS_KEY: 'K0' } },
     'huaweicloud-devkit_1': { environment: { HW_ACCESS_KEY: 'K1' } },
   };
-  assert.equal(pickDevkitMcpServer(map).environment.HW_ACCESS_KEY, 'K0');
+  const server = pickDevkitMcpServer(map) as EnvironmentServerEntry | null;
+  assert.equal(server?.environment.HW_ACCESS_KEY, 'K0');
 });
 
 test('pickDevkitMcpServer falls back to HuaweiCloud DevKit then lowest _N (R4)', () => {
@@ -909,18 +924,23 @@ test('pickDevkitMcpServer falls back to HuaweiCloud DevKit then lowest _N (R4)',
     'huaweicloud-devkit_3': { env: { HW_ACCESS_KEY: 'K3' } },
     'HuaweiCloud DevKit': { env: { HW_ACCESS_KEY: 'KDK' } },
   };
-  assert.equal(pickDevkitMcpServer(map).env.HW_ACCESS_KEY, 'KDK');
+  const server = pickDevkitMcpServer(map) as EnvServerEntry | null;
+  assert.equal(server?.env.HW_ACCESS_KEY, 'KDK');
   const map2 = {
     'huaweicloud-devkit_3': { env: { HW_ACCESS_KEY: 'K3' } },
     'huaweicloud-devkit_1': { env: { HW_ACCESS_KEY: 'K1' } },
   };
-  assert.equal(pickDevkitMcpServer(map2).env.HW_ACCESS_KEY, 'K1');
+  const server2 = pickDevkitMcpServer(map2) as EnvServerEntry | null;
+  assert.equal(server2?.env.HW_ACCESS_KEY, 'K1');
 });
 
 test('pickDevkitMcpServer is order-independent and returns null for empty/non-object', () => {
   const a = { 'huaweicloud-devkit_1': { environment: { HW_ACCESS_KEY: 'A' } } };
   const b = { 'huaweicloud-devkit_1': { environment: { HW_ACCESS_KEY: 'A' } } };
-  assert.equal(pickDevkitMcpServer(a).environment.HW_ACCESS_KEY, pickDevkitMcpServer(b).environment.HW_ACCESS_KEY);
+  const serverA = pickDevkitMcpServer(a) as EnvironmentServerEntry | null;
+  const serverB = pickDevkitMcpServer(b) as EnvironmentServerEntry | null;
+  assert.ok(serverA && serverB);
+  assert.equal(serverA.environment.HW_ACCESS_KEY, serverB.environment.HW_ACCESS_KEY);
   assert.equal(pickDevkitMcpServer({}), null);
   assert.equal(pickDevkitMcpServer(null), null);
   assert.equal(pickDevkitMcpServer(undefined), null);

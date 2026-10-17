@@ -8,14 +8,14 @@ import { fixtureDir } from './fixture-dir.ts';
 
 const isWin = process.platform === 'win32';
 
-function fakeHcloudScript(source) {
+function fakeHcloudScript(source: string): string {
   const dir = fixtureDir('huaweicloud-project-id-');
   const script = join(dir, 'fake-hcloud.mjs');
   writeFileSync(script, source, 'utf8');
   return script;
 }
 
-function withFakeHcloud(source, fn) {
+function withFakeHcloud(source: string, fn: () => void): void {
   const previousBin = process.env.HCLOUD_BIN;
   process.env.HCLOUD_BIN = fakeHcloudScript(source);
   try {
@@ -69,7 +69,7 @@ test('resolveAndApplyProjectId stays non-fatal on unparseable output', () => {
   withFakeHcloud(`process.exit(0);`, () => {
     const result = resolveAndApplyProjectId({ region: 'cn-north-4' });
     assert.equal(result.ok, false);
-    assert.match(result.reason, /parse|projects/i);
+    assert.match(result.reason ?? '', /parse|projects/i);
   });
 });
 
@@ -77,14 +77,14 @@ test('resolveAndApplyProjectId stays non-fatal when hcloud exits non-zero', () =
   withFakeHcloud(`process.exit(3);`, () => {
     const result = resolveAndApplyProjectId({ region: 'cn-north-4' });
     assert.equal(result.ok, false);
-    assert.match(result.reason, /exit 3/);
+    assert.match(result.reason ?? '', /exit 3/);
   });
 });
 
 test('resolveAndApplyProjectId requires a region', () => {
   const result = resolveAndApplyProjectId({});
   assert.equal(result.ok, false);
-  assert.match(result.reason, /region/);
+  assert.match(result.reason ?? '', /region/);
 });
 
 test('a stale HCLOUD_BIN falls through to the PATH tier instead of failing', { skip: isWin }, () => {

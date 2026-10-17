@@ -10,6 +10,11 @@
     "bin",
     ".agents",
     "plugins/huaweicloud-core",
+    "!plugins/huaweicloud-core/src/packs/*/skills",
+    "!plugins/huaweicloud-core/skills.new-*",
+    "!plugins/huaweicloud-core/dist.new",
+    "!plugins/huaweicloud-core/telemetry",
+    "!**/__pycache__",
     "integrations/hermes",
     "integrations/opencode",
     "integrations/dsh",
@@ -31,16 +36,18 @@
   },
   "scripts": {
     "build": "node ./scripts/build-plugin.mjs",
-    "typecheck": "tsc -p plugins/huaweicloud-core/tsconfig.json --noEmit",
+    "typecheck": "tsc -p plugins/huaweicloud-core/tsconfig.json --noEmit && tsc -p test/tsconfig.json",
     "pretest": "npm run build",
     "prepack": "npm run build && node ./scripts/sync-skills.mjs --check",
     "skills:sync": "node ./scripts/sync-skills.mjs --write",
     "test": "node --experimental-test-module-mocks --test \"test/*.test.ts\"",
+    "test:e2e": "node test/e2e/runner.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.git\" \"#test/**\" \"#docs/**\" \"#.superpowers/**\"",
+    "lint:md": "markdownlint-cli2 \"**/*.md\" \"#node_modules\" \"#.git\" \"#test/**\" \"#docs/**\" \"#.superpowers/**\" \"#plugins/huaweicloud-core/skills/**\" \"#plugins/huaweicloud-core/skills.new-*/**\"",
     "lint:js": "eslint .",
     "lint": "npm run lint:md && npm run lint:js",
+    "lint:dup": "jscpd plugins/huaweicloud-core/src plugins/huaweicloud-core/hooks scripts bin test integrations eslint.config.mjs",
     "validate": "node ./scripts/validate-package.mjs && node ./scripts/sync-skills.mjs --check && node ./scripts/sync-readme-badge.mjs",
     "registry:diff": "node ./scripts/registry-snapshot-diff.mjs",
     "badge:sync": "node ./scripts/sync-readme-badge.mjs --write",
@@ -55,6 +62,7 @@
     "@eslint/js": "^10.0.1",
     "@modelcontextprotocol/sdk": "1.30.0",
     "@types/node": "^22.20.4",
+    "@types/ws": "^8.18.1",
     "esbuild": "0.28.2",
     "eslint": "^10.8.1",
     "eslint-config-prettier": "^10.1.8",
@@ -62,10 +70,12 @@
     "eslint-plugin-n": "^18.3.0",
     "eslint-plugin-unicorn": "^73.0.0",
     "globals": "^17.11.0",
+    "jscpd": "5.4.1",
     "markdownlint-cli2": "^0.23.2",
     "prettier": "^3.9.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.70.1",
+    "ws": "^8.18.3",
     "zod": "4.6.5"
   },
   "overrides": {
@@ -91,6 +101,6 @@
   ],
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
   }
 }

@@ -3,17 +3,19 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 // CodeArts sandbox detection, shared by the doctor output (setup-cli.ts) and
-// the KooCLI installer (dep-provision.ts). Extracted from setup-cli.ts when
-// the installer moved: both consumers need the same bash_mode probe and the
-// same remediation text, and a local copy in each would drift.
+// the KooCLI installer (dep/installers/hcloud.ts). Extracted from setup-cli.ts
+// when the installer moved: both consumers need the same bash_mode probe and
+// the same remediation text, and a local copy in each would drift.
 
 // Detect CodeArts sandbox mode (bash_mode in permission config).
 export function detectCodeartsSandbox(): string | null {
   try {
     const configPath = join(homedir(), '.codeartsdoer', 'codearts-data', 'storage', 'permission', 'config.json');
     if (!existsSync(configPath)) return null;
-    const config: { bash_mode?: unknown } = JSON.parse(readFileSync(configPath, 'utf8'));
-    return typeof config.bash_mode === 'string' ? config.bash_mode : null;
+    const parsed: unknown = JSON.parse(readFileSync(configPath, 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const bashMode = (parsed as Record<string, unknown>).bash_mode;
+    return typeof bashMode === 'string' ? bashMode : null;
   } catch {
     return null;
   }

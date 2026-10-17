@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { asText } from '../../lib/as-text.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import { redactSecrets } from '../../safety-policy.ts';
 import { classify, GATEWAY_TOOL_VOCABULARY, resolveApprovalMode } from './approval.ts';
@@ -76,7 +77,7 @@ async function handleGatewayListTools() {
 }
 
 async function handleGatewayCall(args: Record<string, unknown>) {
-  const tool = String(args.tool || '').trim();
+  const tool = asText(args.tool || '').trim();
   const rawToolArgs = args.toolArgs;
   if (!tool) return { ok: false, error: 'tool is required' };
   // Explicit, not silent coercion: the MCP boundary already rejects these

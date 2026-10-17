@@ -44,6 +44,14 @@ interface PendingEntry {
   timer: ReturnType<typeof setTimeout>;
 }
 
+// One newline-delimited JSON-RPC reply from the gateway child, asserted once
+// at the JSON.parse boundary (same pattern as the sidecar.call casts below).
+interface JsonRpcReply {
+  id?: number;
+  result?: unknown;
+  error?: { message?: string };
+}
+
 class OpenMcpSidecar {
   readonly child: ChildProcess;
   private nextId = 1;
@@ -84,9 +92,9 @@ class OpenMcpSidecar {
   }
 
   private onLine(line: string): void {
-    let message: { id?: number; result?: unknown; error?: { message?: string } };
+    let message: JsonRpcReply;
     try {
-      message = JSON.parse(line);
+      message = JSON.parse(line) as JsonRpcReply;
     } catch {
       return; // non-JSON noise on stdout; the protocol is line-delimited JSON only
     }

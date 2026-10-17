@@ -97,7 +97,7 @@ function canonicalize(value: unknown, seen = new Set<unknown>()): unknown {
     seen.add(value);
     try {
       const source = value as Record<string, unknown>;
-      const sorted: Record<string, unknown> = Object.create(null);
+      const sorted = Object.create(null) as Record<string, unknown>;
       // Code-unit comparison, the default sort's exact semantics made explicit.
       for (const key of Object.keys(source).sort((a, b) => (a > b ? 1 : a < b ? -1 : 0))) {
         sorted[key] = canonicalize(source[key], seen);

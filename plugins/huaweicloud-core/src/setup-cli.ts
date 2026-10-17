@@ -19,14 +19,13 @@ import { createRequire } from 'node:module';
 
 import { getAuthStatus, syncAuth } from './auth/service.ts';
 import { resolveAndApplyProjectId } from './auth/project-id.ts';
-import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.ts';
-import { fingerprint, readKooCliProfiles, resolveManagedProfile } from './auth/reconcile.ts';
+import { SUPPORTED_AGENT_TARGETS, xdgConfigHome } from './auth/agent-registration.ts';
+import { readKooCliProfiles, resolveManagedProfile } from './auth/reconcile.ts';
 import { redactSecrets } from './safety-policy.ts';
 import {
   globalCredentialsPath,
   readGlobalCredentials,
   writeGlobalCredentials,
-  writeLastSync,
   writeObsConfig,
 } from './auth/credentials.ts';
 import {
@@ -38,15 +37,15 @@ import {
   type ProxyConfigFile,
 } from './proxy/proxy-config.ts';
 import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.ts';
-import { readReceipt, removeReceipt } from './dep-receipts.ts';
+import { readReceipt, removeReceipt } from './dep/receipts.ts';
+import { runSecretCommand } from './lib/secret-vault/cli.ts';
+import { custodyReport } from './lib/secret-vault/custody.ts';
+import { vaultList, resolveSecretValue } from './lib/secret-vault/store.ts';
+import { preserveRefForm } from './lib/credentials.ts';
 import { detectCodeartsSandbox } from './codearts-sandbox.ts';
-import {
-  installGatewayTool,
-  installKooCli,
-  provisionDependencies,
-  uninstallDependency,
-  uninstallPlacedDependency,
-} from './dep-provision.ts';
+import { installKooCli } from './dep/installers/hcloud.ts';
+import { installerFor } from './dep/installers/table.ts';
+import { provisionDependencies, uninstallDependency, uninstallPlacedDependency } from './dep/provision.ts';
 import {
   mergeCommandStyle,
   mergeArgsStyle,
@@ -59,6 +58,18 @@ import { isUsableOfficeaceRoot, readOfficeaceRootMarker, writeOfficeaceRootMarke
 import { queryDistTagsFetch, determineTarget, semverCompare } from './update-check.ts';
 import { getKooCliVersion, compareVersion, kooCliDownloadBase } from './koocli-version.ts';
 import { findHcloudBin, hcloudProbeNextStep, probeHcloud } from './hcloud-probe.ts';
+import { asText } from './lib/as-text.ts';
+import { parseSkillManifest, parseCoreSkillNames } from './lib/skill-manifest.ts';
+import { listSkillDirs, skillTreeEquals } from './lib/skill-tree.ts';
+import {
+  nativeReceiptPath,
+  readNativeReceipt,
+  writeNativeReceipt,
+  sweepReceiptTmpFiles,
+  marketplacePayloadTree,
+  isCoreNameShape,
+  NATIVE_RECEIPT_NAME,
+} from './lib/native-receipt.ts';
 import { PACK_IDS, type PackId } from './lib/pack-types.ts';
 import {
   DEPENDENCIES,
@@ -124,9 +135,11 @@ const PACKAGE_ROOT = resolve(PLUGIN_ROOT, '..', '..');
 
 let pkgVersion = '0.0.0';
 try {
-  const pkg: { version?: unknown } = JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8'));
+  const pkg = asRecord(JSON.parse(readFileSync(join(PACKAGE_ROOT, 'package.json'), 'utf8')));
   if (typeof pkg.version === 'string') pkgVersion = pkg.version;
-} catch {}
+} catch {
+  // missing or corrupt package.json keeps the 0.0.0 default — banner display only
+}
 
 const BANNER = `
 ╔══════════════════════════════════════════════╗
@@ -135,9 +148,12 @@ const BANNER = `
 ╚══════════════════════════════════════════════╝
 `;
 
+// Every opencode surface (payload dir, skills, commands, config file,
+// status/doctor probes) derives from this root. It follows XDG_CONFIG_HOME
+// so the installer writes where opencode reads — the shared resolution and
+// its rationale live in xdgConfigHome() (auth/agent-registration.ts).
 function configRoot(target = 'opencode'): string {
-  const home = homedir();
-  return join(home, '.config', target);
+  return join(xdgConfigHome(), target);
 }
 
 function opencodeSkillsDir(): string {
@@ -254,9 +270,11 @@ function readOfficeaceRegistryInstallDir(): string | null {
     });
     if (r.status === 0) {
       const m = r.stdout.match(/InstallDir\s+REG_SZ\s+(.+)/);
-      if (m) return m[1].trim();
+      if (m) return m[1]!.trim();
     }
-  } catch {}
+  } catch {
+    // best-effort probe: reg query failure just means no registry install dir
+  }
   return null;
 }
 
@@ -356,7 +374,6 @@ function ensureOfficeaceMcpInSqlite(): 'db-missing' | 'ok' | 'owner-missing' | '
       .get();
     const existing = asRecord(existingRow);
 
-    const argsJson = JSON.stringify([mcpPath]);
     const envJson = JSON.stringify(env);
 
     if ('id' in existing) {
@@ -364,12 +381,14 @@ function ensureOfficeaceMcpInSqlite(): 'db-missing' | 'ok' | 'owner-missing' | '
       let existingArgs: unknown = [];
       let existingEnv: unknown = [];
       try {
-        existingArgs = JSON.parse(String(existing.args_json || '[]'));
-        existingEnv = JSON.parse(String(existing.env_json || '[]'));
-      } catch {}
+        existingArgs = JSON.parse(asText(existing.args_json || '[]'));
+        existingEnv = JSON.parse(asText(existing.env_json || '[]'));
+      } catch {
+        // parse failure falls back to empty defaults — user args/env start blank
+      }
       const userArgs: unknown[] = Array.isArray(existingArgs) ? existingArgs.slice(1) : [];
       // Start from the user's env and add our required keys only when absent (user values win).
-      const envMerged: unknown[] = [...(Array.isArray(existingEnv) ? existingEnv : [])];
+      const envMerged: unknown[] = Array.isArray(existingEnv) ? existingEnv.slice() : [];
       for (const e of env) {
         if (e && e.key && !envMerged.some((x) => asRecord(x).key === e.key)) envMerged.push(e);
       }
@@ -408,10 +427,9 @@ function ensureOfficeaceMcpInSqlite(): 'db-missing' | 'ok' | 'owner-missing' | '
         db.close();
         return 'owner-missing';
       }
-      const insertArgsJson =
-        officeaceDelta && Array.isArray(officeaceDelta.argsExtra)
-          ? JSON.stringify([mcpPath, ...officeaceDelta.argsExtra])
-          : argsJson;
+      const argsExtra: unknown[] =
+        officeaceDelta && Array.isArray(officeaceDelta.argsExtra) ? officeaceDelta.argsExtra : [];
+      const insertArgsJson = JSON.stringify([mcpPath, ...argsExtra]);
       db.prepare(
         `INSERT INTO mcp_connectors (id, owner_user_id, type, name, normalized_name, transport, timeout_ms, command, args_json, env_json, enabled, status, created_at, updated_at, version, seeded)
          VALUES (?, ?, 'custom', 'huaweicloud-devkit', 'huaweicloud-devkit', 'stdio', 60000, 'node', ?, ?, 1, 'disconnected', ?, ?, 1, 0)`,
@@ -426,7 +444,9 @@ function ensureOfficeaceMcpInSqlite(): 'db-missing' | 'ok' | 'owner-missing' | '
     if (db) {
       try {
         db.close();
-      } catch {}
+      } catch {
+        // best-effort close: the original write failure is what gets reported
+      }
     }
     console.log(`  \x1b[31mFailed to write MCP config: ${errorMessage(error)}\x1b[0m`);
     return 'error';
@@ -450,18 +470,24 @@ function removeOfficeaceMcpFromSqlite(): void {
       const ownerUserId = asRecord(row).owner_user_id;
       if (ownerUserId) delta.ownerUserId = ownerUserId;
       try {
-        const parsed: unknown = row ? JSON.parse(String(asRecord(row).args_json || '[]')) : [];
+        const parsed: unknown = row ? JSON.parse(asText(asRecord(row).args_json || '[]')) : [];
         if (Array.isArray(parsed) && parsed.length > 1) delta.argsExtra = parsed.slice(1);
-      } catch {}
+      } catch {
+        // parse failure means no args to back up — the delta keeps identity only
+      }
       if (Object.keys(delta).length > 0) saveAgentDelta('officeace', delta);
-    } catch {}
+    } catch {
+      // best-effort backup: a failed save must not block the connector delete
+    }
     // mcp_connector_tools may not exist on minimal installs — deleting it must
     // not abort deleting the connector row itself.
     try {
       db.prepare(
         "DELETE FROM mcp_connector_tools WHERE connector_id IN (SELECT id FROM mcp_connectors WHERE name = 'huaweicloud-devkit')",
       ).run();
-    } catch {}
+    } catch {
+      // table may be absent on minimal installs — the connector delete still proceeds
+    }
     const result2 = db.prepare("DELETE FROM mcp_connectors WHERE name = 'huaweicloud-devkit'").run();
     const changes: unknown = result2.changes;
     if ((typeof changes === 'number' || typeof changes === 'bigint') && changes > 0) {
@@ -472,7 +498,9 @@ function removeOfficeaceMcpFromSqlite(): void {
     if (db) {
       try {
         db.close();
-      } catch {}
+      } catch {
+        // best-effort close: the removal failure is what gets reported
+      }
     }
     console.log(`  \x1b[31mFailed to remove MCP config: ${errorMessage(error)}\x1b[0m`);
   }
@@ -485,9 +513,7 @@ interface OfficeaceCapabilitiesConfig {
 }
 
 function toCapabilitiesConfig(value: unknown): OfficeaceCapabilitiesConfig {
-  return value !== null && typeof value === 'object' && !Array.isArray(value)
-    ? (value as OfficeaceCapabilitiesConfig)
-    : {};
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
 function writeCapabilitiesJson(config: OfficeaceCapabilitiesConfig): void {
@@ -530,7 +556,7 @@ const DSH_MCP_PATCH_END = '# HuaweiCloud DevKit DSH integration end';
 
 // Detect CodeArts sandbox mode (bash_mode in permission config).
 // The implementation lives in ./codearts-sandbox.ts, shared with the KooCLI
-// installer in ./dep-provision.ts.
+// installer in ./dep/installers/hcloud.ts.
 
 function hasCliFlag(name: string): boolean {
   return process.argv.includes(name);
@@ -538,8 +564,12 @@ function hasCliFlag(name: string): boolean {
 
 function checkNode(): void {
   const v = process.versions.node.split('.').map(Number);
-  if (v[0] < 22) {
-    console.error(`\x1b[31mNode.js >= 22 required (current: ${process.version})\x1b[0m`);
+  // process.versions.node is always "major.minor.patch", so the major and
+  // minor exist. 22.18 is the type-stripping floor the whole build chain
+  // runs on (engines: >= 22.18) — the installer must not wave through a
+  // Node the same contract declares unsupported.
+  if (v[0]! < 22 || (v[0]! === 22 && v[1]! < 18)) {
+    console.error(`\x1b[31mNode.js >= 22.18 required (current: ${process.version})\x1b[0m`);
     process.exit(1);
   }
   console.log(`  Node.js ${process.version} \x1b[32mOK\x1b[0m`);
@@ -615,10 +645,13 @@ function copyDir(src: string, dest: string): void {
 
 // The payload every per-agent plugin dir must carry: the MCP server (dist/),
 // the safety policy, and the skills tree. Skills are server data disclosed
-// only through the MCP tools (list_packs / pack_info / retrieve_skill /
-// search_docs) — they are never copied into an agent's native skill
-// directory, so every install and update path must place them next to the
-// server it deploys.
+// through the MCP tools (list_packs / pack_info / list_skills /
+// retrieve_skill / search_docs) — list_skills also carries the tree's
+// location (skillRoot, stdio sessions only) for direct reads; the core
+// meta-skills are ADDITIONALLY disclosed natively by syncNativeCoreSkills,
+// so every install and update path must place the tree next to the server
+// it deploys (the native sync rides the same PAYLOAD_TARGETS table from
+// the dispatch layer).
 function copyServerPayload(pluginDest: string, opts: { skipDist?: boolean } = {}): void {
   if (!opts.skipDist) {
     copyDir(join(PLUGIN_ROOT, 'dist'), join(pluginDest, 'dist'));
@@ -627,20 +660,33 @@ function copyServerPayload(pluginDest: string, opts: { skipDist?: boolean } = {}
   copyDir(join(PLUGIN_ROOT, 'safety'), join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   const skillsSrc = join(PLUGIN_ROOT, 'skills');
+  // A missing source tree must abort, not silently skip: copyDir's
+  // existsSync guard would no-op the copy while this function still prints
+  // a success line, and the installed server would then advertise skills it
+  // cannot serve. Same loudness as a missing dist/.
+  if (!existsSync(skillsSrc)) {
+    throw new Error(
+      `skills tree missing at ${skillsSrc} — the payload cannot ship without it. ` +
+        'From a git checkout run: npm run build; from a broken install run: npx huaweicloud-devkit install',
+    );
+  }
   copyDir(skillsSrc, join(pluginDest, 'skills'));
   // The plugin dir is wholly devkit-owned: prune retired skill names so a
   // departed directory can never keep serving stale, ungated content through
   // retrieve_skill/search_docs (unclaimed dirs bypass pack enablement).
   const stale = pruneStale(join(pluginDest, 'skills'), skillsSrc);
   console.log(
-    `  Skills (server data, MCP-disclosed) -> ${join(pluginDest, 'skills')}${stale > 0 ? ` (removed ${stale} stale)` : ''}`,
+    `  Skills (server data; MCP catalog + stdio skillRoot) -> ${join(pluginDest, 'skills')}${stale > 0 ? ` (removed ${stale} stale)` : ''}`,
   );
 }
 
 // Devkit-owned skill names. The shipped skills/ tree is the ownership
 // manifest: a name is deletable only when the current tree still ships it,
 // so a user-authored skill that merely shares the huawei* prefix survives
-// every cleanup.
+// every cleanup. Deliberately RAW directories (not the guard-side
+// dir-or-symlink-with-SKILL.md listing in src/lib/skill-tree.ts): purge
+// ownership wants the inclusive reading — a hollow claimed dir still owns
+// its native copies.
 function devkitOwnedSkillNames(): Set<string> {
   const skillsSrc = join(PLUGIN_ROOT, 'skills');
   if (!existsSync(skillsSrc)) return new Set();
@@ -655,78 +701,283 @@ function devkitOwnedSkillNames(): Set<string> {
   }
 }
 
-// Agent-native skill directories that older devkit versions copied skills
-// into. The codex-desktop plugin dir's skills/ is deliberately absent: that
-// is server data, not a native dir.
+// The expected skill roster, read from the shipped .manifest.json file rather
+// than from the candidate directory listing. Doctor must not compare a
+// directory against itself, so the roster of record is the file the build
+// wrote beside the tree; parsing lives in src/lib/skill-manifest.ts (pure,
+// unit-tested). An absent or unreadable manifest yields [] and the caller
+// fails loud.
+function shippedSkillRoster(): string[] {
+  const manifestPath = join(PLUGIN_ROOT, 'skills', '.manifest.json');
+  if (!existsSync(manifestPath)) return [];
+  return parseSkillManifest(readFileSync(manifestPath, 'utf8'));
+}
+
+// Agent-native skill directories: the surfaces agents load into their own
+// system prompt. Derived from PAYLOAD_TARGETS' nativeSkills rows plus the
+// one deliberate exception — officeace's dir is scanned only as a foreign
+// surface (its registration face is capabilities.json, removed in 4a030c0),
+// never synced — so a future row cannot gain placement and miss the
+// cleanup/doctor scan, the same single-table rule the payload checks follow.
+// The codex-desktop plugin dir's skills/ is deliberately absent: that is
+// server data, not a native dir.
 function nativeSkillDirs(): string[] {
   return [
-    opencodeSkillsDir(),
-    openclawSkillsDir(),
-    codeartsSkillsDir(),
-    codeartsProjectSkillsDir(),
-    codeartsWorkSkillsDir(),
-    workbuddySkillsDir(),
-    atomcodeSkillsDir(),
-    dshSkillsDir(),
-    officeaceSkillsDir(),
-    hermesSkillsDir(),
+    ...new Set([...PAYLOAD_TARGETS.flatMap((t) => (t.nativeSkills ? t.nativeSkills() : [])), officeaceSkillsDir()]),
   ];
 }
 
-// Stale native copies from pre-MCP installs: they shadow-disclose outdated
-// skill content through the agent's own skill loading, bypassing pack
-// enablement and the server's disclosure tools.
-function staleNativeSkillDirs(): string[] {
-  const owned = devkitOwnedSkillNames();
-  if (owned.size === 0) return [];
-  const stale: string[] = [];
-  for (const dir of nativeSkillDirs()) {
-    if (!existsSync(dir)) continue;
-    try {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        if (entry.isDirectory() && owned.has(entry.name)) stale.push(join(dir, entry.name));
-      }
-    } catch {}
-  }
-  return stale;
+// The dirs a PAYLOAD_TARGETS sync row owns — the managed set for receipt
+// semantics (remembered names carry delete rights only here) and doctor's
+// stale-scan exemption. Deliberately narrower than nativeSkillDirs():
+// officeace's dir is scanned as a foreign surface, never managed.
+function nativeSyncDirs(): Set<string> {
+  return new Set(PAYLOAD_TARGETS.flatMap((t) => (t.nativeSkills ? t.nativeSkills() : [])));
 }
 
-function purgeStaleNativeSkills(): number {
-  const stale = staleNativeSkillDirs();
+// The core-pack skill names that may be disclosed natively, derived from the
+// shipped manifest's packOf map (parseCoreSkillNames in the zod-free lib) —
+// because this module must not import the zod-dependent packs registry.
+// Null covers every unusable shape (missing tree, missing manifest,
+// unparsable, no core entries): doctor warns, install/update throw via
+// coreSkillNames. The loudness is load-bearing — an empty core set derived
+// silently would invert the narrowed cleanup into deleting the very copies
+// the sync owns.
+function tryCoreSkillNames(): Set<string> | null {
+  const manifestPath = join(PLUGIN_ROOT, 'skills', '.manifest.json');
+  if (!existsSync(manifestPath)) return null;
+  try {
+    return parseCoreSkillNames(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function coreSkillNames(): Set<string> {
+  const core = tryCoreSkillNames();
+  if (core === null) {
+    throw new Error(
+      `skills tree or manifest at ${join(PLUGIN_ROOT, 'skills')} lacks usable core-pack info ` +
+        '(missing tree, missing .manifest.json, unparsable, or no core-pack entries) — the native core-skill sync refuses to guess. ' +
+        'From a git checkout run: npm run build; from a broken install run: npx huaweicloud-devkit install',
+    );
+  }
+  return core;
+}
+
+// The core roster a payload tree's own manifest discloses — the honest
+// freshness roster for doctor, so a newer doctor CLI never demands a core
+// skill the installed payload never shipped. Null when the payload
+// manifest is absent or unusable.
+function payloadCoreNames(payloadTree: string): Set<string> | null {
+  try {
+    return parseCoreSkillNames(readFileSync(join(payloadTree, '.manifest.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+// Place the core-pack skills into one agent-native dir and converge it:
+// remove-then-copy per name (an overlay copy would keep files a newer tree
+// retired), delete owned-but-not-core names and receipt names the current
+// core set no longer claims, keep user skills, rewrite the receipt. Warn and
+// continue on write failure — the native layer is disclosure, the MCP server
+// remains the functional path, and doctor re-checks the result.
+function syncNativeCoreSkills(dir: string): void {
+  const core = coreSkillNames();
+  const owned = devkitOwnedSkillNames();
+  const receipt = readNativeReceipt(dir);
+  if (receipt?.kind === 'corrupt') {
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m unreadable native receipt in ${dir} — this sync rewrites it; if it repeats, re-run install`,
+    );
+  }
+  const remembered = receipt?.kind === 'ok' ? new Set(receipt.receipt.names) : new Set<string>();
+  const skillsSrc = join(PLUGIN_ROOT, 'skills');
+  // A manifest may claim core skills a partial tree does not ship; copyDir
+  // would silently skip them while the receipt still claimed all names.
+  // Place what exists, warn loudly about the rest, and record only what was
+  // actually placed.
+  const placeable = [...core].filter((name) => existsSync(join(skillsSrc, name)));
+  const missing = [...core].filter((name) => !existsSync(join(skillsSrc, name)));
+  if (missing.length > 0) {
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m core skill(s) claimed by the manifest but missing from the tree: ${missing.join(', ')} — from a git checkout run: npm run build`,
+    );
+  }
+  if (placeable.length === 0) {
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m no core skills placeable into ${dir} — MCP disclosure remains authoritative; re-run install`,
+    );
+    return;
+  }
+  try {
+    mkdirSync(dir, { recursive: true });
+    for (const name of placeable) {
+      rmSync(join(dir, name), { recursive: true, force: true });
+      copyDir(join(skillsSrc, name), join(dir, name));
+    }
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const devkitClaimed = owned.has(entry.name) || remembered.has(entry.name);
+      if (devkitClaimed && !core.has(entry.name)) {
+        removeIfExists(join(dir, entry.name));
+      }
+    }
+    writeNativeReceipt(dir, {
+      names: [...placeable].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+      layout: 'plugin-dir',
+    });
+    console.log(`  Core skills (native disclosure) -> ${dir}`);
+  } catch (error) {
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m native core skills not synced to ${dir}: ${errorMessage(error)} — ` +
+        'MCP disclosure remains authoritative; re-run install',
+    );
+  }
+}
+
+// Reconcile every agent-native dir before install/update steps run. A dir
+// without a receipt is residue (pre-MCP copies or hand-placed): every owned
+// name in it goes. A dir a sync row owns AND carries a receipt (even a torn
+// one — the file's existence proves devkit placement) is managed: names the
+// receipt no longer justifies (renamed or retired core skills, stray
+// service copies) go, and the core names stay until this run's sync — or
+// that target's next update — refreshes them. Deleting an installed agent's
+// disclosure because a different agent was installed this run would trade a
+// short staleness window (doctor flags it) for a silent capability loss.
+// Receipt-remembered names earn delete rights only in a managed dir; in a
+// foreign dir (officeace, a hand-copied tree) a receipt is not devkit's
+// ownership memory, so owned names there are residue no matter what a
+// hand-carried receipt claims.
+function cleanupNativeDirs(): number {
+  const core = coreSkillNames();
+  const owned = devkitOwnedSkillNames();
+  const syncDirs = nativeSyncDirs();
   let removed = 0;
-  for (const path of stale) {
-    if (removeIfExists(path)) removed++;
+  for (const dir of nativeSkillDirs()) {
+    if (!existsSync(dir)) continue;
+    const receipt = readNativeReceipt(dir);
+    if (receipt?.kind === 'corrupt') {
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m unreadable native receipt in ${dir} — core copies kept; the next install or update for this agent rewrites it`,
+      );
+    }
+    const remembered = receipt?.kind === 'ok' ? new Set(receipt.receipt.names) : new Set<string>();
+    const managed = syncDirs.has(dir) && receipt !== null;
+    try {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const keep = managed && core.has(entry.name);
+        if (!keep && (owned.has(entry.name) || (managed && remembered.has(entry.name)))) {
+          if (removeIfExists(join(dir, entry.name))) removed++;
+        }
+      }
+    } catch {
+      // unreadable dir cannot confirm stale copies — the other dirs still get scanned
+    }
   }
   return removed;
 }
 
+// The native-disclosure seam: the install step table and the update
+// dispatch both route through PAYLOAD_TARGETS, so a target that places
+// payload refreshes its native core skills here — a target that does not
+// never touches them, and a future row cannot appear in one path and miss
+// the other.
+function syncNativeSkillsForTarget(target: string): void {
+  const row = PAYLOAD_TARGETS.find((t) => t.id === target);
+  if (!row?.nativeSkills) return;
+  for (const dir of row.nativeSkills()) syncNativeCoreSkills(dir);
+}
+
 // Remove devkit-owned skill names from one agent-native dir (uninstall path).
-// Same ownership precision as the purge: user skills sharing the huawei*
-// prefix survive.
+// Same ownership precision as the cleanup: user skills sharing the huawei*
+// prefix survive, and receipt-remembered names carry delete rights only in
+// a dir a sync row owns (a receipt in a foreign dir is not devkit's
+// ownership memory there). The receipt is read FIRST — its remembered names
+// are the only record of retired core skills (names the current tree no
+// longer ships), so consuming it must precede destroying it — and the
+// receipt file goes last, whenever the dir exists at all (even a missing
+// skills tree must not leave an ownership claim behind). A receipt that
+// records the DSH marketplace layout names another maintainer and protects
+// the copies ONLY while that maintainer is verifiably alive (the recorded
+// package root still carries a payload tree — doctor's own liveness
+// probe); npm removes the profile package without running any devkit
+// script, and a dead maintainer's copies are residue, not disclosure.
+// Crashed receipt writes leave pid-suffixed tmp files no other actor
+// reclaims — they are unambiguously devkit crash residue (never
+// maintainer-owned content) and go first, before any attribution return.
+// A corrupt receipt cannot yield remembered names; its possible
+// retired-name leftovers are listed in a warning instead of deleted (they
+// may be user content in the huaweiicloud- namespace, which must survive).
 function removeOwnedSkillsFrom(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  // Crash residue is never maintainer-owned content: the sweep runs before
+  // any attribution return, age-gated so a concurrent live writer's
+  // in-flight tmp is never taken.
+  sweepReceiptTmpFiles(dir);
   const owned = devkitOwnedSkillNames();
-  if (owned.size === 0 || !existsSync(dir)) return 0;
+  const receipt = readNativeReceipt(dir);
+  // Dir-gated to the writer: only the marketplace postinstall writes
+  // package-root receipts, and it writes exclusively the DSH native dir —
+  // a package-root receipt anywhere else is hand-copied and earns nothing,
+  // the same invariant doctor enforces. Liveness: the postinstall died
+  // with the package when npm removed it; a root that no longer carries
+  // the payload tree (or was never recorded) cannot protect anything —
+  // fall through to normal removal. Multiple DSH profiles share the dir
+  // with per-profile roots (last writer wins): the probe sees only the
+  // recorded root, a known limitation.
+  if (receipt?.kind === 'ok' && receipt.receipt.layout === 'package-root' && dir === dshSkillsDir()) {
+    const live =
+      receipt.receipt.packageRoot !== undefined && existsSync(marketplacePayloadTree(receipt.receipt.packageRoot));
+    if (live) {
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m native core skills in ${dir} belong to the DSH profile's huaweicloud-devkit package` +
+          `${receipt.receipt.packageRoot ? ` (${receipt.receipt.packageRoot})` : ''} — remove or upgrade the package there; nothing removed here`,
+      );
+      return 0;
+    }
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m native core skills in ${dir} were marketplace-owned, but the recorded package maintainer is gone — removing them`,
+    );
+  }
+  const remembered =
+    receipt?.kind === 'ok' && nativeSyncDirs().has(dir) ? new Set(receipt.receipt.names) : new Set<string>();
   let removed = 0;
   try {
+    if (receipt?.kind === 'corrupt') {
+      const leftovers = readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && isCoreNameShape(e.name) && !owned.has(e.name))
+        .map((e) => e.name);
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m unreadable native receipt in ${dir}` +
+          `${leftovers.length > 0 ? ` — possible devkit leftover(s) left in place: ${leftovers.join(', ')}` : ''}`,
+      );
+    }
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (entry.isDirectory() && owned.has(entry.name)) {
+      if (entry.isDirectory() && (owned.has(entry.name) || remembered.has(entry.name))) {
         if (removeIfExists(join(dir, entry.name))) removed++;
       }
     }
-  } catch {}
+    removeIfExists(nativeReceiptPath(dir));
+  } catch {
+    // best-effort purge: an unreadable dir is skipped, removal continues elsewhere
+  }
   return removed;
 }
 
 // Skills status reads the server-data tree inside the plugin dir, mirroring
-// where copyServerPayload places it.
+// where copyServerPayload places it. The listing is the shared SKILL.md-
+// aware one (src/lib/skill-tree.ts) — the same membership the boot guard
+// uses, so a hollow claimed dir (name present, SKILL.md missing) counts as
+// missing here exactly as it does at boot.
+function serverSkillDirNames(pluginDir: string): string[] {
+  return listSkillDirs(join(pluginDir, 'skills'));
+}
+
 function serverSkillCount(pluginDir: string): number {
-  const dir = join(pluginDir, 'skills');
-  if (!existsSync(dir)) return 0;
-  try {
-    return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory()).length;
-  } catch {
-    return 0;
-  }
+  return serverSkillDirNames(pluginDir).length;
 }
 
 function installRuntimeDeps(pluginsDir: string): void {
@@ -748,7 +999,7 @@ function installRuntimeDeps(pluginsDir: string): void {
   let r = spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], spawnOpts);
   const isRetryable = (res: SpawnSyncReturns<unknown>): boolean => {
     if (res.status === 0) return false;
-    const stderr = String(res.stderr || '');
+    const stderr = asText(res.stderr || '');
     return spawnErrorCode(res) === 'EPERM' || spawnErrorCode(res) === 'EBUSY' || /EPERM|EBUSY/.test(stderr);
   };
   if (r.status !== 0 && isRetryable(r)) {
@@ -956,7 +1207,7 @@ function readDevkitPacksFromYaml(configPath: string): string | null {
   if (!existsSync(configPath)) return null;
   try {
     const match = readFileSync(configPath, 'utf8').match(/^\s*DEVKIT_PACKS:\s*['"]?([^'"\n]+?)['"]?\s*$/m);
-    return match ? match[1].trim() : null;
+    return match ? match[1]!.trim() : null;
   } catch {
     return null;
   }
@@ -968,9 +1219,9 @@ function readOfficeaceDevkitPacks(): string | null {
   try {
     db = openOfficeaceDb();
     const row: unknown = db.prepare("SELECT env_json FROM mcp_connectors WHERE name = 'huaweicloud-devkit'").get();
-    const parsed: unknown = JSON.parse(String(asRecord(row).env_json || '[]'));
+    const parsed: unknown = JSON.parse(asText(asRecord(row).env_json || '[]'));
     if (!Array.isArray(parsed)) return null;
-    const hit = parsed.find((e) => asRecord(e).key === 'DEVKIT_PACKS');
+    const hit: unknown = parsed.find((e) => asRecord(e).key === 'DEVKIT_PACKS');
     const value = hit ? asRecord(hit).value : null;
     return typeof value === 'string' ? value : null;
   } catch {
@@ -978,7 +1229,9 @@ function readOfficeaceDevkitPacks(): string | null {
   } finally {
     try {
       db?.close();
-    } catch {}
+    } catch {
+      // best-effort close: the packs value is already resolved
+    }
   }
 }
 
@@ -1077,7 +1330,9 @@ function backupDeltaFromMcpServersFile(pluginDest: string, agentKey: string): vo
     const config = asRecord(JSON.parse(readFileSync(configPath, 'utf8')));
     const delta = extractUserDelta(asRecord(config.mcpServers)['huaweicloud-devkit'], 'args');
     if (delta) saveAgentDelta(agentKey, delta);
-  } catch {}
+  } catch {
+    // missing or corrupt .mcp.json means no user delta to preserve
+  }
 }
 
 function removeOpenCodeConfig(): void {
@@ -1183,6 +1438,21 @@ function uninstallCodex(): void {
       stdio: 'pipe',
     });
     console.log(`  ${r2.stdout ? r2.stdout.toString().trim() : r2.stderr.toString().trim()}`);
+    // `codex plugin remove` strips the version subtrees but leaves the
+    // marketplace-keyed cache dir behind (live-verified on codex-cli
+    // 0.162.1: only the empty shell survives the CLI's own cleanup); the
+    // registration was ours, so its cache shell is ours to remove. Gated on
+    // the remove having exited 0 — if the CLI refused (or was unable) to
+    // remove the marketplace, the registration is still live and deleting
+    // its cache would break a still-registered plugin. CODEX_HOME mirrors
+    // the CLI's own home resolution so the cleanup follows whatever root
+    // the spawned `codex plugin` commands above actually used.
+    if (r2.status === 0) {
+      const cacheDir = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'plugins', 'cache', name);
+      if (removeIfExists(cacheDir)) {
+        console.log(`  Codex plugin cache cleaned: ${name}`);
+      }
+    }
   }
 }
 
@@ -1276,7 +1546,10 @@ function codexMarketplacePath(): string {
 
 function ensureCodexMarketplaceEntry(): void {
   const mpPath = codexMarketplacePath();
-  const pluginName = 'huaweicloud-devkit';
+  // The canonical plugin name: status (codexDesktopStatus), install, and
+  // uninstall all derive from the same reader, so a marketplace.json rename
+  // moves all three together.
+  const pluginName = getCodexPluginName();
   const entry = {
     name: pluginName,
     source: { source: 'local', path: './plugins/huaweicloud-devkit' },
@@ -1339,9 +1612,10 @@ function removeCodexMarketplaceEntry(): void {
     return;
   }
   if (!marketplace.plugins) return;
+  const pluginName = getCodexPluginName();
   const plugins: unknown[] = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
   const before = plugins.length;
-  const filtered = plugins.filter((p) => asRecord(p).name !== 'huaweicloud-devkit');
+  const filtered = plugins.filter((p) => asRecord(p).name !== pluginName);
   if (filtered.length === before) return;
   marketplace.plugins = filtered;
   writeFileSync(mpPath, JSON.stringify(marketplace, null, 2) + '\n');
@@ -1447,8 +1721,8 @@ async function installCodexDesktop(): Promise<void> {
   // Clean up old install locations from pre-marketplace era. Neither
   // ~/.agents/skills nor ~/.agents/commands is removed wholesale: OpenClaw
   // installs share both, and user-authored content must survive —
-  // devkit-owned skill names are purged precisely by
-  // purgeStaleNativeSkills() at the command level.
+  // devkit-owned skill names are reconciled precisely by
+  // cleanupNativeDirs() at the command level.
   const oldPluginsDir = join(homedir(), '.agents', 'huaweicloud-plugins');
   if (existsSync(oldPluginsDir)) {
     removeIfExists(oldPluginsDir);
@@ -1533,7 +1807,7 @@ function uninstallCodexDesktop(): void {
       if (skip && line.startsWith('[')) skip = false;
       if (!skip) out.push(line);
     }
-    while (out.length > 0 && out[out.length - 1].trim() === '') out.pop();
+    while (out.length > 0 && out[out.length - 1]!.trim() === '') out.pop();
     writeFileSync(configPath, out.join('\n') + (out.length > 0 ? '\n' : ''));
   }
 }
@@ -1665,7 +1939,9 @@ function uninstallCodeArts(): void {
     let config: Record<string, unknown> = {};
     try {
       config = asRecord(JSON.parse(readFileSync(configPath, 'utf8')));
-    } catch {}
+    } catch {
+      // corrupt config leaves the empty default — no recognizable entry to clean
+    }
     const servers = asRecord(config.mcpServers);
     if (servers['huaweicloud-devkit']) {
       const delta = extractUserDelta(servers['huaweicloud-devkit'], 'args');
@@ -1679,8 +1955,13 @@ function uninstallCodeArts(): void {
   }
 }
 
-function codeartsStatus(): void {
-  const pluginDir = codeartsPluginsDir();
+// The payload triple every directory-based status section reports: server
+// bundle, safety policy, skills tree. Extracted from the per-agent status
+// functions (this file's most-repeated block — seven copies when this
+// comment was written) so a new target joins by calling it instead of
+// copying it. dshStatus and hermesStatus keep inline variants because their
+// hook lines interleave with the triple.
+function payloadStatusLines(pluginDir: string): void {
   console.log(
     `  MCP Server: ${mcpServerInstalled(pluginDir) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
   );
@@ -1691,6 +1972,10 @@ function codeartsStatus(): void {
   console.log(
     `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
   );
+}
+
+function codeartsStatus(): void {
+  payloadStatusLines(codeartsPluginsDir());
   if (existsSync(codeartsMcpSettingsFile())) {
     try {
       const config = asRecord(JSON.parse(readFileSync(codeartsMcpSettingsFile(), 'utf8')));
@@ -1803,7 +2088,9 @@ function uninstallCodeArtsWork(): void {
     let config: Record<string, unknown> = {};
     try {
       config = asRecord(JSON.parse(readFileSync(configPath, 'utf8')));
-    } catch {}
+    } catch {
+      // corrupt config leaves the empty default — no recognizable entry to clean
+    }
     const mcpMap = asRecord(config.mcp);
     if (mcpMap['huaweicloud-devkit']) {
       const delta = extractUserDelta(mcpMap['huaweicloud-devkit'], 'command');
@@ -1818,17 +2105,7 @@ function uninstallCodeArtsWork(): void {
 }
 
 function codeartsWorkStatus(): void {
-  const pluginDir = codeartsWorkPluginsDir();
-  console.log(
-    `  MCP Server: ${mcpServerInstalled(pluginDir) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  const skillCount = serverSkillCount(pluginDir);
-  console.log(
-    `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
-  );
+  payloadStatusLines(codeartsWorkPluginsDir());
   if (existsSync(codeartsWorkMcpSettingsFile())) {
     try {
       const config = asRecord(JSON.parse(readFileSync(codeartsWorkMcpSettingsFile(), 'utf8')));
@@ -2037,7 +2314,9 @@ function uninstallWorkBuddy(): void {
     let config: Record<string, unknown> = {};
     try {
       config = asRecord(JSON.parse(readFileSync(configPath, 'utf8')));
-    } catch {}
+    } catch {
+      // corrupt config leaves the empty default — no recognizable entry to clean
+    }
     const servers = asRecord(config.mcpServers);
     if (servers['huaweicloud-devkit']) {
       const delta = extractUserDelta(servers['huaweicloud-devkit'], 'args');
@@ -2056,7 +2335,9 @@ function uninstallWorkBuddy(): void {
     let settings: Record<string, unknown> = {};
     try {
       settings = asRecord(JSON.parse(readFileSync(settingsPath, 'utf8')));
-    } catch {}
+    } catch {
+      // corrupt settings leave no hooks map — nothing to remove
+    }
     const hooksMap = asRecord(settings.hooks);
     if (hooksMap.PostToolUse) {
       const postToolUse: unknown[] = Array.isArray(hooksMap.PostToolUse) ? hooksMap.PostToolUse : [];
@@ -2087,17 +2368,7 @@ function uninstallWorkBuddy(): void {
 }
 
 function workbuddyStatus(): void {
-  const pluginDir = workbuddyPluginsDir();
-  console.log(
-    `  MCP Server: ${mcpServerInstalled(pluginDir) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  const skillCount = serverSkillCount(pluginDir);
-  console.log(
-    `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
-  );
+  payloadStatusLines(workbuddyPluginsDir());
   const configPath = workbuddyMcpConfigFile();
   if (existsSync(configPath)) {
     try {
@@ -2116,7 +2387,9 @@ function workbuddyStatus(): void {
       const s = asRecord(JSON.parse(readFileSync(settingsPath, 'utf8')));
       const postToolUse: unknown = asRecord(s.hooks).PostToolUse;
       hookConfigured = Array.isArray(postToolUse) && postToolUse.some((e) => asRecord(e).matcher === '*');
-    } catch {}
+    } catch {
+      // corrupt settings count as hook not installed
+    }
   }
   const hookTrackerInstalled = existsSync(join(homedir(), '.codebuddy', 'hooks', 'telemetry-tracker.py'));
   console.log(
@@ -2174,7 +2447,9 @@ function uninstallAtomCode(): void {
     let config: Record<string, unknown> = {};
     try {
       config = asRecord(JSON.parse(readFileSync(configPath, 'utf8')));
-    } catch {}
+    } catch {
+      // corrupt config leaves the empty default — no recognizable entry to clean
+    }
     const servers = asRecord(config.mcpServers);
     if (servers['huaweicloud-devkit']) {
       const delta = extractUserDelta(servers['huaweicloud-devkit'], 'args');
@@ -2189,17 +2464,7 @@ function uninstallAtomCode(): void {
 }
 
 function atomcodeStatus(): void {
-  const pluginDir = atomcodePluginsDir();
-  console.log(
-    `  MCP Server: ${mcpServerInstalled(pluginDir) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  const skillCount = serverSkillCount(pluginDir);
-  console.log(
-    `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
-  );
+  payloadStatusLines(atomcodePluginsDir());
   const configPath = atomcodeMcpConfigFile();
   if (existsSync(configPath)) {
     try {
@@ -2255,14 +2520,14 @@ function removeManagedDshPatchBlock(content: unknown): string {
     `\\n?${escapeRegExp(DSH_MCP_PATCH_START)}[\\s\\S]*?${escapeRegExp(DSH_MCP_PATCH_END)}\\s*`,
     'g',
   );
-  return String(content || '')
+  return asText(content || '')
     .replace(pattern, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trimEnd();
 }
 
 function dshPatchHasOnlyCommentsOrEmptyList(content: unknown): boolean {
-  const meaningful = String(content || '')
+  const meaningful = asText(content || '')
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line && !line.startsWith('#'));
@@ -2365,12 +2630,16 @@ function commandAvailable(command: string, args: string[] = ['--version']): bool
   try {
     const r = spawnSync(command, args, { shell: false, windowsHide: true, stdio: 'pipe', timeout: 10000 });
     if (r.status === 0) return true;
-  } catch {}
+  } catch {
+    // spawn failure falls through — where.exe on win32, else not available
+  }
   if (process.platform === 'win32') {
     try {
       const w = spawnSync('where.exe', [command], { windowsHide: true, stdio: 'pipe', timeout: 10000 });
       return w.status === 0 && w.stdout.toString().trim().length > 0;
-    } catch {}
+    } catch {
+      // where.exe failure means the command is simply not available
+    }
   }
   return false;
 }
@@ -2416,7 +2685,7 @@ function tryInstallDshMcpClient(): boolean {
       console.log('  DSH MCP client package installed via dsh');
       return true;
     }
-    const err = `${r.stderr || ''}${r.stdout || ''}`.trim().split(/\r?\n/).slice(-2).join(' ');
+    const err = `${asText(r.stderr || '')}${asText(r.stdout || '')}`.trim().split(/\r?\n/).slice(-2).join(' ');
     console.log(`  \x1b[33m[WARN]\x1b[0m DSH MCP client auto-install failed${err ? `: ${err}` : ''}`);
   }
   if (commandAvailable('pnpm') && existsSync(join(dshProfileDir(), 'package.json'))) {
@@ -2475,7 +2744,9 @@ function uninstallDsh(): void {
         rmSync(skillsDir, { recursive: true, force: true });
         console.log(`  Removed empty skills directory: ${skillsDir}`);
       }
-    } catch {}
+    } catch {
+      // best-effort cleanup: an empty skills dir left behind is harmless
+    }
   }
   if (removeIfExists(dshPluginsDir())) {
     console.log('  Removed MCP server, safety policy, and hook plugin');
@@ -2553,7 +2824,7 @@ async function installOfficeAce(): Promise<void> {
     );
   }
   // Prior versions registered native skill entries here; clean them so the
-  // capabilities registry carries no pointer at the (now MCP-only) skills.
+  // capabilities registry carries no pointer at the (server-data) skills.
   removeOfficeaceSkillCapabilities();
   // Persist the resolved root so a later uninstall/update (new process, no
   // OFFICE_CLAW_CONFIG_ROOT env) still targets the same directory (#559).
@@ -2589,7 +2860,9 @@ function uninstallOfficeAce(): void {
         rmSync(skillsDir, { recursive: true, force: true });
         console.log(`  Removed empty skills directory: ${skillsDir}`);
       }
-    } catch {}
+    } catch {
+      // best-effort cleanup: an empty skills dir left behind is harmless
+    }
   }
 
   if (removeIfExists(officeacePluginsDir())) {
@@ -2600,17 +2873,7 @@ function uninstallOfficeAce(): void {
 }
 
 function officeaceStatus(): void {
-  const pluginDir = officeacePluginsDir();
-  console.log(
-    `  MCP Server: ${mcpServerInstalled(pluginDir) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  const skillCount = serverSkillCount(pluginDir);
-  console.log(
-    `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
-  );
+  payloadStatusLines(officeacePluginsDir());
   const dbPath = officeaceSqlitePath();
   if (existsSync(dbPath)) {
     try {
@@ -2702,12 +2965,14 @@ function writeHermesMcpConfig(devkitPacks: string | null): boolean {
   if (existsSync(configPath)) {
     try {
       existing = readFileSync(configPath, 'utf8');
-    } catch {}
+    } catch {
+      // unreadable config is treated as absent — the block is written fresh
+    }
     if (existing.includes('mcp_servers:') && existing.includes('huaweicloud-devkit')) {
       // Preserve user's extra args (e.g. --hdkitservice-endpoint) when rewriting the block (issue #615).
       const argsMatch = existing.match(/^\s*huaweicloud-devkit\s*:[\s\S]*?^\s*args:\s*\[[^\]]*\]\s*$/m);
       const extrasMatch = argsMatch ? argsMatch[0].match(/args:\s*\[".*?"(.*)\]/) : null;
-      const extras = extrasMatch && extrasMatch[1].trim() ? extrasMatch[1].replace(/,\s*$/, '') : '';
+      const extras = extrasMatch && extrasMatch[1]!.trim() ? extrasMatch[1]!.replace(/,\s*$/, '') : '';
       const packsLineOk =
         hermesPacksLine === null ? !/^\s*DEVKIT_PACKS:/m.test(existing) : existing.includes(hermesPacksLine);
       if (existing.includes(`args: ["${mcpPath}"${extras}]`) && packsLineOk) {
@@ -2720,7 +2985,9 @@ function writeHermesMcpConfig(devkitPacks: string | null): boolean {
       if (existsSync(configPath)) {
         try {
           existing = readFileSync(configPath, 'utf8');
-        } catch {}
+        } catch {
+          // unreadable re-read means the block becomes the whole file
+        }
       }
     }
   }
@@ -2808,7 +3075,9 @@ function ensureHermesHooksConfig(): boolean {
   if (existsSync(configPath)) {
     try {
       existing = readFileSync(configPath, 'utf8');
-    } catch {}
+    } catch {
+      // unreadable config is treated as absent — the hooks block is written fresh
+    }
     if (
       existing.includes('hooks:') &&
       existing.includes(`command: "${hookCommand}"`) &&
@@ -2823,7 +3092,9 @@ function ensureHermesHooksConfig(): boolean {
     if (existsSync(configPath)) {
       try {
         existing = readFileSync(configPath, 'utf8');
-      } catch {}
+      } catch {
+        // unreadable re-read means the block becomes the whole file
+      }
     }
   }
   mkdirSync(dirname(configPath), { recursive: true });
@@ -2862,9 +3133,11 @@ function ensureHermesHookAllowlist(): boolean {
     try {
       const parsed: unknown = JSON.parse(readFileSync(allowlistPath, 'utf8'));
       if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        data = parsed as HermesAllowlist;
+        data = parsed;
       }
-    } catch {}
+    } catch {
+      // corrupt allowlist falls back to a fresh approvals list
+    }
   }
   const approvals: unknown[] = Array.isArray(data.approvals) ? data.approvals : [];
 
@@ -2986,7 +3259,9 @@ function removeHermesHookPlugin(): boolean {
     if (existsSync(parent) && readdirSync(parent).length === 0) {
       rmSync(parent, { recursive: true, force: true });
     }
-  } catch {}
+  } catch {
+    // best-effort cleanup: an empty parent dir left behind is harmless
+  }
   return true;
 }
 
@@ -3029,7 +3304,9 @@ function ensureHermesMcpSdk(): boolean {
       console.log('  MCP Python SDK: \x1b[32mAlready installed\x1b[0m');
       return true;
     }
-  } catch {}
+  } catch {
+    // probe failure just means SDK state unknown — the install attempt follows
+  }
   console.log('  Installing Hermes MCP Python SDK...');
   try {
     const pip = spawnSync(pythonBin, ['-m', 'pip', 'install', 'mcp', '--quiet'], { encoding: 'utf8', timeout: 60000 });
@@ -3146,7 +3423,7 @@ function uninstallHermes(): void {
       if (argsLine) {
         let parsed: unknown;
         try {
-          parsed = JSON.parse(`[${argsLine[1].replace(/'/g, '"')}]`);
+          parsed = JSON.parse(`[${argsLine[1]!.replace(/'/g, '"')}]`);
         } catch {
           parsed = null;
         }
@@ -3154,7 +3431,9 @@ function uninstallHermes(): void {
           saveAgentDelta('hermes', { argsExtra: parsed.slice(1) });
         }
       }
-    } catch {}
+    } catch {
+      // best-effort backup: no delta means reinstall uses default args
+    }
   }
   removeHermesMcpConfigBlock();
   console.log('  MCP config removed');
@@ -3168,7 +3447,9 @@ function uninstallHermes(): void {
         rmSync(skillsDir, { recursive: true, force: true });
         console.log(`  Removed empty skills directory: ${skillsDir}`);
       }
-    } catch {}
+    } catch {
+      // best-effort cleanup: an empty skills dir left behind is harmless
+    }
   }
 
   // 5. Remove plugin directory (hook script files deleted last)
@@ -3221,17 +3502,7 @@ function hermesStatus(): void {
 }
 
 function opencodeStatus(): void {
-  const pluginDir = opencodePluginsDir();
-  console.log(
-    `  MCP Server: ${mcpServerInstalled(pluginDir) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  console.log(
-    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  const skillCount = serverSkillCount(pluginDir);
-  console.log(
-    `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
-  );
+  payloadStatusLines(opencodePluginsDir());
   const configPath = opencodeConfigFile();
   if (existsSync(configPath)) {
     try {
@@ -3247,7 +3518,7 @@ function opencodeStatus(): void {
 
 function detectAgents(): string[] {
   const checks: Array<[string, () => boolean]> = [
-    ['opencode', () => existsSync(join(homedir(), '.config', 'opencode'))],
+    ['opencode', () => existsSync(configRoot('opencode'))],
     ['codex-desktop', () => existsSync(join(homedir(), '.codex'))],
     ['codearts', () => existsSync(join(homedir(), '.codeartsdoer'))],
     ['codearts-work', () => existsSync(join(homedir(), '.codeartswork'))],
@@ -3283,7 +3554,7 @@ function autoDetectTarget(): string {
     console.error('Use --target <agent> to specify.');
     process.exit(1);
   }
-  if (detected.length === 1) return detected[0];
+  if (detected.length === 1) return detected[0]!;
   return 'all';
 }
 
@@ -3338,7 +3609,8 @@ function promptSelectAgents(detected: string[]): Promise<string[] | null> {
           return;
         }
       }
-      resolve([...indices].map((i) => detected[i]));
+      // Every index was range-checked against detected.length when added.
+      resolve([...indices].map((i) => detected[i]!));
     });
   });
 }
@@ -3575,13 +3847,14 @@ async function cmdInstall(): Promise<void> {
 
   checkNode();
   await checkForUpdate();
-  // Pre-MCP installs copied skills into agent-native skill dirs; those stale
-  // copies shadow-disclose outdated content, so every install run purges them
-  // (ownership-precise: only names the shipped tree still carries).
-  const purged = purgeStaleNativeSkills();
+  // Reconcile the native dirs before any step runs: residue from pre-MCP
+  // installs (no receipt) and retired names go; receipt-managed core copies
+  // stay for their own target's sync below. Also the fail-loud gate on the
+  // manifest's pack info — before any file is copied.
+  const purged = cleanupNativeDirs();
   if (purged > 0)
     console.log(
-      `  Cleaned ${purged} stale native skill cop${purged === 1 ? 'y' : 'ies'} (skills are now MCP-disclosed)`,
+      `  Cleaned ${purged} stale native skill cop${purged === 1 ? 'y' : 'ies'} (pre-MCP residue or retired names)`,
     );
   const installFailures: string[] = [];
 
@@ -3603,6 +3876,7 @@ async function cmdInstall(): Promise<void> {
         installFailures.push(stepTarget);
         return false;
       }
+      syncNativeSkillsForTarget(stepTarget);
       writeInstallMarker(stepTarget);
       return true;
     } catch (error) {
@@ -3800,7 +4074,7 @@ async function cmdUninstall(opts: { fromReinstall?: boolean } = {}): Promise<voi
 
   if (target === 'opencode' || target === 'all') {
     console.log('[OpenCode]');
-    await uninstallOpenCode();
+    uninstallOpenCode();
   }
   if (target === 'codearts' || target === 'all') {
     console.log('\n[CodeArts]');
@@ -3862,7 +4136,9 @@ async function cmdUninstall(opts: { fromReinstall?: boolean } = {}): Promise<voi
         rmSync(vaultDir, { recursive: true, force: true });
         console.log(`  Removed empty directory: ${vaultDir}`);
       }
-    } catch {}
+    } catch {
+      // best-effort cleanup: an empty config dir left behind is harmless
+    }
     await promptGlobalCleanup();
   }
 
@@ -3902,7 +4178,9 @@ function removeKooCliWithMessage(): void {
       removeReceipt('hcloud');
       console.log('  Cleared the devkit hcloud install receipt.');
     }
-  } catch {}
+  } catch {
+    // best-effort receipt hygiene must never abort the uninstall
+  }
 }
 
 function removeObsConfigWithMessage(): void {
@@ -4004,17 +4282,7 @@ async function promptGlobalCleanup(): Promise<void> {
 }
 
 function openclawStatus(): void {
-  const cdPluginDir = openclawPluginsDir();
-  console.log(
-    `  MCP Server: ${mcpServerInstalled(cdPluginDir) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  console.log(
-    `  Safety Policy: ${existsSync(join(cdPluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
-  );
-  const cdSkillCount = serverSkillCount(cdPluginDir);
-  console.log(
-    `  Skills: ${cdSkillCount > 0 ? `\x1b[32m${cdSkillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
-  );
+  payloadStatusLines(openclawPluginsDir());
 }
 
 function codexSectionStatus(): void {
@@ -4022,6 +4290,30 @@ function codexSectionStatus(): void {
     console.log('  \x1b[33mCodex CLI not found.\x1b[0m');
   } else {
     console.log(`  Plugin: ${codexStatus() ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`);
+  }
+}
+
+// Codex Desktop serves the payload from its own plugin dir plus a
+// marketplace registration under ~/.agents/plugins/marketplace.json —
+// status reports both surfaces (previously the one target cmdStatus did
+// not cover at all; the release smoke had to skip its status check).
+function codexDesktopStatus(): void {
+  payloadStatusLines(codexDesktopPluginsDir());
+  const mpPath = codexMarketplacePath();
+  if (existsSync(mpPath)) {
+    try {
+      const marketplace = asRecord(JSON.parse(readFileSync(mpPath, 'utf8')));
+      const plugins: unknown[] = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
+      // The canonical plugin name — the same derived value
+      // ensureCodexMarketplaceEntry writes and removeCodexMarketplaceEntry
+      // filters on (all three ride getCodexPluginName).
+      const registered = plugins.some((p) => asRecord(p).name === getCodexPluginName());
+      console.log(`  Marketplace: ${registered ? '\x1b[32mRegistered\x1b[0m' : '\x1b[31mNot registered\x1b[0m'}`);
+    } catch {
+      console.log(`  Marketplace: \x1b[31mInvalid\x1b[0m`);
+    }
+  } else {
+    console.log(`  Marketplace: \x1b[31mNot registered\x1b[0m`);
   }
 }
 
@@ -4041,12 +4333,14 @@ async function cmdStatus(): Promise<void> {
     { name: 'OpenClaw', run: openclawStatus, on: (target) => target === 'openclaw' || target === 'all' },
     { name: 'AtomCode', run: atomcodeStatus, on: (target) => target === 'atomcode' || target === 'all' },
     { name: 'Codex', run: codexSectionStatus, on: (target) => target === 'codex' || target === 'all' },
+    { name: 'Codex Desktop', run: codexDesktopStatus, on: (target) => target === 'codex-desktop' || target === 'all' },
   ];
 
   // Capture each section's output so results can be grouped by install state
   // (installed first) instead of the fixed agent order.
   const originalLog = console.log;
-  const results: Array<{ name: string; lines: string[]; state: string }> = [];
+  type InstallState = 'installed' | 'partial' | 'unknown' | 'not';
+  const results: Array<{ name: string; lines: string[]; state: InstallState }> = [];
   for (const section of sections) {
     if (!section.on(scope)) continue;
     const lines: string[] = [];
@@ -4063,7 +4357,7 @@ async function cmdStatus(): Promise<void> {
     results.push({ name: section.name, lines, state });
   }
 
-  const stateOrder = { installed: 0, partial: 1, unknown: 2, not: 3 } as Record<string, number>;
+  const stateOrder: Record<InstallState, number> = { installed: 0, partial: 1, unknown: 2, not: 3 };
   results.sort((a, b) => stateOrder[a.state] - stateOrder[b.state]);
 
   const namesIn = (state: string): string[] => results.filter((r) => r.state === state).map((r) => r.name);
@@ -4229,8 +4523,10 @@ function writeDevkitPacksInOfficeace(next: string | null): PackWriteResult {
     }
     let env: unknown = [];
     try {
-      env = JSON.parse(String(existing.env_json || '[]'));
-    } catch {}
+      env = JSON.parse(asText(existing.env_json || '[]'));
+    } catch {
+      // parse failure falls back to an empty env list — no packs row means insert
+    }
     const rows: unknown[] = Array.isArray(env) ? env : [];
     const idx = rows.findIndex((e) => asRecord(e).key === 'DEVKIT_PACKS');
     const current = idx >= 0 ? asRecord(rows[idx]).value : null;
@@ -4256,7 +4552,9 @@ function writeDevkitPacksInOfficeace(next: string | null): PackWriteResult {
   } finally {
     try {
       db?.close();
-    } catch {}
+    } catch {
+      // best-effort close: the packs write result is already resolved
+    }
   }
 }
 
@@ -4439,6 +4737,46 @@ function renderUnknownPackIds(report: PackUnionReport): void {
   }
 }
 
+// The secrets-pack discoverability note, shared by doctor's pack block and
+// `packs status`. Existing installs that pinned DEVKIT_PACKS before the
+// secrets pack shipped keep their seed — the new pack is silently opt-in
+// for them. Two shapes: a stored seed missing `secrets` gets a one-line
+// INFO announcement (a new capability, not a fault); a seed missing
+// `secrets` WHILE the vault is initialized is a real mismatch — the user
+// stores secret:// refs but the MCP face is trimmed — and warns with the
+// fix. Unset (full surface) or already-included seeds print nothing, and
+// the vault probe never throws (a failing keychain tier reads as not
+// initialized here — the dedicated vault block in doctor owns failure
+// rendering).
+function renderSecretsPackNote(report: PackUnionReport, limitLabels?: ReadonlySet<string>): number {
+  let vaultInitialized = false;
+  try {
+    vaultInitialized = custodyReport().initialized;
+  } catch {
+    // an unreadable custody tier is the vault block's story, not this note's
+  }
+  let warns = 0;
+  for (const target of report.targets) {
+    // `packs status --target X` narrows its slot loop; the note follows the
+    // same filter so a filtered view does not advise on other agents' seeds.
+    if (limitLabels && !limitLabels.has(target.label)) continue;
+    if (target.raw === null || target.raw.trim() === '') continue;
+    if (target.unknown.length > 0) continue;
+    if (target.enabled.has('secrets')) continue;
+    if (vaultInitialized) {
+      warns++;
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m Packs (${target.label}): the secret vault is initialized but the secrets pack is trimmed — the vault MCP tools (huaweicloud_secret_set/list/delete) are not disclosed on this target; secret:// refs still resolve wherever their consumers are enabled. Enable: npx huaweicloud-devkit packs enable secrets --target <agent>`,
+      );
+    } else {
+      console.log(
+        `  \x1b[36m[INFO]\x1b[0m Packs (${target.label}): new pack available — secrets (encrypted local vault, secret:// refs, npx huaweicloud-devkit secret set ...). Disclose it: npx huaweicloud-devkit packs enable secrets --target <agent>`,
+      );
+    }
+  }
+  return warns;
+}
+
 // Provision the enabled packs' host binaries right after payload placement.
 // No output at all when nothing is required (empty union, e.g. a
 // DEVKIT_PACKS=core-only install with no codex CLI).
@@ -4463,20 +4801,39 @@ async function provisionPackBinaries(): Promise<void> {
 // skills + undici + .installed marker) into a plugin dir. Doctor's payload
 // checks (MCP server, undici, safety policy, skills tree, restart markers),
 // the .installed marker directory (installMarkerDirForTarget), update's
-// willPlacePayload, and the update dispatch itself (one loop for the
-// single-target and all-targets modes) all derive from this one table, so
-// a target cannot appear in one check and miss another — the atomcode
-// undici miss and the openclaw-wide miss were both this drift class. Labels
-// follow the doctor spellings ('Hermes Agent', not AGENT_LABELS' 'Hermes');
-// hints are the per-target restart copy. codex is CLI-managed with no
-// plugin dir and stays an explicit branch in dispatchUpdateTarget.
-const PAYLOAD_TARGETS = [
+// willPlacePayload, the update dispatch itself (one loop for the
+// single-target and all-targets modes), and the native core-skill sync all
+// derive from this one table, so a target cannot appear in one check and
+// miss another — the atomcode undici miss and the openclaw-wide miss were
+// both this drift class. Labels follow the doctor spellings ('Hermes
+// Agent', not AGENT_LABELS' 'Hermes'); hints are the per-target restart
+// copy. codex is CLI-managed with no plugin dir and stays an explicit
+// branch in dispatchUpdateTarget.
+type PayloadTarget = {
+  id: string;
+  label: string;
+  dir: () => string;
+  update: () => Promise<void>;
+  hint: string;
+  // Agent-native skill dirs this target's install/update refreshes with the
+  // core meta-skills (system-prompt disclosure; non-core skills stay off
+  // the native surface so DEVKIT_PACKS gating holds — their disclosure is
+  // the MCP catalog plus, on stdio sessions, list_skills' skillRoot
+  // location for direct reads, both disclosure-level). Absent = no native
+  // copies: codex-desktop's plugin-dir skills/ IS server data, and
+  // officeace's native surface is the capabilities.json registration
+  // 4a030c0 removed.
+  nativeSkills?: () => string[];
+};
+
+const PAYLOAD_TARGETS: readonly PayloadTarget[] = [
   {
     id: 'opencode',
     label: 'OpenCode',
     dir: opencodePluginsDir,
     update: updateOpenCode,
     hint: 'MCP 工具在重启 OpenCode 会话后才生效。',
+    nativeSkills: () => [opencodeSkillsDir()],
   },
   {
     id: 'codex-desktop',
@@ -4485,13 +4842,23 @@ const PAYLOAD_TARGETS = [
     update: updateCodexDesktop,
     hint: 'MCP 工具在重启 Codex Desktop 会话后才生效。',
   },
-  { id: 'codearts', label: 'CodeArts', dir: codeartsPluginsDir, update: updateCodeArts, hint: 'MCP 工具在重启 CodeArts 会话后才生效。' },
+  {
+    id: 'codearts',
+    label: 'CodeArts',
+    dir: codeartsPluginsDir,
+    update: updateCodeArts,
+    hint: 'MCP 工具在重启 CodeArts 会话后才生效。',
+    // Mirrors registerCodeartsMcp: user level plus the project dir of the
+    // tree the install runs in.
+    nativeSkills: () => [codeartsSkillsDir(), codeartsProjectSkillsDir()],
+  },
   {
     id: 'codearts-work',
     label: 'CodeArts Work',
     dir: codeartsWorkPluginsDir,
     update: updateCodeArtsWork,
     hint: 'MCP 工具在重启 CodeArts Work 会话后才生效。',
+    nativeSkills: () => [codeartsWorkSkillsDir()],
   },
   {
     id: 'workbuddy',
@@ -4499,8 +4866,16 @@ const PAYLOAD_TARGETS = [
     dir: workbuddyPluginsDir,
     update: updateWorkBuddy,
     hint: 'MCP 工具在重启 WorkBuddy 会话后才生效。',
+    nativeSkills: () => [workbuddySkillsDir()],
   },
-  { id: 'dsh', label: 'DSH', dir: dshPluginsDir, update: updateDsh, hint: 'Restart the DSH session for changes to take effect.' },
+  {
+    id: 'dsh',
+    label: 'DSH',
+    dir: dshPluginsDir,
+    update: updateDsh,
+    hint: 'Restart the DSH session for changes to take effect.',
+    nativeSkills: () => [dshSkillsDir()],
+  },
   {
     id: 'officeace',
     label: 'OfficeAce',
@@ -4514,6 +4889,7 @@ const PAYLOAD_TARGETS = [
     dir: hermesPluginsDir,
     update: updateHermes,
     hint: 'Restart Hermes Agent for changes to take effect.',
+    nativeSkills: () => [hermesSkillsDir()],
   },
   {
     id: 'openclaw',
@@ -4521,6 +4897,10 @@ const PAYLOAD_TARGETS = [
     dir: openclawPluginsDir,
     update: updateOpenClaw,
     hint: 'Restart OpenClaw for changes to take effect.',
+    // ~/.agents/skills is shared with opencode's loader; Phase 0 measured
+    // opencode deduplicating by name across both dirs, so the overlap
+    // costs no duplicate disclosure.
+    nativeSkills: () => [openclawSkillsDir()],
   },
   {
     id: 'atomcode',
@@ -4528,8 +4908,9 @@ const PAYLOAD_TARGETS = [
     dir: atomcodePluginsDir,
     update: updateAtomCode,
     hint: 'Restart the AtomCode session for changes to take effect.',
+    nativeSkills: () => [atomcodeSkillsDir()],
   },
-] as const;
+];
 
 async function cmdDoctor(): Promise<void> {
   console.log(BANNER);
@@ -4549,8 +4930,11 @@ async function cmdDoctor(): Promise<void> {
     }
   }
 
-  // Node.js
-  check('Node.js >= 22', Number(process.versions.node.split('.')[0]) >= 22, 'Run: nvm install 22 && nvm use 22');
+  // Node.js — the same 22.18 floor engines declares (the build chain's
+  // type-stripping requirement); a 22.0-22.17 Node must FAIL, not PASS.
+  const nodeParts = process.versions.node.split('.').map(Number);
+  const nodeOk = nodeParts[0]! > 22 || (nodeParts[0]! === 22 && nodeParts[1]! >= 18);
+  check('Node.js >= 22.18', nodeOk, 'Run: nvm install 22.18 && nvm use 22.18');
 
   // MCP server — derived from PAYLOAD_TARGETS (one membership table for
   // every payload check in this doctor run).
@@ -4570,6 +4954,38 @@ async function cmdDoctor(): Promise<void> {
   const safetyOk = payloadDirs.some((d) => existsSync(join(d, 'safety', 'policy.json')));
   check('Safety policy installed', safetyOk, 'Run: npx huaweicloud-devkit install');
 
+  // Secret vault — custody tier and inventory only; doctor never decrypts.
+  try {
+    const custody = custodyReport();
+    if (custody.initialized) {
+      const count = vaultList().length;
+      check(`Secret vault ready (${custody.tier} custody, ${count} secret(s))`, true, '');
+    } else {
+      console.log(
+        '  \x1b[33m[SKIP]\x1b[0m Secret vault not initialized (optional; run npx huaweicloud-devkit secret set secret://<scope>/<name> --file <path>)',
+      );
+    }
+  } catch (error) {
+    // A failing keychain tier on a machine that never initialized the vault
+    // (secret-tool on PATH, no daemon) is the documented headless shape —
+    // not a red failure for an unused optional feature.
+    const code = (error as { code?: string }).code;
+    const hasRecords = (() => {
+      try {
+        return vaultList().length > 0;
+      } catch {
+        return false;
+      }
+    })();
+    if (code === 'VAULT_CUSTODY_READ_FAILED' && !hasRecords) {
+      console.log(
+        '  \x1b[33m[SKIP]\x1b[0m Secret vault not initialized (keychain backend currently unreadable; nothing stored)',
+      );
+    } else {
+      check('Secret vault', false, error instanceof Error ? error.message : String(error));
+    }
+  }
+
   const hookConfigPath = join(PLUGIN_ROOT, 'hooks', 'hooks.json');
   const hookNodePath = join(PLUGIN_ROOT, 'hooks', 'huaweicloud-safety.mjs');
   let hookConfigUsesNode = false;
@@ -4578,7 +4994,9 @@ async function cmdDoctor(): Promise<void> {
     const hookConfigText = readFileSync(hookConfigPath, 'utf8');
     hookConfigUsesNode = hookConfigText.includes('huaweicloud-safety.mjs') && /\bnode\b/.test(hookConfigText);
     hookConfigUsesPython = /\bpython3?\b/.test(hookConfigText);
-  } catch {}
+  } catch {
+    // unreadable hooks.json leaves both flags false — the check reports its advice
+  }
   check(
     'Safety hook runtime (Node)',
     existsSync(hookNodePath) && hookConfigUsesNode && !hookConfigUsesPython,
@@ -4596,7 +5014,9 @@ async function cmdDoctor(): Promise<void> {
         mcpConfigured = true;
         mcpCfgTarget = 'OpenCode';
       }
-    } catch {}
+    } catch {
+      // corrupt OpenCode config skips this candidate — the probe continues
+    }
   }
   const mpPath = codexMarketplacePath();
   if (!mcpConfigured && existsSync(mpPath)) {
@@ -4604,12 +5024,17 @@ async function cmdDoctor(): Promise<void> {
       const mp = asRecord(JSON.parse(readFileSync(mpPath, 'utf8')));
       if (
         mp.plugins &&
-        (Array.isArray(mp.plugins) ? mp.plugins : []).some((p) => asRecord(p).name === 'huaweicloud-devkit')
+        // Canonical plugin name — the same getCodexPluginName() reader
+        // ensureCodexMarketplaceEntry writes and codexDesktopStatus reads,
+        // so a marketplace.json rename moves all of them together.
+        (Array.isArray(mp.plugins) ? mp.plugins : []).some((p) => asRecord(p).name === getCodexPluginName())
       ) {
         mcpConfigured = true;
         mcpCfgTarget = 'Codex Desktop';
       }
-    } catch {}
+    } catch {
+      // corrupt marketplace file skips this candidate — the probe continues
+    }
   }
   const codeartsCfg = codeartsMcpSettingsFile();
   if (!mcpConfigured && existsSync(codeartsCfg)) {
@@ -4619,7 +5044,9 @@ async function cmdDoctor(): Promise<void> {
         mcpConfigured = true;
         mcpCfgTarget = 'CodeArts';
       }
-    } catch {}
+    } catch {
+      // corrupt CodeArts config skips this candidate — the probe continues
+    }
   }
   const codeartsWorkCfg = codeartsWorkMcpSettingsFile();
   if (!mcpConfigured && existsSync(codeartsWorkCfg)) {
@@ -4629,7 +5056,9 @@ async function cmdDoctor(): Promise<void> {
         mcpConfigured = true;
         mcpCfgTarget = 'CodeArts Work';
       }
-    } catch {}
+    } catch {
+      // corrupt CodeArts Work config skips this candidate — the probe continues
+    }
   }
   const workbuddyCfg = workbuddyMcpConfigFile();
   if (!mcpConfigured && existsSync(workbuddyCfg)) {
@@ -4639,7 +5068,9 @@ async function cmdDoctor(): Promise<void> {
         mcpConfigured = true;
         mcpCfgTarget = 'WorkBuddy';
       }
-    } catch {}
+    } catch {
+      // corrupt WorkBuddy config skips this candidate — the probe continues
+    }
   }
   if (!mcpConfigured && dshPatchConfigured()) {
     mcpConfigured = true;
@@ -4655,7 +5086,9 @@ async function cmdDoctor(): Promise<void> {
           mcpConfigured = true;
           mcpCfgTarget = 'OfficeAce';
         }
-      } catch {}
+      } catch {
+        // corrupt capabilities file skips this candidate — the probe continues
+      }
     }
   }
   if (!mcpConfigured) {
@@ -4667,7 +5100,9 @@ async function cmdDoctor(): Promise<void> {
           mcpConfigured = true;
           mcpCfgTarget = 'Hermes Agent';
         }
-      } catch {}
+      } catch {
+        // unreadable Hermes config skips this candidate — the probe continues
+      }
     }
   }
   if (!mcpConfigured) {
@@ -4679,7 +5114,9 @@ async function cmdDoctor(): Promise<void> {
           mcpConfigured = true;
           mcpCfgTarget = 'AtomCode';
         }
-      } catch {}
+      } catch {
+        // corrupt AtomCode config skips this candidate — the probe continues
+      }
     }
   }
   if (!mcpConfigured) {
@@ -4693,7 +5130,9 @@ async function cmdDoctor(): Promise<void> {
           mcpConfigured = true;
           mcpCfgTarget = 'OpenClaw';
         }
-      } catch {}
+      } catch {
+        // corrupt OpenClaw config exhausts the candidates — the check reports its advice
+      }
     }
   }
   check(
@@ -4772,18 +5211,208 @@ async function cmdDoctor(): Promise<void> {
   // package root when the DSH npm-in-profile patch is configured (that
   // layout resolves skills from the package root).
   const skillsTreeDirs = [...payloadDirs];
-  if (dshPatchConfigured()) skillsTreeDirs.push(join(PLUGIN_ROOT, 'skills'));
-  const skillsTreeOk = skillsTreeDirs.some((dir) => serverSkillCount(dir) >= 6);
-  check('Skills tree (server data, MCP-disclosed)', skillsTreeOk, 'Run: npx huaweicloud-devkit install');
+  // serverSkillDirNames() appends 'skills' to its argument, so the DSH
+  // package-root candidate is PLUGIN_ROOT itself — pushing the skills
+  // subdir would probe PLUGIN_ROOT/skills/skills, which never exists (the
+  // pre-fix shape: the fallback was inert and a DSH-only healthy install
+  // false-FAILED here).
+  if (dshPatchConfigured()) skillsTreeDirs.push(PLUGIN_ROOT);
+  // Set equality against the shipped manifest, not a count floor and not a
+  // one-direction subset: verifySkillTree (boot) rejects missing, hollow
+  // (name present, SKILL.md absent), and unclaimed entries, so doctor must
+  // fail any payload the server would refuse to start — doctor's listing
+  // is the same shared predicate the boot guard uses. The expected roster
+  // is a file the build wrote beside the tree, so a candidate listing can
+  // never trivially validate itself.
+  const expectedSkills = shippedSkillRoster();
+  const skillsTreeOk =
+    expectedSkills.length > 0 &&
+    skillsTreeDirs.some((dir) => {
+      const present = new Set(serverSkillDirNames(dir));
+      return present.size === expectedSkills.length && expectedSkills.every((name) => present.has(name));
+    });
+  check(
+    'Skills tree (server data; MCP catalog + stdio skillRoot)',
+    skillsTreeOk,
+    'Run: npx huaweicloud-devkit install (from a git checkout: npm run build first)',
+  );
 
-  // Stale native copies from pre-MCP installs shadow-disclose outdated skill
-  // content through the agent's own loader; they also bypass pack gating.
-  const staleNative = staleNativeSkillDirs().length;
-  if (staleNative > 0) {
+  // Native disclosure: the core meta-skills may sit natively only in a dir a
+  // PAYLOAD_TARGETS sync row manages (receipt present — a torn receipt file
+  // still proves placement); any other owned name — residue, a hand-placed
+  // copy, or a foreign dir like officeace's — warns, as do remembered names
+  // the core set no longer claims. Installed targets additionally get
+  // freshness: the native copies must equal the payload the target actually
+  // runs.
+  const corePack = tryCoreSkillNames();
+  if (corePack === null) {
     warn++;
     console.log(
-      `  \x1b[33m[WARN]\x1b[0m ${staleNative} stale native skill cop${staleNative === 1 ? 'y' : 'ies'} from an older install — re-run: npx huaweicloud-devkit install`,
+      '  \x1b[33m[WARN]\x1b[0m skills tree or manifest lacks usable core-pack info — re-run: npx huaweicloud-devkit install',
     );
+  } else {
+    const owned = devkitOwnedSkillNames();
+    const syncDirs = nativeSyncDirs();
+    let staleNative = 0;
+    for (const dir of nativeSkillDirs()) {
+      if (!existsSync(dir)) continue;
+      const receipt = readNativeReceipt(dir);
+      if (receipt?.kind === 'corrupt') {
+        warn++;
+        // For the DSH native dir the plain `install` remediation is the
+        // layout-converting one (it would layer a plugin-dir install over a
+        // possibly-live marketplace package): the profile's package install
+        // rewrites the receipt too, so both remediations are named. Every
+        // other dir was only ever written by this CLI.
+        const dshHint =
+          `  \x1b[33m[WARN]\x1b[0m unreadable native receipt in ${dir} — ` +
+          (dir === dshSkillsDir()
+            ? "re-run the DSH profile's package install or npx huaweicloud-devkit install (either rewrites it)"
+            : 're-run: npx huaweicloud-devkit install');
+        console.log(dshHint);
+      }
+      const remembered = receipt?.kind === 'ok' ? new Set(receipt.receipt.names) : new Set<string>();
+      const managedHere = syncDirs.has(dir) && receipt !== null;
+      try {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue;
+          if (owned.has(entry.name)) {
+            if (managedHere && corePack.has(entry.name)) continue;
+            staleNative++;
+          } else if (managedHere && remembered.has(entry.name) && !corePack.has(entry.name)) {
+            // A retired core skill living only in the receipt: cleanup
+            // deletes it on the next install; doctor must see it too.
+            staleNative++;
+          }
+        }
+      } catch {
+        // unreadable dir cannot confirm stale copies
+      }
+    }
+    if (staleNative > 0) {
+      warn++;
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m ${staleNative} stale native skill cop${staleNative === 1 ? 'y' : 'ies'} from an older or hand-made install — re-run: npx huaweicloud-devkit install`,
+      );
+    }
+    for (const row of PAYLOAD_TARGETS) {
+      if (!row.nativeSkills) continue;
+      for (const dir of row.nativeSkills()) {
+        const receipt = readNativeReceipt(dir);
+        // The marketplace layout (DSH npm-in-profile): the postinstall —
+        // the only actor that runs in that layout — records it in the
+        // receipt together with the package root it serves from. A detector
+        // built on patch-file markers would not fire for real marketplace
+        // installs: the bundled cordis.patch.yml DSH consumes never carries
+        // the CLI-managed block's markers. The row guard matches the
+        // writer: only the dsh row's dir can legitimately carry this
+        // layout, so a hand-copied receipt elsewhere earns nothing.
+        const packageRoot =
+          receipt?.kind === 'ok' &&
+          row.id === 'dsh' &&
+          receipt.receipt.layout === 'package-root' &&
+          typeof receipt.receipt.packageRoot === 'string'
+            ? receipt.receipt.packageRoot
+            : null;
+        const installed = mcpServerInstalled(row.dir()) || packageRoot !== null;
+        if (!existsSync(dir)) {
+          // Absent without a receipt stays silent: the codearts project dir
+          // only exists for the tree the install ran in.
+          if (receipt !== null) {
+            warn++;
+            console.log(
+              `  \x1b[33m[WARN]\x1b[0m Native core skills (${row.label}): receipt present but the dir is gone — re-run: npx huaweicloud-devkit install --target ${row.id}`,
+            );
+          }
+          continue;
+        }
+        if (!installed) {
+          // A corrupt receipt erases the layout knowledge this branch needs:
+          // the marketplace would be false-orphaned and the remediation
+          // would layer a second install — the corrupt-receipt warning in
+          // the scan above carries the remediation, so this branch speaks
+          // only for readable receipts. The hedge fires when the receipt
+          // names a maintainer this run cannot resolve: a layout-less
+          // receipt (written before the layout field existed) or a
+          // marketplace receipt whose root was dropped as malformed —
+          // less layout knowledge must never earn a MORE confident
+          // prescription. The marketplace half of the hedge is scoped to
+          // the dsh row: the postinstall only ever writes ~/.dsh/skills,
+          // so for every other row a layout-less receipt can only be a
+          // plugin-dir install and the precise remediation is correct.
+          if (receipt?.kind === 'ok' && row.id === 'dsh' && receipt.receipt.layout !== 'plugin-dir') {
+            warn++;
+            console.log(
+              `  \x1b[33m[WARN]\x1b[0m Native core skills (${row.label}) present without a plugin-dir MCP server and no resolvable layout — the marketplace install (DSH profile package) is also a possible owner; if it is stale, re-run the DSH profile's package install or npx huaweicloud-devkit install --target ${row.id}`,
+            );
+          } else if (receipt?.kind === 'ok') {
+            warn++;
+            console.log(
+              `  \x1b[33m[WARN]\x1b[0m Native core skills (${row.label}) present without an installed MCP server — re-run: npx huaweicloud-devkit install --target ${row.id}`,
+            );
+          }
+          continue;
+        }
+        // The honest comparator is the payload the target actually runs —
+        // never this CLI's tree, or `npx huaweicloud-devkit@latest doctor`
+        // would false-report drift on an older healthy payload. The
+        // marketplace layout resolves its payload from the recorded package
+        // root; the plugin-dir layout reads the installed plugin dir. A
+        // remediation is only honest if the command it names can run on
+        // that layout, so the marketplace points at the package upgrade
+        // (update --target would refuse: no plugin dir to update).
+        let payloadTree: string | null;
+        let fixHint: string;
+        if (packageRoot !== null) {
+          // packageRoot is control-character-stripped at READ time in the
+          // shared receipt module (the single entry point for the untrusted
+          // field), so every echo here is already forgery-safe.
+          const shownRoot = packageRoot;
+          const tree = marketplacePayloadTree(packageRoot);
+          payloadTree = existsSync(tree) ? tree : null;
+          fixHint = 'upgrade the huaweicloud-devkit package inside the DSH profile';
+          if (payloadTree === null) {
+            warn++;
+            console.log(
+              `  \x1b[33m[WARN]\x1b[0m Native core skills (${row.label}): the recorded package root ${shownRoot} no longer carries a skills tree — reinstall the huaweicloud-devkit package in the DSH profile`,
+            );
+            continue;
+          }
+        } else if (existsSync(join(row.dir(), 'skills'))) {
+          payloadTree = join(row.dir(), 'skills');
+          fixHint = `re-run: npx huaweicloud-devkit update --target ${row.id}`;
+        } else {
+          // Installed (dist present) but no skills tree: the payload is
+          // broken. The global skills-tree check is a some() across every
+          // candidate dir, so a healthy target can mask this one — name it
+          // here instead of silently skipping freshness.
+          warn++;
+          console.log(
+            `  \x1b[33m[WARN]\x1b[0m Native core skills (${row.label}): the installed payload has no skills tree — re-run: npx huaweicloud-devkit install --target ${row.id}`,
+          );
+          continue;
+        }
+        // The checked roster comes from the payload's own manifest, so a
+        // newer doctor CLI never demands a core skill the installed payload
+        // never shipped; only an unreadable payload manifest falls back to
+        // this CLI's roster.
+        const rosterCore = payloadCoreNames(payloadTree) ?? corePack;
+        for (const name of rosterCore) {
+          const nativeCopy = join(dir, name);
+          if (!existsSync(nativeCopy)) {
+            warn++;
+            console.log(`  \x1b[33m[WARN]\x1b[0m Native core skills (${row.label}): ${name} missing — ${fixHint}`);
+            continue;
+          }
+          if (!skillTreeEquals(nativeCopy, join(payloadTree, name))) {
+            warn++;
+            console.log(
+              `  \x1b[33m[WARN]\x1b[0m Native core skills (${row.label}): ${name} diverges from the installed payload — ${fixHint}`,
+            );
+          }
+        }
+      }
+    }
   }
 
   // Pack status — DEVKIT_PACKS is read from each installed target's MCP
@@ -4825,6 +5454,10 @@ async function cmdDoctor(): Promise<void> {
   if (packReport.codex) {
     renderCodexPacksLine(true, packReport.codex.reason === 'plugin-installed');
   }
+  // Discoverability for the secrets pack on pinned-seed installs; a real
+  // mismatch (vault in use, pack trimmed) warns here and counts like the
+  // other inline warns above.
+  warn += renderSecretsPackNote(packReport);
   const { union: enabledPacksUnion, carriers } = packReport;
   if (carriers.length > 0) {
     const requiredDeps = requiredDependencies(enabledPacksUnion);
@@ -4833,8 +5466,8 @@ async function cmdDoctor(): Promise<void> {
     } else {
       for (const id of DEPENDENCY_IDS.filter((entry) => requiredDeps.has(entry))) {
         if (id === 'hcloud') continue; // the dedicated hcloud block above owns this check
-        if (id === 'devbridge') {
-          console.log(`  \x1b[36m[INFO]\x1b[0m devbridge: sandbox-resident, not probed host-side`);
+        if (DEPENDENCIES[id].kind === 'sandbox-resident') {
+          console.log(`  \x1b[36m[INFO]\x1b[0m ${id}: sandbox-resident, not probed host-side`);
           continue;
         }
         const resolved = resolveDependencyCommand(DEPENDENCIES[id].resolution);
@@ -4905,19 +5538,21 @@ async function cmdUpdate(): Promise<void> {
   resolvePacksFlag(); // fail fast on bogus --packs before any file is copied
   const target = parseTarget();
   await checkForUpdate();
-  // Purge stale native copies only when this run will actually place the new
+  // Reconcile the native dirs only when this run will actually place the new
   // payload somewhere. A target whose server is absent gets "Not installed"
   // below; purging its (only) skill copies first would destroy them with no
   // replacement. codex has no native skill dir, so its null marker skips the
-  // purge harmlessly.
+  // cleanup harmlessly.
   const markerDir = installMarkerDirForTarget(target);
   const willPlacePayload =
-    target === 'all' ? PAYLOAD_TARGETS.some((t) => mcpServerInstalled(t.dir())) : markerDir !== null && mcpServerInstalled(markerDir);
+    target === 'all'
+      ? PAYLOAD_TARGETS.some((t) => mcpServerInstalled(t.dir()))
+      : markerDir !== null && mcpServerInstalled(markerDir);
   if (willPlacePayload) {
-    const purged = purgeStaleNativeSkills();
+    const purged = cleanupNativeDirs();
     if (purged > 0)
       console.log(
-        `  Cleaned ${purged} stale native skill cop${purged === 1 ? 'y' : 'ies'} (skills are now MCP-disclosed)`,
+        `  Cleaned ${purged} stale native skill cop${purged === 1 ? 'y' : 'ies'} (pre-MCP residue or retired names)`,
       );
   }
 
@@ -4970,6 +5605,7 @@ async function dispatchUpdateTarget(target: string): Promise<boolean> {
     // opencode's (the table's first row) prints with a leading blank line.
     console.log(`${all && row.id !== 'opencode' ? '\n' : ''}[${row.label}]`);
     await row.update();
+    syncNativeSkillsForTarget(row.id);
     updatedAny = true;
     if (!all) {
       console.log(`\n\x1b[32mUpdate complete.\x1b[0m`);
@@ -5024,7 +5660,7 @@ async function confirm(msg: string): Promise<boolean> {
 
 async function cmdInstallHcloud(): Promise<void> {
   console.log(BANNER);
-  // Thin wrapper: the platform installer lives in src/dep-provision.ts
+  // Thin wrapper: the platform installer lives in src/dep/installers/hcloud.ts
   // (installKooCli), shared with install-time provisioning; this command
   // owns the banner and the trailing credentials note. For a TTY user the
   // output is indistinguishable from the pre-extraction command.
@@ -5088,8 +5724,8 @@ async function readSecret(prompt: string): Promise<string> {
   });
 }
 
-// Narrow the parsed vault shape at this boundary. The cast keeps the same object
-// reference, so callers that pass it back to writeObsConfig/writeGlobalCredentials
+// Narrow the parsed vault shape at this boundary. The guard returns the same
+// object reference, so callers that pass it back to writeObsConfig/writeGlobalCredentials
 // behave exactly as before.
 interface StoredCredentials {
   ak?: unknown;
@@ -5099,7 +5735,7 @@ interface StoredCredentials {
 }
 
 function asStoredCredentials(value: unknown): StoredCredentials | null {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as StoredCredentials) : null;
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
 
 function configuredProfileName(): string {
@@ -5120,9 +5756,9 @@ function configureHcloud(credentials: { ak: unknown; sk: unknown; region?: unkno
     'configure',
     'set',
     `--cli-profile=${configuredProfileName()}`,
-    `--cli-access-key=${credentials.ak}`,
-    `--cli-secret-key=${credentials.sk}`,
-    `--cli-region=${credentials.region || ''}`,
+    `--cli-access-key=${asText(credentials.ak)}`,
+    `--cli-secret-key=${asText(credentials.sk)}`,
+    `--cli-region=${asText(credentials.region || '')}`,
   ];
   const r = spawnSync(hcloudBin, args, {
     shell: false,
@@ -5156,12 +5792,20 @@ interface AuthStatusSummary {
   obsConfigPath: unknown;
   kooCliInstalled: unknown;
   agents: unknown;
+  reconciled?: { s1RefError?: unknown };
 }
 
 function printAuthStatus(status: AuthStatusSummary): void {
   console.log(
     `Credentials vault: ${status.credentialsConfigured ? 'configured' : 'missing'} (${String(status.credentialsPath)})`,
   );
+  const rawS1RefError = asRecord(status.reconciled).s1RefError;
+  const s1RefError = typeof rawS1RefError === 'string' ? rawS1RefError : null;
+  if (s1RefError) {
+    console.log(
+      `\x1b[31mS1 vault ref error: ${s1RefError}\x1b[0m — fix the vault (npx huaweicloud-devkit secret list) or replace the refs in ~/.config/huaweicloud/credentials.json with plaintext.`,
+    );
+  }
   console.log(`OBS config: ${status.obsConfigured ? 'configured' : 'missing'} (${String(status.obsConfigPath)})`);
   console.log(`KooCLI: ${status.kooCliInstalled ? 'installed' : 'missing'}`);
   console.log('Agent MCP registration:');
@@ -5188,7 +5832,9 @@ async function cmdAuthInit(): Promise<void> {
         );
       }
     }
-  } catch {}
+  } catch {
+    // best-effort hint: unreadable KooCLI config skips the existing-profile notice
+  }
 
   let ak = process.env.HW_ACCESS_KEY || '';
   let sk = process.env.HW_SECRET_KEY || '';
@@ -5223,16 +5869,27 @@ async function cmdAuthInit(): Promise<void> {
     return;
   }
 
-  writeGlobalCredentials({ ak, sk, securityToken, region });
+  // Incoming values may be secret:// refs (env-delivered or typed). Resolve
+  // for the mirrors, keep the ref representation in S1 when the resolved
+  // value matches — same preserveRefForm contract as auth_switch persist.
+  const akValue = resolveSecretValue(ak) ?? ak;
+  const skValue = resolveSecretValue(sk) ?? sk;
+  const rawStored = readGlobalCredentials();
+  writeGlobalCredentials({
+    ak: preserveRefForm(akValue, rawStored?.ak),
+    sk: preserveRefForm(skValue, rawStored?.sk),
+    securityToken,
+    region,
+  });
 
   try {
-    writeObsConfig({ ak, sk, securityToken, region });
+    writeObsConfig({ ak: akValue, sk: skValue, securityToken, region });
   } catch (error) {
     console.log(`OBS config sync failed: ${errorMessage(error)}`);
   }
 
   if (findHcloudBin()) {
-    const result = configureHcloud({ ak, sk, region });
+    const result = configureHcloud({ ak: akValue, sk: skValue, region });
     if (!result.ok) console.log(`KooCLI update failed: ${result.error || result.code}`);
     else {
       const proj = resolveAndApplyProjectId({ region });
@@ -5260,8 +5917,18 @@ async function cmdAuthReconcile(): Promise<void> {
   console.log(BANNER);
   console.log('HuaweiCloud DevKit Credential Reconciliation\n');
 
-  const { scanState, runHcloudConfigure, resolveManagedProfile } = await import('./auth/reconcile.ts');
+  const { scanState } = await import('./auth/reconcile.ts');
   const state = scanState();
+  // A broken S1 vault link suppresses the drift fingerprints, so it would
+  // otherwise read as "consistent" while every credential consumer throws.
+  if (state.s1RefError) {
+    console.error(`  \x1b[31mS1 holds a secret ref the vault cannot resolve: ${state.s1RefError}\x1b[0m`);
+    console.error(
+      '  Fix the vault (npx huaweicloud-devkit secret list; check the master key) or replace the refs in ~/.config/huaweicloud/credentials.json with plaintext.',
+    );
+    process.exitCode = 1;
+    return;
+  }
   if (state.inconsistencies.length === 0) {
     console.log('All credential files are consistent. ✓');
     return;
@@ -5286,33 +5953,29 @@ async function cmdAuthReconcile(): Promise<void> {
     console.log('Aborted.');
     return;
   }
-  const credentials = asStoredCredentials(readGlobalCredentials());
-  if (!credentials?.ak || !credentials?.sk) {
-    console.error('No global credentials found after confirmation; aborting.');
-    process.exitCode = 1;
+  // Propagation delegates to syncAuth — the same seam-tested fan-out (S1
+  // refs resolved BEFORE writing ~/.obsutilconfig and the KooCLI profile,
+  // .last_sync fingerprinted from resolved values). A hand-rolled copy here
+  // once escaped the seam and wrote literal secret:// refs into both
+  // mirrors. Result interpretation keeps reconcile's best-effort contract:
+  // a mirror-partial sync (OBS written, KooCLI absent/failed) is a soft
+  // outcome with detail, not a hard failure — the same exit code the
+  // hand-rolled version produced.
+  const result = syncAuth('all');
+  if (result.ok) {
+    console.log('Done. .last_sync refreshed.');
     return;
   }
-  try {
-    writeObsConfig(credentials);
-  } catch (error) {
-    console.log(`OBS sync failed: ${errorMessage(error)}`);
-  }
-  const profile = resolveManagedProfile();
-  let hcloudSynced = false;
-  if (profile) {
-    // runHcloudConfigure declares string params; the vault fields are guarded
-    // truthy above, so String() is identity for real credential values.
-    const region = typeof credentials.region === 'string' ? credentials.region : undefined;
-    const r = runHcloudConfigure(profile, String(credentials.ak), String(credentials.sk), region);
-    hcloudSynced = r.ok;
-    console.log(`  KooCLI ${r.ok ? 'synced' : 'sync failed'}: profile=${profile} ${r.error || ''}`);
-  }
-  if (hcloudSynced) {
-    writeLastSync({ kooCliProfile: profile, s1Fingerprint: fingerprint(credentials.ak, credentials.sk) });
-    console.log('Done. .last_sync refreshed.');
-  } else {
+  if (result.obs?.configured) {
+    console.log('  OBS synced ✓.');
+    console.log(`  KooCLI sync did not complete: ${result.error}`);
+    if (result.nextStep) console.log(`  Next: ${result.nextStep}`);
     console.log('Done. .last_sync was not refreshed because KooCLI sync did not complete.');
+    return;
   }
+  console.error(`  \x1b[31m${result.error}\x1b[0m`);
+  if (result.nextStep) console.error(`  Next: ${result.nextStep}`);
+  process.exitCode = 1;
 }
 
 async function cmdAuthSync(): Promise<void> {
@@ -5443,7 +6106,7 @@ function readInstalledVersion(pluginsDir: string): string | null {
   const p = join(pluginsDir, 'package.json');
   if (!existsSync(p)) return null;
   try {
-    const v: unknown = JSON.parse(readFileSync(p, 'utf8')).version;
+    const v: unknown = asRecord(JSON.parse(readFileSync(p, 'utf8'))).version;
     return typeof v === 'string' && v ? v : null;
   } catch {
     return null;
@@ -5488,7 +6151,7 @@ function cmdVersion(): void {
 // Dependency tooling: `dep status` renders the catalog rows for the current
 // effective pack union; `dep install <id>` runs one specific installer,
 // bypassing policy; `dep uninstall <id>` is receipt-gated (see
-// dep-provision.ts) and refuses while the effective pack union still
+// dep/provision.ts) and refuses while the effective pack union still
 // requires the id.
 function cmdDepStatus(): void {
   const report = packUnionReport();
@@ -5525,19 +6188,24 @@ async function cmdDepInstall(): Promise<void> {
     process.exitCode = 1;
     return;
   }
+  // The explicit install path bypasses installPolicy on purpose — the
+  // command is the user's answer — including non-TTY: scripted CI installs
+  // download for real (the policy loop's non-TTY refusal is provisioning
+  // policy, not installer mechanics).
+  const installer = installerFor(id as DependencyId);
+  if (!installer) {
+    console.error(`${id} ships inside the cloud sandbox; the host never installs or removes it.`);
+    process.exitCode = 1;
+    return;
+  }
   const tty = process.stdin.isTTY === true && process.stdout.isTTY === true;
-  if (id === 'hcloud') {
-    const ok = await installKooCli({ tty });
+  if (installer.kind === 'cli') {
+    const ok = await installer.install({ tty });
     if (!ok) process.exitCode = 1;
     return;
   }
-  if (id === 'open-mcp-gateway') {
-    const result = await installGatewayTool();
-    if (!result.ok) process.exitCode = 1;
-    return;
-  }
-  console.error('devbridge ships inside the cloud sandbox; the host never installs or removes it.');
-  process.exitCode = 1;
+  const result = await installer.install();
+  if (!result.ok) process.exitCode = 1;
 }
 
 function cmdDepUninstall(): void {
@@ -5653,8 +6321,14 @@ function cmdPacksStatus(): void {
     }
     console.log(`  \x1b[36m[INFO]\x1b[0m Packs (${slot.label}): ${[...parsed.enabled].join(', ')}`);
   }
-  const probe = codexPluginProbe();
-  renderCodexPacksLine(probe.ok ? probe.installed : true, probe.ok);
+  // Discoverability note for pinned seeds missing the secrets pack — the
+  // same packUnionReport() derivation doctor uses, so the two faces cannot
+  // drift. One probe serves both the note and the codex attribution line
+  // (report.codex carries the probe outcome; a second codexPluginProbe()
+  // call would spawn the codex CLI twice per status run).
+  const report = packUnionReport();
+  renderSecretsPackNote(report, new Set(slots.map((slot) => slot.label)));
+  renderCodexPacksLine(report.codex !== null, report.codex?.reason !== 'probe-failed');
 }
 
 // Write modes stay silent about codex by design (no write path there), but
@@ -5674,7 +6348,7 @@ function joinPackIds(ids: Iterable<PackId>): string {
 }
 
 // A requested seed that, with core force-included, spans every pack is
-// stored as the unset full surface instead of a nine-id list.
+// stored as the unset full surface instead of a ten-id list.
 function coversFullSurface(ids: ReadonlySet<PackId>): boolean {
   return PACK_IDS.every((id) => id === 'core' || ids.has(id));
 }
@@ -5824,6 +6498,9 @@ async function main(): Promise<void> {
     case 'auth':
       await cmdAuth();
       break;
+    case 'secret':
+      process.exitCode = runSecretCommand(process.argv.slice(3));
+      break;
     case 'proxy':
       await cmdProxy();
       break;
@@ -5852,6 +6529,7 @@ async function main(): Promise<void> {
       console.log('  dep          Dependency tooling: status | install <id> | uninstall <id>');
       console.log('  packs        Post-install pack surface: status | enable <ids> | disable <ids> | all');
       console.log('  auth         Manage unified auth: init | sync | status | reconcile');
+      console.log('  secret       Encrypted secret vault: set | get | list | rm | exec');
       console.log('  proxy        Manage proxy config: init | show | clear');
       console.log('  version      Print CLI version and installed plugin version per agent');
       console.log('  help         Show this help');

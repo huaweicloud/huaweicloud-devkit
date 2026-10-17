@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { createHash, createHmac } from 'node:crypto';
 import { z } from 'zod';
 
-import { readGlobalCredentials, writeObsConfig, resolveCredentialsWithRuntime } from '../../auth/credentials.ts';
+import { readGlobalCredentialsStrict, writeObsConfig, resolveCredentialsWithRuntime } from '../../auth/credentials.ts';
 import { runHcloud } from '../../hcloud-cli.ts';
 import { fetchWithProxy } from '../../proxy/proxy-agent.ts';
 import { asCredentialRecord, type CredentialLike } from '../../lib/credentials.ts';
@@ -30,7 +30,13 @@ function pickString(...values: unknown[]): string {
 }
 
 async function setupObsConfig(profile?: string) {
-  const stored = asCredentialRecord(readGlobalCredentials());
+  // Strict resolved read through the shared seam: a literal secret:// string
+  // written into ~/.obsutilconfig would break every obsutil call.
+  const strict = readGlobalCredentialsStrict();
+  if (!strict.ok) {
+    return { ok: false, error: strict.error, nextStep: strict.nextStep };
+  }
+  const stored = asCredentialRecord(strict.credentials);
   if (stored?.ak && stored?.sk) {
     try {
       const obs: { path: string; endpoint: string } = writeObsConfig(stored);

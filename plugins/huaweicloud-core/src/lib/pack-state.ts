@@ -17,7 +17,7 @@ import type { PackId } from './pack-types.ts';
 // and reader (the open-mcp gateway's policy file) lives under packs/<id>/,
 // so ownership is derivable from the directory name and an uninstall can
 // preserve user state without a manifest. Modules that still hand-roll
-// the base (auth/credentials, dep-receipts, update-check, proxy-config,
+// the base (auth/credentials, dep/receipts, update-check, proxy-config,
 // officeace-paths) migrate here when next touched; the guard below
 // already resolves through this module, so guard and store cannot
 // disagree about where the tree is.

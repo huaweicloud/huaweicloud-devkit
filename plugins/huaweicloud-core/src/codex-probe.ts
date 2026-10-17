@@ -18,7 +18,9 @@ export function getMarketplaceName(): string {
   try {
     const manifest = asRecord(JSON.parse(readFileSync(marketplacePath, 'utf8')));
     if (typeof manifest.name === 'string' && manifest.name) return manifest.name;
-  } catch {}
+  } catch {
+    // missing or corrupt marketplace.json means the default marketplace name
+  }
   return 'huaweicloud-devkit';
 }
 
@@ -29,12 +31,16 @@ export function getCodexPluginName(): string {
     const plugins: unknown[] = Array.isArray(marketplace.plugins) ? marketplace.plugins : [];
     const pluginName: unknown = asRecord(plugins[0]).name;
     if (typeof pluginName === 'string' && pluginName) return pluginName;
-  } catch {}
+  } catch {
+    // missing or corrupt marketplace.json falls through to the plugin manifest
+  }
   const codexManifestPath = join(PLUGIN_ROOT, '.codex-plugin', 'plugin.json');
   try {
     const manifest = asRecord(JSON.parse(readFileSync(codexManifestPath, 'utf8')));
     if (typeof manifest.name === 'string' && manifest.name) return manifest.name;
-  } catch {}
+  } catch {
+    // missing or corrupt plugin manifest means the default plugin name
+  }
   return 'huaweicloud-devkit';
 }
 

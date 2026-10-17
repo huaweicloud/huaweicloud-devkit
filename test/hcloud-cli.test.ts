@@ -1,9 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { delimiter, dirname, join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import test from 'node:test';
-
-const isWin = process.platform === 'win32';
 
 import {
   consumeApprovalToken,
@@ -15,12 +13,27 @@ import {
   runHcloud,
   extractApiError,
   redactOutput,
+  type HcloudPlan,
+  type HcloudRunResult,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
-async function withTempAuthHome(fn) {
+const isWin = process.platform === 'win32';
+
+interface FakeHcloudOutput {
+  ok: boolean;
+  args: string[];
+}
+
+interface ApprovedRunResult extends HcloudRunResult {
+  approved: boolean;
+  injectedLang?: unknown;
+  autoRetried?: unknown;
+}
+
+async function withTempAuthHome(fn: (home: string) => Promise<void> | void) {
   const home = fixtureDir('huaweicloud-toolkit-auth-');
   const previous = {
     HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
@@ -48,14 +61,14 @@ async function withTempAuthHome(fn) {
   }
 }
 
-function fakeHcloudScript(source) {
+function fakeHcloudScript(source: string) {
   const dir = fixtureDir('huaweicloud-toolkit-');
   const script = join(dir, 'fake-hcloud.mjs');
   writeFileSync(script, source, 'utf8');
   return script;
 }
 
-function fakeHcloudExecutable(source) {
+function fakeHcloudExecutable(source: string) {
   const dir = fixtureDir('huaweicloud-toolkit-bin-');
   const script = join(dir, 'fake-hcloud');
   writeFileSync(script, `#!/usr/bin/env node\n${source}`, 'utf8');
@@ -63,7 +76,7 @@ function fakeHcloudExecutable(source) {
   return script;
 }
 
-function withMetaRepo(files) {
+function withMetaRepo(files: Record<string, unknown[]>) {
   const dir = fixtureDir('huaweicloud-toolkit-meta-');
   for (const [name, items] of Object.entries(files)) {
     writeFileSync(join(dir, name), JSON.stringify({ items }));
@@ -76,7 +89,7 @@ test('planHcloudCommand includes copyable command text and password history warn
     allowWrites: true,
   });
   assert.match(plan.executableBlock, /hcloud ECS CreateServers/);
-  assert.ok(plan.warnings.some((warning) => /shell history/i.test(warning)));
+  assert.ok(plan.warnings.some((warning) => typeof warning === 'string' && /shell history/i.test(warning)));
 });
 
 test('planHcloudCommand correctly classifies read-only command', () => {
@@ -93,13 +106,13 @@ test('planHcloudCommand marks write command as unsafe without approval', () => {
 
 test('planHcloudCommand adds resource-manifest hint for OBS write operations', () => {
   const plan = planHcloudCommand(['OBS', 'mb', 'obs://test-bucket', '-location=cn-north-4']);
-  assert.ok(plan.warnings.some((warning) => /resource manifest/i.test(warning)));
+  assert.ok(plan.warnings.some((warning) => typeof warning === 'string' && /resource manifest/i.test(warning)));
   assert.equal(plan.classification.decision, 'deny');
 });
 
 test('planHcloudCommand adds no manifest hint for OBS read operations', () => {
   const plan = planHcloudCommand(['OBS', 'ls']);
-  assert.ok(!plan.warnings.some((warning) => /resource manifest/i.test(warning)));
+  assert.ok(!plan.warnings.some((warning) => typeof warning === 'string' && /resource manifest/i.test(warning)));
 });
 
 test('createApprovalToken persists hashed/redacted args and never raw secrets', async () => {
@@ -127,7 +140,7 @@ test('approval token survives a fresh file read (cross-process) and expires by T
     const token = createApprovalToken(['OBS', 'mb', 'obs://bucket']);
     // consume reads from the file (single source of truth), not from a memory map
     const stored = consumeApprovalToken(token);
-    assert.equal(stored.argsHash, hashArgs(['OBS', 'mb', 'obs://bucket']));
+    assert.equal(stored!.argsHash, hashArgs(['OBS', 'mb', 'obs://bucket']));
 
     // TTL: backdate an entry to before the window and expect null
     const ttlToken = createApprovalToken(['OBS', 'rm', 'obs://bucket']);
@@ -160,7 +173,7 @@ console.log(JSON.stringify({ ok: true, args: process.argv.slice(2) }));
   });
   assert.equal(result.ok, true);
   assert.equal(result.retries, 1);
-  assert.match(result.stdout, /ListServersDetails/);
+  assert.match(result.stdout!, /ListServersDetails/);
 });
 
 test('runHcloud returns a timeout result instead of hanging', async () => {
@@ -173,7 +186,7 @@ test('runHcloud returns a timeout result instead of hanging', async () => {
   });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'TIMEOUT');
-  assert.match(result.error, /timed out/i);
+  assert.match(result.error!, /timed out/i);
 });
 
 test('runHcloud respects cwd parameter', async () => {
@@ -190,7 +203,7 @@ console.log(content);
     cwd: cwdDir,
   });
   assert.equal(result.ok, true);
-  assert.match(result.stdout, /works/);
+  assert.match(result.stdout!, /works/);
 });
 
 test('runHcloud captures stderr and returns failed status', async () => {
@@ -204,7 +217,7 @@ process.exit(1);
     maxRetries: 0,
   });
   assert.equal(result.ok, false);
-  assert.match(result.stderr, /something went wrong/);
+  assert.match(result.stderr!, /something went wrong/);
 });
 
 test('runHcloud redacts passwords in output', async () => {
@@ -215,7 +228,7 @@ console.log('adminPass=MySecret123!');
     executable: process.execPath,
     executableArgs: [script],
   });
-  assert.doesNotMatch(result.stdout, /MySecret123!/);
+  assert.doesNotMatch(result.stdout!, /MySecret123!/);
 });
 
 test('redactOutput redacts bare token= via redactSecrets reuse (#726 D4-27)', () => {
@@ -281,7 +294,7 @@ console.log(JSON.stringify({ ok: true }));
       executableArgs: [script],
     });
     assert.equal(result.ok, true);
-    assert.match(result.authWarning, /KooCLI current/);
+    assert.match(result.authWarning!, /KooCLI current/);
   });
 });
 
@@ -311,24 +324,24 @@ process.exit(1);
     process.env.HOME = home;
     process.env.HCLOUD_BIN = fake;
     try {
-      const plan = await callTool('huaweicloud_plan_cli_command', {
+      const plan = (await callTool('huaweicloud_plan_cli_command', {
         args: ['BSS', 'ShowCustomerAccountBalances'],
         allowWrites: true,
-      });
+      })) as HcloudPlan;
       assert.ok(plan.approvalToken, 'plan produces an approvalToken');
       assert.equal(plan.safeToRun, true);
       assert.ok(!plan.args.includes('--cli-lang'), 'approved args carry no lang flag');
 
-      const result = await callTool('huaweicloud_run_approved_command', {
+      const result = (await callTool('huaweicloud_run_approved_command', {
         args: ['BSS', 'ShowCustomerAccountBalances'],
         approvalToken: plan.approvalToken,
         approvedByUser: true,
         maxRetries: 0,
-      });
+      })) as ApprovedRunResult;
       assert.equal(result.approved, true, 'approved execution flag preserved');
       assert.equal(result.ok, false, 'command itself failed with Unsupported');
       assert.equal(result.langCause, 'lang-missing');
-      assert.match(result.langNextStep, /hcloud configure set --cli-lang=cn/);
+      assert.match(result.langNextStep!, /hcloud configure set --cli-lang=cn/);
       assert.equal(result.injectedLang, undefined, 'no lang flag injected into the approved command');
       assert.equal(result.autoRetried, undefined);
 
@@ -346,10 +359,10 @@ process.exit(1);
 );
 
 test('koocli lang G4: approval token still rejects args that differ from the approved plan', async () => {
-  const plan = await callTool('huaweicloud_plan_cli_command', {
+  const plan = (await callTool('huaweicloud_plan_cli_command', {
     args: ['BSS', 'ShowCustomerAccountBalances'],
     allowWrites: true,
-  });
+  })) as HcloudPlan;
   await assert.rejects(
     callTool('huaweicloud_run_approved_command', {
       args: ['BSS', 'DifferentOperation'],
@@ -364,8 +377,8 @@ test('koocli lang: extractApiError keeps JSON keys stable under Chinese KooCLI o
   const result = extractApiError(
     'ListVpcs有多个版本,默认使用该API版本v3{ "error_code": "BSS.0001", "error_msg": "指定余额不足" }',
   );
-  assert.equal(result.errorCode, 'BSS.0001');
-  assert.equal(result.errorMessage, '指定余额不足');
+  assert.equal(result!.errorCode, 'BSS.0001');
+  assert.equal(result!.errorMessage, '指定余额不足');
 });
 
 test('runHcloud surfaces Chinese-mode KooCLI JSON error with code and message', async () => {
@@ -423,7 +436,7 @@ test('runHcloud appends STS args to executed command when runtime token is set',
     setRuntimeCredentials('RUN_AK', 'RUN_SK', 'RUN_TOKEN', 'cn-north-4');
     const result = await runHcloud(['VPC', 'ListVpcs'], { executable: process.execPath, executableArgs: [script] });
     assert.equal(result.ok, true);
-    const parsed = JSON.parse(result.stdout);
+    const parsed = JSON.parse(result.stdout!) as FakeHcloudOutput;
     // Secret values are redacted to `<redacted>`; presence proves injection.
     assert.ok(
       parsed.args.some((a) => a.startsWith('--cli-security-token=')),
@@ -460,7 +473,7 @@ test('per-call env cannot bypass binary resolution with a stale HCLOUD_BIN', { s
       maxRetries: 0,
     });
     assert.equal(result.ok, true, JSON.stringify(result));
-    const parsed = JSON.parse(result.stdout);
+    const parsed = JSON.parse(result.stdout!) as FakeHcloudOutput;
     assert.deepEqual(parsed.args.slice(0, 2), ['VPC', 'ListVpcs'], 'the PATH fake answered');
   } finally {
     process.env.PATH = savedPath;
@@ -477,7 +490,7 @@ test('runHcloud does NOT inject STS args for long-lived creds (no token)', async
     clearRuntimeCredentials();
     const result = await runHcloud(['VPC', 'ListVpcs'], { executable: process.execPath, executableArgs: [script] });
     assert.equal(result.ok, true);
-    const parsed = JSON.parse(result.stdout);
+    const parsed = JSON.parse(result.stdout!) as FakeHcloudOutput;
     const injected = parsed.args.filter((a) => a.startsWith('--cli-security-token='));
     assert.equal(injected.length, 0, JSON.stringify(parsed.args));
   });
@@ -532,7 +545,7 @@ test('runHcloud redacts injected STS from returned plan.rawArgs', async () => {
     setRuntimeCredentials('RUN_AK', 'RUN_SK', 'RUN_TOKEN', 'cn-north-4');
     const result = await runHcloud(['VPC', 'ListVpcs'], { executable: process.execPath, executableArgs: [script] });
     assert.equal(result.ok, true);
-    const redactedArgs = result.plan.rawArgs;
+    const redactedArgs = result.plan!.rawArgs;
     assert.ok(Array.isArray(redactedArgs));
     // Injected STS must be redacted, not present in cleartext.
     assert.ok(redactedArgs.some((a) => a.startsWith('--cli-security-token=')));
@@ -598,7 +611,7 @@ test('runHcloud redacts OBS STS args from returned plan.rawArgs', async () => {
     setRuntimeCredentials('OBS_AK', 'OBS_SK', 'OBS_TOKEN', 'cn-south-1');
     const result = await runHcloud(['OBS', 'ls'], { executable: process.execPath, executableArgs: [script] });
     assert.equal(result.ok, true);
-    const raw = result.plan.rawArgs;
+    const raw = result.plan!.rawArgs;
     // The injected OBS STS values must be redacted, not in cleartext.
     const joined = raw.join(' ');
     assert.ok(!joined.includes('OBS_AK'));

@@ -3,10 +3,15 @@ import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { classifyUnsupported, readServiceCatalogs, runHcloud } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
+import {
+  classifyUnsupported,
+  readServiceCatalogs,
+  runHcloud,
+  type HcloudRunResult,
+} from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
-function withCatalog(files) {
+function withCatalog(files: Record<string, Array<{ Service: { Text: string } }>>): string {
   const dir = fixtureDir('koocli-meta-');
   for (const [name, items] of Object.entries(files)) {
     writeFileSync(join(dir, name), JSON.stringify({ items }));
@@ -14,16 +19,18 @@ function withCatalog(files) {
   return dir;
 }
 
-function fakeHcloudScript(source) {
+function fakeHcloudScript(source: string): string {
   const dir = fixtureDir('koocli-fake-hcloud-');
   const script = join(dir, 'fake-hcloud.mjs');
   writeFileSync(script, source, 'utf8');
   return script;
 }
 
-function readFileHelper(filePath) {
+function readFileHelper(filePath: string): string {
   return readFileSync(filePath, 'utf8');
 }
+
+type LangGateResult = HcloudRunResult & { injectedLang?: unknown; autoRetried?: unknown };
 
 test('readServiceCatalogs: maps items[].Service.Text into cn/en sets', () => {
   const dir = withCatalog({
@@ -114,7 +121,7 @@ console.error('Unsupported service: BSS');
 process.exit(1);
 `);
   try {
-    const result = await runHcloud(['BSS', 'ShowCustomerAccountBalances'], {
+    const result: LangGateResult = await runHcloud(['BSS', 'ShowCustomerAccountBalances'], {
       executable: process.execPath,
       executableArgs: [script],
       maxRetries: 0,
@@ -123,7 +130,7 @@ process.exit(1);
     });
     assert.equal(result.ok, false);
     assert.equal(result.langCause, 'lang-missing');
-    assert.match(result.langNextStep, /hcloud configure set --cli-lang=cn/);
+    assert.match(result.langNextStep!, /hcloud configure set --cli-lang=cn/);
     assert.equal(result.injectedLang, undefined, 'no language flag injected into the command');
     assert.equal(Number(readFileHelper(stateFile)), 1, 'command ran exactly once, no retry');
     assert.ok(!result.injectedLang);
@@ -150,7 +157,7 @@ process.exit(1);
     });
     assert.equal(result.ok, false);
     assert.equal(result.langCause, 'unknown');
-    assert.match(result.langNextStep, /hcloud configure set --cli-lang=cn/);
+    assert.match(result.langNextStep!, /hcloud configure set --cli-lang=cn/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(join(script, '..'), { recursive: true, force: true });
@@ -175,8 +182,8 @@ process.exit(1);
       metaDir: dir,
     });
     assert.equal(result.langCause, 'not-found');
-    assert.match(result.langNextStep, /Check the service name/);
-    assert.doesNotMatch(result.langNextStep, /configure set --cli-lang=cn/);
+    assert.match(result.langNextStep!, /Check the service name/);
+    assert.doesNotMatch(result.langNextStep!, /configure set --cli-lang=cn/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(join(script, '..'), { recursive: true, force: true });
@@ -190,7 +197,7 @@ test('runHcloud: successful command is untouched (no diagnostic artifacts)', asy
   });
   const script = fakeHcloudScript(`console.log(JSON.stringify({ ok: true }));`);
   try {
-    const result = await runHcloud(['ECS', 'ListServers'], {
+    const result: LangGateResult = await runHcloud(['ECS', 'ListServers'], {
       executable: process.execPath,
       executableArgs: [script],
       maxRetries: 0,

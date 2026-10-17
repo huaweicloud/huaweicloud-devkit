@@ -5,6 +5,10 @@ description: 每晚自动回归测试 huaweicloud-devkit 插件的指引能力�
 
 # HuaweiCloud DevKit 每晚回归测试
 
+## 与 test/e2e/ 假边界套件的分工
+
+本 harness 验证**指引能力**（真凭证、真云资源、真清理纪律）。`test/e2e/`（`E2E_ENABLE=1 npm run test:e2e`）验证**出站行为契约**（假华为云边界、真实 code agent、机制断言，见 `docs/e2e-testing-design.md`）。两层互补不重叠：同一能力（如 CLI 写流程）在本层看指引完整性，在那层看同意机制与精确 argv。缺陷归属：机制问题先修 test/e2e 侧，指引缺口在本层记录。
+
 ## 目标
 
 验证插件（skills + MCP 工具 + 安全策略）能否**指导代理完成真实云操作**。测试对象是"插件的指引能力"，不是云平台本身。

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import { TOOL_DEFINITIONS } from '../plugins/huaweicloud-core/src/tools.ts';
 import { PACK_OF, PACKS } from '../plugins/huaweicloud-core/src/packs/registry.ts';
+import { parseSkillFrontmatter } from '../plugins/huaweicloud-core/src/lib/skill-frontmatter.ts';
 import { SUPPORTED_AGENT_TARGETS } from '../plugins/huaweicloud-core/src/auth/agent-registration.ts';
 import { PACK_IDS } from '../plugins/huaweicloud-core/src/lib/pack-types.ts';
 import {
@@ -27,24 +28,106 @@ import { DISCOVERY_TOOLS } from '../plugins/huaweicloud-core/src/packs/discovery
 import { SANDBOX_TOOLS } from '../plugins/huaweicloud-core/src/packs/sandbox/tools.ts';
 import { HUAWEICLOUD_OPEN_MCP_TOOLS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-open-mcp/tools.ts';
 import { HUAWEICLOUD_CLI_TOOLS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
+import { SECRETS_TOOLS } from '../plugins/huaweicloud-core/src/packs/secrets/tools.ts';
 import { checkPackBoundaries } from '../scripts/lib/pack-boundaries.mjs';
+import { listSkillDirs } from '../plugins/huaweicloud-core/src/lib/skill-tree.ts';
+import { fixtureDir } from './fixture-dir.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const pluginRoot = join(root, 'plugins', 'huaweicloud-core');
 
-function readJson(path) {
+// The tree-reading guards below require the generated skills tree. One loud
+// precondition instead of a dozen raw ENOENT stack traces when it is absent.
+assert.ok(
+  existsSync(join(pluginRoot, 'skills')),
+  'generated skills tree missing under plugins/huaweicloud-core/ — run: npm run build',
+);
+
+function readJson(path: string): unknown {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
 // Sources are TypeScript; a few call sites still pass legacy .mjs paths.
-function readSource(relativePath) {
+function readSource(relativePath: string): string {
   const full = join(pluginRoot, relativePath.replace(/\.mjs$/, '.ts'));
   assert.ok(existsSync(full), `source file not found: ${relativePath}`);
   return readFileSync(full, 'utf8');
 }
 
+interface PluginManifest {
+  name: string;
+  mcpServers?: string;
+  family?: string;
+  bundleFormat?: string;
+  interface?: { displayName?: string };
+}
+
+interface Marketplace {
+  name: string;
+  plugins: Array<{ name: string; source: { path: string } }>;
+}
+
+interface PackageJson {
+  kooCliVersion: string;
+  bin?: Record<string, string>;
+  scripts: Record<string, string>;
+  devDependencies: Record<string, string>;
+}
+
+interface JscpdConfig {
+  formats: string[];
+  ignore: string[];
+  reporters: string[];
+  threshold?: unknown;
+}
+
+interface JscpdBaseline {
+  version: number;
+  fingerprints: Record<string, unknown>;
+}
+
+interface JscpdReport {
+  duplicates: Array<{ firstFile: { name: string }; secondFile: { name: string }; format: string }>;
+}
+
+interface PackageLock {
+  packages: Record<string, { resolved?: string }>;
+}
+
+interface SafetyPolicy {
+  secretKeyNamePatterns: unknown[];
+  writeOperationPrefixes: unknown[];
+  blockedSecretOperations: unknown[];
+  credentialFilePatterns: unknown[];
+}
+
+interface RiskRulesCatalog {
+  version: string;
+  rules: Array<{
+    id: string;
+    severity: string;
+    stages: string[];
+    match: { any?: unknown; all?: unknown };
+    message: string;
+    remediation: string;
+  }>;
+}
+
+interface McpConfig {
+  mcpServers?: Record<string, { args?: string[] }>;
+  mcp?: unknown;
+}
+
+interface HooksConfig {
+  hooks?: Record<string, Array<{ hooks?: Array<{ command?: string }> }>>;
+}
+
+interface IconsManifest {
+  icons: Array<{ id: string; name: unknown; logo: { source_url: string } }>;
+}
+
 test('Codex plugin manifest and marketplace are installable', () => {
-  const manifest = readJson(join(pluginRoot, '.codex-plugin', 'plugin.json'));
+  const manifest = readJson(join(pluginRoot, '.codex-plugin', 'plugin.json')) as PluginManifest;
   assert.equal(manifest.name, 'huaweicloud-devkit');
   // Skills are server data disclosed over MCP; the manifest must not declare
   // a native skills surface (same field-absence discipline as hooks).
@@ -52,14 +135,14 @@ test('Codex plugin manifest and marketplace are installable', () => {
   assert.equal(manifest.mcpServers, './.mcp.json');
   assert.ok(!Object.hasOwn(manifest, 'hooks'), 'Codex manifest keeps hooks out');
 
-  const marketplace = readJson(join(root, '.agents', 'plugins', 'marketplace.json'));
+  const marketplace = readJson(join(root, '.agents', 'plugins', 'marketplace.json')) as Marketplace;
   assert.equal(marketplace.name, 'huaweicloud-devkit');
   assert.equal(marketplace.plugins[0].name, 'huaweicloud-devkit');
   assert.equal(marketplace.plugins[0].source.path, './plugins/huaweicloud-core');
 });
 
 test('OpenClaw plugin manifest matches other agent manifests', () => {
-  const openclaw = readJson(join(pluginRoot, 'openclaw.plugin.json'));
+  const openclaw = readJson(join(pluginRoot, 'openclaw.plugin.json')) as PluginManifest;
   assert.equal(openclaw.name, 'huaweicloud-devkit');
   assert.equal(openclaw.family, 'bundle-plugin');
   assert.equal(openclaw.bundleFormat, 'codex');
@@ -74,7 +157,7 @@ test('OpenClaw plugin manifest matches other agent manifests', () => {
     join(pluginRoot, '.hermes-plugin', 'plugin.json'),
     join(pluginRoot, 'openclaw.plugin.json'),
   ];
-  const names = new Set(manifests.map((p) => readJson(p).name));
+  const names = new Set(manifests.map((p) => (readJson(p) as PluginManifest).name));
   assert.equal(names.size, 1, 'All plugin.json name fields must be identical');
 });
 
@@ -106,7 +189,7 @@ test('Hermes MCP Catalog manifest is present and valid', () => {
 
 test('plugin skills are compact meta-skills instead of service encyclopedia entries', () => {
   const skillsDir = join(pluginRoot, 'skills');
-  const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
+  const skillNames = listSkillDirs(skillsDir);
   const requiredMetaSkills = [
     'huaweicloud-api-and-sdk',
     'huaweicloud-capability-discovery',
@@ -124,6 +207,33 @@ test('plugin skills are compact meta-skills instead of service encyclopedia entr
     const body = readFileSync(join(skillsDir, name, 'SKILL.md'), 'utf8');
     assert.match(body, /^---\r?\nname: /);
     assert.doesNotMatch(body, /TODO|\[TODO/i);
+  }
+});
+
+// The corpus contract for frontmatter, pinned over every source skill:
+// non-empty quote-free description, frontmatter name equal to the
+// registry/directory name (the search_docs → retrieve_skill chain), absent
+// or numeric version, no unsupported block-scalar marker. The multi-line
+// and second-paragraph guarantees are pinned at the consumer level
+// (test/pack-meta-tools.test.ts, test/tools.test.ts) — a truncation that
+// still yields a clean single line would pass these shape checks.
+test('every source SKILL.md description parses non-empty and quote-free', () => {
+  for (const pack of PACKS) {
+    for (const name of pack.skills) {
+      const body = readFileSync(join(pluginRoot, 'src', 'packs', pack.id, 'skills', name, 'SKILL.md'), 'utf8');
+      const fm = parseSkillFrontmatter(body);
+      assert.ok(fm.description && fm.description.length > 0, `${name} description must parse non-empty`);
+      assert.ok(
+        !/^['"]|['"]$/.test(fm.description),
+        `${name} description must parse quote-stripped (multi-line or quoted frontmatter regressed)`,
+      );
+      assert.ok(
+        !/^[>|]/.test(fm.description),
+        `${name} description must not parse to an unsupported block-scalar marker`,
+      );
+      assert.equal(fm.name, name, `${name} frontmatter name must equal the registry/directory name`);
+      assert.ok(fm.version === null || /^\d+(\.\d+)*$/.test(fm.version), `${name} version must be absent or numeric`);
+    }
   }
 });
 
@@ -152,7 +262,7 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   assert.ok(cliSkill.includes('huaweicloud-cli-mac-arm64.tar.gz'), 'macOS download URL');
 
   // Verify KooCLI version pairing: fixed downloads pin cli/<kooCliVersion>, no stale endpoint
-  const pkg = readJson(join(root, 'package.json'));
+  const pkg = readJson(join(root, 'package.json')) as PackageJson;
   const kooCliVersion = pkg.kooCliVersion;
   assert.match(kooCliVersion ?? '', /^\d+\.\d+\.\d+$/, 'package.json declares kooCliVersion');
   assert.ok(cliSkill.includes(`cli/${kooCliVersion}`), `cli-and-auth skill pins cli/${kooCliVersion} download URLs`);
@@ -170,7 +280,7 @@ test('huawei-openapi skill teaches only vocabulary-table tools and the real para
   const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-openapi', 'SKILL.md'), 'utf8');
 
   const gatewayTools = [...GATEWAY_TOOL_VOCABULARY.readonly, ...GATEWAY_TOOL_VOCABULARY.routed];
-  const known = new Set(gatewayTools);
+  const known = new Set<string>(gatewayTools);
 
   // Positive direction first: every vocabulary name is TAUGHT, bare or
   // with the devkit prefix (round-10: '_' is a word character, so the
@@ -310,14 +420,12 @@ test('the served gateway_call description teaches the readonly discovery surface
 
 function listSkillDirsAll(): string[] {
   const skillsDir = join(pluginRoot, 'skills');
-  return readdirSync(skillsDir)
-    .filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')))
-    .map((name) => join(skillsDir, name));
+  return listSkillDirs(skillsDir).map((name) => join(skillsDir, name));
 }
 
 test('skill SKILL.md files meet minimum content quality bar', () => {
   const skillsDir = join(pluginRoot, 'skills');
-  const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
+  const skillNames = listSkillDirs(skillsDir);
 
   const exceptions = new Set([
     'huaweicloud-api-and-sdk',
@@ -357,7 +465,7 @@ test('huawei-deployment skill uses verified KooCLI service and operation names',
 
 test('skills with references have non-empty reference files', () => {
   const skillsDir = join(pluginRoot, 'skills');
-  const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
+  const skillNames = listSkillDirs(skillsDir);
 
   for (const name of skillNames) {
     const refDir = join(skillsDir, name, 'references');
@@ -392,6 +500,74 @@ test('web/static-site deployment intent offers target options with sandbox first
   const discovery = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-capability-discovery', 'SKILL.md'), 'utf8');
   assert.match(discovery, /Deployment Target Options/);
   assert.match(discovery, /do NOT default to OBS/);
+});
+
+test('core meta-skills teach the skillRoot direct-read path alongside retrieve_skill', () => {
+  // The dual-path contract: list_skills discloses the tree's location on
+  // stdio sessions, and both routing skills must teach the direct read as
+  // an alternative to the portable loader. The references/ assertion is
+  // co-occurrence-anchored (same line as skillRoot) so it pins the teaching
+  // line, not the pre-existing step-2 "Read references/{sub-skill-id}.md".
+  // New SKILL.md copy must keep avoiding see/load followed by a backticked
+  // non-skill identifier — the cross-reference guard resolves those against
+  // the skills tree.
+  const core = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
+  assert.match(core, /skillRoot/, 'huaweicloud-core must teach the skillRoot direct-read path');
+  assert.match(
+    core,
+    /skillRoot[^\n]*references\//,
+    'the direct-read line must name the references directory beside skillRoot',
+  );
+
+  const discovery = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-capability-discovery', 'SKILL.md'), 'utf8');
+  assert.match(discovery, /skillRoot/, 'huaweicloud-capability-discovery must teach the skillRoot direct-read path');
+  assert.match(
+    discovery,
+    /skillRoot[^\n]*references\//,
+    'the discovery teaching line must name the references directory beside skillRoot',
+  );
+});
+
+test('retrieve_skill reference cap stays in sync between code and description', () => {
+  // The description teaches "each reference body capped at 4000 characters";
+  // this pins the taught number to the truncation constant so neither can
+  // drift silently (the repo's own description-literal pinning pattern).
+  const tools = readSource(join('src', 'tools.ts'));
+  const cap = tools.match(/\.substring\(0, (\d+)\) \}\)/)?.[1];
+  assert.ok(cap, 'the reference truncation constant must be found');
+  assert.match(
+    tools,
+    new RegExp(`capped at ${cap} characters`),
+    'the retrieve_skill description must teach the actual reference cap',
+  );
+});
+
+test('telemetry hooks never classify skill-tool loads', () => {
+  // Doctrine guard: the telemetry hooks shed skill-load classification
+  // deliberately (native loads produce no telemetry by design, and the
+  // huawei* prefix match misattributes user skills). Two review rounds
+  // caught drift in this family one file at a time; this sweep pins every
+  // hook-events.jsonl emitter together — the five platform hooks plus the
+  // plugin-dir safety hook — so a bad merge cannot quietly re-add the
+  // branch anywhere.
+  const integrations = join(root, 'integrations');
+  const hookFiles = [
+    join(integrations, 'opencode', 'hooks', 'skill-tracker.js'),
+    join(integrations, 'workbuddy', 'hooks', 'telemetry-tracker.py'),
+    join(integrations, 'hermes', 'hooks', 'huaweicloud-telemetry.py'),
+    join(integrations, 'atomcode', 'hooks', 'huaweicloud-telemetry.js'),
+    join(integrations, 'dsh', 'hook-plugin.mjs'),
+    join(pluginRoot, 'hooks', 'huaweicloud-safety.py'),
+  ];
+  for (const file of hookFiles) {
+    assert.ok(existsSync(file), `hook file ${file} must exist`);
+    const body = readFileSync(file, 'utf8');
+    assert.doesNotMatch(
+      body,
+      /skill:retrieve|isHuaweiCloudSkill|extractSkillName/,
+      `${file} must not classify skill-tool loads (server data doctrine)`,
+    );
+  }
 });
 
 test('devbridge uses the valid `list` command, not the non-existent `ls`', () => {
@@ -513,19 +689,27 @@ test('all plugin manifests are valid JSON', () => {
     join(pluginRoot, '.cursor-plugin', 'plugin.json'),
     join(pluginRoot, '.workbuddy-plugin', 'plugin.json'),
     join(pluginRoot, '.hermes-plugin', 'plugin.json'),
+    // bundleFormat codex: the same manifest-declared surface class the codex
+    // ban protects. Native core disclosure goes through directory loading,
+    // never through a manifest skills field.
+    join(pluginRoot, 'openclaw.plugin.json'),
   ];
   for (const path of manifests) {
-    const data = readJson(path);
+    const data = readJson(path) as PluginManifest;
     assert.ok(data.name, `Manifest ${path} missing name`);
+    if (path.endsWith('openclaw.plugin.json')) continue;
     assert.ok(data.interface, `Manifest ${path} missing interface`);
     // No manifest may declare a native skills surface: skills are server
-    // data disclosed over MCP only.
+    // data disclosed through the MCP tools (the core meta-skills' native
+    // copies are placed by the installer, not declared here).
     assert.ok(!Object.hasOwn(data, 'skills'), `Manifest ${path} must not declare skills`);
   }
+  const openclaw = readJson(join(pluginRoot, 'openclaw.plugin.json')) as PluginManifest;
+  assert.ok(!Object.hasOwn(openclaw, 'skills'), 'openclaw.plugin.json must not declare skills');
 });
 
 test('safety policy.json is valid and has required fields', () => {
-  const policy = readJson(join(pluginRoot, 'safety', 'policy.json'));
+  const policy = readJson(join(pluginRoot, 'safety', 'policy.json')) as SafetyPolicy;
   assert.ok(Array.isArray(policy.secretKeyNamePatterns));
   assert.ok(policy.secretKeyNamePatterns.length >= 5);
   assert.ok(Array.isArray(policy.writeOperationPrefixes));
@@ -538,7 +722,7 @@ test('cloud risk rules are present and public-safe', () => {
   const rulesPath = join(pluginRoot, 'safety', 'rules', 'cloud-risk-rules.json');
   assert.ok(existsSync(rulesPath), 'Missing cloud-risk-rules.json');
 
-  const catalog = readJson(rulesPath);
+  const catalog = readJson(rulesPath) as RiskRulesCatalog;
   assert.equal(catalog.version, '0.1.0');
   assert.ok(Array.isArray(catalog.rules), 'rules must be an array');
   assert.ok(catalog.rules.length >= 9, 'Expected baseline cloud risk rules');
@@ -591,7 +775,7 @@ test('safety skill teaches proactive hook checks', () => {
 });
 
 test('.mcp.json is valid and references existing server script', () => {
-  const mcpConfig = readJson(join(pluginRoot, '.mcp.json'));
+  const mcpConfig = readJson(join(pluginRoot, '.mcp.json')) as McpConfig;
   assert.ok(mcpConfig.mcpServers || mcpConfig.mcp);
 });
 
@@ -632,9 +816,30 @@ test('setup-cli.ts supports the codearts target end to end', () => {
   assert.match(setup, /function installMarkerDirForTarget\(target: string\)/);
   assert.match(setup, /function writeInstallMarker\(target: string\)/);
   // doctor checks the skills tree inside installed plugin dirs, and native
-  // skill dirs only for stale-copy detection
-  assert.match(setup, /serverSkillCount\(dir\) >= 6/);
-  assert.match(setup, /staleNativeSkillDirs\(\)\.length/);
+  // skill dirs only for stale-copy detection. The tree check is set
+  // equality against the shipped manifest (both directions — an extra dir
+  // is as disqualifying as a missing one), and doctor's listing is the
+  // shared SKILL.md-aware predicate from src/lib/skill-tree.ts — the same
+  // membership the boot guard uses, so hollow claimed dirs count as
+  // missing. The DSH package-root candidate is PLUGIN_ROOT itself because
+  // serverSkillDirNames() appends 'skills'.
+  assert.match(setup, /return listSkillDirs\(join\(pluginDir, 'skills'\)\);/);
+  assert.match(setup, /const expectedSkills = shippedSkillRoster\(\);/);
+  assert.match(setup, /present\.size === expectedSkills\.length/);
+  assert.match(setup, /expectedSkills\.every\(\(name\) => present\.has\(name\)\)/);
+  assert.match(setup, /skillsTreeDirs\.push\(PLUGIN_ROOT\)/);
+  assert.doesNotMatch(setup, /serverSkillCount\(dir\) >= 6/, 'count-floor doctor check must be gone');
+  // doctor's native-dir check is the receipt-gated one: core names warn only
+  // outside a dir a sync row manages, and a manifest without pack info warns
+  // instead of crashing the diagnostic run.
+  assert.match(setup, /function tryCoreSkillNames\(\)/);
+  assert.match(setup, /const corePack = tryCoreSkillNames\(\);/);
+  assert.match(setup, /managedHere && corePack\.has\(entry\.name\)/);
+  // The byte-equality comparator lives in the shared zod-free lib (doctor
+  // and the install tests import the same one), not as a setup-cli local.
+  assert.match(setup, /import \{ listSkillDirs, skillTreeEquals \} from '\.\/lib\/skill-tree\.ts';/);
+  const skillTreeSrc = readSource(join('src', 'lib', 'skill-tree.ts'));
+  assert.match(skillTreeSrc, /export function skillTreeEquals\(a: string, b: string\): boolean/);
   // help text documents the target
   assert.match(
     setup,
@@ -643,26 +848,112 @@ test('setup-cli.ts supports the codearts target end to end', () => {
   assert.match(setup, /install --target codearts/);
 });
 
+// The native-disclosure wiring must stay table-driven: the cleanup/doctor
+// scan list derives from the PAYLOAD_TARGETS nativeSkills rows (no second
+// hand-maintained dir list), officeace stays the one explicit foreign
+// detector, and the two deliberately native-copy-free rows keep absent
+// nativeSkills fields.
+test('nativeSkillDirs derives from PAYLOAD_TARGETS plus the officeace exception', () => {
+  const setup = readSource(join('src', 'setup-cli.ts'));
+  const listBody = setup.match(/function nativeSkillDirs\(\): string\[\] \{([\s\S]*?)\n\}/)?.[1] ?? '';
+  assert.ok(listBody.length > 0, 'nativeSkillDirs must exist');
+  assert.match(listBody, /PAYLOAD_TARGETS\.flatMap/, 'the scan list derives from the table');
+  assert.match(listBody, /officeaceSkillsDir\(\)/, 'officeace stays the explicit foreign detector');
+  assert.doesNotMatch(listBody, /opencodeSkillsDir\(\)/, 'no hand-listed row dirs remain');
+  const officeaceRow = setup.match(/\{\s*id: 'officeace',[\s\S]*?\n {2}\},/)?.[0] ?? '';
+  assert.ok(officeaceRow.length > 0, 'officeace row found');
+  assert.doesNotMatch(officeaceRow, /nativeSkills/, 'officeace stays without native skill copies');
+  const codexDesktopRow = setup.match(/\{\s*id: 'codex-desktop',[\s\S]*?\n {2}\},/)?.[0] ?? '';
+  assert.ok(codexDesktopRow.length > 0, 'codex-desktop row found');
+  assert.doesNotMatch(codexDesktopRow, /nativeSkills/, 'codex-desktop stays without native skill copies');
+});
+
+// opencode reads its config from XDG_CONFIG_HOME (default ~/.config). The
+// installer's write root, the registration read, and the agent-presence
+// probe must all derive from ONE shared resolver — three independent
+// derivations is how "install green, agent blind" under a non-default
+// XDG_CONFIG_HOME happened (each seam fixed separately drifted back).
+test('opencode config root is XDG-aware through one shared resolver', () => {
+  const setup = readSource(join('src', 'setup-cli.ts'));
+  const registration = readSource(join('src', 'auth', 'agent-registration.ts'));
+  assert.match(
+    registration,
+    /export function xdgConfigHome\(\): string/,
+    'the shared XDG root resolver must live in agent-registration.ts',
+  );
+  // The resolver honors absolute XDG_CONFIG_HOME only (spec: relative ignored).
+  const resolverBody = registration.match(/export function xdgConfigHome\(\): string \{[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.ok(resolverBody.length > 0, 'xdgConfigHome body found');
+  assert.match(resolverBody, /isAbsolute/);
+  // Registration detection reads the shared root, not its own derivation.
+  const registrationConfigFile =
+    registration.match(/function opencodeConfigFile\(\): string \{[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.ok(registrationConfigFile.length > 0, 'agent-registration opencodeConfigFile found');
+  assert.match(registrationConfigFile, /xdgConfigHome\(\)/);
+  assert.doesNotMatch(registrationConfigFile, /homedir\(\)/, 'detection must not re-derive the default root');
+  // The installer's configRoot delegates instead of re-deriving ~/.config.
+  const configRootBody = setup.match(/function configRoot\(target = 'opencode'\): string \{[\s\S]*?\n\}/)?.[0] ?? '';
+  assert.ok(configRootBody.length > 0, 'configRoot body found');
+  assert.match(configRootBody, /xdgConfigHome\(\)/);
+  assert.doesNotMatch(
+    configRootBody,
+    /homedir\(\)|'\.config'/,
+    'configRoot must not re-derive the default root inline',
+  );
+  // Agent-presence detection probes the same root the installer writes.
+  assert.match(
+    setup,
+    /\['opencode', \(\) => existsSync\(configRoot\('opencode'\)\)\]/,
+    'detectAgents must probe the shared opencode config root',
+  );
+});
+
+// Every supported target must have a cmdStatus section row — codex-desktop
+// shipped for months as "install target exists, cmdStatus does not cover
+// it" (the release smoke had to skip its status check), which is exactly
+// the drift this invariant makes impossible for the next target.
+test('cmdStatus covers every supported agent target', () => {
+  const setup = readSource(join('src', 'setup-cli.ts'));
+  const sectionsBody =
+    setup.match(
+      /const sections: Array<\{ name: string; run: \(\) => void; on: \(_target: string\) => boolean \}> = \[([\s\S]*?)\n {2}\];/,
+    )?.[1] ?? '';
+  assert.ok(sectionsBody.length > 0, 'cmdStatus sections array found');
+  for (const id of SUPPORTED_AGENT_TARGETS) {
+    assert.match(
+      sectionsBody,
+      new RegExp(`target === '${id}' \\|\\| target === 'all'`),
+      `status must cover the ${id} target`,
+    );
+  }
+});
+
 test('tools.ts resolves skills from the server-relative tree only', () => {
   const tools = readSource(join('src', 'tools.ts'));
   // SKILLS_ROOT is server data next to dist/ — no agent-native dir probing
   assert.match(tools, /const SKILLS_ROOT = join\(__dirname, '\.\.', 'skills'\);/);
   assert.doesNotMatch(tools, /function opencodeSkillsDir\(\)/, 'native dir probe must be gone');
   assert.doesNotMatch(tools, /findSkillsRoot/, 'multi-root fallback must be gone');
-  assert.match(tools, /export function listSkillDirs/);
-  assert.match(tools, /existsSync\(join\(root, d\.name, 'SKILL\.md'\)\)/);
+  // The listing itself lives in the shared zod-free module so the boot
+  // guard, doctor, and the --check stray scan hold one membership
+  // predicate; tools.ts re-exports it for its existing importers.
+  assert.match(tools, /import \{ listSkillDirs \} from '\.\/lib\/skill-tree\.ts';/);
+  assert.match(tools, /export \{ listSkillDirs \};/);
+  const listing = readSource(join('src', 'lib', 'skill-tree.ts'));
+  assert.match(listing, /d\.isDirectory\(\) \|\| d\.isSymbolicLink\(\)/);
+  assert.match(listing, /existsSync\(join\(root, d\.name, 'SKILL\.md'\)\)/);
 });
 
 test('KooCLI sandbox blockers and privacy agreement live in their extracted modules', () => {
   const setup = readSource(join('src', 'setup-cli.ts'));
   const hcloudProbe = readSource(join('src', 'hcloud-probe.ts'));
   const codeartsSandbox = readSource(join('src', 'codearts-sandbox.ts'));
-  const depProvision = readSource(join('src', 'dep-provision.ts'));
+  const depHcloud = readSource(join('src', 'dep', 'installers', 'hcloud.ts'));
   // sandbox detection reads the CodeArts permission config (codearts-sandbox.ts,
   // shared by doctor and the KooCLI installer; no leftover local copy in setup-cli)
   assert.match(codeartsSandbox, /function detectCodeartsSandbox\(\)/);
   assert.match(codeartsSandbox, /codearts-data', 'storage', 'permission', 'config\.json'/);
-  assert.match(codeartsSandbox, /config\.bash_mode/);
+  assert.match(codeartsSandbox, /\.\s*bash_mode/);
   // sandbox warning prompts user to install externally or disable sandbox
   assert.match(codeartsSandbox, /function printSandboxWarning\(/);
   assert.match(codeartsSandbox, /检测到码道沙箱模式/);
@@ -680,12 +971,12 @@ test('KooCLI sandbox blockers and privacy agreement live in their extracted modu
   assert.match(hcloudProbe, /resolveDependencyCommand\(DEPENDENCIES\.hcloud\.resolution\)/);
   assert.match(hcloudProbe, /sandbox_home_failure/);
   // install-hcloud surfaces sandbox guidance on failure (caller moved with the installer)
-  assert.match(depProvision, /沙箱模式拦截了 KooCLI 自动安装/);
+  assert.match(depHcloud, /沙箱模式拦截了 KooCLI 自动安装/);
   // privacy agreement is gated on the tty flag on BOTH platforms (the Windows
   // branch used to lack the gate and hang non-interactive sessions)
-  assert.match(depProvision, /await offerPrivacyAcceptance\(join\(installDir, 'hcloud\.exe'\), opts\.tty\)/);
-  assert.match(depProvision, /await offerPrivacyAcceptance\(binPath, opts\.tty\)/);
-  assert.match(depProvision, /非交互会话：请稍后在终端运行 hcloud version/);
+  assert.match(depHcloud, /await offerPrivacyAcceptance\(join\(installDir, 'hcloud\.exe'\), opts\.tty\)/);
+  assert.match(depHcloud, /await offerPrivacyAcceptance\(binPath, opts\.tty\)/);
+  assert.match(depHcloud, /非交互会话：请稍后在终端运行 hcloud version/);
   // the caller computes the gate; the installer stays testable
   assert.match(setup, /process\.stdin\.isTTY === true && process\.stdout\.isTTY === true/);
   // MCP env injects HCLOUD_BIN when an hcloud binary is found
@@ -695,9 +986,9 @@ test('KooCLI sandbox blockers and privacy agreement live in their extracted modu
   assert.match(setup, /设置 → 对话流 → 智能体 终端命令运行模式 → 自动运行/);
 });
 
-test('hermes restart hints, unix auto-install in dep-provision, grouped status (#280)', () => {
+test('hermes restart hints, unix auto-install in dep/installers/hcloud, grouped status (#280)', () => {
   const setup = readSource(join('src', 'setup-cli.ts'));
-  const depProvision = readSource(join('src', 'dep-provision.ts'));
+  const depHcloud = readSource(join('src', 'dep', 'installers', 'hcloud.ts'));
   // Hermes .installed marker is read for restart hints (#280-4): hermes is
   // a row of the payload-target table the marker loop and the update
   // dispatch derive from.
@@ -705,32 +996,51 @@ test('hermes restart hints, unix auto-install in dep-provision, grouped status (
   assert.match(setup, /update: updateHermes,/);
   assert.match(setup, /join\(target\.dir\(\), '\.installed'\)/);
   // Unix install-hcloud executes for real: download → extract → install → verify
-  // (#280-3); the body moved to dep-provision.ts when provisioning absorbed it.
-  assert.match(depProvision, /Auto-installing to \$\{binDir\}/);
-  assert.match(depProvision, /spawnSync\('curl', \['-fL', url, '-o', tmpTar\]/);
-  assert.match(depProvision, /spawnSync\('tar', \['-xzf', tmpTar, '-C', scratch\]/);
+  // (#280-3); the body moved to dep-provision.ts when provisioning absorbed
+  // it, on to dep-hcloud.ts when the per-dependency installers split, and
+  // into dep/installers/ when the subsystem organized by abstraction level.
+  assert.match(depHcloud, /Auto-installing to \$\{binDir\}/);
+  assert.match(depHcloud, /spawnSync\('curl', \['-fL', url, '-o', tmpTar\]/);
+  assert.match(depHcloud, /spawnSync\('tar', \['-xzf', tmpTar, '-C', scratch\]/);
   // download/extract scratch is per-run (mkdtemp) and cleaned up in finally:
   // the fixed tmpdir()/huaweicloud-cli-<pkg>.tar.gz path collided across
   // concurrent installs, and auto-provisioning made concurrent installs normal.
-  assert.match(depProvision, /mkdtempSync\(join\(tmpdir\(\), 'huaweicloud-devkit-'\)\)/);
-  assert.match(depProvision, /rmSync\(scratch, \{ recursive: true, force: true \}\)/);
+  assert.match(depHcloud, /mkdtempSync\(join\(tmpdir\(\), 'huaweicloud-devkit-'\)\)/);
+  assert.match(depHcloud, /rmSync\(scratch, \{ recursive: true, force: true \}\)/);
   // status groups sections by install state, installed first (#280-9)
-  assert.match(setup, /stateOrder = \{ installed: 0, partial: 1, unknown: 2, not: 3 \}/);
+  assert.match(setup, /stateOrder: Record<InstallState, number> = \{ installed: 0, partial: 1, unknown: 2, not: 3 \}/);
   assert.match(setup, /已安装: /);
 });
 
 test('dependency provisioning: new modules stay unbundled; setup-cli delegates', () => {
   const setup = readSource(join('src', 'setup-cli.ts'));
-  const depProvision = readSource(join('src', 'dep-provision.ts'));
   const codeartsSandbox = readSource(join('src', 'codearts-sandbox.ts'));
   const depResolve = readSource(join('src', 'lib', 'dep-resolve.ts'));
+  // The dep module tree is walked, not enumerated: every .ts file under
+  // src/dep/ — including one a future dependency adds, at any depth — joins
+  // the guard automatically, so the zod-free import graph cannot regress by
+  // forgetting a list entry.
+  const depModules = (readdirSync(join(pluginRoot, 'src', 'dep'), { recursive: true }) as string[])
+    .filter((name) => name.endsWith('.ts'))
+    .sort((a, b) => a.localeCompare(b));
+  assert.ok(depModules.length >= 5, `expected the dep module family, found: ${depModules.join(', ')}`);
+  // Same walk for the secret vault: every .ts file under
+  // src/lib/secret-vault/ joins the zod-free guard automatically.
+  const vaultModules = (readdirSync(join(pluginRoot, 'src', 'lib', 'secret-vault'), { recursive: true }) as string[])
+    .filter((name) => name.endsWith('.ts'))
+    .sort((a, b) => a.localeCompare(b));
+  assert.ok(vaultModules.length >= 3, `expected the secret-vault module family, found: ${vaultModules.join(', ')}`);
   // These compile into the unbundled dist/setup-cli.js graph, where only
   // undici exists at runtime: no zod, no SDK, ever.
-  for (const [name, source] of [
-    ['dep-provision.ts', depProvision],
-    ['codearts-sandbox.ts', codeartsSandbox],
-    ['lib/dep-resolve.ts', depResolve],
-  ]) {
+  const guarded = [
+    ...depModules.map((name) => [`src/dep/${name}`, readSource(join('src', 'dep', name))] as const),
+    ...vaultModules.map(
+      (name) => [`src/lib/secret-vault/${name}`, readSource(join('src', 'lib', 'secret-vault', name))] as const,
+    ),
+    ['src/codearts-sandbox.ts', codeartsSandbox] as const,
+    ['src/lib/dep-resolve.ts', depResolve] as const,
+  ];
+  for (const [name, source] of guarded) {
     assert.doesNotMatch(source, /from 'zod'/, `${name} must not import zod`);
     assert.doesNotMatch(source, /@modelcontextprotocol/, `${name} must not import the SDK`);
   }
@@ -746,7 +1056,7 @@ test('dependency provisioning: new modules stay unbundled; setup-cli delegates',
   }
   // The installer body is absorbed, not duplicated: setup-cli owns the CLI
   // wrapper only.
-  assert.doesNotMatch(setup, /spawnSync\('curl'/, 'the KooCLI installer body lives in dep-provision.ts');
+  assert.doesNotMatch(setup, /spawnSync\('curl'/, 'the KooCLI installer body lives in dep/installers/hcloud.ts');
   assert.match(
     setup,
     /await installKooCli\(\{ tty: process\.stdin\.isTTY === true && process\.stdout\.isTTY === true \}\)/,
@@ -778,7 +1088,15 @@ test('setup-cli.ts supports the dsh target end to end', () => {
   assert.match(setup, /function dshStatus\(\)/);
   // install ships the server payload and registers MCP through cordis.patch.yml
   assert.match(setup, /copyServerPayload\(pluginDest\)/);
-  assert.doesNotMatch(setup, /copyDir\(skillsSrc, dshSkillsDir\(\)\)/, 'DSH skills stay server data');
+  // No wholesale native copy ever returns: only core-pack names sync natively
+  // (syncNativeCoreSkills), so DSH's dir can never carry service skills.
+  assert.match(setup, /function syncNativeCoreSkills\(dir: string\)/);
+  assert.doesNotMatch(
+    setup,
+    /copyDir\(skillsSrc, (?:dsh|opencode|hermes|workbuddy|atomcode|openclaw|codearts|codeartsWork)SkillsDir\(\)\)/,
+    'no wholesale native copy; only core-pack names sync natively',
+  );
+  assert.match(setup, /nativeSkills: \(\) => \[dshSkillsDir\(\)\]/, 'DSH row declares its native dir');
   assert.match(setup, /ensureDshMcpPatch\(\)/);
   assert.match(setup, /tryInstallDshMcpClient\(\)/);
   // DSH MCP patch uses dsh-mcp-client with stdio local server mode
@@ -927,7 +1245,7 @@ test('PAYLOAD_TARGETS is the single id→dir map for payload targets', () => {
   // Every non-codex supported target has a table row: doctor's payload
   // checks, the marker dir, willPlacePayload, and the update dispatch all
   // follow the table, so a missing row silently drops a target everywhere.
-  const table = setup.match(/const PAYLOAD_TARGETS = \[[\s\S]*?\] as const;/);
+  const table = setup.match(/const PAYLOAD_TARGETS: readonly PayloadTarget\[\] = \[[\s\S]*?\n\];/);
   assert.ok(table, 'PAYLOAD_TARGETS table must exist');
   for (const id of SUPPORTED_AGENT_TARGETS) {
     if (id === 'codex') continue;
@@ -998,7 +1316,7 @@ test('official Huawei Cloud Icons library is integrated', () => {
 
   const snapshotPath = join(pluginRoot, 'src', 'data', 'icons-manifest.v1.json');
   assert.ok(existsSync(snapshotPath), 'Missing icons-manifest.v1.json snapshot');
-  const manifest = readJson(snapshotPath);
+  const manifest = readJson(snapshotPath) as IconsManifest;
   assert.ok(Array.isArray(manifest.icons), 'icons must be an array');
   assert.ok(manifest.icons.length >= 100, `Expected at least 100 icons, got ${manifest.icons.length}`);
 
@@ -1047,18 +1365,21 @@ test('update pack registers version-update tools; registry carries the central d
   // Behavioral lockstep: the pack tool list equals the PACK_OF ownership for
   // 'update'. Descriptions are derived from UPDATE_TOOLS in tools.ts itself,
   // so no byte-equality pin is needed here anymore.
-  const ownedByUpdate = Object.keys(PACK_OF).filter((tool) => PACK_OF[tool] === 'update');
+  const ownedByUpdate = (Object.keys(PACK_OF) as Array<keyof typeof PACK_OF>).filter(
+    (tool) => PACK_OF[tool] === 'update',
+  );
   assert.deepEqual(
     UPDATE_TOOLS.map((tool) => tool.name).sort((a, b) => a.localeCompare(b)),
     [...ownedByUpdate].sort((a, b) => a.localeCompare(b)),
   );
 });
 
-test('seven packs register their tools; the central map dispatches them', () => {
+test('eight packs register their tools; the central map dispatches them', () => {
   // Same contract as the update pack, asserted for the packs materialized
   // after P4: sandbox (11), auth (5), obs (2), voucher (2), discovery (3),
-  // huaweicloud-open-mcp (3), huaweicloud-cli (7). Their handlers reach
-  // callTool only through the PACK_TOOL_HANDLERS merge in packs/registry.ts.
+  // huaweicloud-open-mcp (3), huaweicloud-cli (7), secrets (3). Their
+  // handlers reach callTool only through the PACK_TOOL_HANDLERS merge in
+  // packs/registry.ts.
   const packs = [
     { id: 'sandbox', tools: SANDBOX_TOOLS, count: 11 },
     { id: 'auth', tools: AUTH_TOOLS, count: 5 },
@@ -1067,6 +1388,7 @@ test('seven packs register their tools; the central map dispatches them', () => 
     { id: 'discovery', tools: DISCOVERY_TOOLS, count: 3 },
     { id: 'huaweicloud-open-mcp', tools: HUAWEICLOUD_OPEN_MCP_TOOLS, count: 3 },
     { id: 'huaweicloud-cli', tools: HUAWEICLOUD_CLI_TOOLS, count: 7 },
+    { id: 'secrets', tools: SECRETS_TOOLS, count: 3 },
   ];
   const tools = readSource(join('src', 'tools.ts'));
   const registry = readSource(join('src', 'packs', 'registry.ts'));
@@ -1084,7 +1406,7 @@ test('seven packs register their tools; the central map dispatches them', () => 
     const exportName = id.toUpperCase().replaceAll('-', '_');
     assert.match(registry, new RegExp(`\\.\\.\\.${exportName}_TOOL_HANDLERS`));
     // Behavioral lockstep: the pack tool list equals the PACK_OF ownership.
-    const owned = Object.keys(PACK_OF).filter((tool) => PACK_OF[tool] === id);
+    const owned = (Object.keys(PACK_OF) as Array<keyof typeof PACK_OF>).filter((tool) => PACK_OF[tool] === id);
     assert.deepEqual(
       packTools.map((tool) => tool.name).sort((a, b) => a.localeCompare(b)),
       [...owned].sort((a, b) => a.localeCompare(b)),
@@ -1178,13 +1500,13 @@ test('doctor success message does not demand a restart', () => {
 });
 
 test('shipped runtime entry points point at built dist JavaScript', () => {
-  const pkg = readJson(join(root, 'package.json'));
+  const pkg = readJson(join(root, 'package.json')) as PackageJson;
   for (const [name, target] of Object.entries(pkg.bin ?? {})) {
     assert.doesNotMatch(target, /\.ts$/, `bin ${name} must not point at a TypeScript file`);
     assert.ok(!target.includes('/src/'), `bin ${name} must not reference src/`);
   }
 
-  const mcp = readJson(join(pluginRoot, '.mcp.json'));
+  const mcp = readJson(join(pluginRoot, '.mcp.json')) as McpConfig;
   for (const server of Object.values(mcp.mcpServers ?? {})) {
     for (const arg of server.args ?? []) {
       assert.doesNotMatch(arg, /\.ts$/, `.mcp.json arg ${arg} must not point at a TypeScript file`);
@@ -1192,7 +1514,7 @@ test('shipped runtime entry points point at built dist JavaScript', () => {
     }
   }
 
-  const hooks = readJson(join(pluginRoot, 'hooks', 'hooks.json'));
+  const hooks = readJson(join(pluginRoot, 'hooks', 'hooks.json')) as HooksConfig;
   for (const entries of Object.values(hooks.hooks ?? {})) {
     for (const entry of entries) {
       for (const hook of entry.hooks ?? []) {
@@ -1227,7 +1549,7 @@ test('shipped runtime entry points point at built dist JavaScript', () => {
 });
 
 test('plugin src tree is TypeScript only', () => {
-  const walk = (dir) =>
+  const walk = (dir: string): string[] =>
     readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
       entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)],
     );
@@ -1245,7 +1567,7 @@ test('pack registry partitions the tool registry and claims every skill director
   // skills/ directory is claimed exactly once.
   const allToolNames = TOOL_DEFINITIONS.map((tool) => tool.name).sort((a, b) => a.localeCompare(b));
   const packTools = PACKS.flatMap((pack) => pack.tools);
-  const toolClaims = new Set();
+  const toolClaims = new Set<string>();
   for (const tool of packTools) {
     assert.ok(!toolClaims.has(tool), `tool ${tool} is claimed by more than one pack`);
     toolClaims.add(tool);
@@ -1259,7 +1581,7 @@ test('pack registry partitions the tool registry and claims every skill director
     .filter((entry) => entry.isDirectory())
     .map((entry) => entry.name)
     .sort((a, b) => a.localeCompare(b));
-  const skillClaims = new Set();
+  const skillClaims = new Set<string>();
   for (const pack of PACKS) {
     for (const skill of pack.skills) {
       assert.ok(!skillClaims.has(skill), `skill ${skill} is claimed by more than one pack (${pack.id})`);
@@ -1335,7 +1657,7 @@ test('dependency model: pack edges are legal, core owns none, hcloud attributed 
     Object.keys(PACK_DEPENDENCIES).sort((a, b) => a.localeCompare(b)),
     [...PACK_IDS].sort((a, b) => a.localeCompare(b)),
   );
-  const used = new Set();
+  const used = new Set<string>();
   for (const [packId, deps] of Object.entries(PACK_DEPENDENCIES)) {
     for (const dep of deps) {
       assert.ok(
@@ -1486,4 +1808,229 @@ test('test fixtures: raw mkdtempSync is denied by default across the suite', () 
       `${entry.name} creates mkdtemp fixtures without the fixtureDir registry and is not on the per-test-cleaner allowlist; adopt fixtureDir() or clean per-test and join the list`,
     );
   }
+});
+
+// jscpd duplication gate. The committed .jscpd-baseline.json fingerprints the
+// legacy clones (generated from the v2 tree), so the gate fails only on
+// duplication the baseline has never seen — no branch-ref comparison, no
+// total-percentage threshold. These guards keep that contract honest: the
+// config must restrict formats and ignore the noisy trees (asserted on the
+// file AND on the binary's actual behavior — jscpd degrades an unknown
+// config key to defaults with one warning line), the pin must be exact
+// (ratchet flags are documented only in --help, so version drift silently
+// changes gate behavior), and the working tree must stay in sync with the
+// baseline.
+function jscpdRunner(): string {
+  return join(root, 'node_modules', 'jscpd', 'run-jscpd.js');
+}
+
+function lintDupRoots(): string[] {
+  const pkg = readJson(join(root, 'package.json')) as PackageJson;
+  const script = pkg.scripts['lint:dup'] ?? '';
+  assert.ok(script.startsWith('jscpd '), 'package.json must define lint:dup as a jscpd invocation');
+  return script.split(' ').slice(1);
+}
+
+test('jscpd scan config: formats exclude markdown, ignores pinned, no threshold', () => {
+  const config = readJson(join(root, '.jscpd.json')) as JscpdConfig;
+  assert.deepEqual(config.formats, ['typescript', 'javascript']);
+  assert.ok(
+    !Object.hasOwn(config, 'threshold'),
+    'total-percentage thresholds fail builds on legacy duplication and are the documented top reason teams disable copy/paste gates',
+  );
+  for (const pattern of ['**/dist/**', '**/*.d.mts', 'test/fixtures/**', 'test/huaweicloud-*/**']) {
+    assert.ok(config.ignore.includes(pattern), `.jscpd.json must keep ignore pattern ${pattern}`);
+  }
+  assert.ok(config.reporters.includes('console'), 'local lint:dup runs need the console reporter');
+});
+
+test('jscpd devDependency is exact-pinned and lint:dup roots exclude the skills trees', () => {
+  const pkg = readJson(join(root, 'package.json')) as PackageJson;
+  assert.match(
+    pkg.devDependencies.jscpd ?? '',
+    /^\d+\.\d+\.\d+$/,
+    'jscpd must be exact-pinned (no ^ or ~): the baseline ratchet flags are documented only in --help, version drift changes gate behavior',
+  );
+  const script = pkg.scripts['lint:dup'] ?? '';
+  assert.doesNotMatch(
+    script,
+    /skills/,
+    'the script must not mention a skills path at all (a root would scan a skills tree, an ignore glob would silently mask one); the src/packs/*/skills/ markdown sources live inside the scanned src root and are excluded only by the formats restriction (pinned by the config and behavioral tests in this suite)',
+  );
+  assert.ok(
+    script.includes('eslint.config.mjs'),
+    'eslint.config.mjs is hand-written JavaScript and belongs in the scan roots',
+  );
+});
+
+test('jscpd binary honors the config: ts twins clone, markdown stays excluded', () => {
+  const runner = jscpdRunner();
+  assert.ok(existsSync(runner), 'jscpd is not installed; run npm install');
+  const dir = fixtureDir('jscpd-config-honored-');
+  const tsTwin = [
+    'export function formatLabelParts(input: string): string {',
+    '  const trimmed = input.trim();',
+    '  const lowered = trimmed.toLowerCase();',
+    '  const parts = lowered.split(/[,\\s]+/).filter((part) => part.length > 0);',
+    '  const unique = [...new Set(parts)];',
+    '  const joined = unique.join("-");',
+    '  const wrapped = `[${joined}]`;',
+    '  return wrapped;',
+    '}',
+    '',
+  ].join('\n');
+  const mdTwin = [
+    '# Twin Document',
+    '',
+    ...Array.from({ length: 12 }, (_, i) => `Shared planning note line ${i + 1} kept identical across both files.`),
+    '',
+  ].join('\n');
+  writeFileSync(join(dir, 'ts-twin-a.ts'), tsTwin);
+  writeFileSync(join(dir, 'ts-twin-b.ts'), tsTwin);
+  // The markdown twins exist to be missed: if formats ever degrade (typo'd
+  // config key, jscpd upgrade renaming one), markdown enters the scan and
+  // this pair becomes a clone the assertion below rejects.
+  writeFileSync(join(dir, 'md-twin-a.md'), mdTwin);
+  writeFileSync(join(dir, 'md-twin-b.md'), mdTwin);
+  const outDir = join(dir, 'out');
+  const run = spawnSync(process.execPath, [runner, dir, '--reporters', 'json', '--output', outDir, '--no-colors'], {
+    cwd: root,
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  assert.equal(run.status, 0, `jscpd fixture scan failed: ${run.stdout}\n${run.stderr}`);
+  const report = JSON.parse(readFileSync(join(outDir, 'jscpd-report.json'), 'utf8')) as JscpdReport;
+  assert.equal(
+    report.duplicates.length,
+    1,
+    `expected exactly the ts twin pair, got: ${report.duplicates.map((dup) => `${dup.format}:${dup.firstFile.name}`).join(', ')}`,
+  );
+  assert.equal(report.duplicates[0]?.format, 'typescript');
+  assert.match(report.duplicates[0]?.firstFile.name ?? '', /^ts-twin-/);
+  assert.match(report.duplicates[0]?.secondFile.name ?? '', /^ts-twin-/);
+});
+
+test('jscpd baseline is in sync: zero new clones against the committed fingerprints', () => {
+  const runner = jscpdRunner();
+  assert.ok(existsSync(runner), 'jscpd is not installed; run npm install');
+  const baselinePath = join(root, '.jscpd-baseline.json');
+  assert.ok(existsSync(baselinePath), '.jscpd-baseline.json must be committed with the gate');
+  const baseline = readJson(baselinePath) as JscpdBaseline;
+  assert.equal(typeof baseline.version, 'number');
+  assert.ok(
+    Object.keys(baseline.fingerprints).length > 0,
+    'baseline fingerprints must be non-empty (regenerate with --update-baseline)',
+  );
+  const run = spawnSync(
+    process.execPath,
+    [
+      runner,
+      ...lintDupRoots(),
+      '--reporters',
+      'silent',
+      '--baseline',
+      '.jscpd-baseline.json',
+      '--fail-on-new-clones',
+      '0',
+      '--fail-on-empty',
+      '--no-colors',
+    ],
+    { cwd: root, encoding: 'utf8', timeout: 120_000 },
+  );
+  assert.equal(
+    run.status,
+    0,
+    `new duplication (or a broken gate config) detected:\n${run.stdout}\n${run.stderr}\n` +
+      'run `npm run lint:dup -- --baseline .jscpd-baseline.json --fail-on-new-clones 0` for the clone list; ' +
+      'if the new duplication is intentional (moved-not-deleted, edits inside a baselined region, or deliberate ' +
+      'test repetition), run `npm run format` first (fingerprints are whitespace-sensitive), then regenerate with ' +
+      '`npm run lint:dup -- --baseline .jscpd-baseline.json --update-baseline` and commit the file',
+  );
+});
+
+test('package-lock.json fetch origins are registry.npmjs.org only', () => {
+  // A developer-local npm registry (e.g. the Huawei mirror the README
+  // suggests) leaks into committed lockfiles: installs record the mirror's
+  // URLs in `resolved`, and every CI `npm ci` then fetches from whatever
+  // the lockfile names — silently, with nothing red. The jscpd install
+  // captured 9 mirror URLs that way; this guard turns any re-capture into
+  // a failing test instead of a latent third-party fetch dependency.
+  const lock = readJson(join(root, 'package-lock.json')) as PackageLock;
+  const resolved: Array<{ path: string; url: string }> = [];
+  for (const [path, entry] of Object.entries(lock.packages)) {
+    if (typeof entry.resolved === 'string') resolved.push({ path, url: entry.resolved });
+  }
+  assert.ok(resolved.length > 0, 'package-lock.json must record resolved URLs');
+  for (const { path, url } of resolved) {
+    assert.match(
+      url,
+      /^https:\/\/registry\.npmjs\.org\//,
+      `${path} resolves from ${url} — a mirror-configured npm captured its own origin into the lockfile; ` +
+        're-resolve with `npm install --package-lock-only --registry=https://registry.npmjs.org/ <pkg>` and commit',
+    );
+  }
+});
+
+test('the safety skill documents the secret vault and its reference is not a dead end', () => {
+  const skill = readSource(join('src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'SKILL.md'));
+  const reference = readSource(
+    join('src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'references', 'secrets.md'),
+  );
+  // SKILL.md routes to the reference; the reference actually covers the
+  // ref model, the agent-side exec path, the deny on secret get, and the
+  // honest security boundary (cross-skill references must not dead-end).
+  assert.match(skill, /references\/secrets\.md/);
+  assert.match(reference, /secret:\/\/<scope>\/<name>/);
+  assert.match(reference, /secret exec --env/);
+  assert.match(reference, /secret get/);
+  assert.match(reference, /NOT defend/);
+});
+
+test('auth reconcile propagates through syncAuth (the seam-tested fan-out)', () => {
+  // cmdAuthReconcile once hand-rolled the S1→S2/S3 propagation with a raw
+  // readGlobalCredentials() and wrote literal secret:// refs into
+  // ~/.obsutilconfig and the KooCLI profile. Delegation to syncAuth is the
+  // structural fix; this guard pins it so the propagation cannot be
+  // re-hand-rolled off the seam.
+  const setup = readSource(join('src', 'setup-cli.ts'));
+  const reconcileBody = setup.slice(
+    setup.indexOf('async function cmdAuthReconcile'),
+    setup.indexOf('async function cmdAuthSync'),
+  );
+  assert.match(reconcileBody, /syncAuth\(/);
+  assert.doesNotMatch(reconcileBody, /writeObsConfig\(/, 'reconcile must not hand-roll the OBS fan-out');
+  assert.doesNotMatch(reconcileBody, /runHcloudConfigure\(/, 'reconcile must not hand-roll the KooCLI fan-out');
+});
+
+test('no conflict-marker residue survives in tracked text files (prettier-laundered forms included)', () => {
+  // A rebase resolution once left a `>>>>>>> <hash>` marker in docs/CHANGELOG.md;
+  // the subsequent format pass rewrote it into a 7-deep nested blockquote
+  // ("> > > > > > > <hash>"), so markdownlint, format:check, and every bare
+  // `grep '<<<<<<<'` sweep went blind on it. This guard scans all tracked
+  // text files for BOTH shapes: raw git markers and the formatter-normalized
+  // blockquote spelling (stacked quote markers followed by a commit-hash-
+  // shaped token — legitimate prose never stacks 3+ nested quotes).
+  const tracked = spawnSync('git', ['ls-files'], { cwd: root, encoding: 'utf8' })
+    .stdout!.split('\n')
+    .filter(Boolean)
+    .filter((f) => /\.(ts|mjs|cjs|js|json|md|py|yml|yaml|sh|txt)$/.test(f));
+  const rawMarker = /^(<{7}|={7}|>{7})( |$)/;
+  const launderedMarker = /^(?:>\s?){3,}[0-9a-f]{7,}(\s|$)/;
+  const offenders: string[] = [];
+  for (const file of tracked) {
+    const path = join(root, file);
+    let text: string;
+    try {
+      text = readFileSync(path, 'utf8');
+    } catch {
+      continue;
+    }
+    for (const line of text.split('\n')) {
+      if (rawMarker.test(line) || launderedMarker.test(line)) {
+        offenders.push(`${file}: ${line.slice(0, 60)}`);
+        break;
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], 'conflict-marker residue found');
 });

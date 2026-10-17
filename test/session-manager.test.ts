@@ -123,8 +123,8 @@ test('formatPortDriftWarning is undefined without drift', () => {
 
 test('formatPortDriftWarning names both ports and the re-bind command', () => {
   const msg = formatPortDriftWarning(80, 81);
-  assert.match(msg, /nginx now listens on port 81/);
-  assert.match(msg, /devbridge port create <tunnelId> -p 81 --protocol http -a/);
+  assert.match(msg!, /nginx now listens on port 81/);
+  assert.match(msg!, /devbridge port create <tunnelId> -p 81 --protocol http -a/);
 });
 
 test('buildExposeRemediation includes credential sourcing and host command with port', () => {
@@ -155,6 +155,6 @@ test('formatProxyPortWarning is undefined without drift', () => {
 
 test('formatProxyPortWarning explains proxy templates ignore auto-increment', () => {
   const msg = formatProxyPortWarning(80, 81);
-  assert.match(msg, /still listens on port 80/);
-  assert.match(msg, /auto-increment does not apply to proxy configs/);
+  assert.match(msg!, /still listens on port 80/);
+  assert.match(msg!, /auto-increment does not apply to proxy configs/);
 });

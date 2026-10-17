@@ -38,7 +38,9 @@ export interface FrameworkDetection {
   subApps?: SubApp[];
 }
 
-const FRAMEWORKS: Record<string, FrameworkSpec> = {
+// `satisfies` (not a Record annotation) keeps the literal key set, so the
+// FRAMEWORKS.<name> lookups below stay total under noUncheckedIndexedAccess.
+const FRAMEWORKS = {
   nextjs: {
     type: 'ssr',
     framework: 'Next.js',
@@ -182,7 +184,7 @@ const FRAMEWORKS: Record<string, FrameworkSpec> = {
     checkUrl: 'http://localhost:8080',
     nginxType: 'static',
   },
-};
+} satisfies Record<string, FrameworkSpec>;
 
 function asRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -254,7 +256,7 @@ function resolveAngularOutput(projectPath: string, pkg: Record<string, unknown> 
       const defaultProjectValue = config.defaultProject;
       const defaultProject =
         typeof defaultProjectValue === 'string' && defaultProjectValue ? defaultProjectValue : Object.keys(projects)[0];
-      const project = asRecord(projects[defaultProject]);
+      const project = asRecord(defaultProject !== undefined ? projects[defaultProject] : undefined);
       const architect = asRecord(project.architect);
       const build = asRecord(architect.build);
       const outputPath = asRecord(build.options).outputPath;
@@ -298,8 +300,11 @@ function readVitepressOutDir(projectPath: string): string | null {
     try {
       const content = readFileSync(configPath, 'utf8');
       const match = content.match(/outDir\s*:\s*['"`]?([^'"`\s,}]+)['"`]?/);
-      if (match) return match[1];
-    } catch {}
+      // The capture group is +-quantified; it always participates when the regex matches.
+      if (match) return match[1]!;
+    } catch {
+      // unreadable config: fall through to the next config file; null keeps the caller's default
+    }
   }
   return null;
 }

@@ -13,8 +13,9 @@ import { parseDevkitPacks, type ParsedPacksEnv } from '../lib/dependency-model.t
 // own core force-include.
 //
 // core is force-included either way, and the rationale is disclosure: the
-// pack meta tools (huaweicloud_list_packs / huaweicloud_pack_info) stay in
-// core, so no trimming can hide what was disabled. Trimming the
+// pack meta tools (huaweicloud_list_packs / huaweicloud_pack_info /
+// huaweicloud_list_skills) stay in core, so no trimming can hide what was
+// disabled. Trimming the
 // huaweicloud-cli pack removes the CLI execution face and its approval
 // tools together. The open-mcp gateway face no longer carries devkit-side
 // approval: authorization is delegated to the gateway's own policy engine

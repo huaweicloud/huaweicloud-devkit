@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { mkdirSync, rmSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import { randomBytes } from 'node:crypto';
 import { z } from 'zod';
 
 import {
@@ -26,6 +27,8 @@ import { getCredentials } from '../../lib/hdkit/hwlink-api.ts';
 import { validateIamCredentials } from '../../auth/credential-validator.ts';
 import { resolveCredentialsWithRuntime } from '../../auth/credentials.ts';
 import { asCredentialRecord, type CredentialLike } from '../../lib/credentials.ts';
+import { vaultGet, VaultError } from '../../lib/secret-vault/store.ts';
+import { isSecretRef } from '../../lib/secret-vault/refs.ts';
 import { numericArg, looseObject, gitConfig, workspaceId, username } from '../../lib/tool-schema-parts.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
@@ -272,24 +275,46 @@ async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
     setWorkspaceId(devStageId);
     try {
       await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
-    } catch {}
+    } catch {
+      // best-effort: a fresh sandbox may have no tunnels (or no devbridge) to delete
+    }
     try {
       await execWithSession(devStageId, 'export PATH=$HOME/.huawei/bin${PATH:+:$PATH}', 'root', 10000);
-    } catch {}
+    } catch {
+      // best-effort: the PATH export only aids later devbridge calls in this session
+    }
     await transferGitRepo(args, devStageId, connectResult);
   }
   return connectResult;
 }
 
+// POSIX single-quote escaping for every generated export line: vault values
+// are arbitrary user strings, and an unescaped `'` in a value would either
+// break the sourced script or inject commands into the sandbox shell.
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'\\''`)}'`;
+}
+
 async function handleCredentials(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
   const devStageId = args.dev_stage_id || getCurrentWorkspaceId();
   let resolved: CredentialLike | null;
+  let resolveError: unknown;
   try {
     resolved = asCredentialRecord(resolveCredentialsWithRuntime());
-  } catch {
+  } catch (error) {
     resolved = null;
+    resolveError = error;
   }
   if (!resolved?.ak || !resolved?.sk) {
+    // A broken S1 vault link is NOT "not configured" — and the auth init
+    // remediation would overwrite the refs with plaintext. Distinguish.
+    if (resolveError instanceof VaultError) {
+      return {
+        ok: false,
+        error: `Stored credentials use a secret vault ref that cannot be resolved: ${resolveError.message}`,
+        hint: 'Fix the vault (check "npx huaweicloud-devkit secret list" from a terminal; the master key may be missing or rotated) or replace the refs in ~/.config/huaweicloud/credentials.json with plaintext.',
+      };
+    }
     return {
       ok: false,
       error: 'Huawei Cloud credentials are not configured. Nothing was injected into the sandbox.',
@@ -315,33 +340,52 @@ async function handleCredentials(args: ToolArgs = {}, _opts: CallToolOptions = {
   // revocation only) — unlike the temporary STS AK/SK. It is stored in its own file
   // (/tmp/hw_api_key, 0600) so an accidental dump of /tmp/hw_creds.sh never exposes it,
   // and the local HW_API_KEY env takes precedence over the tool param so the key can be
-  // delivered without entering the conversation.
-  const apiKey = process.env.HW_API_KEY || args.api_key || '';
+  // delivered without entering the conversation. The param also accepts a vault ref
+  // (secret://<scope>/<name>), resolved here so the plaintext stays out of the
+  // conversation and out of argv.
+  const rawApiKey = process.env.HW_API_KEY || args.api_key || '';
+  let apiKey = rawApiKey;
+  if (isSecretRef(rawApiKey)) {
+    try {
+      apiKey = vaultGet(rawApiKey).value;
+    } catch (error) {
+      return {
+        ok: false,
+        error: `Cannot resolve the api_key vault ref: ${error instanceof Error ? error.message : String(error)}`,
+        hint: 'Check the ref with "npx huaweicloud-devkit secret list" from your terminal, or pass the key via the local HW_API_KEY environment variable.',
+      };
+    }
+  }
   const apiKeyFile = '/tmp/hw_api_key';
   if (sandboxWsIdCred) {
     try {
       const { ak, sk, securitytoken } = getCredentials();
       const credsScript = [
-        `export HW_ACCESS_KEY='${ak}'`,
-        `export HW_SECRET_KEY='${sk}'`,
-        securitytoken ? `export HW_SECURITY_TOKEN='${securitytoken}'` : '',
-        securitytoken ? `export X_HW_SECURITY_TOKEN='${securitytoken}'` : '',
-        validation.projectId ? `export HW_PROJECT_ID='${validation.projectId}'` : '',
+        `export HW_ACCESS_KEY=${shellSingleQuote(ak)}`,
+        `export HW_SECRET_KEY=${shellSingleQuote(sk)}`,
+        securitytoken ? `export HW_SECURITY_TOKEN=${shellSingleQuote(securitytoken)}` : '',
+        securitytoken ? `export X_HW_SECURITY_TOKEN=${shellSingleQuote(securitytoken)}` : '',
+        validation.projectId ? `export HW_PROJECT_ID=${shellSingleQuote(validation.projectId)}` : '',
       ]
         .filter(Boolean)
         .join('\n');
       const credsFile = '/tmp/hw_creds.sh';
+      // Random per-call heredoc delimiter: vault values are arbitrary user
+      // strings, and a fixed delimiter line inside a value would terminate
+      // the heredoc early and execute the remainder as root shell commands.
+      const credsDelim = `HWCREDS_${randomBytes(8).toString('hex')}`;
       await execOneShot(
         sandboxWsIdCred,
-        `cat > ${credsFile} << 'HWCREDS_EOF'\n${credsScript}\nHWCREDS_EOF\nchmod 600 ${credsFile}`,
+        `cat > ${credsFile} << '${credsDelim}'\n${credsScript}\n${credsDelim}\nchmod 600 ${credsFile}`,
         'root',
         15000,
       );
       await execWithSession(sandboxWsIdCred, `source ${credsFile} && echo "CREDS_SOURCED"`, 'root', 15000);
       if (apiKey) {
+        const apiKeyDelim = `HWAPIKEY_${randomBytes(8).toString('hex')}`;
         await execOneShot(
           sandboxWsIdCred,
-          `cat > ${apiKeyFile} << 'HWAPIKEY_EOF'\nexport HW_API_KEY='${apiKey}'\nHWAPIKEY_EOF\nchmod 600 ${apiKeyFile}`,
+          `cat > ${apiKeyFile} << '${apiKeyDelim}'\nexport HW_API_KEY=${shellSingleQuote(apiKey)}\n${apiKeyDelim}\nchmod 600 ${apiKeyFile}`,
           'root',
           15000,
         );
@@ -349,7 +393,9 @@ async function handleCredentials(args: ToolArgs = {}, _opts: CallToolOptions = {
         // Refresh with no key → drop any stale copy, same semantics as the creds file rewrite.
         await execOneShot(sandboxWsIdCred, `rm -f ${apiKeyFile}`, 'root', 15000);
       }
-    } catch {}
+    } catch {
+      // best-effort: the hdkitservice injection already succeeded; the /tmp files only supplement shell access
+    }
   }
   const result: Record<string, unknown> = {
     ...credResult,
@@ -373,14 +419,18 @@ const execWithSessionSchema = z.looseObject({
   command: z.string().describe('The shell command to execute on the remote workspace'),
   workspace_id: workspaceId,
   username,
-  timeout_ms: numericArg.optional().describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_with_session})`),
+  timeout_ms: numericArg
+    .optional()
+    .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_with_session})`),
 });
 
 const execOneShotSchema = z.looseObject({
   command: z.string().describe('The shell command to execute on the remote workspace'),
   workspace_id: workspaceId,
   username,
-  timeout_ms: numericArg.optional().describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_one_shot})`),
+  timeout_ms: numericArg
+    .optional()
+    .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_one_shot})`),
 });
 
 const closeSessionSchema = z.looseObject({
@@ -393,7 +443,9 @@ const uploadFileSchema = z.looseObject({
   remote_path: z.string().describe('Target path in the sandbox, e.g. /workspace/<repo>/index.html.'),
   workspace_id: workspaceId,
   username,
-  timeout_ms: numericArg.optional().describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.upload_file})`),
+  timeout_ms: numericArg
+    .optional()
+    .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.upload_file})`),
 });
 
 const uploadProjectSchema = z.looseObject({
@@ -411,7 +463,9 @@ const uploadProjectSchema = z.looseObject({
     .optional()
     .describe('Patterns to exclude from archive (default: .git, node_modules, __pycache__, .venv)'),
   extract: z.boolean().optional().describe('Extract tar.gz on sandbox after upload (default: true)'),
-  timeout_ms: numericArg.optional().describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.upload_project})`),
+  timeout_ms: numericArg
+    .optional()
+    .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.upload_project})`),
 });
 
 const deployNginxSchema = z.looseObject({
@@ -433,7 +487,9 @@ const deployNginxSchema = z.looseObject({
     ),
   workspace_id: workspaceId,
   username,
-  timeout_ms: numericArg.optional().describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.deploy_nginx})`),
+  timeout_ms: numericArg
+    .optional()
+    .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.deploy_nginx})`),
 });
 
 const deployCheckSchema = z.looseObject({
@@ -446,7 +502,9 @@ const deployCheckSchema = z.looseObject({
     .describe('Framework type from detect_framework. Set to cross-platform for QR code check.'),
   workspace_id: workspaceId,
   username,
-  timeout_ms: numericArg.optional().describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.deploy_check})`),
+  timeout_ms: numericArg
+    .optional()
+    .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.deploy_check})`),
 });
 
 const checkUserSchema = z.looseObject({});
@@ -478,7 +536,7 @@ const credentialsSchema = z.looseObject({
     .string()
     .optional()
     .describe(
-      'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
+      'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. Also accepts a vault ref (secret://<scope>/<name>), resolved locally so the key never enters the conversation. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
     ),
 });
 

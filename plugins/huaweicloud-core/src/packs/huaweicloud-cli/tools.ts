@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { runHcloud, planHcloudCommand, type HcloudRunResult } from '../../hcloud-cli.ts';
 import { hcloudProbeNextStep, probeHcloud, type ProbeHcloudOptions } from '../../hcloud-probe.ts';
 import { redactSecrets } from '../../safety-policy.ts';
+import { asText } from '../../lib/as-text.ts';
 import { consumeApprovalToken, hashArgs } from '../../lib/approval-tokens.ts';
 import { numericArg } from '../../lib/tool-schema-parts.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
@@ -194,7 +195,7 @@ async function listRegions() {
   } catch {
     regions = [{ raw: String(result.stdout).substring(0, 1000) }];
   }
-  regions.sort((a, b) => String(a.id || '').localeCompare(String(b.id || '')));
+  regions.sort((a, b) => asText(a.id || '').localeCompare(asText(b.id || '')));
   return { ok: true, count: regions.length, regions };
 }
 

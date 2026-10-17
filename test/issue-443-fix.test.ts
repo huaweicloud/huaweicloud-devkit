@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import test from 'node:test';
 
-function setFakeHcloud(nodeScript) {
+function setFakeHcloud(nodeScript: string) {
   const oldEnv = {
     HCLOUD_BIN: process.env.HCLOUD_BIN,
     HCLOUD_BIN_ARGS_JSON: process.env.HCLOUD_BIN_ARGS_JSON,
@@ -68,7 +68,9 @@ console.log(JSON.stringify({
     restoreHcloud();
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // best-effort by design: cleanup must never fail a test run
+    }
   }
 });
 
@@ -118,7 +120,9 @@ console.log(JSON.stringify({
     restoreHcloud();
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // best-effort by design: cleanup must never fail a test run
+    }
   }
 });
 
@@ -168,6 +172,8 @@ console.log(JSON.stringify({
     restoreHcloud();
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {}
+    } catch {
+      // best-effort by design: cleanup must never fail a test run
+    }
   }
 });

@@ -13,7 +13,7 @@ import {
   withDepLock,
   writeReceipt,
   type DepReceipt,
-} from '../plugins/huaweicloud-core/src/dep-receipts.ts';
+} from '../plugins/huaweicloud-core/src/dep/receipts.ts';
 
 // Unit 3 receipts contracts, driven through the public functions against a
 // temp receipt dir: round-trip, attribution-shape validation, atomic
@@ -258,7 +258,9 @@ test('lock: a live foreign holder is waited out, then taken over after it dies',
             process.kill(pid, 0);
             holder = pid;
             break;
-          } catch {}
+          } catch {
+            // pid not alive yet: keep polling for the live holder window
+          }
         }
       }
       await new Promise((r) => setTimeout(r, 10));
@@ -312,7 +314,7 @@ test('lock: same-process re-entry recurses instead of deadlocking', () => {
 // Each contender records its enter/leave timestamps; the sections must
 // not overlap.
 test('lock: two contenders against a dead lock never overlap critical sections', async () => {
-  const receiptsModule = fileURLToPath(new URL('../plugins/huaweicloud-core/src/dep-receipts.ts', import.meta.url));
+  const receiptsModule = fileURLToPath(new URL('../plugins/huaweicloud-core/src/dep/receipts.ts', import.meta.url));
   const contenderScript = `
 const mod = await import(process.argv[1]);
 const fs = await import('node:fs');
@@ -389,7 +391,7 @@ mod.withDepLock(() => {
 // the slow contender sleeps between its re-read and its rename — the
 // stall the round-11 probe injected artificially, here deterministic.
 test("lock: a stalled contender does not steal the winner's fresh claim", async () => {
-  const receiptsModule = fileURLToPath(new URL('../plugins/huaweicloud-core/src/dep-receipts.ts', import.meta.url));
+  const receiptsModule = fileURLToPath(new URL('../plugins/huaweicloud-core/src/dep/receipts.ts', import.meta.url));
   const fastScript = `
 const mod = await import(process.argv[1]);
 const fs = await import('node:fs');
@@ -422,7 +424,7 @@ mod.withDepLock(() => {
     const deadPid = dead.pid;
     await new Promise<void>((resolve) => dead.on('exit', resolve));
     mkdirSync(dir, { recursive: true });
-    seedLock(dir, deadPid);
+    seedLock(dir, deadPid!);
     const sentinel = join(dir, 'go');
     const fastTimings = join(dir, 'fast.json');
     const slowTimings = join(dir, 'slow.json');
@@ -493,7 +495,9 @@ test(
             process.kill(holder.pid!, 0);
             sawLiveHolder = true;
             break;
-          } catch {}
+          } catch {
+            // holder not alive yet: keep polling for the live holder window
+          }
         }
         await new Promise((r) => setTimeout(r, 10));
       }

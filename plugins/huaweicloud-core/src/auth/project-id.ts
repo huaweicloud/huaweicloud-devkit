@@ -85,7 +85,8 @@ export function resolveAndApplyProjectId({
     }
     const usable = projects.map((p) => toIamProject(p)).filter((p): p is IamProject => p !== null);
     if (usable.length === 0) return { ok: false, reason: 'project list contained no usable ids' };
-    const match = usable.find((p) => p.name === region) ?? usable[0];
+    // usable was checked non-empty just above.
+    const match = usable.find((p) => p.name === region) ?? usable[0]!;
 
     const set = runHcloud(['configure', 'set', ...profileArgs, `--cli-project-id=${match.id}`]);
     if (set.status !== 0) {

@@ -134,7 +134,8 @@ class FairQueue {
 
     for (let i = 0; i < len; i += 1) {
       const idx = (start + i) % len;
-      const id = this.channelOrder[idx];
+      // idx is a modulo of channelOrder.length, so the indexed entry exists.
+      const id = this.channelOrder[idx]!;
       if (!this.readyChannels.has(id)) continue;
 
       const buffer = this.channels.get(id);

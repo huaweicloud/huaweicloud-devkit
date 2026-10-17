@@ -7,7 +7,12 @@ import test from 'node:test';
 
 const hookPath = join(process.cwd(), 'plugins', 'huaweicloud-core', 'hooks', 'huaweicloud-safety.mjs');
 
-function runHook(payload) {
+interface HookPayload {
+  tool_name: string;
+  tool_input: { command: string };
+}
+
+function runHook(payload: HookPayload) {
   return spawnSync(process.execPath, [hookPath], {
     input: JSON.stringify(payload),
     encoding: 'utf8',

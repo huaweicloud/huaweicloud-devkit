@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { SANDBOX_TOOLS, SANDBOX_TIMEOUT_MS } from '../plugins/huaweicloud-core/src/packs/sandbox/tools.ts';
+import {
+  SANDBOX_TOOLS,
+  SANDBOX_TIMEOUT_MS,
+  type SandboxToolName,
+} from '../plugins/huaweicloud-core/src/packs/sandbox/tools.ts';
 
 // The schema text is the interface agents see on tools/list: it must
 // document the default the handler actually applies, and it must not
 // promise fallback behavior the implementation removed.
-const TIMEOUT_TOOLS: Array<[string, number]> = [
+const TIMEOUT_TOOLS: Array<[SandboxToolName, number]> = [
   ['huaweicloud_sandbox_exec_with_session', SANDBOX_TIMEOUT_MS.exec_with_session],
   ['huaweicloud_sandbox_exec_one_shot', SANDBOX_TIMEOUT_MS.exec_one_shot],
   ['huaweicloud_sandbox_upload_file', SANDBOX_TIMEOUT_MS.upload_file],

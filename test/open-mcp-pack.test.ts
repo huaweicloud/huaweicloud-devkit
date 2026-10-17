@@ -16,6 +16,7 @@ import {
   resolveGatewaySpawnArgs,
   _openMcpSidecarStats,
   _resetOpenMcpSidecar,
+  type GatewayCommand,
 } from '../plugins/huaweicloud-core/src/packs/huaweicloud-open-mcp/sidecar.ts';
 import {
   classify,
@@ -46,7 +47,7 @@ const OPEN_MCP_TOOLS = new Set([
 
 // node --test runs each file in its own process; the try/finally keeps later
 // tests in this file honest when a test pins DEVKIT_PACKS.
-function withDevkitPacks(value, fn) {
+function withDevkitPacks(value: string, fn: () => Promise<void>) {
   return async () => {
     const previous = process.env.DEVKIT_PACKS;
     process.env.DEVKIT_PACKS = value;
@@ -63,9 +64,9 @@ function withDevkitPacks(value, fn) {
 // must reset the sidecar after setting it (and again after restoring) — the
 // FAKE_FAIL_HANDSHAKE pattern, lifted into a helper for the policy/drift
 // matrix below.
-function withGatewayEnv(overrides, fn) {
+function withGatewayEnv(overrides: Record<string, string>, fn: () => Promise<void>) {
   return async () => {
-    const saved = {};
+    const saved: Record<string, string | undefined> = {};
     for (const [key, value] of Object.entries(overrides)) {
       saved[key] = process.env[key];
       process.env[key] = value;
@@ -83,6 +84,38 @@ function withGatewayEnv(overrides, fn) {
   };
 }
 
+interface PackInfoResult {
+  ok: boolean;
+  enabled: boolean;
+  tools: Array<{ name: string; description: unknown }>;
+}
+
+interface GatewayCallResult {
+  ok: boolean;
+  tool?: string;
+  pid: number;
+  arguments: { query?: unknown; limit?: unknown };
+  requiresApproval?: unknown;
+  classification?: string;
+  error?: string;
+  reason?: string;
+  executed?: { product: string; api: string };
+  rules: Array<{ line: string }>;
+  policy?: unknown;
+}
+
+interface GatewayRestartResult {
+  ok: boolean;
+  spawns: number;
+  pid: number | null;
+}
+
+interface GatewayListToolsResult {
+  ok: boolean;
+  tools: Array<{ name: unknown; inputSchema: unknown }>;
+  drift: { missing: string[] };
+}
+
 // Invariant 1: a trimmed pack registers no tools AND never spawns the sidecar.
 // The registry imports every pack's handler modules unconditionally, so the
 // zero-spawn half is exactly what lazy spawning has to guarantee.
@@ -95,7 +128,7 @@ test(
       await client.connect(transport);
       const listed = await client.listTools();
       const names = listed.tools.map((tool) => tool.name);
-      assert.equal(names.length, 10, 'core-only tools/list');
+      assert.equal(names.length, 11, 'core-only tools/list');
       for (const name of OPEN_MCP_TOOLS) {
         assert.ok(!names.includes(name), `${name} must not be registered when huaweicloud-open-mcp is trimmed`);
       }
@@ -108,7 +141,7 @@ test(
 );
 
 test('pack meta discloses the huaweicloud-open-mcp pack with its three tools', async () => {
-  const info = await callTool('huaweicloud_pack_info', { pack: 'huaweicloud-open-mcp' });
+  const info = (await callTool('huaweicloud_pack_info', { pack: 'huaweicloud-open-mcp' })) as PackInfoResult;
   assert.equal(info.ok, true);
   assert.equal(info.enabled, true);
   assert.equal(info.tools.length, 3);
@@ -120,10 +153,10 @@ test('pack meta discloses the huaweicloud-open-mcp pack with its three tools', a
 });
 
 test('the generic call face round-trips discovery tools through the sidecar', async () => {
-  const result = await callTool('huaweicloud_gateway_call', {
+  const result = (await callTool('huaweicloud_gateway_call', {
     tool: 'search_apis',
     toolArgs: { query: 'ecs', limit: 5 },
-  });
+  })) as GatewayCallResult;
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.tool, 'search_apis');
   assert.equal(result.arguments.query, 'ecs');
@@ -143,20 +176,29 @@ test('remote-style per-request server construction does not touch the sidecar', 
   const second = createDevkitMcpServer({ sessionId: 'remote-2' });
   await second.close();
   assert.equal(_openMcpSidecarStats().spawns, before.spawns, 'server construct/close must not spawn or kill');
-  const result = await callTool('huaweicloud_gateway_call', { tool: 'list_products', toolArgs: { keyword: 'ecs' } });
+  const result = (await callTool('huaweicloud_gateway_call', {
+    tool: 'list_products',
+    toolArgs: { keyword: 'ecs' },
+  })) as GatewayCallResult;
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.tool, 'list_products');
   assert.equal(_openMcpSidecarStats().spawns, before.spawns, 'the existing singleton serves later calls');
 });
 
 test('a dead sidecar is respawned by the next call, not awaited forever', async () => {
-  const first = await callTool('huaweicloud_gateway_call', { tool: 'get_product', toolArgs: { product: 'ECS' } });
+  const first = (await callTool('huaweicloud_gateway_call', {
+    tool: 'get_product',
+    toolArgs: { product: 'ECS' },
+  })) as GatewayCallResult;
   assert.equal(first.ok, true, JSON.stringify(first));
   const spawnsBefore = _openMcpSidecarStats().spawns;
   process.kill(first.pid, 'SIGKILL');
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.equal(_openMcpSidecarStats().alive, false, 'the singleton must register the child death');
-  const second = await callTool('huaweicloud_gateway_call', { tool: 'get_product', toolArgs: { product: 'VPC' } });
+  const second = (await callTool('huaweicloud_gateway_call', {
+    tool: 'get_product',
+    toolArgs: { product: 'VPC' },
+  })) as GatewayCallResult;
   assert.equal(second.ok, true, JSON.stringify(second));
   assert.notEqual(second.pid, first.pid, 'the next call must be served by a fresh child');
   assert.equal(_openMcpSidecarStats().spawns, spawnsBefore + 1);
@@ -168,7 +210,7 @@ test('a dead sidecar is respawned by the next call, not awaited forever', async 
 test('normalization covers structuredContent, isError, envelope failures, and raw text', async () => {
   const echoed = await callOpenMcpTool('search_apis', { query: 'ecs' });
   assert.equal(echoed.ok, true, JSON.stringify(echoed));
-  assert.equal(echoed.arguments.query, 'ecs');
+  assert.equal((echoed.arguments as { query: unknown }).query, 'ecs');
   assert.equal(typeof echoed.pid, 'number');
 
   const failing = await callOpenMcpTool('failing_tool', {});
@@ -217,7 +259,10 @@ test('forwarded marks completed round trips and nothing else', async () => {
 // (reproduced by probe). The stdin error handler must turn it into a fast
 // {ok:false} instead.
 test('a call racing child death fails fast instead of crashing the server', async () => {
-  const first = await callTool('huaweicloud_gateway_call', { tool: 'get_product', toolArgs: { product: 'ECS' } });
+  const first = (await callTool('huaweicloud_gateway_call', {
+    tool: 'get_product',
+    toolArgs: { product: 'ECS' },
+  })) as GatewayCallResult;
   assert.equal(first.ok, true, JSON.stringify(first));
   process.kill(first.pid, 'SIGKILL');
   // Block the event loop so 'exit' cannot be delivered yet: the write below
@@ -237,7 +282,10 @@ test('a call racing child death fails fast instead of crashing the server', asyn
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   assert.ok(cleared, 'the singleton must clear once the child death is delivered');
-  const revived = await callTool('huaweicloud_gateway_call', { tool: 'get_product', toolArgs: { product: 'RDS' } });
+  const revived = (await callTool('huaweicloud_gateway_call', {
+    tool: 'get_product',
+    toolArgs: { product: 'RDS' },
+  })) as GatewayCallResult;
   assert.equal(revived.ok, true, JSON.stringify(revived));
 });
 
@@ -245,7 +293,11 @@ test('a call racing child death fails fast instead of crashing the server', asyn
 // persistent install (~/.local/bin or PATH) → the uvx fallback, which runs
 // the gateway with no persistent install at all.
 test('gateway resolution prefers OPENMCP_BIN, then disk, then uvx', () => {
-  const direct = resolveGatewayCommand({ OPENMCP_BIN: fakeSidecar, HOME: '/nonexistent', PATH: '/usr/bin' });
+  const direct = resolveGatewayCommand({
+    OPENMCP_BIN: fakeSidecar,
+    HOME: '/nonexistent',
+    PATH: '/usr/bin',
+  }) as GatewayCommand;
   assert.equal(direct.command, fakeSidecar);
   assert.deepEqual(direct.argsPrefix, []);
 
@@ -254,7 +306,7 @@ test('gateway resolution prefers OPENMCP_BIN, then disk, then uvx', () => {
   const fakeUvx = join(binDir, 'uvx');
   writeFileSync(fakeUvx, `#!/bin/sh\nshift\nexec "${process.execPath}" "${fakeSidecar}" "$@"\n`, { mode: 0o755 });
   const envUvxOnly = { HOME: home, PATH: `/usr/bin:${binDir}` };
-  const viaUvx = resolveGatewayCommand(envUvxOnly);
+  const viaUvx = resolveGatewayCommand(envUvxOnly) as GatewayCommand;
   assert.equal(viaUvx.command, fakeUvx, 'with nothing on disk, uvx is the fallback');
   assert.deepEqual(viaUvx.argsPrefix, ['huaweicloud-open-mcp']);
 
@@ -263,7 +315,7 @@ test('gateway resolution prefers OPENMCP_BIN, then disk, then uvx', () => {
   mkdirSync(localBin, { recursive: true });
   const installed = join(localBin, 'huaweicloud-open-mcp');
   writeFileSync(installed, `#!/bin/sh\nexec "${process.execPath}" "${fakeSidecar}" "$@"\n`, { mode: 0o755 });
-  const viaDisk = resolveGatewayCommand(envUvxOnly);
+  const viaDisk = resolveGatewayCommand(envUvxOnly) as GatewayCommand;
   assert.equal(viaDisk.command, installed);
   assert.deepEqual(viaDisk.argsPrefix, []);
 });
@@ -285,7 +337,10 @@ test('a tool call runs end to end through the uvx fallback', { skip: process.pla
   process.env.PATH = `/usr/bin:${binDir}`;
   try {
     await _resetOpenMcpSidecar();
-    const result = await callTool('huaweicloud_gateway_call', { tool: 'search_apis', toolArgs: { query: 'via-uvx' } });
+    const result = (await callTool('huaweicloud_gateway_call', {
+      tool: 'search_apis',
+      toolArgs: { query: 'via-uvx' },
+    })) as GatewayCallResult;
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.arguments.query, 'via-uvx');
     assert.equal(typeof result.pid, 'number');
@@ -316,7 +371,7 @@ test('a failed handshake kills the spawned child (no orphan)', async () => {
     let gone = false;
     for (let attempt = 0; attempt < 50; attempt++) {
       try {
-        process.kill(pid, 0);
+        process.kill(pid!, 0);
         await new Promise((resolve) => setTimeout(resolve, 100));
       } catch {
         gone = true;
@@ -385,7 +440,7 @@ test('huaweicloud_gateway_restart recycles a live child and spawns fresh when no
   try {
     // No prior spawn: the restart is a single spawn.
     let before = _openMcpSidecarStats().spawns;
-    let result = await callTool('huaweicloud_gateway_restart', {});
+    let result = (await callTool('huaweicloud_gateway_restart', {})) as GatewayRestartResult;
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.spawns - before, 1, 'first restart with no live child is one spawn');
     const firstPid = result.pid;
@@ -393,13 +448,16 @@ test('huaweicloud_gateway_restart recycles a live child and spawns fresh when no
 
     // Live child: the restart stops it and spawns a replacement.
     before = _openMcpSidecarStats().spawns;
-    result = await callTool('huaweicloud_gateway_restart', {});
+    result = (await callTool('huaweicloud_gateway_restart', {})) as GatewayRestartResult;
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.spawns - before, 1, 'a live child adds exactly one more spawn');
     assert.notEqual(result.pid, firstPid, 'the recycled child must be a new process');
 
     // The replacement actually serves proxy calls.
-    const probe = await callTool('huaweicloud_gateway_call', { tool: 'list_products', toolArgs: {} });
+    const probe = (await callTool('huaweicloud_gateway_call', {
+      tool: 'list_products',
+      toolArgs: {},
+    })) as GatewayCallResult;
     assert.equal(probe.ok, true, JSON.stringify(probe));
   } finally {
     await _resetOpenMcpSidecar();
@@ -752,7 +810,11 @@ test('redactString covers auth-header values, quoted AK/SK, and Bearer forms', (
     assert.equal(preserved, prose, `${prose} must survive verbatim`);
   }
   // The object walk and the string walk agree on input_value.
-  assert.equal(redactSecrets({ input_value: 'SECRET' }).input_value, '<redacted>', 'object keys redact');
+  assert.equal(
+    (redactSecrets({ input_value: 'SECRET' }) as { input_value: unknown }).input_value,
+    '<redacted>',
+    'object keys redact',
+  );
 });
 
 test('resolveApprovalMode: unset passes; any set value throws the retirement guard', () => {
@@ -799,7 +861,7 @@ test('resolveApprovalMode: unset passes; any set value throws the retirement gua
 // ── gateway_list_tools / gateway_call through the real dispatch ──
 
 test('huaweicloud_gateway_list_tools reports the live surface and its drift', async () => {
-  const result = await callTool('huaweicloud_gateway_list_tools', {});
+  const result = (await callTool('huaweicloud_gateway_list_tools', {})) as GatewayListToolsResult;
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.ok(Array.isArray(result.tools) && result.tools.length > 0, 'tools/list is non-empty');
   assert.ok(result.tools.every((tool) => typeof tool.name === 'string' && tool.inputSchema));
@@ -811,7 +873,10 @@ test('huaweicloud_gateway_list_tools reports the live surface and its drift', as
 });
 
 test('gateway_call passes read-only discovery tools straight through', async () => {
-  const result = await callTool('huaweicloud_gateway_call', { tool: 'search_apis', toolArgs: { query: 'ecs' } });
+  const result = (await callTool('huaweicloud_gateway_call', {
+    tool: 'search_apis',
+    toolArgs: { query: 'ecs' },
+  })) as GatewayCallResult;
   assert.equal(result.ok, true, JSON.stringify(result));
   assert.equal(result.tool, 'search_apis');
   assert.equal(result.arguments.query, 'ecs');
@@ -826,7 +891,7 @@ test('gateway_call passes read-only discovery tools straight through', async () 
 test(
   'gateway_call forwards each routed tool to the gateway on the first call',
   withGatewayEnv({ FAKE_POLICY: '1' }, async () => {
-    const cases = [
+    const cases: Array<[string, Record<string, unknown>]> = [
       ['execute_api', { product: 'ECS', api: 'CreateServers' }],
       ['manage_policy', { action: 'list' }],
       ['manage_policy', { action: 'add', line: 'ECS:ListServers=allow', scope: 'once' }],
@@ -835,7 +900,7 @@ test(
       ['transform_data', { sql: 'select 1 as x', out: { path: join(tmpdir(), 'plain.csv') } }],
     ];
     for (const [tool, toolArgs] of cases) {
-      const result = await callTool('huaweicloud_gateway_call', { tool, toolArgs });
+      const result = (await callTool('huaweicloud_gateway_call', { tool, toolArgs })) as GatewayCallResult;
       // Every gateway-served result carries the tool name; the mint path
       // never did. tool presence is the forwarding proof.
       assert.equal(result.tool, tool, `${tool} must be served by the gateway, not refused locally`);
@@ -848,10 +913,10 @@ test(
 test(
   'an engine refusal returns the {ok:false} envelope with the reason preserved',
   withGatewayEnv({ FAKE_POLICY: '1' }, async () => {
-    const result = await callTool('huaweicloud_gateway_call', {
+    const result = (await callTool('huaweicloud_gateway_call', {
       tool: 'execute_api',
       toolArgs: { product: 'ECS', api: 'CreateServers' },
-    });
+    })) as GatewayCallResult;
     assert.equal(result.ok, false, JSON.stringify(result));
     assert.equal(result.requiresApproval, undefined, 'refusals are engine verdicts, not consent demands');
     assert.match(String(result.error), /safety policy/);
@@ -865,21 +930,30 @@ test(
   'the delegated consent round: refuse, grant with an ephemeral scope, retry, burn',
   withGatewayEnv({ FAKE_POLICY: '1' }, async () => {
     const execArgs = { product: 'ECS', api: 'CreateServers' };
-    const refused = await callTool('huaweicloud_gateway_call', { tool: 'execute_api', toolArgs: execArgs });
+    const refused = (await callTool('huaweicloud_gateway_call', {
+      tool: 'execute_api',
+      toolArgs: execArgs,
+    })) as GatewayCallResult;
     assert.equal(refused.ok, false, 'the empty policy refuses the first execute');
     assert.match(String(refused.error), /safety policy/);
 
-    const granted = await callTool('huaweicloud_gateway_call', {
+    const granted = (await callTool('huaweicloud_gateway_call', {
       tool: 'manage_policy',
       toolArgs: { action: 'add', line: 'ECS:CreateServers=allow', scope: 'once' },
-    });
+    })) as GatewayCallResult;
     assert.equal(granted.ok, true, JSON.stringify(granted));
 
-    const executed = await callTool('huaweicloud_gateway_call', { tool: 'execute_api', toolArgs: execArgs });
+    const executed = (await callTool('huaweicloud_gateway_call', {
+      tool: 'execute_api',
+      toolArgs: execArgs,
+    })) as GatewayCallResult;
     assert.equal(executed.ok, true, JSON.stringify(executed));
     assert.deepEqual(executed.executed, { product: 'ECS', api: 'CreateServers' });
 
-    const listing = await callTool('huaweicloud_gateway_call', { tool: 'manage_policy', toolArgs: { action: 'list' } });
+    const listing = (await callTool('huaweicloud_gateway_call', {
+      tool: 'manage_policy',
+      toolArgs: { action: 'list' },
+    })) as GatewayCallResult;
     assert.equal(listing.ok, true, JSON.stringify(listing));
     assert.ok(
       !listing.rules.some((rule) => rule.line === 'ECS:CreateServers=allow'),
@@ -898,20 +972,23 @@ test(
     // measured: executions against nonexistent APIs stop at catalog
     // resolution, so the real gateway never gets far enough to burn.
     for (const line of ['ECS:RuleA=allow', 'ECS:RuleB=allow', 'ECS:RuleC=allow']) {
-      const added = await callTool('huaweicloud_gateway_call', {
+      const added = (await callTool('huaweicloud_gateway_call', {
         tool: 'manage_policy',
         toolArgs: { action: 'add', line, scope: 'once' },
-      });
+      })) as GatewayCallResult;
       assert.equal(added.ok, true, JSON.stringify(added));
     }
 
-    const executed = await callTool('huaweicloud_gateway_call', {
+    const executed = (await callTool('huaweicloud_gateway_call', {
       tool: 'execute_api',
       toolArgs: { product: 'ECS', api: 'RuleB' },
-    });
+    })) as GatewayCallResult;
     assert.equal(executed.ok, true, JSON.stringify(executed));
 
-    const listing = await callTool('huaweicloud_gateway_call', { tool: 'manage_policy', toolArgs: { action: 'list' } });
+    const listing = (await callTool('huaweicloud_gateway_call', {
+      tool: 'manage_policy',
+      toolArgs: { action: 'list' },
+    })) as GatewayCallResult;
     assert.equal(listing.ok, true, JSON.stringify(listing));
     const lines = new Set(listing.rules.map((rule) => rule.line));
     assert.ok(!lines.has('ECS:RuleB=allow'), 'the executed once rule burned');
@@ -978,9 +1055,10 @@ test(
 
       const listed = await callOpenMcpTool('manage_policy', { action: 'list' });
       assert.equal(listed.ok, true, JSON.stringify(listed));
-      assert.equal(listed.rules[0].line, 'ECS:OverlayRule=allow', 'overlay rules list before file rules');
+      const rules = listed.rules as Array<{ line: string }>;
+      assert.equal(rules[0].line, 'ECS:OverlayRule=allow', 'overlay rules list before file rules');
       assert.ok(
-        listed.rules.some((rule) => rule.line === 'ECS:FromFile=allow'),
+        rules.some((rule) => rule.line === 'ECS:FromFile=allow'),
         'the file rule appears later in the listing',
       );
 
@@ -1017,7 +1095,7 @@ test(
       ['no_such_tool', {}, /not in the gateway tool vocabulary/],
     ];
     for (const [tool, toolArgs, reasonPattern] of denies) {
-      const result = await callTool('huaweicloud_gateway_call', { tool, toolArgs });
+      const result = (await callTool('huaweicloud_gateway_call', { tool, toolArgs })) as GatewayCallResult;
       assert.equal(result.ok, false, `${tool} ${JSON.stringify(toolArgs)} must deny`);
       assert.equal(result.classification, 'deny', 'the denial is a floor ruling');
       assert.equal(result.tool, undefined, 'a floor denial never reaches the gateway');
@@ -1031,10 +1109,10 @@ test('floor denials do not spend a gateway spawn', async () => {
   await _resetOpenMcpSidecar();
   try {
     const before = _openMcpSidecarStats().spawns;
-    const denied = await callTool('huaweicloud_gateway_call', {
+    const denied = (await callTool('huaweicloud_gateway_call', {
       tool: 'manage_policy',
       toolArgs: { action: 'add', line: 'ECS:X=allow', scope: 'permanent' },
-    });
+    })) as GatewayCallResult;
     assert.equal(denied.ok, false);
     assert.equal(denied.classification, 'deny');
     assert.equal(_openMcpSidecarStats().spawns, before, 'floors rule on the arguments alone, before any sidecar');
@@ -1046,7 +1124,10 @@ test('floor denials do not spend a gateway spawn', async () => {
 test(
   'a set HUAWEICLOUD_OPENMCP_APPROVAL surfaces the retirement guidance as the tool error',
   withGatewayEnv({ HUAWEICLOUD_OPENMCP_APPROVAL: 'native' }, async () => {
-    const result = await callTool('huaweicloud_gateway_call', { tool: 'search_apis', toolArgs: { query: 'x' } });
+    const result = (await callTool('huaweicloud_gateway_call', {
+      tool: 'search_apis',
+      toolArgs: { query: 'x' },
+    })) as GatewayCallResult;
     assert.equal(result.ok, false);
     assert.match(String(result.error), /HUAWEICLOUD_OPENMCP_APPROVAL is retired/);
     assert.match(String(result.error), /docs\/safety-model\.md/);
@@ -1056,10 +1137,10 @@ test(
 test(
   'a known tool missing from the live surface is forwarded and fails at the gateway',
   withGatewayEnv({ FAKE_POLICY: '1', FAKE_HIDE_TOOLS: 'execute_api' }, async () => {
-    const result = await callTool('huaweicloud_gateway_call', {
+    const result = (await callTool('huaweicloud_gateway_call', {
       tool: 'execute_api',
       toolArgs: { product: 'ECS', api: 'CreateServers' },
-    });
+    })) as GatewayCallResult;
     assert.equal(result.ok, false, JSON.stringify(result));
     assert.equal(result.tool, 'execute_api', 'the call was forwarded, not pre-denied as drift');
     assert.match(String(result.error), /Unknown tool/);
@@ -1071,7 +1152,10 @@ test(
   withGatewayEnv({ FAKE_POLICY: '1' }, () =>
     withDevkitPacks('core,huaweicloud-open-mcp', async () => {
       const execArgs = { product: 'ECS', api: 'CreateServers' };
-      const forwarded = await callTool('huaweicloud_gateway_call', { tool: 'execute_api', toolArgs: execArgs });
+      const forwarded = (await callTool('huaweicloud_gateway_call', {
+        tool: 'execute_api',
+        toolArgs: execArgs,
+      })) as GatewayCallResult;
       assert.equal(forwarded.tool, 'execute_api', 'the write path forwards instead of demanding consent');
       assert.equal(forwarded.requiresApproval, undefined);
       assert.equal(forwarded.ok, false, 'the empty policy refuses it: the engine is the gate');
@@ -1079,7 +1163,10 @@ test(
       const policyPath = join(stateHome, '.config', 'huaweicloud', 'packs', 'huaweicloud-open-mcp', 'policy');
       writeFileSync(policyPath, 'ECS:CreateServers=allow\n');
       try {
-        const executed = await callTool('huaweicloud_gateway_call', { tool: 'execute_api', toolArgs: execArgs });
+        const executed = (await callTool('huaweicloud_gateway_call', {
+          tool: 'execute_api',
+          toolArgs: execArgs,
+        })) as GatewayCallResult;
         assert.equal(executed.ok, true, JSON.stringify(executed));
         assert.deepEqual(
           executed.executed,
@@ -1108,7 +1195,10 @@ test(
     writeFileSync(policyPath, 'ECS:ListServers=allow\n');
     try {
       const execArgs = { product: 'ECS', api: 'ListServers' };
-      const granted = await callTool('huaweicloud_gateway_call', { tool: 'execute_api', toolArgs: execArgs });
+      const granted = (await callTool('huaweicloud_gateway_call', {
+        tool: 'execute_api',
+        toolArgs: execArgs,
+      })) as GatewayCallResult;
       assert.equal(granted.ok, true, JSON.stringify(granted));
       assert.deepEqual(
         granted.executed,
@@ -1116,17 +1206,20 @@ test(
         'a file-layer rule authorizes the call with no overlay grant',
       );
 
-      const removed = await callTool('huaweicloud_gateway_call', {
+      const removed = (await callTool('huaweicloud_gateway_call', {
         tool: 'manage_policy',
         toolArgs: { action: 'remove', line: 'ECS:ListServers=allow' },
-      });
+      })) as GatewayCallResult;
       assert.equal(removed.ok, true, JSON.stringify(removed));
       assert.ok(
         !String(removed.policy).includes('ECS:ListServers=allow'),
         'the remove envelope echoes the rewritten file: the rule is gone from the policy text',
       );
 
-      const refused = await callTool('huaweicloud_gateway_call', { tool: 'execute_api', toolArgs: execArgs });
+      const refused = (await callTool('huaweicloud_gateway_call', {
+        tool: 'execute_api',
+        toolArgs: execArgs,
+      })) as GatewayCallResult;
       assert.equal(refused.ok, false, 'the cross-layer remove rewrote the policy file, so the rule is gone');
       assert.match(String(refused.error), /safety policy/);
     } finally {
@@ -1174,13 +1267,16 @@ test('JSON-shaped error envelopes redact through the object walk', async () => {
 test(
   'gateway_call rejects non-object toolArgs explicitly instead of coercing',
   withGatewayEnv({}, async () => {
-    for (const bad of ['a string', 42, ['array'], null]) {
-      const result = await callTool('huaweicloud_gateway_call', { tool: 'search_apis', toolArgs: bad });
+    for (const bad of ['a string', 42, ['array'], null] as unknown[]) {
+      const result = (await callTool('huaweicloud_gateway_call', {
+        tool: 'search_apis',
+        toolArgs: bad as Record<string, unknown>,
+      })) as GatewayCallResult;
       assert.equal(result.ok, false);
       assert.match(String(result.error), /toolArgs must be an object/);
     }
     // undefined behaves as an empty object (the MCP optional-field case).
-    const fine = await callTool('huaweicloud_gateway_call', { tool: 'list_products' });
+    const fine = (await callTool('huaweicloud_gateway_call', { tool: 'list_products' })) as GatewayCallResult;
     assert.equal(fine.ok, true, JSON.stringify(fine));
   }),
 );

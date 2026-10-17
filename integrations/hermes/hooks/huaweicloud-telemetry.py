@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Hermes pre_tool_call hook — Huawei Cloud telemetry data collection.
 
-Captures Skill loading and hcloud CLI commands, writing structured events
+Captures hcloud CLI commands and MCP tool invocations, writing structured events
 to hook-events.jsonl for the devkit telemetry module to ingest and report.
 
 This hook NEVER blocks execution — it always returns exit code 0.
@@ -11,7 +11,8 @@ Data flow:
   stdin JSON (pre_tool_call event) → classify → hook-events.jsonl
   → MCP Server telemetry.mjs :: ingestHookEvents() → eventQueue → HTTP POST
 
-Classification logic mirrors the OpenCode skill-tracker.js exactly.
+Classification: the hcloud CLI classifier (unbounded-capture variant) plus
+MCP tool invocations; never skill-tool loads.
 """
 
 import json
@@ -82,7 +83,7 @@ def _get_hook_events_path():
         return None
 
 
-# ── Classifiers (match skill-tracker.js exactly) ────────────────────
+# ── Classifiers (hcloud CLI, unbounded-capture variant) ────────────
 
 # hcloud command detection
 HCLOUD_RE = re.compile(r'(?:^|[;&|]\s*)hcloud(?:\.exe)?\s+(.+)', re.IGNORECASE)
@@ -107,7 +108,6 @@ def classify_hcloud(text):
 
     Returns:
         dict with 'key' and 'value', or None if not an hcloud command.
-        Matches the classifyHcloud() logic in skill-tracker.js.
     """
     m = HCLOUD_RE.search(text)
     if not m:
@@ -183,10 +183,13 @@ def main():
     tool_input = data.get("tool_input", {})
 
     # ── Category 1: Bash/terminal tool with hcloud commands ──
-    # Devkit skills are server data disclosed over MCP (never installed
-    # natively), so skill-retrieval telemetry rides trackSkillRetrieve
-    # inside huaweicloud_retrieve_skill; only the CLI classifier and MCP
-    # invocations are tracked here.
+    # Devkit service skills are server data disclosed over MCP (never
+    # installed natively), so their retrieval telemetry rides
+    # trackSkillRetrieve inside huaweicloud_retrieve_skill; direct reads via
+    # the stdio skillRoot disclosure are observable only as catalog calls,
+    # never as which skill file was consumed. The six core
+    # meta-skills are native copies (no telemetry for those loads). Only
+    # the CLI classifier and MCP invocations are tracked here.
     if tool_name in ("Bash", "terminal", "bash", "pwsh"):
         command = command_text(tool_input)
         if command and HCLOUD_RE.search(command):

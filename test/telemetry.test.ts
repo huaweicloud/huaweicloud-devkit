@@ -6,7 +6,7 @@ import { detectAgentHarness } from '../plugins/huaweicloud-core/src/telemetry/ag
 
 const DETECTION_ENV_KEYS = ['AGENT_HARNESS', ...new Set(AGENTS.flatMap((agent) => agent.envVars || []))];
 
-function withNoAgentEnv(fn) {
+function withNoAgentEnv(fn: () => void) {
   const prev = Object.fromEntries(DETECTION_ENV_KEYS.map((key) => [key, process.env[key]]));
   for (const key of DETECTION_ENV_KEYS) delete process.env[key];
   try {
@@ -19,9 +19,11 @@ function withNoAgentEnv(fn) {
   }
 }
 
+type TelemetryModule = typeof import('../plugins/huaweicloud-core/src/telemetry/telemetry.ts');
+
 // 隔离 telemetry.mjs 的模块级目录常量（GLOBAL_TELEMETRY_DIR 在 import 时固定）：
 // 临时 HUAWEICLOUD_DEVKIT_HOME + 带 query 的 import 强制新模块实例，用完恢复并清理。
-async function withIsolatedTelemetry(fn) {
+async function withIsolatedTelemetry(fn: (telemetry: TelemetryModule) => unknown) {
   const fs = await import('node:fs');
   const os = await import('node:os');
   const path = await import('node:path');
@@ -75,7 +77,7 @@ test('detectAgentHarness classifies MCP client names to canonical harness', () =
   const nameBackedAgents = AGENTS.filter((a) => a.clientNames?.length);
   const idNameAgents = AGENTS.filter((a) => a.envVars?.length);
   const cases = [
-    ...nameBackedAgents.flatMap((a) => a.clientNames.map((n) => [n, a.id])),
+    ...nameBackedAgents.flatMap((a) => (a.clientNames ?? []).map((n) => [n, a.id])),
     ...idNameAgents.map((a) => [a.id, a.id]),
   ];
   withNoAgentEnv(() => {
@@ -89,15 +91,58 @@ test('detectAgentHarness prefers real host env over clientInfo.name', () => {
   const hostBackedAgents = AGENTS.filter((a) => a.envVars?.length);
   withNoAgentEnv(() => {
     for (const agent of hostBackedAgents) {
-      process.env[agent.envVars[0]] = 'simulated';
+      process.env[agent.envVars![0]] = 'simulated';
       assert.equal(
         detectAgentHarness({ name: 'unknown-mcp-client-probe' }),
         agent.id,
-        `env ${agent.envVars[0]} should win over name for ${agent.id}`,
+        `env ${agent.envVars![0]} should win over name for ${agent.id}`,
       );
-      delete process.env[agent.envVars[0]];
+      delete process.env[agent.envVars![0]];
     }
   });
+});
+
+// The registry's path patterns are matched against the spawned server's own
+// module path. opencode resolves its config root from XDG_CONFIG_HOME (and
+// the installer follows, xdgConfigHome), so the opencode marker must survive
+// a non-default root — the plugin dir segment, not the ~/.config prefix.
+test('opencode path pattern matches payload paths under any XDG root', () => {
+  const opencode = AGENTS.find((a) => a.id === 'opencode');
+  assert.ok(opencode?.pathPatterns?.length, 'opencode must carry path patterns');
+  const marker = opencode.pathPatterns![0]!;
+  const payloadPaths = [
+    '/home/u/.config/opencode/huaweicloud-plugins/dist/mcp-server.js',
+    '/home/u/xdg/opencode/huaweicloud-plugins/dist/mcp-server.js',
+    '/home/u/.config/opencode/huaweicloud-plugins/src/mcp-server.mjs',
+  ];
+  for (const serverPath of payloadPaths) {
+    assert.ok(serverPath.includes(marker), `marker ${marker} must match ${serverPath}`);
+  }
+  // matchAgent is substring + first-match over AGENTS order, so the real
+  // no-collision property is non-containment: a future broad pattern (e.g.
+  // /huaweicloud-plugins/) on any agent would shadow or be shadowed by the
+  // opencode marker while passing an exact-equality check.
+  for (const agent of AGENTS.filter((a) => a.id !== 'opencode')) {
+    for (const pattern of agent.pathPatterns ?? []) {
+      assert.ok(
+        !pattern.includes(marker) && !marker.includes(pattern),
+        `agent ${agent.id} pattern ${pattern} must neither contain nor be contained by the opencode marker ${marker}`,
+      );
+    }
+  }
+  // And no agent listed BEFORE opencode may match an opencode payload path
+  // (first-match order would attribute the spawn to that agent instead).
+  const opencodeIdx = AGENTS.findIndex((a) => a.id === 'opencode');
+  for (const agent of AGENTS.slice(0, opencodeIdx)) {
+    for (const pattern of agent.pathPatterns ?? []) {
+      for (const serverPath of payloadPaths) {
+        assert.ok(
+          !serverPath.includes(pattern),
+          `earlier agent ${agent.id} pattern ${pattern} must not match an opencode payload path`,
+        );
+      }
+    }
+  }
 });
 
 test('generateOrRecoverInstallId returns consistent string', async () => {

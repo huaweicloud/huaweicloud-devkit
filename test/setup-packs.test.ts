@@ -14,8 +14,8 @@ import test from 'node:test';
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 
-function makeEnv(home) {
-  const env = {
+function makeEnv(home: string) {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
@@ -26,32 +26,42 @@ function makeEnv(home) {
     HUAWEICLOUD_NPM_REGISTRY: 'http://127.0.0.1:9',
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
-  for (const key of ['ATOMCODE_HOME', 'DSH_HOME', 'HUAWEICLOUD_HOME', 'OFFICE_CLAW_CONFIG_ROOT', 'DEVKIT_PACKS']) {
+  // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);
+  // CODEX_HOME keys the uninstaller's codex cache cleanup.
+  for (const key of [
+    'ATOMCODE_HOME',
+    'DSH_HOME',
+    'HUAWEICLOUD_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'DEVKIT_PACKS',
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+  ]) {
     delete env[key];
   }
   return env;
 }
 
-function runCli(home, args) {
+function runCli(home: string, args: string[]) {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd: root,
     env: makeEnv(home),
     encoding: 'utf8',
-    timeout: 120000,
+    timeout: 240000,
   });
 }
 
-function opencodeConfigPath(home) {
+function opencodeConfigPath(home: string) {
   return join(home, '.config', 'opencode', 'opencode.json');
 }
 
-function readEntry(home) {
+function readEntry(home: string) {
   return JSON.parse(readFileSync(opencodeConfigPath(home), 'utf8')).mcp['huaweicloud-devkit'];
 }
 
 // Seed a drifted install (mcp-server.mjs era) whose entry carries a
 // user-set DEVKIT_PACKS, so the install merge path runs against it.
-function seedUserPacks(home, value) {
+function seedUserPacks(home: string, value: string) {
   const configDir = join(home, '.config', 'opencode');
   const srcDir = join(configDir, 'huaweicloud-plugins', 'src');
   mkdirSync(srcDir, { recursive: true });

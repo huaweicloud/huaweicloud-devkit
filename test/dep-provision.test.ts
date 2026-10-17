@@ -1,20 +1,23 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { DEPENDENCIES } from '../plugins/huaweicloud-core/src/lib/dependency-model.ts';
+import { DEPENDENCIES, DEPENDENCY_IDS } from '../plugins/huaweicloud-core/src/lib/dependency-model.ts';
 import { lookupOnPath, resolveDependencyCommand } from '../plugins/huaweicloud-core/src/lib/dep-resolve.ts';
+import type { PackId } from '../plugins/huaweicloud-core/src/lib/pack-types.ts';
+import { installerFor } from '../plugins/huaweicloud-core/src/dep/installers/table.ts';
+import { installGatewayTool } from '../plugins/huaweicloud-core/src/dep/installers/gateway.ts';
 import {
-  installGatewayTool,
   provisionDependencies,
   uninstallDependency,
   uninstallPlacedDependency,
-} from '../plugins/huaweicloud-core/src/dep-provision.ts';
-import { readReceipt, writeReceipt, type DepReceipt } from '../plugins/huaweicloud-core/src/dep-receipts.ts';
+  type DepUninstallTargets,
+} from '../plugins/huaweicloud-core/src/dep/provision.ts';
+import { readReceipt, writeReceipt, type DepReceipt } from '../plugins/huaweicloud-core/src/dep/receipts.ts';
 import { findHcloudBin } from '../plugins/huaweicloud-core/src/hcloud-probe.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
@@ -243,7 +246,7 @@ test('provisioning: a fallback-tier gateway in a TTY session prompts, then insta
   });
   assert.equal(calls.installGateway, 1);
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /Install the Open MCP Gateway persistently/);
+  assert.match(prompts[0], /Install the Open MCP Gateway persistently \(uv tool install \/ pipx \/ pip\)\?/);
   assert.match(out.text(), /open-mcp-gateway: installed via uv/);
 });
 
@@ -296,6 +299,23 @@ test('provisioning: devbridge is one INFO line and invokes nothing', async () =>
   assert.match(out.text(), /devbridge: sandbox-resident \(lives inside the cloud sandbox; the host never manages it\)/);
 });
 
+test('provisioning: hcloud absent in a TTY session auto-installs exactly once', async () => {
+  const out = collector();
+  let installerCalls = 0;
+  await provisionDependencies(['hcloud'], {
+    tty: true,
+    log: out.log,
+    probeHcloud: () => ({ status: 'not_found', installed: false }),
+    installKooCli: async () => {
+      installerCalls += 1;
+      return true;
+    },
+  });
+  assert.equal(installerCalls, 1, 'the TTY auto path must call the injected installer');
+  assert.match(out.text(), /hcloud: installed/);
+  assert.doesNotMatch(out.text(), /not found; auto-install needs an interactive session/);
+});
+
 test('provisioning: a failing dependency is isolated and reported, the loop continues', async () => {
   const out = collector();
   await provisionDependencies(['hcloud', 'devbridge'], {
@@ -323,7 +343,7 @@ function gatewayReceiptWithTier(tier: 'uv' | 'pipx' | 'pip3'): DepReceipt {
   return { binary: 'open-mcp-gateway', provisioner: 'devkit', tier, installedAt: '2026-10-08T00:00:00.000Z' };
 }
 
-const noTargets = { enabledPacks: new Set(), carriers: [] };
+const noTargets: DepUninstallTargets = { enabledPacks: new Set<PackId>(), carriers: [] };
 
 test('uninstall: devbridge is refused, the host never manages it', () => {
   const result = uninstallDependency('devbridge', noTargets, { receiptsDir: fixtureDir('dep-') });
@@ -353,11 +373,11 @@ test('uninstall open-mcp-gateway without a receipt refuses and points at the man
 test('uninstall refuses while the effective pack union still requires the id', () => {
   const dir = fixtureDir('dep-uninstall-');
   writeReceipt(hcloudReceiptAt('/gone-anyway'), dir);
-  const targets = {
-    enabledPacks: new Set(['core', 'huaweicloud-cli', 'auth']),
+  const targets: DepUninstallTargets = {
+    enabledPacks: new Set<PackId>(['core', 'huaweicloud-cli', 'auth']),
     carriers: [
-      { label: 'OpenCode', packs: new Set(['core', 'huaweicloud-cli', 'auth']) },
-      { label: 'Codex CLI', packs: new Set(['core', 'voucher']) },
+      { label: 'OpenCode', packs: new Set<PackId>(['core', 'huaweicloud-cli', 'auth']) },
+      { label: 'Codex CLI', packs: new Set<PackId>(['core', 'voucher']) },
     ],
   };
   const result = uninstallDependency('hcloud', targets, { receiptsDir: dir });
@@ -568,9 +588,9 @@ test('the forced uninstall shape skips the pack-requirement gate the gated shape
   const dir = join(home, 'deps');
   writeReceipt(gatewayReceiptWithTier('uv'), dir);
   writeExecutable(join(home, '.local', 'bin', 'uv'));
-  const requiring = {
-    enabledPacks: new Set(['huaweicloud-open-mcp']),
-    carriers: [{ label: 'OpenCode', packs: new Set(['huaweicloud-open-mcp']) }],
+  const requiring: DepUninstallTargets = {
+    enabledPacks: new Set<PackId>(['huaweicloud-open-mcp']),
+    carriers: [{ label: 'OpenCode', packs: new Set<PackId>(['huaweicloud-open-mcp']) }],
   };
   const gated = uninstallDependency('open-mcp-gateway', requiring, {
     receiptsDir: dir,
@@ -666,7 +686,23 @@ test('uninstall gateway with no tier tool and no resolvable binary clears the st
   assert.equal(readReceipt('open-mcp-gateway', dir), null);
 });
 
-test('installers: a successful gateway install records its tier in a receipt', async () => {
+// ---- installers: the composition table agrees with the catalog ----
+
+test('installers: every installable dependency has a kind-matching installer, sandbox-resident none', () => {
+  for (const id of DEPENDENCY_IDS) {
+    const installer = installerFor(id);
+    const kind = DEPENDENCIES[id].kind;
+    if (kind === 'sandbox-resident') {
+      assert.equal(installer, null, `${id} is sandbox-resident: the host never manages it`);
+      continue;
+    }
+    assert.ok(installer, `${id} must have an installer in DEP_INSTALLERS`);
+    assert.equal(installer.kind, kind, `${id}'s installer kind must match the catalog`);
+    assert.ok(installer.escapeHatch.length > 0, `${id}'s no-receipt refusal names an escape hatch`);
+  }
+});
+
+test('installers: a successful gateway install records its tier in a receipt', { skip: isWin }, async () => {
   const home = tempHome();
   const savedHome = process.env.HOME;
   const savedReceiptHome = process.env.HUAWEICLOUD_HOME;
@@ -800,31 +836,48 @@ test('dep status with nothing installed requires no binaries', () => {
 // ---- install/update wiring through the real installer ----
 
 function cliEnv(home: string, extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
-  return {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     HOME: home,
     USERPROFILE: home,
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
     HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT: '1',
-    ...extra,
   };
+  // These tests reach `install --target opencode` (the XDG-aware config
+  // root) and `uninstall --target all` (uninstallCodex's CODEX_HOME-keyed
+  // cache cleanup, uninstallHermes's HERMES_HOME-keyed payload removal)
+  // with the ambient PATH; ambient home overrides would write/delete real
+  // state on a dev machine.
+  for (const key of [
+    'ATOMCODE_HOME',
+    'DSH_HOME',
+    'HERMES_HOME',
+    'HUAWEICLOUD_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+  ]) {
+    delete env[key];
+  }
+  return { ...env, ...extra };
 }
 
 function runSetupCli(
   args: string[],
   home: string,
   extra: Record<string, string | undefined> = {},
-): ReturnType<typeof spawnSync> {
+): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd: fixtureDir('dep-provision-cwd-'),
     env: cliEnv(home, extra),
     encoding: 'utf8',
-    timeout: 120000,
+    // Install-bearing: cold fake-HOME undici fetch needs the 240s class.
+    timeout: 240000,
   });
 }
 
-function runInstall(args: string[]): ReturnType<typeof spawnSync> {
+function runInstall(args: string[]): SpawnSyncReturns<string> {
   return runSetupCli(args, tempHome());
 }
 
@@ -1197,7 +1250,7 @@ test('dep status: a failed codex plugin probe widens the union (fail-safe)', { s
   const stubPath = `${stubDir}${delimiter}/usr/bin${delimiter}/bin`;
   const res = runSetupCli(['dep', 'status'], home, { PATH: stubPath });
   assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /Dependency status \(effective packs: 9\)/);
+  assert.match(res.stdout, /Dependency status \(effective packs: 10\)/);
   // Doctor names the codex contribution: a widened union with no explaining
   // line reads as a phantom.
   const doc = runSetupCli(['doctor'], home, { PATH: stubPath, HUAWEICLOUD_HOME: home });

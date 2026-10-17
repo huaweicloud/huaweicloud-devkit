@@ -10,7 +10,7 @@ import {
 
 test('kooCliVersion is declared in package.json and is semver', () => {
   const v = getKooCliVersion();
-  assert.match(v, /^\d+\.\d+\.\d+$/);
+  assert.match(v!, /^\d+\.\d+\.\d+$/);
 });
 
 test('parseHcloudVersion extracts version from both output formats', () => {

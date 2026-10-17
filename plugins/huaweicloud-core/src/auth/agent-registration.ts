@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -23,10 +23,24 @@ export const SUPPORTED_AGENT_TARGETS: string[] = [
 // Agent-owned config paths resolve from the real home. HUAWEICLOUD_HOME
 // relocates only devkit-owned state (credentials.ts); the installer writes
 // agent configs under homedir(), so detection must read the same place.
+// opencode is the exception on the config ROOT: it reads XDG_CONFIG_HOME
+// with ~/.config as the default. This resolver follows the XDG spec's
+// absolute-only rule; note the known divergence — the pinned opencode
+// (1.19.0) honors RELATIVE values against its cwd, so a non-compliant
+// relative XDG_CONFIG_HOME still splits installer (~/.config) from agent
+// (<cwd>/<relative>). Matching cwd-dependent resolution would be worse;
+// every opencode path derivation — the write side (configRoot in
+// setup-cli.ts), the detection side below, and the agent-presence probe —
+// must share this resolver regardless.
+export function xdgConfigHome(): string {
+  const xdg = process.env.XDG_CONFIG_HOME;
+  return xdg && isAbsolute(xdg) ? xdg : join(homedir(), '.config');
+}
+
 function opencodeConfigFile(): string {
-  const jsonc = join(homedir(), '.config', 'opencode', 'opencode.jsonc');
+  const jsonc = join(xdgConfigHome(), 'opencode', 'opencode.jsonc');
   if (existsSync(jsonc)) return jsonc;
-  return join(homedir(), '.config', 'opencode', 'opencode.json');
+  return join(xdgConfigHome(), 'opencode', 'opencode.json');
 }
 
 function readJsonSafe(path: string): unknown {
@@ -119,9 +133,11 @@ function readOfficeaceRegistryInstallDir(): string | null {
     });
     if (r.status === 0) {
       const m = r.stdout.match(/InstallDir\s+REG_SZ\s+(.+)/);
-      if (m) return m[1].trim();
+      if (m) return m[1]!.trim();
     }
-  } catch {}
+  } catch {
+    // best-effort: a failed reg query falls through to the Program Files probing below
+  }
   return null;
 }
 
@@ -189,7 +205,9 @@ function officeaceRegistered(): boolean {
           db.close();
           hasMcp = Boolean(asRecord(row).enabled);
         }
-      } catch {}
+      } catch {
+        // unreadable or locked connector db leaves hasMcp false; the capabilities.json check below still decides
+      }
     }
   }
 

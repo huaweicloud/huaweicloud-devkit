@@ -39,7 +39,7 @@ function setProxyEnv(https = '', http = '', noProxy = '') {
   }
 }
 
-function restoreProxyEnv(saved) {
+function restoreProxyEnv(saved: Record<string, string | undefined>) {
   for (const key of PROXY_ENV_KEYS) {
     if (saved[key] === undefined) delete process.env[key];
     else process.env[key] = saved[key];
@@ -73,6 +73,12 @@ test('getProxyDispatcher returns undefined when no proxy is configured', async (
   }
 });
 
+interface CapturedProxyOptions {
+  uri: string;
+  proxyTls?: { rejectUnauthorized?: boolean };
+  requestTls?: { rejectUnauthorized?: boolean };
+}
+
 test(
   'getProxyDispatcher constructs ProxyAgent with relaxed TLS options',
   { skip: typeof mock?.module !== 'function' },
@@ -80,12 +86,12 @@ test(
     const saved = pushProxyEnv();
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-agent-test-'));
     const savedHome = process.env.HUAWEICLOUD_HOME;
-    let captured = null;
+    let captured = null as CapturedProxyOptions | null;
 
     t.mock.module('undici', {
       namedExports: {
         ProxyAgent: class {
-          constructor(options) {
+          constructor(options: CapturedProxyOptions) {
             captured = options;
           }
           dispatch() {}
@@ -121,12 +127,12 @@ test(
     const saved = pushProxyEnv();
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-agent-test-'));
     const savedHome = process.env.HUAWEICLOUD_HOME;
-    let captured = null;
+    let captured = null as CapturedProxyOptions | null;
 
     t.mock.module('undici', {
       namedExports: {
         ProxyAgent: class {
-          constructor(options) {
+          constructor(options: CapturedProxyOptions) {
             captured = options;
           }
           dispatch() {}
@@ -164,12 +170,12 @@ test(
     const saved = pushProxyEnv();
     const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'proxy-agent-test-'));
     const savedHome = process.env.HUAWEICLOUD_HOME;
-    let captured = null;
+    let captured = null as CapturedProxyOptions | null;
 
     t.mock.module('undici', {
       namedExports: {
         ProxyAgent: class {
-          constructor(options) {
+          constructor(options: CapturedProxyOptions) {
             captured = options;
           }
           dispatch() {}

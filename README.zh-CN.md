@@ -14,7 +14,7 @@
 
 ## 前置条件
 
-- Node.js >= 22
+- Node.js >= 22.18
 
 > **国内用户**：使用默认 npm 镜像时可能遇到下载缓慢或连接失败的问题，建议配置华为云 npm 镜像：
 >
@@ -346,7 +346,7 @@ npx --yes huaweicloud-devkit proxy clear   # 删除代理配置
 - **执行前风险检查** — 公网暴露、凭证泄露、破坏性操作在执行前即被拦截
 - **区域感知** — 自动发现可用区域，创建资源前检查服务可用性
 - **沙箱（DevStation）** — 临时云端运行环境，部署 Web 应用并即刻获得公网预览地址
-- **能力包（46 个 MCP 工具）** — 内置九个能力包（core 11 个工具；huaweicloud-cli 承载 20 个服务技能外加 7 个 KooCLI 执行工具；sandbox、auth、obs、voucher、update、discovery、huaweicloud-open-mcp 合计其余 28 个）。huaweicloud-open-mcp 包经本地 huaweicloud-open-mcp 网关代理华为云全量 OpenAPI 目录，统一走一个泛型调用工具（`huaweicloud_gateway_call`：search_apis → list_apis → get_api 发现链，execute_api 由网关 policy engine 把关同意；网关可用 pip 或 uv 安装，PATH 上有 `uvx` 即无需持久安装）。用 `huaweicloud_list_packs` → `huaweicloud_pack_info` 发现能力包，再用 `huaweicloud_retrieve_skill` 加载技能。可用 `DEVKIT_PACKS` 裁剪启用面（逗号分隔的包 id，如 `DEVKIT_PACKS=core,sandbox`）；未设置即全量启用，未知 id 启动即报错，core（包元数据、安全与发现面）始终强制包含——裁剪 huaweicloud-cli 会同时移除 CLI 执行面及其审批工具。stdio 会话内可用 `huaweicloud_packs_configure` 即时开关能力包（仅会话内生效，刷新后的工具列表立即推给 agent，重启会话即回到操作者姿态；无状态 remote 面不提供该工具）。安装后可用 `npx huaweicloud-devkit packs status | enable <ids> | disable <ids> | all [--target <agent>]` 持久管理启用面：该命令直接改写各已安装 agent MCP 配置里的 `DEVKIT_PACKS`（安装期 `--packs` 不会覆盖已有值），重启会话后生效。
+- **能力包（47 个 MCP 工具）** — 内置九个能力包（core 12 个工具；huaweicloud-cli 承载 20 个服务技能外加 7 个 KooCLI 执行工具；sandbox、auth、obs、voucher、update、discovery、huaweicloud-open-mcp 合计其余 28 个）。huaweicloud-open-mcp 包经本地 huaweicloud-open-mcp 网关代理华为云全量 OpenAPI 目录，统一走一个泛型调用工具（`huaweicloud_gateway_call`：search_apis → list_apis → get_api 发现链，execute_api 由网关 policy engine 把关同意；网关可用 pip 或 uv 安装，PATH 上有 `uvx` 即无需持久安装）。用 `huaweicloud_list_packs` → `huaweicloud_pack_info` 发现能力包，用 `huaweicloud_list_skills` 一次调用浏览技能目录（每个已启用包的技能名称、描述、版本与引用文件名；stdio 会话的载荷还携带 `skillRoot`——技能树绝对路径，同机 agent 可用自己的文件工具直读 `<skillRoot>/<name>/SKILL.md` 与 `references/`），再用 `huaweicloud_retrieve_skill` 加载技能（受门控、带遥测、跨 remote/manifest 面可移植的加载路径；六个核心元技能在目录加载型 agent 上额外以原生副本安装以获得系统提示可见性）。可用 `DEVKIT_PACKS` 裁剪启用面（逗号分隔的包 id，如 `DEVKIT_PACKS=core,sandbox`）；未设置即全量启用，未知 id 启动即报错，core（包元数据、安全与发现面）始终强制包含——裁剪 huaweicloud-cli 会同时移除 CLI 执行面及其审批工具。stdio 会话内可用 `huaweicloud_packs_configure` 即时开关能力包（仅会话内生效，刷新后的工具列表立即推给 agent，重启会话即回到操作者姿态；无状态 remote 面不提供该工具）。安装后可用 `npx huaweicloud-devkit packs status | enable <ids> | disable <ids> | all [--target <agent>]` 持久管理启用面：该命令直接改写各已安装 agent MCP 配置里的 `DEVKIT_PACKS`（安装期 `--packs` 不会覆盖已有值），重启会话后生效。
 
 ## 支持的服务
 

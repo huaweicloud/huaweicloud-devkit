@@ -27,6 +27,27 @@
 //   FAKE_SLOW_MS=<ms>          delays every tools/call answer by <ms> so a
 //                              short caller timeout lands in sidecar.request's
 //                              timer (the forwarded:false catch path).
+//   OPENMCP_FAKE_LOG=<path>    records every JSON-RPC request as one JSON
+//                              line ({method, tool?, args?}) — the E2E
+//                              assertion surface. Unset = no recording, so
+//                              parallel unit tests never interleave writes.
+const fs = await import('node:fs');
+
+function recordRequest(request) {
+  const log = process.env.OPENMCP_FAKE_LOG;
+  if (!log) return;
+  try {
+    const entry = { method: request.method };
+    if (request.method === 'tools/call') {
+      entry.tool = request.params?.name ?? null;
+      entry.args = request.params?.arguments ?? {};
+    }
+    fs.appendFileSync(log, `${JSON.stringify(entry)}\n`);
+  } catch {
+    // best-effort: recording must never fail the sidecar
+  }
+}
+
 const CORE_TOOLS = [
   'search_apis',
   'list_products',
@@ -114,7 +135,6 @@ const SCOPE_VOCAB = new Set(['permanent', 'temporary', 'session', 'once']);
 // File-layer mirror: the real gateway resolves its policy file from
 // --policy; this fixture reuses that argv entry, so file-layer rules and
 // removes run against real bytes instead of the in-memory overlay alone.
-const fs = await import('node:fs');
 function policyFilePath() {
   const index = process.argv.indexOf('--policy');
   return index >= 0 ? process.argv[index + 1] : null;
@@ -238,6 +258,7 @@ function handleLine(line) {
   } catch {
     return;
   }
+  if (request && typeof request === 'object') recordRequest(request);
   if (request.method === 'initialize') {
     if (process.env.FAKE_FAIL_HANDSHAKE === '1') {
       send({ jsonrpc: '2.0', id: request.id, error: { code: -32603, message: 'fake handshake failure' } });

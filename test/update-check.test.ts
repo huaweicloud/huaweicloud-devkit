@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, mkdirSync, readdirSync,
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { SpawnSyncOptions } from 'node:child_process';
 
 import {
   semverParse,
@@ -23,6 +24,9 @@ import {
   applyUpdateHint,
   upgradePackage,
 } from '../plugins/huaweicloud-core/src/update-check.ts';
+import type { UpgradeOptions } from '../plugins/huaweicloud-core/src/update-check.ts';
+
+type UpgradeSpawnFn = NonNullable<UpgradeOptions['spawnFn']>;
 
 test('semverParse 解析稳定版与 prerelease', () => {
   assert.deepEqual(semverParse('1.1.1-next.15'), {
@@ -32,7 +36,7 @@ test('semverParse 解析稳定版与 prerelease', () => {
     pre: ['next', '15'],
     raw: '1.1.1-next.15',
   });
-  assert.equal(semverParse('1.1.1').pre, null);
+  assert.equal(semverParse('1.1.1')!.pre, null);
   assert.equal(semverParse('not-a-version'), null);
 });
 
@@ -131,8 +135,8 @@ test('skip state 原子写往返 + 损坏容错', () => {
     assert.equal(state.dismissedVersion, '1.1.1-next.12');
     assert.ok(!existsSync(`${file}.tmp`)); // 不留 tmp 残渣
     const read = readSkipState(file);
-    assert.equal(read.dismissedVersion, '1.1.1-next.12');
-    assert.ok(Date.parse(read.expireAt) - Date.parse(read.dismissedAt) >= 2 * 24 * 60 * 60 * 1000); // 3 天
+    assert.equal(read!.dismissedVersion, '1.1.1-next.12');
+    assert.ok(Date.parse(read!.expireAt) - Date.parse(read!.dismissedAt) >= 2 * 24 * 60 * 60 * 1000); // 3 天
     writeFileSync(file, '{broken json');
     assert.equal(readSkipState(file), null); // 损坏 → null
   } finally {
@@ -203,11 +207,40 @@ test('queryDistTagsFetch 尊重 HUAWEICLOUD_NPM_REGISTRY 覆盖', async () => {
   }
 });
 
+test('queryDistTags 在 HUAWEICLOUD_NPM_REGISTRY 设置时委托 fetch 路径(不 spawn npm)', async () => {
+  // 端到端证明委托:本地 server 供 dist-tags,queryDistTags 直接返回其内容。
+  // 若仍走 npm view 子进程,请求不会到达该 server,断言失败。
+  const seen: string[] = [];
+  const server = await import('node:http').then((http) =>
+    http.createServer((req, res) => {
+      seen.push(String(req.url));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ latest: '0.0.1', next: '0.0.1' }));
+    }),
+  );
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = (server.address() as { port: number }).port;
+  const prev = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = `http://127.0.0.1:${port}`;
+  try {
+    const result = await queryDistTags({ timeoutMs: 5000 });
+    assert.deepEqual(result, { latest: '0.0.1', next: '0.0.1' });
+    assert.ok(
+      seen.some((url) => url.includes('/-/package/huaweicloud-devkit/dist-tags')),
+      `expected the dist-tags fetch, saw: ${seen.join(', ')}`,
+    );
+  } finally {
+    if (prev === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = prev;
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test('queryDistTagsSync 失败时在 DEBUG 下输出日志而非静默', () => {
   const prev = process.env.HUAWEICLOUD_DEVKIT_DEBUG;
-  const logs = [];
+  const logs: string[] = [];
   const origErr = console.error;
-  console.error = (msg) => logs.push(String(msg));
+  console.error = (msg: unknown) => logs.push(String(msg));
   process.env.HUAWEICLOUD_DEVKIT_DEBUG = '1';
   try {
     // 指向不可达 registry 的 npm view 会失败（fast，避免慢网拖长）
@@ -312,10 +345,17 @@ test('peekCachedUpdateInfo 返回已就绪 hint | null', async () => {
   invalidateUpdateCache();
 });
 
+interface UpdateHintAttached {
+  _updateInfo: { currentVersion?: string; latestVersion: string };
+}
+
 test('applyUpdateHint 附加/跳过规则', () => {
   const base = { ok: true };
   const hint = { updateAvailable: true, currentVersion: '1.0.2', targetVersion: '1.1.0' };
-  assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', hint)._updateInfo.latestVersion, '1.1.0');
+  assert.equal(
+    (applyUpdateHint(base, 'huaweicloud_check_cli', hint) as UpdateHintAttached)._updateInfo.latestVersion,
+    '1.1.0',
+  );
   assert.equal(applyUpdateHint(base, 'huaweicloud_check_update', hint), base); // 自身不加
   assert.equal(applyUpdateHint(base, 'huaweicloud_upgrade', hint), base);
   assert.equal(applyUpdateHint(base, 'huaweicloud_check_cli', null), base); // 无 hint 不加
@@ -325,7 +365,7 @@ test('applyUpdateHint 附加/跳过规则', () => {
     applyUpdateHint(base, 'huaweicloud_check_cli', { updateAvailable: true, currentVersion: '1.0.2' }),
     base,
   );
-  assert.deepEqual(applyUpdateHint(base, 'huaweicloud_check_cli', hint)._updateInfo, {
+  assert.deepEqual((applyUpdateHint(base, 'huaweicloud_check_cli', hint) as UpdateHintAttached)._updateInfo, {
     currentVersion: '1.0.2',
     latestVersion: '1.1.0',
   });
@@ -334,34 +374,36 @@ test('applyUpdateHint 附加/跳过规则', () => {
 test('upgradePackage 参数校验: version 仅支持 latest', async () => {
   const r = await upgradePackage({ target: 'opencode', version: '1.0.0' }, { spawnFn: () => ({ status: 0 }) });
   assert.equal(r.success, false);
-  assert.match(r.error, /version 参数仅支持 latest/);
+  assert.match(r.error ?? '', /version 参数仅支持 latest/);
 });
 
 test('upgradePackage 成功路径: 目标版本/重启/文案/缓存失效', async () => {
   invalidateUpdateCache();
-  let spawned = null;
-  const spawnFn = (cmd, args, opts) => {
+  let spawned: { cmd: string; args: readonly string[]; opts: SpawnSyncOptions } | null = null;
+  const spawnFn: UpgradeSpawnFn = (cmd, args, opts) => {
     spawned = { cmd, args, opts };
     return { status: 0, stdout: '', stderr: '' };
   };
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'opencode', version: 'latest' }, { doQuery, spawnFn });
   assert.equal(r.success, true);
-  const repoPkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'));
+  const repoPkg = JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json'), 'utf8'),
+  ) as { version: string };
   assert.equal(r.previousVersion, repoPkg.version); // 与仓库 package.json 当前版本动态一致
   assert.equal(r.installedVersion, '1.1.1');
   assert.equal(r.requiresRestart, true);
   assert.match(r.message, /重启当前会话/);
-  assert.equal(spawned.cmd, process.platform === 'win32' ? 'npx.cmd' : 'npx');
-  assert.deepEqual(spawned.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
-  assert.equal(spawned.opts.timeout, 300000);
+  assert.equal(spawned!.cmd, process.platform === 'win32' ? 'npx.cmd' : 'npx');
+  assert.deepEqual(spawned!.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
+  assert.equal(spawned!.opts.timeout, 300000);
   // 升级后缓存失效 → 下一次检测重新查询（此处不 fetch，只验证 invalidate 生效）
   invalidateUpdateCache();
 });
 
 test('upgradePackage next 目标: 用 next tag', async () => {
-  let spawned = null;
-  const spawnFn = (cmd, args) => {
+  let spawned: readonly string[] | null = null;
+  const spawnFn: UpgradeSpawnFn = (cmd, args) => {
     spawned = args;
     return { status: 0 };
   };
@@ -369,14 +411,14 @@ test('upgradePackage next 目标: 用 next tag', async () => {
   // currentVersion 显式注入：包版本在 prerelease/stable 之间切换（如 release 分支 bump 成稳定版）
   // 不应改变升级 tag 的判定逻辑
   await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn, currentVersion: '1.1.0-next.1' });
-  assert.ok(spawned.some((a) => a === 'huaweicloud-devkit@next'));
+  assert.ok(spawned!.some((a) => a === 'huaweicloud-devkit@next'));
 });
 
 test('upgradePackage officeace 专属重连文案', async () => {
   const spawnFn = () => ({ status: 0 });
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'officeace' }, { doQuery, spawnFn });
-  assert.match(r.message, /连接器/);
+  assert.match(r.message ?? '', /连接器/);
 });
 
 test('upgradePackage 失败: 返回手动命令', async () => {
@@ -384,8 +426,8 @@ test('upgradePackage 失败: 返回手动命令', async () => {
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
   assert.equal(r.success, false);
-  assert.match(r.manual, /npx --yes huaweicloud-devkit@latest update --target opencode/);
-  assert.match(r.error, /EPERM/);
+  assert.match(r.manual ?? '', /npx --yes huaweicloud-devkit@latest update --target opencode/);
+  assert.match(r.error ?? '', /EPERM/);
 });
 
 test('upgradePackage 失败: spawn 不存在时报可读错误而非 exit null', async () => {
@@ -398,8 +440,8 @@ test('upgradePackage 失败: spawn 不存在时报可读错误而非 exit null',
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
   assert.equal(r.success, false);
-  assert.match(r.error, /ENOENT/);
-  assert.doesNotMatch(r.error, /exit null/);
+  assert.match(r.error ?? '', /ENOENT/);
+  assert.doesNotMatch(r.error ?? '', /exit null/);
 });
 
 test('upgradePackage 无目标版本: distTags 有效但无候选时不 spawn 并返回无需升级', async () => {
@@ -425,7 +467,7 @@ test('upgradePackage 查询失败: 不 spawn 并给手动提示', async () => {
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: async () => null, spawnFn });
   assert.equal(r.success, false);
   assert.equal(spawned, false);
-  assert.match(r.manual, /huaweicloud-devkit@latest update/);
+  assert.match(r.manual ?? '', /huaweicloud-devkit@latest update/);
 });
 
 // ===== #614 回归: #607 dismiss+查询失败路径 =====
@@ -452,11 +494,13 @@ test('#607: dismiss + 查询失败 → 折叠为 check_failed（不落伪冷却�
   const { rmSync } = await import('node:fs');
   try {
     rmSync(f, { force: true });
-  } catch {}
+  } catch {
+    // 预清理上次残留的 skip 文件；失败无妨，下方仍断言其不存在
+  }
   // 模拟 dismiss 路径的处理：查询失败 → getUpdateDistTags null → judgeUpdate null
   const dt = await m.getUpdateDistTags('1.1.0', { doQuery: async () => null, sessionId: 'sess-607' });
   assert.equal(dt, null);
-  const r = m.judgeUpdate('1.1.0', dt);
+  const r = m.judgeUpdate('1.1.0', dt, null);
   assert.equal(r.result, 'check_failed');
   assert.ok(!r.dismissed);
   // 且不得写任何 skip 文件

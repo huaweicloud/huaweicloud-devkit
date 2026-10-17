@@ -57,7 +57,9 @@ export function takeAgentDelta(agentKey: string, file: string = mcpBackupFilePat
     } else {
       writeFileSync(file, JSON.stringify(backup, null, 2));
     }
-  } catch {}
+  } catch {
+    // best-effort: the delta is already in hand; a residual entry is documented above as harmless
+  }
   return delta;
 }
 

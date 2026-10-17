@@ -52,6 +52,8 @@ test('toClientInfo reads client identity from full initialize params', async () 
   assert.deepEqual(toClientInfo(null), { name: null, version: null });
 });
 
+type DecoratedResult = { _updateInfo?: unknown };
+
 test('hint-consumption: A 会话消费后 B 会话仍能拿到提示（隔离）', async () => {
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
@@ -59,16 +61,16 @@ test('hint-consumption: A 会话消费后 B 会话仍能拿到提示（隔离）
   await updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) });
 
   const base = { ok: 1 };
-  const rA = _decorateResult('session-A', 'huaweicloud_check_cli', { ...base });
+  const rA = _decorateResult('session-A', 'huaweicloud_check_cli', { ...base }) as DecoratedResult;
   assert.ok(rA._updateInfo, 'A 会话应附加 _updateInfo');
   assert.ok(_isHintConsumed('session-A'), 'A 已消费');
 
-  const rB = _decorateResult('session-B', 'huaweicloud_check_cli', { ...base });
+  const rB = _decorateResult('session-B', 'huaweicloud_check_cli', { ...base }) as DecoratedResult;
   assert.ok(rB._updateInfo, 'B 会话仍应附加 _updateInfo（隔离）');
   assert.ok(_isHintConsumed('session-B'), 'B 独立消费');
 
   // A 再次调用：不再提示（A 已消费）
-  const rA2 = _decorateResult('session-A', 'huaweicloud_check_cli', { ...base });
+  const rA2 = _decorateResult('session-A', 'huaweicloud_check_cli', { ...base }) as DecoratedResult;
   assert.ok(!rA2._updateInfo, 'A 二次调用不再附加');
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
@@ -79,9 +81,9 @@ test('hint-consumption: stdio 固定 session 行为 = 每会话首次提示一�
   updateCheck.invalidateUpdateCache();
   await updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) });
   const base = { ok: 1 };
-  const r1 = _decorateResult('stdin', 'huaweicloud_check_cli', { ...base });
+  const r1 = _decorateResult('stdin', 'huaweicloud_check_cli', { ...base }) as DecoratedResult;
   assert.ok(r1._updateInfo, 'stdio 首次附加');
-  const r2 = _decorateResult('stdin', 'huaweicloud_check_cli', { ...base });
+  const r2 = _decorateResult('stdin', 'huaweicloud_check_cli', { ...base }) as DecoratedResult;
   assert.ok(!r2._updateInfo, 'stdio 二次不附加');
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
@@ -92,9 +94,9 @@ test('hint-consumption: 缺省 session 兜底为 default（行为同现版）', 
   updateCheck.invalidateUpdateCache();
   await updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) });
   const base = { ok: 1 };
-  const r1 = _decorateResult(undefined, 'huaweicloud_check_cli', { ...base });
+  const r1 = _decorateResult(undefined, 'huaweicloud_check_cli', { ...base }) as DecoratedResult;
   assert.ok(r1._updateInfo, '缺省登录为 default 并附加');
-  const r2 = _decorateResult(undefined, 'huaweicloud_check_cli', { ...base });
+  const r2 = _decorateResult(undefined, 'huaweicloud_check_cli', { ...base }) as DecoratedResult;
   assert.ok(!r2._updateInfo, 'default 二次不附加');
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
@@ -193,7 +195,7 @@ test('skip-path: 会话隔离写读 —— A 写 skip 不影响 B', () => {
   }
 });
 
-function dirname(file) {
+function dirname(file: string): string {
   return file.slice(0, file.lastIndexOf('/'));
 }
 
@@ -205,16 +207,18 @@ test('#607: callTool dismiss + doQuery 失败 → check_failed 且不写冷却',
   const f = updateCheck.resolveSkipFilePath('sess-607e');
   try {
     fs.rmSync(f, { force: true });
-  } catch {}
+  } catch {
+    // 预清理上次残留的 skip 文件；失败无妨，下方仍断言其不存在
+  }
 
-  const r = await callTool(
+  const r = (await callTool(
     'huaweicloud_check_update',
     { dismiss: true },
     {
       sessionId: 'sess-607e',
       doQuery: async () => null, // 注入失败
     },
-  );
+  )) as updateCheck.UpdateHint;
   assert.equal(r.result, 'check_failed', `dismiss+失败应 check_failed, got ${r.result}`);
   assert.ok(!fs.existsSync(f), '查询失败不得写 skip 冷却文件');
   // 且不得沉 current 冷却（dismissed 必须 false）

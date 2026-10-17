@@ -12,6 +12,7 @@ import { OBS_TOOL_SCHEMAS } from './packs/obs/tools.ts';
 import { VOUCHER_TOOL_SCHEMAS } from './packs/voucher/tools.ts';
 import { DISCOVERY_TOOL_SCHEMAS } from './packs/discovery/tools.ts';
 import { SANDBOX_TOOL_SCHEMAS } from './packs/sandbox/tools.ts';
+import { SECRETS_TOOL_SCHEMAS } from './packs/secrets/tools.ts';
 
 // LooseToolSchema now lives in src/lib/pack-types.ts (shared pack vocabulary);
 // re-exported here so existing import sites keep working.
@@ -108,12 +109,27 @@ const TOOL_SCHEMAS = {
   // the spread keeps them in TOOL_SCHEMAS so the satisfies check below still
   // covers every ToolName key.
   ...HUAWEICLOUD_CLI_TOOL_SCHEMAS,
+  // The secrets pack owns its tool schemas (src/packs/secrets/tools.ts);
+  // same spread contract.
+  ...SECRETS_TOOL_SCHEMAS,
   huaweicloud_list_packs: z.looseObject({}),
   huaweicloud_pack_info: z.looseObject({
     pack: z
       .string()
       .describe(
         'Pack id from huaweicloud_list_packs, such as core, huaweicloud-cli, sandbox, auth, obs, voucher, update, discovery, huaweicloud-open-mcp.',
+      ),
+  }),
+  // The pack filter is deliberately z.string (handler-side PACKS lookup),
+  // not z.enum(PACK_IDS): the unknown-id error must name every valid id at
+  // the handler boundary so callTool-driven callers and SDK-validated MCP
+  // callers see the same shape packs_configure's enum boundary would split.
+  huaweicloud_list_skills: z.looseObject({
+    pack: z
+      .string()
+      .optional()
+      .describe(
+        'Optional pack id filter from huaweicloud_list_packs. Skill-owning packs (huaweicloud-cli, sandbox, obs, voucher, huaweicloud-open-mcp) list their skills; a valid zero-skill pack (auth, update, discovery, secrets) returns an empty list; the core pack is refused with an explanation (its six meta-skills are excluded by design). Omit to list every enabled pack\u2019s skills.',
       ),
   }),
   huaweicloud_packs_configure: z.looseObject({

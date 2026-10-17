@@ -1,4 +1,7 @@
 node_modules/
 dist/
+plugins/huaweicloud-core/skills/
+plugins/huaweicloud-core/skills.new-*/
 *.zst
 *.db
+.jscpd-baseline.json

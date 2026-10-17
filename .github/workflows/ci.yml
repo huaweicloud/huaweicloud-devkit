@@ -40,6 +40,8 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run lint
+      - name: duplication gate (new clones vs committed baseline)
+        run: npm run lint:dup -- --reporters silent --baseline .jscpd-baseline.json --fail-on-new-clones 0 --fail-on-empty
 
   typecheck:
     runs-on: ubuntu-24.04
@@ -74,6 +76,11 @@ jobs:
       - run: npm test
       - run: npm run validate
 
+  # OS coverage: Linux x64/arm + Windows. macOS is deliberately absent: the
+  # PTY-driven interactive install tests require util-linux `script` syntax
+  # (they skip off-Linux via the ptySkip guard), and no maintainer verifies
+  # on macOS today. Adding a macOS leg means porting the PTY helper
+  # (runAutoPty in test/agent-install.test.ts) to BSD script syntax first.
   test:
     needs: [lint]
     strategy:
@@ -92,11 +99,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       - run: npm ci
-        if: matrix.os != 'windows-latest'
       - run: npm test
-        if: matrix.os != 'windows-latest'
-      - if: matrix.os == 'windows-latest'
-        run: echo "Skipped - better-sqlite3 native compile not supported on Windows CI"
       - run: npm run validate
 
   integration:
@@ -114,6 +117,34 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: node --test test/agent-install.test.ts test/cross-platform-*.test.ts
+
+  # Real-agent lifecycle lane: installs the actual opencode/codex CLIs and
+  # drives them through install -> agent-visible state -> uninstall inside
+  # sandboxed config dirs (the test skips itself unless DEVKIT_REAL_AGENT_TESTS
+  # is set, so the plain test matrix never pays this lane's cost). The CLIs
+  # are exact-pinned because the test asserts agent output contracts (mcp
+  # list rendering, plugin list --json shape) verified against these
+  # versions — bump a pin only together with a green run of
+  # DEVKIT_REAL_AGENT_TESTS=1 node --test test/real-agents.test.ts.
+  real-agents:
+    needs: [test]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: install agent CLIs (exact-pinned)
+        run: npm install -g --no-audit --no-fund opencode-ai@1.19.0 @openai/codex@0.162.1
+      - run: node --test test/real-agents.test.ts
+        env:
+          DEVKIT_REAL_AGENT_TESTS: '1'
 
   pack:
     runs-on: ubuntu-24.04

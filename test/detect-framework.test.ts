@@ -7,24 +7,24 @@ import test from 'node:test';
 
 import { detectFramework } from '../plugins/huaweicloud-core/src/detect-framework.ts';
 
-function tmpDir() {
+function tmpDir(): string {
   const dir = join(tmpdir(), 'devkit-test-' + randomUUID());
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-function writeJson(dir, filename, obj) {
+function writeJson(dir: string, filename: string, obj: unknown): void {
   writeFileSync(join(dir, filename), JSON.stringify(obj, null, 2), 'utf8');
 }
 
-function touchFile(dir, filename, content = '') {
+function touchFile(dir: string, filename: string, content = ''): void {
   const p = join(dir, filename);
   const parent = join(p, '..');
   if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
   writeFileSync(p, content, 'utf8');
 }
 
-function cleanup(dir) {
+function cleanup(dir: string): void {
   try {
     rmSync(dir, { recursive: true, force: true });
   } catch {
@@ -61,6 +61,7 @@ test('detectFramework detects Next.js', () => {
     });
     touchFile(d, 'next.config.js');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'ssr');
     assert.equal(result.framework, 'Next.js');
     assert.equal(result.port, 3000);
@@ -79,6 +80,7 @@ test('detectFramework detects Nuxt', () => {
     writeJson(d, 'package.json', { name: 'my-nuxt-app', dependencies: { nuxt: '^3' } });
     touchFile(d, 'nuxt.config.ts');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'ssr');
     assert.equal(result.framework, 'Nuxt');
     assert.equal(result.port, 3000);
@@ -96,6 +98,7 @@ test('detectFramework detects VitePress', () => {
     mkdirSync(join(d, '.vitepress'));
     touchFile(d, '.vitepress/config.mts');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'ssg');
     assert.equal(result.framework, 'VitePress');
     assert.equal(result.port, 8080);
@@ -112,6 +115,7 @@ test('detectFramework detects Docusaurus', () => {
     writeJson(d, 'package.json', { name: 'my-docs', dependencies: { '@docusaurus/core': '^3' } });
     touchFile(d, 'docusaurus.config.js');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'ssg');
     assert.equal(result.framework, 'Docusaurus');
     assert.equal(result.outputDir, 'build');
@@ -125,6 +129,7 @@ test('detectFramework detects Hugo', () => {
   try {
     touchFile(d, 'hugo.toml');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'ssg');
     assert.equal(result.framework, 'Hugo');
     assert.equal(result.outputDir, 'public');
@@ -142,6 +147,7 @@ test('detectFramework detects Hexo', () => {
     writeJson(d, 'package.json', { name: 'my-blog', dependencies: { hexo: '^7' } });
     touchFile(d, '_config.yml');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'ssg');
     assert.equal(result.framework, 'Hexo');
     assert.equal(result.outputDir, 'public');
@@ -160,6 +166,7 @@ test('detectFramework detects Taro', () => {
       dependencies: { '@tarojs/taro': '^3.6' },
     });
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'cross-platform');
     assert.equal(result.framework, 'Taro');
     assert.equal(result.buildCmd, 'npm run build:h5');
@@ -178,6 +185,7 @@ test('detectFramework detects uni-app', () => {
       dependencies: { '@dcloudio/uni-app': '^3' },
     });
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'cross-platform');
     assert.equal(result.framework, 'uni-app');
     assert.equal(result.outputDir, 'dist/build/h5');
@@ -197,6 +205,7 @@ test('detectFramework detects Vite SPA', () => {
     });
     touchFile(d, 'vite.config.ts');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'spa');
     assert.equal(result.framework, 'Vite (React/Vue/Svelte)');
     assert.equal(result.outputDir, 'dist');
@@ -217,6 +226,7 @@ test('detectFramework detects Create React App', () => {
     });
     touchFile(d, 'public/index.html');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'spa');
     assert.equal(result.framework, 'Create React App');
     assert.equal(result.outputDir, 'build');
@@ -236,6 +246,7 @@ test('detectFramework detects Angular', () => {
       },
     });
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'spa');
     assert.equal(result.framework, 'Angular');
     assert.equal(result.outputDir, 'dist/ng-app');
@@ -262,9 +273,11 @@ test('detectFramework detects Monorepo with sub-apps', () => {
     touchFile(adminDir, 'vite.config.ts');
 
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'monorepo');
     assert.equal(result.framework, 'Monorepo');
     assert.equal(result.monorepoTool, 'Turborepo');
+    assert.ok(result.subApps);
     assert.equal(result.subApps.length, 2);
 
     const webApp = result.subApps.find((a) => a.name === '@saas/web');
@@ -286,7 +299,7 @@ test('detectFramework detects package manager from lock files', () => {
     writeJson(d, 'package.json', { name: 'test' });
     touchFile(d, 'vite.config.js');
     touchFile(d, 'pnpm-lock.yaml');
-    assert.equal(detectFramework(d).packageManager, 'pnpm');
+    assert.equal(detectFramework(d)?.packageManager, 'pnpm');
   } finally {
     cleanup(d);
   }
@@ -296,7 +309,7 @@ test('detectFramework detects package manager from lock files', () => {
     writeJson(d2, 'package.json', { name: 'test' });
     touchFile(d2, 'vite.config.js');
     touchFile(d2, 'yarn.lock');
-    assert.equal(detectFramework(d2).packageManager, 'yarn');
+    assert.equal(detectFramework(d2)?.packageManager, 'yarn');
   } finally {
     cleanup(d2);
   }
@@ -306,7 +319,7 @@ test('detectFramework detects package manager from lock files', () => {
     writeJson(d3, 'package.json', { name: 'test' });
     touchFile(d3, 'vite.config.js');
     touchFile(d3, 'package-lock.json');
-    assert.equal(detectFramework(d3).packageManager, 'npm');
+    assert.equal(detectFramework(d3)?.packageManager, 'npm');
   } finally {
     cleanup(d3);
   }
@@ -317,6 +330,7 @@ test('detectFramework static fallback for project with index.html but no framewo
   try {
     touchFile(d, 'index.html', '<html></html>');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.type, 'static');
     assert.equal(result.framework, 'Static Site');
     assert.equal(result.buildCmd, null);
@@ -333,6 +347,7 @@ test('detectFramework returns projectPath in rootDir', () => {
     writeJson(d, 'package.json', { name: 'test', dependencies: { react: '^18' } });
     touchFile(d, 'vite.config.js');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.rootDir, d);
   } finally {
     cleanup(d);
@@ -350,6 +365,7 @@ test('detectFramework detects Vue CLI before CRA fallback', () => {
     });
     touchFile(d, 'public/index.html');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.framework, 'Vue CLI');
     assert.equal(result.outputDir, 'dist');
   } finally {
@@ -368,10 +384,11 @@ test('detectFramework patches serveCmd for pnpm projects', () => {
     touchFile(d, 'next.config.js');
     touchFile(d, 'pnpm-lock.yaml');
     const result = detectFramework(d);
+    assert.ok(result);
     assert.equal(result.packageManager, 'pnpm');
     assert.equal(result.installCmd, 'pnpm install');
     assert.equal(result.buildCmd, 'pnpm run build');
-    assert.ok(result.serveCmd.includes('pnpm start'), 'serveCmd should use pnpm start');
+    assert.ok(result.serveCmd?.includes('pnpm start'), 'serveCmd should use pnpm start');
   } finally {
     cleanup(d);
   }
@@ -393,6 +410,8 @@ test('detectFramework handles non-web monorepo sub-apps gracefully', () => {
     writeJson(libDir, 'package.json', { name: '@mono/utils', dependencies: { lodash: '^4' } });
 
     const result = detectFramework(d);
+    assert.ok(result);
+    assert.ok(result.subApps);
     assert.equal(result.subApps.length, 1);
     assert.equal(result.subApps[0].name, '@mono/web');
     assert.equal(result.subApps[0].type, 'ssr');

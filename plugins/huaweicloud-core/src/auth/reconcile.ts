@@ -8,12 +8,13 @@ import {
   hasRuntimeCredentials,
   isPlaceholder,
   obsConfigPath,
-  readGlobalCredentials,
+  readGlobalCredentialsResolved,
   readLastSync,
   resolveCredentialsWithRuntime,
 } from './credentials.ts';
 import { resolveHcloudCommand } from '../hcloud-probe.ts';
 import { redactSecrets } from '../safety-policy.ts';
+import { asText } from '../lib/as-text.ts';
 
 export { hasRuntimeCredentials };
 
@@ -62,6 +63,8 @@ export interface ScanState {
   kooCliCurrent: string | null;
   envIsPlaceholder: boolean;
   s2Encrypted: boolean;
+  /** Non-null when S1 holds a secret:// ref the vault cannot resolve. */
+  s1RefError: string | null;
   inconsistencies: Inconsistency[];
   hasRuntime: boolean;
   runtimeFingerprint: string | null;
@@ -78,7 +81,7 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 function toLastSync(value: unknown): LastSyncRecord {
-  return value !== null && typeof value === 'object' && !Array.isArray(value) ? (value as LastSyncRecord) : {};
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : {};
 }
 
 export function kooCliConfigPath(): string {
@@ -91,7 +94,7 @@ export function kooCliConfigPath(): string {
 export function fingerprint(ak?: unknown, sk?: unknown): string {
   if (!ak || !sk) return '';
   return createHash('sha256')
-    .update(`${String(ak)}${String(sk)}`)
+    .update(`${asText(ak)}${asText(sk)}`)
     .digest('hex')
     .slice(0, 8);
 }
@@ -113,7 +116,7 @@ export function readKooCliProfiles(): KooCliProfilesResult {
   if (!existsSync(configPath)) return { error: 'KooCLI config not found' };
   try {
     const raw = asRecord(JSON.parse(readFileSync(configPath, 'utf8')));
-    const current = String(raw.current || 'default');
+    const current = asText(raw.current || 'default');
     const profiles: unknown[] = Array.isArray(raw.profiles) ? raw.profiles : [];
     const mtimeMs = statSync(configPath).mtimeMs;
     // KooCLI 7.x stores AK/SK encrypted (authEncrypt=true): the on-disk values
@@ -130,11 +133,11 @@ export function readKooCliProfiles(): KooCliProfilesResult {
       profiles: profiles.map((p) => {
         const profile = asRecord(p);
         return encrypted
-          ? { name: String(profile.name || ''), fingerprint: '', accessKeyId: '', encrypted: true }
+          ? { name: asText(profile.name || ''), fingerprint: '', accessKeyId: '', encrypted: true }
           : {
-              name: String(profile.name || ''),
+              name: asText(profile.name || ''),
               fingerprint: fingerprint(profile.accessKeyId, profile.secretAccessKey),
-              accessKeyId: String(profile.accessKeyId || ''),
+              accessKeyId: asText(profile.accessKeyId || ''),
               encrypted: false,
             };
       }),
@@ -177,7 +180,17 @@ function s2CurrentMatchesLastDevkitSync(
 }
 
 export function scanState(): ScanState {
-  const s1 = asRecord(readGlobalCredentials());
+  // S1 refs resolve through the shared seam so fingerprints compare plaintext
+  // against plaintext (S2/S3). An unresolvable ref must not crash status
+  // reporting: it surfaces as s1RefError and suppresses the drift checks
+  // (their fingerprints would be meaningless against ref strings).
+  let s1: Record<string, unknown> = {};
+  let s1RefError: string | null = null;
+  try {
+    s1 = asRecord(readGlobalCredentialsResolved());
+  } catch (error) {
+    s1RefError = error instanceof Error ? error.message : String(error);
+  }
   const envAk = isPlaceholder(process.env.HW_ACCESS_KEY) ? '' : process.env.HW_ACCESS_KEY || '';
   const envSk = isPlaceholder(process.env.HW_SECRET_KEY) ? '' : process.env.HW_SECRET_KEY || '';
   const kooCli = readKooCliProfiles();
@@ -186,7 +199,7 @@ export function scanState(): ScanState {
     Boolean(process.env.HW_ACCESS_KEY && isPlaceholder(process.env.HW_ACCESS_KEY)) ||
     Boolean(process.env.HW_SECRET_KEY && isPlaceholder(process.env.HW_SECRET_KEY));
 
-  const s1Fingerprint = fingerprint(s1.ak, s1.sk);
+  const s1Fingerprint = s1RefError ? '' : fingerprint(s1.ak, s1.sk);
   const currentFp = currentFingerprintFromHcloud(kooCli);
   const s2SyncedByDevkit = s1Fingerprint ? s2CurrentMatchesLastDevkitSync(kooCli, s1, s1Fingerprint) : false;
   const effectiveCurrentFp = s2SyncedByDevkit ? s1Fingerprint : currentFp;
@@ -238,6 +251,7 @@ export function scanState(): ScanState {
     // S2 is encrypted storage (authEncrypt) → its fingerprint is unavailable,
     // so the S2-current drift check is intentionally skipped (#533).
     s2Encrypted: Boolean(!('error' in kooCli) && kooCli.authEncrypt),
+    s1RefError,
     inconsistencies,
     hasRuntime,
     runtimeFingerprint,
@@ -249,7 +263,7 @@ function parseS3ObsConfig(path: string): ObsConfig | null {
     const text = readFileSync(path, 'utf8');
     const get = (k: string): string => {
       const m = text.match(new RegExp(`^${k}=(.+)$`, 'm'));
-      return m ? m[1].trim() : '';
+      return m ? m[1]!.trim() : '';
     };
     return { ak: get('ak'), sk: get('sk'), region: inferRegion(text) };
   } catch {
@@ -259,7 +273,7 @@ function parseS3ObsConfig(path: string): ObsConfig | null {
 
 function inferRegion(text: string): string {
   const m = text.match(/endpoint=https:\/\/obs\.([^.]+)\./);
-  return m ? m[1] : '';
+  return m ? m[1]! : '';
 }
 
 export function exportStateForStatus(_jailed?: boolean) {

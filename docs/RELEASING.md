@@ -82,8 +82,8 @@ Rules:
 
 ## 4. Prerelease Workflow (current, manual)
 
-Until release-please is in place (Section 6), prereleases are published
-manually.
+Prereleases are published manually by design — the Release workflow only
+manages stable-version release PRs (see Section 6).
 
 **Prerequisite:** the version bump decision. A prerelease commits to a future
 stable number: `1.1.0-next.0` commits to stable `1.1.0`.
@@ -107,20 +107,29 @@ Steps:
 4. Refresh the bundled Huawei Cloud Icons manifest snapshot:
    `node ./scripts/update-icons-manifest.mjs`.
 5. Run tests: `npm test`.
-6. Publish to the `next` tag:
+6. Run the pre-release agent smoke (packed-tarball install for every agent
+   target, `status`, and a live MCP roundtrip per configured server; the
+   codex target needs the `codex` CLI on PATH, and the per-target dependency
+   installs need npm registry access):
+
+   ```powershell
+   npm run smoke:agents
+   ```
+
+7. Publish to the `next` tag:
 
    ```powershell
    npm publish --tag next
    ```
 
-7. Restore `package.json` to the stable version and commit only non-version
+8. Restore `package.json` to the stable version and commit only non-version
    changes (the repo must never drift from what is published):
 
    ```powershell
    npm version <previous-stable> --no-git-tag-version
    ```
 
-8. Announce `1.1.0-next.N` with its change list; collect feedback under that
+9. Announce `1.1.0-next.N` with its change list; collect feedback under that
    version number.
 
 Subsequent iterations use `1.1.0-next.1`, `1.1.0-next.2`, and so on.
@@ -154,6 +163,20 @@ Prerelease cadence: at most 1–2 `next` publishes per week, only after
 
 ### Phase 1 — Automate stable releases with release-please
 
+> **As implemented:** this phase runs as `release.yml` with home-grown
+> scripts — `scripts/bump-version.mjs` (version proposal from conventional
+> commits and tags) and `scripts/create-release-pr.mjs` (opens the release
+> PR bumping `package.json`, the root `plugin.json`, all five plugin
+> manifests, `openclaw.plugin.json`, and `docs/CHANGELOG.md`). The
+> release-please config files at the repo root belong to this setup:
+> `.release-please-manifest.json` is the scripts' released-version state of
+> record (the googleapis release-please action itself is **not** used). The
+> publish workflow is `npm-publish.yml` (not `publish.yml`), the `pack` CI
+> job is live, the retired manual publish workflows are gone, and no
+> `cd-production.yml` exists. The design below is the original plan; where
+> it names release-please mechanics, read "the Release workflow +
+> `scripts/bump-version.mjs`".
+
 - Add `release-please-config.json` with `release-type: node` and
   `extra-files` covering all four plugin manifests (replaces
   `sync-version.mjs` in the release path).
@@ -175,10 +198,10 @@ Release flow after Phase 1:
 
 ```
 feat/fix commits → PR → merge to main
-  → release-please opens/updates a release PR (version + changelog)
+  → the Release workflow opens/updates a release PR (version + changelog)
   → a maintainer merges it
   → git tag vX.Y.Z + GitHub Release (npm is untouched)
-  → a maintainer manually dispatches Publish on the vX.Y.Z tag (dist-tag=latest)
+  → a maintainer manually dispatches Publish npm on the vX.Y.Z tag (dist-tag=latest)
   → npm-publish environment approval (reviewer + v* tag allowlist)
   → npm publish → latest
 ```
@@ -189,25 +212,29 @@ install into a temp project). The Publish workflow re-runs the same
 verification before publishing, so the bytes that reach npm are the bytes
 that were verified.
 
-**The team decides the version (title override rule).** The version computed by
-release-please is only a proposal, expressed in the release PR title (e.g.
-`chore: release 1.0.2`). Before merging, a maintainer may edit the PR title to
-force a specific version; merging then releases exactly that version:
+**The team decides the version (release-PR edit rule).** The version
+computed by `scripts/bump-version.mjs` is only a proposal, materialized in
+the release PR's file bumps. Before merging, a maintainer may edit the PR's
+bumped version fields to force a specific version; merging then releases
+exactly that version. (With the home-grown flow the PR title is decorative —
+the bumped files are the version of record; the release-please
+"retitle the PR" shortcut does not apply.)
 
-```
-proposal:            chore: release 1.0.2
-team wants 1.1.0  →  retitle to: chore: release 1.1.0 → merge
-team wants 2.0.0  →  retitle to: chore: release 2.0.0 → merge
-```
-
-When fix + feat + feat! commits are mixed, the proposal takes the highest
-priority (feat! > feat > fix); if the team judges the real impact lower than
-the proposal, use the title override to downgrade.
+**The proposal rule as implemented:** `scripts/bump-version.mjs` patch-bumps
+by default and only deviates on an explicit override — a `Release-As:
+<version>` trailer in a commit body, or a `.version-override` file at the
+repo root. (The conventional-commit feat!/feat/fix priority of the original
+release-please design is **not** implemented.) If the team wants a different
+version, add the override or edit the release PR's bumps — the bumped files
+are the version of record.
 
 ### Phase 2 — The `next` channel (prereleases)
 
-- Maintain a `next` branch; release-please runs there, producing
-  `X.Y.Z-next.N` release PRs; merging only tags, never publishes.
+- Maintain the `next` prerelease line on the `dev` branch: the Release
+  workflow's release-PR step is skipped on dev pushes (tag-only), so
+  `X.Y.Z-next.N` release PRs come from a manual dispatch of the workflow on
+  `dev`, where `scripts/bump-version.mjs`'s dev arm computes the next-N
+  counter from the latest stable tag. Merging only tags, never publishes.
 - Prereleases use the same manual Publish: dispatch from the
   `vX.Y.Z-next.N` tag with `dist-tag=next`.
 - The `next` line stays tied to the upcoming stable: after `1.1.0` ships,
@@ -225,16 +252,19 @@ the proposal, use the title override to downgrade.
 ## 7. Rules (non-negotiable)
 
 1. Nobody edits `package.json#version` by hand. The version number comes from
-   the release-please release PR: accept the proposal by default, or override
-   it by editing the PR title (or, temporarily, the steps in Section 4).
+   the release PR the Release workflow opens (`scripts/create-release-pr.mjs`):
+   accept the proposal by default, or override it by editing the PR's version
+   bump before merging (or, temporarily, the steps in Section 4).
 2. A prerelease always announces the future stable version it tests.
 3. `latest` never receives a prerelease; `next` never receives a stable.
 4. Every publish — stable or prerelease — passes `npm test` and
    `npm run validate` first.
-5. All four plugin manifests (codex, claude, cursor, workbuddy) ship at the
-   same version as `package.json`.
+5. All seven versioned manifests (root `plugin.json`, the codex / claude /
+   cursor / workbuddy / hermes plugin manifests, and `openclaw.plugin.json`)
+   ship at the same version as `package.json` — `npm run validate` enforces
+   the parity.
 6. The repo `package.json` always reflects the latest **stable** version;
    prerelease numbers exist only transiently during a publish.
-7. **npm publishing happens only through `publish.yml`, manually dispatched
-   from a `v*` tag and approved via the `npm-publish` environment.** No other
-   automated publish path is allowed.
+7. **npm publishing happens only through `npm-publish.yml`, manually
+   dispatched from a `v*` tag and approved via the `npm-publish`
+   environment.** No other automated publish path is allowed.

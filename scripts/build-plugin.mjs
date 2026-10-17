@@ -86,7 +86,19 @@ rmSync(join(stagingDir, 'mcp-server-remote.js'), { force: true });
 rmSync(distDir, { recursive: true, force: true });
 renameSync(stagingDir, distDir);
 
-console.error(`[build-plugin] dist rebuilt; ${copied} asset(s) copied; server entry bundled.`);
+// The skills tree is a build artifact beside dist/: sources live in
+// src/packs/*/skills/** (all 30 skills are pack-owned), output lands in
+// skills/ with the roster manifest. sync-skills applies the same staging
+// discipline used for dist above (render into a unique skills.new-* dir,
+// swap on success), so a failed skills generation never leaves a
+// half-written tree behind.
+const { writeSkillsTree } = await import('./sync-skills.mjs');
+const skillsOut = writeSkillsTree();
+
+console.error(
+  `[build-plugin] dist rebuilt; ${copied} asset(s) copied; server entry bundled; ` +
+    `skills tree regenerated (${skillsOut.skills} skill(s), ${skillsOut.files} file(s)).`,
+);
 
 function walk(dir) {
   const out = [];

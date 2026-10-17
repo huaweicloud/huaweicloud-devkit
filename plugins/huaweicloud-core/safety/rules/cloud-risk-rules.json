@@ -32,11 +32,11 @@
         "all": [
           {
             "field": "text",
-            "regex": "(^|\\s)(env|printenv|Get-ChildItem\\s+Env:|gci\\s+Env:|dir\\s+Env:)"
+            "regex": "(^|\\s)(env|printenv|export\\s+-p|declare|typeset|set|Get-ChildItem\\s+Env:|gci\\s+Env:|dir\\s+Env:)(?![A-Za-z0-9_-])"
           },
           {
             "field": "text",
-            "regex": "(HUAWEICLOUD|HWC_|HCLOUD|OS_)"
+            "regex": "(HUAWEICLOUD(?!-devkit)|HWC_|HCLOUD_|OS_|HW_(?:ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN|API_KEY|VAULT_MASTER_KEY))"
           }
         ]
       },

@@ -19,7 +19,7 @@ import {
   writeGlobalCredentials,
 } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
 
-function withTempHome(fn) {
+function withTempHome(fn: (home: string) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-rec-'));
   const previous = {
     HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
@@ -50,11 +50,18 @@ function withTempHome(fn) {
   }
 }
 
+interface FakeKooCliProfileConfig {
+  name: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  region: string;
+}
+
 // The fake KooCLI config lives under the temp dir and is wired to
 // HCLOUD_CONFIG_PATH, so readKooCliProfiles (production: ~/.hcloud/config.json
 // from homedir()) reads the fake file without touching the real one.
-function writeFakeKooCli(current, profiles) {
-  const home = process.env.HUAWEICLOUD_HOME;
+function writeFakeKooCli(current: string, profiles: FakeKooCliProfileConfig[]): string {
+  const home = process.env.HUAWEICLOUD_HOME!;
   const p = join(home, '.hcloud', 'config.json');
   mkdirSync(join(home, '.hcloud'), { recursive: true });
   writeFileSync(p, JSON.stringify({ current, profiles }, null, 2));
@@ -75,15 +82,17 @@ test('readKooCliProfiles parses current + profiles with fingerprint/mtime', () =
       { name: 'deploy', accessKeyId: 'AK_B', secretAccessKey: 'SK_B', region: 'cn-north-4' },
     ]);
     const res = readKooCliProfiles();
+    assert.ok(!('error' in res));
     assert.equal(res.current, 'deploy');
     assert.equal(res.profiles.length, 2);
-    assert.equal(res.profiles.find((p) => p.name === 'default').fingerprint, fingerprint('AK_A', 'SK_A'));
+    assert.equal(res.profiles.find((p) => p.name === 'default')?.fingerprint, fingerprint('AK_A', 'SK_A'));
   });
 });
 
 test('readKooCliProfiles handles missing config', () => {
   withTempHome(() => {
     const res = readKooCliProfiles();
+    assert.ok('error' in res);
     assert.equal(res.error, 'KooCLI config not found');
   });
 });
@@ -104,7 +113,7 @@ test('scanState does not misreport S2 drift when KooCLI authEncrypt=true', () =>
     writeGlobalCredentials({ ak: 'AK_S1', sk: 'SK_S1', region: 'cn-north-4' });
     // KooCLI authEncrypt stores ciphertext for the SAME AK/SK — must NOT be
     // compared against plaintext S1 and reported as a drift (#533).
-    const home = process.env.HUAWEICLOUD_HOME;
+    const home = process.env.HUAWEICLOUD_HOME!;
     const p = join(home, '.hcloud', 'config.json');
     mkdirSync(join(home, '.hcloud'), { recursive: true });
     writeFileSync(

@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 
+import { asText } from '../../lib/as-text.ts';
 import { isInsideProtectedTree, packStateDir } from '../../lib/pack-state.ts';
 import { classifyTextCommand } from '../../safety-policy.ts';
 import { POLICY_FILE } from './sidecar.ts';
@@ -161,7 +162,7 @@ export function classify(tool: string, toolArgs: Record<string, unknown>): Rulin
     // policy setting can widen that (the gateway itself has no secret
     // guard — probed 2026-10-10, an allowed KMS ShowSecretVersion rule
     // proceeded to catalog resolution).
-    const secretCheck = classifyTextCommand(`hcloud ${toolArgs.product} ${toolArgs.api}`);
+    const secretCheck = classifyTextCommand(`hcloud ${asText(toolArgs.product)} ${asText(toolArgs.api)}`);
     if (secretCheck.risk === 'secret') return { verdict: 'deny', reason: secretCheck.reason };
     return { verdict: 'forward' };
   }

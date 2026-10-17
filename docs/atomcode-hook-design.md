@@ -15,9 +15,8 @@ Huawei Cloud DevKit 已集成 4 个 Agent 平台的遥测 Hook：
 
 ## 2. 目标
 
-为 AtomCode 平台实现遥测 Hook，对齐现有四平台能力，仅保留三项核心功能：
+为 AtomCode 平台实现遥测 Hook，对齐现有平台能力，保留两项核心功能（Skill 跟踪已随五平台 doctrine 移除，见 5.2）：
 
-- **Skill 跟踪**：拦截 `skill` / `use_skill` 工具调用，识别华为云技能
 - **CLI 分类**：解析 bash 中的 `hcloud` 命令，分类为 `cli:read` / `cli:write` / `cli:invoke`
 - **MCP 跟踪**：记录 `mcp__huaweicloud*` 工具调用
 
@@ -52,23 +51,13 @@ AtomCode 提供 4 个生命周期事件：
 ```
 ATOMCODE_TOOL_NAME + ATOMCODE_HOOK_CONTEXT (stdin JSON)
   │
-  ├── tool === "skill" ──────────────────────→ 5.2 Skill 跟踪
   ├── tool === "bash"  ──────────────────────→ 5.3 CLI 分类
   └── tool.startsWith("mcp__huaweicloud") ───→ 5.4 MCP 跟踪
 ```
 
-### 5.2 Skill 跟踪
+### 5.2 Skill 跟踪（已移除）
 
-匹配工具名 `skill` 或 `use_skill`，提取参数中的技能名：
-
-```javascript
-if (toolName === 'skill' || toolName === 'use_skill') {
-  const skillName = toolInput?.name || toolInput || '';
-  if (/^huawei/i.test(skillName)) {
-    writeEvent('skill:retrieve', skillName);
-  }
-}
-```
+Skill-tool 分类已移除：service skills 的 retrieval 遥测走 server 端 `trackSkillRetrieve`，核心元技能的原生加载与 skillRoot 文件直读按设计不产生遥测（与五平台 hooks 的 doctrine 一致，structure 守卫钉住）。
 
 ### 5.3 CLI 分类
 
@@ -117,7 +106,6 @@ if (toolName.startsWith('mcp__huaweicloud')) {
 ### 6.2 事件格式
 
 ```json
-{"key": "skill:retrieve",     "value": "huawei-ecs"}
 {"key": "cli:read",           "value": "hcloud ECS ListServersDetails", "capability": "cli"}
 {"key": "cli:write",          "value": "hcloud ECS CreateServers",     "capability": "cli"}
 {"key": "cli:invoke",         "value": "hcloud OBS mb",                "capability": "cli"}
@@ -166,7 +154,7 @@ Hook 进程运行时，AtomCode 注入以下环境变量：
 
 | 能力         | DSH | Hermes | OpenCode | WorkBuddy | **AtomCode** |
 | ------------ | :-: | :----: | :------: | :-------: | :----------: |
-| Skill 跟踪   | ✅  |   ✅   |    ✅    |    ✅     |      ✅      |
+| Skill 跟踪   |  —  |   —    |    —     |     —     |      —       |
 | CLI 分类     | ✅  |   ✅   |    ✅    |    ✅     |      ✅      |
 | MCP 跟踪     | ✅  |   ✅   |    —     |    ✅     |      ✅      |
 | 流式消息解析 |  —  |   —    |    ✅    |     —     |      —       |

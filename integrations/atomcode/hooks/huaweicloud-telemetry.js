@@ -1,12 +1,21 @@
 /**
  * huaweicloud-telemetry.js — AtomCode PreToolUse Hook
  *
- * Captures Skill loading, hcloud CLI commands, and MCP tool invocations,
- * writing structured events to hook-events.jsonl for the devkit telemetry
- * module to ingest and report.
+ * Captures hcloud CLI commands and MCP tool invocations, writing structured
+ * events to hook-events.jsonl for the devkit telemetry module to ingest and
+ * report. Service skills are server data disclosed over MCP, so their
+ * retrieval telemetry rides trackSkillRetrieve inside
+ * huaweicloud_retrieve_skill; direct reads via the stdio skillRoot
+ * disclosure are observable only as catalog calls, never as which skill
+ * file was consumed. The six core meta-skills are installed as native
+ * copies (system-prompt disclosure); those loads produce no telemetry by
+ * design — so this hook never classifies skill-tool loads (the prefix
+ * match would also misattribute user skills sharing the huawei* prefix).
  *
- * Classification logic mirrors the existing four platform hooks exactly.
- * This hook NEVER blocks execution — it always exits 0.
+ * Classification mirrors the other platform hooks' trimmed shape: the
+ * hcloud CLI classifier plus MCP tool events (opencode's hook carries
+ * the CLI classifier only). This hook NEVER blocks execution — it
+ * always exits 0.
  */
 
 import { appendFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
@@ -59,15 +68,8 @@ function writeEvent(key, value, extra = {}) {
 }
 
 // ══════════════════════════════════════════════════════════════════
-// Skill identification
-// ══════════════════════════════════════════════════════════════════
-
-function isHuaweiCloudSkill(name) {
-  return typeof name === 'string' && /^huawei/i.test(name);
-}
-
-// ══════════════════════════════════════════════════════════════════
-// CLI command classification (matches skill-tracker.js exactly)
+// CLI command classification (the unbounded-capture variant shared with
+// the workbuddy/hermes hooks; opencode/dsh use a bounded 4-token capture)
 // ══════════════════════════════════════════════════════════════════
 
 const HCLOUD_RE = /(?:^|[;&|]\s*)hcloud(?:\.exe)?\s+(.+)/i;
@@ -128,14 +130,6 @@ function extractCommand(toolInput) {
   return '';
 }
 
-function extractSkillName(toolInput) {
-  if (typeof toolInput === 'string') return toolInput;
-  if (toolInput && typeof toolInput === 'object') {
-    return toolInput.name || toolInput.command || '';
-  }
-  return '';
-}
-
 // ══════════════════════════════════════════════════════════════════
 // Main
 // ══════════════════════════════════════════════════════════════════
@@ -147,16 +141,7 @@ try {
 
   debugLog(`tool=${toolName}`);
 
-  // ── Category 1: Skill tool calls ──
-  if (toolName === 'skill' || toolName === 'use_skill') {
-    const skillName = extractSkillName(toolInput);
-    debugLog(`skill name=${skillName}`);
-    if (isHuaweiCloudSkill(skillName)) {
-      writeEvent('skill:retrieve', skillName);
-    }
-  }
-
-  // ── Category 2: Bash/pwsh with hcloud commands ──
+  // ── Category 1: Bash/pwsh with hcloud commands ──
   if (toolName === 'bash' || toolName === 'pwsh') {
     const command = extractCommand(toolInput);
     if (command && HCLOUD_RE.test(command)) {
@@ -168,7 +153,7 @@ try {
     }
   }
 
-  // ── Category 3: MCP Huawei Cloud tools ──
+  // ── Category 2: MCP Huawei Cloud tools ──
   if (toolName.startsWith('mcp__huaweicloud')) {
     writeEvent(`tool:${toolName}`, '1', { capability: 'mcp' });
     debugLog(`MCP tool: ${toolName}`);

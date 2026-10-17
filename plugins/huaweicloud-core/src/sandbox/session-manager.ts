@@ -213,6 +213,7 @@ function firstExisting(...candidates: string[]): string {
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
+  // Both call sites pass literal, non-empty candidate lists; the last entry is the fallback.
   return candidates[candidates.length - 1]!;
 }
 
@@ -335,7 +336,7 @@ async function createTunnelSession(workspaceId: string, username: string, timeou
     mux.onError = (err) => {
       clearTimeout(timer);
       clearInterval(interval);
-      reject(err);
+      reject(err instanceof Error ? err : new Error(String(err)));
     };
   });
 
@@ -514,7 +515,9 @@ function uploadLog(message: string): void {
   console.error(line.trimEnd());
   try {
     appendFileSync(UPLOAD_LOG_PATH, line);
-  } catch {}
+  } catch {
+    // best-effort by design: a failed log-file append must never fail the caller
+  }
 }
 
 function rotateUploadLog(maxBytes = 100 * 1024): void {
@@ -525,7 +528,9 @@ function rotateUploadLog(maxBytes = 100 * 1024): void {
         unlinkSync(UPLOAD_LOG_PATH);
       }
     }
-  } catch {}
+  } catch {
+    // best-effort: a failed rotation only leaves an oversized log file
+  }
 }
 
 function generateUploadToken(): string {
@@ -582,7 +587,9 @@ async function computeMd5(filePath: string): Promise<string> {
 function cleanupLocalArchive(archivePath: string): void {
   try {
     rmSync(dirname(archivePath), { recursive: true, force: true });
-  } catch {}
+  } catch {
+    // best-effort: a leftover temp archive dir is harmless
+  }
 }
 
 async function deployFileServer(
@@ -655,7 +662,7 @@ async function uploadViaTunnel(
         if (headerEnd > 0) {
           const headerBlock = resp.slice(0, headerEnd);
           const clMatch = headerBlock.match(/Content-Length:\s*(\d+)/i);
-          if (clMatch) contentLength = parseInt(clMatch[1], 10);
+          if (clMatch) contentLength = parseInt(clMatch[1]!, 10);
         }
       }
       if (contentLength >= 0 && headerEnd > 0) {
@@ -664,7 +671,7 @@ async function uploadViaTunnel(
           done(() => {
             const resp = respBuf.toString();
             const statusLine = resp.split('\r\n')[0] || '';
-            const statusCode = parseInt(statusLine.split(' ')[1], 10);
+            const statusCode = parseInt(statusLine.split(' ')[1]!, 10);
             const body = resp.slice(headerEnd + 4, headerEnd + 4 + contentLength);
             if (!statusCode || statusCode < 200 || statusCode >= 300) {
               uploadLog(`uploadViaTunnel: POST failed with HTTP ${statusCode}: ${body.slice(0, 200)}`);
@@ -685,7 +692,7 @@ async function uploadViaTunnel(
       done(() => {
         const resp = respBuf.toString();
         const statusLine = resp.split('\r\n')[0] || '';
-        const statusCode = parseInt(statusLine.split(' ')[1], 10);
+        const statusCode = parseInt(statusLine.split(' ')[1]!, 10);
         const he = resp.indexOf('\r\n\r\n');
         const body = he > 0 ? resp.slice(he + 4) : '';
         if (!statusCode || statusCode < 200 || statusCode >= 300) {
@@ -933,12 +940,16 @@ export async function uploadProjectWithSession(
         username,
         15000,
       );
-    } catch {}
+    } catch {
+      // best-effort: the upload already succeeded; the traverse-permission fixup only hardens later nginx serving
+    }
   }
 
   try {
     await cleanupFileServer(workspaceId, username);
-  } catch {}
+  } catch {
+    // best-effort: the next deploy's pidfile sweep kills a leftover file server
+  }
   cleanupLocalArchive(archivePath);
 
   return {
@@ -997,7 +1008,9 @@ export async function deployNginx(
         10000,
       );
       if (!String(portCheck.stdout || '').includes('IN_USE')) break;
-    } catch {}
+    } catch {
+      // a failed probe reads as in-use; conservatively try the next port
+    }
     if (offset === maxPortAttempts - 1) {
       throw new Error(
         `sandbox deploy nginx: all ports ${basePort}-${basePort + maxPortAttempts - 1} are in use. Free a port and try again.`,
@@ -1103,7 +1116,9 @@ fi`;
       10000,
     );
     tunnelActive = String(tunnelCheck.stdout || '').includes('ACTIVE');
-  } catch {}
+  } catch {
+    // a failed probe leaves tunnelActive false; the result then carries the incomplete-deployment warning
+  }
 
   return {
     ok: result.exitCode === 0,
@@ -1127,6 +1142,62 @@ fi`;
       ]
         .filter(Boolean)
         .join(' ') || undefined,
+  };
+}
+
+// The deploy-check stdout contract as one exported pure function — the
+// grammar (`name:PASS`, `SCORE:n/n`, `TUNNEL_URL:`, `VERDICT:COMPLETE`)
+// is the product-fake interface for the e2e ws fake, so it is pinned by
+// test/ws-exec-protocol.test.ts from BOTH sides (the fake's synthesized
+// output must parse through this function).
+export interface ParsedDeployCheck {
+  checks: Record<string, DeployCheckEntry>;
+  complete: boolean;
+  score: { pass: number; total: number } | null;
+  publicUrl: string | undefined;
+  missing: string[];
+  parseWarning: string | undefined;
+}
+
+export function parseDeployCheckOutput(stdout: string): ParsedDeployCheck {
+  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
+  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
+  // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
+  const ESC = '\x1b';
+  const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
+  const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
+  const cleanStdout = stdout.replace(csiRe, '').replace(oscRe, '');
+  const checks: Record<string, DeployCheckEntry> = {};
+  const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const m = trimmed.match(/^(\w+):(PASS|FAIL|SKIP)\b(.*)/);
+    if (m) checks[m[1]!] = { status: m[2]!, detail: (m[3] || '').trim() };
+  }
+  const scoreMatch = cleanStdout.match(/SCORE:(\d+)\/(\d+)/);
+  const tunnelMatch = cleanStdout.match(TUNNEL_URL_PATTERN);
+  const complete = /VERDICT:COMPLETE/.test(cleanStdout);
+
+  const missing: string[] = [];
+  if (!complete) {
+    for (const [key, val] of Object.entries(checks)) {
+      if (val.status === 'FAIL') missing.push(key);
+    }
+  }
+
+  // If checks is empty but score was found, parsing failed — raw output is kept for debugging
+  const parseWarning =
+    Object.keys(checks).length === 0 && scoreMatch
+      ? 'Check output parsing failed — individual check results could not be extracted. See rawOutput for details.'
+      : undefined;
+
+  return {
+    checks,
+    complete,
+    score: scoreMatch ? { pass: parseInt(scoreMatch[1]!, 10), total: parseInt(scoreMatch[2]!, 10) } : null,
+    publicUrl: tunnelMatch ? tunnelMatch[1] : undefined,
+    missing,
+    parseWarning,
   };
 }
 
@@ -1265,36 +1336,7 @@ fi
 
   const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
   const stdout = String(result.stdout || '');
-  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
-  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
-  // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
-  const ESC = '\x1b';
-  const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
-  const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
-  const cleanStdout = stdout.replace(csiRe, '').replace(oscRe, '');
-  const checks: Record<string, DeployCheckEntry> = {};
-  const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
-  for (const line of lines) {
-    const trimmed = line.trim();
-    const m = trimmed.match(/^(\w+):(PASS|FAIL|SKIP)\b(.*)/);
-    if (m) checks[m[1]] = { status: m[2], detail: (m[3] || '').trim() };
-  }
-  const scoreMatch = cleanStdout.match(/SCORE:(\d+)\/(\d+)/);
-  const tunnelMatch = cleanStdout.match(TUNNEL_URL_PATTERN);
-  const complete = /VERDICT:COMPLETE/.test(cleanStdout);
-
-  const missing: string[] = [];
-  if (!complete) {
-    for (const [key, val] of Object.entries(checks)) {
-      if (val.status === 'FAIL') missing.push(key);
-    }
-  }
-
-  // If checks is empty but score was found, parsing failed — return raw output for debugging
-  const parseWarning =
-    Object.keys(checks).length === 0 && scoreMatch
-      ? 'Check output parsing failed — individual check results could not be extracted. See rawOutput for details.'
-      : undefined;
+  const { checks, complete, score, publicUrl, missing, parseWarning } = parseDeployCheckOutput(stdout);
 
   const nextStepValue = !complete
     ? missing.includes('devbridge_tunnel') || missing.includes('tunnel_url_accessible')
@@ -1313,8 +1355,8 @@ fi
     complete,
     checkType: isCrossPlatform ? 'cross-platform' : 'standard',
     checks,
-    score: scoreMatch ? { pass: parseInt(scoreMatch[1], 10), total: parseInt(scoreMatch[2], 10) } : null,
-    publicUrl: tunnelMatch ? tunnelMatch[1] : undefined,
+    score,
+    publicUrl,
     missingSteps: missing.length > 0 ? missing.join(', ') : undefined,
     parseWarning,
     rawOutput: parseWarning ? stdout.trim() : undefined,
@@ -1330,7 +1372,9 @@ export async function closeSession(workspaceId: string, username: string): Promi
   sessions.delete(key);
   try {
     session.close();
-  } catch {}
+  } catch {
+    // best-effort: the session is already deregistered; a failed close must not fail disconnect tracking
+  }
   trackSandboxDisconnect();
   return true;
 }
@@ -1340,7 +1384,9 @@ export async function closeAllSessions(): Promise<void> {
     sessions.delete(key);
     try {
       session.close();
-    } catch {}
+    } catch {
+      // best-effort: one stuck session must not block closing the rest
+    }
   }
 }
 

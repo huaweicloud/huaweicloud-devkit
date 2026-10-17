@@ -25,10 +25,14 @@ const IGNORED_KEYS = new Set(['$schema', 'additionalProperties', 'description'])
 const EXEMPT_TOOLS = new Set([
   'huaweicloud_list_packs',
   'huaweicloud_pack_info',
+  'huaweicloud_list_skills',
   'huaweicloud_packs_configure',
   'huaweicloud_gateway_list_tools',
   'huaweicloud_gateway_call',
   'huaweicloud_gateway_restart',
+  'huaweicloud_secret_set',
+  'huaweicloud_secret_list',
+  'huaweicloud_secret_delete',
 ]);
 
 // Declared, intentional drifts from the legacy literals. Each entry names the
@@ -73,7 +77,7 @@ const INTENTIONAL_DRIFTS = [
   {
     tool: 'huaweicloud_retrieve_skill',
     reason:
-      'name declares the skill-name pattern the legacy literal left untyped: MCP is the sole skill-loading surface, so traversal-shaped names are rejected at the schema boundary',
+      'name declares the skill-name pattern the legacy literal left untyped: retrieve_skill is the server-side skill loader, so traversal-shaped names are rejected at the schema boundary',
     match: (tool, key, legacy, rendered) =>
       legacy &&
       typeof legacy === 'object' &&

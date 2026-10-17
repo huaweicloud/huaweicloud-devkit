@@ -20,10 +20,20 @@
     "\\.hcloud",
     "\\.huaweicloud",
     "hcloud[/\\\\](config|credentials)",
-    "huaweicloud[/\\\\](config|credentials)"
+    "huaweicloud[/\\\\](config|credentials|creds-import)",
+    "huaweicloud[/\\\\]secrets",
+    "\\.master-key",
+    "creds-import\\.json",
+    "/proc/(self|[0-9]+)/environ",
+    "huaweicloud\\s*(?:&&|;|/|[\\n\\r])\\s*(?:\\S+\\s+){0,2}(?:credentials|creds-import|config)\\.json"
   ],
   "blockedConfigureSubcommands": ["show", "get", "list", "export", "init"],
   "blockedSecretOperations": ["ShowSecretVersion", "DownloadSecret", "GetSecretValue"],
+  "blockedSecretCliPatterns": [
+    "huaweicloud-devkit(@[\\w.+-]+)?(\\.(js|cjs|mjs|exe|ts))?(\\s+--)?\\s+secret\\s+get\\b",
+    "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+secret\\s+get\\b",
+    "setup\\.cjs(\\s+--)?\\s+secret\\s+get\\b"
+  ],
   "writeOperationPrefixes": [
     "Create",
     "BatchCreate",

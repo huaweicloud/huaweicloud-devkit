@@ -14,45 +14,57 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-function makeEnv(home, officeaceConfigRoot) {
-  return {
+function makeEnv(home: string, officeaceConfigRoot: string): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
     OFFICE_CLAW_CONFIG_ROOT: officeaceConfigRoot,
+    // OfficeAce install/uninstall also writes devkit-owned state keyed on
+    // HUAWEICLOUD_HOME (the #559 root marker and the uninstall delta
+    // backup) — pin it to the fake home or an ambient export redirects
+    // those writes into real state.
+    HUAWEICLOUD_HOME: home,
   };
+  // cleanupNativeDirs() runs inside every install and reconciles EVERY
+  // target's native dir (not just officeace), each resolved from its own
+  // ambient override — clear the ones this file does not pin.
+  for (const key of ['XDG_CONFIG_HOME', 'CODEX_HOME', 'HERMES_HOME', 'DSH_HOME', 'ATOMCODE_HOME']) {
+    delete env[key];
+  }
+  return env;
 }
 
-function runCli(home, cwd, args, officeaceConfigRoot = join(home, '.office-claw')) {
+function runCli(home: string, cwd: string, args: string[], officeaceConfigRoot: string = join(home, '.office-claw')) {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd,
     env: makeEnv(home, officeaceConfigRoot),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 240000,
   });
 }
 
 // Runs the CLI without OFFICE_CLAW_CONFIG_ROOT so OfficeAce root resolution
 // is forced through the persisted marker / registry / Program Files probes.
-function runCliNoEnv(home, cwd, args) {
+function runCliNoEnv(home: string, cwd: string, args: string[]) {
   const env = makeEnv(home, join(home, '.office-claw'));
   delete env.OFFICE_CLAW_CONFIG_ROOT;
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd,
     env,
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 240000,
   });
 }
 
-function countSkills(dir) {
+function countSkills(dir: string): number {
   if (!existsSync(dir)) return 0;
   return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith('huawei')).length;
 }
 
-function removeTempDir(path) {
+function removeTempDir(path: string): void {
   rmSync(path, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
@@ -61,9 +73,16 @@ const MCP_CONNECTORS_SCHEMA =
   'timeout_ms INTEGER, command TEXT, args_json TEXT, env_json TEXT, enabled INTEGER, status TEXT, ' +
   'created_at INTEGER, updated_at INTEGER, version INTEGER, seeded INTEGER)';
 
+interface OfficeaceSeedRow {
+  id: string;
+  ownerUserId: string;
+  name: string;
+  argsJson: string;
+}
+
 // Creates OfficeAce's mcp-connectors.sqlite under <baseDir>/data (mirroring
 // officeaceSqlitePath() = <config-root>/../data/mcp-connectors.sqlite).
-function createOfficeaceDb(baseDir, seedRows = []) {
+function createOfficeaceDb(baseDir: string, seedRows: OfficeaceSeedRow[] = []) {
   const dbDir = join(baseDir, 'data');
   mkdirSync(dbDir, { recursive: true });
   const db = new DatabaseSync(join(dbDir, 'mcp-connectors.sqlite'));
@@ -79,7 +98,7 @@ function createOfficeaceDb(baseDir, seedRows = []) {
   db.close();
 }
 
-function queryDevkitRow(dbParentDir) {
+function queryDevkitRow(dbParentDir: string) {
   const db = new DatabaseSync(join(dbParentDir, 'data', 'mcp-connectors.sqlite'));
   const row = db.prepare("SELECT owner_user_id, args_json FROM mcp_connectors WHERE name = 'huaweicloud-devkit'").get();
   db.close();
@@ -135,7 +154,9 @@ test('officeace capability cleanup preserves user entries and non-skill capabili
   try {
     const res = runCli(home, cwd, ['install', '--target', 'officeace'], oaHome);
     assert.equal(res.status, 0, res.stderr);
-    const config = JSON.parse(readFileSync(join(oaHome, 'capabilities.json'), 'utf8'));
+    const config = JSON.parse(readFileSync(join(oaHome, 'capabilities.json'), 'utf8')) as {
+      capabilities: { id: string }[];
+    };
     const ids = new Set(config.capabilities.map((c) => c.id));
     assert.ok(!ids.has('huawei-ecs'), 'devkit-owned skill entry must be cleaned');
     assert.ok(ids.has('huawei-my-runbook'), 'user custom skill entry must survive');

@@ -36,8 +36,12 @@ export function isUsableOfficeaceRoot(dir: string): boolean {
 
 export function readOfficeaceRootMarker(): string | null {
   try {
-    const marker: { root?: unknown } = JSON.parse(readFileSync(markerPath(), 'utf8'));
-    return typeof marker.root === 'string' && isUsableOfficeaceRoot(marker.root) ? marker.root : null;
+    const parsed: unknown = JSON.parse(readFileSync(markerPath(), 'utf8'));
+    const root =
+      parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) && 'root' in parsed
+        ? parsed.root
+        : undefined;
+    return typeof root === 'string' && isUsableOfficeaceRoot(root) ? root : null;
   } catch {
     return null;
   }
@@ -47,5 +51,7 @@ export function writeOfficeaceRootMarker(root: string): void {
   try {
     mkdirSync(dirname(markerPath()), { recursive: true });
     writeFileSync(markerPath(), JSON.stringify({ root, savedAt: new Date().toISOString() }, null, 2));
-  } catch {}
+  } catch {
+    // best-effort: a missing marker just means later runs re-probe for the OfficeAce root
+  }
 }

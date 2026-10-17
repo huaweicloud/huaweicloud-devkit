@@ -182,7 +182,9 @@ export async function validateIamCredentials({
   let data: unknown = null;
   try {
     data = JSON.parse(text);
-  } catch {}
+  } catch {
+    // non-JSON body: asRecord(null) collapses to {}, so the error paths below fall back to the raw text
+  }
 
   if (resp.status === 200) {
     const projects = Array.isArray(asRecord(data).projects) ? (asRecord(data).projects as unknown[]) : [];

@@ -1,36 +1,72 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { parseCoreSkillNames } from '../plugins/huaweicloud-core/src/lib/skill-manifest.ts';
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 
-function makeEnv(home) {
-  return {
+function makeEnv(home: string): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
     HUAWEICLOUD_HOME: home,
+    // `uninstall --target all` dispatches uninstallOfficeAce, which probes
+    // the real Windows registry / Program Files without this skip (#654) —
+    // on a dev machine with a real OfficeAce it would uninstall it.
+    HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT: '1',
   };
+  // The installer honors XDG_CONFIG_HOME for opencode (xdgConfigHome) and
+  // CODEX_HOME for the codex cache cleanup (uninstallCodex). This suite also
+  // runs `uninstall --target all`, which dispatches every per-target
+  // uninstall (hermes/dsh/atomcode/officeace) — each keyed on its own
+  // ambient home override — so the full standard clear list applies.
+  for (const key of [
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+    'HERMES_HOME',
+    'DSH_HOME',
+    'ATOMCODE_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+  ]) {
+    delete env[key];
+  }
+  return env;
 }
 
-function runCli(home, cwd, args) {
+function runCli(
+  home: string,
+  cwd: string,
+  args: string[],
+  extraEnv: Record<string, string | undefined> = {},
+): SpawnSyncReturns<string> {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd,
-    env: makeEnv(home),
+    env: { ...makeEnv(home), ...extraEnv },
     encoding: 'utf8',
-    timeout: 60000,
+    // install commands are network-bound: every fake-HOME install fetches
+    // undici from the npm registry into a cold cache ($HOME/.npm), which
+    // measured 79s on a high-latency registry day — 60s killed the install
+    // mid-flight (status null). Other commands return in seconds; the
+    // timeout is only an upper bound for them.
+    timeout: 240000,
   });
 }
 
-function readJson(path) {
-  return JSON.parse(readFileSync(path, 'utf8'));
+interface OpencodeConfig {
+  mcp: Record<string, { command: string[] }>;
+}
+
+function readJson(path: string): OpencodeConfig {
+  return JSON.parse(readFileSync(path, 'utf8')) as OpencodeConfig;
 }
 
 test('install creates opencode config with normalized forward-slash paths', () => {
@@ -79,24 +115,89 @@ test('handles platform-specific home directory resolution', () => {
   const home = mkdtempSync(join(tmpdir(), 'cp-userprofile-'));
   const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
   try {
-    const isWin = process.platform === 'win32';
-    const env = {
-      ...process.env,
-      USERPROFILE: isWin ? home : join(tmpdir(), 'not-used'),
-      HOME: isWin ? join(tmpdir(), 'not-used') : home,
-    };
+    // Ride makeEnv for the ambient-override hygiene (XDG_CONFIG_HOME etc.)
+    // and keep the test's discrimination: the platform-discordant home var
+    // points elsewhere so the resolver must pick the right one.
+    const env = makeEnv(home);
+    if (process.platform === 'win32') env.HOME = join(tmpdir(), 'not-used');
+    else env.USERPROFILE = join(tmpdir(), 'not-used');
     const res = spawnSync(process.execPath, [setupCli, 'install', '--target', 'opencode'], {
       cwd,
       env,
       encoding: 'utf8',
-      timeout: 60000,
+      // Install-bearing spawn: cold-cache undici fetch needs the 240s class
+      // (see runCli above), not 60s.
+      timeout: 240000,
     });
     assert.equal(res.status, 0, res.stderr);
     assert.ok(
       existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', 'skills')),
       'skills tree (server data) created under correct home',
     );
-    assert.ok(!existsSync(join(home, '.config', 'opencode', 'skills')), 'native skill dir must not be created');
+    // Core meta-skills are natively disclosed under the same home; every
+    // non-core skill stays off the native surface (MCP catalog, plus the
+    // stdio skillRoot location disclosure). The roster comes from the same
+    // manifest parser the CLI reads.
+    const nativeDir = join(home, '.config', 'opencode', 'skills');
+    assert.ok(existsSync(nativeDir), 'native skill dir created for core disclosure');
+    const nativeOwned = readdirSync(nativeDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory() && d.name.startsWith('huawei'))
+      .map((d) => d.name)
+      .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    const expectedCore = [
+      ...(parseCoreSkillNames(
+        readFileSync(join(root, 'plugins', 'huaweicloud-core', 'skills', '.manifest.json'), 'utf8'),
+      ) ?? new Set()),
+    ].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+    assert.deepEqual(nativeOwned, expectedCore, 'native dir carries exactly the core meta-skills');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('opencode install follows an absolute XDG_CONFIG_HOME', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cp-xdg-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
+  try {
+    const xdgRoot = join(home, 'xdg-config');
+    const res = runCli(home, cwd, ['install', '--target', 'opencode'], { XDG_CONFIG_HOME: xdgRoot });
+    assert.equal(res.status, 0, `stderr: ${res.stderr}`);
+    // Everything lands under the XDG root opencode actually reads.
+    assert.ok(existsSync(join(xdgRoot, 'opencode', 'huaweicloud-plugins', 'dist', 'mcp-server.js')));
+    assert.ok(existsSync(join(xdgRoot, 'opencode', 'skills')), 'native skills under the XDG root');
+    const config = readJson(join(xdgRoot, 'opencode', 'opencode.json'));
+    assert.ok(config.mcp['huaweicloud-devkit'], 'mcp entry written under the XDG root');
+    // The legacy default root stays untouched.
+    assert.ok(!existsSync(join(home, '.config', 'opencode')), 'legacy ~/.config/opencode must not be created');
+    // status reads the same root (detection alignment).
+    const status = runCli(home, cwd, ['status', '--target', 'opencode'], { XDG_CONFIG_HOME: xdgRoot });
+    assert.equal(status.status, 0, `stderr: ${status.stderr}`);
+    assert.match(status.stdout, /MCP Server:.*Installed/);
+    // Uninstall cleans the XDG root side.
+    assert.equal(runCli(home, cwd, ['uninstall', '--target', 'opencode'], { XDG_CONFIG_HOME: xdgRoot }).status, 0);
+    assert.ok(!existsSync(join(xdgRoot, 'opencode', 'huaweicloud-plugins')));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('relative XDG_CONFIG_HOME values are ignored (spec: absolute only)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'cp-xdgrel-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'cp-proj-'));
+  try {
+    // The installer follows the XDG spec (absolute only). Known divergence:
+    // the pinned opencode (1.19.0) honors relative values against its cwd,
+    // so this input class still splits installer from agent — accepted
+    // rather than matching cwd-dependent resolution (see xdgConfigHome).
+    const res = runCli(home, cwd, ['install', '--target', 'opencode'], { XDG_CONFIG_HOME: 'relative-xdg' });
+    assert.equal(res.status, 0, `stderr: ${res.stderr}`);
+    assert.ok(
+      existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', 'dist', 'mcp-server.js')),
+      'falls back to the default ~/.config root',
+    );
+    assert.ok(!existsSync(join(cwd, 'relative-xdg')), 'no relative dir materialized');
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });

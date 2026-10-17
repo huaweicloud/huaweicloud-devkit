@@ -11,6 +11,9 @@ import {
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
+import { asText } from '../lib/as-text.ts';
+import { resolveSecretValue } from '../lib/secret-vault/store.ts';
+
 // The credential vault is JSON on disk shaped like this. Fields stay `unknown`
 // until a typeof/Array.isArray guard surfaces a string, because the file (and
 // platform-injected JSON) is untrusted input.
@@ -57,7 +60,9 @@ function ensurePrivateMode(path: string): void {
   if (process.platform === 'win32') return;
   try {
     chmodSync(path, 0o600);
-  } catch {}
+  } catch {
+    // best-effort chmod; the statSync check below warns when the mode did not stick
+  }
   try {
     const mode = statSync(path).mode & 0o777;
     if (mode !== 0o600) {
@@ -70,7 +75,9 @@ function ensurePrivateMode(path: string): void {
         `\x1b[33m       Or skip file storage entirely with HW_ACCESS_KEY/HW_SECRET_KEY environment variables.\x1b[0m`,
       );
     }
-  } catch {}
+  } catch {
+    // best-effort: if even stat fails there is no mode left to verify or warn about
+  }
 }
 
 function baseHome(): string {
@@ -92,11 +99,57 @@ export function readGlobalCredentials(): StoredCredentials | null {
   if (!existsSync(path)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as StoredCredentials)
-      : null;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
+  }
+}
+
+// S1 may hold secret://<scope>/<name> refs in its secret-bearing fields (the
+// vault is the at-rest-encrypted alternative to plaintext AK/SK). This is the
+// one seam every S1 value CONSUMER goes through: refs resolve to plaintext,
+// plain strings pass through, and an unresolvable ref throws — a broken vault
+// link in the credential chain is a loud failure, never a silent fallthrough
+// to env or another store (that would resurrect exactly the drift the
+// resolver priority chain exists to prevent). Preserving callers (the
+// read-modify-write in setConfiguredBySession, backup/restore) keep the raw
+// readGlobalCredentials so refs survive on disk instead of being replaced by
+// resolved plaintext.
+export function resolveStoredRefs(stored: StoredCredentials | null): StoredCredentials | null {
+  if (!stored) return null;
+  const resolveField = (value: unknown): unknown =>
+    typeof value === 'string' && value ? resolveSecretValue(value) : value;
+  return {
+    ...stored,
+    ak: resolveField(stored.ak),
+    sk: resolveField(stored.sk),
+    securityToken: resolveField(stored.securityToken),
+  };
+}
+
+export function readGlobalCredentialsResolved(): StoredCredentials | null {
+  return resolveStoredRefs(readGlobalCredentials());
+}
+
+export type StrictS1Read =
+  | { ok: true; credentials: StoredCredentials | null }
+  | { ok: false; credentials: null; error: string; nextStep: string };
+
+// The strict read every PROPAGATING S1 consumer folds: refs resolve, and an
+// unresolvable ref returns one loud error with remediation at the seam
+// itself. Per-call-site copies of this block are what let a fourth consumer
+// (auth reconcile) escape the seam with the raw read — the fold is the seam.
+export function readGlobalCredentialsStrict(): StrictS1Read {
+  try {
+    return { ok: true, credentials: readGlobalCredentialsResolved() };
+  } catch (error) {
+    return {
+      ok: false,
+      credentials: null,
+      error: `S1 holds a secret ref the vault cannot resolve: ${error instanceof Error ? error.message : String(error)}`,
+      nextStep:
+        'Fix the vault (npx huaweicloud-devkit secret list; check the master key) or replace the refs in ~/.config/huaweicloud/credentials.json with plaintext.',
+    };
   }
 }
 
@@ -169,7 +222,7 @@ export interface StsExpiryInput {
 export function parseStsExpiry({ securityToken, expiresAtEnv = process.env.HW_STS_EXPIRES_AT }: StsExpiryInput = {}):
   number | null {
   if (expiresAtEnv) {
-    const v = String(expiresAtEnv).trim();
+    const v = asText(expiresAtEnv).trim();
     if (!v) return null;
     const asNum = Number(v);
     if (Number.isFinite(asNum) && asNum > 0) return asNum > 1e12 ? asNum : asNum * 1000;
@@ -181,7 +234,7 @@ export function parseStsExpiry({ securityToken, expiresAtEnv = process.env.HW_ST
   const token = String(securityToken).trim();
   if (!token) return null;
 
-  const payload: unknown = (() => {
+  const payload: unknown = ((): unknown => {
     try {
       if (token.includes('.')) {
         const parts = token.split('.');
@@ -215,11 +268,12 @@ function readWorkEnvironmentEntry(config: unknown): CodeArtsCredentials | null {
   const ak = environment.HW_ACCESS_KEY;
   const sk = environment.HW_SECRET_KEY;
   if (present(ak) && present(sk)) {
+    const region = environment.HW_REGION || environment.HUAWEICLOUD_REGION;
     return {
       ak,
       sk,
       securityToken: present(environment.HW_SECURITY_TOKEN) ? environment.HW_SECURITY_TOKEN : '',
-      region: String(environment.HW_REGION || environment.HUAWEICLOUD_REGION || ''),
+      region: asText(region || ''),
     };
   }
   return null;
@@ -237,10 +291,10 @@ export function writeGlobalCredentials(credentials: WriteGlobalCredentialsInput 
   const path = globalCredentialsPath();
   mkdirSync(dirname(path), { recursive: true });
   const payload = {
-    ak: String(credentials.ak || ''),
-    sk: String(credentials.sk || ''),
-    securityToken: String(credentials.securityToken || ''),
-    region: String(credentials.region || ''),
+    ak: asText(credentials.ak || ''),
+    sk: asText(credentials.sk || ''),
+    securityToken: asText(credentials.securityToken || ''),
+    region: asText(credentials.region || ''),
     ...(credentials.configuredBySession === undefined
       ? {}
       : { configuredBySession: Boolean(credentials.configuredBySession) }),
@@ -265,15 +319,15 @@ export interface WriteObsConfigInput {
 }
 
 export function writeObsConfig(credentials: WriteObsConfigInput = {}): { path: string; endpoint: string } {
-  const region = String(credentials.region || '');
-  const ak = String(credentials.ak || '');
-  const sk = String(credentials.sk || '');
-  const securityToken = String(credentials.securityToken || '');
+  const region = asText(credentials.region || '');
+  const ak = asText(credentials.ak || '');
+  const sk = asText(credentials.sk || '');
+  const securityToken = asText(credentials.securityToken || '');
   if (!region || !ak || !sk) {
     throw new Error('region, ak, and sk are required to write OBS config');
   }
   const path = obsConfigPath();
-  const endpoint = String(credentials.endpoint || `https://obs.${region}.myhuaweicloud.com`);
+  const endpoint = asText(credentials.endpoint || `https://obs.${region}.myhuaweicloud.com`);
   // Flat key=value format (no [default] section) as written by KooCLI 7.x `hcloud OBS config`.
   const content = `endpoint=${endpoint}\nak=${ak}\nsk=${sk}${securityToken ? `\ntoken=${securityToken}` : ''}\n`;
   writeFileSync(path, content, { encoding: 'utf8', mode: 0o600 });
@@ -303,7 +357,7 @@ export function resolveCredentials(options: ResolveCredentialsOptions = {}): Res
     if (!region && codeartsCreds.region) region = codeartsCreds.region;
   }
 
-  const stored = readGlobalCredentials();
+  const stored = readGlobalCredentialsResolved();
   if (stored) {
     // R11: skip placeholder/masked values from the vault too (templates must
     // not win the truthiness check and shadow another store).
@@ -431,11 +485,12 @@ export function readCodeArtsCredentials(): CodeArtsCredentials | null {
       const ak = env.HW_ACCESS_KEY;
       const sk = env.HW_SECRET_KEY;
       if (present(ak) && present(sk)) {
+        const region = env.HW_REGION || env.HUAWEICLOUD_REGION;
         return {
           ak,
           sk,
           securityToken: present(env.HW_SECURITY_TOKEN) ? env.HW_SECURITY_TOKEN : '',
-          region: String(env.HW_REGION || env.HUAWEICLOUD_REGION || ''),
+          region: asText(region || ''),
         };
       }
     } catch {
@@ -469,10 +524,10 @@ let runtimeCredentials: ResolvedCredentials | null = null;
 
 export function setRuntimeCredentials(ak: unknown, sk: unknown, securityToken?: unknown, region?: unknown): void {
   runtimeCredentials = {
-    ak: String(ak ?? ''),
-    sk: String(sk ?? ''),
-    securityToken: String(securityToken || ''),
-    region: String(region || ''),
+    ak: asText(ak ?? ''),
+    sk: asText(sk ?? ''),
+    securityToken: asText(securityToken || ''),
+    region: asText(region || ''),
   };
 }
 
@@ -506,7 +561,7 @@ export function readLastSync(): LastSyncRecord | null {
   if (!existsSync(path)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? (parsed as LastSyncRecord) : null;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
   } catch {
     return null;
   }
@@ -522,8 +577,8 @@ export function writeLastSync(metadata: LastSyncMetadata = {}): void {
   mkdirSync(dirname(path), { recursive: true });
   const payload = {
     ts: Date.now(),
-    ...(metadata.kooCliProfile ? { kooCliProfile: String(metadata.kooCliProfile) } : {}),
-    ...(metadata.s1Fingerprint ? { s1Fingerprint: String(metadata.s1Fingerprint) } : {}),
+    ...(metadata.kooCliProfile ? { kooCliProfile: asText(metadata.kooCliProfile) } : {}),
+    ...(metadata.s1Fingerprint ? { s1Fingerprint: asText(metadata.s1Fingerprint) } : {}),
   };
   writeFileSync(path, JSON.stringify(payload), { encoding: 'utf8', mode: 0o600 });
   ensurePrivateMode(path);

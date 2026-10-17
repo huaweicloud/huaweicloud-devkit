@@ -22,6 +22,16 @@ import {
 } from './packs/enable.ts';
 import { PACK_IDS, type PackId } from './lib/pack-types.ts';
 import { closePackEnablement } from './lib/dependency-model.ts';
+// The skill-dir listing lives in the shared zod-free module
+// (src/lib/skill-tree.ts) so the boot guard, the installer's doctor check,
+// the build-time --check stray scan, and validate-package's skill gate all
+// hold one membership predicate (dir-or-symlink with a SKILL.md).
+import { listSkillDirs } from './lib/skill-tree.ts';
+// The frontmatter field extraction (name/description/version) behind
+// searchDocs, retrieveSkill, and listSkills — one parser instead of the
+// per-call-site regexes that truncated multi-line descriptions.
+import { parseSkillFrontmatter } from './lib/skill-frontmatter.ts';
+import { recordToolCall, traceEnabled } from './lib/call-trace.ts';
 // Service region descriptor (the old inline `known` table in
 // getRegionalAvailability, migrated verbatim — see services/regions.ts for
 // its guarantee scope).
@@ -38,23 +48,48 @@ import { SANDBOX_TOOLS } from './packs/sandbox/tools.ts';
 import { UPDATE_TOOLS } from './packs/update/tools.ts';
 import { HUAWEICLOUD_OPEN_MCP_TOOLS } from './packs/huaweicloud-open-mcp/tools.ts';
 import { HUAWEICLOUD_CLI_TOOLS } from './packs/huaweicloud-cli/tools.ts';
+import { SECRETS_TOOLS } from './packs/secrets/tools.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // The skills tree is server data, not an agent-native artifact: it ships next
 // to dist/ (esbuild preserves import.meta.url, so the bundled mcp-server.js
-// resolves this relative to its own location) and is disclosed only through
-// the MCP tools (list_packs / pack_info / retrieve_skill / search_docs).
+// resolves this relative to its own location) and is disclosed through the
+// MCP tools (list_packs / pack_info / list_skills / retrieve_skill /
+// search_docs); list_skills also carries the tree's location (skillRoot,
+// stdio sessions only) so a same-machine agent can read the files with its
+// own tools. The installer separately places the six core meta-skills as
+// native copies in directory-loading agents (setup-cli's PAYLOAD_TARGETS
+// sync) — that placement lives in setup-cli, and this module never probes
+// agent-native dirs.
 const SKILLS_ROOT = join(__dirname, '..', 'skills');
 
-export function listSkillDirs(root: string): string[] {
-  if (!existsSync(root)) return [];
-  try {
-    return readdirSync(root, { withFileTypes: true })
-      .filter((d) => (d.isDirectory() || d.isSymbolicLink()) && existsSync(join(root, d.name, 'SKILL.md')))
-      .map((d) => d.name);
-  } catch {
-    return [];
+// Re-exported for the existing test importers (test/tools.test.ts); the
+// tool handlers below (retrieve_skill, search_docs) consume the local
+// binding. The predicate itself lives in src/lib/skill-tree.ts.
+export { listSkillDirs };
+
+// Boot-time cross-check between the registry's skill claims and the
+// generated tree. A server that advertises skills retrieve_skill cannot
+// serve (registry-driven list_packs beside an empty or partial tree) is
+// worse than one that refuses to start, so the factory calls this before
+// registering anything — mirroring the loudness of a missing dist/.
+// The tree must EQUAL the registry roster, not merely contain it: an
+// unclaimed directory is served ungated (SKILL_OWNER.get returns undefined,
+// so retrieve_skill skips the pack-enablement gate), so extras are as
+// dangerous as gaps. The root is injectable for tests.
+export function verifySkillTree(root: string = SKILLS_ROOT): void {
+  const present = new Set(listSkillDirs(root));
+  const missing = [...SKILL_OWNER.keys()].filter((skill) => !present.has(skill));
+  const unclaimed = [...present].filter((skill) => !SKILL_OWNER.has(skill));
+  if (missing.length > 0 || unclaimed.length > 0) {
+    const parts: string[] = [];
+    if (missing.length > 0) parts.push(`missing ${missing.join(', ')}`);
+    if (unclaimed.length > 0) parts.push(`unclaimed ${unclaimed.join(', ')}`);
+    throw new Error(
+      `skills tree invalid at ${root}: ${parts.join('; ')} — ` +
+        'from a git checkout run: npm run build; from an install run: npx huaweicloud-devkit install',
+    );
   }
 }
 
@@ -80,6 +115,7 @@ for (const tools of [
   UPDATE_TOOLS,
   HUAWEICLOUD_OPEN_MCP_TOOLS,
   HUAWEICLOUD_CLI_TOOLS,
+  SECRETS_TOOLS,
 ]) {
   for (const tool of tools) packToolDescriptions.set(tool.name, tool.description);
 }
@@ -148,7 +184,7 @@ const TOOL_DEFINITIONS_LITERALS = [
   {
     name: 'huaweicloud_retrieve_skill',
     description:
-      "Retrieve one Huawei Cloud skill by exact name (e.g. huawei-ecs, huawei-vpc, huawei-obs, huawei-sandbox). Returns the full SKILL.md content plus its reference files. This is the only way to load devkit skills: they are server data, not installed in the agent's own skill directory. Find candidate names first via huaweicloud_service_catalog, huaweicloud_search_docs, or huaweicloud_list_packs.",
+      "Retrieve one Huawei Cloud skill by exact name (e.g. huawei-ecs, huawei-vpc, huawei-obs, huawei-sandbox). Returns the full SKILL.md content plus its reference files (each reference body capped at 4000 characters). Service skills are server data — never installed into an agent's own skill directory — and this tool loads them on every surface: the DEVKIT_PACKS-gated, telemetry-bearing, portable path remote sessions and manifest-based agents rely on. On stdio sessions, a same-machine agent may instead read the files directly under the skillRoot huaweicloud_list_skills discloses. The six core meta-skills (huaweicloud-*) are additionally disclosed as native skill copies on directory-loading agents; this tool serves them identically everywhere, so it stays the portable load path. Browse the catalog first with huaweicloud_list_skills; candidates also come from huaweicloud_service_catalog, huaweicloud_search_docs, or huaweicloud_list_packs.",
   },
   {
     name: 'huaweicloud_list_regions',
@@ -262,12 +298,17 @@ const TOOL_DEFINITIONS_LITERALS = [
   {
     name: 'huaweicloud_list_packs',
     description:
-      'List the devkit capability packs — the complete skill and tool inventory of this server. Returns each pack with id, title, description, the skill names it owns (load them with huaweicloud_retrieve_skill), its tool names, and the enabled flag. The "huaweicloud-cli" pack carries the twenty Huawei Cloud service skills (ecs, vpc, obs, iam, rds, ...) with per-service CLI workflows plus the seven KooCLI execution tools (check_cli, plan_cli_command, run_readonly_command, list_operations, run_approved_command, show_profile_redacted, list_regions); the huaweicloud-cli-and-auth skill covers KooCLI installation and credentials. Use this to discover what the devkit knows before picking a skill or pack.',
+      'List the devkit capability packs — the complete skill and tool inventory of this server. Returns each pack with id, title, description, the skill names it owns (browse their metadata with huaweicloud_list_skills, load them with huaweicloud_retrieve_skill), its tool names, and the enabled flag. The "huaweicloud-cli" pack carries the twenty Huawei Cloud service skills (ecs, vpc, obs, iam, rds, ...) with per-service CLI workflows plus the seven KooCLI execution tools (check_cli, plan_cli_command, run_readonly_command, list_operations, run_approved_command, show_profile_redacted, list_regions); the huaweicloud-cli-and-auth skill covers KooCLI installation and credentials. Use this to discover what the devkit knows before picking a skill or pack.',
   },
   {
     name: 'huaweicloud_pack_info',
     description:
       'Inspect one capability pack. Takes pack (a pack id from huaweicloud_list_packs) and returns the pack title, description, claimed skills, enabled flag, and every tool in the pack with name, description, and JSON Schema. Use to decide which pack covers a task before loading a skill with huaweicloud_retrieve_skill.',
+  },
+  {
+    name: 'huaweicloud_list_skills',
+    description:
+      'List the metadata of every pack-owned skill in one call — name, description, version, owning pack, and reference filenames — so the agent can browse the catalog and pick a skill before paying for huaweicloud_retrieve_skill (which returns the full SKILL.md plus every reference body). The payload also carries skillRoot, the absolute location of the skills tree (stdio sessions only): on a same-machine install, read <skillRoot>/<name>/SKILL.md and the references/ files with your own file tools the way you explore native skills — untruncated, and only the reference you need (the root uses host-native separators; a huaweicloud_search_docs source\u2019s skills/ prefix is this same root). Remote sessions omit skillRoot (the path lives on the server host) — load skills with huaweicloud_retrieve_skill there. Covers the huawei-* service/domain skills of enabled non-core packs; skills of packs disabled through DEVKIT_PACKS are omitted, and the six core meta-skills (huaweicloud-*) are excluded by design: directory-loading agents disclose them natively in the system prompt, and huaweicloud_retrieve_skill serves them everywhere. Optional pack filter takes a pack id from huaweicloud_list_packs.',
   },
   {
     name: 'huaweicloud_packs_configure',
@@ -285,6 +326,18 @@ const TOOL_DEFINITIONS_LITERALS = [
   {
     name: 'huaweicloud_gateway_restart',
     description: packDescription('huaweicloud_gateway_restart'),
+  },
+  {
+    name: 'huaweicloud_secret_set',
+    description: packDescription('huaweicloud_secret_set'),
+  },
+  {
+    name: 'huaweicloud_secret_list',
+    description: packDescription('huaweicloud_secret_list'),
+  },
+  {
+    name: 'huaweicloud_secret_delete',
+    description: packDescription('huaweicloud_secret_delete'),
   },
 ] as const;
 
@@ -375,6 +428,13 @@ export type ToolArgs = {
   version?: string;
   indexDocument?: string;
   errorDocument?: string;
+  ref?: string;
+  channel?: string;
+  value?: string;
+  file?: string;
+  envVar?: string;
+  note?: string;
+  scope?: string;
 };
 
 interface SandboxGitConfig {
@@ -403,6 +463,9 @@ function toolInvokeValue(name: ToolName, args: ToolArgs): string {
   if (name === 'huaweicloud_list_operations' && args.service) {
     return args.service;
   }
+  if (name === 'huaweicloud_list_skills' && args.pack) {
+    return args.pack;
+  }
   if (name === 'huaweicloud_retrieve_skill' && args.name) {
     return args.name;
   }
@@ -422,6 +485,11 @@ function toolInvokeValue(name: ToolName, args: ToolArgs): string {
     if (parts[0] === 'hcloud' && parts[1]) return `hcloud ${parts.slice(1, 3).join(' ')}`;
     return parts.slice(0, 2).join(' ');
   }
+  // The auditable fact for vault mutations is the ref (and scope), never the
+  // value or any channel payload.
+  if (name === 'huaweicloud_secret_set' && args.ref) return args.ref;
+  if (name === 'huaweicloud_secret_list' && args.scope) return args.scope;
+  if (name === 'huaweicloud_secret_delete' && args.ref) return args.ref;
   return '1';
 }
 
@@ -453,6 +521,21 @@ export async function callTool(name: ToolName, rawArgs: ToolArgs = {}, opts: Cal
   const toolValue = toolInvokeValue(name, args);
   trackToolInvoke(name, toolValue);
 
+  // Trace sits between normalization and dispatch: it records the shape
+  // the handler will actually see, and only calls that reached dispatch —
+  // SDK-level zod rejects never get here (see lib/call-trace.ts contract).
+  if (!traceEnabled()) return dispatchTool(name, args, opts);
+  try {
+    const result = await dispatchTool(name, args, opts);
+    recordToolCall(name, args, true);
+    return result;
+  } catch (error) {
+    recordToolCall(name, args, false, error);
+    throw error;
+  }
+}
+
+async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOptions): Promise<unknown> {
   // Pack tools (every non-core name) dispatch through the central handler
   // map in packs/registry.ts before the switch; the type guard narrows
   // `name` to the core remainder, which is what the switch below and its
@@ -485,6 +568,8 @@ export async function callTool(name: ToolName, rawArgs: ToolArgs = {}, opts: Cal
       return listPacks(opts);
     case 'huaweicloud_pack_info':
       return packInfo(args.pack || '', opts);
+    case 'huaweicloud_list_skills':
+      return listSkills(args.pack, opts);
     case 'huaweicloud_packs_configure':
       return configurePacks(args, opts);
     default: {
@@ -696,6 +781,21 @@ const SKILL_OWNER = new Map<string, PackId>(
   PACKS.flatMap((pack) => pack.skills.map((skill) => [skill, pack.id] as const)),
 );
 
+// Deterministic (codepoint, not locale) reference listing shared by the
+// skill disclosure tools. Regular files plus symlinks — the same read
+// exposure the unfiltered readdir it replaced had (a symlink to a
+// directory still throws at read time) — while subdirectories are
+// excluded: they are not references retrieve_skill could read, so the
+// catalog must not advertise them.
+function referenceFilenames(skillName: string): string[] {
+  const refDir = join(SKILLS_ROOT, skillName, 'references');
+  if (!existsSync(refDir)) return [];
+  return readdirSync(refDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() || entry.isSymbolicLink())
+    .map((entry) => entry.name)
+    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
 function listPacks(opts: CallToolOptions = {}) {
   const enabled = resolveEnabledPacks();
   // packs_configure is core-owned but registered only on surfaces that carry
@@ -720,26 +820,36 @@ function listPacks(opts: CallToolOptions = {}) {
   };
 }
 
+// Shared enablement remediation: pack_info, list_skills, and retrieve_skill
+// serve the same instructions for the same condition, so a wording fix lands
+// once. The stdio qualifier keeps the message honest on the stateless
+// remote, which never registers the session-toggle tool.
+function packEnablementRemediation(packId: string): string {
+  return (
+    'Enable it for this session with huaweicloud_packs_configure (stdio agent sessions; confirm with the user when the operator trimmed the pack on purpose), or ask the operator to persist it with npx huaweicloud-devkit packs enable ' +
+    packId +
+    ' --target <agent>, then restart the agent (that command rewrites DEVKIT_PACKS in the agent MCP config).'
+  );
+}
+
+// Shared refusal for an unknown pack id: names every valid id so the caller
+// can retry without a second discovery call.
+function packNotFound(packId: string): { ok: false; error: string } {
+  const available = PACKS.map((entry) => entry.id).join(', ');
+  return { ok: false, error: 'Pack "' + packId + '" not found. Available: ' + available };
+}
+
+function packNotEnabled(packId: string): { ok: false; error: string } {
+  return { ok: false, error: 'Pack "' + packId + '" is not enabled. ' + packEnablementRemediation(packId) };
+}
+
 function packInfo(pack: string, opts: CallToolOptions = {}) {
   const packId = String(pack || '').trim();
   if (!packId) return { ok: false, error: 'Pack id is required.' };
   const found = PACKS.find((entry) => entry.id === packId);
-  if (!found) {
-    const available = PACKS.map((entry) => entry.id).join(', ');
-    return { ok: false, error: 'Pack "' + packId + '" not found. Available: ' + available };
-  }
+  if (!found) return packNotFound(packId);
   const enabled = resolveEnabledPacks();
-  if (!enabled.has(found.id)) {
-    return {
-      ok: false,
-      error:
-        'Pack "' +
-        found.id +
-        '" is not enabled. Enable it for this session with huaweicloud_packs_configure (confirm with the user when the operator trimmed the pack on purpose), or ask the operator to persist it with npx huaweicloud-devkit packs enable ' +
-        found.id +
-        ' --target <agent>, then restart the agent (that command rewrites DEVKIT_PACKS in the agent MCP config).',
-    };
-  }
+  if (!enabled.has(found.id)) return packNotEnabled(found.id);
   // Same surface filter as listPacks: core owns packs_configure, but only
   // session-carrying surfaces register it, and pack_info must not advertise
   // a tool tools/list will never carry.
@@ -761,6 +871,80 @@ function packInfo(pack: string, opts: CallToolOptions = {}) {
     skills: found.skills,
     tools,
     enabled: true,
+  };
+}
+
+// Skill metadata catalog: one call disclosing every enabled non-core
+// pack's skills (name, parsed description, version, owning pack, reference
+// filenames) so an agent can browse before paying for retrieve_skill's
+// full payload — and, on stdio sessions, the tree's location (skillRoot)
+// so the agent can read the same files with its own tools the way it
+// explores native skills. Registry-driven on purpose (PACKS order, claimed
+// skills only) rather than a tree walk: the output order is deterministic,
+// every entry carries a defined pack, and the deliberate difference from
+// searchDocs' ungated-straggler posture is that unclaimed directories do
+// not exist here — verifySkillTree refuses to boot the server on any.
+// Gating is disclosure-level on both fields' terms: catalog entries never
+// reference a trimmed pack's skills, while skillRoot discloses the shared
+// tree (every skill, including trimmed packs' and the six core
+// meta-skills) — the same doctrine enable.ts applies to pack handlers.
+// A missing SKILL.md for a claimed skill throws (readFileSync) and rides
+// the callTool error pass-through: the boot guard makes hollow entries
+// unreachable in a booted server (a file deleted or made unreadable after
+// boot can still throw, riding the same pass-through), and fabricating
+// metadata for a hollow entry would be worse than the honest crash.
+function listSkills(pack: string | undefined, opts: CallToolOptions = {}) {
+  const packId = String(pack ?? '').trim();
+  if (pack !== undefined && packId === '') {
+    return { ok: false, error: 'Pack id is required.' };
+  }
+  const enabled = resolveEnabledPacks();
+  if (packId) {
+    const found = PACKS.find((entry) => entry.id === packId);
+    if (!found) return packNotFound(packId);
+    if (packId === 'core') {
+      return {
+        ok: false,
+        error:
+          'The core pack\u2019s six meta-skills (huaweicloud-*) are not listed here by design: directory-loading agents disclose them natively in the system prompt, and huaweicloud_retrieve_skill serves them identically everywhere.',
+      };
+    }
+    if (!enabled.has(found.id)) return packNotEnabled(found.id);
+  }
+  const skills: Array<{
+    name: string;
+    description: string;
+    pack: string;
+    version: string | number;
+    references: string[];
+  }> = [];
+  for (const entry of PACKS) {
+    if (entry.id === 'core') continue;
+    if (packId && entry.id !== packId) continue;
+    if (!enabled.has(entry.id)) continue;
+    for (const skillName of entry.skills) {
+      const fm = parseSkillFrontmatter(readFileSync(join(SKILLS_ROOT, skillName, 'SKILL.md'), 'utf8'));
+      skills.push({
+        name: skillName,
+        description: fm.description ?? '',
+        pack: entry.id,
+        version: fm.version ?? 1,
+        references: referenceFilenames(skillName),
+      });
+    }
+  }
+  // skillRoot rides only surfaces that carry session state (stdio), the
+  // same seam listPacks uses to drop packs_configure from the remote's
+  // tool inventory: the stateless remote serves an unauthenticated CORS-*
+  // face whose callers cannot reach the server host's filesystem, so a
+  // host path there would be pure leakage with no utility. The key itself
+  // is withheld rather than nulled — absence is the guard.
+  const stdioSession = Boolean(opts.onPacksChanged);
+  return {
+    ok: true,
+    count: skills.length,
+    skills,
+    ...(stdioSession ? { skillRoot: SKILLS_ROOT } : {}),
   };
 }
 
@@ -985,16 +1169,9 @@ async function searchDocs(query: string, topic: string = 'all') {
         const skillPath = join(SKILLS_ROOT, dir, 'SKILL.md');
         if (!existsSync(skillPath)) continue;
         const content = readFileSync(skillPath, 'utf8');
-        const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-        let description = '';
-        let name = dir;
-        if (frontmatter) {
-          const fm = frontmatter[1];
-          const nameMatch = fm.match(/^name:\s*(.+)$/m);
-          if (nameMatch) name = nameMatch[1].trim();
-          const descMatch = fm.match(/^description:\s*(.+)$/m);
-          if (descMatch) description = descMatch[1].trim();
-        }
+        const fm = parseSkillFrontmatter(content);
+        const description = fm.description ?? '';
+        const name = fm.name ?? dir;
         if (topic !== 'all') {
           const topicLower = topic.toLowerCase();
           if (!name.toLowerCase().includes(topicLower) && !description.toLowerCase().includes(topicLower)) continue;
@@ -1030,9 +1207,10 @@ async function searchDocs(query: string, topic: string = 'all') {
 async function retrieveSkill(name: string) {
   const skillName = String(name || '').trim();
   if (!skillName) return { ok: false, error: 'Skill name is required.' };
-  // Boundary guard: the name joins a filesystem path and MCP is the sole
-  // loading surface, so anything outside the skill-name shape (traversal
-  // segments, separators, absolute paths) is rejected before touching disk.
+  // Boundary guard: the name joins a filesystem path in this handler, so
+  // anything outside the skill-name shape (traversal segments, separators,
+  // absolute paths) is rejected before touching disk; direct reads via the
+  // disclosed skillRoot are the agent's own file tools' territory.
   if (!/^[a-z0-9-]+$/.test(skillName)) {
     return {
       ok: false,
@@ -1059,30 +1237,19 @@ async function retrieveSkill(name: string) {
         skillName +
         '" belongs to pack "' +
         owner +
-        '" which is not enabled. Enable it for this session with huaweicloud_packs_configure (confirm with the user when the operator trimmed the pack on purpose), or ask the operator to persist it with npx huaweicloud-devkit packs enable ' +
-        owner +
-        ' --target <agent>, then restart the agent (that command rewrites DEVKIT_PACKS in the agent MCP config).',
+        '" which is not enabled. ' +
+        packEnablementRemediation(owner),
     };
   }
   const content = readFileSync(skillPath, 'utf8');
   const references: Array<{ filename: string; content: string }> = [];
-  const refDir = join(SKILLS_ROOT, skillName, 'references');
-  if (existsSync(refDir)) {
-    readdirSync(refDir).forEach((f) => {
-      const refPath = join(refDir, f);
-      references.push({ filename: f, content: readFileSync(refPath, 'utf8').substring(0, 4000) });
-    });
+  for (const filename of referenceFilenames(skillName)) {
+    const refPath = join(SKILLS_ROOT, skillName, 'references', filename);
+    references.push({ filename, content: readFileSync(refPath, 'utf8').substring(0, 4000) });
   }
-  const frontmatter = content.match(/^---\r?\n([\s\S]*?)\r?\n---/);
-  let version: string | number = 1,
-    description = '';
-  if (frontmatter) {
-    const fm = frontmatter[1];
-    const vm = fm.match(/^version:\s*(.+)$/m);
-    if (vm) version = vm[1].trim();
-    const dm = fm.match(/^description:\s*(.+)$/m);
-    if (dm) description = dm[1].trim();
-  }
+  const frontmatter = parseSkillFrontmatter(content);
+  const version: string | number = frontmatter.version ?? 1;
+  const description = frontmatter.description ?? '';
   return { ok: true, name: skillName, version, description, content, references };
 }
 

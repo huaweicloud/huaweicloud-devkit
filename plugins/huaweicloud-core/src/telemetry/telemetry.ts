@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { fetchWithProxy } from '../proxy/proxy-agent.ts';
+import { asText } from '../lib/as-text.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -34,12 +35,14 @@ try {
       const parsed: unknown = JSON.parse(readFileSync(p, 'utf8'));
       const v = parsed !== null && typeof parsed === 'object' ? (parsed as { version?: unknown }).version : undefined;
       if (v) {
-        PLUGIN_VERSION = String(v);
+        PLUGIN_VERSION = asText(v);
         break;
       }
     }
   }
-} catch {}
+} catch {
+  // missing or corrupt package.json means the 0.0.0 fallback version
+}
 function hookEventsPath(): string {
   return join(AGENT_TELEMETRY_DIR, 'hook-events.jsonl');
 }
@@ -112,7 +115,9 @@ function debugLog(msg: string): void {
     const path = debugLogPath();
     ensureDir(dirname(path));
     appendFileSync(path, `${new Date().toISOString()} ${msg}\n`, 'utf8');
-  } catch (_) {}
+  } catch (_) {
+    // best-effort: debug logging must never fail telemetry
+  }
 }
 
 function ensureDir(dirPath: string = GLOBAL_TELEMETRY_DIR): void {
@@ -212,7 +217,7 @@ function capabilityFromKey(key: string): string | undefined {
 }
 
 export function sanitizeValue(value: unknown): string {
-  let text = typeof value === 'string' ? value : value == null ? '' : String(value);
+  let text = typeof value === 'string' ? value : value == null ? '' : asText(value);
   text = text.replace(/[\r\n\t]+/g, ' ').trim();
   if (text.length > MAX_VALUE_LENGTH) {
     text = text.slice(0, MAX_VALUE_LENGTH - 3) + '...';
@@ -310,13 +315,18 @@ export function ingestHookEvents(): void {
           const parsed: unknown = JSON.parse(line);
           const input = toTelemetryEventInput(parsed);
           if (input) eventQueue.push(buildEvent(input));
-        } catch {}
+        } catch {
+          // a malformed line is skipped; the rest of the leftover batch still ingests
+        }
       }
     } catch {
+      // an unreadable leftover batch is unrecoverable; fall through to cleanup
     } finally {
       try {
         unlinkSync(processingPath);
-      } catch {}
+      } catch {
+        // best-effort: a failed unlink just retries this leftover on the next ingest
+      }
     }
   }
   if (!existsSync(hookPath)) return;
@@ -358,7 +368,9 @@ export function clearUserHash(): void {
   userHash = null;
   try {
     unlinkSync(USER_HASH_PATH);
-  } catch {}
+  } catch {
+    // best-effort: the in-memory hash is already cleared; a leftover file only re-caches it next start
+  }
 }
 
 function flushEvents(): void {
@@ -368,8 +380,9 @@ function flushEvents(): void {
 
   const batch = eventQueue.splice(0, BATCH_SIZE);
   const keys = batch.map((e) => e.key).join(',');
+  // The queue was checked non-empty above; splice yields a non-empty batch.
   debugLog(
-    `FLUSH start events=${batch.length} harness=${batch[0].harness} agentVersion=${batch[0].agentVersion} keys=[${keys}]`,
+    `FLUSH start events=${batch.length} harness=${batch[0]!.harness} agentVersion=${batch[0]!.agentVersion} keys=[${keys}]`,
   );
 
   const endpoint = getEndpoint();

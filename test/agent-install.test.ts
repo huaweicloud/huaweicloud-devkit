@@ -8,6 +8,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -15,12 +16,16 @@ import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { getMarketplaceName } from '../plugins/huaweicloud-core/src/codex-probe.ts';
+import { parseCoreSkillNames } from '../plugins/huaweicloud-core/src/lib/skill-manifest.ts';
+import { skillTreeEquals } from '../plugins/huaweicloud-core/src/lib/skill-tree.ts';
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-function makeEnv(home, extra = {}) {
-  const env = {
+function makeEnv(home: string, extra: Record<string, string | undefined> = {}) {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
@@ -29,7 +34,19 @@ function makeEnv(home, extra = {}) {
     HERMES_HOME: join(home, '.hermes'),
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
-  for (const key of ['ATOMCODE_HOME', 'DSH_HOME', 'HUAWEICLOUD_HOME', 'OFFICE_CLAW_CONFIG_ROOT']) {
+  // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);
+  // CODEX_HOME keys the uninstaller's marketplace-cache cleanup (uninstallCodex);
+  // CLAUDE_CONFIG_DIR redirects the option-3 generic MCP config (configureGenericMCP
+  // resolves it first when writing .claude.json).
+  for (const key of [
+    'ATOMCODE_HOME',
+    'DSH_HOME',
+    'HUAWEICLOUD_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+    'CLAUDE_CONFIG_DIR',
+  ]) {
     delete env[key];
   }
   // OfficeAce detection probes the real Windows registry / Program Files, which
@@ -38,25 +55,34 @@ function makeEnv(home, extra = {}) {
   return { ...env, ...extra };
 }
 
-function run(target, home, cwd, cmd, extraEnv = {}) {
+function run(
+  target: string,
+  home: string,
+  cwd: string,
+  cmd: string,
+  extraEnv: Record<string, string | undefined> = {},
+) {
   return spawnSync(process.execPath, [setupCli, cmd, '--target', target], {
     cwd,
     env: makeEnv(home, extraEnv),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 240000,
   });
 }
 
-function runAuto(home, cwd, cmd, extraEnv = {}) {
+function runAuto(home: string, cwd: string, cmd: string, extraEnv: Record<string, string | undefined> = {}) {
   return spawnSync(process.execPath, [setupCli, cmd], {
     cwd,
     env: makeEnv(home, extraEnv),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 240000,
   });
 }
 
-function fakeCodexEnv(cwd, options = {}) {
+function fakeCodexEnv(
+  cwd: string,
+  options: { failPluginAdd?: boolean; failMarketplaceRemove?: boolean; listOutput?: string; listJson?: string } = {},
+) {
   const binDir = join(cwd, 'fake-bin');
   mkdirSync(binDir, { recursive: true });
   const logPath = join(cwd, 'codex.log');
@@ -83,6 +109,15 @@ if (process.env.FAKE_CODEX_FAIL_PLUGIN_ADD === '1' && args[0] === 'plugin' && ar
   console.error('fake plugin add failed');
   process.exit(1);
 }
+if (
+  process.env.FAKE_CODEX_FAIL_MARKETPLACE_REMOVE === '1' &&
+  args[0] === 'plugin' &&
+  args[1] === 'marketplace' &&
+  args[2] === 'remove'
+) {
+  console.error('fake marketplace remove failed');
+  process.exit(1);
+}
 process.exit(0);
 `,
     'utf8',
@@ -98,34 +133,82 @@ process.exit(0);
     PATH: `${binDir}${delimiter}${process.env.PATH || ''}`,
     FAKE_CODEX_LOG: logPath,
     ...(options.failPluginAdd ? { FAKE_CODEX_FAIL_PLUGIN_ADD: '1' } : {}),
+    ...(options.failMarketplaceRemove ? { FAKE_CODEX_FAIL_MARKETPLACE_REMOVE: '1' } : {}),
     ...(options.listOutput ? { FAKE_CODEX_LIST_OUTPUT: options.listOutput } : {}),
     ...(options.listJson ? { FAKE_CODEX_LIST_JSON: options.listJson } : {}),
     logPath,
   };
 }
 
-function countSkills(dir) {
+function countSkills(dir: string) {
   if (!existsSync(dir)) return 0;
   return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith('huawei')).length;
 }
 
-// Skills are server data: they ship inside the plugin dir next to dist/ and
-// are disclosed over MCP, never copied into an agent's native skill dir.
-function pluginSkills(pluginsDir) {
+// Skills are server data for the full tree (MCP catalog; stdio list_skills
+// additionally discloses skillRoot for direct reads); the six core
+// meta-skills are ALSO disclosed natively (system-prompt visibility). The
+// core roster is derived from the shipped manifest — the same parser the
+// CLI reads.
+const parsedCoreRoster = parseCoreSkillNames(
+  readFileSync(join(root, 'plugins', 'huaweicloud-core', 'skills', '.manifest.json'), 'utf8'),
+);
+assert.ok(parsedCoreRoster, 'manifest core roster must parse');
+const coreRoster: Set<string> = parsedCoreRoster;
+
+function pluginSkills(pluginsDir: string) {
   return countSkills(join(pluginsDir, 'skills'));
 }
 
-// MCP-only disclosure contract for one agent: native skill dir stays empty,
-// plugin dir carries the skills tree next to the server.
-function assertServerDataSkills(nativeSkillsDir, pluginsDir) {
-  assert.equal(countSkills(nativeSkillsDir), 0, 'native skill dir must stay empty (MCP-only disclosure)');
+// Native core disclosure contract for one agent: the native skill dir
+// carries exactly the core-pack meta-skills (set membership, byte-equal to
+// the payload the same run placed), a receipt records them, user skills
+// survive, and no non-core owned name leaks in. The plugin dir still
+// carries the full tree next to the server.
+function assertNativeCoreDisclosure(nativeSkillsDir: string, pluginsDir: string) {
+  const owned = new Set(
+    readdirSync(join(pluginsDir, 'skills'), { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name),
+  );
+  const entries = existsSync(nativeSkillsDir)
+    ? readdirSync(nativeSkillsDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory())
+        .map((d) => d.name)
+    : [];
+  const present = new Set(entries);
+  for (const name of coreRoster) {
+    assert.ok(present.has(name), `core skill ${name} must be natively disclosed in ${nativeSkillsDir}`);
+    assert.ok(
+      skillTreeEquals(join(nativeSkillsDir, name), join(pluginsDir, 'skills', name)),
+      `native copy of ${name} must equal the payload tree`,
+    );
+  }
+  for (const name of entries) {
+    if (owned.has(name)) {
+      assert.ok(coreRoster.has(name), `non-core owned skill ${name} must not be native in ${nativeSkillsDir}`);
+    }
+  }
+  const receiptPath = join(nativeSkillsDir, '.huaweicloud-devkit-native.json');
+  assert.ok(existsSync(receiptPath), `native receipt must exist in ${nativeSkillsDir}`);
+  const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as { names: string[]; layout?: string };
+  assert.deepEqual(
+    [...new Set(receipt.names)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+    [...coreRoster].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+    'receipt records exactly the core roster',
+  );
+  assert.equal(receipt.layout, 'plugin-dir', 'the CLI sync records the plugin-dir layout');
   assert.ok(pluginSkills(pluginsDir) >= 6, 'plugin dir must carry the skills tree');
 }
 
-function pluginVersion(pluginsDir) {
+function pluginVersion(pluginsDir: string) {
   const p = join(pluginsDir, 'package.json');
   if (!existsSync(p)) return null;
   return JSON.parse(readFileSync(p, 'utf8')).version;
+}
+
+interface HermesAllowlist {
+  approvals?: Array<{ event?: string; command?: string }>;
 }
 
 test('opencode install creates skills, MCP server, and safety policy', () => {
@@ -142,7 +225,7 @@ test('opencode install creates skills, MCP server, and safety policy', () => {
     assert.ok(existsSync(join(pd, 'safety', 'policy.json')));
     assert.ok(existsSync(join(pd, '.installed')));
     assert.equal(pluginVersion(pd), pkg.version);
-    assertServerDataSkills(join(home, '.config', 'opencode', 'skills'), pd);
+    assertNativeCoreDisclosure(join(home, '.config', 'opencode', 'skills'), pd);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -171,6 +254,10 @@ test('opencode uninstall removes installed files', () => {
     const res = run('opencode', home, cwd, 'uninstall');
     assert.match(res.stdout, /Uninstall complete/);
     assert.equal(countSkills(join(home, '.config', 'opencode', 'skills')), 0);
+    assert.ok(
+      !existsSync(join(home, '.config', 'opencode', 'skills', '.huaweicloud-devkit-native.json')),
+      'native receipt removed on uninstall',
+    );
     assert.ok(!existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins')));
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -184,7 +271,7 @@ test('opencode install is idempotent', () => {
   try {
     assert.equal(run('opencode', home, cwd, 'install').status, 0);
     assert.equal(run('opencode', home, cwd, 'install').status, 0);
-    assertServerDataSkills(
+    assertNativeCoreDisclosure(
       join(home, '.config', 'opencode', 'skills'),
       join(home, '.config', 'opencode', 'huaweicloud-plugins'),
     );
@@ -194,27 +281,392 @@ test('opencode install is idempotent', () => {
   }
 });
 
-// Pre-MCP installs copied skills into native dirs; an install run must purge
-// exactly those (ownership-precise), never a user skill sharing the prefix.
-test('install purges stale native skill copies and preserves user skills', () => {
+// Native-dir reconciliation on install: pre-MCP residue (owned names
+// without a receipt) is purged, a stale core copy is refreshed in place
+// (remove-then-copy, so files a newer tree retired disappear), user skills
+// survive, and residue on a non-installed agent's dir is cleaned too.
+test('install reconciles native skill dirs: residue purged, core refreshed, user skills preserved', () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
   try {
     const nativeDir = join(home, '.config', 'opencode', 'skills');
     mkdirSync(join(nativeDir, 'huawei-ecs'), { recursive: true });
     writeFileSync(join(nativeDir, 'huawei-ecs', 'SKILL.md'), '---\nname: huawei-ecs\n---\nstale\n');
+    mkdirSync(join(nativeDir, 'huaweicloud-core', 'references'), { recursive: true });
+    writeFileSync(join(nativeDir, 'huaweicloud-core', 'SKILL.md'), '---\nname: huaweicloud-core\n---\nstale\n');
+    writeFileSync(join(nativeDir, 'huaweicloud-core', 'references', 'retired-by-newer-tree.md'), 'orphan\n');
     mkdirSync(join(nativeDir, 'huawei-my-own-runbook'), { recursive: true });
     writeFileSync(
       join(nativeDir, 'huawei-my-own-runbook', 'SKILL.md'),
       '---\nname: huawei-my-own-runbook\n---\nuser\n',
     );
+    // Residue on an agent this run does not install: owned names there are
+    // stale regardless (no receipt, no replacement coming this run).
+    const otherDir = join(home, '.workbuddy', 'skills');
+    mkdirSync(join(otherDir, 'huawei-ecs'), { recursive: true });
+    writeFileSync(join(otherDir, 'huawei-ecs', 'SKILL.md'), '---\nname: huawei-ecs\n---\nstale\n');
+
     const res = run('opencode', home, cwd, 'install');
     assert.equal(res.status, 0, res.stderr);
-    assert.ok(!existsSync(join(nativeDir, 'huawei-ecs')), 'stale devkit-owned copy must be purged');
+    assert.ok(!existsSync(join(nativeDir, 'huawei-ecs')), 'non-core owned copy must be purged');
     assert.ok(existsSync(join(nativeDir, 'huawei-my-own-runbook')), 'user skill sharing the prefix must survive');
+    assert.ok(!existsSync(join(otherDir, 'huawei-ecs')), 'residue on a non-installed agent must be purged');
+    const pd = join(home, '.config', 'opencode', 'huaweicloud-plugins');
     assert.ok(
-      pluginSkills(join(home, '.config', 'opencode', 'huaweicloud-plugins')) >= 6,
-      'plugin dir must carry the skills tree',
+      skillTreeEquals(join(nativeDir, 'huaweicloud-core'), join(pd, 'skills', 'huaweicloud-core')),
+      'stale core copy must be refreshed byte-equal to the payload',
+    );
+    assert.ok(
+      !existsSync(join(nativeDir, 'huaweicloud-core', 'references', 'retired-by-newer-tree.md')),
+      'a file the newer tree retired must not survive the refresh',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// A devkit-managed native dir (receipt present) keeps its core copies when a
+// different agent is installed this run: deleting an installed agent's
+// disclosure for a staleness window doctor already flags would be a silent
+// capability loss.
+test('install for one target keeps another managed agent core copies', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    assert.equal(run('workbuddy', home, cwd, 'install').status, 0);
+    const workbuddyNative = join(home, '.workbuddy', 'skills');
+    assert.ok(existsSync(join(workbuddyNative, '.huaweicloud-devkit-native.json')));
+    const res = run('opencode', home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      existsSync(join(workbuddyNative, 'huaweicloud-core')),
+      'managed core copies of a non-installed-this-run agent must survive',
+    );
+    assertNativeCoreDisclosure(
+      join(home, '.config', 'opencode', 'skills'),
+      join(home, '.config', 'opencode', 'huaweicloud-plugins'),
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// The native sync is disclosure, not payload: an unwritable native dir must
+// warn and let the install complete (the MCP server remains the functional
+// path), not fail the step.
+test('install warns and continues when the native skill dir cannot be created', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const nativeDir = join(home, '.config', 'opencode', 'skills');
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    writeFileSync(nativeDir, 'occupied by a file');
+    const res = run('opencode', home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /native core skills not synced/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', 'dist', 'mcp-server.js')));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// A torn receipt write must not demote a managed dir to residue treatment:
+// the file's existence still proves devkit placement, so another agent's
+// install keeps the core copies and warns instead of deleting them. The
+// corrupt boundary is unified with the postinstall's: shape-broken names
+// (parsable JSON, non-array) are corrupt too, not "healthy with no names".
+test('corrupt receipt keeps managed core copies and warns', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    assert.equal(run('workbuddy', home, cwd, 'install').status, 0);
+    const workbuddyNative = join(home, '.workbuddy', 'skills');
+    writeFileSync(join(workbuddyNative, '.huaweicloud-devkit-native.json'), '{"names": [torn');
+    const res = run('opencode', home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /unreadable native receipt .*\.workbuddy.*rewrites it/);
+    assert.ok(
+      existsSync(join(workbuddyNative, 'huaweicloud-core')),
+      'a torn receipt must not cost a managed agent its core copies',
+    );
+
+    writeFileSync(join(workbuddyNative, '.huaweicloud-devkit-native.json'), '{"names": null}');
+    const shapeBroken = run('opencode', home, cwd, 'install');
+    assert.equal(shapeBroken.status, 0, shapeBroken.stderr);
+    assert.match(
+      shapeBroken.stdout,
+      /unreadable native receipt .*\.workbuddy/,
+      'a shape-broken receipt is corrupt, not ok-empty',
+    );
+    assert.ok(existsSync(join(workbuddyNative, 'huaweicloud-core')), 'core copies kept');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// Receipt-remembered names carry delete rights only in a dir a sync row
+// owns. In a foreign dir (officeace), a forged receipt must not be able to
+// aim the cleanup at user content — including content in the devkit's own
+// huaweicloud- namespace, which the shape filter alone would admit.
+test('forged receipt cannot delete user content in the officeace dir', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const officeaceDir = join(home, '.office-claw', 'skills');
+    mkdirSync(join(officeaceDir, 'huawei-ecs'), { recursive: true });
+    writeFileSync(join(officeaceDir, 'huawei-ecs', 'SKILL.md'), '---\nname: huawei-ecs\n---\n', 'utf8');
+    mkdirSync(join(officeaceDir, 'huaweicloud-user-notes'), { recursive: true });
+    writeFileSync(join(officeaceDir, 'huaweicloud-user-notes', 'SKILL.md'), '---\nname: x\n---\nuser\n', 'utf8');
+    writeFileSync(
+      join(officeaceDir, '.huaweicloud-devkit-native.json'),
+      JSON.stringify({ names: ['huawei-ecs', 'huaweicloud-user-notes'] }),
+    );
+    const res = run('opencode', home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(!existsSync(join(officeaceDir, 'huawei-ecs')), 'owned residue in a foreign dir still goes');
+    assert.ok(
+      existsSync(join(officeaceDir, 'huaweicloud-user-notes')),
+      'receipt-remembered names must not earn delete rights in a foreign dir',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// A corrupt receipt at uninstall cannot yield remembered names; the
+// possible retired-name leftovers are warned (and left in place — they may
+// be user content), and the receipt file itself still goes.
+test('uninstall warns about possible leftovers when the receipt is corrupt', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    assert.equal(run('workbuddy', home, cwd, 'install').status, 0);
+    const workbuddyNative = join(home, '.workbuddy', 'skills');
+    mkdirSync(join(workbuddyNative, 'huaweicloud-retired-x'), { recursive: true });
+    writeFileSync(join(workbuddyNative, 'huaweicloud-retired-x', 'SKILL.md'), '---\nname: x\n---\n', 'utf8');
+    writeFileSync(join(workbuddyNative, '.huaweicloud-devkit-native.json'), '{"names": [torn');
+    const res = run('workbuddy', home, cwd, 'uninstall');
+    assert.match(res.stdout, /Uninstall complete/);
+    assert.match(
+      res.stdout,
+      /unreadable native receipt .*possible devkit leftover\(s\) left in place: huaweicloud-retired-x/,
+    );
+    assert.ok(
+      existsSync(join(workbuddyNative, 'huaweicloud-retired-x')),
+      'an unidentifiable name is never auto-deleted',
+    );
+    assert.ok(
+      !existsSync(join(workbuddyNative, '.huaweicloud-devkit-native.json')),
+      'the corrupt receipt is still removed',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// officeace's dir is never a sync target: owned names there are residue no
+// matter what receipt a wholesale hand-copy carried in.
+test('forged receipt cannot exempt owned names in the officeace dir', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const officeaceDir = join(home, '.office-claw', 'skills');
+    mkdirSync(join(officeaceDir, 'huawei-ecs'), { recursive: true });
+    writeFileSync(join(officeaceDir, 'huawei-ecs', 'SKILL.md'), '---\nname: huawei-ecs\n---\n', 'utf8');
+    writeFileSync(join(officeaceDir, '.huaweicloud-devkit-native.json'), '{"names":["huawei-ecs"]}');
+    const res = run('opencode', home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      !existsSync(join(officeaceDir, 'huawei-ecs')),
+      'officeace stays without native skill copies, receipt or not',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// Uninstall consumes the receipt before destroying it: a retired core name
+// living only in the receipt must go with the install, not survive as
+// permanently unidentifiable shadow-disclosure.
+test('uninstall removes receipt-remembered retired names', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    assert.equal(run('opencode', home, cwd, 'install').status, 0);
+    const nativeDir = join(home, '.config', 'opencode', 'skills');
+    const receiptPath = join(nativeDir, '.huaweicloud-devkit-native.json');
+    const receipt = JSON.parse(readFileSync(receiptPath, 'utf8')) as { names: string[] };
+    mkdirSync(join(nativeDir, 'huaweicloud-retired-example'), { recursive: true });
+    writeFileSync(join(nativeDir, 'huaweicloud-retired-example', 'SKILL.md'), '---\nname: x\n---\n', 'utf8');
+    writeFileSync(receiptPath, JSON.stringify({ names: [...receipt.names, 'huaweicloud-retired-example'] }));
+    const res = run('opencode', home, cwd, 'uninstall');
+    assert.match(res.stdout, /Uninstall complete/);
+    assert.ok(!existsSync(join(nativeDir, 'huaweicloud-retired-example')), 'retired name must not survive uninstall');
+    assert.ok(!existsSync(receiptPath), 'receipt removed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// The update dispatch drives the same native sync as install: a divergent
+// copy and a deleted one must both converge back to the payload.
+test('update restores divergent and missing native core copies', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    assert.equal(run('opencode', home, cwd, 'install').status, 0);
+    const nativeDir = join(home, '.config', 'opencode', 'skills');
+    writeFileSync(join(nativeDir, 'huaweicloud-core', 'SKILL.md'), 'stale\n', 'utf8');
+    rmSync(join(nativeDir, 'huaweicloud-safety'), { recursive: true, force: true });
+    const res = run('opencode', home, cwd, 'update');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Update complete/);
+    assertNativeCoreDisclosure(nativeDir, join(home, '.config', 'opencode', 'huaweicloud-plugins'));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// Uninstall honors the receipt's maintainer attribution — dir-gated to the
+// DSH native dir (the only writer of package-root receipts) and
+// liveness-gated. A dead maintainer's copies are residue and go; a live
+// one keeps them (the dedicated dsh-target test below). A package-root
+// receipt in any other dir is hand-copied and earns nothing: normal
+// removal, no attribution message.
+test('uninstall removes dead-maintainer copies and ignores foreign-dir package-root receipts', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    // Dead maintainer on the real dsh dir: the recorded package root is
+    // gone — residue, not disclosure.
+    const dshHome = join(home, '.dsh');
+    const dshNative = join(dshHome, 'skills');
+    const deadRoot = join(home, 'gone-profile-pkg');
+    for (const name of coreRoster) {
+      mkdirSync(join(dshNative, name), { recursive: true });
+      writeFileSync(join(dshNative, name, 'SKILL.md'), '---\nname: stub\n---\n', 'utf8');
+    }
+    writeFileSync(
+      join(dshNative, '.huaweicloud-devkit-native.json'),
+      JSON.stringify({
+        names: [...coreRoster].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+        layout: 'package-root',
+        packageRoot: deadRoot,
+      }),
+    );
+    const dsh = run('dsh', home, cwd, 'uninstall');
+    assert.match(dsh.stdout, /Uninstall complete/);
+    assert.match(dsh.stdout, /recorded package maintainer is gone — removing them/);
+    assert.ok(!existsSync(join(dshNative, 'huaweicloud-core')), 'dead-maintainer copies must go');
+
+    // A LIVE package-root receipt on a foreign (workbuddy) dir: hand-copied
+    // by construction — the postinstall only writes the dsh dir — so it
+    // earns no attribution there.
+    assert.equal(run('workbuddy', home, cwd, 'install').status, 0);
+    const wbNative = join(home, '.workbuddy', 'skills');
+    const liveRoot = join(home, 'staged-profile-pkg');
+    const liveSkills = join(liveRoot, 'plugins', 'huaweicloud-core', 'skills');
+    for (const name of coreRoster) {
+      mkdirSync(join(liveSkills, name), { recursive: true });
+      writeFileSync(join(liveSkills, name, 'SKILL.md'), '---\nname: stub\n---\n', 'utf8');
+    }
+    writeFileSync(
+      join(wbNative, '.huaweicloud-devkit-native.json'),
+      JSON.stringify({
+        names: [...coreRoster].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+        layout: 'package-root',
+        packageRoot: liveRoot,
+      }),
+    );
+    const foreign = run('workbuddy', home, cwd, 'uninstall');
+    assert.match(foreign.stdout, /Uninstall complete/);
+    assert.ok(
+      !foreign.stdout.includes('belong to the DSH profile'),
+      'a foreign-dir package-root receipt earns no attribution',
+    );
+    assert.ok(!existsSync(join(wbNative, 'huaweicloud-core')), 'the copies go with the normal removal');
+    assert.ok(!existsSync(join(wbNative, '.huaweicloud-devkit-native.json')), 'the receipt goes too');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// The DSH-target variant: the real uninstallDsh path with a marketplace
+// receipt on ~/.dsh/skills (DSH_HOME faked) — live maintainer keeps the
+// native dir, plugin-dir cleanup proceeds regardless, and aged crash
+// residue is swept even on the attribution path.
+test('uninstall --target dsh honors a live marketplace receipt', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const nativeDir = join(dshHome, 'skills');
+    const liveRoot = join(home, 'staged-profile-pkg');
+    const liveSkills = join(liveRoot, 'plugins', 'huaweicloud-core', 'skills');
+    for (const name of coreRoster) {
+      mkdirSync(join(nativeDir, name), { recursive: true });
+      writeFileSync(join(nativeDir, name, 'SKILL.md'), '---\nname: stub\n---\n', 'utf8');
+      mkdirSync(join(liveSkills, name), { recursive: true });
+      writeFileSync(join(liveSkills, name, 'SKILL.md'), '---\nname: stub\n---\n', 'utf8');
+    }
+    writeFileSync(
+      join(nativeDir, '.huaweicloud-devkit-native.json'),
+      JSON.stringify({
+        names: [...coreRoster].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
+        layout: 'package-root',
+        packageRoot: liveRoot,
+      }),
+    );
+    const agedTmp = join(nativeDir, '.huaweicloud-devkit-native.json.424242.tmp');
+    writeFileSync(agedTmp, 'torn');
+    const stale = new Date(Date.now() - 120_000);
+    utimesSync(agedTmp, stale, stale);
+    const res = run('dsh', home, cwd, 'uninstall');
+    assert.match(res.stdout, /Uninstall complete/);
+    assert.match(res.stdout, /belong to the DSH profile's huaweicloud-devkit package/);
+    assert.ok(existsSync(join(nativeDir, 'huaweicloud-core')), 'the marketplace dir is left for its maintainer');
+    assert.ok(existsSync(join(nativeDir, '.huaweicloud-devkit-native.json')), 'the receipt stays with the copies');
+    assert.ok(!existsSync(agedTmp), 'aged crash residue is swept even on the attribution path');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+// Crashed receipt writes leave pid-suffixed tmp files no other actor
+// reclaims; uninstall sweeps the aged ones while a young (possibly
+// in-flight concurrent writer's) tmp is left alone — the same age gate
+// the writer applies, pinned here for the uninstall consumer.
+test('uninstall sweeps aged receipt tmp files and leaves young ones', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    assert.equal(run('workbuddy', home, cwd, 'install').status, 0);
+    const nativeDir = join(home, '.workbuddy', 'skills');
+    const agedTmp = join(nativeDir, '.huaweicloud-devkit-native.json.424242.tmp');
+    const youngTmp = join(nativeDir, '.huaweicloud-devkit-native.json.999999.tmp');
+    writeFileSync(agedTmp, 'torn');
+    writeFileSync(youngTmp, 'in-flight');
+    const stale = new Date(Date.now() - 120_000);
+    utimesSync(agedTmp, stale, stale);
+    const res = run('workbuddy', home, cwd, 'uninstall');
+    assert.match(res.stdout, /Uninstall complete/);
+    assert.ok(!existsSync(agedTmp), 'the aged tmp file is swept');
+    assert.ok(existsSync(youngTmp), 'a young tmp is never swept by the uninstall path');
+    assert.deepEqual(
+      readdirSync(nativeDir).filter((n) => n !== '.huaweicloud-devkit-native.json.999999.tmp'),
+      [],
+      'nothing else devkit-owned remains in the dir',
     );
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -231,7 +683,7 @@ test('workbuddy install creates skills, MCP server, and safety policy', () => {
     assert.match(res.stdout, /\[WorkBuddy\]/);
     assert.match(res.stdout, /Installation complete/);
     const pd = join(home, '.workbuddy', 'huaweicloud-plugins');
-    assertServerDataSkills(join(home, '.workbuddy', 'skills'), pd);
+    assertNativeCoreDisclosure(join(home, '.workbuddy', 'skills'), pd);
     assert.ok(existsSync(join(pd, 'dist', 'mcp-server.js')));
     assert.ok(existsSync(join(pd, 'dist', 'tools.js')));
     assert.ok(existsSync(join(pd, 'safety', 'policy.json')));
@@ -303,7 +755,7 @@ test('workbuddy install is idempotent', () => {
   try {
     assert.equal(run('workbuddy', home, cwd, 'install').status, 0);
     assert.equal(run('workbuddy', home, cwd, 'install').status, 0);
-    assertServerDataSkills(join(home, '.workbuddy', 'skills'), join(home, '.workbuddy', 'huaweicloud-plugins'));
+    assertNativeCoreDisclosure(join(home, '.workbuddy', 'skills'), join(home, '.workbuddy', 'huaweicloud-plugins'));
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -324,6 +776,13 @@ test('codex-desktop install creates skills, MCP server, and safety policy', () =
     assert.ok(existsSync(join(pd, 'dist', 'tools.js')));
     assert.ok(existsSync(join(pd, 'safety', 'policy.json')));
     assert.equal(pluginVersion(pd), pkg.version);
+    // The status section this target lacked for months: both surfaces it
+    // owns (plugin dir payload + marketplace registration) must report in.
+    const status = run('codex-desktop', home, cwd, 'status');
+    assert.equal(status.status, 0, status.stderr);
+    assert.match(status.stdout, /\[Codex Desktop\]/);
+    assert.match(status.stdout, /MCP Server:.*Installed/);
+    assert.match(status.stdout, /Marketplace:.*Registered/);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -373,7 +832,7 @@ test('openclaw install creates skills, MCP server, and safety policy in .agents'
     assert.match(res.stdout, /\[OpenClaw\]/);
     assert.match(res.stdout, /Installation complete/);
     const pd = join(home, '.agents', 'huaweicloud-plugins');
-    assertServerDataSkills(join(home, '.agents', 'skills'), pd);
+    assertNativeCoreDisclosure(join(home, '.agents', 'skills'), pd);
     assert.ok(existsSync(join(pd, 'dist', 'mcp-server.js')));
     assert.ok(existsSync(join(pd, 'dist', 'tools.js')));
     assert.ok(existsSync(join(pd, 'safety', 'policy.json')));
@@ -409,13 +868,13 @@ test('hermes install creates skills, MCP server, and safety policy', () => {
     assert.match(res.stdout, /\[Hermes Agent\]/);
     assert.match(res.stdout, /Installation complete/);
     const pd = join(home, '.hermes', 'huaweicloud-plugins');
-    assertServerDataSkills(join(home, '.hermes', 'skills'), pd);
+    assertNativeCoreDisclosure(join(home, '.hermes', 'skills'), pd);
     assert.ok(existsSync(join(pd, 'dist', 'mcp-server.js')));
     assert.ok(existsSync(join(pd, 'safety', 'policy.json')));
     assert.equal(pluginVersion(pd), pkg.version);
     const allowlistPath = join(home, '.hermes', 'shell-hooks-allowlist.json');
     assert.ok(existsSync(allowlistPath), 'shell hook allowlist must be written on install');
-    const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8'));
+    const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8')) as HermesAllowlist;
     const entry = (allowlist.approvals || []).find(
       (a) =>
         a &&
@@ -447,7 +906,7 @@ test('hermes uninstall removes installed files', () => {
     assert.ok(!existsSync(join(home, '.hermes', 'huaweicloud-plugins')));
     const allowlistPath = join(home, '.hermes', 'shell-hooks-allowlist.json');
     if (existsSync(allowlistPath)) {
-      const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8'));
+      const allowlist = JSON.parse(readFileSync(allowlistPath, 'utf8')) as HermesAllowlist;
       const remains = (allowlist.approvals || []).some((a) => {
         const cmd = typeof a === 'string' ? a : a?.command;
         return typeof cmd === 'string' && cmd.includes('huaweicloud-safety.py');
@@ -473,7 +932,7 @@ test('atomcode install creates skills, MCP server, and safety policy', () => {
     assert.match(res.stdout, /\[AtomCode\]/);
     assert.match(res.stdout, /Installation complete/);
     const pd = join(home, '.atomcode', 'huaweicloud-plugins');
-    assertServerDataSkills(join(home, '.atomcode', 'skills'), pd);
+    assertNativeCoreDisclosure(join(home, '.atomcode', 'skills'), pd);
     assert.ok(existsSync(join(pd, 'dist', 'mcp-server.js')));
     assert.ok(existsSync(join(pd, 'dist', 'tools.js')));
     assert.ok(existsSync(join(pd, 'safety', 'policy.json')));
@@ -522,7 +981,7 @@ test('atomcode install is idempotent', () => {
   try {
     assert.equal(run('atomcode', home, cwd, 'install').status, 0);
     assert.equal(run('atomcode', home, cwd, 'install').status, 0);
-    assertServerDataSkills(join(home, '.atomcode', 'skills'), join(home, '.atomcode', 'huaweicloud-plugins'));
+    assertNativeCoreDisclosure(join(home, '.atomcode', 'skills'), join(home, '.atomcode', 'huaweicloud-plugins'));
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
@@ -666,6 +1125,35 @@ test('codex uninstall removes current and legacy plugin ids', () => {
   }
 });
 
+test('codex uninstall keeps the plugin cache when marketplace remove fails', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    assert.equal(run('codex', home, cwd, 'install', fakeCodexEnv(cwd)).status, 0);
+    // Seed the marketplace-keyed cache shell `codex plugin remove` leaves
+    // behind (live-verified on codex-cli 0.162.1).
+    const cacheDir = join(home, '.codex', 'plugins', 'cache', getMarketplaceName());
+    mkdirSync(cacheDir, { recursive: true });
+    writeFileSync(join(cacheDir, 'marker'), 'x');
+
+    const res = run('codex', home, cwd, 'uninstall', fakeCodexEnv(cwd, { failMarketplaceRemove: true }));
+    assert.equal(res.status, 0, res.stderr);
+    // The safety gate: a failed `codex plugin marketplace remove` leaves the
+    // registration potentially live, so its cache must survive the uninstall
+    // (deleting it would break a still-registered plugin).
+    assert.ok(existsSync(join(cacheDir, 'marker')), 'failed marketplace remove must keep the plugin cache');
+
+    // Positive twin: a successful marketplace remove opens the gate and
+    // cleans the cache (the fake-CLI pin; real-agents covers the real CLI).
+    const again = run('codex', home, cwd, 'uninstall', fakeCodexEnv(cwd));
+    assert.equal(again.status, 0, again.stderr);
+    assert.ok(!existsSync(join(cacheDir, 'marker')), 'successful marketplace remove must clean the plugin cache');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
 test('install auto-detect with multiple agents requires explicit target in non-interactive shells', () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
@@ -685,18 +1173,40 @@ test('install auto-detect with multiple agents requires explicit target in non-i
   }
 });
 
-function runAutoPty(home, cwd, cmd, input, extraEnv = {}) {
+// The PTY-driven interactive tests below shell out through util-linux
+// `script -qec` and /bin/bash — Linux-only flags and paths. The guard is
+// "run only on Linux" (not "skip on Windows") so a future macOS matrix leg
+// skips these instead of failing on BSD script's different flag set.
+const ptySkip = process.platform !== 'linux' ? 'PTY-driven tests require util-linux script' : false;
+
+function runAutoPty(
+  home: string,
+  cwd: string,
+  cmd: string,
+  input: string,
+  extraEnv: Record<string, string | undefined> = {},
+) {
   seedProvisionedBinaries(home);
   return spawnSync('script', ['-qec', `${process.execPath} ${setupCli} ${cmd}`, '/dev/null'], {
     cwd,
     env: makeEnv(home, extraEnv),
     input,
     encoding: 'utf8',
-    timeout: 90000,
+    // PTY installs are install-bearing: installRuntimeDeps fetches undici
+    // from a cold fake-HOME npm cache (the 79s bad-day measurement), and the
+    // multi-select PTY tests install several targets — same 240s class as
+    // run()/runAuto().
+    timeout: 240000,
   });
 }
 
-function runAutoPtyStaged(home, cwd, cmd, stages, extraEnv = {}) {
+function runAutoPtyStaged(
+  home: string,
+  cwd: string,
+  cmd: string,
+  stages: Array<string | number>,
+  extraEnv: Record<string, string | undefined> = {},
+) {
   seedProvisionedBinaries(home);
   const env = makeEnv(home, extraEnv);
   const innerCmd = `${process.execPath} ${setupCli} ${cmd}`;
@@ -705,7 +1215,7 @@ function runAutoPtyStaged(home, cwd, cmd, stages, extraEnv = {}) {
     cwd,
     env,
     encoding: 'utf8',
-    timeout: 150000,
+    timeout: 240000,
   });
 }
 
@@ -715,7 +1225,7 @@ function runAutoPtyStaged(home, cwd, cmd, stages, extraEnv = {}) {
 // the privacy-agreement prompt with the test's input already exhausted. The
 // fakes make the provisioning loop resolve everything as present and skip —
 // the seam still runs end to end, just without network or prompts.
-function seedProvisionedBinaries(home) {
+function seedProvisionedBinaries(home: string) {
   const binDir = join(home, '.local', 'bin');
   mkdirSync(binDir, { recursive: true });
   const fakeHcloud = join(binDir, 'hcloud');
@@ -726,75 +1236,57 @@ function seedProvisionedBinaries(home) {
   chmodSync(fakeGateway, 0o755);
 }
 
-test(
-  'install auto-detect multiple agents interactive multi-select picks only chosen ones',
-  { skip: process.platform === 'win32' },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
-    try {
-      mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
-      mkdirSync(join(home, '.workbuddy'), { recursive: true });
-      const res = runAutoPty(home, cwd, 'install', '1\n');
-      assert.equal(res.status, 0, res.stderr);
-      assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode/);
-      assert.ok(
-        existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')),
-        'opencode installed',
-      );
-      assert.ok(!existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy not installed');
-      assert.doesNotMatch(res.stdout, /\[WorkBuddy\]/);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  },
-);
+test('install auto-detect multiple agents interactive multi-select picks only chosen ones', { skip: ptySkip }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '1\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(!existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy not installed');
+    assert.doesNotMatch(res.stdout, /\[WorkBuddy\]/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
-test(
-  'install auto-detect multiple agents interactive multi-select picks all on comma list',
-  { skip: process.platform === 'win32' },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
-    try {
-      mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
-      mkdirSync(join(home, '.workbuddy'), { recursive: true });
-      const res = runAutoPty(home, cwd, 'install', '1,2\n');
-      assert.equal(res.status, 0, res.stderr);
-      assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
-      assert.ok(
-        existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')),
-        'opencode installed',
-      );
-      assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  },
-);
+test('install auto-detect multiple agents interactive multi-select picks all on comma list', { skip: ptySkip }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '1,2\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
-test(
-  'install auto-detect multiple agents interactive cancel installs nothing',
-  { skip: process.platform === 'win32' },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
-    try {
-      mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
-      mkdirSync(join(home, '.workbuddy'), { recursive: true });
-      const res = runAutoPty(home, cwd, 'install', '0\n');
-      assert.equal(res.status, 1);
-      assert.doesNotMatch(res.stdout, /Installation complete/);
-      assert.ok(!existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins')), 'nothing installed on cancel');
-      assert.ok(!existsSync(join(home, '.workbuddy', 'huaweicloud-plugins')), 'nothing installed on cancel');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  },
-);
+test('install auto-detect multiple agents interactive cancel installs nothing', { skip: ptySkip }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '0\n');
+    assert.equal(res.status, 1);
+    assert.doesNotMatch(res.stdout, /Installation complete/);
+    assert.ok(!existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins')), 'nothing installed on cancel');
+    assert.ok(!existsSync(join(home, '.workbuddy', 'huaweicloud-plugins')), 'nothing installed on cancel');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test('install --target all still installs every supported agent', () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
@@ -833,7 +1325,7 @@ test('install auto-detect single agent installs only that agent', () => {
     const res = runAuto(home, cwd, 'install');
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /Installing HuaweiCloud DevKit for opencode/);
-    assertServerDataSkills(
+    assertNativeCoreDisclosure(
       join(home, '.config', 'opencode', 'skills'),
       join(home, '.config', 'opencode', 'huaweicloud-plugins'),
     );
@@ -874,54 +1366,40 @@ test('status auto-detect multiple retains full-range behavior (install-only chan
   }
 });
 
-test(
-  'install auto-detect multiple agents interactive multi-select installs all on "all"',
-  { skip: process.platform === 'win32' },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
-    try {
-      mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
-      mkdirSync(join(home, '.workbuddy'), { recursive: true });
-      const res = runAutoPty(home, cwd, 'install', 'all\n');
-      assert.equal(res.status, 0, res.stderr);
-      assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
-      assert.ok(
-        existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')),
-        'opencode installed',
-      );
-      assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  },
-);
+test('install auto-detect multiple agents interactive multi-select installs all on "all"', { skip: ptySkip }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', 'all\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
-test(
-  'install auto-detect multiple agents invalid input falls back to all detected',
-  { skip: process.platform === 'win32' },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
-    try {
-      mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
-      mkdirSync(join(home, '.workbuddy'), { recursive: true });
-      const res = runAutoPty(home, cwd, 'install', '9\n');
-      assert.equal(res.status, 0, res.stderr);
-      assert.match(res.stdout, /Invalid selection: "9"/);
-      assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
-      assert.ok(
-        existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')),
-        'opencode installed',
-      );
-      assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  },
-);
+test('install auto-detect multiple agents invalid input falls back to all detected', { skip: ptySkip }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    mkdirSync(join(home, '.config', 'opencode'), { recursive: true });
+    mkdirSync(join(home, '.workbuddy'), { recursive: true });
+    const res = runAutoPty(home, cwd, 'install', '9\n');
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Invalid selection: "9"/);
+    assert.match(res.stdout, /Installing HuaweiCloud DevKit to opencode, workbuddy/);
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', '.installed')), 'opencode installed');
+    assert.ok(existsSync(join(home, '.workbuddy', 'huaweicloud-plugins', '.installed')), 'workbuddy installed');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
 test('install rejects unknown --target', () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
@@ -954,7 +1432,7 @@ test('uninstall auto-detect multiple retains full-range behavior (install-only c
   }
 });
 
-test('install zero-detect menu option 1 installs to the entered target', { skip: process.platform === 'win32' }, () => {
+test('install zero-detect menu option 1 installs to the entered target', { skip: ptySkip }, () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
   try {
@@ -968,7 +1446,7 @@ test('install zero-detect menu option 1 installs to the entered target', { skip:
   }
 });
 
-test('install zero-detect menu option 1 rejects unknown target', { skip: process.platform === 'win32' }, () => {
+test('install zero-detect menu option 1 rejects unknown target', { skip: ptySkip }, () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
   try {
@@ -982,7 +1460,7 @@ test('install zero-detect menu option 1 rejects unknown target', { skip: process
   }
 });
 
-test('install zero-detect menu option 2 installs to all', { skip: process.platform === 'win32' }, () => {
+test('install zero-detect menu option 2 installs to all', { skip: ptySkip }, () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
   try {
@@ -1003,7 +1481,7 @@ test('install zero-detect menu option 2 installs to all', { skip: process.platfo
   }
 });
 
-test('install zero-detect menu option 0 exits without installing', { skip: process.platform === 'win32' }, () => {
+test('install zero-detect menu option 0 exits without installing', { skip: ptySkip }, () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
   try {
@@ -1016,29 +1494,25 @@ test('install zero-detect menu option 0 exits without installing', { skip: proce
   }
 });
 
-test(
-  'install zero-detect menu option 3 writes Claude Code MCP config with backup',
-  { skip: process.platform === 'win32' },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
-    try {
-      writeFileSync(join(home, '.claude.json'), JSON.stringify({ existing: true }));
-      const res = runAutoPty(home, cwd, 'install', '3\n');
-      assert.equal(res.status, 0, res.stderr);
-      const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
-      assert.equal(cfg.existing, true);
-      assert.equal(cfg.mcpServers['huaweicloud-devkit'].command, 'npx');
-      assert.ok(existsSync(join(home, '.claude.json.bak')), 'backup created');
-      assert.match(res.stdout, /Restart the session to apply/);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  },
-);
+test('install zero-detect menu option 3 writes Claude Code MCP config with backup', { skip: ptySkip }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    writeFileSync(join(home, '.claude.json'), JSON.stringify({ existing: true }));
+    const res = runAutoPty(home, cwd, 'install', '3\n');
+    assert.equal(res.status, 0, res.stderr);
+    const cfg = JSON.parse(readFileSync(join(home, '.claude.json'), 'utf8'));
+    assert.equal(cfg.existing, true);
+    assert.equal(cfg.mcpServers['huaweicloud-devkit'].command, 'npx');
+    assert.ok(existsSync(join(home, '.claude.json.bak')), 'backup created');
+    assert.match(res.stdout, /Restart the session to apply/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
 
-test('install zero-detect menu option 3 writes Cursor mcp.json', { skip: process.platform === 'win32' }, () => {
+test('install zero-detect menu option 3 writes Cursor mcp.json', { skip: ptySkip }, () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
   try {
@@ -1053,7 +1527,7 @@ test('install zero-detect menu option 3 writes Cursor mcp.json', { skip: process
   }
 });
 
-test('install zero-detect menu option 3 skips already-configured MCP', { skip: process.platform === 'win32' }, () => {
+test('install zero-detect menu option 3 skips already-configured MCP', { skip: ptySkip }, () => {
   const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
   try {
@@ -1071,20 +1545,16 @@ test('install zero-detect menu option 3 skips already-configured MCP', { skip: p
   }
 });
 
-test(
-  'install zero-detect menu option 3 prints snippet when no MCP agent detected',
-  { skip: process.platform === 'win32' },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
-    try {
-      const res = runAutoPty(home, cwd, 'install', '3\n');
-      assert.equal(res.status, 1);
-      assert.match(res.stdout, /config snippet you can paste/);
-      assert.match(res.stdout, /huaweicloud-devkit-mcp/);
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(cwd, { recursive: true, force: true });
-    }
-  },
-);
+test('install zero-detect menu option 3 prints snippet when no MCP agent detected', { skip: ptySkip }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = runAutoPty(home, cwd, 'install', '3\n');
+    assert.equal(res.status, 1);
+    assert.match(res.stdout, /config snippet you can paste/);
+    assert.match(res.stdout, /huaweicloud-devkit-mcp/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});

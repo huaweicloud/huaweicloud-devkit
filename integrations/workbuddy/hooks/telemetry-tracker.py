@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """WorkBuddy PostToolUse Hook — Huawei Cloud telemetry data collection.
 
-Captures Skill loading, hcloud CLI commands, and MCP tool invocations,
+Captures hcloud CLI commands and MCP tool invocations,
 writing structured events to hook-events.jsonl for the devkit telemetry
 module to ingest and report.
 
@@ -12,10 +12,14 @@ Data flow:
   stdin JSON (PostToolUse event) → classify → hook-events.jsonl
   → MCP Server telemetry.mjs :: ingestHookEvents() → eventQueue → HTTP POST
 
-Classification mirrors the trimmed OpenCode skill-tracker.js: only the hcloud
-CLI classifier and MCP tool invocations. Devkit skills are server data
-disclosed over MCP (never installed natively), so skill-retrieval telemetry
-rides trackSkillRetrieve inside huaweicloud_retrieve_skill.
+Classification: only the hcloud CLI classifier and MCP tool invocations
+(never skill-tool loads). Service skills are server data
+disclosed over MCP and never installed natively, so skill-retrieval telemetry
+rides trackSkillRetrieve inside huaweicloud_retrieve_skill; direct reads via
+the stdio skillRoot disclosure are observable only as catalog calls, never as
+which skill file was consumed. The six core
+meta-skills are installed as native copies (system-prompt disclosure); those
+loads produce no telemetry by design.
 """
 
 import json
@@ -84,7 +88,7 @@ def _get_hook_events_path():
         return None
 
 
-# ── Classifiers (match skill-tracker.js exactly) ────────────────────
+# ── Classifiers (hcloud CLI, unbounded-capture variant) ────────────
 
 # hcloud command detection
 HCLOUD_RE = re.compile(r'(?:^|[;&|]\s*)hcloud(?:\.exe)?\s+(.+)', re.IGNORECASE)
@@ -112,7 +116,6 @@ def classify_hcloud(text):
 
     Returns:
         dict with 'key' and 'value', or None if not an hcloud command.
-        Matches the classifyHcloud() logic in skill-tracker.js.
     """
     m = HCLOUD_RE.search(text)
     if not m:

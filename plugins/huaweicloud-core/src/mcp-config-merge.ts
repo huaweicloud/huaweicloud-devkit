@@ -7,6 +7,12 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+// Array.isArray alone narrows unknown to any[]; this guard keeps the element
+// type unknown so narrowed config arrays spread without reintroducing any.
+function isUnknownArray(value: unknown): value is unknown[] {
+  return Array.isArray(value);
+}
+
 function sameJson(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
@@ -73,7 +79,7 @@ export function mergeCommandStyle(
       changed: true,
     };
   }
-  const command = Array.isArray(existing.command) ? existing.command : [];
+  const command = isUnknownArray(existing.command) ? existing.command : [];
   const merged: Record<string, unknown> = {
     ...existing,
     type: 'local',
@@ -105,7 +111,7 @@ export function mergeArgsStyle(
   const merged: Record<string, unknown> = {
     ...existing,
     command: 'node',
-    args: [mcpPath, ...(Array.isArray(existing.args) ? existing.args.slice(1) : [])],
+    args: [mcpPath, ...(isUnknownArray(existing.args) ? existing.args.slice(1) : [])],
   };
   const envMerged = mergeEnv(isPlainObject(existing.env) ? existing.env : {}, env);
   if (envMerged) merged.env = envMerged;
@@ -156,11 +162,11 @@ export function extractUserDelta(entry: unknown, style: string): Record<string, 
 export function applyUserDelta(entry: unknown, delta: unknown, style: string): unknown {
   if (!isPlainObject(entry) || !isPlainObject(delta)) return entry;
   const merged: Record<string, unknown> = { ...entry };
-  if (style === 'command' && Array.isArray(delta.commandExtra)) {
-    const base = Array.isArray(entry.command) ? entry.command : [];
+  if (style === 'command' && isUnknownArray(delta.commandExtra)) {
+    const base = isUnknownArray(entry.command) ? entry.command : [];
     merged.command = [...base, ...delta.commandExtra];
-  } else if (style === 'args' && Array.isArray(delta.argsExtra)) {
-    const base = Array.isArray(entry.args) ? entry.args : [];
+  } else if (style === 'args' && isUnknownArray(delta.argsExtra)) {
+    const base = isUnknownArray(entry.args) ? entry.args : [];
     merged.args = [...base, ...delta.argsExtra];
   }
   if (isPlainObject(delta.env)) {

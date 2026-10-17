@@ -15,12 +15,14 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { parseCoreSkillNames } from '../plugins/huaweicloud-core/src/lib/skill-manifest.ts';
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
 
-function makeEnv(home, dshHome) {
-  return {
+function makeEnv(home: string, dshHome: string) {
+  const env: Record<string, string | undefined> = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
@@ -29,28 +31,42 @@ function makeEnv(home, dshHome) {
     DSH_HOME: dshHome,
     HUAWEICLOUD_DEVKIT_SKIP_DSH_PLUGIN_INSTALL: '1',
   };
+  // cleanupNativeDirs() runs inside every install and reconciles EVERY
+  // target's native dir (not just dsh), each resolved from its own ambient
+  // override — clear the ones this file does not pin.
+  for (const key of [
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+    'HERMES_HOME',
+    'ATOMCODE_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'HUAWEICLOUD_HOME',
+  ]) {
+    delete env[key];
+  }
+  return env;
 }
 
-function runCli(home, cwd, args, dshHome = join(home, '.dsh')) {
+function runCli(home: string, cwd: string, args: string[], dshHome: string = join(home, '.dsh')) {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd,
     env: makeEnv(home, dshHome),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 240000,
   });
 }
 
-function countSkills(dir) {
+function countSkills(dir: string): number {
   if (!existsSync(dir)) return 0;
   return readdirSync(dir, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name.startsWith('huawei')).length;
 }
 
-function readPatch(dshHome) {
+function readPatch(dshHome: string): string {
   const patchFile = join(dshHome, 'profiles', 'web', 'cordis.patch.yml');
   return existsSync(patchFile) ? readFileSync(patchFile, 'utf8') : '';
 }
 
-function countMcpRows(patch) {
+function countMcpRows(patch: string): number {
   return (patch.match(/id: (?:huaweicloud-devkit|mcp-huaweicloud)/g) || []).length;
 }
 
@@ -65,7 +81,17 @@ test('dsh install copies skills, MCP server, safety policy, and patch row', () =
     assert.match(res.stdout, /Installation complete!/);
 
     assert.ok(countSkills(join(dshHome, 'huaweicloud-plugins', 'skills')) >= 6, 'DSH skills tree in plugin dir');
-    assert.equal(countSkills(join(dshHome, 'skills')), 0, 'native DSH skills dir stays empty');
+    // Plugin-dir layout: the core meta-skills are ALSO natively disclosed.
+    const nativeCore = parseCoreSkillNames(
+      readFileSync(join(root, 'plugins', 'huaweicloud-core', 'skills', '.manifest.json'), 'utf8'),
+    );
+    assert.ok(nativeCore, 'manifest core roster must parse');
+    assert.equal(
+      countSkills(join(dshHome, 'skills')),
+      nativeCore.size,
+      'native DSH skills dir carries the core meta-skills',
+    );
+    assert.ok(existsSync(join(dshHome, 'skills', '.huaweicloud-devkit-native.json')));
     const pluginDir = join(dshHome, 'huaweicloud-plugins');
     assert.ok(existsSync(join(pluginDir, 'dist', 'mcp-server.js')));
     assert.ok(existsSync(join(pluginDir, 'dist', 'tools.js')));
@@ -280,6 +306,266 @@ test('bundled cordis.patch.yml has no self loader entry and only the MCP insert'
   assert.match(patch, /name: '@deepseek-ai\/dsh-mcp-client'/);
   assert.doesNotMatch(patch, /name: huaweicloud-devkit/, 'must not import itself as a loader entry');
   assert.equal(countMcpRows(patch), 1, 'exactly one insert entry');
+});
+
+// The npm-in-profile layout: postinstall maintains ~/.dsh/skills itself (the
+// MCP server runs from the package root, not a plugin dir). It must sync the
+// core meta-skills, purge non-core owned names, and write the receipt — and
+// refuse to mutate anything when the manifest lacks pack info.
+test('dsh bundle postinstall syncs core skills natively and purges non-core', () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-home-'));
+  const stage = mkdtempSync(join(tmpdir(), 'dsh-pkg-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const profileDir = join(dshHome, 'profiles', 'web');
+    mkdirSync(profileDir, { recursive: true });
+
+    // A minimal package layout: bin/ + patch + the compiled shared libs the
+    // postinstall requires + a skills tree with manifest.
+    mkdirSync(join(stage, 'bin'), { recursive: true });
+    copyFileSync(join(root, 'bin', 'dsh-postinstall.cjs'), join(stage, 'bin', 'dsh-postinstall.cjs'));
+    copyFileSync(join(root, 'cordis.patch.yml'), join(stage, 'cordis.patch.yml'));
+    const stagedLib = join(stage, 'plugins', 'huaweicloud-core', 'dist', 'lib');
+    mkdirSync(stagedLib, { recursive: true });
+    for (const lib of ['native-receipt.js', 'skill-manifest.js']) {
+      copyFileSync(join(root, 'plugins', 'huaweicloud-core', 'dist', 'lib', lib), join(stagedLib, lib));
+    }
+    const stagedSkills = join(stage, 'plugins', 'huaweicloud-core', 'skills');
+    const realSkills = join(root, 'plugins', 'huaweicloud-core', 'skills');
+    mkdirSync(stagedSkills, { recursive: true });
+    copyFileSync(join(realSkills, '.manifest.json'), join(stagedSkills, '.manifest.json'));
+    for (const name of ['huaweicloud-core', 'huaweicloud-safety', 'huawei-ecs']) {
+      mkdirSync(join(stagedSkills, name), { recursive: true });
+      copyFileSync(join(realSkills, name, 'SKILL.md'), join(stagedSkills, name, 'SKILL.md'));
+    }
+
+    // Pre-existing residue in the native dir: a stale service copy (owned,
+    // non-core), a user skill sharing the prefix, and a forged receipt
+    // claiming a retired core name (valid shape: deletable) plus a
+    // user-content name (invalid shape: must never earn delete rights).
+    const nativeDir = join(dshHome, 'skills');
+    mkdirSync(join(nativeDir, 'huawei-ecs'), { recursive: true });
+    writeFileSync(join(nativeDir, 'huawei-ecs', 'SKILL.md'), '---\nname: huawei-ecs\n---\nstale\n');
+    mkdirSync(join(nativeDir, 'huawei-my-runbook'), { recursive: true });
+    writeFileSync(join(nativeDir, 'huawei-my-runbook', 'SKILL.md'), '---\nname: huawei-my-runbook\n---\nuser\n');
+    mkdirSync(join(nativeDir, 'huaweicloud-retired-x'), { recursive: true });
+    writeFileSync(join(nativeDir, 'huaweicloud-retired-x', 'SKILL.md'), '---\nname: x\n---\nretired\n');
+    mkdirSync(join(nativeDir, 'steal-me'), { recursive: true });
+    writeFileSync(join(nativeDir, 'steal-me', 'SKILL.md'), '---\nname: steal-me\n---\nuser\n');
+    writeFileSync(
+      join(nativeDir, '.huaweicloud-devkit-native.json'),
+      JSON.stringify({ names: ['huaweicloud-retired-x', 'steal-me'] }),
+    );
+
+    const res = spawnSync(process.execPath, [join(stage, 'bin', 'dsh-postinstall.cjs')], {
+      cwd: profileDir,
+      env: makeEnv(home, dshHome),
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /rewrote DSH patch MCP path/);
+    assert.match(res.stdout, /refreshed 2 core skill cop/);
+    // The fixture stages only 2 of the 6 core dirs: the manifest claims the
+    // other 4 and the postinstall must warn, not crash the npm install.
+    assert.match(res.stderr, /claimed by the manifest but missing from the package tree: huaweicloud-/);
+    // A broken package must not be promised availability in the same
+    // output — the hint is gated on package health.
+    assert.ok(
+      !res.stdout.includes('MCP server will be available'),
+      'the availability hint must not follow a refuse-to-start diagnosis',
+    );
+
+    assert.ok(existsSync(join(nativeDir, 'huaweicloud-core')), 'core skill synced natively');
+    assert.ok(existsSync(join(nativeDir, 'huaweicloud-safety')), 'core skill synced natively');
+    assert.ok(
+      !existsSync(join(nativeDir, 'huawei-ecs')),
+      'owned non-core name stays off the native surface (stale copy purged)',
+    );
+    assert.ok(existsSync(join(nativeDir, 'huawei-my-runbook')), 'user skill sharing the prefix survives');
+    assert.ok(
+      !existsSync(join(nativeDir, 'huaweicloud-retired-x')),
+      'a receipt-remembered retired core name is deletable',
+    );
+    assert.ok(
+      existsSync(join(nativeDir, 'steal-me')),
+      'a receipt name outside the core-skill shape must never earn delete rights',
+    );
+    assert.ok(existsSync(join(nativeDir, '.huaweicloud-devkit-native.json')));
+    const receipt = JSON.parse(readFileSync(join(nativeDir, '.huaweicloud-devkit-native.json'), 'utf8'));
+    assert.equal(receipt.names.length, 2, 'receipt rewritten to the actually-placed roster');
+    assert.equal(receipt.layout, 'package-root', 'the marketplace receipt records its layout');
+    assert.equal(receipt.packageRoot, stage, 'the marketplace receipt records the package root');
+    assert.equal(
+      readFileSync(join(nativeDir, 'huaweicloud-core', 'SKILL.md'), 'utf8'),
+      readFileSync(join(stagedSkills, 'huaweicloud-core', 'SKILL.md'), 'utf8'),
+      'native copy is byte-equal to the package tree',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(stage, { recursive: true, force: true });
+  }
+});
+
+// A staged package without dist/ is broken (the server cannot start), but
+// the postinstall must still not fail the npm install: warn on stderr,
+// skip the native sync, leave the destination untouched.
+test('dsh bundle postinstall warns and exits 0 when dist is missing from the package', () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-home-'));
+  const stage = mkdtempSync(join(tmpdir(), 'dsh-pkg-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const profileDir = join(dshHome, 'profiles', 'web');
+    mkdirSync(profileDir, { recursive: true });
+
+    mkdirSync(join(stage, 'bin'), { recursive: true });
+    copyFileSync(join(root, 'bin', 'dsh-postinstall.cjs'), join(stage, 'bin', 'dsh-postinstall.cjs'));
+    copyFileSync(join(root, 'cordis.patch.yml'), join(stage, 'cordis.patch.yml'));
+    const stagedSkills = join(stage, 'plugins', 'huaweicloud-core', 'skills');
+    const realSkills = join(root, 'plugins', 'huaweicloud-core', 'skills');
+    mkdirSync(stagedSkills, { recursive: true });
+    copyFileSync(join(realSkills, '.manifest.json'), join(stagedSkills, '.manifest.json'));
+    mkdirSync(join(stagedSkills, 'huaweicloud-core'), { recursive: true });
+    copyFileSync(join(realSkills, 'huaweicloud-core', 'SKILL.md'), join(stagedSkills, 'huaweicloud-core', 'SKILL.md'));
+
+    const nativeDir = join(dshHome, 'skills');
+    mkdirSync(join(nativeDir, 'huawei-preexisting'), { recursive: true });
+    writeFileSync(join(nativeDir, 'huawei-preexisting', 'SKILL.md'), '---\nname: x\n---\n', 'utf8');
+
+    const res = spawnSync(process.execPath, [join(stage, 'bin', 'dsh-postinstall.cjs')], {
+      cwd: profileDir,
+      env: makeEnv(home, dshHome),
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    assert.equal(res.status, 0, `postinstall must not fail the npm install: ${res.stderr}`);
+    assert.match(res.stdout, /rewrote DSH patch MCP path/);
+    assert.match(res.stderr, /dist\/ missing or unreadable/);
+    assert.ok(!existsSync(join(nativeDir, '.huaweicloud-devkit-native.json')), 'no receipt written');
+    assert.ok(
+      existsSync(join(nativeDir, 'huawei-preexisting')),
+      'the native dir is left untouched when the package is broken',
+    );
+    assert.ok(
+      !res.stdout.includes('MCP server will be available'),
+      'the availability hint must not follow a refuse-to-start diagnosis',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(stage, { recursive: true, force: true });
+  }
+});
+
+// Destination-side failure (locked/occupied skills dir) must warn and leave
+// the npm install green — the same warn-and-continue contract the setup
+// CLI's syncNativeCoreSkills carries.
+test('dsh bundle postinstall warns and exits 0 when the native dir cannot be created', () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-home-'));
+  const stage = mkdtempSync(join(tmpdir(), 'dsh-pkg-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const profileDir = join(dshHome, 'profiles', 'web');
+    mkdirSync(profileDir, { recursive: true });
+
+    mkdirSync(join(stage, 'bin'), { recursive: true });
+    copyFileSync(join(root, 'bin', 'dsh-postinstall.cjs'), join(stage, 'bin', 'dsh-postinstall.cjs'));
+    copyFileSync(join(root, 'cordis.patch.yml'), join(stage, 'cordis.patch.yml'));
+    const stagedLib = join(stage, 'plugins', 'huaweicloud-core', 'dist', 'lib');
+    mkdirSync(stagedLib, { recursive: true });
+    for (const lib of ['native-receipt.js', 'skill-manifest.js']) {
+      copyFileSync(join(root, 'plugins', 'huaweicloud-core', 'dist', 'lib', lib), join(stagedLib, lib));
+    }
+    const stagedSkills = join(stage, 'plugins', 'huaweicloud-core', 'skills');
+    const realSkills = join(root, 'plugins', 'huaweicloud-core', 'skills');
+    mkdirSync(stagedSkills, { recursive: true });
+    copyFileSync(join(realSkills, '.manifest.json'), join(stagedSkills, '.manifest.json'));
+    // A COMPLETE core tree: the package is healthy, so a destination-side
+    // failure still leaves the availability hint on — the hint follows
+    // package health, not the disclosure layer's success.
+    const core = parseCoreSkillNames(readFileSync(join(realSkills, '.manifest.json'), 'utf8'));
+    assert.ok(core, 'manifest core roster must parse');
+    for (const name of core) {
+      mkdirSync(join(stagedSkills, name), { recursive: true });
+      copyFileSync(join(realSkills, name, 'SKILL.md'), join(stagedSkills, name, 'SKILL.md'));
+    }
+
+    // The native skills dir path is occupied by a regular file.
+    mkdirSync(join(dshHome), { recursive: true });
+    writeFileSync(join(dshHome, 'skills'), 'occupied by a file');
+
+    const res = spawnSync(process.execPath, [join(stage, 'bin', 'dsh-postinstall.cjs')], {
+      cwd: profileDir,
+      env: makeEnv(home, dshHome),
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    assert.equal(res.status, 0, `postinstall must not fail the npm install: ${res.stderr}`);
+    assert.match(res.stdout, /rewrote DSH patch MCP path/);
+    assert.match(res.stderr, /native core skills not synced .* MCP disclosure remains authoritative/);
+    assert.match(
+      res.stdout,
+      /MCP server will be available after DSH restart/,
+      'a healthy package keeps the availability hint despite the destination failure',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(stage, { recursive: true, force: true });
+  }
+});
+
+// The discriminating cell for the availability-hint gate: a BROKEN package
+// (partial core tree) that ALSO fails the destination write. The catch must
+// return the real package health, so the refuse-to-start diagnosis and the
+// availability promise never share one output — reverting the catch to an
+// unconditional true passes every other test and fails only here.
+test('dsh bundle postinstall suppresses the availability hint when a broken package also fails the destination', () => {
+  const home = mkdtempSync(join(tmpdir(), 'dsh-home-'));
+  const stage = mkdtempSync(join(tmpdir(), 'dsh-pkg-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const profileDir = join(dshHome, 'profiles', 'web');
+    mkdirSync(profileDir, { recursive: true });
+
+    mkdirSync(join(stage, 'bin'), { recursive: true });
+    copyFileSync(join(root, 'bin', 'dsh-postinstall.cjs'), join(stage, 'bin', 'dsh-postinstall.cjs'));
+    copyFileSync(join(root, 'cordis.patch.yml'), join(stage, 'cordis.patch.yml'));
+    const stagedLib = join(stage, 'plugins', 'huaweicloud-core', 'dist', 'lib');
+    mkdirSync(stagedLib, { recursive: true });
+    for (const lib of ['native-receipt.js', 'skill-manifest.js']) {
+      copyFileSync(join(root, 'plugins', 'huaweicloud-core', 'dist', 'lib', lib), join(stagedLib, lib));
+    }
+    const stagedSkills = join(stage, 'plugins', 'huaweicloud-core', 'skills');
+    const realSkills = join(root, 'plugins', 'huaweicloud-core', 'skills');
+    mkdirSync(stagedSkills, { recursive: true });
+    copyFileSync(join(realSkills, '.manifest.json'), join(stagedSkills, '.manifest.json'));
+    // Partial tree (2 of 6): the package is broken.
+    for (const name of ['huaweicloud-core', 'huaweicloud-safety']) {
+      mkdirSync(join(stagedSkills, name), { recursive: true });
+      copyFileSync(join(realSkills, name, 'SKILL.md'), join(stagedSkills, name, 'SKILL.md'));
+    }
+
+    // AND the destination write fails: the skills path is a regular file.
+    mkdirSync(join(dshHome), { recursive: true });
+    writeFileSync(join(dshHome, 'skills'), 'occupied by a file');
+
+    const res = spawnSync(process.execPath, [join(stage, 'bin', 'dsh-postinstall.cjs')], {
+      cwd: profileDir,
+      env: makeEnv(home, dshHome),
+      encoding: 'utf8',
+      timeout: 60000,
+    });
+    assert.equal(res.status, 0, `postinstall must not fail the npm install: ${res.stderr}`);
+    assert.match(res.stdout, /rewrote DSH patch MCP path/);
+    assert.match(res.stderr, /claimed by the manifest but missing from the package tree/);
+    assert.match(res.stderr, /native core skills not synced .* MCP disclosure remains authoritative/);
+    assert.ok(
+      !res.stdout.includes('MCP server will be available'),
+      'a broken package must never be promised availability, even when the destination also fails',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(stage, { recursive: true, force: true });
+  }
 });
 
 test('dsh bundle postinstall rewrites relative MCP path to absolute', () => {

@@ -5,6 +5,7 @@ import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 
 import { runInitializeSideEffects, normalizeToolCallParams } from './mcp-protocol.ts';
 import { detectAgent } from './telemetry/agent-detect.ts';
+import { traceOutboundDisclosure } from './lib/call-trace.ts';
 
 type JsonRpcRequest = { id?: unknown; method?: string; params?: unknown };
 type JsonRpcResponse = {
@@ -67,6 +68,9 @@ export class DevkitStdioTransport implements Transport {
 
   async send(message: JSONRPCMessage, _options?: TransportSendOptions): Promise<void> {
     if (this.closed) return;
+    // Outbound-wire disclosure tracing (see lib/call-trace.ts contract):
+    // tools/list results and tools/list_changed notifications only.
+    traceOutboundDisclosure(message);
     const json = JSON.stringify(message);
     if (this.useContentLengthFraming) {
       stdout.write(`Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`);
@@ -169,7 +173,9 @@ export class DevkitStdioTransport implements Transport {
     if (message.method === 'initialize') {
       try {
         await (this.options.initializeSideEffects ?? runInitializeSideEffects)(message.params);
-      } catch {}
+      } catch {
+        // best-effort: initialize side effects must not fail the handshake
+      }
     }
 
     if (!Object.hasOwn(message, 'id')) {

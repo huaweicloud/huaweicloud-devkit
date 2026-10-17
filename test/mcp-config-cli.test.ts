@@ -25,8 +25,8 @@ function makeHome() {
   return fixtureDir('devkit-mcp-cli-');
 }
 
-function makeEnv(home) {
-  const env = {
+function makeEnv(home: string) {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
@@ -38,22 +38,31 @@ function makeEnv(home) {
     HUAWEICLOUD_NPM_REGISTRY: 'http://127.0.0.1:9',
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
-  for (const key of ['ATOMCODE_HOME', 'DSH_HOME', 'HUAWEICLOUD_HOME', 'OFFICE_CLAW_CONFIG_ROOT']) {
+  // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);
+  // CODEX_HOME keys the uninstaller's codex cache cleanup.
+  for (const key of [
+    'ATOMCODE_HOME',
+    'DSH_HOME',
+    'HUAWEICLOUD_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+  ]) {
     delete env[key];
   }
   return env;
 }
 
-function run(target, home, cmd) {
+function run(target: string, home: string, cmd: string) {
   return spawnSync(process.execPath, [setupCli, cmd, '--target', target], {
     cwd: root,
     env: makeEnv(home),
     encoding: 'utf8',
-    timeout: 120000,
+    timeout: 240000,
   });
 }
 
-function seedInstalled(home, { stalePath = false } = {}) {
+function seedInstalled(home: string, { stalePath = false }: { stalePath?: boolean } = {}) {
   const srcDir = join(home, '.config', 'opencode', 'huaweicloud-plugins', 'src');
   mkdirSync(srcDir, { recursive: true });
   writeFileSync(join(srcDir, 'mcp-server.mjs'), '// seeded\n');
@@ -79,11 +88,11 @@ function seedInstalled(home, { stalePath = false } = {}) {
   return mcpPath;
 }
 
-function readMcpEntry(home) {
+function readMcpEntry(home: string) {
   return JSON.parse(readFileSync(join(home, '.config', 'opencode', 'opencode.json'), 'utf8')).mcp['huaweicloud-devkit'];
 }
 
-function backupFile(home) {
+function backupFile(home: string) {
   return join(home, '.config', 'huaweicloud', 'devkit-mcp-backup.json');
 }
 

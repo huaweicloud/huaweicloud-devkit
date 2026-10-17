@@ -10,6 +10,10 @@ import tseslint from 'typescript-eslint';
 // globally by default, which would run TS-only rules (no-require-imports,
 // no-unused-vars) against the repo's .mjs files.
 const tsFiles = ['**/*.ts', '**/*.tsx', '**/*.mts', '**/*.cts'];
+// Type-aware rules (and projectService) run on src only: the test project
+// is enforced by tsc (test/tsconfig.json), so linting it type-aware would
+// re-pay the type-program cost for no extra gate.
+const srcFiles = ['plugins/huaweicloud-core/src/**/*.ts', 'plugins/huaweicloud-core/src/**/*.tsx'];
 
 export default [
   {
@@ -17,6 +21,26 @@ export default [
   },
   js.configs.recommended,
   ...tseslint.configs.recommended.map((config) => ({ ...config, files: config.files ?? tsFiles })),
+  ...tseslint.configs.recommendedTypeChecked
+    // Select by entry name, not position: a typescript-eslint reshape must
+    // not silently drop the type-aware gate.
+    .filter((config) => config.name === 'typescript-eslint/recommended-type-checked')
+    .map((config) => ({ ...config, files: srcFiles })),
+  {
+    files: srcFiles,
+    languageOptions: {
+      parserOptions: {
+        projectService: true,
+      },
+    },
+    rules: {
+      // Handlers (pack tools, CLI subcommands) are async by contract: they
+      // are dispatched through await and gain awaits as they evolve.
+      // Removing async to satisfy the rule would churn sync-throw
+      // semantics for zero safety gain.
+      '@typescript-eslint/require-await': 'off',
+    },
+  },
   nodePlugin.configs['flat/recommended'],
   prettier,
   {
@@ -70,8 +94,7 @@ export default [
       'no-unused-vars': ['warn', { argsIgnorePattern: '^_', caughtErrors: 'none' }],
       'no-var': 'warn',
       'prefer-const': 'warn',
-      'no-undef': 'error',
-      'no-empty': ['error', { allowEmptyCatch: true }],
+      'no-empty': ['error', { allowEmptyCatch: false }],
 
       'n/no-missing-import': 'error',
       'n/no-unsupported-features/es-syntax': 'off',
@@ -79,11 +102,14 @@ export default [
     },
   },
   {
-    files: ['**/*.ts'],
+    files: tsFiles,
     rules: {
-      // TypeScript resolves types itself, and eslint-plugin-n does not resolve
-      // explicit ".ts" specifiers. Keep both out of the .ts path.
-      'no-undef': 'off',
+      // typescript-eslint's recommended set already turns no-undef off for TS
+      // sources, and eslint-plugin-n does not resolve explicit ".ts"
+      // specifiers. The base no-unused-vars stays off so it does not
+      // double-report next to the @typescript-eslint variant below — and so
+      // it does not false-positive on .d.mts declaration signatures.
+      'no-unused-vars': 'off',
       'n/no-missing-import': 'off',
       '@typescript-eslint/no-unused-vars': [
         'warn',
@@ -137,12 +163,6 @@ export default [
     rules: {
       'n/no-process-exit': 'off',
       'n/hashbang': 'off',
-    },
-  },
-  {
-    files: ['test/**/*.ts'],
-    rules: {
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
     },
   },
   {

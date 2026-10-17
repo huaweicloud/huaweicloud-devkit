@@ -15,13 +15,13 @@ import test from 'node:test';
 // zero writes.
 
 const require = createRequire(import.meta.url);
-const { DatabaseSync } = require('node:sqlite');
+const { DatabaseSync } = require('node:sqlite') as typeof import('node:sqlite');
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 
-function makeEnv(home) {
-  const env = {
+function makeEnv(home: string) {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     USERPROFILE: home,
     HOME: home,
@@ -36,39 +36,66 @@ function makeEnv(home) {
     HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT: '1',
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
-  for (const key of ['ATOMCODE_HOME', 'HUAWEICLOUD_HOME', 'OFFICE_CLAW_CONFIG_ROOT', 'DEVKIT_PACKS']) {
+  // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);
+  // CODEX_HOME keys the uninstaller's codex cache cleanup.
+  // HW_VAULT_MASTER_KEY becomes an INVALID sentinel rather than being
+  // deleted: the custody order is env → OS keychain → keyfile, so a bare
+  // delete would let a real keychain-tier entry (macOS Keychain / Secret
+  // Service — machine state HOME-faking cannot isolate) flip the INFO
+  // announcement to a WARN. An invalid value throws in the env tier BEFORE
+  // any keychain probe, and the note's try/catch reads that as
+  // not-initialized — deterministic on every platform. The vault-carrying
+  // test variant overrides the sentinel with a valid key.
+  for (const key of [
+    'ATOMCODE_HOME',
+    'HUAWEICLOUD_HOME',
+    'OFFICE_CLAW_CONFIG_ROOT',
+    'DEVKIT_PACKS',
+    'XDG_CONFIG_HOME',
+    'CODEX_HOME',
+  ]) {
     delete env[key];
   }
+  env.HW_VAULT_MASTER_KEY = 'not-a-valid-master-key-sentinel';
   return env;
 }
 
-function runCli(home, args) {
+function runCli(home: string, args: string[]) {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd: root,
     env: makeEnv(home),
     encoding: 'utf8',
-    timeout: 120000,
+    timeout: 240000,
   });
 }
 
-function opencodeConfigPath(home) {
+function opencodeConfigPath(home: string) {
   return join(home, '.config', 'opencode', 'opencode.json');
 }
 
-function readEntry(home) {
-  return JSON.parse(readFileSync(opencodeConfigPath(home), 'utf8')).mcp['huaweicloud-devkit'];
+interface OpencodeMcpEntry {
+  command: string[];
+  type: string;
+  environment?: Record<string, string>;
 }
 
-function readPacks(home) {
+function readEntry(home: string): OpencodeMcpEntry {
+  const cfg = JSON.parse(readFileSync(opencodeConfigPath(home), 'utf8')) as {
+    mcp: Record<string, OpencodeMcpEntry>;
+  };
+  return cfg.mcp['huaweicloud-devkit'];
+}
+
+function readPacks(home: string) {
   return readEntry(home).environment?.DEVKIT_PACKS;
 }
 
 // Overwrite the OpenCode entry's DEVKIT_PACKS the way an operator would have
 // typed it — the state install refuses to change (keptUserValue) and the
 // packs command owns.
-function seedUserPacks(home, value) {
+function seedUserPacks(home: string, value: string) {
   const cfgPath = opencodeConfigPath(home);
-  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  const cfg = JSON.parse(readFileSync(cfgPath, 'utf8')) as { mcp: Record<string, OpencodeMcpEntry> };
   const entry = cfg.mcp['huaweicloud-devkit'];
   entry.environment = { ...(entry.environment ?? {}), DEVKIT_PACKS: value };
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
@@ -116,7 +143,10 @@ test('disable from an unset config writes the complement (all minus the ids)', (
     assert.equal(runCli(home, ['install', '--target', 'opencode']).status, 0);
     const res = runCli(home, ['packs', 'disable', 'obs']);
     assert.equal(res.status, 0, res.stderr);
-    assert.equal(readPacks(home), 'core,huaweicloud-cli,sandbox,auth,voucher,update,discovery,huaweicloud-open-mcp');
+    assert.equal(
+      readPacks(home),
+      'core,huaweicloud-cli,sandbox,auth,voucher,update,discovery,huaweicloud-open-mcp,secrets',
+    );
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -164,7 +194,7 @@ test('enable that covers the full surface removes the key', () => {
     const res = runCli(home, [
       'packs',
       'enable',
-      'huaweicloud-cli,sandbox,auth,obs,voucher,update,discovery,huaweicloud-open-mcp',
+      'huaweicloud-cli,sandbox,auth,obs,voucher,update,discovery,huaweicloud-open-mcp,secrets',
     ]);
     assert.equal(res.status, 0, res.stderr);
     assert.equal(readPacks(home), undefined, 'a seed covering every pack is stored as the unset full surface');
@@ -412,7 +442,9 @@ test('officeace: enable rewrites the DEVKIT_PACKS env_json row surgically', () =
     assert.match(res.stdout, /Packs \(OfficeAce\): DEVKIT_PACKS "core" → "core,sandbox"/);
 
     const db2 = new DatabaseSync(join(dbDir, 'mcp-connectors.sqlite'));
-    const row = db2.prepare("SELECT env_json FROM mcp_connectors WHERE name = 'huaweicloud-devkit'").get();
+    const row = db2.prepare("SELECT env_json FROM mcp_connectors WHERE name = 'huaweicloud-devkit'").get() as {
+      env_json: string;
+    };
     db2.close();
     assert.deepEqual(JSON.parse(String(row.env_json)), [
       { key: 'HUAWEICLOUD_AGENT_TOOLKIT_MODE', value: 'local', sensitive: false },
@@ -420,5 +452,62 @@ test('officeace: enable rewrites the DEVKIT_PACKS env_json row surgically', () =
     ]);
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('packs status announces the secrets pack on pinned seeds, warns when the vault is in use', () => {
+  const home = mkdtempSync(join(tmpdir(), 'devkit-packs-secnote-'));
+  const vaultHome = mkdtempSync(join(tmpdir(), 'devkit-packs-secvault-'));
+  const masterKey = Buffer.alloc(32, 0x6b).toString('base64');
+  // The vault-carrying variant: the fake home is swapped for a second fake
+  // home holding an initialized env-tier vault, so the WARN shape probes
+  // that vault and the INFO shape (plain runCli) probes the vault-less one.
+  const withVault = (command: string[]) =>
+    spawnSync(process.execPath, [setupCli, ...command], {
+      cwd: root,
+      env: { ...makeEnv(home), HUAWEICLOUD_HOME: vaultHome, HW_VAULT_MASTER_KEY: masterKey },
+      encoding: 'utf8',
+      timeout: 120000,
+    });
+  try {
+    // Pinned seed without the secrets pack, vault not initialized: the
+    // one-line INFO announcement, not a WARN.
+    assert.equal(runCli(home, ['install', '--target', 'opencode', '--packs', 'core']).status, 0);
+    seedUserPacks(home, 'core,huaweicloud-cli');
+    const announce = runCli(home, ['packs', 'status']);
+    assert.equal(announce.status, 0, announce.stderr);
+    assert.match(announce.stdout, /new pack available — secrets/);
+    assert.doesNotMatch(announce.stdout, /secrets pack is trimmed/);
+
+    // Vault in use while the pack is trimmed: the real-mismatch WARN with
+    // the fix command.
+    const init = withVault(['secret', 'set', 'secret://user/hw-ak', '--value', 'AKNOTE-1']);
+    assert.equal(init.status, 0, init.stderr);
+    const mismatch = withVault(['packs', 'status']);
+    assert.equal(mismatch.status, 0, mismatch.stderr);
+    assert.match(mismatch.stdout, /the secret vault is initialized but the secrets pack is trimmed/);
+    assert.match(mismatch.stdout, /packs enable secrets/);
+
+    // The doctor face renders the same WARN (its consumer wiring is the
+    // warn-counter increment next to the codex attribution line).
+    const doctorRun = withVault(['doctor']);
+    assert.match(doctorRun.stdout, /the secret vault is initialized but the secrets pack is trimmed/);
+    assert.match(doctorRun.stdout, /packs enable secrets/);
+
+    // Full surface (unset seed) prints nothing for either shape; an
+    // already-included seed stays silent too.
+    assert.equal(runCli(home, ['packs', 'all']).status, 0);
+    const unset = withVault(['packs', 'status']);
+    assert.equal(unset.status, 0, unset.stderr);
+    assert.doesNotMatch(unset.stdout, /new pack available — secrets/);
+    assert.doesNotMatch(unset.stdout, /secrets pack is trimmed/);
+    seedUserPacks(home, 'core,secrets');
+    const included = runCli(home, ['packs', 'status']);
+    assert.equal(included.status, 0, included.stderr);
+    assert.doesNotMatch(included.stdout, /new pack available — secrets/);
+    assert.doesNotMatch(included.stdout, /secrets pack is trimmed/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(vaultHome, { recursive: true, force: true });
   }
 });

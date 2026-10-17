@@ -2,6 +2,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 
+import { asText } from '../lib/as-text.ts';
+
 const selfPath = (() => {
   try {
     return new URL(import.meta.url).pathname.toLowerCase();
@@ -43,7 +45,11 @@ export const AGENTS: AgentDefinition[] = [
   },
   {
     id: 'opencode',
-    pathPatterns: ['/.config/opencode/'],
+    // The payload path marker, not ~/.config/opencode: opencode resolves its
+    // config root from XDG_CONFIG_HOME, and the installer follows
+    // (xdgConfigHome), so under a non-default root the server path has no
+    // /.config/ segment — but every layout keeps the opencode plugin dir.
+    pathPatterns: ['/opencode/huaweicloud-plugins/'],
     envVars: ['OPENCODE_SESSION_ID', 'OPENCODE_CONFIG_PATH'],
     version: null,
   },
@@ -188,7 +194,7 @@ export function matchAgent(agent: AgentDefinition, clientInfo: AgentMatchClientI
   if (agent.envVars && agent.envVars.some((v) => process.env[v])) return true;
   const name = clientInfo.name;
   if (!name) return false;
-  const lower = String(name).toLowerCase();
+  const lower = asText(name).toLowerCase();
   if (agent.id.toLowerCase() === lower) return true;
   if (agent.clientNames && agent.clientNames.some((n) => n.toLowerCase() === lower)) return true;
   return false;
@@ -211,25 +217,36 @@ function jsonField(value: unknown, field: string): unknown {
     : undefined;
 }
 
+// Version-ish fields in product-written JSON (package.json, install-manifest,
+// release files): strings and numbers keep the historical truthy String()
+// coercion; any other shape counts as absent.
+function versionText(v: unknown): string | null {
+  if (typeof v === 'string' && v) return v;
+  if (typeof v === 'number' && v) return String(v);
+  return null;
+}
+
 function detectCodeArtsVersion(): string | null {
   for (const base of _codeartsSearchBases) {
     const p = join(base, 'resources', 'app', 'package.json');
     try {
       if (existsSync(p)) {
-        const v = jsonField(JSON.parse(readFileSync(p, 'utf8')), 'version');
-        return v ? String(v) : null;
+        return versionText(jsonField(JSON.parse(readFileSync(p, 'utf8')), 'version'));
       }
-    } catch {}
+    } catch {
+      // unreadable or corrupt package.json counts this candidate as absent; try the next base
+    }
   }
   for (let d = 'A'.charCodeAt(0); d <= 'Z'.charCodeAt(0); d++) {
     const drive = String.fromCharCode(d) + ':';
     try {
       const p = join(drive, '/', 'Program Files', 'CodeArts Agent', 'resources', 'app', 'package.json');
       if (existsSync(p)) {
-        const v = jsonField(JSON.parse(readFileSync(p, 'utf8')), 'version');
-        return v ? String(v) : null;
+        return versionText(jsonField(JSON.parse(readFileSync(p, 'utf8')), 'version'));
       }
-    } catch {}
+    } catch {
+      // unreadable or corrupt package.json counts this drive as absent; try the next
+    }
   }
   return null;
 }
@@ -255,10 +272,11 @@ function detectDshVersion(): string | null {
   for (const p of candidates) {
     try {
       if (existsSync(p)) {
-        const v = jsonField(JSON.parse(readFileSync(p, 'utf8')), 'version');
-        return v ? String(v) : null;
+        return versionText(jsonField(JSON.parse(readFileSync(p, 'utf8')), 'version'));
       }
-    } catch {}
+    } catch {
+      // unreadable or corrupt package.json counts this candidate as absent; version stays unknown
+    }
   }
   return null;
 }
@@ -275,9 +293,11 @@ function detectHermesVersion(): string | null {
       if (existsSync(initFile)) {
         const content = readFileSync(initFile, 'utf8');
         const m = content.match(/__version__\s*=\s*['"]([^'"]+)['"]/);
-        if (m) return m[1];
+        if (m) return m[1]!;
       }
-    } catch {}
+    } catch {
+      // unreadable or corrupt __init__.py counts this candidate as absent; version stays unknown
+    }
   }
   return null;
 }
@@ -290,14 +310,18 @@ function detectWorkBuddyVersion(): string | null {
     const manifest = join(base, 'resources', 'install-manifest.json');
     try {
       if (existsSync(manifest)) {
-        const v = jsonField(JSON.parse(readFileSync(manifest, 'utf8')), 'appVersion');
-        if (v) return `v${String(v)}`;
+        const v = versionText(jsonField(JSON.parse(readFileSync(manifest, 'utf8')), 'appVersion'));
+        if (v) return `v${v}`;
       }
-    } catch {}
+    } catch {
+      // unreadable or corrupt manifest falls through to the plain version file
+    }
     const verFile = join(base, 'version');
     try {
       if (existsSync(verFile)) return readFileSync(verFile, 'utf8').trim() || null;
-    } catch {}
+    } catch {
+      // unreadable version file means version unknown; telemetry must never fail
+    }
     return null;
   }
 
@@ -321,10 +345,12 @@ function detectOfficeAceVersion(): string | null {
     const releaseFile = join(base, '.office-claw-release.json');
     try {
       if (existsSync(releaseFile)) {
-        const v = jsonField(JSON.parse(readFileSync(releaseFile, 'utf8')), 'version');
-        if (v) return `V${String(v)}`;
+        const v = versionText(jsonField(JSON.parse(readFileSync(releaseFile, 'utf8')), 'version'));
+        if (v) return `V${v}`;
       }
-    } catch {}
+    } catch {
+      // unreadable or corrupt release file means version unknown; telemetry must never fail
+    }
     return null;
   }
 
