@@ -981,3 +981,36 @@ test('find-skills marks npx skills add as broken and keeps the git clone bypass 
   assert.match(skill, /npx skills add/);
   assert.match(skill, /git clone/);
 });
+
+test('gateway tunnel-error bodies are treated as unreachable, not content issues', () => {
+  // Verified against the live s2 gateway (Oct 2026): the gateway answers
+  //   404 "tunnel not found"    — no live host session (tunnel record may still list)
+  //   404 "port not configured" — URL port not registered on the tunnel
+  //   502 "bad gateway"         — host alive, local service down
+  // A bare non-000 status check misreads these as PASS and dead URLs get handed
+  // over as successful deployments. The probe must match the exact body.
+  const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  // Code: status-gated exact-body probes in both deploy check and expose parse.
+  assert.match(sessionManager, /const DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER = 'tunnel not found'/);
+  assert.match(sessionManager, /const DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER = 'port not configured'/);
+  assert.match(sessionManager, /const DEVBRIDGE_BAD_GATEWAY_MARKER = 'bad gateway'/);
+  assert.match(sessionManager, /grep -qx "\$\{DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER\}"/);
+  assert.match(sessionManager, /gatewayTunnelError/);
+  // Expose must extract the URL anchored to the requested port (multi-port hosts
+  // print one "Tunnel URL:" line per port; a port-blind tail -1 picks the wrong one).
+  // Plain substring check: the target text is itself a regex, so regex-matching it
+  // needs every metacharacter escaped — includes() avoids that trap.
+  assert.ok(
+    sessionManager.includes('grep -oE "https://[A-Za-z0-9_-]+-${port}'),
+    'expose script must extract the tunnel URL anchored to the requested port',
+  );
+  assert.doesNotMatch(sessionManager, /sed -n 's\/\.\*Tunnel URL: \*\/\/p' \$\{hostLog\} \| tail -1/);
+
+  // Skill: the deploy_check contract and the pitfall table document the markers.
+  assert.match(sandbox, /tunnel not found/);
+  assert.match(sandbox, /port not configured/);
+  assert.match(sandbox, /bad gateway/);
+  assert.match(sandbox, /404 "tunnel not found" ≠ content issue/);
+});

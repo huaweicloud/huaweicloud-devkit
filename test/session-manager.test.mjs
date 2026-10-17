@@ -248,7 +248,6 @@ test('919: buildDevbridgeExposeScript starts a session-surviving host on the cal
   assert.match(script, /else nohup devbridge host -p 8081 -e 72/);
   assert.match(script, /devbridge delete-all/);
   assert.match(script, /pkill -f "devbridge host"/);
-  assert.match(script, /sed -n 's\/\.\*Tunnel URL: \*\/\/p' \/tmp\/host\.log/);
   assert.match(script, /DB_TUNNEL_URL=/);
   assert.match(script, /DB_HTTP_CODE=/);
   // The tunnel lifetime (-e, hours) is echoed so the return value can carry it.
@@ -341,6 +340,24 @@ test('919: buildDevbridgeVerifyScript rejects URLs unsafe for shell interpolatio
   }
 });
 
+test('G404: buildDevbridgeExposeScript extracts the tunnel URL anchored to the requested port', () => {
+  const script = buildDevbridgeExposeScript(8081);
+  // Multi-port hosts print one "Tunnel URL:" line per port; a port-blind
+  // `sed | tail -1` can extract the wrong port's URL and hand it over.
+  const expectedPattern = 'https://[A-Za-z0-9_-]+-8081\\.devbridge-s2\\.hwtunnel\\.com';
+  assert.ok(
+    script.includes(`grep -oE "${expectedPattern}"`),
+    'must extract the URL with a port-anchored grep, not a port-blind tail',
+  );
+  assert.doesNotMatch(script, /tail -1/, 'port-blind tail -1 extraction must be gone');
+});
+
+test('G404: buildDevbridgeExposeScript captures the probe body for gateway-error detection', () => {
+  const script = buildDevbridgeExposeScript(8081);
+  assert.match(script, /-o \/tmp\/\.db_probe_body/);
+  assert.match(script, /DB_TUNNEL_BODY=/);
+});
+
 test('D: parseDevbridgeExposeOutput extracts tunnel URL, id, HTTP code, and quota flag', () => {
   const stdout = [
     'DB_HOST_LOG=',
@@ -388,4 +405,88 @@ test('919: validateTunnelPort rejects strings, decimals, and out-of-range ports 
   for (const bad of ['80;rm -rf /', 'abc', '', null, undefined, 0, -1, 65536, 1.5, '8080;true']) {
     assert.throws(() => validateTunnelPort(bad), /invalid port/, `expected rejection for ${JSON.stringify(bad)}`);
   }
+});
+
+// --- G404: gateway-level tunnel errors (verified against the live s2 gateway) ---
+// The s2 gateway answers, with exact text/plain bodies:
+//   404 "tunnel not found"      — no live host session (host process dead / tunnel deleted)
+//   404 "port not configured"   — URL port not registered on the tunnel
+//   502 "bad gateway"           — host alive, registered port has no local service
+// These must be treated as unreachable/broken, NOT as "content issue" PASSes.
+
+test('G404: parseDevbridgeExposeOutput detects gateway tunnel errors from the probe body', () => {
+  const sample = (code, body) =>
+    [
+      'DB_HOST_LOG=',
+      'DB_TUNNEL_URL=https://abc12345-8081.devbridge-s2.hwtunnel.com',
+      `DB_HTTP_CODE=${code}`,
+      `DB_TUNNEL_BODY=${body}`,
+      'DB_QUOTA_ERROR=0',
+    ].join('\n');
+
+  const dead = parseDevbridgeExposeOutput(sample('404', 'tunnel not found'));
+  assert.equal(dead.gatewayTunnelError, true, '404 "tunnel not found" must be a gateway tunnel error');
+
+  const unregistered = parseDevbridgeExposeOutput(sample('404', 'port not configured'));
+  assert.equal(unregistered.gatewayTunnelError, true, '404 "port not configured" must be a gateway tunnel error');
+
+  const backendDown = parseDevbridgeExposeOutput(sample('502', 'bad gateway'));
+  assert.equal(backendDown.badGateway, true);
+  assert.equal(backendDown.gatewayTunnelError, false, '502 is a backend issue, not a dead tunnel');
+
+  // An app's own 404 page must NOT be misjudged as a gateway tunnel error.
+  const app404 = parseDevbridgeExposeOutput(sample('404', '<!DOCTYPE html><html><body>Not Found</body>'));
+  assert.equal(app404.gatewayTunnelError, false, 'app-generated 404 body must not be flagged');
+  assert.equal(app404.badGateway, false);
+
+  const ok = parseDevbridgeExposeOutput(sample('200', 'E1-CONTROL-OK'));
+  assert.equal(ok.gatewayTunnelError, false);
+  assert.equal(ok.badGateway, false);
+});
+
+test('G404: buildDeployCheckScript probe fails on gateway tunnel-error markers', () => {
+  const script = buildDeployCheckScript({
+    port: 8080,
+    project: 'myapp',
+    outputPath: '/workspace/myapp/dist',
+    isCrossPlatform: false,
+  });
+  // Status-gated exact-body checks (grep -x): no false positives on app HTML
+  assert.match(script, /\[ "\$code" = "404" \] && grep -qx "tunnel not found"/);
+  assert.match(script, /\[ "\$code" = "404" \] && grep -qx "port not configured"/);
+  assert.match(script, /\[ "\$code" = "502" \] && grep -qx "bad gateway"/);
+  // Migration placeholder check retained
+  assert.match(script, /服务已迁移/);
+});
+
+test('G404: buildDeployCheckScript probes listed tunnels and selects one that actually serves the port', () => {
+  const script = buildDeployCheckScript({
+    port: 8080,
+    project: 'myapp',
+    outputPath: '/workspace/myapp/dist',
+    isCrossPlatform: false,
+  });
+  // Candidate loop (bounded) instead of blindly taking the first `devbridge list` row —
+  // list order is arbitrary and a stale tunnel listed first must not shadow the live one.
+  assert.match(script, /for CAND in \$TUNNEL_IDS/);
+  assert.match(script, /CAND_URL="https:\/\/\$\{CAND\}-8080\./);
+  assert.match(script, /head -5/);
+  // TUNNEL_URL is only set from a candidate that passed the probe
+  assert.match(script, /TUNNEL_URL="\$SELECTED_URL"/);
+});
+
+test('G404: parseDeployCheckOutput routes a gateway tunnel-error FAIL to expose_via_devbridge', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:PASS (port 8080, HTTP 200)',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:FAIL (https://abc12345-8080.devbridge-s2.hwtunnel.com -> tunnel not found (no live host session on the gateway))',
+    'SCORE:3/4',
+    'VERDICT:INCOMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.tunnel_url_accessible.status, 'FAIL');
+  assert.equal(result.nextStep, 'expose_via_devbridge');
+  assert.equal(result.publicUrl, undefined, 'no publicUrl may be fabricated for a dead tunnel');
 });
