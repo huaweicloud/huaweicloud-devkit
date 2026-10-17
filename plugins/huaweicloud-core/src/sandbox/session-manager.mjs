@@ -932,7 +932,7 @@ export async function deployCheck(
   const checkScript = buildDeployCheckScript({ port, project, outputPath, isCrossPlatform });
   const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
   const stdout = String(result.stdout || '');
-  return parseDeployCheckOutput(stdout, { port, isCrossPlatform });
+  return parseDeployCheckOutput(stdout, { port, isCrossPlatform, frameworkType });
 }
 
 export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatform: _isCrossPlatform }) {
@@ -1058,7 +1058,7 @@ fi
     .join('\n');
 }
 
-export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
+export function parseDeployCheckOutput(stdout, { port, isCrossPlatform, frameworkType } = {}) {
   // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
   // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
   // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
@@ -1104,13 +1104,52 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
             : 'review_checks'
     : 'complete';
 
+  // Structured conclusion summary (#888): maps raw check lines onto the stable
+  // {ok, detail} contract consumed by downstream orchestration (#887 finalize,
+  // #889 release) and human review. Kept additive — legacy fields stay unchanged.
+  const SUMMARY_CHECK_MAP = {
+    nginx: 'nginx_serving',
+    devbridge: 'devbridge_tunnel',
+    url: 'tunnel_url_accessible',
+    fingerprint: 'content_verified',
+  };
+  const structuredChecks = {};
+  for (const [summaryKey, rawKey] of Object.entries(SUMMARY_CHECK_MAP)) {
+    const raw = checks[rawKey];
+    if (summaryKey === 'fingerprint' && frameworkType === 'ssr' && (!raw || raw.status === 'SKIP')) {
+      // SSR proxy: nginx reverse-proxies the Node app, no static fingerprint to verify.
+      structuredChecks[summaryKey] = { ok: true, detail: 'skipped (SSR proxy)' };
+    } else if (!raw) {
+      structuredChecks[summaryKey] = { ok: false, detail: 'check not reported' };
+    } else if (raw.status === 'SKIP') {
+      structuredChecks[summaryKey] = { ok: true, detail: `skipped (${raw.detail || 'no detail'})` };
+    } else {
+      structuredChecks[summaryKey] = {
+        ok: raw.status === 'PASS',
+        detail: raw.detail || `${rawKey} ${raw.status.toLowerCase()}`,
+      };
+    }
+    checks[summaryKey] = structuredChecks[summaryKey];
+  }
+
+  const status = complete ? 'pass' : 'fail';
+  const publicUrl = tunnelMatch ? tunnelMatch[1] : null;
+  const failedSummaryKeys = Object.entries(structuredChecks)
+    .filter(([, v]) => !v.ok)
+    .map(([k]) => k);
+  const summary = complete
+    ? 'Deployment complete: nginx serving, DevBridge tunnel active, tunnel URL accessible, fingerprint verified.'
+    : `Deployment check failed: ${failedSummaryKeys.join(', ') || 'unknown checks'} not passing (nextStep: ${nextStepValue}).`;
+
   return {
     ok: true,
     complete,
+    status,
     checkType: isCrossPlatform ? 'cross-platform' : 'standard',
     checks,
     score: scoreMatch ? { pass: parseInt(scoreMatch[1], 10), total: parseInt(scoreMatch[2], 10) } : null,
-    publicUrl: tunnelMatch ? tunnelMatch[1] : undefined,
+    publicUrl,
+    summary,
     missingSteps: missing.length > 0 ? missing.join(', ') : undefined,
     parseWarning,
     rawOutput: parseWarning ? String(stdout || '').trim() : undefined,
