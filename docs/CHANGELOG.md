@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.9-next.1 (unreleased)
+
+- feat(opencode): native plugin — bridges all 42 MCP tools into OpenCode in-process custom tools (zod schema conversion + callTool direct invocation), preserving the `huaweicloud_*` names, approval gate (`plan → approve` token), and telemetry; startup drops from ~1.9s (MCP spawn+handshake+tools/list) to ~0.16s. Verified end-to-end on a real ECS (Ubuntu 22.04 / Node 22 / OpenCode 1.19.2 / devkit 1.1.8): 42 tools bridged, write-op denied with approvalToken, `check_update` invoked from an OpenCode session.
+
 ## 1.1.9-next.0 (2026-10-14)
 
 - chore: set version-override to 1.1.9 + sync badge (prepare 1.1.9-next.0) (#913)

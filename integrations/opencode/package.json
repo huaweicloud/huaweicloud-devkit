@@ -1,0 +1,10 @@
+{
+  "name": "@huaweicloud-devkit/opencode-integration",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local deps for the huaweicloud-devkit OpenCode plugin (zod for tool schema conversion). Installed into ~/.config/opencode by 'npx huaweicloud-devkit install --target opencode'.",
+  "dependencies": {
+    "zod": "^3.11.0"
+  }
+}
