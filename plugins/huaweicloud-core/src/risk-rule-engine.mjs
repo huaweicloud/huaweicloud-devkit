@@ -30,10 +30,187 @@ function normalizeText(value) {
   return JSON.stringify(value, null, 2);
 }
 
+// --- ANSI-C quoting decode preprocessing (#866 D4-15) -----------------------
+// Bash/zsh `$'...'` strings decode escape sequences (\xNN, \uNNNN, \UNNNNNNNN,
+// octal \NNN, \cX, and C shorthands like \n) at execution time. Matching rules
+// against the raw text alone lets an encoded inner command (`$'\x72m -\x72f /'`)
+// slip past every rule. `expandAnsiCQuoting` decodes each `$'...'` body and
+// APPENDS the decoded strings to the text, so raw-text rules keep their exact
+// semantics while decoded payloads are also inspected.
+
+const ANSI_C_STRING = /\$'((?:\\[\s\S]|[^'\\])*)'/g;
+const ANSI_C_SHORT_ESCAPES = {
+  a: '\x07',
+  b: '\x08',
+  e: '\x1b',
+  E: '\x1b',
+  f: '\x0c',
+  n: '\n',
+  r: '\r',
+  t: '\t',
+  v: '\x0b',
+  '\\': '\\',
+  "'": "'",
+  '"': '"',
+  '?': '?',
+};
+
+function decodeHexEscape(body, index, maxDigits) {
+  const digits = body.slice(index, index + maxDigits).match(/^[0-9a-fA-F]+/);
+  if (!digits) return null;
+  return { char: String.fromCharCode(parseInt(digits[0], 16)), length: digits[0].length };
+}
+
+function decodeAnsiCBody(body) {
+  let out = '';
+  for (let i = 0; i < body.length;) {
+    const ch = body[i];
+    if (ch !== '\\') {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    const next = body[i + 1];
+    if (next === undefined) {
+      out += '\\';
+      break;
+    }
+    if (Object.hasOwn(ANSI_C_SHORT_ESCAPES, next)) {
+      out += ANSI_C_SHORT_ESCAPES[next];
+      i += 2;
+      continue;
+    }
+    if (next === 'x') {
+      const decoded = decodeHexEscape(body, i + 2, 2);
+      if (decoded) {
+        out += decoded.char;
+        i += 2 + decoded.length;
+        continue;
+      }
+    }
+    if (next === 'u') {
+      const decoded = decodeHexEscape(body, i + 2, 4);
+      if (decoded) {
+        out += decoded.char;
+        i += 2 + decoded.length;
+        continue;
+      }
+    }
+    if (next === 'U') {
+      const decoded = decodeHexEscape(body, i + 2, 8);
+      if (decoded) {
+        out += decoded.char;
+        i += 2 + decoded.length;
+        continue;
+      }
+    }
+    if (next === 'c' && body[i + 2] !== undefined) {
+      // \cX = control char: XOR the letter with 0x40 (bash semantics).
+      out += String.fromCharCode(body.charCodeAt(i + 2) ^ 0x40);
+      i += 3;
+      continue;
+    }
+    if (/[0-7]/.test(next)) {
+      const octal = body.slice(i + 1, i + 4).match(/^[0-7]+/);
+      if (octal) {
+        out += String.fromCharCode(parseInt(octal[0], 8) & 0xff);
+        i += 1 + octal[0].length;
+        continue;
+      }
+    }
+    // Unknown escape: keep the escaped character literally.
+    out += next;
+    i += 2;
+  }
+  return out;
+}
+
+export function expandAnsiCQuoting(text) {
+  const value = String(text || '');
+  const decoded = [];
+  let match;
+  ANSI_C_STRING.lastIndex = 0;
+  while ((match = ANSI_C_STRING.exec(value)) !== null) {
+    if (match[1]) decoded.push(decodeAnsiCBody(match[1]));
+  }
+  if (decoded.length === 0) return value;
+  return `${value}\n${decoded.join('\n')}`;
+}
+
+// --- $(…) command substitution inner decode (#866 D4-15 step 2) --------------
+// `$(printf '\x72\x6d')` and `$(echo '…' | base64 -d)` produce command text at
+// execution time that the raw command string doesn't reveal. The engine extracts
+// the inner command from each `$(...)`, decodes `printf` hex/octal escapes and
+// `base64 -d` payloads, then APPENDS the decoded text so raw-text rules keep
+// their exact semantics while decoded payloads are also inspected.
+//
+// Only single-level `$(...)` is extracted (nested parens are a known
+// limitation, same as `extractInnerCommand` in safety-policy.mjs). The depth
+// guard prevents infinite recursion on pathological input.
+
+const CMD_SUBST_PATTERN = /\$\(([^)]+)\)/g;
+// printf '...' / printf "..." with \xNN/\uNNNN/\NNN escapes (reuse decodeAnsiCBody)
+const PRINTF_PATTERN = /\bprintf\s+(['"])((?:\\[\s\S]|(?!\\?\1).)*)\1/gi;
+// echo '...' | base64 -d  /  echo "..." | base64 --decode  (capture the b64 blob)
+const BASE64_PIPE_PATTERN = /\becho\s+(['"])([A-Za-z0-9+/=\s]+)\1\s*\|\s*base64\s+(-d|--decode)/gi;
+
+function decodePrintfEscapes(innerCommand) {
+  const decoded = [];
+  let m;
+  PRINTF_PATTERN.lastIndex = 0;
+  while ((m = PRINTF_PATTERN.exec(innerCommand)) !== null) {
+    if (m[2]) decoded.push(decodeAnsiCBody(m[2]));
+  }
+  return decoded;
+}
+
+function decodeBase64Payloads(innerCommand) {
+  const decoded = [];
+  let m;
+  BASE64_PIPE_PATTERN.lastIndex = 0;
+  while ((m = BASE64_PIPE_PATTERN.exec(innerCommand)) !== null) {
+    if (m[2]) {
+      try {
+        const b64 = m[2].replace(/\s/g, '');
+        decoded.push(Buffer.from(b64, 'base64').toString('utf8'));
+      } catch {
+        // Malformed base64 — skip; the raw echo|base64 pattern is still
+        // caught by hwc-command-encoded-shell-exec if piped to a shell.
+      }
+    }
+  }
+  return decoded;
+}
+
+export function expandCommandSubstitution(text) {
+  const value = String(text || '');
+  const decoded = [];
+  let match;
+  CMD_SUBST_PATTERN.lastIndex = 0;
+  while ((match = CMD_SUBST_PATTERN.exec(value)) !== null) {
+    const inner = match[1];
+    if (!inner) continue;
+    // The inner command itself is a candidate for rule matching (e.g.
+    // `$(hcloud ECS DeleteServers …)` → inner = `hcloud ECS DeleteServers …`).
+    decoded.push(inner.trim());
+    // Decode printf '\xNN' escapes inside the inner command.
+    decoded.push(...decodePrintfEscapes(inner));
+    // Decode `echo '…' | base64 -d` payloads inside the inner command.
+    decoded.push(...decodeBase64Payloads(inner));
+  }
+  if (decoded.length === 0) return value;
+  return `${value}\n${decoded.join('\n')}`;
+}
+
 function evaluationContext(stage, input) {
   if (stage === 'command') {
     const command = normalizeText(input.command || input.text || '');
-    return { text: command, command };
+    // Decode ANSI-C `$'...'` strings before rule matching (#866 D4-15).
+    let expanded = expandAnsiCQuoting(command);
+    // Decode $(…) command substitution inner commands (printf/base64)
+    // before rule matching (#866 D4-15 step 2 — command substitution bypass).
+    expanded = expandCommandSubstitution(expanded);
+    return { text: expanded, command };
   }
   if (stage === 'artifact') {
     const path = String(input.path || '');

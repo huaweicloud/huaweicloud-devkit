@@ -182,6 +182,31 @@ test('classifyTextCommand blocks credential env-var references incl. HW_ prefix 
   assert.equal(hwEnvDump.reason, 'Dumping cloud credential environment variables is blocked.');
 });
 
+test('classifyTextCommand blocks Windows %VAR% credential references (#866 D4-2)', () => {
+  // Windows cmd expands %VAR% (and !VAR! under delayed expansion); these
+  // previously fell through the Unix-only $VAR detection (#866 D4-2).
+  const bypasses = [
+    'echo %HW_ACCESS_KEY%',
+    'echo %HW_SECRET_KEY%',
+    'echo %HUAWEICLOUD_SECRET_ACCESS_KEY%',
+    'echo %HWC_SECRET_ACCESS_KEY%',
+    'echo %OS_SECRET_ACCESS_KEY%',
+    'cmd /c echo %HW_SECURITY_TOKEN%',
+    'set HW_ACCESS_KEY',
+  ];
+  for (const cmd of bypasses) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.equal(result.risk, 'credential', cmd);
+  }
+  // Non-credential Windows variables must not be blocked.
+  const benign = ['echo %PATH%', 'echo %OS%', 'set PATH'];
+  for (const cmd of benign) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'allow', cmd);
+  }
+});
+
 test('classifyTextCommand blocks HUAWEICLOUD_SECRET_ACCESS_KEY env-var references (#770 D4-2)', () => {
   // AWS-style credential env names (HUAWEICLOUD_SECRET_ACCESS_KEY) previously
   // fell through the SECRET_KEY alternation and returned allow.
