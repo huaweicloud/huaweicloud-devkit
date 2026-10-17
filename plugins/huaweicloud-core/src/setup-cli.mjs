@@ -961,21 +961,6 @@ async function installOpenCode() {
   mkdirSync(opcPlugins, { recursive: true });
   copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
   console.log(`  Plugin -> ${opcPlugins}`);
-  // OpenCode native plugin (#905 OpenCode performance): bridges all 42 MCP tools
-  // into OpenCode in-process custom tools (zod schemas + callTool), plus safety
-  // gate and telemetry. Local plugins are auto-loaded from this directory.
-  const nativePluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'plugins', 'huaweicloud-devkit.js');
-  if (existsSync(nativePluginSrc)) {
-    copyFileSync(nativePluginSrc, join(opcPlugins, 'huaweicloud-devkit.js'));
-    // Deps for the native plugin (zod) live next to the OpenCode config so the
-    // plugin can require them at load time.
-    const nativePkgSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'package.json');
-    const nativePkgDst = join(configRoot('opencode'), 'package.json');
-    if (existsSync(nativePkgSrc) && !existsSync(nativePkgDst)) {
-      copyFileSync(nativePkgSrc, nativePkgDst);
-    }
-    console.log(`  Native plugin -> ${join(opcPlugins, 'huaweicloud-devkit.js')}`);
-  }
   updateOpenCodeConfig(pluginDest);
   installRuntimeDeps(pluginDest);
 }
@@ -1008,11 +993,6 @@ function uninstallOpenCode() {
   if (existsSync(pluginFile)) {
     removeIfExists(pluginFile);
     console.log('  Removed plugin');
-  }
-  const nativePluginFile = join(configRoot('opencode'), 'plugins', 'huaweicloud-devkit.js');
-  if (existsSync(nativePluginFile)) {
-    removeIfExists(nativePluginFile);
-    console.log('  Removed native plugin');
   }
 
   if (removeIfExists(opencodePluginsDir())) {
@@ -1061,17 +1041,6 @@ async function updateOpenCode() {
   mkdirSync(opcPlugins, { recursive: true });
   copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
   console.log(`  Plugin updated -> ${opcPlugins}`);
-  // Native plugin refresh (#905 OpenCode performance) — overwrite in place.
-  const nativePluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'plugins', 'huaweicloud-devkit.js');
-  if (existsSync(nativePluginSrc)) {
-    copyFileSync(nativePluginSrc, join(opcPlugins, 'huaweicloud-devkit.js'));
-    const nativePkgSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'package.json');
-    const nativePkgDst = join(configRoot('opencode'), 'package.json');
-    if (existsSync(nativePkgSrc) && !existsSync(nativePkgDst)) {
-      copyFileSync(nativePkgSrc, nativePkgDst);
-    }
-    console.log(`  Native plugin updated -> ${join(opcPlugins, 'huaweicloud-devkit.js')}`);
-  }
   updateOpenCodeConfig(pluginDest);
   mkdirSync(pluginDest, { recursive: true });
   writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
