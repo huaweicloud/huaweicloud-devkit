@@ -1087,18 +1087,27 @@ fi
     .join('\n');
 }
 
-export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
-  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
-  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
-  // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
+// Strip terminal escape sequences from sandbox command output (#946): CSI
+// color/cursor codes and OSC shell-integration markers (shells with integration
+// enabled wrap EVERY line in \x1b]133;C\x07, which blinds anchored ^DB_...=
+// parsers), then normalize \r\n / \r line endings to \n.
+// Use new RegExp to avoid ESLint no-control-regex on literal control chars.
+export function stripTerminalEscapes(text) {
   const ESC = '\x1b';
   const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
   const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
-  const cleanStdout = String(stdout || '')
+  return String(text || '')
     .replace(csiRe, '')
-    .replace(oscRe, '');
+    .replace(oscRe, '')
+    .replace(/\r\n|\r/g, '\n');
+}
+
+export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
+  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
+  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
+  const cleanStdout = stripTerminalEscapes(stdout);
   const checks = {};
-  const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
+  const lines = cleanStdout.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
     const m = trimmed.match(/^(\w+):(PASS|FAIL|SKIP)\b(.*)/);
@@ -1270,7 +1279,9 @@ export function buildDevbridgeAuthProbe() {
 // authMode is the LAST DB_AUTH_MODE line; attempts collects the non-sensitive
 // DB_ATTEMPT_* diagnostics emitted by tiers that failed and fell through.
 export function parseDevbridgeAuthOutput(stdout) {
-  const text = String(stdout || '');
+  // #946: OSC 133 markers precede every line on integration-enabled shells; the
+  // anchored ^DB_ATTEMPT_ regexes are blind to them without stripping first.
+  const text = stripTerminalEscapes(stdout);
   const modes = text.match(/DB_AUTH_MODE=([A-Z_]+)/g) || [];
   const authMode = modes.length > 0 ? modes[modes.length - 1].split('=')[1] : '';
   const attempts = {};
@@ -1357,7 +1368,10 @@ export function buildDevbridgeVerifyScript(tunnelUrl) {
 // regardless of the app. `badGateway` (502 "bad gateway") means the tunnel is
 // alive but the local service on the exposed port is not serving.
 export function parseDevbridgeExposeOutput(stdout) {
-  const text = String(stdout || '');
+  // #946: strip OSC/CSI escapes + \r BEFORE the anchored ^DB_ lookups — otherwise
+  // every field is lost on integration-enabled shells and a perfectly good tunnel
+  // comes back as ok:true with publicUrl missing (and pointlessly re-built once).
+  const text = stripTerminalEscapes(stdout);
   const getField = (key) => {
     const m = text.match(new RegExp(`^${key}=(.*)$`, 'm'));
     return m ? m[1].trim() : '';
@@ -1381,7 +1395,9 @@ export function parseDevbridgeExposeOutput(stdout) {
 // parseDevbridgeExposeOutput never matches them, which used to leave
 // verifyHttpCode empty and persistent always false.
 export function parseDevbridgeVerifyOutput(stdout) {
-  const text = String(stdout || '');
+  // #946: strip OSC/CSI escapes + \r — the anchored DB_VERIFY_* lookups are blind
+  // to them, leaving verifyHttpCode empty and persistent permanently false.
+  const text = stripTerminalEscapes(stdout);
   const getField = (key) => {
     const m = text.match(new RegExp(`^${key}=(.*)$`, 'm'));
     return m ? m[1].trim() : '';

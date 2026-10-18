@@ -490,3 +490,71 @@ test('G404: parseDeployCheckOutput routes a gateway tunnel-error FAIL to expose_
   assert.equal(result.nextStep, 'expose_via_devbridge');
   assert.equal(result.publicUrl, undefined, 'no publicUrl may be fabricated for a dead tunnel');
 });
+
+// --- #946: OSC 133 / CSI escape prefixes and \r\n line endings blind the anchored
+// ^DB_... parsers on shells with shell-integration enabled (real capture from the
+// hd-space-ai-shell2 image: every output line is wrapped in \x1b]133;C\x07).
+// parseDeployCheckOutput already strips them; expose/verify/auth parsers must too.
+const OSC = '\x1b]133;C\x07';
+const oscLine = (s) => OSC + s;
+
+test('#946: parseDevbridgeExposeOutput extracts all fields from OSC-wrapped, CRLF output', () => {
+  const stdout = [
+    oscLine('DB_HOST_LOG='),
+    oscLine('Created tunnel: abc12345'),
+    oscLine('Tunnel URL: https://abc12345-8081.devbridge-s2.hwtunnel.com'),
+    oscLine('DB_TUNNEL_URL=https://abc12345-8081.devbridge-s2.hwtunnel.com'),
+    oscLine('DB_HTTP_CODE=200'),
+    oscLine('DB_TUNNEL_BODY=E1-CONTROL-OK'),
+    oscLine('DB_EXPIRY_HOURS=72'),
+    oscLine('DB_QUOTA_ERROR=0'),
+  ].join('\r\n');
+  const parsed = parseDevbridgeExposeOutput(stdout);
+  assert.equal(parsed.tunnelUrl, 'https://abc12345-8081.devbridge-s2.hwtunnel.com');
+  assert.equal(parsed.tunnelId, 'abc12345');
+  assert.equal(parsed.httpCode, '200');
+  assert.equal(parsed.gatewayTunnelError, false);
+  assert.equal(parsed.expiryHours, 72);
+
+  const dead = parseDevbridgeExposeOutput(
+    [
+      oscLine('DB_TUNNEL_URL=https://abc12345-8081.devbridge-s2.hwtunnel.com'),
+      oscLine('DB_HTTP_CODE=404'),
+      oscLine('DB_TUNNEL_BODY=tunnel not found'),
+      oscLine('DB_QUOTA_ERROR=0'),
+    ].join('\r\n'),
+  );
+  assert.equal(dead.gatewayTunnelError, true, '404 "tunnel not found" behind OSC escapes must still be detected');
+});
+
+test('#946: parseDevbridgeVerifyOutput extracts code and not-found behind OSC escapes', () => {
+  const stdout = [oscLine('DB_VERIFY_HTTP_CODE=200'), oscLine('DB_VERIFY_NOT_FOUND=0')].join('\r\n');
+  const parsed = parseDevbridgeVerifyOutput(stdout);
+  assert.equal(parsed.httpCode, '200');
+  assert.equal(parsed.notFound, false);
+
+  const notFound = parseDevbridgeVerifyOutput(
+    [oscLine('DB_VERIFY_HTTP_CODE=404'), oscLine('DB_VERIFY_NOT_FOUND=1')].join('\r\n'),
+  );
+  assert.equal(notFound.httpCode, '404');
+  assert.equal(notFound.notFound, true);
+});
+
+test('#946: parseDevbridgeAuthOutput keeps per-tier attempts behind OSC escapes', () => {
+  const stdout = [
+    oscLine('DB_ATTEMPT_KEYRING=no-valid-key'),
+    oscLine('DB_ATTEMPT_AKSK=binary-or-creds-unavailable'),
+    oscLine('DB_AUTH_MODE=API_KEY_FILE'),
+  ].join('\r\n');
+  const parsed = parseDevbridgeAuthOutput(stdout);
+  assert.equal(parsed.authMode, 'API_KEY_FILE');
+  assert.equal(parsed.attempts.KEYRING, 'no-valid-key');
+  assert.equal(parsed.attempts.AKSK, 'binary-or-creds-unavailable');
+});
+
+test('#946: stripTerminalEscapes is exported for reuse by all DB_* parsers', async () => {
+  const mod = await import('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs');
+  assert.equal(typeof mod.stripTerminalEscapes, 'function');
+  const cleaned = mod.stripTerminalEscapes(oscLine('DB_HTTP_CODE=200') + '\r\n');
+  assert.equal(cleaned, 'DB_HTTP_CODE=200\n');
+});
