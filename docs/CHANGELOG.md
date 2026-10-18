@@ -18,6 +18,7 @@
 - fix(auth): unify onboarding guidance + error surface — root-cause fix for #900 (#905)
 - docs(huawei-obs): document OBS Content-Disposition forced-download trap from real test (#899)
 - docs(voucher): add HDKIT_COMPETITION_NOT_CONFIGURED UX row for competition voucher
+
 ## 1.1.8 (2026-10-12)
 
 - chore: merge dev into main for 1.1.8 release (#892)
