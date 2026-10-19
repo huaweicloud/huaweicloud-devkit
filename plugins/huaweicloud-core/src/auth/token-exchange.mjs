@@ -1,4 +1,4 @@
-import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
+import { fetchWithProxy } from '../proxy/proxy-agent.mjs';
 
 const DEFAULT_DURATION_SECONDS = 900;
 const DEFAULT_IAM_ENDPOINT = 'https://iam.myhuaweicloud.com';
@@ -6,7 +6,7 @@ const DEFAULT_IAM_ENDPOINT = 'https://iam.myhuaweicloud.com';
 export async function exchangeTokenForCredentials(token, options = {}) {
   const durationSeconds = options.durationSeconds ?? DEFAULT_DURATION_SECONDS;
   const iamEndpoint = options.iamEndpoint || process.env.HW_TOKEN_IAM_ENDPOINT || DEFAULT_IAM_ENDPOINT;
-  const fetchImpl = options.fetchImpl || fetch;
+  const fetchImpl = options.fetchImpl;
 
   const body = {
     auth: {
@@ -17,17 +17,17 @@ export async function exchangeTokenForCredentials(token, options = {}) {
     },
   };
 
-  const dispatcher = await getProxyDispatcher(iamEndpoint);
   const fetchOpts = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json;charset=utf8' },
     body: JSON.stringify(body),
   };
-  if (dispatcher) fetchOpts.dispatcher = dispatcher;
+
+  const url = `${iamEndpoint}/v3.0/OS-CREDENTIAL/securitytokens`;
 
   let resp;
   try {
-    resp = await fetchImpl(`${iamEndpoint}/v3.0/OS-CREDENTIAL/securitytokens`, fetchOpts);
+    resp = fetchImpl ? await fetchImpl(url, fetchOpts) : await fetchWithProxy(url, fetchOpts);
   } catch (error) {
     const err = new Error(`Token exchange request failed: ${error.message}`);
     err.code = 'TOKEN_EXCHANGE_FAILED';
@@ -45,7 +45,14 @@ export async function exchangeTokenForCredentials(token, options = {}) {
     throw err;
   }
 
-  const data = await resp.json();
+  let data;
+  try {
+    data = await resp.json();
+  } catch (error) {
+    const err = new Error(`Token exchange returned malformed JSON: ${error.message}`);
+    err.code = 'TOKEN_EXCHANGE_FAILED';
+    throw err;
+  }
   const cred = data?.credential;
   if (!cred?.access || !cred?.secret || !cred?.securitytoken) {
     const err = new Error('Token exchange response missing credential fields.');
