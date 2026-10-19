@@ -49,6 +49,18 @@ token 不能直接喂给 hcloud，但可以通过 IAM 的 **`CreateTemporaryAcce
 | token 失效 | env 快照下**无法自动轮换**；主动感知到期 → `TOKEN_EXPIRED`（提示重启进程重新注入）；换取返回 401/403 → `TOKEN_INVALID` |
 | 临时凭证过期 | **token 有效时自动续期**（重换，每次校验 token）；token 也失效时 → 报错提示重启（复用 `CREDENTIAL_EXPIRED` 语义） |
 
+## 兼容性不变量（回归红线）
+
+本次改动是**纯增量**——token 认证只在「AK/SK 完全缺失」时接管，现有认证路径行为必须逐位保持不变：
+
+1. **永久 AK/SK**（有 `ak`+`sk`、无 `securityToken`）：仍走 hcloud profile，不经 token 分支。
+2. **临时 AK/SK + STS**（`ak`+`sk`+`securityToken` 三元组）：现有 `--cli-access-key/--cli-secret-key/--cli-security-token` 注入，完全不变。
+3. **STS 过期检测**：`isTemporaryStsExpired` / `parseStsExpiry` / `HW_STS_EXPIRES_AT` 全链路不变。
+4. **`resolveCredentials` 优先级链**（env → CodeArts env → vault S1 → `configuredBySession` 覆盖）不变；`resolveCredentials`/`resolveCredentialsWithRuntime` 的函数签名与返回结构不变。
+5. **触发 token 分支的唯一条件**：`!ak || !sk`（AK/SK 完全缺失）**且** `HW_X_AUTH_TOKEN` 存在。只要任一 AK/SK 存在（永久或临时），一律不走 token。
+
+回归门禁：改动后 `auth-credentials.test.mjs`、`cred-reconcile-e2e.test.mjs`、`hcloud-cli.test.mjs`、`safety-policy.test.mjs` 等现有测试**原样全绿**；新增 token 用例只覆盖「无 AK/SK + 有 token」分支，不与现有用例重叠或改判定。
+
 ## 架构组件
 
 ### 1. `src/auth/token-exchange.mjs`（新增）
