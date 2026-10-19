@@ -67,3 +67,30 @@ export async function exchangeTokenForCredentials(token, options = {}) {
     expiresAt: Number.isFinite(expiresAt) ? expiresAt : null,
   };
 }
+
+const GRACE_MS = 60 * 1000;
+
+let cached = null; // { ak, sk, securityToken, expiresAt }
+let inflight = null; // Promise 单飞
+
+export function __resetTokenCache() {
+  cached = null;
+  inflight = null;
+}
+
+export async function getTokenCredentials(token, options = {}) {
+  const now = Date.now();
+  if (cached && cached.expiresAt && cached.expiresAt - GRACE_MS > now) {
+    return cached;
+  }
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      cached = await exchangeTokenForCredentials(token, options);
+      return cached;
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
+}

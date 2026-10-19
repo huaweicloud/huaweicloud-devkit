@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { exchangeTokenForCredentials } from '../plugins/huaweicloud-core/src/auth/token-exchange.mjs';
+import { exchangeTokenForCredentials, getTokenCredentials, __resetTokenCache } from '../plugins/huaweicloud-core/src/auth/token-exchange.mjs';
 
 function stubFetch(status, body) {
   return async (url, opts) => ({
@@ -52,4 +52,52 @@ test('exchangeTokenForCredentials throws TOKEN_EXCHANGE_FAILED on non-201', asyn
     exchangeTokenForCredentials('bad-token', { fetchImpl: stubFetch(500, {}) }),
     (err) => err.code === 'TOKEN_EXCHANGE_FAILED',
   );
+});
+
+test('getTokenCredentials caches the result and avoids re-exchange while valid', async () => {
+  __resetTokenCache();
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return {
+      status: 201,
+      json: async () => ({
+        credential: {
+          access: 'AK',
+          secret: 'SK',
+          securitytoken: 'STS',
+          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        },
+      }),
+    };
+  };
+  const a = await getTokenCredentials('t', { fetchImpl });
+  const b = await getTokenCredentials('t', { fetchImpl });
+  assert.equal(calls, 1, 'second call should hit cache');
+  assert.equal(a.ak, b.ak);
+  __resetTokenCache();
+});
+
+test('getTokenCredentials re-exchanges when cached credential is expired', async () => {
+  __resetTokenCache();
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return {
+      status: 201,
+      json: async () => ({
+        credential: {
+          access: 'AK' + calls,
+          secret: 'SK',
+          securitytoken: 'STS',
+          expires_at: new Date(Date.now() - 1000).toISOString(), // 已过期
+        },
+      }),
+    };
+  };
+  const a = await getTokenCredentials('t', { fetchImpl });
+  const b = await getTokenCredentials('t', { fetchImpl });
+  assert.equal(calls, 2, 'expired credential should force re-exchange');
+  assert.notEqual(a.ak, b.ak);
+  __resetTokenCache();
 });
