@@ -948,6 +948,44 @@ test('runHcloud returns structured TOKEN_INVALID when token exchange fails', asy
   });
 });
 
+test('runHcloud returns structured TOKEN_EXPIRED when token already expired', async (t) => {
+  await withTempAuthHome(async () => {
+    const script = fakeHcloudScript('console.log(JSON.stringify({ ok: true }));');
+    clearRuntimeCredentials();
+    const savedToken = process.env.HW_X_AUTH_TOKEN;
+    const savedExpiry = process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+    try {
+      process.env.HW_X_AUTH_TOKEN = 'the-token';
+      process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = new Date(Date.now() - 60_000).toISOString();
+      let exchanged = false;
+      t.mock.module('../plugins/huaweicloud-core/src/auth/token-exchange.mjs', {
+        namedExports: {
+          getTokenCredentials: async () => {
+            exchanged = true;
+            return { ak: 'EX_AK', sk: 'EX_SK', securityToken: 'EX_STS', expiresAt: Date.now() + 60000 };
+          },
+        },
+      });
+      const { runHcloud } = await import('../plugins/huaweicloud-core/src/hcloud-cli.mjs?token=cloned-expired');
+      const result = await runHcloud(['ECS', 'ListServersDetails'], {
+        executable: process.execPath,
+        executableArgs: [script],
+        maxRetries: 0,
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.code, 'TOKEN_EXPIRED');
+      assert.match(result.error, /已过期/);
+      assert.equal(exchanged, false, 'expiry check must short-circuit before exchange');
+    } finally {
+      if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
+      else process.env.HW_X_AUTH_TOKEN = savedToken;
+      if (savedExpiry === undefined) delete process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+      else process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = savedExpiry;
+      clearRuntimeCredentials();
+    }
+  });
+});
+
 test('resolveStsInjectArgs prefers AK/SK over token when both present', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');

@@ -7,7 +7,12 @@ import { dirname, join } from 'node:path';
 import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { resolveHcloudCommand } from './hcloud-probe.mjs';
-import { parseStsExpiry, resolveCredentialsWithRuntime, resolveXAuthToken } from './auth/credentials.mjs';
+import {
+  parseStsExpiry,
+  resolveCredentialsWithRuntime,
+  resolveXAuthToken,
+  resolveXAuthTokenExpiry,
+} from './auth/credentials.mjs';
 import { getTokenCredentials } from './auth/token-exchange.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -354,6 +359,12 @@ export async function resolveStsInjectArgs(rawArgs) {
   if (!creds || !creds.ak || !creds.sk) {
     const token = resolveXAuthToken();
     if (token) {
+      const expiry = resolveXAuthTokenExpiry();
+      if (expiry !== null && expiry - 60000 <= Date.now()) {
+        const err = new Error('X-Auth-Token 已过期，请重启进程重新注入凭证。');
+        err.code = 'TOKEN_EXPIRED';
+        throw err;
+      }
       const temp = await getTokenCredentials(token);
       return [
         '--cli-access-key=' + temp.ak,
@@ -485,7 +496,11 @@ export async function runHcloud(args, options = {}) {
   try {
     stsInject = await resolveStsInjectArgs(normalizedArgs);
   } catch (error) {
-    if (error?.code === 'TOKEN_INVALID' || error?.code === 'TOKEN_EXCHANGE_FAILED') {
+    if (
+      error?.code === 'TOKEN_INVALID' ||
+      error?.code === 'TOKEN_EXCHANGE_FAILED' ||
+      error?.code === 'TOKEN_EXPIRED'
+    ) {
       return {
         ok: false,
         code: error.code,

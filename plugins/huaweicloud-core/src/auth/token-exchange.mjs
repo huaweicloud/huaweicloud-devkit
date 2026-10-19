@@ -59,6 +59,10 @@ export async function exchangeTokenForCredentials(token, options = {}) {
     err.code = 'TOKEN_EXCHANGE_FAILED';
     throw err;
   }
+  // IAM always returns expires_at; if it is absent (or unparseable) we store
+  // expiresAt:null, which never satisfies the `cached.expiresAt && …` guard in
+  // getTokenCredentials — so the cache is always a miss and we deliberately
+  // re-exchange on every call rather than risk caching credentials forever.
   const expiresAt = cred.expires_at ? Date.parse(cred.expires_at) : NaN;
   return {
     ak: cred.access,

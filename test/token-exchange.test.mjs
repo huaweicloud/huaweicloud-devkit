@@ -82,6 +82,29 @@ test('getTokenCredentials caches the result and avoids re-exchange while valid',
   __resetTokenCache();
 });
 
+test('getTokenCredentials single-flights concurrent exchange', async () => {
+  __resetTokenCache();
+  let calls = 0;
+  const fetchImpl = async () => {
+    calls += 1;
+    return {
+      status: 201,
+      json: async () => ({
+        credential: {
+          access: 'AK',
+          secret: 'SK',
+          securitytoken: 'STS',
+          expires_at: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+        },
+      }),
+    };
+  };
+  const [a, b] = await Promise.all([getTokenCredentials('t', { fetchImpl }), getTokenCredentials('t', { fetchImpl })]);
+  assert.equal(calls, 1, 'concurrent calls must share a single exchange');
+  assert.equal(a.ak, b.ak);
+  __resetTokenCache();
+});
+
 test('getTokenCredentials re-exchanges when cached credential is expired', async () => {
   __resetTokenCache();
   let calls = 0;
