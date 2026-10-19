@@ -18,6 +18,8 @@ import {
   readLastSync,
   resolveCredentials,
   resolveCredentialsWithRuntime,
+  resolveXAuthToken,
+  resolveXAuthTokenExpiry,
   restoreGlobalCredentialsBackup,
   setRuntimeCredentials,
   writeGlobalCredentials,
@@ -920,3 +922,33 @@ function minimalReconciledStub() {
   // keep it cheap like the old failure path did — stub the reconcile state
   return { runtimeActive: false, envIsPlaceholder: false };
 }
+
+test('resolveXAuthToken reads HW_X_AUTH_TOKEN env and rejects placeholders', () => {
+  const saved = process.env.HW_X_AUTH_TOKEN;
+  try {
+    delete process.env.HW_X_AUTH_TOKEN;
+    assert.equal(resolveXAuthToken(), null);
+    process.env.HW_X_AUTH_TOKEN = 'real-token-value';
+    assert.equal(resolveXAuthToken(), 'real-token-value');
+    process.env.HW_X_AUTH_TOKEN = '<HW_X_AUTH_TOKEN>';
+    assert.equal(resolveXAuthToken(), null);
+  } finally {
+    if (saved === undefined) delete process.env.HW_X_AUTH_TOKEN;
+    else process.env.HW_X_AUTH_TOKEN = saved;
+  }
+});
+
+test('resolveXAuthTokenExpiry parses ISO8601 and epoch seconds', () => {
+  const saved = process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+  try {
+    delete process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+    assert.equal(resolveXAuthTokenExpiry(), null);
+    process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = '2026-10-20T08:56:33.710000Z';
+    assert.equal(resolveXAuthTokenExpiry(), Date.parse('2026-10-20T08:56:33.710000Z'));
+    process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = '1765788993';
+    assert.equal(resolveXAuthTokenExpiry(), 1765788993 * 1000);
+  } finally {
+    if (saved === undefined) delete process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+    else process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = saved;
+  }
+});

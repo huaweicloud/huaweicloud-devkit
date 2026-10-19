@@ -393,6 +393,49 @@ export function resolveCredentialsWithRuntime(options = {}) {
   return resolveCredentials(options);
 }
 
+export function resolveXAuthToken() {
+  const envToken = process.env.HW_X_AUTH_TOKEN;
+  if (present(envToken)) return envToken;
+
+  const parentCwd = getParentCwd();
+  const searchDirs = [process.env.CODEARTS_PROJECT_DIR, parentCwd, process.cwd(), homedir()];
+  for (const dir of searchDirs) {
+    if (!dir) continue;
+    const path = join(dir, '.codeartsdoer', 'mcp', 'mcp_settings.json');
+    try {
+      if (!existsSync(path)) continue;
+      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const server = pickDevkitMcpServer(config?.mcpServers);
+      const token = server?.env?.HW_X_AUTH_TOKEN;
+      if (present(token)) return token;
+    } catch {}
+  }
+
+  const workPaths = [
+    join(homedir(), '.codearts', 'mcp', 'mcp_settings.json'),
+    join(homedir(), '.codeartswork', 'mcp', 'mcp_settings.json'),
+  ];
+  for (const path of workPaths) {
+    try {
+      if (!existsSync(path)) continue;
+      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const server = pickDevkitMcpServer(config?.mcp);
+      const token = server?.environment?.HW_X_AUTH_TOKEN;
+      if (present(token)) return token;
+    } catch {}
+  }
+  return null;
+}
+
+export function resolveXAuthTokenExpiry() {
+  const v = process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+  if (!v || typeof v !== 'string' || !v.trim()) return null;
+  const asNum = Number(v.trim());
+  if (Number.isFinite(asNum) && asNum > 0) return asNum > 1e12 ? asNum : asNum * 1000;
+  const t = Date.parse(v.trim());
+  return Number.isFinite(t) ? t : null;
+}
+
 export function lastSyncPath() {
   return join(baseHome(), '.config', 'huaweicloud', '.last_sync');
 }
