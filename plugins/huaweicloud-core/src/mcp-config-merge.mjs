@@ -3,7 +3,7 @@
 // Program-owned fields (the node executable + mcp-server.mjs path, required env
 // keys) are corrected by the installer; everything else belongs to the user.
 
-function isPlainObject(value) {
+export function isPlainObject(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 

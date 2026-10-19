@@ -44,6 +44,7 @@ import {
   applyUserDelta,
   inheritPeerUserEnv,
   detectOpenCodeEra,
+  isPlainObject,
   mergeOpenCodeEntry,
 } from './mcp-config-merge.mjs';
 import { readAgentDelta, saveAgentDelta, takeAgentDelta, purgeBackup } from './mcp-config-backup.mjs';
