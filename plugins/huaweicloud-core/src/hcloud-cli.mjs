@@ -7,7 +7,8 @@ import { dirname, join } from 'node:path';
 import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { resolveHcloudCommand } from './hcloud-probe.mjs';
-import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.mjs';
+import { parseStsExpiry, resolveCredentialsWithRuntime, resolveXAuthToken } from './auth/credentials.mjs';
+import { getTokenCredentials } from './auth/token-exchange.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
@@ -297,7 +298,7 @@ export function redactArgsWithObs(rawArgs) {
   return redactSecrets(out);
 }
 
-export function resolveStsInjectArgs(rawArgs) {
+export async function resolveStsInjectArgs(rawArgs) {
   const normalized = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
   if (normalized.length === 0) return [];
   const flat = normalized.map(String);
@@ -350,7 +351,15 @@ export function resolveStsInjectArgs(rawArgs) {
   } catch {
     return [];
   }
-  if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
+  if (!creds || !creds.ak || !creds.sk) {
+    const token = resolveXAuthToken();
+    if (token) {
+      const temp = await getTokenCredentials(token);
+      return ['--cli-access-key=' + temp.ak, '--cli-secret-key=' + temp.sk, '--cli-security-token=' + temp.securityToken];
+    }
+    return [];
+  }
+  if (!creds.securityToken) return [];
 
   // R3: if we can derive an expiry and the token is already at/within 60s of
   // expiring, skip injection — using a dead token would make a doomed IAM round
@@ -468,7 +477,7 @@ export async function runHcloud(args, options = {}) {
   // and R3 forbids writing them to disk). Inject per-command so hcloud actually
   // authenticates with the platform-provided STS. Injection args are appended to
   // the EXECUTED args only; classification/approval used the original args.
-  const stsInject = resolveStsInjectArgs(normalizedArgs);
+  const stsInject = await resolveStsInjectArgs(normalizedArgs);
   if (stsInject.length > 0) {
     plan.rawArgs = [...plan.rawArgs, ...stsInject];
   }

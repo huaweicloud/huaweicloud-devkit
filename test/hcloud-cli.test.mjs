@@ -434,25 +434,25 @@ process.exit(1);
   }
 });
 
-test('resolveStsInjectArgs returns empty for long-lived creds (no token)', () => {
+test('resolveStsInjectArgs returns empty for long-lived creds (no token)', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('AK_NO_TOKEN', 'SK_NO_TOKEN', '');
-  assert.deepEqual(resolveStsInjectArgs(['ECS', 'ListServersDetails']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['ECS', 'ListServersDetails']), []);
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs injects STS args for live runtime tokens', () => {
+test('resolveStsInjectArgs injects STS args for live runtime tokens', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
-  const injected = resolveStsInjectArgs(['VPC', 'ListVpcs']);
+  const injected = await resolveStsInjectArgs(['VPC', 'ListVpcs']);
   assert.deepEqual(injected, ['--cli-access-key=STS_AK', '--cli-secret-key=STS_SK', '--cli-security-token=STS_TOKEN']);
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs uses obsutil -i/-k/-t for OBS subcommands', () => {
+test('resolveStsInjectArgs uses obsutil -i/-k/-t for OBS subcommands', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
-  const injected = resolveStsInjectArgs(['OBS', 'ls']);
+  const injected = await resolveStsInjectArgs(['OBS', 'ls']);
   assert.deepEqual(injected, ['-i', 'STS_AK', '-k', 'STS_SK', '-t', 'STS_TOKEN']);
   clearRuntimeCredentials();
 });
@@ -488,41 +488,41 @@ test('runHcloud does NOT inject STS args for long-lived creds (no token)', async
   });
 });
 
-test('resolveStsInjectArgs skips help/metadata commands', () => {
+test('resolveStsInjectArgs skips help/metadata commands', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
-  assert.deepEqual(resolveStsInjectArgs(['--help']), []);
-  assert.deepEqual(resolveStsInjectArgs(['ECS', '--help']), []);
-  assert.deepEqual(resolveStsInjectArgs(['help']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['--help']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['ECS', '--help']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['help']), []);
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs skips bash/sudo wrapper invocations', () => {
+test('resolveStsInjectArgs skips bash/sudo wrapper invocations', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
-  assert.deepEqual(resolveStsInjectArgs(['bash', '-c', 'hcloud ECS ListServersDetails']), []);
-  assert.deepEqual(resolveStsInjectArgs(['sudo', 'hcloud', 'ECS', 'ListServersDetails']), []);
-  assert.deepEqual(resolveStsInjectArgs(['/bin/sh', '-c', 'hcloud ECS ListServersDetails']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['bash', '-c', 'hcloud ECS ListServersDetails']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['sudo', 'hcloud', 'ECS', 'ListServersDetails']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['/bin/sh', '-c', 'hcloud ECS ListServersDetails']), []);
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs skips configure/config and existing explicit creds', () => {
+test('resolveStsInjectArgs skips configure/config and existing explicit creds', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
-  assert.deepEqual(resolveStsInjectArgs(['configure', 'set']), []);
-  assert.deepEqual(resolveStsInjectArgs(['config', 'list']), []);
-  assert.deepEqual(resolveStsInjectArgs(['ECS', 'ListServersDetails', '--cli-access-key=EXPLICIT']), []);
-  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-i', 'EXPLICIT']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['configure', 'set']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['config', 'list']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['ECS', 'ListServersDetails', '--cli-access-key=EXPLICIT']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['OBS', 'ls', '-i', 'EXPLICIT']), []);
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs honors HUAWEICLOUD_INJECT_STS_CMD=0 kill switch', () => {
+test('resolveStsInjectArgs honors HUAWEICLOUD_INJECT_STS_CMD=0 kill switch', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
   const prev = process.env.HUAWEICLOUD_INJECT_STS_CMD;
   try {
     process.env.HUAWEICLOUD_INJECT_STS_CMD = '0';
-    assert.deepEqual(resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
+    assert.deepEqual(await resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
   } finally {
     if (prev === undefined) delete process.env.HUAWEICLOUD_INJECT_STS_CMD;
     else process.env.HUAWEICLOUD_INJECT_STS_CMD = prev;
@@ -548,39 +548,39 @@ test('runHcloud redacts injected STS from returned plan.rawArgs', async () => {
   });
 });
 
-test('resolveStsInjectArgs skips injection when security token is expired (R3)', () => {
+test('resolveStsInjectArgs skips injection when security token is expired (R3)', async () => {
   clearRuntimeCredentials();
   const past = Math.floor(Date.now() / 1000) - 120; // expired 2 min ago
   const token = Buffer.from(JSON.stringify({ exp: past })).toString('base64url');
   setRuntimeCredentials('STS_AK', 'STS_SK', token, 'cn-north-4');
-  assert.deepEqual(resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs skips injection when expiry is within 60s grace (R3)', () => {
+test('resolveStsInjectArgs skips injection when expiry is within 60s grace (R3)', async () => {
   clearRuntimeCredentials();
   const soon = Math.floor(Date.now() / 1000) + 30; // expires in 30s
   const token = Buffer.from(JSON.stringify({ exp: soon })).toString('base64url');
   setRuntimeCredentials('STS_AK', 'STS_SK', token, 'cn-north-4');
-  assert.deepEqual(resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['VPC', 'ListVpcs']), []);
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs still injects when expiry is unparseable (R3 fallback)', () => {
+test('resolveStsInjectArgs still injects when expiry is unparseable (R3 fallback)', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'HSTANOTATOKEN', 'cn-north-4');
-  const injected = resolveStsInjectArgs(['VPC', 'ListVpcs']);
+  const injected = await resolveStsInjectArgs(['VPC', 'ListVpcs']);
   assert.ok(injected.length > 0);
   assert.ok(injected.some((a) => a.startsWith('--cli-security-token=')));
   clearRuntimeCredentials();
 });
 
-test('resolveStsInjectArgs injects when expiry is in the future (R3)', () => {
+test('resolveStsInjectArgs injects when expiry is in the future (R3)', async () => {
   clearRuntimeCredentials();
   const future = Math.floor(Date.now() / 1000) + 3600; // 1h out
   const token = Buffer.from(JSON.stringify({ exp: future })).toString('base64url');
   setRuntimeCredentials('STS_AK', 'STS_SK', token, 'cn-north-4');
-  const injected = resolveStsInjectArgs(['VPC', 'ListVpcs']);
+  const injected = await resolveStsInjectArgs(['VPC', 'ListVpcs']);
   assert.ok(injected.some((a) => a.startsWith('--cli-security-token=')));
   clearRuntimeCredentials();
 });
@@ -615,12 +615,12 @@ test('runHcloud redacts OBS STS args from returned plan.rawArgs', async () => {
   });
 });
 
-test('resolveStsInjectArgs skips when obsutil attached -iAK/-kSK/-tTOK present', () => {
+test('resolveStsInjectArgs skips when obsutil attached -iAK/-kSK/-tTOK present', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
-  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-iAK_VAL']), []);
-  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-kSK_VAL', '-tTOK_VAL']), []);
-  assert.deepEqual(resolveStsInjectArgs(['OBS', 'ls', '-iAK_VAL', '-d']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['OBS', 'ls', '-iAK_VAL']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['OBS', 'ls', '-kSK_VAL', '-tTOK_VAL']), []);
+  assert.deepEqual(await resolveStsInjectArgs(['OBS', 'ls', '-iAK_VAL', '-d']), []);
   clearRuntimeCredentials();
 });
 
@@ -882,4 +882,50 @@ test('runApprovedCommand: unknown token returns {status:rejected, code:CONFIRM_T
     assert.equal(result.status, 'rejected');
     assert.equal(result.code, 'CONFIRM_TOKEN_NOT_FOUND');
   });
+});
+
+test('resolveStsInjectArgs injects exchanged temp creds for token mode', async (t) => {
+  await withTempAuthHome(async () => {
+    clearRuntimeCredentials();
+    const savedToken = process.env.HW_X_AUTH_TOKEN;
+    try {
+      process.env.HW_X_AUTH_TOKEN = 'the-token';
+      t.mock.module('../plugins/huaweicloud-core/src/auth/token-exchange.mjs', {
+        namedExports: {
+          getTokenCredentials: async () => ({
+            ak: 'EX_AK',
+            sk: 'EX_SK',
+            securityToken: 'EX_STS',
+            expiresAt: Date.now() + 60000,
+          }),
+        },
+      });
+      // hcloud-cli.mjs is statically imported at the top of this file, so a plain
+      // re-import would return the already-evaluated module (real getTokenCredentials).
+      // The query suffix forces a fresh evaluation whose ./auth/token-exchange.mjs
+      // dependency resolves to the mock registered above.
+      const { resolveStsInjectArgs } = await import('../plugins/huaweicloud-core/src/hcloud-cli.mjs?token=cloned');
+      const injected = await resolveStsInjectArgs(['VPC', 'ListVpcs']);
+      assert.deepEqual(injected, ['--cli-access-key=EX_AK', '--cli-secret-key=EX_SK', '--cli-security-token=EX_STS']);
+    } finally {
+      if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
+      else process.env.HW_X_AUTH_TOKEN = savedToken;
+      clearRuntimeCredentials();
+    }
+  });
+});
+
+test('resolveStsInjectArgs prefers AK/SK over token when both present', async () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  const savedToken = process.env.HW_X_AUTH_TOKEN;
+  try {
+    process.env.HW_X_AUTH_TOKEN = 'the-token';
+    const injected = await resolveStsInjectArgs(['VPC', 'ListVpcs']);
+    assert.deepEqual(injected, ['--cli-access-key=STS_AK', '--cli-secret-key=STS_SK', '--cli-security-token=STS_TOKEN']);
+  } finally {
+    if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
+    else process.env.HW_X_AUTH_TOKEN = savedToken;
+    clearRuntimeCredentials();
+  }
 });
