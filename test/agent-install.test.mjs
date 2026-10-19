@@ -1008,14 +1008,13 @@ test('opencode install: native plugin active + MCP entry disabled (no duplicate 
     assert.equal(res.status, 0, res.stderr);
     // Native plugin deployed
     assert.ok(existsSync(join(home, '.config', 'opencode', 'plugins', 'huaweicloud-devkit.js')));
-    // MCP entry present but disabled
+    // MCP entry present but disabled (era-agnostic: v1 flat or v2 mcp.servers;
+    // CI runners have no `opencode` binary so the era defaults to v2)
     const cfg = JSON.parse(readFileSync(join(home, '.config', 'opencode', 'opencode.json'), 'utf8'));
-    assert.ok(cfg.mcp?.['huaweicloud-devkit'], 'MCP entry should exist for manual fallback');
-    assert.equal(
-      cfg.mcp['huaweicloud-devkit'].enabled,
-      false,
-      'MCP entry must be disabled when native plugin is active',
-    );
+    const entry = cfg.mcp?.['huaweicloud-devkit'] ?? cfg.mcp?.servers?.['huaweicloud-devkit'];
+    assert.ok(entry, 'MCP entry should exist for manual fallback');
+    const disabled = entry.enabled === false || entry.disabled === true;
+    assert.ok(disabled, 'MCP entry must be disabled when native plugin is active');
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
