@@ -477,7 +477,22 @@ export async function runHcloud(args, options = {}) {
   // and R3 forbids writing them to disk). Inject per-command so hcloud actually
   // authenticates with the platform-provided STS. Injection args are appended to
   // the EXECUTED args only; classification/approval used the original args.
-  const stsInject = await resolveStsInjectArgs(normalizedArgs);
+  let stsInject;
+  try {
+    stsInject = await resolveStsInjectArgs(normalizedArgs);
+  } catch (error) {
+    if (error?.code === 'TOKEN_INVALID' || error?.code === 'TOKEN_EXCHANGE_FAILED') {
+      return {
+        ok: false,
+        code: error.code,
+        error: error.message,
+        stderr: '',
+        stdout: '',
+        plan,
+      };
+    }
+    throw error;
+  }
   if (stsInject.length > 0) {
     plan.rawArgs = [...plan.rawArgs, ...stsInject];
   }

@@ -915,6 +915,39 @@ test('resolveStsInjectArgs injects exchanged temp creds for token mode', async (
   });
 });
 
+test('runHcloud returns structured TOKEN_INVALID when token exchange fails', async (t) => {
+  await withTempAuthHome(async () => {
+    const script = fakeHcloudScript('console.log(JSON.stringify({ ok: true }));');
+    clearRuntimeCredentials();
+    const savedToken = process.env.HW_X_AUTH_TOKEN;
+    try {
+      process.env.HW_X_AUTH_TOKEN = 'the-token';
+      t.mock.module('../plugins/huaweicloud-core/src/auth/token-exchange.mjs', {
+        namedExports: {
+          getTokenCredentials: async () => {
+            const err = new Error('X-Auth-Token is invalid or expired.');
+            err.code = 'TOKEN_INVALID';
+            throw err;
+          },
+        },
+      });
+      const { runHcloud } = await import('../plugins/huaweicloud-core/src/hcloud-cli.mjs?token=cloned-invalid');
+      const result = await runHcloud(['ECS', 'ListServersDetails'], {
+        executable: process.execPath,
+        executableArgs: [script],
+        maxRetries: 0,
+      });
+      assert.equal(result.ok, false);
+      assert.equal(result.code, 'TOKEN_INVALID');
+      assert.match(result.error, /invalid or expired/i);
+    } finally {
+      if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
+      else process.env.HW_X_AUTH_TOKEN = savedToken;
+      clearRuntimeCredentials();
+    }
+  });
+});
+
 test('resolveStsInjectArgs prefers AK/SK over token when both present', async () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
