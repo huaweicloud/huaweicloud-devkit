@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { exchangeTokenForCredentials, getTokenCredentials, __resetTokenCache } from '../plugins/huaweicloud-core/src/auth/token-exchange.mjs';
+import {
+  exchangeTokenForCredentials,
+  getTokenCredentials,
+  __resetTokenCache,
+} from '../plugins/huaweicloud-core/src/auth/token-exchange.mjs';
 
 function stubFetch(status, body) {
   return async (url, opts) => ({

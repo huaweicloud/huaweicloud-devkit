@@ -22,10 +22,12 @@
 ### Task 1: `token-exchange.mjs` — `exchangeTokenForCredentials`
 
 **Files:**
+
 - Create: `plugins/huaweicloud-core/src/auth/token-exchange.mjs`
 - Test: `test/token-exchange.test.mjs`
 
 **Interfaces:**
+
 - Produces: `exchangeTokenForCredentials(token, options?)` → `Promise<{ ak, sk, securityToken, expiresAt }>`；`options.durationSeconds`（默认 900）、`options.iamEndpoint`、`options.fetchImpl`（测试注入）。
 
 - [ ] **Step 1: 写失败测试**
@@ -178,17 +180,23 @@ git commit -m "feat(auth): add token→temporary-AK/SK exchange (CreateTemporary
 ### Task 2: `token-exchange.mjs` — `getTokenCredentials`（缓存 + single-flight）
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/auth/token-exchange.mjs`
 - Test: `test/token-exchange.test.mjs`
 
 **Interfaces:**
+
 - Produces: `getTokenCredentials(token, options?)` → `Promise<{ ak, sk, securityToken, expiresAt }>`；`__resetTokenCache()`（测试专用，重置模块级缓存与 inflight）。
 
 - [ ] **Step 1: 写失败测试**
 
 ```js
 // 追加到 test/token-exchange.test.mjs 顶部 import
-import { exchangeTokenForCredentials, getTokenCredentials, __resetTokenCache } from '../plugins/huaweicloud-core/src/auth/token-exchange.mjs';
+import {
+  exchangeTokenForCredentials,
+  getTokenCredentials,
+  __resetTokenCache,
+} from '../plugins/huaweicloud-core/src/auth/token-exchange.mjs';
 
 test('getTokenCredentials caches the result and avoids re-exchange while valid', async () => {
   __resetTokenCache();
@@ -292,20 +300,19 @@ git commit -m "feat(auth): cache + single-flight token→AK/SK exchange"
 ### Task 3: `credentials.mjs` — `resolveXAuthToken` + `resolveXAuthTokenExpiry`
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/auth/credentials.mjs`
 - Test: `test/auth-credentials.test.mjs`
 
 **Interfaces:**
+
 - Produces: `resolveXAuthToken()` → `string|null`（读 env + CodeArts env）；`resolveXAuthTokenExpiry()` → `number|null`（epoch ms，读 `HW_X_AUTH_TOKEN_EXPIRES_AT`）。
 
 - [ ] **Step 1: 写失败测试**
 
 ```js
 // 追加到 test/auth-credentials.test.mjs（假设已 top-level await import credentials）
-import {
-  resolveXAuthToken,
-  resolveXAuthTokenExpiry,
-} from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
+import { resolveXAuthToken, resolveXAuthTokenExpiry } from '../plugins/huaweicloud-core/src/auth/credentials.mjs';
 
 test('resolveXAuthToken reads HW_X_AUTH_TOKEN env and rejects placeholders', () => {
   const saved = process.env.HW_X_AUTH_TOKEN;
@@ -407,10 +414,12 @@ git commit -m "feat(auth): resolve X-Auth-Token and expiry from env/CodeArts env
 ### Task 4: `hcloud-cli.mjs` — `resolveStsInjectArgs` 异步化 + token 分支
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/hcloud-cli.mjs:300-368`、`443-488`（调用点 `await`）、顶部 import
 - Test: `test/hcloud-cli.test.mjs:437-517`（现有用例补 `await`）、追加 token 分支用例
 
 **Interfaces:**
+
 - Consumes: `resolveXAuthToken`、`getTokenCredentials`（Task 2/3）
 - Produces: `resolveStsInjectArgs(rawArgs)` → `Promise<Array<string>>`；`resolveTokenInjectArgs(rawArgs)` → `Promise<Array<string>>`（可选拆出）
 
@@ -429,21 +438,21 @@ import { getTokenCredentials } from './auth/token-exchange.mjs';
 将现有（约 353 行）：
 
 ```js
-  if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
+if (!creds || !creds.ak || !creds.sk || !creds.securityToken) return [];
 ```
 
 替换为：
 
 ```js
-  if (!creds || !creds.ak || !creds.sk) {
-    const token = resolveXAuthToken();
-    if (token) {
-      const temp = await getTokenCredentials(token);
-      return ['--cli-access-key=' + temp.ak, '--cli-secret-key=' + temp.sk, '--cli-security-token=' + temp.securityToken];
-    }
-    return [];
+if (!creds || !creds.ak || !creds.sk) {
+  const token = resolveXAuthToken();
+  if (token) {
+    const temp = await getTokenCredentials(token);
+    return ['--cli-access-key=' + temp.ak, '--cli-secret-key=' + temp.sk, '--cli-security-token=' + temp.securityToken];
   }
-  if (!creds.securityToken) return [];
+  return [];
+}
+if (!creds.securityToken) return [];
 ```
 
 - [ ] **Step 3: 改实现——`runHcloud` 调用点补 `await`**
@@ -451,13 +460,13 @@ import { getTokenCredentials } from './auth/token-exchange.mjs';
 将 `runHcloud` 内（约 471 行）：
 
 ```js
-  const stsInject = resolveStsInjectArgs(normalizedArgs);
+const stsInject = resolveStsInjectArgs(normalizedArgs);
 ```
 
 替换为：
 
 ```js
-  const stsInject = await resolveStsInjectArgs(normalizedArgs);
+const stsInject = await resolveStsInjectArgs(normalizedArgs);
 ```
 
 - [ ] **Step 4: 更新现有测试（仅补 async/await，断言不变）**
@@ -508,7 +517,11 @@ test('resolveStsInjectArgs prefers AK/SK over token when both present', async ()
   try {
     process.env.HW_X_AUTH_TOKEN = 'the-token';
     const injected = await resolveStsInjectArgs(['VPC', 'ListVpcs']);
-    assert.deepEqual(injected, ['--cli-access-key=STS_AK', '--cli-secret-key=STS_SK', '--cli-security-token=STS_TOKEN']);
+    assert.deepEqual(injected, [
+      '--cli-access-key=STS_AK',
+      '--cli-secret-key=STS_SK',
+      '--cli-security-token=STS_TOKEN',
+    ]);
   } finally {
     if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
     else process.env.HW_X_AUTH_TOKEN = savedToken;
@@ -534,11 +547,13 @@ git commit -m "feat(auth): token mode in resolveStsInjectArgs — exchange then 
 ### Task 5: 脱敏加固（token 字段不落日志/回显）
 
 **Files:**
+
 - Modify: `plugins/huaweicloud-core/src/safety-policy.mjs`（`isSecretKeyName`/`redactString`）
 - Modify: `plugins/huaweicloud-core/src/risk-rule-engine.mjs`（`redactEvidence`）
 - Test: `test/risk-rule-engine.test.mjs`
 
 **Interfaces:**
+
 - Consumes: 无
 - Produces: token 形如 `X_AUTH_TOKEN` / `x-auth-token` / `X-Auth-Token` 在脱敏输出中变为 `<redacted>`。
 
@@ -610,6 +625,7 @@ git commit -m "chore: format + validate for token auth"
 - [ ] dispatch `npm-publish.yml`（from tag）+ 审批 `npm-publish` environment。
 - [ ] 验证 npm `next` 指向 `1.1.9-next.6`。
 - [ ] ECS 真机验证：注入真实 `HW_X_AUTH_TOKEN`，跑 `drawing` 只读命令（`ECS ListServersDetails`）验证 token→临时AK/SK→hcloud 全链路；确认与现有 AK/SK 路径并存的回归（无 token 时走原有 AK/SK 路径）。
+
 ```
 
 ## Self-Review
@@ -617,3 +633,4 @@ git commit -m "chore: format + validate for token auth"
 - **Spec 覆盖**：技术路径（Task1/2/4）、resolveXAuthToken（Task3）、缓存+single-flight（Task2）、错误处理（Task1 `TOKEN_INVALID`/`TOKEN_EXCHANGE_FAILED`）、脱敏（Task5）、回归（Task6）、兼容红线（Global Constraints + Task4 的「AK/SK 优先」测试）。
 - **占位符**：无 TBD/TODO；Task4 的 token 分支测试用 `t.mock.module` 精确桩，无「待补充」。
 - **类型一致**：`getTokenCredentials` 返回 `{ak,sk,securityToken,expiresAt}`，Task4 用 `temp.ak/temp.sk/temp.securityToken`，一致；`resolveXAuthToken`/`resolveXAuthTokenExpiry` 在 Task3 定义、Task4 消费，签名一致。
+```

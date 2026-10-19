@@ -32,22 +32,23 @@ token 不能直接喂给 hcloud，但可以通过 IAM 的 **`CreateTemporaryAcce
 ```
 
 参考接口（IAM `CreateTemporaryAccessKeyByToken`）：
+
 - URI：`POST https://iam.myhuaweicloud.com/v3.0/OS-CREDENTIAL/securitytokens`（支持全局端点，也支持各区域端点）
 - 请求头：`Content-Type: application/json;charset=utf8`；认证可选 `X-Auth-Token` 或 body `auth.identity.token.id`
 - 响应：`{ credential: { access, secret, securitytoken, expires_at } }`，`expires_at` 为 UTC
 
 ## 关键决策
 
-| 项 | 决策 |
-|---|---|
-| token 注入字段 | `HW_X_AUTH_TOKEN`（环境变量 + CodeArts `server.environment.HW_X_AUTH_TOKEN`），由华为云内部 agent 注入；env 注入且**进程长驻** → `process.env` 为启动快照，进程内 token 值不变 |
-| token 过期时间字段 | `HW_X_AUTH_TOKEN_EXPIRES_AT`（ISO8601 或 epoch 秒，可选），注入方提供；devkit 主动读，到期前告警（方案 A） |
-| 优先级 | **AK/SK 优先**——有可用 AK/SK 直接走现有路径；无 AK/SK 时才用 token |
-| `duration_seconds` | **900（15min）**——临时凭证先于 token 过期，每次重换都真实校验 token，无错位，最小权限 |
-| IAM 端点 | 全局端点 `iam.myhuaweicloud.com`（可被 `HW_TOKEN_IAM_ENDPOINT` 环境变量覆盖，供测试/翻墙场景） |
-| 换取时机/缓存 | **惰性换取 + 内存缓存到 `expires_at`**（提前 60s grace 视为过期则重换）；并发换取走 **single-flight** |
-| token 失效 | env 快照下**无法自动轮换**；主动感知到期 → `TOKEN_EXPIRED`（提示重启进程重新注入）；换取返回 401/403 → `TOKEN_INVALID` |
-| 临时凭证过期 | **token 有效时自动续期**（重换，每次校验 token）；token 也失效时 → 报错提示重启（复用 `CREDENTIAL_EXPIRED` 语义） |
+| 项                 | 决策                                                                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| token 注入字段     | `HW_X_AUTH_TOKEN`（环境变量 + CodeArts `server.environment.HW_X_AUTH_TOKEN`），由华为云内部 agent 注入；env 注入且**进程长驻** → `process.env` 为启动快照，进程内 token 值不变 |
+| token 过期时间字段 | `HW_X_AUTH_TOKEN_EXPIRES_AT`（ISO8601 或 epoch 秒，可选），注入方提供；devkit 主动读，到期前告警（方案 A）                                                                     |
+| 优先级             | **AK/SK 优先**——有可用 AK/SK 直接走现有路径；无 AK/SK 时才用 token                                                                                                             |
+| `duration_seconds` | **900（15min）**——临时凭证先于 token 过期，每次重换都真实校验 token，无错位，最小权限                                                                                          |
+| IAM 端点           | 全局端点 `iam.myhuaweicloud.com`（可被 `HW_TOKEN_IAM_ENDPOINT` 环境变量覆盖，供测试/翻墙场景）                                                                                 |
+| 换取时机/缓存      | **惰性换取 + 内存缓存到 `expires_at`**（提前 60s grace 视为过期则重换）；并发换取走 **single-flight**                                                                          |
+| token 失效         | env 快照下**无法自动轮换**；主动感知到期 → `TOKEN_EXPIRED`（提示重启进程重新注入）；换取返回 401/403 → `TOKEN_INVALID`                                                         |
+| 临时凭证过期       | **token 有效时自动续期**（重换，每次校验 token）；token 也失效时 → 报错提示重启（复用 `CREDENTIAL_EXPIRED` 语义）                                                              |
 
 ## 兼容性不变量（回归红线）
 
@@ -120,15 +121,15 @@ token 不能直接喂给 hcloud，但可以通过 IAM 的 **`CreateTemporaryAcce
 
 ## 错误处理
 
-| 场景 | 行为 |
-|---|---|
-| 无 AK/SK 且无 token | 现有 `HDKIT_CRED_MISSING` onboarding（不变） |
-| token 换取 401/403 | `TOKEN_INVALID`，提示重新登录/重启重新注入 |
-| token 过期（主动感知 `HW_X_AUTH_TOKEN_EXPIRES_AT`） | `TOKEN_EXPIRED`，提示重启进程重新注入 |
-| token 换取网络失败 | 不静默降级，返回结构化错误（复用 retry 策略） |
-| 临时 AK/SK 过期（token 仍有效） | 自动续期（重换），不报错 |
-| 临时 AK/SK 过期（token 也失效） | `CREDENTIAL_EXPIRED` 语义，提示重启（复用现有） |
-| token 为占位符/masked | `present()` 判空，视为未配置 |
+| 场景                                                | 行为                                            |
+| --------------------------------------------------- | ----------------------------------------------- |
+| 无 AK/SK 且无 token                                 | 现有 `HDKIT_CRED_MISSING` onboarding（不变）    |
+| token 换取 401/403                                  | `TOKEN_INVALID`，提示重新登录/重启重新注入      |
+| token 过期（主动感知 `HW_X_AUTH_TOKEN_EXPIRES_AT`） | `TOKEN_EXPIRED`，提示重启进程重新注入           |
+| token 换取网络失败                                  | 不静默降级，返回结构化错误（复用 retry 策略）   |
+| 临时 AK/SK 过期（token 仍有效）                     | 自动续期（重换），不报错                        |
+| 临时 AK/SK 过期（token 也失效）                     | `CREDENTIAL_EXPIRED` 语义，提示重启（复用现有） |
+| token 为占位符/masked                               | `present()` 判空，视为未配置                    |
 
 ## 测试策略
 

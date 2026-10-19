@@ -955,7 +955,11 @@ test('resolveStsInjectArgs prefers AK/SK over token when both present', async ()
   try {
     process.env.HW_X_AUTH_TOKEN = 'the-token';
     const injected = await resolveStsInjectArgs(['VPC', 'ListVpcs']);
-    assert.deepEqual(injected, ['--cli-access-key=STS_AK', '--cli-secret-key=STS_SK', '--cli-security-token=STS_TOKEN']);
+    assert.deepEqual(injected, [
+      '--cli-access-key=STS_AK',
+      '--cli-secret-key=STS_SK',
+      '--cli-security-token=STS_TOKEN',
+    ]);
   } finally {
     if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
     else process.env.HW_X_AUTH_TOKEN = savedToken;

@@ -355,7 +355,11 @@ export async function resolveStsInjectArgs(rawArgs) {
     const token = resolveXAuthToken();
     if (token) {
       const temp = await getTokenCredentials(token);
-      return ['--cli-access-key=' + temp.ak, '--cli-secret-key=' + temp.sk, '--cli-security-token=' + temp.securityToken];
+      return [
+        '--cli-access-key=' + temp.ak,
+        '--cli-secret-key=' + temp.sk,
+        '--cli-security-token=' + temp.securityToken,
+      ];
     }
     return [];
   }
