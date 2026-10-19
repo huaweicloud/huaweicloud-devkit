@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.9-next.5
+
+- fix(safety): stop treating hcloud Reboot/Restart API calls as sandbox-terminal destructive commands. `hcloud ECS BatchRebootServers --reboot.type=SOFT` was wrongly denied by `hwc-sandbox-destructive-command` (its bare `\breboot\b` matched the `--reboot.type` parameter name). Added a `none` (`\bhcloud\b`) condition so the sandbox-terminal rule skips hcloud commands — those go through `hwc-destructive-reset/delete` + `classifyHcloudArgs` write/execution gating instead. Raw sandbox commands (`reboot`, `rm -rf /`, `shutdown`, `mkfs`, `fdisk`) still deny.
+
 ## 1.1.9-next.4
 
 - feat(opencode): native plugin — bridges all 42 MCP tools into OpenCode in-process custom tools (zod schema conversion + callTool direct invocation), preserving the `huaweicloud_*` names, approval gate (`plan → approve` token), and telemetry; startup drops from ~1.9s (MCP spawn+handshake+tools/list) to ~0.16s. Verified end-to-end on a real ECS (Ubuntu 22.04 / Node 22 / OpenCode 1.19.2 / devkit 1.1.8): 42 tools bridged, write-op denied with approvalToken, `check_update` invoked from an OpenCode session.
