@@ -362,7 +362,11 @@ test('evaluateCommandRisk still blocks sandbox-terminal destructive commands', (
   }
 });
 
-test('evidence snippets redact X-Auth-Token values', () => {
-  const result = evaluateCommandRisk('echo $HW_X_AUTH_TOKEN=SecretTokenValue123');
-  assert.doesNotMatch(JSON.stringify(result), /SecretTokenValue123/);
+test('evidence snippets redact x-auth-token and x-subject-token values', () => {
+  for (const field of ['--x-auth-token=SecretTokenValue123', '--x-subject-token=SecretTokenValue123']) {
+    const result = evaluateCommandRisk(`hcloud ECS CreateServers --adminPass=P@ss123 ${field}`);
+    assert.notEqual(result.findings.length, 0, 'command should trigger a finding');
+    assert.doesNotMatch(JSON.stringify(result), /SecretTokenValue123/);
+    assert.match(JSON.stringify(result), /<redacted>/);
+  }
 });
