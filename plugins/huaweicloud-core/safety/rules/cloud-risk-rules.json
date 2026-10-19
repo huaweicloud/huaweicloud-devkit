@@ -429,6 +429,12 @@
             "field": "text",
             "regex": "\\bfdisk\\b"
           }
+        ],
+        "none": [
+          {
+            "field": "text",
+            "regex": "\\bhcloud\\b"
+          }
         ]
       },
       "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",

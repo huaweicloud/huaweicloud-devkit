@@ -336,3 +336,28 @@ test('evaluateDeployPlan warns when plan contains adminPass field (#733 D4-6)', 
   assert.equal(result.decision, 'warn');
   assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
 });
+
+test('evaluateCommandRisk does not flag hcloud Reboot commands as sandbox-destructive', () => {
+  for (const cmd of [
+    'hcloud ECS BatchRebootServers --reboot.servers.1.id=x --reboot.type=SOFT',
+    'hcloud ECS BatchSoftRebootServers --reboot.servers.1.id=x --reboot.type=SOFT',
+    'sudo hcloud ECS BatchRebootServers --reboot.type=SOFT',
+  ]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.ok(
+      !result.findings.some((f) => f.ruleId === 'hwc-sandbox-destructive-command'),
+      `${cmd} should not trigger hwc-sandbox-destructive-command`,
+    );
+  }
+});
+
+test('evaluateCommandRisk still blocks sandbox-terminal destructive commands', () => {
+  for (const cmd of ['reboot', 'shutdown -h now', 'rm -rf /', 'mkfs.ext4 /dev/sdb', 'fdisk /dev/sda']) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.ok(
+      result.findings.some((f) => f.ruleId === 'hwc-sandbox-destructive-command'),
+      `${cmd} should trigger hwc-sandbox-destructive-command`,
+    );
+  }
+});
