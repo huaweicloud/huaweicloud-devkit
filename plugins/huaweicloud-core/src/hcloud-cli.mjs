@@ -496,11 +496,7 @@ export async function runHcloud(args, options = {}) {
   try {
     stsInject = await resolveStsInjectArgs(normalizedArgs);
   } catch (error) {
-    if (
-      error?.code === 'TOKEN_INVALID' ||
-      error?.code === 'TOKEN_EXCHANGE_FAILED' ||
-      error?.code === 'TOKEN_EXPIRED'
-    ) {
+    if (error?.code === 'TOKEN_INVALID' || error?.code === 'TOKEN_EXCHANGE_FAILED' || error?.code === 'TOKEN_EXPIRED') {
       return {
         ok: false,
         code: error.code,
