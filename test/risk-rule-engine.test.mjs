@@ -361,3 +361,8 @@ test('evaluateCommandRisk still blocks sandbox-terminal destructive commands', (
     );
   }
 });
+
+test('evidence snippets redact X-Auth-Token values', () => {
+  const result = evaluateCommandRisk('echo $HW_X_AUTH_TOKEN=SecretTokenValue123');
+  assert.doesNotMatch(JSON.stringify(result), /SecretTokenValue123/);
+});
