@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.9-next.6
+
+- feat(auth): support Huawei Cloud X-Auth-Token authentication. When no AK/SK is present but `HW_X_AUTH_TOKEN` env is injected, devkit exchanges the token for temporary AK/SK via IAM `CreateTemporaryAccessKeyByToken` (in-memory cache + single-flight, `duration_seconds=900`) and injects them into hcloud. Token expiry is detected proactively via optional `HW_X_AUTH_TOKEN_EXPIRES_AT` (`TOKEN_EXPIRED`) with a 401 fallback (`TOKEN_INVALID`). Strictly additive — permanent/temporary AK/SK paths are untouched.
+
 ## 1.1.9-next.5
 
 - fix(safety): stop treating hcloud Reboot/Restart API calls as sandbox-terminal destructive commands. `hcloud ECS BatchRebootServers --reboot.type=SOFT` was wrongly denied by `hwc-sandbox-destructive-command` (its bare `\breboot\b` matched the `--reboot.type` parameter name). Added a `none` (`\bhcloud\b`) condition so the sandbox-terminal rule skips hcloud commands — those go through `hwc-destructive-reset/delete` + `classifyHcloudArgs` write/execution gating instead. Raw sandbox commands (`reboot`, `rm -rf /`, `shutdown`, `mkfs`, `fdisk`) still deny.
