@@ -703,7 +703,7 @@ function resolveOpenCodeEra() {
   return (resolvedOpenCodeEra = 'v2');
 }
 
-function updateOpenCodeConfig(pluginDir) {
+function updateOpenCodeConfig(pluginDir, { nativePluginInstalled = false } = {}) {
   const configPath = opencodeConfigFile();
   const mcpPath = join(pluginDir, 'src', 'mcp-server.mjs').replace(/\\/g, '/');
   const era = resolveOpenCodeEra();
@@ -722,6 +722,25 @@ function updateOpenCodeConfig(pluginDir) {
 
   const { config: next, existing, changed } = mergeOpenCodeEntry(config, { mcpPath, era });
 
+  // Native-plugin mode: the in-process plugin already bridges all 42 tools with
+  // the shared callTool layer (names, approval gate, telemetry unchanged). Keep
+  // the MCP entry for manual fallback but leave it disabled so OpenCode does
+  // not register 42 duplicate `huaweicloud-devkit_*` copies (#940 follow-up).
+  let mcpDisabled = false;
+  if (nativePluginInstalled) {
+    const key = 'huaweicloud-devkit';
+    if (era === 'v2') {
+      const servers = isPlainObject(next.mcp?.servers) ? next.mcp.servers : null;
+      if (servers && servers[key] && servers[key].disabled !== true) {
+        servers[key] = { ...servers[key], disabled: true };
+        mcpDisabled = true;
+      }
+    } else if (next.mcp?.[key] && next.mcp[key].enabled !== false) {
+      next.mcp[key] = { ...next.mcp[key], enabled: false };
+      mcpDisabled = true;
+    }
+  }
+
   // Restore user fields saved by a previous uninstall (issue #615), on fresh install only.
   if (!existing) {
     const delta = takeAgentDelta('opencode');
@@ -734,12 +753,15 @@ function updateOpenCodeConfig(pluginDir) {
     }
   }
 
-  if (existing && !changed) {
+  if (existing && !changed && !mcpDisabled) {
     console.log(`  OpenCode MCP config unchanged: ${configPath}`);
     return;
   }
 
   writeMcpSettingsFile(configPath, next);
+  if (mcpDisabled) {
+    console.log(`  OpenCode MCP entry disabled (native plugin active — no duplicate tools) -> ${configPath}`);
+  }
   console.log(
     existing
       ? `  OpenCode MCP config merged (user fields preserved, ${era}): ${configPath}`
@@ -965,6 +987,7 @@ async function installOpenCode() {
   // into OpenCode in-process custom tools (zod schemas + callTool), plus safety
   // gate and telemetry. Local plugins are auto-loaded from this directory.
   const nativePluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'plugins', 'huaweicloud-devkit.js');
+  let nativePluginInstalled = false;
   if (existsSync(nativePluginSrc)) {
     copyFileSync(nativePluginSrc, join(opcPlugins, 'huaweicloud-devkit.js'));
     // Deps for the native plugin (zod) live next to the OpenCode config so the
@@ -974,9 +997,10 @@ async function installOpenCode() {
     if (existsSync(nativePkgSrc) && !existsSync(nativePkgDst)) {
       copyFileSync(nativePkgSrc, nativePkgDst);
     }
+    nativePluginInstalled = true;
     console.log(`  Native plugin -> ${join(opcPlugins, 'huaweicloud-devkit.js')}`);
   }
-  updateOpenCodeConfig(pluginDest);
+  updateOpenCodeConfig(pluginDest, { nativePluginInstalled });
   installRuntimeDeps(pluginDest);
 }
 
@@ -1063,6 +1087,7 @@ async function updateOpenCode() {
   console.log(`  Plugin updated -> ${opcPlugins}`);
   // Native plugin refresh (#905 OpenCode performance) — overwrite in place.
   const nativePluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'plugins', 'huaweicloud-devkit.js');
+  let nativePluginInstalled = false;
   if (existsSync(nativePluginSrc)) {
     copyFileSync(nativePluginSrc, join(opcPlugins, 'huaweicloud-devkit.js'));
     const nativePkgSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'package.json');
@@ -1070,9 +1095,10 @@ async function updateOpenCode() {
     if (existsSync(nativePkgSrc) && !existsSync(nativePkgDst)) {
       copyFileSync(nativePkgSrc, nativePkgDst);
     }
+    nativePluginInstalled = true;
     console.log(`  Native plugin updated -> ${join(opcPlugins, 'huaweicloud-devkit.js')}`);
   }
-  updateOpenCodeConfig(pluginDest);
+  updateOpenCodeConfig(pluginDest, { nativePluginInstalled });
   mkdirSync(pluginDest, { recursive: true });
   writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
   installRuntimeDeps(pluginDest);

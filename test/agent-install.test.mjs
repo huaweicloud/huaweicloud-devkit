@@ -64,7 +64,7 @@ function fakeCodexEnv(cwd, options = {}) {
   writeFileSync(
     scriptPath,
     `
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_CODEX_LOG, JSON.stringify(args) + '\\n');
 if (args[0] === '--version') {
@@ -999,3 +999,25 @@ test(
     }
   },
 );
+
+test('opencode install: native plugin active + MCP entry disabled (no duplicate tools)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  try {
+    const res = run('opencode', home, cwd, 'install');
+    assert.equal(res.status, 0, res.stderr);
+    // Native plugin deployed
+    assert.ok(existsSync(join(home, '.config', 'opencode', 'plugins', 'huaweicloud-devkit.js')));
+    // MCP entry present but disabled
+    const cfg = JSON.parse(readFileSync(join(home, '.config', 'opencode', 'opencode.json'), 'utf8'));
+    assert.ok(cfg.mcp?.['huaweicloud-devkit'], 'MCP entry should exist for manual fallback');
+    assert.equal(
+      cfg.mcp['huaweicloud-devkit'].enabled,
+      false,
+      'MCP entry must be disabled when native plugin is active',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
