@@ -42,7 +42,7 @@ token 不能直接喂给 hcloud，但可以通过 IAM 的 **`CreateTemporaryAcce
 | 项                 | 决策                                                                                                                                                                           |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | token 注入字段     | `HW_X_AUTH_TOKEN`（环境变量 + CodeArts `server.environment.HW_X_AUTH_TOKEN`），由华为云内部 agent 注入；env 注入且**进程长驻** → `process.env` 为启动快照，进程内 token 值不变 |
-| token 过期时间字段 | `HW_X_AUTH_TOKEN_EXPIRES_AT`（ISO8601 或 epoch 秒，可选），注入方提供；devkit 主动读，到期前告警（方案 A）                                                                     |
+| token 过期时间字段 | `HW_X_AUTH_TOKEN_EXPIRES_AT`（ISO8601 或 epoch 秒，**可选**）；缺省时 devkit 从 token 字符串自解析过期时间（CMS 内嵌 JSON `token.expires_at`），active 告警无需注入方显式提供 |
 | 优先级             | **AK/SK 优先**——有可用 AK/SK 直接走现有路径；无 AK/SK 时才用 token                                                                                                             |
 | `duration_seconds` | **900（15min）**——临时凭证先于 token 过期，每次重换都真实校验 token，无错位，最小权限                                                                                          |
 | IAM 端点           | 全局端点 `iam.myhuaweicloud.com`（可被 `HW_TOKEN_IAM_ENDPOINT` 环境变量覆盖，供测试/翻墙场景）                                                                                 |
@@ -75,7 +75,7 @@ token 不能直接喂给 hcloud，但可以通过 IAM 的 **`CreateTemporaryAcce
 ### 2. `src/auth/credentials.mjs`（小改）
 
 - 新增 `resolveXAuthToken()`：从 `process.env.HW_X_AUTH_TOKEN` 和 CodeArts `mcp_settings.json` env 读取 token（复用 `present()` 占位符判定），返回 token 或 `null`。
-- 新增 `resolveXAuthTokenExpiry()`：读 `HW_X_AUTH_TOKEN_EXPIRES_AT`（复用 `parseStsExpiry` 的 ISO8601/epoch 解析语义），返回过期 epoch ms 或 `null`。
+- 新增 `resolveXAuthTokenExpiry()`：优先读 `HW_X_AUTH_TOKEN_EXPIRES_AT`（ISO8601/epoch 解析语义）；**缺省时 fallback 到 token 自解析**——base64 解码 CMS SignedData 并提取内嵌 JSON 的 `token.expires_at`；返回过期 epoch ms 或 `null`。
 - `resolveCredentials` 保持不变（token 不是 AK/SK 三元组的一部分，不混入）。
 
 ### 3. `src/hcloud-cli.mjs`（小改）
@@ -105,8 +105,8 @@ token 不能直接喂给 hcloud，但可以通过 IAM 的 **`CreateTemporaryAcce
 - **临时 AK/SK 自动续期（token 有效期内）**：临时凭证每 15min 过期 → `getTokenCredentials` 自动重换，会话不中断；每次重换即校验 token。
 - **不做 token 轮换感知**：token 经 env 注入且进程长驻，`process.env` 是启动快照，注入方轮换 env 后 devkit 进程读不到新值，故「值变化强制重换」不成立。
 - **token 过期（方案 A）**：
-  - 优先读 `HW_X_AUTH_TOKEN_EXPIRES_AT` 主动判断，到期前告警 `TOKEN_EXPIRED`（提示用户/运维重启进程，注入方重新注入凭证）。
-  - 未提供 `HW_X_AUTH_TOKEN_EXPIRES_AT` 时，兜底靠临时凭证重换取 401（`The token must be updated`）判定 token 失效。
+  - 优先读 `HW_X_AUTH_TOKEN_EXPIRES_AT` 主动判断；**未注入该字段时从 token 字符串自解析过期时间**（CMS 内嵌 JSON `token.expires_at`）——到期前告警 `TOKEN_EXPIRED`（提示用户/运维重启进程，注入方重新注入凭证）。
+  - 自解析也失败（非 CMS/无内嵌 JSON）时，兜底靠临时凭证重换取 401（`The token must be updated`）判定 token 失效。
   - 失效恢复 = **重启进程重新注入**（与现有 STS `CREDENTIAL_EXPIRED` 语义一致），devkit 不尝试自动轮换。
 - 账密登录/重新获取新 token **由注入方负责**（devkit 不持有 username/password）。
 
