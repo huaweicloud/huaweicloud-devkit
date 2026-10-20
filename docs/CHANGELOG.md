@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.1.10-next.2
+## 1.1.10-next.3
 
 - fix(auth): recognize `HW_X_AUTH_TOKEN` in `auth_status` onboarding — token mode no longer reports `未配置华为云凭证`/auth-init prompt; `credentialsConfigured` and `credentialPanel.activeSource` now reflect the token.
 
