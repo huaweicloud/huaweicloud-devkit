@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.10-next.4
+
+- fix: CodeArts Web 测试六项修复 — hdkitservice/voucher 后端 API 支持 X-Auth-Token(无 AK/SK 换临时 AK/SK);读 JSON 时 strip UTF-8 BOM;setup-cli 惰性 require node:sqlite(CLI 无需 --experimental-sqlite);doctor 平台 STS/token 场景将凭据 fail 降级为 warn;auth_status 新增 usableCredentials;check_account_type 错误信息明确化。
+
 ## 1.1.10-next.3
 
 - fix(auth): recognize `HW_X_AUTH_TOKEN` in `auth_status` onboarding — token mode no longer reports `未配置华为云凭证`/auth-init prompt; `credentialsConfigured` and `credentialPanel.activeSource` now reflect the token.
