@@ -429,11 +429,49 @@ export function resolveXAuthToken() {
 
 export function resolveXAuthTokenExpiry() {
   const v = process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
-  if (!v || typeof v !== 'string' || !v.trim()) return null;
-  const asNum = Number(v.trim());
-  if (Number.isFinite(asNum) && asNum > 0) return asNum > 1e12 ? asNum : asNum * 1000;
-  const t = Date.parse(v.trim());
-  return Number.isFinite(t) ? t : null;
+  if (v && typeof v === 'string' && v.trim()) {
+    const asNum = Number(v.trim());
+    if (Number.isFinite(asNum) && asNum > 0) return asNum > 1e12 ? asNum : asNum * 1000;
+    const t = Date.parse(v.trim());
+    if (Number.isFinite(t)) return t;
+  }
+
+  // Fallback: 未注入 HW_X_AUTH_TOKEN_EXPIRES_AT 时，从 token 字符串自解析过期时间。
+  // X-Auth-Token 是 CMS/PKCS#7 SignedData(base64 DER),其 eContent 内嵌明文 JSON
+  // (含 token.expires_at);base64 解码 + 提取 {"token" JSON 即可读出,无需依赖注入方显式给过期时间。
+  const token = resolveXAuthToken();
+  if (!token) return null;
+  return parseXAuthTokenExpiry(token);
+}
+
+function parseXAuthTokenExpiry(token) {
+  try {
+    const pad = token + '='.repeat((4 - (token.length % 4)) % 4);
+    const text = Buffer.from(pad.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8');
+    const idx = text.indexOf('{"token"');
+    if (idx < 0) return null;
+    const tail = text.slice(idx);
+    let depth = 0;
+    let end = -1;
+    for (let i = 0; i < tail.length; i += 1) {
+      if (tail[i] === '{') depth += 1;
+      else if (tail[i] === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    if (end < 0) return null;
+    const obj = JSON.parse(tail.slice(0, end));
+    const expiresAt = obj?.token?.expires_at;
+    if (!expiresAt || typeof expiresAt !== 'string') return null;
+    const t = Date.parse(expiresAt);
+    return Number.isFinite(t) ? t : null;
+  } catch {
+    return null;
+  }
 }
 
 export function lastSyncPath() {

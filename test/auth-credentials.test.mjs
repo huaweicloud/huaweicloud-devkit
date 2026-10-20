@@ -952,3 +952,38 @@ test('resolveXAuthTokenExpiry parses ISO8601 and epoch seconds', () => {
     else process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = saved;
   }
 });
+
+test('resolveXAuthTokenExpiry falls back to parsing token content when env missing', () => {
+  const savedExp = process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+  const savedToken = process.env.HW_X_AUTH_TOKEN;
+  try {
+    delete process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+    const json =
+      '{"token":{"expires_at":"2026-10-21T03:34:36.497000Z","issued_at":"2026-10-20T03:34:36.497000Z","methods":["password"]}}';
+    const bin = Buffer.concat([Buffer.from([0x30, 0x82, 0x00, 0x41]), Buffer.from(json, 'utf8')]);
+    process.env.HW_X_AUTH_TOKEN = bin.toString('base64');
+    assert.equal(resolveXAuthTokenExpiry(), Date.parse('2026-10-21T03:34:36.497000Z'));
+  } finally {
+    if (savedExp === undefined) delete process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+    else process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = savedExp;
+    if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
+    else process.env.HW_X_AUTH_TOKEN = savedToken;
+  }
+});
+
+test('resolveXAuthTokenExpiry prefers env over token content', () => {
+  const savedExp = process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+  const savedToken = process.env.HW_X_AUTH_TOKEN;
+  try {
+    process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = '2026-10-22T00:00:00.000000Z';
+    const json = '{"token":{"expires_at":"2026-10-21T03:34:36.497000Z"}}';
+    const bin = Buffer.concat([Buffer.from([0x30, 0x82, 0x00, 0x41]), Buffer.from(json, 'utf8')]);
+    process.env.HW_X_AUTH_TOKEN = bin.toString('base64');
+    assert.equal(resolveXAuthTokenExpiry(), Date.parse('2026-10-22T00:00:00.000000Z'));
+  } finally {
+    if (savedExp === undefined) delete process.env.HW_X_AUTH_TOKEN_EXPIRES_AT;
+    else process.env.HW_X_AUTH_TOKEN_EXPIRES_AT = savedExp;
+    if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
+    else process.env.HW_X_AUTH_TOKEN = savedToken;
+  }
+});
