@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.9-next.7
+
+- feat(auth): make `HW_X_AUTH_TOKEN_EXPIRES_AT` optional — when absent, `resolveXAuthTokenExpiry` falls back to parsing the token's expiry directly from the X-Auth-Token content (base64 decode the CMS SignedData and extract the embedded `{"token":{expires_at}}` JSON), so token expiry is detected proactively without the injector supplying the field.
+
 ## 1.1.9-next.6
 
 - feat(auth): support Huawei Cloud X-Auth-Token authentication. When no AK/SK is present but `HW_X_AUTH_TOKEN` env is injected, devkit exchanges the token for temporary AK/SK via IAM `CreateTemporaryAccessKeyByToken` (in-memory cache + single-flight, `duration_seconds=900`) and injects them into hcloud. Token expiry is detected proactively via optional `HW_X_AUTH_TOKEN_EXPIRES_AT` (`TOKEN_EXPIRED`) with a 401 fallback (`TOKEN_INVALID`). Strictly additive — permanent/temporary AK/SK paths are untouched.
