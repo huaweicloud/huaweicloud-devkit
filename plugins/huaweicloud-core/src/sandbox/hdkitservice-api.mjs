@@ -1,20 +1,42 @@
-import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
 import { readInstalledVersion } from '../update-check.mjs';
+import { resolveCredentialsWithRuntime, resolveXAuthToken } from '../auth/credentials.mjs';
+import { getTokenCredentials } from '../auth/token-exchange.mjs';
+import { makeError } from '../auth/guidance.mjs';
 
 function getHdkitBaseUrl() {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
 }
 
+// Backend (hdkitservice/voucher) credentials: prefer AK/SK, else fall back to
+// X-Auth-Token → temporary AK/SK exchange, so token-auth users are not blocked.
+async function resolveBackendCredentials() {
+  try {
+    const creds = resolveCredentialsWithRuntime({ allowMissing: true });
+    if (creds && creds.ak && creds.sk) return creds;
+  } catch {
+    // no AK/SK — fall through to token
+  }
+  const token = resolveXAuthToken();
+  if (!token) return null;
+  try {
+    return await getTokenCredentials(token);
+  } catch {
+    return null;
+  }
+}
+
 async function hdkitRequest(method, path, body, timeoutMs = 300000) {
-  const { ak, sk, securitytoken } = getCredentials();
+  const creds = await resolveBackendCredentials();
+  const ak = creds?.ak;
+  const sk = creds?.sk;
+  const securitytoken = creds?.securityToken || '';
 
   if (!ak || !sk) {
-    throw new Error(
-      'Huawei Cloud credentials are not configured. ' +
-        'Run "npx huaweicloud-devkit auth init" or set HW_ACCESS_KEY/HW_SECRET_KEY.',
-    );
+    const err = makeError('HDKIT_CRED_MISSING');
+    err.detail = 'Run "npx huaweicloud-devkit auth init" or set HW_ACCESS_KEY/HW_SECRET_KEY/HW_X_AUTH_TOKEN.';
+    throw err;
   }
   const headers = {
     'Content-Type': 'application/json',

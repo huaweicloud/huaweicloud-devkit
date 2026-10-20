@@ -31,7 +31,7 @@ function opencodeConfigFile() {
 function readJsonSafe(path) {
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    return JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
   } catch {
     return null;
   }

@@ -50,11 +50,18 @@ export function obsConfigPath() {
   return process.env.HCLOUD_OBS_CONFIG_PATH || join(homedir(), '.obsutilconfig');
 }
 
+// Read a JSON file, stripping a leading UTF-8 BOM (U+FEFF) if present. CodeArts
+// writes mcp_settings.json with a BOM on Windows; plain JSON.parse would throw.
+export function readJsonFile(path) {
+  const text = readFileSync(path, 'utf8');
+  return JSON.parse(text.replace(/^\uFEFF/, ''));
+}
+
 export function readGlobalCredentials() {
   const path = globalCredentialsPath();
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    return readJsonFile(path);
   } catch {
     return null;
   }
@@ -325,7 +332,7 @@ export function readCodeArtsCredentials() {
     const path = join(dir, '.codeartsdoer', 'mcp', 'mcp_settings.json');
     try {
       if (!existsSync(path)) continue;
-      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const config = readJsonFile(path);
       const server = pickDevkitMcpServer(config?.mcpServers);
       if (!server?.env) continue;
 
@@ -355,7 +362,7 @@ export function readCodeArtsCredentials() {
   for (const path of workPaths) {
     try {
       if (!existsSync(path)) continue;
-      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const config = readJsonFile(path);
       const entry = readWorkEnvironmentEntry(config);
       if (entry) return entry;
     } catch {
@@ -404,7 +411,7 @@ export function resolveXAuthToken() {
     const path = join(dir, '.codeartsdoer', 'mcp', 'mcp_settings.json');
     try {
       if (!existsSync(path)) continue;
-      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const config = readJsonFile(path);
       const server = pickDevkitMcpServer(config?.mcpServers);
       const token = server?.env?.HW_X_AUTH_TOKEN;
       if (present(token)) return token;
@@ -418,7 +425,7 @@ export function resolveXAuthToken() {
   for (const path of workPaths) {
     try {
       if (!existsSync(path)) continue;
-      const config = JSON.parse(readFileSync(path, 'utf8'));
+      const config = readJsonFile(path);
       const server = pickDevkitMcpServer(config?.mcp);
       const token = server?.environment?.HW_X_AUTH_TOKEN;
       if (present(token)) return token;
@@ -482,7 +489,7 @@ export function readLastSync() {
   const path = lastSyncPath();
   if (!existsSync(path)) return null;
   try {
-    return JSON.parse(readFileSync(path, 'utf8'));
+    return readJsonFile(path);
   } catch {
     return null;
   }

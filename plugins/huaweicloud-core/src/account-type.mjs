@@ -112,7 +112,16 @@ export async function checkAccountType({ region } = {}) {
   }
   const identity = parseCallerIdentity(identityResult.stdout);
   if (!identity.ok) {
-    return { ok: false, error: identity.error };
+    // hcloud ran but stdout was not the expected JSON — usually a credentials
+    // problem surfacing as free-text error output, not a parser bug.
+    const snippet = String(identityResult.stdout || '')
+      .slice(0, 200)
+      .replace(/\s+/g, ' ');
+    return {
+      ok: false,
+      error: identity.error + (snippet ? ` (raw: ${snippet})` : ''),
+      hint: 'GetCallerIdentity 未返回 JSON，通常是凭据未就绪：请确认已运行 auth init、或平台已注入可用 STS（先用 huaweicloud_auth_status 查看 usableCredentials/credentialPanel）。',
+    };
   }
 
   const domainsResult = await runHcloud(['IAM', 'KeystoneListAuthDomains'], {

@@ -15,6 +15,7 @@ import {
   parseStsExpiry,
   pickDevkitMcpServer,
   readGlobalCredentials,
+  readJsonFile,
   readLastSync,
   resolveCredentials,
   resolveCredentialsWithRuntime,
@@ -1000,4 +1001,34 @@ test('resolveXAuthTokenExpiry prefers env over token content', () => {
     if (savedToken === undefined) delete process.env.HW_X_AUTH_TOKEN;
     else process.env.HW_X_AUTH_TOKEN = savedToken;
   }
+});
+
+test('readJsonFile strips a leading UTF-8 BOM', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'devkit-bom-'));
+  try {
+    const path = join(dir, 'mcp_settings.json');
+    writeFileSync(path, Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"mcpServers":{}}')]));
+    const parsed = readJsonFile(path);
+    assert.deepEqual(parsed, { mcpServers: {} });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('getAuthStatus exposes usableCredentials for platform STS and token', () => {
+  withTempHome(() => {
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+    delete process.env.HW_X_AUTH_TOKEN;
+    // 无任何凭据
+    let status = getAuthStatus('all');
+    assert.equal(status.usableCredentials, false);
+    // 注入 token
+    process.env.HW_X_AUTH_TOKEN = 'the-token';
+    status = getAuthStatus('all');
+    assert.equal(status.usableCredentials, true);
+    assert.equal(status.onboarding.reason, 'token-auth');
+    delete process.env.HW_X_AUTH_TOKEN;
+  });
 });

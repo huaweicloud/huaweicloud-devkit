@@ -25,6 +25,9 @@ import { redactSecrets } from './safety-policy.mjs';
 import {
   globalCredentialsPath,
   readGlobalCredentials,
+  readJsonFile,
+  resolveCredentialsWithRuntime,
+  resolveXAuthToken,
   writeGlobalCredentials,
   writeLastSync,
   writeObsConfig,
@@ -52,8 +55,6 @@ import { isUsableOfficeaceRoot, readOfficeaceRootMarker, writeOfficeaceRootMarke
 import { queryDistTagsFetch, determineTarget, semverCompare } from './update-check.mjs';
 import { getKooCliVersion, compareVersion, kooCliDownloadBase, KOO_CLI_BASE } from './koocli-version.mjs';
 import { findHcloudBin, hcloudProbeNextStep, probeHcloud } from './hcloud-probe.mjs';
-
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..');
@@ -244,6 +245,9 @@ function officeaceSqlitePath() {
 }
 
 function openOfficeaceDb() {
+  // Lazy-require node:sqlite (experimental on Node 22.x) so CLI commands that
+  // don't touch OfficeAce (version/doctor/install) run without the flag.
+  const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
   return new DatabaseSync(officeaceSqlitePath());
 }
 
@@ -1584,7 +1588,7 @@ function codeartsStatus() {
   );
   if (existsSync(codeartsMcpSettingsFile())) {
     try {
-      const config = JSON.parse(readFileSync(codeartsMcpSettingsFile(), 'utf8'));
+      const config = readJsonFile(codeartsMcpSettingsFile());
       console.log(
         `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`,
       );
@@ -1745,7 +1749,7 @@ function codeartsWorkStatus() {
   );
   if (existsSync(codeartsWorkMcpSettingsFile())) {
     try {
-      const config = JSON.parse(readFileSync(codeartsWorkMcpSettingsFile(), 'utf8'));
+      const config = readJsonFile(codeartsWorkMcpSettingsFile());
       console.log(
         `  MCP config: ${config.mcp?.['huaweicloud-devkit'] ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`,
       );
@@ -4310,7 +4314,27 @@ async function cmdDoctor() {
       timeout: 5000,
     });
     const hasAuth = authCheck.status === 0 && /access.?key/i.test(authCheck.stdout.toString());
-    check('hcloud credentials configured', hasAuth, 'Run: npx huaweicloud-devkit auth init');
+    if (hasAuth) {
+      check('hcloud credentials configured', true, '');
+    } else {
+      // In CodeArts, platform-injected STS / X-Auth-Token reach only the MCP
+      // server process, not this bash tool process — so `hcloud configure list`
+      // shows no profile even though the backend API path is usable. Degrade to
+      // a warning instead of a hard fail in that case (#P3 of CodeArts test).
+      let platformCredsActive = false;
+      try {
+        const c = resolveCredentialsWithRuntime({ allowMissing: true });
+        platformCredsActive = Boolean((c && c.ak && c.sk && c.securityToken) || resolveXAuthToken());
+      } catch {}
+      if (platformCredsActive) {
+        console.log(
+          `  \x1b[33m[WARN]\x1b[0m hcloud credentials configured — KooCLI 无 profile，但检测到平台凭证(MCP 通道可用);仅 KooCLI 直接调用需 auth init`,
+        );
+        warn++;
+      } else {
+        check('hcloud credentials configured', false, 'Run: npx huaweicloud-devkit auth init');
+      }
+    }
   }
 
   // Skills

@@ -189,6 +189,17 @@ export function getAuthStatus(target = 'all') {
   };
   return {
     target,
+    // usableCredentials: any credential source that makes the MCP/backend path
+    // actually work right now (S1, CodeArts settings, platform STS triplet,
+    // X-Auth-Token, or runtime creds) — supersedes the misleading
+    // credentialsConfigured/onboarding split (#P4).
+    usableCredentials: Boolean(
+      (credentials?.ak && credentials?.sk) ||
+      (s4Creds?.ak && s4Creds?.sk) ||
+      envHasRealTriplet() ||
+      tokenAuth ||
+      hasRuntimeCredentials(),
+    ),
     credentialsConfigured: Boolean(credentials?.ak && credentials?.sk) || Boolean(tokenAuth),
     credentialsPath: globalCredentialsPath(),
     mcpSettingsConfigured: Boolean(s4Creds?.ak && s4Creds?.sk),
