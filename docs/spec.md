@@ -12,6 +12,12 @@
 - 方案：`plugins/huaweicloud-core/src/safety-policy.mjs` 凭证变量引用检查新增 Windows cmd `%VAR%` 分支，覆盖 `%(HUAWEICLOUD|HWC|HW|OS)_(SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)%`。
 - 验收：`echo %HW_ACCESS_KEY%`、`echo %HUAWEICLOUD_SECRET_ACCESS_KEY%` → deny；`echo %PATH%` 不误报；现有 Unix 拦截不受影响。
 
+### #1b【P0】D4-2 v1.1.10 凭证 env 打印拦截未覆盖裸凭证变量名
+
+- 现状：PR #880 修复仅覆盖云厂商前缀变量（HUAWEICLOUD/HWC/HW/OS）+ Windows `%VAR%` 语法；裸凭证变量名（`access_key`/`secret_key`/`security_token`，无前缀）在 env-dump 门控与凭证引用检查中均放行（`env | grep access_key`、`echo $ACCESS_KEY`、`printenv secret_key`、`echo %security_token%` → allow）。
+- 方案：`plugins/huaweicloud-core/src/safety-policy.mjs` 抽取共享 `CRED_VAR_NAMES` 常量（SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN），env-dump 门控正则追加裸名匹配；凭证引用三分支（Unix `$VAR`/`${VAR}`、Windows `%VAR%`、`printenv|set VAR`）改为「前缀式 | 裸名」并行匹配，大小写不敏感。既有豁免语义不变（`'$VAR'`/`\$VAR` 字面引用、`set VAR=value` 赋值不误报）。
+- 验收：`env | grep access_key`、`echo $ACCESS_KEY`、`echo $secret_key`、`echo ${SECURITY_TOKEN}`、`printenv access_key`、`echo $SECRET_ACCESS_KEY`、`echo %ACCESS_KEY%`、`cmd /c echo %security_token%`、`set secret_key` → deny；`echo $ACCESS_TOKEN`、`set SECRET_KEYS`、`set ACCESS_KEY_ID`、`echo %TOKEN%` 不误报。
+
 ### #2【P1】EXP-E serviceCatalog 中文意图路由覆盖率 21.4% → ≥90%
 
 - 现状：`plugins/huaweicloud-core/src/tools.mjs` `serviceCatalog` routeMap 中文同义词覆盖不足，日常自然语言意图（购买/多少钱/审计日志/消息队列/防攻击等）MISS。
