@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.10-next.1
+
+- 合入 dev 全部修复(沙箱/安全/IAM/文档)到 codearts_web_test,并保留 OpenCode native plugin 与 X-Auth-Token 认证。
+- feat(auth): X-Auth-Token 认证(无 AK/SK 时用注入 token 换临时 AK/SK,`HW_X_AUTH_TOKEN_EXPIRES_AT` 可选,缺省从 token 自解析过期时间)。
+
 ## Unreleased
 
 - docs(huawei-ecs): large-user_data JSON-file path (--skeleton / --cli-jsonInput / --dryrun) + anti-pattern warning against abandoning the MCP approval channel (#964)

@@ -42,7 +42,7 @@ token 不能直接喂给 hcloud，但可以通过 IAM 的 **`CreateTemporaryAcce
 | 项                 | 决策                                                                                                                                                                           |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | token 注入字段     | `HW_X_AUTH_TOKEN`（环境变量 + CodeArts `server.environment.HW_X_AUTH_TOKEN`），由华为云内部 agent 注入；env 注入且**进程长驻** → `process.env` 为启动快照，进程内 token 值不变 |
-| token 过期时间字段 | `HW_X_AUTH_TOKEN_EXPIRES_AT`（ISO8601 或 epoch 秒，**可选**）；缺省时 devkit 从 token 字符串自解析过期时间（CMS 内嵌 JSON `token.expires_at`），active 告警无需注入方显式提供 |
+| token 过期时间字段 | `HW_X_AUTH_TOKEN_EXPIRES_AT`（ISO8601 或 epoch 秒，**可选**）；缺省时 devkit 从 token 字符串自解析过期时间（CMS 内嵌 JSON `token.expires_at`），active 告警无需注入方显式提供  |
 | 优先级             | **AK/SK 优先**——有可用 AK/SK 直接走现有路径；无 AK/SK 时才用 token                                                                                                             |
 | `duration_seconds` | **900（15min）**——临时凭证先于 token 过期，每次重换都真实校验 token，无错位，最小权限                                                                                          |
 | IAM 端点           | 全局端点 `iam.myhuaweicloud.com`（可被 `HW_TOKEN_IAM_ENDPOINT` 环境变量覆盖，供测试/翻墙场景）                                                                                 |
