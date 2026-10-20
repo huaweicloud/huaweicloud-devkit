@@ -2213,6 +2213,10 @@ function serviceCatalog(intent = '') {
         'website',
         'web app',
         'webapp',
+        'web 应用',
+        'web应用',
+        '应用部署',
+        '部署应用',
         'hosting',
         '网站',
         '网页',
@@ -2270,12 +2274,60 @@ function serviceCatalog(intent = '') {
     recommendedSkills.unshift('huawei-sandbox');
   }
 
+  // #979 D3-S7: compound web-app deployment intents (e.g. "部署 Web 应用 + RDS")
+  // must decompose into MULTIPLE service targets — the deployment target plus
+  // every matched service target — instead of collapsing to a single service.
+  // The keyword additions on the sandbox route ('web 应用' / '应用部署' / ...)
+  // make the deployment target matchable for CJK compound intents, and the
+  // deploymentIntent reorder above keeps the deployment skill first.
+  const compoundTargets = deploymentIntent && matched.length > 1 ? matched.flatMap((r) => r.services) : undefined;
+
+  // #979 D3-S7: RDS instance creation depends on network prerequisites the
+  // catalog must surface — VPC → subnet → security group — reusing the
+  // huawei-vpc skill creation chain. Query-only RDS intents stay unchanged.
+  const rdsCreationIntent =
+    matched.some((r) => r.services.includes('RDS')) && /create|创建|新建|部署|deploy|搭建/.test(it);
+  let prerequisites;
+  if (rdsCreationIntent) {
+    prerequisites = [
+      {
+        order: 1,
+        service: 'VPC',
+        skill: 'huawei-vpc',
+        operation: 'CreateVpc',
+        goal: 'Create or reuse the VPC that will contain the RDS instance',
+        hint: 'hcloud VPC CreateVpc --help (run --help before constructing the command)',
+      },
+      {
+        order: 2,
+        service: 'VPC',
+        skill: 'huawei-vpc',
+        operation: 'CreateSubnet',
+        goal: 'Create or reuse a subnet inside that VPC for the RDS instance',
+        hint: 'hcloud VPC CreateSubnet --help (needs the vpc_id from step 1)',
+      },
+      {
+        order: 3,
+        service: 'VPC',
+        skill: 'huawei-vpc',
+        operation: 'CreateSecurityGroup',
+        goal: 'Create or reuse a security group and allow the database port (e.g. 3306/5432)',
+        hint: 'hcloud VPC CreateSecurityGroup --help; security groups are region-level, not VPC-bound',
+      },
+    ];
+    if (!recommendedSkills.includes('huawei-vpc')) {
+      recommendedSkills.push('huawei-vpc');
+    }
+  }
+
   return {
     intent,
     recommendedSkills: recommendedSkills.length ? recommendedSkills : ['Use huaweicloud-core to route intent.'],
     recommendedServices: recommendedServices.length
       ? recommendedServices
       : ['Run hcloud --help to list available services.'],
+    ...(compoundTargets ? { compoundTargets } : {}),
+    ...(prerequisites ? { prerequisites } : {}),
     capabilityOrder: [
       'Huawei Cloud Skills for task-specific workflows and examples',
       'KooCLI hcloud for local authenticated operations and quick inspection',
