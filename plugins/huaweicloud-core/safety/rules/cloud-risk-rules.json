@@ -91,7 +91,7 @@
         "any": [
           {
             "field": "text",
-            "regex": "hcloud\\s+STS\\s+(AssumeAgency|GetCallerIdentity|GetTemporaryCredential)\\b"
+            "regex": "hcloud\\s+STS\\s+(AssumeAgency|GetTemporaryCredential)\\b"
           }
         ]
       },

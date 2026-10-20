@@ -28,6 +28,17 @@ const execFileAsync = promisify(execFile);
 const DEVBRIDGE_TUNNEL_DOMAIN = 'devbridge-s2.hwtunnel.com';
 // Migration placeholder page marker — a tunnel URL returning this body must be treated as unreachable.
 const DEVBRIDGE_MIGRATION_MARKER = '服务已迁移';
+// Gateway-level tunnel error markers (verified against the live s2 gateway, Oct 2026).
+// The gateway answers with exact text/plain bodies:
+//   404 "tunnel not found"    — no live host session on the gateway (host process dead or
+//                               tunnel deleted); the tunnel RECORD may still exist in `list`
+//   404 "port not configured" — the URL's port is not registered on the tunnel
+//   502 "bad gateway"         — host session alive, but the registered port has no local service
+// A bare status check cannot distinguish these from app-generated 404/502 responses, so the
+// checks below match the exact body AND gate on the HTTP status code.
+const DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER = 'tunnel not found';
+const DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER = 'port not configured';
+const DEVBRIDGE_BAD_GATEWAY_MARKER = 'bad gateway';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const WS_EXEC_INDEX_URL = pathToFileURL(join(__dirname, '..', 'ws-exec', 'index.js')).href;
@@ -215,12 +226,48 @@ export function buildExposeRemediation(port) {
   return `In the sandbox: source /tmp/hw_creds.sh; source /tmp/hw_api_key 2>/dev/null; devbridge delete-all; devbridge create <name>; devbridge port create <tunnelId> -p ${port} --protocol http -a; nohup devbridge host <tunnelId> -p ${port} > /tmp/host.log 2>&1 & If deploy_nginx reported a different (auto-incremented) port in its "port" field, use THAT port instead of the one shown here. Full procedure in huawei-sandbox skill, Step 7 (Expose via DevBridge).`;
 }
 
-export async function uploadFileWithSession(workspaceId, localPath, remotePath, username = 'root', timeoutMs = 30000) {
-  if (!existsSync(localPath)) {
-    throw new Error(`sandbox upload: local file not found: ${localPath}`);
+// #953: classify a local upload path BEFORE touching the file, so the error names
+// the real problem instead of a misleading "not found" when an entire parent
+// directory is missing (agent-side paths often do not exist at all).
+// kind: 'file' (uploadFileWithSession) | 'directory' (uploadProjectWithSession).
+// Returns null when the path exists with the expected type; otherwise an Error
+// whose message distinguishes missing-path from missing-parent, with a copy-to-tmp
+// hint that names the actual OS temp dir.
+export function classifyLocalUploadPath(localPath, kind = 'file') {
+  const expected = kind === 'directory' ? 'directory' : 'regular file';
+  const prefix = kind === 'directory' ? 'sandbox upload project' : 'sandbox upload';
+  if (existsSync(localPath)) {
+    const stat = statSync(localPath);
+    const matches = kind === 'directory' ? stat.isDirectory() : stat.isFile();
+    if (!matches) {
+      return new Error(`${prefix}: path is not a ${expected}: ${localPath}`);
+    }
+    return null;
   }
-  if (!statSync(localPath).isFile()) {
-    throw new Error(`sandbox upload: path is not a regular file: ${localPath}`);
+  const parent = dirname(localPath);
+  if (!existsSync(parent)) {
+    return new Error(
+      `${prefix}: directory not found: ${parent}. The DevKit MCP server reads files from ` +
+        `the machine it runs on. Verify the path, or first copy the ${expected} to the local ` +
+        `temp directory (${tmpdir()}) and upload from there.`,
+    );
+  }
+  return new Error(`${prefix}: local ${expected} not found: ${localPath}`);
+}
+
+// #953: reset command for uploadFileWithSession. mkdir -p the remote parent BEFORE any
+// chunk writes — the `printf >>` appends land in "${remotePath}.b64tmp" next to the
+// target, so an absent directory (e.g. /workspace/game2048/) would fail the very first
+// batch. This aligns base64-path behavior with upload_project's file server (which
+// already makedirs). Both paths are quoted; "path with spaces" is covered by tests.
+export function buildUploadResetCommand(remotePath, tmpPath) {
+  return `mkdir -p "$(dirname "${remotePath}")" && rm -f "${tmpPath}"`;
+}
+
+export async function uploadFileWithSession(workspaceId, localPath, remotePath, username = 'root', timeoutMs = 30000) {
+  const localError = classifyLocalUploadPath(localPath, 'file');
+  if (localError) {
+    throw localError;
   }
   const content = readFileSync(localPath);
   const base64 = content.toString('base64');
@@ -228,7 +275,7 @@ export async function uploadFileWithSession(workspaceId, localPath, remotePath, 
   const chunks = splitBase64Chunks(base64);
   const tmp = `${remotePath}.b64tmp`;
 
-  const reset = await execWithSession(workspaceId, `rm -f "${tmp}"`, username, timeoutMs);
+  const reset = await execWithSession(workspaceId, buildUploadResetCommand(remotePath, tmp), username, timeoutMs);
   if (reset.exitCode !== 0) {
     throw new Error(`sandbox upload: failed to reset temp file: ${reset.stdout || reset.error || reset.exitCode}`);
   }
@@ -628,11 +675,9 @@ export async function uploadProjectWithSession(
         'Set HW_WORKSPACE_ID env var or ensure huaweicloud_sandbox_connect was called first.',
     );
   }
-  if (!existsSync(localDir)) {
-    throw new Error(`sandbox upload project: local directory not found: ${localDir}`);
-  }
-  if (!statSync(localDir).isDirectory()) {
-    throw new Error(`sandbox upload project: path is not a directory: ${localDir}`);
+  const localError = classifyLocalUploadPath(localDir, 'directory');
+  if (localError) {
+    throw localError;
   }
 
   rotateUploadLog();
@@ -726,6 +771,56 @@ export async function uploadProjectWithSession(
     md5: result.md5 || expectedMd5,
     md5Verified: result.md5 ? result.md5 === expectedMd5 : true,
     extracted: options.extract !== false,
+  };
+}
+
+// A1 (#935): normalize the deploy_nginx configName to a bare filename. A value
+// carrying path separators (e.g. `/root/hc-activity.conf`, `./x/y.conf`) used to
+// be spliced verbatim into `/etc/nginx/conf.d/${configName}.conf`, producing the
+// broken path `/etc/nginx/conf.d//root/hc-activity.conf` (nginx never serves it,
+// the tunnel answers 502). Only the basename is kept and the `.conf` suffix is
+// stripped before the path is rebuilt as `/etc/nginx/conf.d/<name>.conf`. A
+// pure filename (no separators) keeps the previous behavior unchanged.
+export function resolveNginxConfigPath(configName, project) {
+  const raw = String(configName || project || '');
+  const base = raw.split(/[\\/]/).filter(Boolean).pop() || '';
+  const name = base.replace(/\.conf$/i, '') || 'default';
+  return `/etc/nginx/conf.d/${name}.conf`;
+}
+
+// A1 (#935): parse the write-verification block appended to the deploy_nginx
+// script. The old flow returned ok:true whenever the deploy script exited 0,
+// even when the tee write silently failed — the config file never existed and
+// the tunnel answered 502. The verification block emits explicit markers:
+//   DB_NGINX_CONFIG_MISSING=1  — the target config file does not exist
+//   DB_NGINX_T=PASS|FAIL       — nginx -t verdict, with failure output echoed
+//                                as `DB_NGINX_T_OUTPUT: ...` lines
+export function parseDeployNginxVerifyOutput(stdout) {
+  const text = String(stdout || '');
+  const configMissing = /DB_NGINX_CONFIG_MISSING=1/.test(text);
+  const nginxTest = (text.match(/^DB_NGINX_T=(\w+)$/m) || [])[1] || '';
+  const nginxTestOutput = (text.match(/^DB_NGINX_T_OUTPUT: .*$/gm) || [])
+    .map((line) => line.replace(/^DB_NGINX_T_OUTPUT: /, ''))
+    .join('\n');
+  return { configMissing, nginxTest, nginxTestOutput };
+}
+
+// A1 (#935): the deploy verdict. A deploy script exit of 0 alone is NOT proof
+// of success — the tee write can fail silently (broken pipe) and nginx -t can
+// reject the config. Returns ok:false with an explicit, actionable error for
+// any verification failure; a pure function so the verdict is unit-testable.
+export function evaluateDeployNginxVerify(result, verify, configPath) {
+  const exitCode = result?.exitCode;
+  const writeVerified = exitCode === 0 && !verify.configMissing && verify.nginxTest === 'PASS';
+  if (writeVerified) return { ok: true };
+  const problems = [];
+  if (exitCode !== 0) problems.push(`deploy script exited with code ${exitCode}`);
+  if (verify.configMissing) problems.push(`nginx config file ${configPath} was not created (tee write failed)`);
+  if (verify.nginxTest !== 'PASS')
+    problems.push(`nginx -t did not pass${verify.nginxTestOutput ? ` — ${verify.nginxTestOutput}` : ''}`);
+  return {
+    ok: false,
+    error: `sandbox deploy nginx: configuration write verification failed — ${problems.join('; ')}.`,
   };
 }
 
@@ -863,10 +958,14 @@ fi`;
     throw new Error(`sandbox deploy nginx: unknown nginxType "${nginxType}". Must be one of: spa, proxy, static`);
   }
 
+  // A1 (#935): configName is normalized to a bare filename so a path-shaped
+  // value can never produce `/etc/nginx/conf.d//root/xxx.conf` again.
+  const configPath = resolveNginxConfigPath(configName, project);
+
   const cmd = [
     resolveScript,
     `sudo mkdir -p /etc/nginx/conf.d`,
-    `sudo tee /etc/nginx/conf.d/${configName || project}.conf > /dev/null << 'NGINX_EOF'`,
+    `sudo tee ${configPath} > /dev/null << 'NGINX_EOF'`,
     config,
     `NGINX_EOF`,
     `# Resolve symlinks for chmod (chmod does not follow symlinks on Linux)`,
@@ -875,6 +974,11 @@ fi`;
     `find "$REAL_PROJECT" -type f -path "*/node_modules/.bin/*" -exec chmod +x {} \\; 2>/dev/null || true`,
     `if pgrep -x nginx > /dev/null 2>&1; then sudo killall -9 nginx 2>/dev/null; sleep 1; fi
     sudo nginx`,
+    `# A1 (#935): verify the config write took effect before reporting success`,
+    `NGINX_CONFIG_PATH=${configPath}`,
+    `if [ ! -f "$NGINX_CONFIG_PATH" ]; then echo "DB_NGINX_CONFIG_MISSING=1"; fi`,
+    `NGINX_T_OUTPUT=$(sudo nginx -t 2>&1 || true)`,
+    `if echo "$NGINX_T_OUTPUT" | grep -Eq "syntax is ok|test is successful"; then echo "DB_NGINX_T=PASS"; else echo "DB_NGINX_T=FAIL"; echo "$NGINX_T_OUTPUT" | sed "s/^/DB_NGINX_T_OUTPUT: /"; fi`,
   ].join('\n');
 
   const result = await execOneShot(workspaceId, cmd, username, timeoutMs);
@@ -901,13 +1005,36 @@ fi`;
   const driftWarning = tunnelActive ? formatPortDriftWarning(basePort, targetPort) : undefined;
   if (driftWarning) warnings.push(driftWarning);
 
+  // A1 (#935): verify the config write before reporting success. Any
+  // verification failure returns ok:false with an explicit, actionable error.
+  const verify = parseDeployNginxVerifyOutput(result.stdout);
+  const verdict = evaluateDeployNginxVerify(result, verify, configPath);
+  if (!verdict.ok) {
+    return {
+      ok: false,
+      error: verdict.error,
+      nginxType,
+      port: targetPort,
+      nodePort: effectiveNodePort || undefined,
+      outputPath,
+      projectPath,
+      configPath,
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      nextStep: 'fix_and_retry',
+      warning: warnings.length > 0 ? warnings.join(' | ') : undefined,
+    };
+  }
+
   return {
-    ok: result.exitCode === 0,
+    ok: true,
     nginxType,
     port: targetPort,
     nodePort: effectiveNodePort || undefined,
     outputPath,
     projectPath,
+    configPath,
+    verification: { configPath, nginxTest: verify.nginxTest },
     exitCode: result.exitCode,
     stdout: result.stdout,
     nextStep: 'expose_via_devbridge',
@@ -989,31 +1116,49 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `fi`,
     ``,
     `TOTAL=$((TOTAL+1))`,
-    `TUNNEL_ID=$(devbridge list -j 2>/dev/null | grep -oP '"tunnelId":\\s*"\\K[^"]+' | head -1)`,
-    `if [ -z "$TUNNEL_ID" ]; then`,
-    `  TUNNEL_ID=$(devbridge list 2>/dev/null | grep -E '^[a-z2-7]{8}[[:space:]]' | awk '{print $1}' | head -1)`,
+    `TUNNEL_IDS=$(devbridge list -j 2>/dev/null | grep -oP '"tunnelId":\\s*"\\K[^"]+' | head -5)`,
+    `if [ -z "$TUNNEL_IDS" ]; then`,
+    `  TUNNEL_IDS=$(devbridge list 2>/dev/null | grep -E '^[a-z2-7]{8}[[:space:]]' | awk '{print $1}' | head -5)`,
     `fi`,
-    `TUNNEL_URL="https://\${TUNNEL_ID}-${port}.${DEVBRIDGE_TUNNEL_DOMAIN}"`,
+    `# Gateway-level tunnel errors have exact text/plain bodies (verified on the s2`,
+    `# gateway): 404 "tunnel not found" = no live host session (the tunnel RECORD may`,
+    `# still be in \`list\`); 404 "port not configured" = URL port not registered; 502`,
+    `# "bad gateway" = tunnel alive, local service down. grep -x (exact-line match) +`,
+    `# status gating avoids flagging app-generated 404/502 pages.`,
     `probe_tunnel() {`,
     `  local url="$1" code`,
-    `  code=$(curl -s -o /tmp/.dc_tunnel_body -w "%{http_code}" --max-time 10 "$url" 2>/dev/null)`,
-    `  [ "$code" = "000" ] && return 1`,
-    `  # A migrated gateway serves a placeholder page with HTTP 200 — treat it as unreachable.`,
-    `  if grep -q "${DEVBRIDGE_MIGRATION_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then return 1; fi`,
-    `  # Any non-000 HTTP code means the tunnel is connected and nginx is serving`,
-    `  # (404/502 = content issue, not a connectivity issue — consistent with nginx_serving).`,
+    `  code=$(curl -s -o /tmp/.dc_tunnel_body -w "%{http_code}" --max-time 5 "$url" 2>/dev/null)`,
+    `  PROBE_FAIL_REASON=""`,
+    `  if [ "$code" = "000" ]; then PROBE_FAIL_REASON="unreachable"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
+    `  if grep -q "${DEVBRIDGE_MIGRATION_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="migration placeholder page"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
+    `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="tunnel not found (no live host session on the gateway)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
+    `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="port not configured (URL port not registered on the tunnel)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
+    `  if [ "$code" = "502" ] && grep -qx "${DEVBRIDGE_BAD_GATEWAY_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="bad gateway (tunnel alive, local service not serving)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
     `  rm -f /tmp/.dc_tunnel_body`,
     `  return 0`,
     `}`,
-    `if [ -n "$TUNNEL_ID" ] && probe_tunnel "$TUNNEL_URL"; then`,
-    `  echo "tunnel_url_accessible:PASS ($TUNNEL_URL)"`,
+    `# Probe each listed tunnel (bounded to 5) and select the first one that actually`,
+    `# serves this port — \`devbridge list\` order is arbitrary, so a stale tunnel listed`,
+    `# first must not shadow the live one.`,
+    `SELECTED_URL=""`,
+    `FIRST_ID=""`,
+    `for CAND in $TUNNEL_IDS; do`,
+    `  if [ -z "$FIRST_ID" ]; then FIRST_ID="$CAND"; fi`,
+    `  CAND_URL="https://\${CAND}-${port}.${DEVBRIDGE_TUNNEL_DOMAIN}"`,
+    `  if probe_tunnel "$CAND_URL"; then`,
+    `    SELECTED_URL="$CAND_URL"`,
+    `    break`,
+    `  fi`,
+    `done`,
+    `TUNNEL_URL="$SELECTED_URL"`,
+    `if [ -n "$SELECTED_URL" ]; then`,
+    `  echo "tunnel_url_accessible:PASS ($SELECTED_URL)"`,
     `  PASS=$((PASS+1))`,
-    `elif [ -n "$TUNNEL_ID" ]; then`,
-    `  echo "tunnel_url_accessible:FAIL ($TUNNEL_URL -> unreachable, tunnel not found, or migration placeholder page)"`,
+    `elif [ -n "$FIRST_ID" ]; then`,
+    `  echo "tunnel_url_accessible:FAIL (https://\${FIRST_ID}-${port}.${DEVBRIDGE_TUNNEL_DOMAIN} -> $PROBE_FAIL_REASON)"`,
     `else`,
     `  echo "tunnel_url_accessible:FAIL (no tunnel)"`,
     `fi`,
-    `rm -f /tmp/.dc_tunnel_body 2>/dev/null || true`,
     ``,
     `${`
 TOTAL=$((TOTAL+1))
@@ -1058,18 +1203,27 @@ fi
     .join('\n');
 }
 
-export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
-  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
-  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
-  // Use new RegExp to avoid ESLint no-control-regex on literal control chars in regex.
+// Strip terminal escape sequences from sandbox command output (#946): CSI
+// color/cursor codes and OSC shell-integration markers (shells with integration
+// enabled wrap EVERY line in \x1b]133;C\x07, which blinds anchored ^DB_...=
+// parsers), then normalize \r\n / \r line endings to \n.
+// Use new RegExp to avoid ESLint no-control-regex on literal control chars.
+export function stripTerminalEscapes(text) {
   const ESC = '\x1b';
   const csiRe = new RegExp(ESC + '\\[[0-9;]*[a-zA-Z]', 'g');
   const oscRe = new RegExp(ESC + '\\][^' + ESC + '\x07]*(?:\x07|' + ESC + '\\\\)', 'g');
-  const cleanStdout = String(stdout || '')
+  return String(text || '')
     .replace(csiRe, '')
-    .replace(oscRe, '');
+    .replace(oscRe, '')
+    .replace(/\r\n|\r/g, '\n');
+}
+
+export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
+  // Strip ANSI escape sequences (CSI color/cursor codes and OSC shell-integration markers)
+  // and split on any line-ending style (\r\n, \r, or \n) to handle all terminal outputs.
+  const cleanStdout = stripTerminalEscapes(stdout);
   const checks = {};
-  const lines = cleanStdout.split(new RegExp('\\r\\n|\\r|\\n'));
+  const lines = cleanStdout.split('\n');
   for (const line of lines) {
     const trimmed = line.trim();
     const m = trimmed.match(/^(\w+):(PASS|FAIL|SKIP)\b(.*)/);
@@ -1241,7 +1395,9 @@ export function buildDevbridgeAuthProbe() {
 // authMode is the LAST DB_AUTH_MODE line; attempts collects the non-sensitive
 // DB_ATTEMPT_* diagnostics emitted by tiers that failed and fell through.
 export function parseDevbridgeAuthOutput(stdout) {
-  const text = String(stdout || '');
+  // #946: OSC 133 markers precede every line on integration-enabled shells; the
+  // anchored ^DB_ATTEMPT_ regexes are blind to them without stripping first.
+  const text = stripTerminalEscapes(stdout);
   const modes = text.match(/DB_AUTH_MODE=([A-Z_]+)/g) || [];
   const authMode = modes.length > 0 ? modes[modes.length - 1].split('=')[1] : '';
   const attempts = {};
@@ -1278,14 +1434,31 @@ export function buildDevbridgeExposeScript(port, expiryHours = DEVBRIDGE_HOST_EX
     // not abort the script.
     `if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host -p ${port} -e ${expiryHours} > ${hostLog} 2>&1 < /dev/null & else nohup devbridge host -p ${port} -e ${expiryHours} > ${hostLog} 2>&1 < /dev/null & fi`,
     `disown 2>/dev/null || true`,
-    `sleep 12`,
-    `TUNNEL_URL=$(sed -n 's/.*Tunnel URL: *//p' ${hostLog} | tail -1)`,
-    `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
+    `sleep 6`,
+    // Port-anchored extraction (#943): a multi-port host prints one "Tunnel URL:" line per
+    // port, so a port-blind `sed | tail -1` can pick another port's URL.
+    `TUNNEL_URL=$(grep -oE "https://[A-Za-z0-9_-]+-${port}\\.devbridge-s2\\.hwtunnel\\.com" ${hostLog} | head -1)`,
+    // A2 (#935): probe with retries + backoff — 502/000 before the gateway is
+    // ready is not a failure; the LAST probe decides reachability. The body is
+    // captured every probe so DB_TUNNEL_BODY reflects the final one (#943).
+    `HTTP_CODE="000"`,
+    `if [ -n "$TUNNEL_URL" ]; then`,
+    `  for i in 1 2 3 4; do`,
+    `    HTTP_CODE=$(curl -s -o /tmp/.db_probe_body -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
+    `    echo "DB_PROBE_$i=$HTTP_CODE"`,
+    `    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then break; fi`,
+    `    if [ "$i" != "4" ]; then sleep 5; fi`,
+    `  done`,
+    `fi`,
     `echo "DB_HOST_LOG="`,
     `tail -n 5 ${hostLog}`,
     `echo "DB_TUNNEL_URL=$TUNNEL_URL"`,
     `echo "DB_HTTP_CODE=$HTTP_CODE"`,
     `echo "DB_EXPIRY_HOURS=${expiryHours}"`,
+    // First 64 bytes of the probe body (non-sensitive) so gateway-error markers
+    // like "tunnel not found" can be distinguished from app-generated 404/502 pages.
+    `echo "DB_TUNNEL_BODY=$(head -c 64 /tmp/.db_probe_body 2>/dev/null)"`,
+    `rm -f /tmp/.db_probe_body`,
     `echo "DB_QUOTA_ERROR=$(grep -c '10006' ${hostLog} 2>/dev/null || echo 0)"`,
   ].join('\n');
 }
@@ -1316,19 +1489,55 @@ export function buildDevbridgeVerifyScript(tunnelUrl) {
   ].join('\n');
 }
 
-// Parse the raw stdout of buildDevbridgeExposeScript into structured fields.
-export function parseDevbridgeExposeOutput(stdout) {
+// A2 (#935): parse the probe sequence emitted by buildDevbridgeExposeScript.
+// Each probe echo is `DB_PROBE_<n>=<code>`; reachability is decided by the
+// LAST probe — intermediate 502/000 probes are gateway-not-ready noise, not
+// failures, so they must not leak into the tool's verdict.
+export function parseDevbridgeProbeSequence(stdout) {
   const text = String(stdout || '');
+  const probes = [];
+  for (const m of text.matchAll(/^DB_PROBE_(\d+)=(\S*)$/gm)) {
+    probes.push({ attempt: Number(m[1]), httpCode: m[2] });
+  }
+  const finalHttpCode = probes.length > 0 ? probes[probes.length - 1].httpCode : '';
+  return { probes, finalHttpCode };
+}
+
+// A2 (#935): the reachability warning must come from the LAST probe's HTTP
+// status, not from a single early curl — the old single-shot check warned
+// "Tunnel reachable check returned HTTP (expected 200/304)" while the same
+// log showed DB_HTTP_CODE=200. 200/304 = no warning; anything else surfaces
+// as-is.
+export function formatTunnelReachabilityWarning(httpCode) {
+  if (httpCode === '200' || httpCode === '304') return undefined;
+  return `Tunnel reachable check returned HTTP ${httpCode || '000'} (expected 200/304). The URL may not be serving yet — the final probe decides.`;
+}
+
+// Parse the raw stdout of buildDevbridgeExposeScript into structured fields.
+// `gatewayTunnelError` marks a URL the s2 gateway itself reports as dead
+// (404 "tunnel not found" / "port not configured") — it can never serve content
+// regardless of the app. `badGateway` (502 "bad gateway") means the tunnel is
+// alive but the local service on the exposed port is not serving.
+export function parseDevbridgeExposeOutput(stdout) {
+  // #946: strip OSC/CSI escapes + \r BEFORE the anchored ^DB_ lookups — otherwise
+  // every field is lost on integration-enabled shells and a perfectly good tunnel
+  // comes back as ok:true with publicUrl missing (and pointlessly re-built once).
+  const text = stripTerminalEscapes(stdout);
   const getField = (key) => {
     const m = text.match(new RegExp(`^${key}=(.*)$`, 'm'));
     return m ? m[1].trim() : '';
   };
   const tunnelUrl = getField('DB_TUNNEL_URL') || (text.match(/TUNNEL_URL:(https:\/\/[^\s]+)/) || [])[1] || '';
   const httpCode = getField('DB_HTTP_CODE');
+  const body = getField('DB_TUNNEL_BODY');
   const quotaError = getField('DB_QUOTA_ERROR') === '1' || /10006/.test(text);
   const tunnelId = (tunnelUrl.match(/^https:\/\/([A-Za-z0-9_-]+)-\d+\./) || [])[1] || '';
   const expiryHours = Number(getField('DB_EXPIRY_HOURS')) || undefined;
-  return { tunnelUrl, httpCode, quotaError, tunnelId, expiryHours };
+  // Exact-body match gated on the status code: an app's own 404/502 page is never misjudged.
+  const gatewayTunnelError =
+    httpCode === '404' && (body === DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER || body === DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER);
+  const badGateway = httpCode === '502' && body === DEVBRIDGE_BAD_GATEWAY_MARKER;
+  return { tunnelUrl, httpCode, quotaError, tunnelId, expiryHours, gatewayTunnelError, badGateway };
 }
 
 // Parse the raw stdout of buildDevbridgeVerifyScript into structured fields.
@@ -1337,7 +1546,9 @@ export function parseDevbridgeExposeOutput(stdout) {
 // parseDevbridgeExposeOutput never matches them, which used to leave
 // verifyHttpCode empty and persistent always false.
 export function parseDevbridgeVerifyOutput(stdout) {
-  const text = String(stdout || '');
+  // #946: strip OSC/CSI escapes + \r — the anchored DB_VERIFY_* lookups are blind
+  // to them, leaving verifyHttpCode empty and persistent permanently false.
+  const text = stripTerminalEscapes(stdout);
   const getField = (key) => {
     const m = text.match(new RegExp(`^${key}=(.*)$`, 'm'));
     return m ? m[1].trim() : '';
@@ -1411,10 +1622,15 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
     if (parsed.quotaError && attempt < maxAttempts) {
       continue;
     }
-    // Unreachable (000) or a migrated-gateway placeholder: one retry.
+    // Unreachable (000), migrated-gateway placeholder, or gateway-level tunnel errors
+    // (404 "tunnel not found" / "port not configured"): one cleanup + rebuild retry.
+    // 502 "bad gateway" (host alive, local service down) also gets one retry to cover
+    // slow app starts.
     const unreachable = parsed.httpCode === '000' || parsed.httpCode === '';
     const migration = /服务已迁移/.test(String(result.stdout || ''));
-    if (unreachable || migration) {
+    const gatewayTunnelError = parsed.gatewayTunnelError === true;
+    const backendDown = parsed.badGateway === true;
+    if (unreachable || migration || gatewayTunnelError || backendDown) {
       if (attempt === 1) {
         try {
           await execOneShot(
@@ -1425,6 +1641,20 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
           );
         } catch {}
         continue;
+      }
+      // Retry exhausted: a URL the gateway itself reports as dead (or one pointing at
+      // the retired pre-migration gateway) must NOT be handed over as a working
+      // deployment link — previously this returned ok:true with a soft warning.
+      if (gatewayTunnelError || migration) {
+        return {
+          ok: false,
+          error: gatewayTunnelError
+            ? 'DevBridge gateway reports the fresh tunnel URL as dead (404 "tunnel not found" / "port not configured") — the host session is not registered on the gateway. A rebuild was already attempted.'
+            : 'DevBridge gateway serves a migration placeholder page (服务已迁移) — the URL points at the retired pre-migration gateway and cannot work.',
+          authMode,
+          httpCode: parsed.httpCode,
+          hostLog: String(result.stdout || '').slice(0, 400),
+        };
       }
     }
 
@@ -1474,11 +1704,15 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
       }
     }
 
-    if (parsed.httpCode !== '200' && parsed.httpCode !== '304') {
+    // A2 (#935): the reachability warning uses the FINAL probe's HTTP status —
+    // intermediate 502/000 probes (gateway not ready yet) must not leak into
+    // the verdict, and a sequence of 502/000 → 200 must NOT warn.
+    if (parsed.badGateway)
       warnings.push(
-        `Tunnel reachable check returned HTTP ${parsed.httpCode} (expected 200/304). The URL may not be serving yet.`,
+        'Tunnel reachable but the gateway reports "bad gateway" — the local service on the exposed port is not serving.',
       );
-    }
+    const reachabilityWarning = formatTunnelReachabilityWarning(parsed.httpCode);
+    if (reachabilityWarning) warnings.push(reachabilityWarning);
     const expiresAt =
       parsed.expiryHours !== undefined
         ? new Date(Date.now() + parsed.expiryHours * 3_600_000).toISOString()

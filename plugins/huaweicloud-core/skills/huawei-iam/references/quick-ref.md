@@ -55,6 +55,41 @@ hcloud IAM CreateLoginToken                # create login token
 hcloud IAM GetAccountSummaryV5             # account summary
 ```
 
+## Primary vs Sub-Account Judgment
+
+**Rule (validated against 6 live credentials, zero misjudgment): `username == domainName` → primary account; otherwise IAM sub-user.**
+
+The primary account's operator user is named after the domain, and an IAM user cannot occupy that name (account-unique), so the rule has no false positives.
+
+Preferred path — one MCP call:
+
+```
+huaweicloud_check_account_type            # optional region param, defaults to configured cli-region
+```
+
+CLI fallback (two read-only calls, no identity-policy permission required; works for both primary and sub-user credentials):
+
+```bash
+hcloud STS GetCallerIdentity --cli-region=<region>
+# -> principal_urn "iam::<account_id>:user:<username>" gives username; account_id gives domainId
+hcloud IAM KeystoneListAuthDomains
+# -> domains[0].name gives domainName (domains[0].id must equal account_id — consistency check)
+```
+
+Example: `principal_urn ...:user:dingchunlei` + domain name `es_hwcddbdt_OpenCapability_team` → names differ → IAM sub-user. `...:user:keco_1919aa` + domain name `keco_1919aa` → equal → primary account.
+
+**Do NOT use these two tempting-but-wrong rules** (both disproved in live testing):
+
+| Wrong rule                                    | Why it fails                                                                                         |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `ShowDomainPasswordPolicy` succeeds → primary | Permission-gated, not account-type-gated: a sub-user with IAM permissions also succeeds              |
+| `principal_id == account_id` → primary        | False for primary accounts too (observed on three separate primary samples; IDs only share a prefix) |
+
+Edge cases:
+
+- Agency-session credentials (`principal_urn` starts with `sts::` or contains `assumed-agency`): the rule does not apply — report the identity only.
+- `KeystoneValidateToken` looks like a one-call shortcut (its token payload has both names) but requires an existing token as `--X-Subject-Token`, which AK/SK signing does not provide.
+
 ## Security Best Practices
 
 1. **NEVER create IAM users** — use IAM Identity Center or temporary STS tokens

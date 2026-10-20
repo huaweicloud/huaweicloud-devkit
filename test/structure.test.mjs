@@ -180,6 +180,33 @@ test('huawei-cloud-deployment-task-management skill uses verified KooCLI service
   assert.doesNotMatch(body, /\bDeleteApplication\b/);
 });
 
+test('huawei-iam skill documents the validated primary-account judgment rule (#954)', () => {
+  const body = readFileSync(join(pluginRoot, 'skills', 'huawei-iam', 'SKILL.md'), 'utf8');
+  assert.match(body, /username == domainName/);
+  assert.match(body, /huaweicloud_check_account_type/);
+  // Both disproved judgment rules must be named so they are not rediscovered.
+  assert.match(body, /ShowDomainPasswordPolicy/);
+  assert.match(body, /principal_id == account_id/);
+
+  const quickRef = readFileSync(join(pluginRoot, 'skills', 'huawei-iam', 'references', 'quick-ref.md'), 'utf8');
+  assert.match(quickRef, /STS GetCallerIdentity/);
+  assert.match(quickRef, /KeystoneListAuthDomains/);
+  assert.match(quickRef, /username == domainName/);
+  assert.match(quickRef, /assumed-agency/);
+});
+
+test('huawei-ecs create-instance documents the large-user_data JSON-file path (#964)', () => {
+  const body = readFileSync(join(pluginRoot, 'skills', 'huawei-ecs', 'references', 'create-instance.md'), 'utf8');
+  // The oversized-parameter escape hatch: file-based params keep the MCP approval channel.
+  assert.match(body, /--cli-jsonInput/);
+  assert.match(body, /body\.server\.user_data/);
+  // The three global flags are absent from operation-level --help, so naming them is HELPFUL knowledge.
+  assert.match(body, /--skeleton/);
+  assert.match(body, /--dryrun/);
+  // The observed anti-pattern (abandoning MCP tools for a direct shell call) must be called out.
+  assert.match(body, /do NOT abandon the MCP channel/i);
+});
+
 test('skills with references have non-empty reference files', () => {
   const skillsDir = join(pluginRoot, 'skills');
   const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
@@ -980,4 +1007,104 @@ test('find-skills marks npx skills add as broken and keeps the git clone bypass 
   assert.match(skill, /实测失效/);
   assert.match(skill, /npx skills add/);
   assert.match(skill, /git clone/);
+});
+
+test('1024-batch2 (#935): skill docs carry the verified trap guidance', () => {
+  const readRef = (skill, file) => readFileSync(join(pluginRoot, 'skills', skill, 'references', file), 'utf8');
+  const readSkill = (skill) => readFileSync(join(pluginRoot, 'skills', skill, 'SKILL.md'), 'utf8');
+
+  // B1: subnet DNS pre-fix — empty dnsList breaks cloud-init/yum silently;
+  // both files must teach the UpdateSubnet fix with the Huawei internal DNS IPs.
+  const createInstance = readRef('huawei-ecs', 'create-instance.md');
+  assert.match(createInstance, /100\.125\.1\.250/);
+  assert.match(createInstance, /100\.125\.129\.250/);
+  assert.match(createInstance, /UpdateSubnet/);
+  const iac = readSkill('huawei-iac');
+  assert.match(iac, /UpdateSubnet/);
+
+  // B2/B9: proxy egress IP trap — NoProxy detection + /32 precise rules.
+  const windowsSsh = readRef('huawei-ecs', 'windows-ssh.md');
+  assert.match(windowsSsh, /NoProxy/);
+  assert.match(windowsSsh, /\/32/);
+
+  // B3/B4: firewalld on EulerOS 3.0; delete polling uses ListServersDetails —
+  // NovaShowJob must appear only as a non-existent correction, never as a
+  // recommended polling operation.
+  const troubleshooting = readRef('huawei-ecs', 'troubleshooting.md');
+  assert.match(troubleshooting, /firewalld/);
+  assert.match(troubleshooting, /ListServersDetails/);
+  for (const line of troubleshooting.split('\n')) {
+    if (line.includes('NovaShowJob')) {
+      assert.match(line, /不存在/, `NovaShowJob must only be documented as non-existent, found: ${line.trim()}`);
+    }
+  }
+
+  // B5/B6: sandbox has no systemd; devbridge 0.2.x has no --huaweicloud flag;
+  // STS ciphertext → APIGW.0301 with the plaintext-store upload remedy.
+  const sandbox = readSkill('huawei-sandbox');
+  assert.match(sandbox, /systemctl/);
+  assert.match(sandbox, /无 systemd|nginx -s reload/);
+  assert.match(sandbox, /devbridge auth login --access-key/);
+  assert.match(sandbox, /APIGW\.0301/);
+  // The removed 0.1.x login flow must not be taught as the 0.2.x path.
+  assert.doesNotMatch(sandbox, /auth login --huaweicloud/);
+
+  // B7: stage-5 cost gate carries the cash-balance + arrears semantics.
+  assert.match(iac, /现金余额/);
+  assert.match(iac, /欠费/);
+  const stage5 = iac.split('\n').find((line) => line.includes('Cost + balance gate'));
+  assert.ok(stage5, 'stage-5 cost gate row missing');
+  assert.ok(
+    stage5.includes('现金余额') && stage5.includes('欠费'),
+    'stage-5 gate must carry the cash-balance + arrears risk-control semantics',
+  );
+
+  // B8: content updates on an already-running instance (scp/rsync + reload).
+  assert.match(createInstance, /scp|rsync/);
+  assert.match(createInstance, /nginx -s reload/);
+
+  // B10: SELF_VERIFY self-agency pre-creation in the IAM skill.
+  const iam = readSkill('huawei-iam');
+  assert.match(iam, /SELF_VERIFY/);
+
+  // B11: hc-activity api_link validation rules.
+  const hcActivity = readRef('huawei-ecs', 'hc-activity.md');
+  assert.match(hcActivity, /hc-activity/);
+  assert.match(hcActivity, /OPENSERVICE_PARAM_ERROR/);
+  assert.match(hcActivity, /index\.html/);
+  assert.match(hcActivity, /作品链接无效/);
+  assert.match(hcActivity, /1-2 分钟/);
+});
+
+test('gateway tunnel-error bodies are treated as unreachable, not content issues', () => {
+  // Verified against the live s2 gateway (Oct 2026): the gateway answers
+  //   404 "tunnel not found"    — no live host session (tunnel record may still list)
+  //   404 "port not configured" — URL port not registered on the tunnel
+  //   502 "bad gateway"         — host alive, local service down
+  // A bare non-000 status check misreads these as PASS and dead URLs get handed
+  // over as successful deployments. The probe must match the exact body.
+  const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+
+  // Code: status-gated exact-body probes in both deploy check and expose parse.
+  assert.match(sessionManager, /const DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER = 'tunnel not found'/);
+  assert.match(sessionManager, /const DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER = 'port not configured'/);
+  assert.match(sessionManager, /const DEVBRIDGE_BAD_GATEWAY_MARKER = 'bad gateway'/);
+  assert.match(sessionManager, /grep -qx "\$\{DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER\}"/);
+  assert.match(sessionManager, /gatewayTunnelError/);
+  // Expose must extract the URL anchored to the requested port (multi-port hosts
+  // print one "Tunnel URL:" line per port; a port-blind tail -1 picks the wrong one).
+  // Plain substring check: the target text is itself a regex, so regex-matching it
+  // needs every metacharacter escaped — includes() avoids that trap.
+  assert.ok(
+    sessionManager.includes('grep -oE "https://[A-Za-z0-9_-]+-${port}'),
+    'expose script must extract the tunnel URL anchored to the requested port',
+  );
+  assert.doesNotMatch(sessionManager, /sed -n 's\/\.\*Tunnel URL: \*\/\/p' \$\{hostLog\} \| tail -1/);
+
+  // Skill: the deploy_check contract and the pitfall table document the markers.
+  assert.match(sandbox, /tunnel not found/);
+  assert.match(sandbox, /port not configured/);
+  assert.match(sandbox, /bad gateway/);
+  assert.match(sandbox, /404 "tunnel not found" ≠ content issue/);
 });

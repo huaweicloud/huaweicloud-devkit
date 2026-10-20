@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+- docs(huawei-ecs): large-user_data JSON-file path (--skeleton / --cli-jsonInput / --dryrun) + anti-pattern warning against abandoning the MCP approval channel (#964)
+
+## 1.1.10-next.0 (2026-10-20)
+
+- chore: sync README beta badge to 1.1.10
+- chore: set version override to 1.1.10 for next preview release
+- fix(sandbox): upload_file auto-creates remote parent dir + honest local-path errors
+- [1024活动第二批] 修复沙箱部署链路假成功/假告警与错误码映射缺口，补强 ECS/沙箱/IAC 技能文档踩坑指引 (#935) (#937)
+- style: prettier table alignment for #954 files (CI format)
+- chore: sync AGENTS.md tool count (39 -> 43) and changelog for #954
+- fix(safety): stop misclassifying STS GetCallerIdentity as credential exposure
+- docs(iam): primary-account judgment rule in skill + quick-ref
+- feat(iam): add huaweicloud_check_account_type tool
+- fix(safety): close tokenization bypasses in command classifier (#927) (#928)
+
+## 1.1.9-next.3 (2026-10-18)
+
+- fix(sandbox): strip OSC/CSI escapes in all DB_* parsers — root-cause fix for #946 (#947)
+
+## 1.1.9-next.2 (2026-10-18)
+
+- fix(sandbox): treat gateway-level tunnel errors as unreachable — root-cause fix for #943
+- Revert "feat(opencode): native plugin — 42 MCP tools as in-process custom tools (1.1.9-next.1) (#940)" (#941)
+- feat(opencode): native plugin — 42 MCP tools as in-process custom tools (1.1.9-next.1) (#940)
+- fix: 1024活动体验实测批次 — 沙箱隧道假成功 / auth persist 假输出 / CLI ok 判定 / ECS 指引 (#919-#922)
+- skills: enforce mandatory deployment-target gate via question tool (#3) (#918)
+
 ## 1.1.9-next.7
 
 - feat(auth): make `HW_X_AUTH_TOKEN_EXPIRES_AT` optional — when absent, `resolveXAuthTokenExpiry` falls back to parsing the token's expiry directly from the X-Auth-Token content (base64 decode the CMS SignedData and extract the embedded `{"token":{expires_at}}` JSON), so token expiry is detected proactively without the injector supplying the field.

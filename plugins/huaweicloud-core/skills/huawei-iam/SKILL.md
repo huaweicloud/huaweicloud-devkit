@@ -16,14 +16,15 @@ Domain expertise for Huawei Cloud Identity and Access Management (IAM). Covers u
 
 ## Critical Warnings
 
-| Trap                                         | Why                                                                                                                                                                                                                                  |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| NEVER create IAM users for humans            | Use OneAccess (IAM Identity Center) or federated SSO                                                                                                                                                                                 |
-| NEVER create long-term AK/SK                 | Use temporary STS tokens via agencies                                                                                                                                                                                                |
-| Wildcard policies dangerous                  | Effect:Allow + Resource:* = full access. Always scope resources                                                                                                                                                                      |
-| Agency trust is powerful                     | Agencies let services assume roles. Always add conditions                                                                                                                                                                            |
-| Root account must have MFA                   | Root AK/SK is all-powerful. Enable MFA immediately                                                                                                                                                                                   |
-| `缺少必填参数 cli-domain-id` = invalid creds | KooCLI's account-id lookup failed (APIGW.0301). Re-run `auth init`. Domain-level params (`--domain_id`, `--agency.domain_id`) are separate — get the account-id via `hcloud STS GetCallerIdentity --cli-region=<region>` when needed |
+| Trap                                             | Why                                                                                                                                                                                                                                      |
+| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| NEVER create IAM users for humans                | Use OneAccess (IAM Identity Center) or federated SSO                                                                                                                                                                                     |
+| NEVER create long-term AK/SK                     | Use temporary STS tokens via agencies                                                                                                                                                                                                    |
+| Wildcard policies dangerous                      | Effect:Allow + Resource:* = full access. Always scope resources                                                                                                                                                                          |
+| Agency trust is powerful                         | Agencies let services assume roles. Always add conditions                                                                                                                                                                                |
+| Root account must have MFA                       | Root AK/SK is all-powerful. Enable MFA immediately                                                                                                                                                                                       |
+| `缺少必填参数 cli-domain-id` = invalid creds     | KooCLI's account-id lookup failed (APIGW.0301). Re-run `auth init`. Domain-level params (`--domain_id`, `--agency.domain_id`) are separate — get the account-id via `hcloud STS GetCallerIdentity --cli-region=<region>` when needed     |
+| Primary-account check = `username == domainName` | Use `huaweicloud_check_account_type` (one call). NOT `ShowDomainPasswordPolicy` (permission-gated, sub-users can succeed) and NOT `principal_id == account_id` (false for primary accounts too). Full procedure: references/quick-ref.md |
 
 ## Policy Structure
 
@@ -43,14 +44,15 @@ Domain expertise for Huawei Cloud Identity and Access Management (IAM). Covers u
 
 ## Common Workflows
 
-| Task                     | Command                                                                                                                     | Steps                         |
-| ------------------------ | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| List users               | hcloud IAM KeystoneListUsers --cli-region=<r>                                                                               | references/quick-ref.md       |
-| Create group             | hcloud IAM CreateGroupV5 --group_name=<name>                                                                                | references/quick-ref.md       |
-| Create custom policy     | hcloud IAM CreateCloudServiceCustomPolicy --role.display_name=<n> --role.type=<type> --role.policy.Statement.1.Effect=Allow | references/policy-examples.md |
-| Create agency            | hcloud IAM CreateAgency --agency.name=<n> --agency.domain_id=<id> --agency.trust_domain_name=<domain>                       | references/quick-ref.md       |
-| Get temporary credential | hcloud STS AssumeAgency --agency_urn=<urn> --agency_session_name=<n> --duration_seconds=3600                                | references/quick-ref.md       |
-| Attach policy to group   | hcloud IAM AttachGroupPolicyV5 --group_id=<id> --policy_id=<id>                                                             | references/quick-ref.md       |
+| Task                         | Command                                                                                                                     | Steps                         |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------- | ----------------------------- |
+| List users                   | hcloud IAM KeystoneListUsers --cli-region=<r>                                                                               | references/quick-ref.md       |
+| Create group                 | hcloud IAM CreateGroupV5 --group_name=<name>                                                                                | references/quick-ref.md       |
+| Create custom policy         | hcloud IAM CreateCloudServiceCustomPolicy --role.display_name=<n> --role.type=<type> --role.policy.Statement.1.Effect=Allow | references/policy-examples.md |
+| Create agency                | hcloud IAM CreateAgency --agency.name=<n> --agency.domain_id=<id> --agency.trust_domain_name=<domain>                       | references/quick-ref.md       |
+| Get temporary credential     | hcloud STS AssumeAgency --agency_urn=<urn> --agency_session_name=<n> --duration_seconds=3600                                | references/quick-ref.md       |
+| Check primary vs sub-account | huaweicloud_check_account_type (or 2-call CLI fallback)                                                                     | references/quick-ref.md       |
+| Attach policy to group       | hcloud IAM AttachGroupPolicyV5 --group_id=<id> --policy_id=<id>                                                             | references/quick-ref.md       |
 
 ## Policy Examples (Least Privilege)
 
@@ -83,6 +85,22 @@ Domain expertise for Huawei Cloud Identity and Access Management (IAM). Covers u
 
 Agencies allow one service to act on behalf of another. Common use cases:
 
+### STS 自委托需预创建（实测 #935 报告4 问题6）
+
+生成 STS 临时凭证时报**委托不存在**时（如 `agency SELF_VERIFY not found`），需先预创建名为 `SELF_VERIFY` 的 IAM 自委托（agency）—— 活动/新环境默认**不预置**该委托：
+
+```bash
+# 1. 预创建自委托（信任本账号自身）
+hcloud IAM CreateAgency --agency.name=SELF_VERIFY --agency.trust_domain_name=<本账号domain_name>
+
+# 2. 授予基础权限（按需最小化）
+hcloud IAM AssociateAgencyWithDomainPermission --agency_id=<agency-id> --role_id=<role-id>
+
+# 3. 之后重试生成 STS 临时凭证
+```
+
+排查顺序：先 `hcloud IAM ListAgencies` 确认 `SELF_VERIFY` 是否存在，不存在再按上面步骤预创建，创建后重试 STS 调用。
+
 ### FunctionGraph Agency (VPC Access)
 
 FunctionGraph needs an agency to access VPC resources (RDS, DCS, etc.):
@@ -104,6 +122,7 @@ Common roles for FunctionGraph: VPC Administrator, RDS Administrator, DCS Admini
 
 - huaweicloud_list_operations service=IAM
 - huaweicloud_run_readonly_command for user/policy discovery
+- huaweicloud_check_account_type for primary/sub-account judgment
 
 ## References
 

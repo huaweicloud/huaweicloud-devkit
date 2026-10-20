@@ -9,6 +9,7 @@ import { createHmac, createHash } from 'node:crypto';
 import { evaluateArtifacts, evaluateCommandRisk, evaluateDeployPlan } from './risk-rule-engine.mjs';
 import { classifyTextCommand, redactSecrets } from './safety-policy.mjs';
 import { planHcloudCommand, runHcloud, consumeApprovalToken, inspectApprovalToken, hashArgs } from './hcloud-cli.mjs';
+import { checkAccountType } from './account-type.mjs';
 import { searchMarketplace } from './search-market.mjs';
 import { getServiceIcon } from './icon-library.mjs';
 import { detectFramework } from './detect-framework.mjs';
@@ -421,6 +422,21 @@ export const TOOL_DEFINITIONS = [
     },
   },
   {
+    name: 'huaweicloud_check_account_type',
+    description:
+      'Check whether the current credentials belong to the primary account or an IAM sub-user. Runs STS GetCallerIdentity + IAM KeystoneListAuthDomains (both read-only, no identity-policy permission required) and applies the validated rule: username == domainName -> primary account, otherwise IAM sub-user. Use before sandbox deployment (primary-account prechecks), account confirmation, or any task that needs to know who the current AK/SK belongs to. Returns isPrimaryAccount, applicable, domainId, domainName, userId, username, principalUrn, and an evidence string. Agency-session credentials are detected and reported as applicable:false.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        region: {
+          type: 'string',
+          description:
+            'Optional region ID for the region-level GetCallerIdentity endpoint (e.g., cn-north-4). Defaults to the configured cli-region.',
+        },
+      },
+    },
+  },
+  {
     name: 'huaweicloud_get_regional_availability',
     description:
       'Check if a specific Huawei Cloud service is available in a target region. Use before creating resources to prevent failures from regional unavailability.',
@@ -621,12 +637,16 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_upload_file',
     description:
-      'Upload a local file into the sandbox workspace. Base64-encodes the file, writes it in small chunks through the terminal session (the exec channel is fragile for large single commands), then decodes and verifies the md5 checksum. Use this instead of embedding large file content directly in a command.',
+      'Upload a local file into the sandbox workspace. Base64-encodes the file, writes it in small chunks through the terminal session (the exec channel is fragile for large single commands), then decodes and verifies the md5 checksum. The remote parent directory is created automatically if absent. Use this instead of embedding large file content directly in a command. local_path must be readable from the machine running the DevKit MCP server — if the file lives elsewhere, copy it to the local temp directory first.',
     inputSchema: {
       type: 'object',
       required: ['local_path', 'remote_path'],
       properties: {
-        local_path: { type: 'string', description: 'Absolute path to the local file to upload.' },
+        local_path: {
+          type: 'string',
+          description:
+            'Absolute path to the local file, readable from the machine running the DevKit MCP server (copy to the local temp dir first if not).',
+        },
         remote_path: { type: 'string', description: 'Target path in the sandbox, e.g. /workspace/<repo>/index.html.' },
         workspace_id: {
           type: 'string',
@@ -641,12 +661,16 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_upload_project',
     description:
-      'Package a local project directory and upload it to a sandbox workspace via HTTP tunnel. Falls back to base64 chunking if tunnel fails. Creates a tar.gz archive, uploads it, and extracts it on the sandbox by default.',
+      'Package a local project directory and upload it to a sandbox workspace via HTTP tunnel. Falls back to base64 chunking if tunnel fails. Creates a tar.gz archive, uploads it, and extracts it on the sandbox by default. local_dir must be readable from the machine running the DevKit MCP server — if the project lives elsewhere, copy it to the local temp directory first.',
     inputSchema: {
       type: 'object',
       required: ['local_dir'],
       properties: {
-        local_dir: { type: 'string', description: 'Local project directory to upload.' },
+        local_dir: {
+          type: 'string',
+          description:
+            'Local project directory, readable from the machine running the DevKit MCP server (copy to the local temp dir first if not).',
+        },
         remote_dir: {
           type: 'string',
           description:
@@ -1186,6 +1210,8 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       return retrieveSkill(args.name || '');
     case 'huaweicloud_list_regions':
       return listRegions();
+    case 'huaweicloud_check_account_type':
+      return checkAccountType(args);
     case 'huaweicloud_get_regional_availability':
       return getRegionalAvailability(args.service || '', args.region || '');
     case 'huaweicloud_explain_error':
@@ -2279,8 +2305,18 @@ function explainError({ service = 'unknown', errorCode = '', message = '', reque
     fgs: 'FSS',
     ecs: 'Ecs',
     ECS: 'Ecs',
+    kps: 'Kps',
+    KPS: 'Kps',
   };
-  const patternKey = SERVICE_ALIASES[svc] || service;
+  // #935 E2E-B1: real MCP calls pass only errorCode (e.g. Ecs.0019, KPS.9004)
+  // with no service — derive the service key from the dotted-code prefix so the
+  // service-keyed mapping table is hit. Explicit service behavior is unchanged.
+  let resolvedService = service;
+  if ((!service || svc === 'unknown') && /^[A-Za-z]+\.\w+/.test(errorCode)) {
+    const prefix = errorCode.split('.')[0].toLowerCase();
+    resolvedService = SERVICE_ALIASES[prefix] || errorCode.split('.')[0].toUpperCase();
+  }
+  const patternKey = SERVICE_ALIASES[svc] || resolvedService;
 
   const hwErrorPatterns = {
     OBS: {
@@ -2309,12 +2345,26 @@ function explainError({ service = 'unknown', errorCode = '', message = '', reque
     Ecs: {
       'Ecs.0707':
         'The flavor + image-type combination does not exist ("the product does not exist") — the error does not say which side is wrong, so check BOTH (#922): (1) the flavor is abandoned/sellout in this region/AZ (check os_extra_specs.cond:operation:status and cond:operation:az; see the huawei-ecs skill references/flavors.md for the AZ-vs-global-status conflict rule); (2) the image TYPE is incompatible with the flavor — market-type images fail with KunPeng flavors (kc1/kc2 etc.). Fix: switch the image to a gold-type image or switch to a compatible general-purpose flavor (verified: kc2.small.2 + market Ubuntu → Ecs.0707; s6.medium.2 + gold Ubuntu works), re-listing with hcloud ECS ListFlavors / hcloud IMS ListImages --__imagetype=gold first.',
+      // #935 (report 4 problem 1 / report 1 坑5): real-world ECS order failures
+      // with no mapping — flavor offline, AZ capacity, balance, keypair restriction.
+      'Ecs.0019':
+        'The flavor has been taken offline (Ecs.0019). Run `hcloud ECS ListFlavors --cli-region=<region>` to query currently on-sale flavors and switch to a replacement flavor (see the huawei-ecs skill references/flavors.md for the cond:operation:status field rules — a flavor marked 卖光/下线 keeps failing until you pick an on-sale one), then recreate.',
+      'Ecs.0319':
+        'The requested flavor has insufficient capacity in the selected availability zone (Ecs.0319). Fix: retry in a different availability zone, or switch to a replacement flavor (list on-sale flavors with `hcloud ECS ListFlavors --cli-region=<region>`), then recreate.',
+      'Ecs.0067':
+        'Order submission rejected for balance reasons (Ecs.0067). Check the cash balance with `hcloud BSS ShowCustomerAccountBalances --cli-region=cn-north-1` and top up if needed — pay-per-use order risk control checks the CASH balance only (代金券/vouchers do NOT participate in order risk control; they only offset the bill at settlement). Also settle any historical arrears, however small, before retrying.',
     },
     APIGW: {
       'APIGW.0301':
         'Incorrect IAM authentication information. The AK/SK is invalid (check the SK for typos), the security token is missing or expired, or the profile lacks project_id. Fix: re-run "npx huaweicloud-devkit auth init" (it auto-sets project_id), or set it manually: hcloud configure set --cli-project-id=<project_id> after finding it via hcloud IAM KeystoneListProjects --cli-region=<region> --name=<region>.',
       'APIGW.0802':
         'The current IAM user has no permissions in the requested region. Go to IAM console → Users → Permissions → add the target region, or switch to a different region.',
+    },
+    // #935 (report 1 坑5): KPS keypair creation has its own restriction code —
+    // the Kps service had no entry at all, so the error fell through to generic advice.
+    Kps: {
+      'KPS.9004':
+        'Keypair creation rejected for account restrictions (KPS.9004). Check the cash balance with `hcloud BSS ShowCustomerAccountBalances --cli-region=cn-north-1` and top up if needed, and settle any historical arrears (even a small unpaid amount triggers this) — then retry `hcloud ECS NovaCreateKeypair` or create the keypair in the console.',
     },
   };
   if (hwErrorPatterns[patternKey] && hwErrorPatterns[patternKey][errorCode]) {
