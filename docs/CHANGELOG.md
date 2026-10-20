@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.10-next.2
+
+- fix(auth): recognize `HW_X_AUTH_TOKEN` in `auth_status` onboarding — token mode no longer reports `未配置华为云凭证`/auth-init prompt; `credentialsConfigured` and `credentialPanel.activeSource` now reflect the token.
+
 ## 1.1.10-next.1
 
 - 合入 dev 全部修复(沙箱/安全/IAM/文档)到 codearts_web_test,并保留 OpenCode native plugin 与 X-Auth-Token 认证。
