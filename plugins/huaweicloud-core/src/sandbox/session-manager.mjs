@@ -1007,7 +1007,10 @@ fi`;
 
   // A1 (#935): verify the config write before reporting success. Any
   // verification failure returns ok:false with an explicit, actionable error.
-  const verify = parseDeployNginxVerifyOutput(result.stdout);
+  // (#981) strip OSC-133 / CSI escapes before parsing — shells with shell
+  // integration wrap every line in \x1b]133;C\x07, blinding the anchored
+  // /^DB_NGINX_T=(\w+)$/m regex (same fix as parseDeployCheckOutput #946).
+  const verify = parseDeployNginxVerifyOutput(stripTerminalEscapes(result.stdout));
   const verdict = evaluateDeployNginxVerify(result, verify, configPath);
   if (!verdict.ok) {
     return {

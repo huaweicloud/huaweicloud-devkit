@@ -23,6 +23,9 @@ import {
   parseDevbridgeExposeOutput,
   buildDevbridgeVerifyScript,
   parseDevbridgeVerifyOutput,
+  parseDeployNginxVerifyOutput,
+  evaluateDeployNginxVerify,
+  stripTerminalEscapes,
   DEVBRIDGE_HOST_EXPIRY_HOURS,
   validateTunnelPort,
   classifyLocalUploadPath,
@@ -612,4 +615,59 @@ test('#946: stripTerminalEscapes is exported for reuse by all DB_* parsers', asy
   assert.equal(typeof mod.stripTerminalEscapes, 'function');
   const cleaned = mod.stripTerminalEscapes(oscLine('DB_HTTP_CODE=200') + '\r\n');
   assert.equal(cleaned, 'DB_HTTP_CODE=200\n');
+});
+
+// --- #981: deploy_nginx write-verification must strip OSC-133 escapes before
+// parsing. Root cause: deployNginx (session-manager.mjs line 1010) called
+// parseDeployNginxVerifyOutput(result.stdout) WITHOUT stripTerminalEscapes,
+// unlike the other 4 DB_* parsers. On shells with shell-integration enabled
+// (hd-space-ai-shell2 image) every line is wrapped in \x1b]133;C\x07, which
+// blinds the anchored /^DB_NGINX_T=(\w+)$/m regex → nginxTest empty →
+// evaluateDeployNginxVerify falsely reports "nginx -t did not pass".
+// These tests mirror the deployNginx call site (strip then parse then evaluate).
+
+test('#981: parseDeployNginxVerifyOutput sees DB_NGINX_T=PASS behind OSC-133 + CRLF after strip', () => {
+  const stdout = oscLine('DB_NGINX_T=PASS') + '\r\n';
+  const verify = parseDeployNginxVerifyOutput(stripTerminalEscapes(stdout));
+  assert.equal(verify.configMissing, false);
+  assert.equal(verify.nginxTest, 'PASS');
+  assert.equal(verify.nginxTestOutput, '');
+});
+
+test('#981: parseDeployNginxVerifyOutput sees DB_NGINX_T=FAIL + output behind OSC-133 after strip', () => {
+  const stdout = [
+    oscLine('DB_NGINX_T=FAIL'),
+    oscLine('DB_NGINX_T_OUTPUT: nginx: [emerg] unknown directive "foo" in /etc/nginx/conf.d/x.conf:1'),
+  ].join('\r\n');
+  const verify = parseDeployNginxVerifyOutput(stripTerminalEscapes(stdout));
+  assert.equal(verify.configMissing, false);
+  assert.equal(verify.nginxTest, 'FAIL');
+  assert.match(verify.nginxTestOutput, /unknown directive/);
+});
+
+test('#981: parseDeployNginxVerifyOutput sees DB_NGINX_CONFIG_MISSING=1 behind OSC-133 after strip', () => {
+  const stdout = [oscLine('deploy output'), oscLine('DB_NGINX_CONFIG_MISSING=1')].join('\r\n');
+  const verify = parseDeployNginxVerifyOutput(stripTerminalEscapes(stdout));
+  assert.equal(verify.configMissing, true);
+  assert.equal(verify.nginxTest, '');
+});
+
+test('#981: evaluateDeployNginxVerify returns ok:true for OSC-wrapped DB_NGINX_T=PASS (deploy_nginx acceptance)', () => {
+  // Mirrors session-manager.mjs deployNginx lines 1010-1011 exactly: the raw
+  // OSC-wrapped stdout is stripped, parsed, then evaluated. exitCode 0 + PASS
+  // must yield ok:true — the D3-C3/D3-S3 false failure must not recur.
+  const result = { exitCode: 0 };
+  const rawStdout = [oscLine('nginx: configuration file /etc/nginx/nginx.conf test is successful'), oscLine('DB_NGINX_T=PASS')].join('\r\n');
+  const verify = parseDeployNginxVerifyOutput(stripTerminalEscapes(rawStdout));
+  const verdict = evaluateDeployNginxVerify(result, verify, '/etc/nginx/conf.d/x.conf');
+  assert.equal(verdict.ok, true);
+});
+
+test('#981: without strip, OSC-wrapped DB_NGINX_T=PASS is NOT parsed (documents the regression)', () => {
+  // Documents the pre-fix behavior: parseDeployNginxVerifyOutput itself does
+  // not strip (by design — the deployNginx call site is responsible), so raw
+  // OSC-wrapped input yields an empty nginxTest. This is why the strip must
+  // happen at the call site (line 1010), as fixed by #981.
+  const verify = parseDeployNginxVerifyOutput(oscLine('DB_NGINX_T=PASS') + '\r\n');
+  assert.equal(verify.nginxTest, '', 'OSC-wrapped input without strip must not match (proves the strip is required)');
 });
