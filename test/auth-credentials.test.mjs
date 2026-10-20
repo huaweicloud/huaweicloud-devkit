@@ -572,6 +572,20 @@ test('47 getAuthStatus onboarding: platform triplet + no S1 → needsSetup=false
   });
 });
 
+test('getAuthStatus onboarding: X-Auth-Token + no AK/SK → needsSetup=false (token-auth)', () => {
+  withTempHome(() => {
+    delete process.env.HW_ACCESS_KEY;
+    delete process.env.HW_SECRET_KEY;
+    delete process.env.HW_SECURITY_TOKEN;
+    process.env.HW_X_AUTH_TOKEN = 'the-token-value';
+    const { onboarding } = getAuthStatus('all');
+    assert.equal(onboarding.needsSetup, false);
+    assert.equal(onboarding.scenario, 0);
+    assert.equal(onboarding.reason, 'token-auth');
+    delete process.env.HW_X_AUTH_TOKEN;
+  });
+});
+
 test('48 getAuthStatus onboarding runtime active → needsSetup=false, no leak', () => {
   withTempHome(() => {
     clearRuntimeCredentials();

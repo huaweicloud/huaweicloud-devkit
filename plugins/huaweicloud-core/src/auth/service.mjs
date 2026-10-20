@@ -11,6 +11,7 @@ import {
   readCodeArtsCredentials,
   readGlobalCredentials,
   resolveCredentialsWithRuntime,
+  resolveXAuthToken,
   writeLastSync,
   writeObsConfig,
 } from './credentials.mjs';
@@ -77,6 +78,14 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
     scenario = 0;
     reason = 'mcp-settings-injected';
     message = '已从码道 MCP settings 读取到临时凭证,MCP 工具可直接使用。';
+    return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
+  }
+  if (resolveXAuthToken() && !s1Has && !envHasCreds) {
+    // X-Auth-Token authentication: no AK/SK injected but a token is present —
+    // devkit exchanges it for temporary AK/SK on demand, so no manual setup.
+    scenario = 0;
+    reason = 'token-auth';
+    message = '已使用 X-Auth-Token 认证,MCP 工具可直接使用,无需配置 AK/SK。';
     return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
   }
   if (s1Has && !envHasCreds) {
@@ -167,6 +176,7 @@ export function getAuthStatus(target = 'all') {
   const s4Creds = readCodeArtsCredentials();
   const onboarding = computeOnboarding({ credentials, reconciled });
   const stsExpiry = computeStsExpiry();
+  const tokenAuth = resolveXAuthToken();
   const credentialPanel = {
     sts: stsExpiry, // 临时 STS（MCP==沙箱同源）
     s1: {
@@ -174,11 +184,12 @@ export function getAuthStatus(target = 'all') {
       fingerprint: credentials?.ak ? fingerprint(credentials.ak, credentials.sk) : null,
       persistent: true, // 永久，无过期
     },
-    activeSource: stsExpiry ? 'temporary-sts' : credentials?.ak ? 's1-persistent' : 'none',
+    token: tokenAuth ? { active: true } : { active: false },
+    activeSource: stsExpiry ? 'temporary-sts' : credentials?.ak ? 's1-persistent' : tokenAuth ? 'x-auth-token' : 'none',
   };
   return {
     target,
-    credentialsConfigured: Boolean(credentials?.ak && credentials?.sk),
+    credentialsConfigured: Boolean(credentials?.ak && credentials?.sk) || Boolean(tokenAuth),
     credentialsPath: globalCredentialsPath(),
     mcpSettingsConfigured: Boolean(s4Creds?.ak && s4Creds?.sk),
     mcpSettingsSource: s4Creds ? 'codearts' : null,
