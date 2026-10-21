@@ -1,6 +1,6 @@
 ---
 name: huawei-obs
-description: 'Use when creating, configuring, or managing OBS buckets and objects on Huawei Cloud. Covers bucket creation, lifecycle policies, versioning, static website hosting, CORS, access control (IAM/bucket policy/ACL), cross-region replication, event notifications, and presigned URLs. Triggers on: OBS, bucket, object storage, lifecycle, versioning, static website, CORS, presigned, replication. NOT for: EVS block storage (use huawei-ecs), SFS file storage, CBR backup (use huawei-cbr).'
+description: 'Use when creating, configuring, or managing OBS buckets and objects on Huawei Cloud. Covers bucket creation, lifecycle policies, versioning, static website hosting, CORS, access control (IAM/bucket policy/ACL), cross-region replication, event notifications, and presigned URLs. Triggers on: OBS, bucket, object storage, lifecycle, versioning, static website, CORS, presigned, replication, 浏览器直传, browser direct upload, 预签名上传, 直传 OBS. NOT for: EVS block storage (use huawei-ecs), SFS file storage, CBR backup (use huawei-cbr).'
 version: 1
 ---
 
@@ -131,3 +131,4 @@ See `references/single-file-share.md` for the full workflow to host one file and
 - Static website: references/static-website.md
 - Single-file share: references/single-file-share.md
 - Lifecycle: references/bucket-lifecycle.md
+- Browser direct upload & CORS: references/common-pitfalls.md
