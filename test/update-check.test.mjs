@@ -227,6 +227,49 @@ test('queryDistTagsSync 失败时在 DEBUG 下输出日志而非静默', () => {
   );
 });
 
+test('queryDistTagsSync 在 DEBUG=true 时同样输出日志', () => {
+  const prev = process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+  const logs = [];
+  const origErr = console.error;
+  console.error = (msg) => logs.push(String(msg));
+  process.env.HUAWEICLOUD_DEVKIT_DEBUG = 'true';
+  try {
+    const result = queryDistTagsSync({
+      timeoutMs: 2000,
+      cwd: '/nonexistent-dir-to-force-failure',
+    });
+    assert.equal(result, null);
+  } finally {
+    console.error = origErr;
+    if (prev === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+    else process.env.HUAWEICLOUD_DEVKIT_DEBUG = prev;
+  }
+  assert.ok(
+    logs.some((l) => l.includes('[debug] queryDistTagsSync')),
+    `expected debug log, got: ${logs}`,
+  );
+});
+
+test('queryDistTagsSync 未设 DEVKIT_DEBUG 时静默', () => {
+  const prev = process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+  const logs = [];
+  const origErr = console.error;
+  console.error = (msg) => logs.push(String(msg));
+  delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+  try {
+    const result = queryDistTagsSync({
+      timeoutMs: 2000,
+      cwd: '/nonexistent-dir-to-force-failure',
+    });
+    assert.equal(result, null);
+  } finally {
+    console.error = origErr;
+    if (prev === undefined) delete process.env.HUAWEICLOUD_DEVKIT_DEBUG;
+    else process.env.HUAWEICLOUD_DEVKIT_DEBUG = prev;
+  }
+  assert.ok(!logs.some((l) => l.includes('[debug] queryDistTagsSync')), `expected silence, got: ${logs}`);
+});
+
 test('getCachedUpdateInfo 单飞: 并发只查一次', async () => {
   invalidateUpdateCache();
   let calls = 0;

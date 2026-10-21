@@ -7,6 +7,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 import { fetchWithProxy } from './proxy/proxy-agent.mjs';
+import { isDebugEnv } from './debug-env.mjs';
 import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.mjs';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -228,7 +229,7 @@ export function writeSkipState(file, dismissedVersion, { at = Date.now(), days =
 }
 
 function debugLog(message) {
-  if (process.env.HUAWEICLOUD_DEVKIT_DEBUG === '1' || process.env.HUAWEICLOUD_DEVKIT_DEBUG === 'true') {
+  if (isDebugEnv()) {
     console.error(`[debug] ${message}`);
   }
 }

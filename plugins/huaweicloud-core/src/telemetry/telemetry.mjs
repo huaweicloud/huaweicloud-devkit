@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { fetchWithProxy } from '../proxy/proxy-agent.mjs';
+import { isDebugEnv } from '../debug-env.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -78,7 +79,7 @@ let agentVersion = '0.0.0';
 const osTypeStr = osType();
 const osVersionStr = osRelease();
 
-const DEBUG = process.env.HUAWEICLOUD_DEVKIT_DEBUG === 'true';
+const DEBUG = isDebugEnv();
 function debugLogPath() {
   return join(AGENT_TELEMETRY_DIR, 'telemetry-debug.log');
 }
