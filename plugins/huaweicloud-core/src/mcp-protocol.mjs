@@ -55,6 +55,15 @@ export async function dispatch(method, params, opts = {}) {
   }
 
   if (method === 'tools/list') {
+    // JSON-RPC 2.0: params, when present, must be an object (struct). A
+    // non-object params (string/number/boolean/array) is an -32602 Invalid
+    // params error, aligned with the tools/call branch below. Omitting params
+    // (undefined/null) is allowed by the spec and returns the tool list (#817 D9-2).
+    if (params !== undefined && params !== null && (typeof params !== 'object' || Array.isArray(params))) {
+      const invalidParamsError = new Error('Invalid params: tools/list expects an object or no params.');
+      invalidParamsError.code = -32602;
+      throw invalidParamsError;
+    }
     return { tools: TOOL_DEFINITIONS };
   }
 
