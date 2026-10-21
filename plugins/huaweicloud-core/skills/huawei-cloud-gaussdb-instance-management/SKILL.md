@@ -2,7 +2,7 @@
 name: huawei-cloud-gaussdb-instance-management
 description: |
   Huawei Cloud GaussDB distributed database (GaussDB for MySQL 兼容版 and GaussDB for openGauss 分布式版) management and diagnosis skill. Provides 12 huawei_* actions across three capability tiers: (1) Query (R3, read-only auto-execute) — list/get instances, list flavors, list databases; (2) Analyze (R3, read-only auto-execute) — deployment-form analysis (shards/readonly nodes/engine version) and security configuration analysis (security group port/SSL); (3) Manage (R2/R1, preview + user confirmation) — create instance, create backup, add readonly node, add sharding node, update database permission, delete instance. Preserves 3 Critical Warnings: shard key is permanent once set, distributed GaussDB requires at least 3 nodes, and MySQL-compatible vs openGauss are separate products with pinned engine versions. Declares hcloud GaussDB CLI dependency; supports both AK/SK credentials and a locally configured hcloud profile.
-  Triggers include: "GaussDB", "分布式数据库", "GaussDB(for MySQL)", "GaussDB(for openGauss)", "openGauss", "sharding", "分片", "添加分片节点", "只读节点", "readonly node", "GaussDB实例", "GaussDB备份", "数据库权限", "部署形态分析", "安全配置分析", "GaussDB诊断", "GaussDB运维", "HTAP", "GaussDB部署检查", "GaussDB安全基线".
+  Triggers include: "GaussDB", "分布式数据库", "GaussDB(for MySQL)", "GaussDB(for openGauss)", "openGauss", "sharding", "分片", "添加分片节点", "只读节点", "readonly node", "GaussDB实例", "GaussDB备份", "数据库权限", "部署形态分析", "安全配置分析", "GaussDB诊断", "GaussDB运维", "HTAP", "GaussDB部署检查", "GaussDB安全基线", "GaussDB选型", "选型", "询价", "买库", "预算", "数据库规格推荐", "sizing", "pricing", "budget", "pre-purchase".
 tags: [huawei-cloud, gaussdb, database, distributed-database, devops]
 ---
 
@@ -307,6 +307,24 @@ ID (look it up with `hcloud IAM KeystoneListProjects --cli-region={region}`):
 --cli-jsonInput=input.json --dryrun` prints the exact request; run it before the real call.
 > `--master_availability_zone` (e.g. `cn-north-4a`) is required for
 > `availability_zone_mode=multi`; pick the AZ by running `hcloud GaussDB ShowGaussMySqlFlavors --cli-region={region} --availability_zone_mode=multi --database_name=gaussdb-mysql` first.
+
+## Pre-Purchase Sizing and Pricing (购买前选型与询价)
+
+Help the user pick the right GaussDB product form/flavor and estimate cost **before creating anything** — see [pre-purchase-sizing-and-pricing.md](references/pre-purchase-sizing-and-pricing.md). Four steps:
+
+1. **Collect decision inputs** (ask, never guess): 用途（开发测试/生产）、数据规模与增长、并发/QPS、可用性（HA/RPO-RTO）、预算上限、region/网络。
+2. **Discover flavors and deployment forms** (read-only, re-use R3 queries): `huawei_list_gaussdb_flavors` (`ShowGaussMySqlFlavors` / `gaussdbforopengauss ListFlavors`); deployment forms single/triset/logger/distributed, product forms basic/enterprise/ecology.
+3. **Price and budget** via BSS (region fixed `cn-north-1`): on-demand `hcloud BSS ListOnDemandResourceRatings`, subscription `hcloud BSS ListRateOnPeriodDetail`, balance `hcloud BSS ShowCustomerAccountBalances`.
+4. **Tiered recommendation**: 开发/测试 → `single` 单副本（无 HA/SLA，用完即删）；一般生产 → `triset` 1主2备（强一致 HA）；大容量/大并发 → `distributed` 分布式（水平扩展）。
+
+| Boundary (hard rule)      | Detail                                                                                                                                                                                      |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| BSS pricing applicability | openGauss ✅ usable (verified: 4C16G `gaussdb.bs.kc1.xlarge.arm4.ha` on-demand ¥2.5/hour == bill); RDS `CBC.6074` / DCS `CBC.6006` ❌ not usable — use official website prices labeled 估算 |
+| 询价 = read-only (R3)     | auto-execute freely                                                                                                                                                                         |
+| 下单/购买 = billing write | MUST go through the `huawei-iac` approval flow — never order from this skill                                                                                                                |
+| Division of labor         | this skill = 选型询价 + lifecycle; `huawei-billing` = bills/balance/BSS API; `huawei-iac` = order/cost gate/approval                                                                        |
+
+> openGauss starts large (smallest centralized single replica ~4C16G ≈ ¥1825/month on-demand; RDS smallest 2C4G ≈ ¥150/month) — for tiny projects mention that RDS may be cheaper, then route to `huawei-rds` / `huawei-iac` (Critical Warning #3: separate products).
 
 ## Action Routing Table
 

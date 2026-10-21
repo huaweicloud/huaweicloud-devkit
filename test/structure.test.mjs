@@ -180,6 +180,44 @@ test('huawei-cloud-deployment-task-management skill uses verified KooCLI service
   assert.doesNotMatch(body, /\bDeleteApplication\b/);
 });
 
+test('gaussdb skill covers pre-purchase sizing and pricing with BSS boundary (#932)', () => {
+  const skillDir = join(pluginRoot, 'skills', 'huawei-cloud-gaussdb-instance-management');
+  const body = readFileSync(join(skillDir, 'SKILL.md'), 'utf8');
+  const ref = readFileSync(join(skillDir, 'references', 'pre-purchase-sizing-and-pricing.md'), 'utf8');
+
+  // Routing section exists with the 4-step flow and tiered recommendations.
+  assert.match(body, /Pre-Purchase Sizing and Pricing/);
+  assert.match(body, /Collect decision inputs/);
+  assert.match(body, /single` 单副本/);
+  assert.match(body, /triset` 1主2备/);
+  assert.match(body, /distributed` 分布式/);
+
+  // Trigger words extended additively (选型/询价/买库/预算).
+  assert.match(body, /"选型", "询价", "买库", "预算"/);
+
+  // BSS pricing commands are the verified trio, region pinned to cn-north-1.
+  for (const doc of [body, ref]) {
+    assert.match(doc, /ListOnDemandResourceRatings/);
+    assert.match(doc, /ListRateOnPeriodDetail/);
+    assert.match(doc, /ShowCustomerAccountBalances/);
+    assert.match(doc, /cn-north-1/);
+  }
+
+  // BSS applicability labeling: openGauss usable, RDS/DCS error codes documented.
+  assert.match(ref, /CBC\.6074/);
+  assert.match(ref, /CBC\.6006/);
+  assert.match(ref, /gaussdb\.bs\.kc1\.xlarge\.arm4\.ha/);
+
+  // Boundary: pricing is read-only auto-execute, ordering goes through huawei-iac.
+  assert.match(ref, /huawei-iac/);
+  assert.match(ref, /read-only R3 → auto-execute|询价.*read-only.*R3/s);
+
+  // Re-use only: no new huawei_* actions beyond the existing 12.
+  const actions = body.match(/huawei_[a-z_]+/g);
+  const unique = new Set(actions);
+  assert.equal(unique.size, 12, `expected exactly 12 huawei_* actions, got ${unique.size}`);
+});
+
 test('skills with references have non-empty reference files', () => {
   const skillsDir = join(pluginRoot, 'skills');
   const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
