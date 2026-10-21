@@ -186,8 +186,23 @@ function capabilityFromKey(key) {
   return undefined;
 }
 
+// Credential redaction for telemetry values (#980 D8-9): aligned with the
+// patterns in safety-policy.mjs redactString, all case-insensitive so
+// lowercase `ak=`/`sk=` variants are covered. Applied BEFORE newline
+// collapsing so the opaque-blob rule (`.*`) only eats up to the next line.
+function redactSensitiveText(text) {
+  return String(text)
+    .replace(/((?:user[_-]?data|metadata|private[_-]?key)\s*[:=]\s*).*/gi, '$1<redacted>')
+    .replace(
+      /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+      '$1<redacted>',
+    )
+    .replace(/((?:AK|SK)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>');
+}
+
 export function sanitizeValue(value) {
   if (typeof value !== 'string') value = value == null ? '' : String(value);
+  value = redactSensitiveText(value);
   value = value.replace(/[\r\n\t]+/g, ' ').trim();
   if (value.length > MAX_VALUE_LENGTH) {
     value = value.slice(0, MAX_VALUE_LENGTH - 3) + '...';
