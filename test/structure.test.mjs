@@ -1005,6 +1005,53 @@ test('huawei-ecs routes Windows SSH to references/windows-ssh.md (#922)', () => 
   assert.match(ref, /ssh_authorized_keys/); // cloud-init key injection path
 });
 
+test('huawei-sandbox routes tunnel persistence to references/tunnel-persistence.md (2026-10 test)', () => {
+  const refPath = join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'tunnel-persistence.md');
+  assert.ok(existsSync(refPath), 'Missing huawei-sandbox/references/tunnel-persistence.md');
+
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  assert.match(skill, /references\/tunnel-persistence\.md/);
+  // Renewal + watchdog tools must be documented in the skill.
+  assert.match(skill, /huaweicloud_sandbox_renew_tunnel/);
+  assert.match(skill, /huaweicloud_sandbox_keepalive_watchdog/);
+  // AUTO-enrollment: expose_tunnel must document that every exposed tunnel is
+  // keepalive-protected by default (user requirement 2026-10).
+  assert.match(skill, /AUTO-ENROLL/i);
+
+  const ref = readFileSync(refPath, 'utf8');
+  // Rolling-window expiry (measured): renewal sets expiration = now + hours.
+  assert.match(ref, /rolling window/i);
+  // 720h = 30-day maximum; re-attach keeps the URL (bound to tunnel ID).
+  assert.match(ref, /720/);
+  assert.match(ref, /devbridge host <tunnel-id>/);
+  // Hardcoded URLs, never derived from the OSC-wrapped port list output.
+  assert.match(ref, /port list/);
+  // The MCP tool names must match the implementation in tools.mjs.
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  assert.match(tools, /huaweicloud_sandbox_renew_tunnel/);
+  assert.match(tools, /huaweicloud_sandbox_keepalive_watchdog/);
+  // expose_tunnel auto-enrolls by default (keepalive:false opts out).
+  assert.match(tools, /AUTO-ENROLLS the tunnel into the keepalive watchdog/i);
+});
+
+test('huawei-sandbox routes the PostgREST full-stack to references/fullstack-postgrest.md (2026-10 test)', () => {
+  const refPath = join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'fullstack-postgrest.md');
+  assert.ok(existsSync(refPath), 'Missing huawei-sandbox/references/fullstack-postgrest.md');
+
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  assert.match(skill, /references\/fullstack-postgrest\.md/);
+
+  const ref = readFileSync(refPath, 'utf8');
+  // Measured HCE traps that must be preserved:
+  assert.match(ref, /requires PG ≥ 14|needs\s+at\s+least\s+14\.0/); // PostgREST 16.x rejects PG 13
+  assert.match(ref, /rhel-8-aarch64/); // hyphenated PGDG path (rhel8-aarch64 404s)
+  assert.match(ref, /libicu-60/); // real compat package — ICU symlinks crash on versioned symbols
+  assert.match(ref, /libldap-2\.4\.so\.2/); // el8 soname shims
+  assert.match(ref, /linux-static-aarch64/); // dynamic Ubuntu builds fail on HCE glibc
+  assert.match(ref, /chmod o\+x/); // nginx 403 traverse-permission fix
+  assert.match(ref, /db-anon-role/); // anon role gates writes
+});
+
 test('huawei-sandbox distinguishes the workspace URL 401 trap from tunnel failure (#919)', () => {
   const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   // The authenticated workspace URL returns 401 when opened logged-out —

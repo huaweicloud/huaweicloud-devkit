@@ -63,6 +63,14 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 | `huaweicloud_sandbox_connect`     | Connect to sandbox (one user one instance, reuses existing if available) |
 | `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                            |
 
+### Tunnel Persistence (public URL lifetime)
+
+| Tool                                     | Purpose                                                                                                                                                                                                    |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `huaweicloud_sandbox_expose_tunnel`      | Expose a port → public tunnel URL (auth, pre-clean, health check; `expiry_hours` 1-720, def 72). **AUTO-enrolls into the keepalive watchdog** (merged into existing coverage; `keepalive: false` opts out) |
+| `huaweicloud_sandbox_renew_tunnel`       | Renew a tunnel lifetime (`update -e`, rolling window; returns absolute expiresAt)                                                                                                                          |
+| `huaweicloud_sandbox_keepalive_watchdog` | Install/replace the 3-layer watchdog: host re-attach + daily 720h renewal + 5-min health check                                                                                                             |
+
 ### Terminal Execution
 
 | Tool                                    | Purpose                                                                     |
@@ -86,6 +94,8 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 | Deployment scripts                 | `exec_one_shot+shot`               | Long script, fresh connection avoids session timeouts        |
 | nginx configuration                | `deploy_nginx`                     | Auto-generates correct template + permissions + reload       |
 | Deployment completeness check      | `deploy_check`                     | Verifies nginx, DevBridge, URL, QR before reporting success  |
+| Tunnel lifetime renewal            | `renew_tunnel`                     | Rolling-window renewal, same URL stays alive                 |
+| URL must outlive the session       | `keepalive_watchdog`               | Unattended host re-attach + daily renewal + health check     |
 | Single file upload (<1MB)          | `upload_file`                      | Base64 chunked, reliable for small files                     |
 | Project directory upload (>1MB)    | `upload_project`                   | HTTP tunnel, much faster than base64 for multi-file projects |
 
@@ -404,9 +414,34 @@ This eliminates the most common deployment failure — historical tunnels from p
 
 **No local downgrade**: if the tunnel tooling cannot be installed in the sandbox, STOP and report a generic error ("无法生成访问地址") without technical detail. Never install it on the developer's local machine — a local install would defeat the purpose of sandbox deployment.
 
+### Step 3: Keep the URL alive (persistence & renewal)
+
+**AUTO-ENROLLMENT**: `huaweicloud_sandbox_expose_tunnel` automatically enrolls every exposed tunnel into the keepalive watchdog (merged into existing coverage — exposing a second tunnel never drops the first one's protection; `keepalive: false` opts out). The developer's requirement — "every tunnel deployed to the sandbox must be keepalive-protected" — is satisfied by the tool itself, not by remembering to call the watchdog.
+
+The tunnel URL is bound to the tunnel ID, not the host process — persistence is about **preventing expiry, never URL recovery**. `-e` accepts 1..720 hours (720 = the 30-day maximum); the expiry is a **rolling window** (renewal sets `expiration = now + hours` regardless of remaining time), so renewing before expiry keeps the same URL alive indefinitely.
+
+- **Renew** (same URL, extends lifetime): `huaweicloud_sandbox_renew_tunnel` (or `devbridge update <id> -e 720`). A renewal counts as ok only when the update succeeds AND `show <id> -v` reports the absolute `tunnelExpiration` — the management plane can lose a tunnel record (`10002 tunnel not found`) while the data plane keeps serving.
+- **Host process dies** → the watchdog re-attaches with `devbridge host <id>`; the URL does NOT change.
+- **Manual install / replacement / repair** → `huaweicloud_sandbox_keepalive_watchdog`: installs a setsid-detached loop (host watchdog + daily 720h renewal + 5-min health check) at `/tmp/tunnel-keepalive.sh`.
+
+Complete measured procedure and traps (OSC-escape port list, health-check URL, watchdog pgrep): see `references/tunnel-persistence.md`.
+
+## Full-Stack: REST API over PostgreSQL (PostgREST)
+
+When deploying a **full-stack workbench project** (前后端工作台) or asking for a database-backed REST API inside the sandbox (postgres, postgrest, 数据库, RESTful 接口, 工作台后端):
+
+1. **PostgreSQL 16 from PGDG** — the OS repo only ships PG 13, and PostgREST 16.x requires PG ≥ 14. HCE is NOT el8-lib-compatible: hand-write the repo file (the el8 path is `rhel-8-aarch64` WITH a hyphen), install the RPMs one-per-call with `--nodeps`, and shim the sonames — including the REAL `libicu-60` package (ICU symlinks load but crash on versioned symbols).
+2. **PostgREST `linux-static-aarch64`** — dynamic Ubuntu builds fail on HCE glibc. Create the schema and a read-only `api_user` role (the anon role gates all writes; POST/PATCH → 401).
+3. **Nginx single-origin** — `/` serves the frontend, `/api/` reverse-proxies to PostgREST (no CORS, same origin). The frontend dir needs `chmod o+x` on the whole path chain or nginx returns 403.
+4. **Expose + keep alive (automatic)** — `huaweicloud_sandbox_expose_tunnel` with the nginx port; it AUTO-enrolls the tunnel into the keepalive watchdog (merged into existing coverage). Prefer `expiry_hours: 720` for long-lived workbench deployments.
+
+Complete measured procedure (with the full command chain): see `references/fullstack-postgrest.md`.
+
 ## Web Application Deployment
 
 When deploying a web application to the sandbox, build the app inside the sandbox before exposing it. Source code is uploaded, dependencies installed, and the framework built in the sandbox environment.
+
+**Backend present?** If the project includes a PostgreSQL + PostgREST backend (or the developer asks for one), set up the backend FIRST by following [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) — install PostgreSQL/PostgREST, create the schema, and point the frontend's nginx `/api/` location at PostgREST — then continue with the steps below. Every tunnel exposed afterwards is auto-enrolled into the keepalive watchdog.
 
 **沙箱无 systemd（实测 #935 报告3 问题3）**：沙箱为无 systemd 的容器环境，`systemctl` 全部失效（`System has not been booted with systemd`）—— 不要用 `systemctl start/reload/restart nginx`。Nginx 配置变更直接使用 `nginx -t` 验证 + `nginx -s reload` 热加载，或直接执行 nginx 二进制（`sudo nginx` 启动 / `nginx -s stop` 停止）。`huaweicloud_sandbox_deploy_nginx` 工具返回的 nextStep 文案与该语义一致（配置写入后自动回验存在性与 `nginx -t`，通过后即生效，无需 systemctl）。
 

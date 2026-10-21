@@ -22,6 +22,8 @@ import {
   deployNginx,
   deployCheck,
   exposeTunnel,
+  renewTunnel,
+  installKeepaliveWatchdog,
   getCurrentWorkspaceId,
   setWorkspaceId,
 } from './sandbox/session-manager.mjs';
@@ -764,7 +766,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_expose_tunnel',
     description:
-      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (probing AK/SK vs API-Key builds, using /tmp/hw_creds.sh and /tmp/hw_api_key as injected by huaweicloud_sandbox_credentials), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. This automates the manual "Expose via DevBridge" 5-step flow. Returns ok, publicUrl, port, tunnelId, and warnings. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
+      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (probing AK/SK vs API-Key builds, using /tmp/hw_creds.sh and /tmp/hw_api_key as injected by huaweicloud_sandbox_credentials), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, and warnings. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
     inputSchema: {
       type: 'object',
       required: ['port'],
@@ -774,6 +776,16 @@ export const TOOL_DEFINITIONS = [
           description:
             'Actual port nginx is listening on — use the "port" value returned by huaweicloud_sandbox_deploy_nginx, not the originally requested port.',
         },
+        expiry_hours: {
+          type: 'number',
+          description:
+            'Tunnel lifetime in hours via devbridge -e (1-720; 720 = the 30-day maximum, default 72). The expiry is a rolling window — the keepalive watchdog renews daily to keep the URL alive indefinitely.',
+        },
+        keepalive: {
+          type: 'boolean',
+          description:
+            'Auto-enroll the tunnel into the keepalive watchdog (default true — every tunnel deployed to the sandbox must be keepalive-protected). Pass false only when the caller explicitly manages keepalive itself.',
+        },
         workspace_id: {
           type: 'string',
           description:
@@ -781,6 +793,65 @@ export const TOOL_DEFINITIONS = [
         },
         username: { type: 'string', description: 'Login username (default: root)' },
         timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 90000)' },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_sandbox_renew_tunnel',
+    description:
+      'Renew a DevBridge tunnel lifetime via devbridge update <tunnelId> -e <hours> (1-720; 720 = the 30-day maximum). The expiry is a rolling window: renewal sets expiration = now + hours regardless of remaining time, so renewing before expiry keeps the SAME tunnel URL alive indefinitely. A renewal counts as ok only when the update succeeds AND show -v reports the absolute tunnelExpiration — the management plane can lose a tunnel record (10002 "tunnel not found") while the data plane keeps serving. Returns ok, tunnelId, expiresAt (ISO), renewedForHours. Pair with huaweicloud_sandbox_keepalive_watchdog for unattended daily renewal.',
+    inputSchema: {
+      type: 'object',
+      required: ['tunnel_id'],
+      properties: {
+        tunnel_id: {
+          type: 'string',
+          description:
+            'Short tunnel ID from huaweicloud_sandbox_expose_tunnel (e.g. nv2dvv6w) — extractable from the public URL as https://<tunnel_id>-<port>.devbridge-s2.hwtunnel.com.',
+        },
+        expiry_hours: {
+          type: 'number',
+          description:
+            'Renewal horizon in hours (1-720, default 720). The expiration becomes now + expiry_hours (rolling window).',
+        },
+        workspace_id: {
+          type: 'string',
+          description:
+            'Workspace ID from huaweicloud_sandbox_connect return value. Required - must be passed explicitly when HW_WORKSPACE_ID is not set.',
+        },
+        username: { type: 'string', description: 'Login username (default: root)' },
+        timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 60000)' },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_sandbox_keepalive_watchdog',
+    description:
+      'Install a keepalive watchdog in the sandbox that keeps DevBridge tunnel URLs alive indefinitely (three-layer pattern, proven in the 2026-10 tunnel-persistence test): (1) re-attaches the host with devbridge host <tunnelId> if the process dies — the URL is bound to the tunnel ID so it never changes; (2) renews every tunnel daily with devbridge update <tunnelId> -e 720 (29-day failure tolerance); (3) health-checks each URL every 5 minutes, logging warnings to /tmp/tunnel-keepalive.log. Installs as a setsid-detached loop at /tmp/tunnel-keepalive.sh; re-running replaces the old loop. URLs are hardcoded per tunnel because devbridge port list output is wrapped in OSC escapes that break anchored greps. Call AFTER huaweicloud_sandbox_expose_tunnel; requires DevBridge credentials (auth) in the sandbox.',
+    inputSchema: {
+      type: 'object',
+      required: ['tunnels'],
+      properties: {
+        tunnels: {
+          type: 'array',
+          description:
+            'Tunnels to watch. Get tunnelId + url from huaweicloud_sandbox_expose_tunnel (publicUrl contains the tunnelId as https://<tunnel_id>-<port>.devbridge-s2.hwtunnel.com).',
+          items: {
+            type: 'object',
+            required: ['tunnel_id', 'url'],
+            properties: {
+              tunnel_id: { type: 'string', description: 'Short tunnel ID (e.g. kag7rozs).' },
+              url: { type: 'string', description: 'Full public https URL of the tunnel (used for the health check).' },
+            },
+          },
+        },
+        workspace_id: {
+          type: 'string',
+          description:
+            'Workspace ID from huaweicloud_sandbox_connect return value. Required - must be passed explicitly when HW_WORKSPACE_ID is not set.',
+        },
+        username: { type: 'string', description: 'Login username (default: root)' },
+        timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 60000)' },
       },
     },
   },
@@ -1512,7 +1583,53 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser9 = args.username || 'root';
       const sandboxTimeout9 = args.timeout_ms || 90000;
-      return await exposeTunnel(sandboxWsId9, { port: args.port }, sandboxUser9, sandboxTimeout9);
+      return await exposeTunnel(
+        sandboxWsId9,
+        { port: args.port, expiryHours: args.expiry_hours, keepalive: args.keepalive },
+        sandboxUser9,
+        sandboxTimeout9,
+      );
+    }
+    case 'huaweicloud_sandbox_renew_tunnel': {
+      if (!args.tunnel_id) {
+        throw new Error(
+          'tunnel_id is required. Get it from huaweicloud_sandbox_expose_tunnel or extract it from the public URL (https://<tunnel_id>-<port>.devbridge-s2.hwtunnel.com).',
+        );
+      }
+      const sandboxWsId10 = args.workspace_id || getCurrentWorkspaceId();
+      if (!sandboxWsId10) {
+        throw new Error(
+          'workspace_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, ' +
+            'or set HW_WORKSPACE_ID environment variable before starting the agent.',
+        );
+      }
+      return await renewTunnel(
+        sandboxWsId10,
+        { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
+        args.username || 'root',
+        args.timeout_ms || 60000,
+      );
+    }
+    case 'huaweicloud_sandbox_keepalive_watchdog': {
+      if (!Array.isArray(args.tunnels) || args.tunnels.length === 0) {
+        throw new Error(
+          'tunnels is required — a non-empty array of {tunnel_id, url} from huaweicloud_sandbox_expose_tunnel results.',
+        );
+      }
+      const sandboxWsId11 = args.workspace_id || getCurrentWorkspaceId();
+      if (!sandboxWsId11) {
+        throw new Error(
+          'workspace_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, ' +
+            'or set HW_WORKSPACE_ID environment variable before starting the agent.',
+        );
+      }
+      const tunnels11 = args.tunnels.map((t) => ({ tunnelId: t.tunnel_id || t.tunnelId, url: t.url }));
+      return await installKeepaliveWatchdog(
+        sandboxWsId11,
+        { tunnels: tunnels11 },
+        args.username || 'root',
+        args.timeout_ms || 60000,
+      );
     }
     case 'huaweicloud_sandbox_check_user':
       return await hdkitCheckUser();
