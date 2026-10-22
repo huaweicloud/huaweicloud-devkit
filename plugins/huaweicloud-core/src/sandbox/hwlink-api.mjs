@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 
-import { resolveCredentialsWithRuntime } from '../auth/credentials.mjs';
+import { resolveCredentialsWithRuntime, resolveXAuthToken } from '../auth/credentials.mjs';
+import { getTokenCredentials } from '../auth/token-exchange.mjs';
+import { makeError } from '../auth/guidance.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 
 const BASE_URL = process.env.HWLINK_ENDPOINT || 'https://devstation.myhuaweicloud.com';
@@ -80,6 +82,33 @@ function signRequest(method, path, query, body, ak, sk, securitytoken) {
 export function getCredentials() {
   const credentials = resolveCredentialsWithRuntime();
   return { ak: credentials.ak, sk: credentials.sk, securitytoken: credentials.securityToken };
+}
+
+// Data-plane (sandbox exec/upload/tunnel) credentials: prefer AK/SK, else fall
+// back to X-Auth-Token → temporary AK/SK, so token-auth users can drive the data
+// plane without a permanent AK/SK (experience-report #3.3/#3.7 dead-loop fix).
+export async function resolveBackendCredentials() {
+  try {
+    const creds = resolveCredentialsWithRuntime({ allowMissing: true });
+    if (creds && creds.ak && creds.sk) return creds;
+  } catch {
+    // no AK/SK — fall through to token
+  }
+  const token = resolveXAuthToken();
+  if (token) {
+    try {
+      return await getTokenCredentials(token);
+    } catch (error) {
+      // Distinguish "token exchange failed" from "no credential at all" (#3.4).
+      const err = makeError('HDKIT_CRED_MISSING');
+      err.code = error?.code || 'TOKEN_EXCHANGE_FAILED';
+      err.messageZh =
+        `X-Auth-Token 换取临时 AK/SK 失败(${err.code}):` +
+        `${error?.message || '网络异常或 token 无效'},请检查网络连通性与 token 有效性。`;
+      throw err;
+    }
+  }
+  throw makeError('HDKIT_CRED_MISSING');
 }
 
 async function apiGet(path, query, ak, sk, securitytoken) {

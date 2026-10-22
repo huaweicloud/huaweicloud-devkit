@@ -16,7 +16,7 @@ import { join, dirname, basename } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import { createConnection, getCredentials } from './hwlink-api.mjs';
+import { createConnection, resolveBackendCredentials } from './hwlink-api.mjs';
 import { getWebSocketImpl } from '../proxy/proxy-agent.mjs';
 import { trackSandboxConnect, trackSandboxDisconnect } from '../telemetry/telemetry.mjs';
 
@@ -107,7 +107,7 @@ async function getSession(workspaceId, username, timeoutMs) {
   const key = `${workspaceId}:${username}`;
   if (sessions.has(key)) return sessions.get(key);
 
-  const { ak, sk, securitytoken } = getCredentials();
+  const { ak, sk, securitytoken } = await resolveBackendCredentials();
   const { wsUrl, source } = await createConnection(workspaceId, ak, sk, securitytoken);
 
   const WebSocketImpl = await getWebSocketImpl(wsUrl);
@@ -126,7 +126,7 @@ async function getSession(workspaceId, username, timeoutMs) {
 }
 
 async function createTunnelSession(workspaceId, username, timeoutMs = 30000) {
-  const { ak, sk, securitytoken } = getCredentials();
+  const { ak, sk, securitytoken } = await resolveBackendCredentials();
   const { wsUrl, source } = await createConnection(workspaceId, ak, sk, securitytoken);
   const WebSocketImpl = await getWebSocketImpl(wsUrl);
 
@@ -165,7 +165,7 @@ async function createTunnelSession(workspaceId, username, timeoutMs = 30000) {
 }
 
 export async function execOneShot(workspaceId, command, username, timeoutMs) {
-  const { ak, sk, securitytoken } = getCredentials();
+  const { ak, sk, securitytoken } = await resolveBackendCredentials();
   const { wsUrl, source } = await createConnection(workspaceId, ak, sk, securitytoken);
 
   const WebSocketImpl = await getWebSocketImpl(wsUrl);

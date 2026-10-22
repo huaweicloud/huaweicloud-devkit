@@ -13,6 +13,7 @@ import { checkAccountType } from './account-type.mjs';
 import { searchMarketplace } from './search-market.mjs';
 import { getServiceIcon } from './icon-library.mjs';
 import { detectFramework } from './detect-framework.mjs';
+import { installKooCli } from './koocli-install.mjs';
 import {
   execWithSession,
   execOneShot,
@@ -35,7 +36,7 @@ import {
   hdkitCompetitionVoucherClaim,
   hdkitGenerateUserHash,
 } from './sandbox/hdkitservice-api.mjs';
-import { getCredentials } from './sandbox/hwlink-api.mjs';
+import { resolveBackendCredentials } from './sandbox/hwlink-api.mjs';
 import { getAuthStatus, syncAuth } from './auth/service.mjs';
 import { validateIamCredentials } from './auth/credential-validator.mjs';
 import {
@@ -194,6 +195,15 @@ export const TOOL_DEFINITIONS = [
     name: 'huaweicloud_check_cli',
     description:
       'Check whether Huawei Cloud KooCLI hcloud is installed and whether its version matches the plugin paired version. Returns redacted output.',
+    inputSchema: {
+      type: 'object',
+      properties: {},
+    },
+  },
+  {
+    name: 'huaweicloud_install_hcloud',
+    description:
+      'Install KooCLI (hcloud) from inside the MCP server process via Node (no agent bash tool required). Downloads and extracts the pinned hcloud binary to ~/.local/bin/hcloud. Use when huaweicloud_check_cli reports HCLOUD_NOT_FOUND and the agent bash tool is unavailable (e.g. CodeArts with OPENCODE_CONFIG unset).',
     inputSchema: {
       type: 'object',
       properties: {},
@@ -1180,6 +1190,8 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
   switch (name) {
     case 'huaweicloud_check_cli':
       return runVersionCheck();
+    case 'huaweicloud_install_hcloud':
+      return installKooCli();
     case 'huaweicloud_plan_cli_command':
       return planHcloudCommand(args.args || [], { allowWrites: args.allowWrites === true });
     case 'huaweicloud_run_readonly_command':
@@ -1572,7 +1584,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       const apiKeyFile = '/tmp/hw_api_key';
       if (sandboxWsIdCred) {
         try {
-          const { ak, sk, securitytoken } = getCredentials();
+          const { ak, sk, securitytoken } = await resolveBackendCredentials();
           const credsScript = [
             `export HW_ACCESS_KEY='${ak}'`,
             `export HW_SECRET_KEY='${sk}'`,
@@ -2317,6 +2329,26 @@ function explainError({ service = 'unknown', errorCode = '', message = '', reque
     resolvedService = SERVICE_ALIASES[prefix] || errorCode.split('.')[0].toUpperCase();
   }
   const patternKey = SERVICE_ALIASES[svc] || resolvedService;
+
+  // devkit internal credential/environment error codes (experience-report #3.9)
+  // — these come from devkit's own guidance/credential layer, not Huawei Cloud API.
+  const devkitErrorPatterns = {
+    HDKIT_CRED_MISSING:
+      '未配置华为云凭证。运行 npx huaweicloud-devkit auth init 配置 AK/SK,或注入 HW_X_AUTH_TOKEN(devkit 会自动用 token 换取临时 AK/SK)。',
+    HDKIT_CRED_INVALID: '凭证已被华为云拒绝(AK/SK 无效或已过期)。重新生成 AK/SK 后 auth init。',
+    HDKIT_CRED_FORBIDDEN: '凭证有效但无权限列出项目。检查 IAM 授权(可用 huaweicloud_check_account_type 判断账号类型)。',
+    HDKIT_CRED_REGION_MISSING: '缺少 region 配置。运行 hcloud configure set --cli-region=<region>。',
+    HDKIT_KOOCLI_NOT_READY: 'KooCLI(hcloud)未安装或未就绪。运行 npx huaweicloud-devkit install-hcloud。',
+    HDKIT_PROJECT_ID_MISSING: '缺少 project_id。运行 npx huaweicloud-devkit auth init 自动配置。',
+    TOKEN_INVALID: 'X-Auth-Token 无效或已过期。重新注入有效的 HW_X_AUTH_TOKEN。',
+    TOKEN_EXPIRED: 'X-Auth-Token 已过期。重启进程重新注入凭证。',
+    TOKEN_EXCHANGE_FAILED:
+      'X-Auth-Token 换取临时 AK/SK 失败,通常是网络无法访问 IAM 端点。检查网络连通性与 token 有效性。',
+    HDKIT_SUB_ACCOUNT_RESTRICTED: '沙箱使用限制:当前子账号无法使用沙箱。切换主账号认证(auth_init)后重试。',
+  };
+  if (devkitErrorPatterns[errorCode]) {
+    suggestions.push(`${errorCode}: ${devkitErrorPatterns[errorCode]}`);
+  }
 
   const hwErrorPatterns = {
     OBS: {

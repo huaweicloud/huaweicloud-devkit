@@ -85,7 +85,8 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
     // devkit exchanges it for temporary AK/SK on demand, so no manual setup.
     scenario = 0;
     reason = 'token-auth';
-    message = '已使用 X-Auth-Token 认证,MCP 工具可直接使用,无需配置 AK/SK。';
+    message =
+      '已使用 X-Auth-Token 认证。管理面与数据面(沙箱部署/exec)都会在需要时用 token 自动换取临时 AK/SK;请确保可访问 IAM 端点。';
     return { needsSetup: false, scenario, reason, message, steps: [], accountHint };
   }
   if (s1Has && !envHasCreds) {
