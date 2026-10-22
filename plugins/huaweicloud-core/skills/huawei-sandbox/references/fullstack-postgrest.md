@@ -100,8 +100,17 @@ curl -fsSL https://api.github.com/repos/PostgREST/postgrest/releases \
   | grep -o '"name": *"postgrest-v16[^"]*aarch64[^"]*"'
 # GitHub direct is slow from the sandbox; prefix proxies measure ~500KB/s (2026-10):
 #   https://ghfast.top/https://github.com/...   or   https://gh-proxy.com/https://github.com/...
-curl -fsSL --http1.1 -o /tmp/pgrst.tar.xz \
+# ⚠️ Those proxies are THIRD-PARTY: never extract their bytes unverified (supply-chain
+# risk). Pull the official asset sha256 digest from the GitHub releases API, download
+# through the proxy, and verify with sha256sum BEFORE extracting — this also catches
+# partial downloads (a truncated tar.xz fails the check instead of a cryptic tar error).
+PGRST_SHA256="$(curl -fsSL https://api.github.com/repos/PostgREST/postgrest/releases/tags/v16.5 \
+  | grep -A30 '"name": *"postgrest-v16.5-linux-static-aarch64.tar.xz"' \
+  | grep -o '"digest": *"sha256:[a-f0-9]*"' | head -1 | cut -d: -f3)"
+test -n "$PGRST_SHA256"   # empty digest = API lookup failed; do NOT proceed unverified
+curl -fsSL --http1.1 --max-time 240 -C - -o /tmp/pgrst.tar.xz \
   "https://ghfast.top/https://github.com/PostgREST/postgrest/releases/download/v16.5/postgrest-v16.5-linux-static-aarch64.tar.xz"
+echo "$PGRST_SHA256  /tmp/pgrst.tar.xz" | sha256sum -c -   # must print ": OK" before tar
 mkdir -p /opt/postgrest && tar -xJf /tmp/pgrst.tar.xz -C /opt/postgrest
 
 cat > /opt/postgrest/pgrst.conf << 'PGRST_EOF'
@@ -162,14 +171,17 @@ devbridge host -p <port> -e 720
 ```
 
 Verify end-to-end through the public URL: `GET /` (page, 200), `GET /api/todos`
-(data, 200), `POST /api/todos` (401 — the anon role has SELECT only; if a write
-API is wanted, grant INSERT/UPDATE on the specific table, never to anon broadly).
+(data, 200), `POST /api/todos` (**401 by default** — the anon role has SELECT
+only). To enable writes on one table, `GRANT INSERT ON api.todos TO api_user`
+(never a broad grant to anon); after that targeted grant the same POST returns
+**201**.
 
 ## Field notes (2026-10 retest): 5 measured traps
 
 Re-measured 2026-10-23 on HCE 2.0 (aarch64, no systemd) with PG 16.15 +
 PostgREST 16.5; all five traps reproduced and solved, end-to-end verified
-(page 200 / API 200 / POST 201).
+(page 200 / API 200 / POST 401 anon-default, 201 after `GRANT INSERT` on
+`api.todos`).
 
 ### 1. RPM sources: use the Aliyun mirror
 
@@ -180,7 +192,9 @@ Aliyun mirror completes in seconds:
 - PG 16: `https://mirrors.aliyun.com/postgresql/repos/yum/16/redhat/rhel-8-aarch64/`
 - libicu60: `https://mirrors.aliyun.com/almalinux/8/BaseOS/aarch64/os/Packages/`
 - PostgREST: `ghfast.top` / `gh-proxy.com` prefix proxies (~500KB/s) — but see
-  trap 3 first: the asset name must be exact.
+  trap 3 first: the asset name must be exact, and the proxy is third-party:
+  fetch the official GitHub asset digest and `sha256sum -c` the tarball before
+  extracting (see the Step 2 download block).
 
 ### 2. Cross-mirror resume corrupts RPMs
 

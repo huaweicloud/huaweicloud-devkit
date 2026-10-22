@@ -1066,6 +1066,13 @@ test('fullstack-postgrest.md carries the 2026-10 retest field notes (#1016)', ()
   assert.match(ref, /postgrest-v16\.5-linux-static-aarch64/);
   assert.match(ref, /api\.github\.com\/repos\/PostgREST\/postgrest\/releases/);
   assert.match(ref, /ghfast\.top/);
+  // Supply-chain guard: the third-party proxy download MUST be digest-verified
+  // (GitHub releases API digest + sha256sum -c) before extraction (#1016 review).
+  assert.match(ref, /releases\/tags\/v16\.5/);
+  assert.match(ref, /sha256sum -c/);
+  assert.match(ref, /--max-time 240 -C - -o \/tmp\/pgrst\.tar\.xz/);
+  // POST semantics: 401 is the anon default; 201 only after a targeted GRANT INSERT.
+  assert.match(ref, /POST 401 anon-default/);
   // Trap 4: upload_file 640 permission → silent schema failure → PGRST002.
   assert.match(ref, /chmod o\+r/);
   assert.match(ref, /PGRST002/);
