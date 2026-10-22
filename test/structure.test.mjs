@@ -1052,6 +1052,28 @@ test('huawei-sandbox routes the PostgREST full-stack to references/fullstack-pos
   assert.match(ref, /db-anon-role/); // anon role gates writes
 });
 
+test('fullstack-postgrest.md carries the 2026-10 retest field notes (#1016)', () => {
+  const ref = readFileSync(
+    join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'fullstack-postgrest.md'),
+    'utf8',
+  );
+  // Trap 1: Aliyun mirrors replace the ~8KB/s official RPM sources.
+  assert.match(ref, /mirrors\.aliyun\.com\/postgresql/);
+  assert.match(ref, /mirrors\.aliyun\.com\/almalinux/);
+  // Trap 2: cross-mirror resume corrupts RPMs — rm + full re-download.
+  assert.match(ref, /Payload SHA256 digest: BAD/);
+  // Trap 3: asset name has no patch version — verify via the GitHub API.
+  assert.match(ref, /postgrest-v16\.5-linux-static-aarch64/);
+  assert.match(ref, /api\.github\.com\/repos\/PostgREST\/postgrest\/releases/);
+  assert.match(ref, /ghfast\.top/);
+  // Trap 4: upload_file 640 permission → silent schema failure → PGRST002.
+  assert.match(ref, /chmod o\+r/);
+  assert.match(ref, /PGRST002/);
+  // Trap 5: exec-channel escaping — upload files, then psql -f / curl -d @file.
+  assert.match(ref, /psql -f/);
+  assert.match(ref, /-d @\/tmp\/payload\.json/);
+});
+
 test('huawei-sandbox distinguishes the workspace URL 401 trap from tunnel failure (#919)', () => {
   const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   // The authenticated workspace URL returns 401 when opened logged-out —
