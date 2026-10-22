@@ -1,22 +1,8 @@
-# Plan: Telemetry Disclosure in README
+# Issue #866 任务拆解
 
-## Task Breakdown
-
-| #   | Task                                        | Files                     | Complexity |
-| --- | ------------------------------------------- | ------------------------- | ---------- |
-| 1   | Add `## Telemetry` section to README.md     | `README.md`               | Simple     |
-| 2   | Add `## 遥测` section to README.zh-CN.md    | `README.zh-CN.md`         | Simple     |
-| 3   | Add structure test for telemetry disclosure | `test/structure.test.mjs` | Simple     |
-| 4   | Run lint, tests, format check               | —                         | Simple     |
-
-## Design Decisions
-
-- Place the Telemetry section after "Configure Proxy" and before "What It Does"
-  (EN) / "功能特性" (ZH) — it fits naturally with configuration topics.
-- Content is grounded in the actual `telemetry.mjs` source code:
-  - `isTelemetryEnabled()` checks `HUAWEICLOUD_DEVKIT_TELEMETRY !== 'off'`
-  - `DEFAULT_ENDPOINT` = `https://devkit.huaweicloud.com/.../telemetry/events`
-  - `sanitizeValue()` truncates to 255 chars and strips newlines/tabs
-  - `generateOrRecoverInstallId()` uses SHA-256 of machine fingerprint
-  - No AK/SK, no credentials, no user input in event payloads
-- No external API dependencies.
+1. [P0] safety-policy.mjs：Windows `%VAR%` 凭证引用分支 + 测试（RED→GREEN）
+2. [P0] safety-policy.mjs：裸凭证变量名（access_key/secret_key/security_token，无前缀）env-dump 门控 + 凭证引用并行匹配 + 测试（RED→GREEN，D4-2 v1.1.10 复审追加）
+3. [P1] tools.mjs：serviceCatalog routeMap 中文同义词扩展 + 测试阈值 0.9（英文不回归）
+4. [security] risk-rule-engine.mjs：ANSI-C 引号解码预处理层 + D4-15 测试
+5. 全量回归：npm test / npm run lint / npm run validate / pack:verify
+6. 五轴自审查 → 建 PR（base dev）→ Issue 评论 → A2A QA
