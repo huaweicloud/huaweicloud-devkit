@@ -10,7 +10,7 @@
 
 帮助 AI 编码助手安全、准确地使用华为云——一站式集成云知识、CLI 工具和安全护栏。
 
-支持 OpenCode、Codex、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes、OpenClaw、AtomCode。
+支持 OpenCode、Codex、码道（CodeArts Agent）、WorkBuddy、CodeBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes、OpenClaw、AtomCode。
 
 ## 前置条件
 
@@ -148,6 +148,21 @@ npx --yes huaweicloud-devkit doctor --target workbuddy
 npx --yes huaweicloud-devkit status --target workbuddy
 npx --yes huaweicloud-devkit update --target workbuddy
 npx --yes huaweicloud-devkit uninstall --target workbuddy
+```
+
+### CodeBuddy
+
+```bash
+npx --yes huaweicloud-devkit install --target codebuddy
+```
+
+**安装后请重启 CodeBuddy 会话。**
+
+```bash
+npx --yes huaweicloud-devkit doctor --target codebuddy
+npx --yes huaweicloud-devkit status --target codebuddy
+npx --yes huaweicloud-devkit update --target codebuddy
+npx --yes huaweicloud-devkit uninstall --target codebuddy
 ```
 
 ### DeepSeek Harness（DSH）

@@ -594,7 +594,7 @@ test('setup-cli.mjs supports the codearts target end to end', () => {
   // help text documents the target
   assert.match(
     setup,
-    /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
+    /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|codebuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
   );
   assert.match(setup, /install --target codearts/);
 });
@@ -700,9 +700,48 @@ test('setup-cli.mjs supports the dsh target end to end', () => {
   // help text documents the target
   assert.match(
     setup,
-    /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
+    /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|codebuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
   );
   assert.match(setup, /install --target dsh/);
+});
+
+test('setup-cli.mjs supports the codebuddy target end to end', () => {
+  const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
+  // SUPPORTED_AGENT_TARGETS includes codebuddy and parseTarget uses it
+  assert.match(setup, /'codebuddy'/);
+  // CodeBuddy path helpers exist
+  assert.match(setup, /function codebuddySkillsDir\(\)/);
+  assert.match(setup, /function codebuddyMcpConfigFile\(\)/);
+  assert.match(setup, /function codebuddyPluginsDir\(\)/);
+  // install / update / uninstall / status functions exist
+  assert.match(setup, /async function installCodebuddy\(\)/);
+  assert.match(setup, /async function updateCodebuddy\(\)/);
+  assert.match(setup, /function uninstallCodebuddy\(\)/);
+  assert.match(setup, /function codebuddyStatus\(\)/);
+  // install copies skills/server/safety and registers MCP via ~/.codebuddy/mcp.json
+  assert.match(setup, /copyDir\(skillsSrc, codebuddySkillsDir\(\)\)/);
+  assert.match(setup, /copyDir\(srcDir, join\(pluginDest, 'src'\)\)/);
+  assert.match(setup, /copyDir\(safetyDir, join\(pluginDest, 'safety'\)\)/);
+  assert.match(setup, /ensureCodebuddyMcpConfig\(\)/);
+  assert.match(setup, /injectAgentRules\(pluginDest\)/);
+  // command dispatch covers codebuddy for install / uninstall / status / update
+  const branches = setup.match(/target === 'codebuddy' \|\| target === 'all'/g);
+  const installDispatch = setup.match(/shouldInstall\('codebuddy'\)/g);
+  assert.ok(
+    (branches?.length ?? 0) + (installDispatch?.length ?? 0) >= 4,
+    `codebuddy dispatch branches: ${(branches?.length ?? 0) + (installDispatch?.length ?? 0)}`,
+  );
+  // .installed marker goes to the codebuddy plugins dir
+  assert.match(setup, /if \(target === 'codebuddy'\) return codebuddyPluginsDir\(\);/);
+  // doctor checks the CodeBuddy plugin dir and skills dir
+  assert.match(setup, /const codebuddyPluginDir = codebuddyPluginsDir\(\);/);
+  assert.match(setup, /codebuddySkillsDir\(\)/);
+  // help text documents the target
+  assert.match(
+    setup,
+    /--target <opencode\|codex\|codearts\|codearts-work\|workbuddy\|codebuddy\|dsh\|officeace\|hermes\|openclaw\|atomcode\|all>/,
+  );
+  assert.match(setup, /describe your Huawei Cloud task in CodeBuddy/);
 });
 
 test('tools.mjs resolves skills from the dsh directory', () => {

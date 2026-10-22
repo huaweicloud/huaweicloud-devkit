@@ -153,6 +153,16 @@ function workbuddyPluginsDir() {
   return join(homedir(), '.workbuddy', 'huaweicloud-plugins');
 }
 
+function codebuddySkillsDir() {
+  return join(homedir(), '.codebuddy', 'skills');
+}
+function codebuddyMcpConfigFile() {
+  return join(homedir(), '.codebuddy', 'mcp.json');
+}
+function codebuddyPluginsDir() {
+  return join(homedir(), '.codebuddy', 'huaweicloud-plugins');
+}
+
 function atomcodeHome() {
   return process.env.ATOMCODE_HOME || join(homedir(), '.atomcode');
 }
@@ -1740,6 +1750,49 @@ function ensureWorkbuddyMcpConfig() {
   return true;
 }
 
+// CodeBuddy uses the same ~/.codebuddy/mcp.json shape as WorkBuddy.
+function ensureCodebuddyMcpConfig() {
+  const configPath = codebuddyMcpConfigFile();
+  const mcpPath = join(codebuddyPluginsDir(), 'src', 'mcp-server.mjs').replace(/\\/g, '/');
+  const env = { HUAWEICLOUD_AGENT_TOOLKIT_MODE: 'local' };
+  const hcloudBin = findHcloudBin();
+  if (hcloudBin) env.HCLOUD_BIN = hcloudBin.replace(/\\/g, '/');
+  let config = {};
+  if (existsSync(configPath)) {
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf8'));
+    } catch {
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m Could not parse ${configPath}. Skipping MCP config write; ensure "mcpServers.huaweicloud-devkit" points to ${mcpPath}.`,
+      );
+      return false;
+    }
+    const existing = config.mcpServers?.['huaweicloud-devkit'];
+    if (existing) {
+      const { entry, changed } = mergeArgsStyle(existing, { mcpPath, env });
+      if (!changed) {
+        console.log(`  MCP config unchanged: ${configPath}`);
+        return false;
+      }
+      config.mcpServers['huaweicloud-devkit'] = entry;
+      mkdirSync(dirname(configPath), { recursive: true });
+      writeMcpSettingsFile(configPath, config);
+      console.log(`  MCP config merged (user fields preserved): ${configPath}`);
+      return true;
+    }
+  }
+  config.mcpServers = config.mcpServers || {};
+  let entry = mergeArgsStyle(undefined, { mcpPath, env }).entry;
+  // Restore user fields saved by a previous uninstall (issue #615).
+  const delta = takeAgentDelta('codebuddy');
+  if (delta) entry = applyUserDelta(entry, delta, 'args');
+  config.mcpServers['huaweicloud-devkit'] = entry;
+  mkdirSync(dirname(configPath), { recursive: true });
+  writeMcpSettingsFile(configPath, config);
+  console.log(`  MCP config updated: ${configPath}`);
+  return true;
+}
+
 // Resolve WorkBuddy's managed Python binary to run the hook tracker.
 // Falls back to a version-specific path if "current" symlink doesn't exist.
 function resolveWorkBuddyPython() {
@@ -1986,6 +2039,115 @@ function uninstallWorkBuddy() {
   if (existsSync(devkitTelemetryDir)) {
     rmSync(devkitTelemetryDir, { recursive: true, force: true });
     console.log(`  Removed telemetry cache: ${devkitTelemetryDir}`);
+  }
+}
+
+async function installCodebuddy() {
+  const skillsSrc = join(PLUGIN_ROOT, 'skills');
+  const srcDir = join(PLUGIN_ROOT, 'src');
+  const safetyDir = join(PLUGIN_ROOT, 'safety');
+  const pluginDest = codebuddyPluginsDir();
+
+  copyDir(skillsSrc, codebuddySkillsDir());
+  console.log(`  Skills -> ${codebuddySkillsDir()}`);
+
+  copyDir(srcDir, join(pluginDest, 'src'));
+  console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
+  copyDir(safetyDir, join(pluginDest, 'safety'));
+  console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
+
+  ensureCodebuddyMcpConfig();
+  installRuntimeDeps(pluginDest);
+}
+
+function uninstallCodebuddy() {
+  const skillsDir = codebuddySkillsDir();
+  let removed = 0;
+  if (existsSync(skillsDir)) {
+    for (const entry of readdirSync(skillsDir, { withFileTypes: true })) {
+      if (entry.name.startsWith('huawei')) {
+        if (removeIfExists(join(skillsDir, entry.name))) removed++;
+      }
+    }
+    if (removed > 0) console.log(`  Removed ${removed} skills`);
+  }
+
+  if (removeIfExists(codebuddyPluginsDir())) {
+    console.log('  Removed MCP server and safety policy');
+  }
+
+  const configPath = codebuddyMcpConfigFile();
+  if (existsSync(configPath)) {
+    let config = {};
+    try {
+      config = JSON.parse(readFileSync(configPath, 'utf8'));
+    } catch {}
+    if (config.mcpServers?.['huaweicloud-devkit']) {
+      const delta = extractUserDelta(config.mcpServers['huaweicloud-devkit'], 'args');
+      if (delta) saveAgentDelta('codebuddy', delta);
+      delete config.mcpServers['huaweicloud-devkit'];
+      if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
+      writeMcpSettingsFile(configPath, config);
+      console.log(`  MCP config cleaned: ${configPath}`);
+    }
+  }
+
+  const devkitTelemetryDir = join(homedir(), '.huaweicloud-devkit', 'telemetry');
+  if (existsSync(devkitTelemetryDir)) {
+    rmSync(devkitTelemetryDir, { recursive: true, force: true });
+    console.log(`  Removed telemetry cache: ${devkitTelemetryDir}`);
+  }
+}
+
+async function updateCodebuddy() {
+  const skillsSrc = join(PLUGIN_ROOT, 'skills');
+  const srcDir = join(PLUGIN_ROOT, 'src');
+  const safetyDir = join(PLUGIN_ROOT, 'safety');
+  const pluginDest = codebuddyPluginsDir();
+
+  copyDir(skillsSrc, codebuddySkillsDir());
+  const stale = pruneStale(codebuddySkillsDir(), skillsSrc);
+  console.log(`  Skills updated -> ${codebuddySkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
+  copyDir(srcDir, join(pluginDest, 'src'));
+  console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
+  copyDir(safetyDir, join(pluginDest, 'safety'));
+  console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
+  injectAgentRules(pluginDest);
+  ensureCodebuddyMcpConfig();
+  mkdirSync(pluginDest, { recursive: true });
+  writeFileSync(join(pluginDest, '.installed'), new Date().toISOString());
+  installRuntimeDeps(pluginDest);
+}
+
+function codebuddyStatus() {
+  const pluginDir = codebuddyPluginsDir();
+  const skillsDir = codebuddySkillsDir();
+  console.log(
+    `  MCP Server: ${existsSync(join(pluginDir, 'src', 'mcp-server.mjs')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+  );
+  console.log(
+    `  Safety Policy: ${existsSync(join(pluginDir, 'safety', 'policy.json')) ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`,
+  );
+  let skillCount = 0;
+  if (existsSync(skillsDir)) {
+    skillCount = readdirSync(skillsDir, { withFileTypes: true }).filter(
+      (d) => d.isDirectory() && d.name.startsWith('huawei'),
+    ).length;
+  }
+  console.log(
+    `  Skills: ${skillCount > 0 ? `\x1b[32m${skillCount} installed\x1b[0m` : '\x1b[31mNot installed\x1b[0m'}`,
+  );
+  const configPath = codebuddyMcpConfigFile();
+  if (existsSync(configPath)) {
+    try {
+      const config = JSON.parse(readFileSync(configPath, 'utf8'));
+      console.log(
+        `  MCP config: ${config.mcpServers?.['huaweicloud-devkit'] ? '\x1b[32mConfigured\x1b[0m' : '\x1b[31mNot configured\x1b[0m'}`,
+      );
+    } catch {
+      console.log(`  MCP config: \x1b[31mInvalid\x1b[0m`);
+    }
   }
 }
 
@@ -3275,6 +3437,7 @@ function detectAgents() {
     ['codearts', () => existsSync(join(homedir(), '.codeartsdoer'))],
     ['codearts-work', () => existsSync(join(homedir(), '.codeartswork'))],
     ['workbuddy', () => existsSync(join(homedir(), '.workbuddy'))],
+    ['codebuddy', () => existsSync(join(homedir(), '.codebuddy'))],
     [
       'dsh',
       () => {
@@ -3308,6 +3471,7 @@ const AGENT_LABELS = {
   codearts: 'CodeArts',
   'codearts-work': 'CodeArts Work',
   workbuddy: 'WorkBuddy',
+  codebuddy: 'CodeBuddy',
   dsh: 'DSH',
   officeace: 'OfficeAce',
   hermes: 'Hermes',
@@ -3532,6 +3696,7 @@ function installMarkerDirForTarget(target) {
   if (target === 'codearts') return codeartsPluginsDir();
   if (target === 'codearts-work') return codeartsWorkPluginsDir();
   if (target === 'workbuddy') return workbuddyPluginsDir();
+  if (target === 'codebuddy') return codebuddyPluginsDir();
   if (target === 'officeace') return officeacePluginsDir();
   if (target === 'hermes') return hermesPluginsDir();
   if (target === 'openclaw') return openclawPluginsDir();
@@ -3612,6 +3777,9 @@ async function cmdInstall() {
   if (shouldInstall('workbuddy')) {
     await runInstallStep('workbuddy', '\n[WorkBuddy]', installWorkBuddy);
   }
+  if (shouldInstall('codebuddy')) {
+    await runInstallStep('codebuddy', '\n[CodeBuddy]', installCodebuddy);
+  }
   if (shouldInstall('dsh')) {
     await runInstallStep('dsh', '\n[DSH]', installDsh);
   }
@@ -3678,6 +3846,8 @@ async function cmdInstall() {
             ? 'Codex'
             : target === 'workbuddy'
               ? 'WorkBuddy'
+              : target === 'codebuddy'
+                ? 'CodeBuddy'
               : target === 'dsh'
                 ? 'DSH'
                 : target === 'officeace'
@@ -3756,6 +3926,9 @@ async function cmdInstall() {
   if (target === 'workbuddy' || target === 'all') {
     console.log('Or describe your Huawei Cloud task in WorkBuddy');
   }
+  if (target === 'codebuddy' || target === 'all') {
+    console.log('Or describe your Huawei Cloud task in CodeBuddy');
+  }
   if (target === 'dsh' || target === 'all') {
     console.log('Or describe your Huawei Cloud task in DSH');
   }
@@ -3790,6 +3963,10 @@ async function cmdUninstall() {
   if (target === 'workbuddy' || target === 'all') {
     console.log('\n[WorkBuddy]');
     uninstallWorkBuddy();
+  }
+  if (target === 'codebuddy' || target === 'all') {
+    console.log('\n[CodeBuddy]');
+    uninstallCodebuddy();
   }
   if (target === 'dsh' || target === 'all') {
     console.log('\n[DSH]');
@@ -3935,6 +4112,7 @@ async function cmdStatus() {
     { name: 'CodeArts', run: codeartsStatus, on: (target) => target === 'codearts' || target === 'all' },
     { name: 'CodeArts Work', run: codeartsWorkStatus, on: (target) => target === 'codearts-work' || target === 'all' },
     { name: 'WorkBuddy', run: workbuddyStatus, on: (target) => target === 'workbuddy' || target === 'all' },
+    { name: 'CodeBuddy', run: codebuddyStatus, on: (target) => target === 'codebuddy' || target === 'all' },
     { name: 'DSH', run: dshStatus, on: (target) => target === 'dsh' || target === 'all' },
     { name: 'OfficeAce', run: officeaceStatus, on: (target) => target === 'officeace' || target === 'all' },
     { name: 'Hermes Agent', run: hermesStatus, on: (target) => target === 'hermes' || target === 'all' },
@@ -4011,6 +4189,7 @@ async function cmdDoctor() {
   const codeartsPluginDir = codeartsPluginsDir();
   const codeartsWorkPluginDir = codeartsWorkPluginsDir();
   const workbuddyPluginDir = workbuddyPluginsDir();
+  const codebuddyPluginDir = codebuddyPluginsDir();
   const dshPluginDir = dshPluginsDir();
   const officeacePluginDir = officeacePluginsDir();
   const hermesPluginDir = hermesPluginsDir();
@@ -4021,6 +4200,7 @@ async function cmdDoctor() {
     existsSync(join(codeartsPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(codeartsWorkPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(workbuddyPluginDir, 'src', 'mcp-server.mjs')) ||
+    existsSync(join(codebuddyPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(dshPluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(officeacePluginDir, 'src', 'mcp-server.mjs')) ||
     existsSync(join(hermesPluginDir, 'src', 'mcp-server.mjs')) ||
@@ -4035,8 +4215,10 @@ async function cmdDoctor() {
           ? 'CodeArts Work'
           : existsSync(join(workbuddyPluginDir, 'src', 'mcp-server.mjs'))
             ? 'WorkBuddy'
+            : existsSync(join(codebuddyPluginDir, 'src', 'mcp-server.mjs'))
+            ? 'CodeBuddy'
             : existsSync(join(dshPluginDir, 'src', 'mcp-server.mjs'))
-              ? 'DSH'
+            ? 'DSH'
               : existsSync(join(officeacePluginDir, 'src', 'mcp-server.mjs'))
                 ? 'OfficeAce'
                 : existsSync(join(hermesPluginDir, 'src', 'mcp-server.mjs'))
@@ -4056,6 +4238,7 @@ async function cmdDoctor() {
     codeartsPluginDir,
     codeartsWorkPluginDir,
     workbuddyPluginDir,
+    codebuddyPluginDir,
     dshPluginDir,
     officeacePluginDir,
     hermesPluginDir,
@@ -4069,6 +4252,7 @@ async function cmdDoctor() {
     existsSync(join(codeartsPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(codeartsWorkPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(workbuddyPluginDir, 'safety', 'policy.json')) ||
+    existsSync(join(codebuddyPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(dshPluginDir, 'safety', 'policy.json')) ||
     existsSync(join(officeacePluginDir, 'safety', 'policy.json')) ||
     existsSync(join(hermesPluginDir, 'safety', 'policy.json')) ||
@@ -4140,6 +4324,16 @@ async function cmdDoctor() {
       if (cfg.mcpServers && cfg.mcpServers['huaweicloud-devkit']) {
         mcpConfigured = true;
         mcpCfgTarget = 'WorkBuddy';
+      }
+    } catch {}
+  }
+  const codebuddyCfg = codebuddyMcpConfigFile();
+  if (!mcpConfigured && existsSync(codebuddyCfg)) {
+    try {
+      const cfg = JSON.parse(readFileSync(codebuddyCfg, 'utf8'));
+      if (cfg.mcpServers && cfg.mcpServers['huaweicloud-devkit']) {
+        mcpConfigured = true;
+        mcpCfgTarget = 'CodeBuddy';
       }
     } catch {}
   }
@@ -4262,6 +4456,7 @@ async function cmdDoctor() {
     codeartsSkillsDir(),
     codeartsWorkSkillsDir(),
     workbuddySkillsDir(),
+    codebuddySkillsDir(),
     dshSkillsDir(),
     officeaceSkillsDir(),
     hermesSkillsDir(),
@@ -4419,6 +4614,18 @@ async function cmdUpdate() {
     return;
   }
 
+  if (target === 'codebuddy') {
+    if (!existsSync(join(codebuddyPluginsDir(), 'src', 'mcp-server.mjs'))) {
+      console.log('\x1b[33mNot installed. Use "install" command first.\x1b[0m');
+      return;
+    }
+    console.log('[CodeBuddy]');
+    await updateCodebuddy();
+    console.log(`\n\x1b[32mUpdate complete.\x1b[0m`);
+    console.log(`\x1b[33mMCP 工具在重启 CodeBuddy 会话后才生效。\x1b[0m`);
+    return;
+  }
+
   if (target === 'dsh') {
     if (!existsSync(join(dshPluginsDir(), 'src', 'mcp-server.mjs'))) {
       console.log('\x1b[33mNot installed. Use "install" command first.\x1b[0m');
@@ -4504,6 +4711,11 @@ async function cmdUpdate() {
     if (existsSync(join(workbuddyPluginsDir(), 'src', 'mcp-server.mjs'))) {
       console.log('\n[WorkBuddy]');
       await updateWorkBuddy();
+      updatedAny = true;
+    }
+    if (existsSync(join(codebuddyPluginsDir(), 'src', 'mcp-server.mjs'))) {
+      console.log('\n[CodeBuddy]');
+      await updateCodebuddy();
       updatedAny = true;
     }
     if (existsSync(join(dshPluginsDir(), 'src', 'mcp-server.mjs'))) {
@@ -5321,7 +5533,7 @@ async function main() {
     default:
       console.log(BANNER);
       console.log(
-        'Usage: npx huaweicloud-devkit <command> [--target <opencode|codex|codearts|codearts-work|workbuddy|dsh|officeace|hermes|openclaw|atomcode|all>]\n',
+        'Usage: npx huaweicloud-devkit <command> [--target <opencode|codex|codearts|codearts-work|workbuddy|codebuddy|dsh|officeace|hermes|openclaw|atomcode|all>]\n',
       );
       console.log('Commands:');
       console.log('  install      Install skills, MCP server, safety policy');
@@ -5337,7 +5549,7 @@ async function main() {
       console.log('  help         Show this help');
       console.log('\nOptions:');
       console.log(
-        '  --target     Target agent: opencode (default), codex, codearts, codearts-work, workbuddy, dsh, officeace, hermes, openclaw, atomcode, all',
+        '  --target     Target agent: opencode (default), codex, codearts, codearts-work, workbuddy, codebuddy, dsh, officeace, hermes, openclaw, atomcode, all',
       );
       console.log('  --version    Print CLI version and installed plugin version per agent');
       console.log(
