@@ -310,6 +310,52 @@ test('evaluateCommandRisk decodes $(…) command substitution before rule matchi
   }
 });
 
+test('evaluateCommandRisk fails closed on unparsable $(…) inner commands (#866 D4-17)', () => {
+  // A detected $(…) whose inner command cannot be fully parsed statically
+  // (nested substitution, backticks, variable expansion, eval, xargs) leaves
+  // the executed payload unknown — absence of findings must NOT report allow.
+  const unresolvedPayloads = [
+    // Variable expansion: runtime value unknown.
+    `rm -rf $(echo $TARGET_DIR)`,
+    `cat $(eval $FILE_EXPR)`,
+    // Nested substitution: single-level extractor cannot consume it.
+    `echo $(printf $(echo nested))`,
+    // Backticks inside the inner command.
+    `chmod 777 $(echo \`whoami\`)`,
+    // xargs builds the command at runtime.
+    `echo 'rm -rf /' | $(echo xargs rm)`,
+    // Unbalanced $( : extractor cannot close it.
+    `hcloud ECS DeleteServers --servers.01.id=$(`,
+  ];
+  for (const cmd of unresolvedPayloads) {
+    const result = evaluateCommandRisk(cmd);
+    assert.notEqual(result.decision, 'allow', `${cmd} must not be allowed`);
+    assert.ok(
+      result.findings.some((f) => f.ruleId === 'hwc-command-subst-unresolved'),
+      `${cmd} should carry the unresolved-substitution finding`,
+    );
+  }
+
+  // Fully visible inner commands stay clean (no false positives).
+  for (const cmd of [`$(echo hello)`, `$(date +%Y)`, `$(hcloud ECS ListServers --x=1)`]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.ok(
+      !result.findings.some((f) => f.ruleId === 'hwc-command-subst-unresolved'),
+      `${cmd} should not carry the unresolved-substitution finding`,
+    );
+  }
+
+  // A deny from a real rule outranks the synthetic warn finding.
+  const denyCmd = `rm -rf / && echo $(eval $X)`;
+  const deny = evaluateCommandRisk(denyCmd);
+  assert.equal(deny.decision, 'deny', `${denyCmd} should stay deny`);
+  assert.equal(deny.findings[0].severity, 'deny');
+  assert.ok(
+    deny.findings.some((f) => f.ruleId === 'hwc-command-subst-unresolved'),
+    'unresolved-substitution finding should coexist with the deny rule',
+  );
+});
+
 test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
   for (const cmd of ['env | grep HW_', 'printenv | grep HW_ACCESS', 'env | grep HUAWEICLOUD']) {
     const result = evaluateCommandRisk(cmd);

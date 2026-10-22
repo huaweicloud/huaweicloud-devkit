@@ -145,8 +145,9 @@ export function expandAnsiCQuoting(text) {
 // their exact semantics while decoded payloads are also inspected.
 //
 // Only single-level `$(...)` is extracted (nested parens are a known
-// limitation, same as `extractInnerCommand` in safety-policy.mjs). The depth
-// guard prevents infinite recursion on pathological input.
+// limitation, same as `extractInnerCommand` in safety-policy.mjs). Nested or
+// otherwise unparsable substitutions are handled fail-closed by
+// `hasUnresolvedCommandSubstitution` below (#866 D4-17).
 
 const CMD_SUBST_PATTERN = /\$\(([^)]+)\)/g;
 // printf '...' / printf "..." with \xNN/\uNNNN/\NNN escapes (reuse decodeAnsiCBody)
@@ -174,8 +175,9 @@ function decodeBase64Payloads(innerCommand) {
         const b64 = m[2].replace(/\s/g, '');
         decoded.push(Buffer.from(b64, 'base64').toString('utf8'));
       } catch {
-        // Malformed base64 — skip; the raw echo|base64 pattern is still
-        // caught by hwc-command-encoded-shell-exec if piped to a shell.
+        // Defensive fallback only: Node's base64 decoder silently truncates
+        // malformed input rather than throwing, so this branch is normally
+        // unreachable. Partial decodes still flow into rule matching below.
       }
     }
   }
@@ -202,6 +204,40 @@ export function expandCommandSubstitution(text) {
   return `${value}\n${decoded.join('\n')}`;
 }
 
+// --- $(…) fail-closed detection (#866 D4-17) ----------------------------------
+// "No finding ⇒ allow" is fail-open when a `$(...)` is present but its inner
+// command cannot be fully parsed statically: the executed payload is unknown,
+// so the absence of findings proves nothing. `hasUnresolvedCommandSubstitution`
+// flags inner commands that hide their runtime output from inspection:
+// nested/unbalanced `$(`, backticks, `$VAR`/`${...}` expansion, `eval`,
+// `xargs` — the engine then emits a synthetic warn finding so the overall
+// decision is at least `warn` instead of `allow`.
+
+const UNRESOLVED_INNER_PATTERN = /\$\(|`|\$\{|\$[A-Za-z_][A-Za-z0-9_]*|\beval\b|\bxargs\b/;
+
+function countCommandSubstitutions(value) {
+  CMD_SUBST_PATTERN.lastIndex = 0;
+  let matched = 0;
+  while (CMD_SUBST_PATTERN.exec(value) !== null) matched += 1;
+  return matched;
+}
+
+export function hasUnresolvedCommandSubstitution(text) {
+  const value = String(text || '');
+  if (!value.includes('$(') && !value.includes('`')) return false;
+  CMD_SUBST_PATTERN.lastIndex = 0;
+  let match;
+  while ((match = CMD_SUBST_PATTERN.exec(value)) !== null) {
+    const inner = match[1];
+    if (inner && UNRESOLVED_INNER_PATTERN.test(inner)) return true;
+  }
+  // A `$(` that the single-level pattern could not consume (nested or
+  // unbalanced parens) is by definition unparsed.
+  const total = (value.match(/\$\(/g) || []).length;
+  if (total > countCommandSubstitutions(value)) return true;
+  return false;
+}
+
 function evaluationContext(stage, input) {
   if (stage === 'command') {
     const command = normalizeText(input.command || input.text || '');
@@ -210,7 +246,9 @@ function evaluationContext(stage, input) {
     // Decode $(…) command substitution inner commands (printf/base64)
     // before rule matching (#866 D4-15 step 2 — command substitution bypass).
     expanded = expandCommandSubstitution(expanded);
-    return { text: expanded, command };
+    // Fail-closed: an unparsable $(…) must not degrade to allow (#866 D4-17).
+    const unresolvedSubstitution = hasUnresolvedCommandSubstitution(command);
+    return { text: expanded, command, unresolvedSubstitution };
   }
   if (stage === 'artifact') {
     const path = String(input.path || '');
@@ -270,6 +308,23 @@ function evaluate(stage, inputs, options = {}) {
         severity: rule.severity,
         message: rule.message,
         remediation: rule.remediation,
+        source: input?.path || stage,
+        evidence: excerpt(context.text),
+      });
+    }
+    // Fail-closed (#866 D4-17): a detected $(…) whose inner command cannot be
+    // fully parsed statically means the executed payload is unknown; "no rule
+    // matched" must not be reported as a clean allow in that case.
+    if (stage === 'command' && context.unresolvedSubstitution) {
+      findings.push({
+        ruleId: 'hwc-command-subst-unresolved',
+        title: 'Unresolvable $(…) command substitution',
+        category: 'obfuscation',
+        severity: 'warn',
+        message:
+          'Command contains $(…) whose inner command cannot be fully parsed statically (nested substitution, backticks, variable expansion, eval, or xargs). The executed payload is unknown to the risk engine.',
+        remediation:
+          'Rewrite the command so every $(…) inner command is literal and fully visible, or have a human review the command before execution.',
         source: input?.path || stage,
         evidence: excerpt(context.text),
       });
