@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.10-next.5
+
+- fix(sandbox): 数据面(sandbox exec/upload/tunnel)凭证获取支持 X-Auth-Token 回退——token-auth 用户无需永久 AK/SK 即可驱动沙箱部署(experience-report 死循环修复)。
+- feat: 新增 `huaweicloud_install_hcloud` MCP 工具,Node 内直装 KooCLI,不依赖 agent bash 工具。
+- fix(auth): token 换临时 AK/SK 失败时细分错误(TOKEN_EXCHANGE_FAILED vs HDKIT_CRED_MISSING);auth_status token-auth message 明确数据面依赖。
+- feat(diag): explain_error 扩展 devkit 内部错误码(HDKIT__/TOKEN__)。
+
 ## 1.1.10-next.4
 
 - fix: CodeArts Web 测试六项修复 — hdkitservice/voucher 后端 API 支持 X-Auth-Token(无 AK/SK 换临时 AK/SK);读 JSON 时 strip UTF-8 BOM;setup-cli 惰性 require node:sqlite(CLI 无需 --experimental-sqlite);doctor 平台 STS/token 场景将凭据 fail 降级为 warn;auth_status 新增 usableCredentials;check_account_type 错误信息明确化。
