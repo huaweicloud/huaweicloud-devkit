@@ -3,7 +3,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 
-import { dispatch } from './mcp-protocol.mjs';
+import { dispatch, _markInitialized } from './mcp-protocol.mjs';
 
 export const DEFAULT_PORT = 9528;
 export const DEFAULT_HOST = '127.0.0.1';
@@ -42,6 +42,12 @@ export async function startRemoteServer({ port = DEFAULT_PORT, host = DEFAULT_HO
     }
 
     if (!Object.hasOwn(message, 'id')) {
+      // D9-4: notifications/initialized reinforces the initialized state
+      // (initialize already marks the session). Honor it for spec compliance.
+      if (message.method === 'notifications/initialized') {
+        const sid = (req.headers['mcp-session-id'] || '').trim() || 'default';
+        _markInitialized(sid);
+      }
       // 通知类消息（含 notifications/initialized）无需响应体，HTTP 层直接 202。
       res.writeHead(202);
       res.end();
