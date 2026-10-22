@@ -106,7 +106,12 @@ curl -fsSL https://api.github.com/repos/PostgREST/postgrest/releases \
 # partial downloads (a truncated tar.xz fails the check instead of a cryptic tar error).
 PGRST_SHA256="$(curl -fsSL https://api.github.com/repos/PostgREST/postgrest/releases/tags/v16.5 \
   | grep -A30 '"name": *"postgrest-v16.5-linux-static-aarch64.tar.xz"' \
-  | grep -o '"digest": *"sha256:[a-f0-9]*"' | head -1 | cut -d: -f3)"
+  | grep -o '"digest": *"sha256:[a-f0-9]*"' | head -1 \
+  | sed 's/.*sha256://; s/"$//')"
+# ⚠️ The sed strips both the `sha256:` prefix and the closing quote.
+# Using `cut` by delimiter instead would leave a trailing double-quote on the
+# hash, making `sha256sum -c -` fail with "no properly formatted checksum
+# lines found" even when the download is correct.
 test -n "$PGRST_SHA256"   # empty digest = API lookup failed; do NOT proceed unverified
 curl -fsSL --http1.1 --max-time 240 -C - -o /tmp/pgrst.tar.xz \
   "https://ghfast.top/https://github.com/PostgREST/postgrest/releases/download/v16.5/postgrest-v16.5-linux-static-aarch64.tar.xz"

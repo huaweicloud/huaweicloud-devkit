@@ -1071,6 +1071,14 @@ test('fullstack-postgrest.md carries the 2026-10 retest field notes (#1016)', ()
   assert.match(ref, /releases\/tags\/v16\.5/);
   assert.match(ref, /sha256sum -c/);
   assert.match(ref, /--max-time 240 -C - -o \/tmp\/pgrst\.tar\.xz/);
+  // Supply-chain guard fix (review r2): digest extraction must NOT use
+  // `cut -d: -f3` — it leaves a trailing double-quote on the hash, making
+  // sha256sum -c fail every time even when the download is correct.
+  assert.ok(
+    !ref.includes('cut -d: -f3'),
+    'digest extraction must not use cut -d: -f3 (trailing quote breaks sha256sum -c)',
+  );
+  assert.match(ref, /sed.*sha256/); // sed-based extraction strips the trailing quote
   // POST semantics: 401 is the anon default; 201 only after a targeted GRANT INSERT.
   assert.match(ref, /POST 401 anon-default/);
   // Trap 4: upload_file 640 permission → silent schema failure → PGRST002.
