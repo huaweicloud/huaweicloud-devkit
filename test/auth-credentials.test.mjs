@@ -1032,3 +1032,33 @@ test('getAuthStatus exposes usableCredentials for platform STS and token', () =>
     delete process.env.HW_X_AUTH_TOKEN;
   });
 });
+
+test('resolveBackendCredentials returns lowercase securitytoken for temp STS credentials', async () => {
+  const hwlink = await import('../plugins/huaweicloud-core/src/sandbox/hwlink-api.mjs');
+  clearRuntimeCredentials();
+  const saved = {
+    ak: process.env.HW_ACCESS_KEY,
+    sk: process.env.HW_SECRET_KEY,
+    st: process.env.HW_SECURITY_TOKEN,
+    home: process.env.HUAWEICLOUD_HOME,
+  };
+  try {
+    process.env.HW_ACCESS_KEY = 'TEST_AK';
+    process.env.HW_SECRET_KEY = 'TEST_SK';
+    process.env.HW_SECURITY_TOKEN = 'TEST_STS_VALUE';
+    process.env.HUAWEICLOUD_HOME = mkdtempSync(join(tmpdir(), 'hwlink-cred-'));
+    const creds = await hwlink.resolveBackendCredentials();
+    assert.ok(creds.ak && creds.sk, 'should return AK/SK');
+    assert.equal(creds.securitytoken, 'TEST_STS_VALUE', 'must expose lowercase securitytoken (S1 temp STS)');
+  } finally {
+    if (saved.ak === undefined) delete process.env.HW_ACCESS_KEY;
+    else process.env.HW_ACCESS_KEY = saved.ak;
+    if (saved.sk === undefined) delete process.env.HW_SECRET_KEY;
+    else process.env.HW_SECRET_KEY = saved.sk;
+    if (saved.st === undefined) delete process.env.HW_SECURITY_TOKEN;
+    else process.env.HW_SECURITY_TOKEN = saved.st;
+    if (saved.home === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = saved.home;
+    clearRuntimeCredentials();
+  }
+});

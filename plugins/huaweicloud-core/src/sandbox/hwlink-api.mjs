@@ -87,17 +87,23 @@ export function getCredentials() {
 // Data-plane (sandbox exec/upload/tunnel) credentials: prefer AK/SK, else fall
 // back to X-Auth-Token → temporary AK/SK, so token-auth users can drive the data
 // plane without a permanent AK/SK (experience-report #3.3/#3.7 dead-loop fix).
+// NOTE: returns `securitytoken` (lowercase t) — the call sites (session-manager,
+// tools.mjs) destructure that exact spelling; returning `securityToken` here
+// silently drops the STS token from the hwlink signature (APIGW.0301).
 export async function resolveBackendCredentials() {
   try {
     const creds = resolveCredentialsWithRuntime({ allowMissing: true });
-    if (creds && creds.ak && creds.sk) return creds;
+    if (creds && creds.ak && creds.sk) {
+      return { ak: creds.ak, sk: creds.sk, securitytoken: creds.securityToken || '' };
+    }
   } catch {
     // no AK/SK — fall through to token
   }
   const token = resolveXAuthToken();
   if (token) {
     try {
-      return await getTokenCredentials(token);
+      const temp = await getTokenCredentials(token);
+      return { ak: temp.ak, sk: temp.sk, securitytoken: temp.securityToken || '' };
     } catch (error) {
       // Distinguish "token exchange failed" from "no credential at all" (#3.4).
       const err = makeError('HDKIT_CRED_MISSING');

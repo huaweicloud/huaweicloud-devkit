@@ -1073,7 +1073,9 @@ function readImportFile() {
   const path = join(dirname(globalCredentialsPath()), 'creds-import.json');
   try {
     if (!existsSync(path)) return null;
-    const data = JSON.parse(readFileSync(path, 'utf8'));
+    // Strip a leading UTF-8 BOM: PowerShell `Set-Content -Encoding UTF8` writes
+    // one, which plain JSON.parse rejects (#devkit-体验报告 P1-4).
+    const data = JSON.parse(readFileSync(path, 'utf8').replace(/^\uFEFF/, ''));
     return {
       ak: String(data.ak || ''),
       sk: String(data.sk || ''),
@@ -1295,6 +1297,11 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
 
       if (!ak || !sk) {
+        if (sourceChannel === 'import') {
+          throw new Error(
+            'ak and sk are required. creds-import.json 缺失或无法解析（可能带 UTF-8 BOM 或非法 JSON），解析失败时文件已被清除。请用无 BOM 的 UTF-8 JSON 重新写入后重试 mode=import（PowerShell 推荐 [IO.File]::WriteAllText 配 UTF8Encoding($false)）。',
+          );
+        }
         throw new Error('ak and sk are required (or provide creds-import.json for mode=import).');
       }
 

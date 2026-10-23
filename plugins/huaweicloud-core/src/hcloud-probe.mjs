@@ -111,6 +111,18 @@ export function classifyHcloudProbe(result, requiredVersion = getKooCliVersion()
     };
   }
 
+  // Probe timed out / was signal-killed: we can't tell whether hcloud is truly
+  // broken or just slow on this box — report unknown instead of unavailable so
+  // the caller doesn't falsely conclude "CLI not installed" (#P0-2).
+  if (result.signal || result.status === null || result.error?.code === 'ETIMEDOUT') {
+    return {
+      status: 'unknown',
+      installed: false,
+      ok: false,
+      errorCode: 'HCLOUD_UNKNOWN',
+    };
+  }
+
   return {
     status: 'unavailable',
     installed: false,
