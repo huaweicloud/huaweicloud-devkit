@@ -462,7 +462,7 @@ When deploying a **full-stack workbench project** (前后端工作台) or asking
 3. **Nginx single-origin** — `/` serves the frontend, `/api/` reverse-proxies to PostgREST (no CORS, same origin). The frontend dir needs `chmod o+x` on the whole path chain or nginx returns 403.
 4. **Expose + keep alive (automatic)** — `huaweicloud_sandbox_expose_tunnel` with the nginx port; it AUTO-enrolls the tunnel into the keepalive watchdog (merged into existing coverage). Prefer `expiry_hours: 720` for long-lived workbench deployments.
 
-Complete measured procedure (full command chain) plus the 2026-10 field notes (Aliyun mirror URLs, cross-mirror resume corruption, `upload_file` 640 → PGRST002, exec-channel escaping → upload files and run `psql -f` / `curl -d @file`): see `references/fullstack-postgrest.md`.
+Complete measured procedure (full command chain) plus the 2026-10 field notes (Aliyun mirror URLs, cross-mirror resume corruption, `upload_file` 640 → PGRST002, exec-channel escaping → upload files and run `psql -f` / `curl -d @file`): see `references/fullstack-postgrest.md`. For the sandbox restart recovery checklist (what survives on `/workspace` vs what is lost on the 系统盘, plus the write-GRANT rollback trap): see the `Sandbox Restart Recovery Checklist` section in the same file.
 
 ## Web Application Deployment
 

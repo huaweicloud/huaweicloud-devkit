@@ -78,12 +78,16 @@ ln -sf /usr/lib64/libreadline.so.8 /usr/lib64/libreadline.so.7
 ldconfig   # registers /usr/pgsql-16/lib (libpq.so.5)
 ```
 
-Init and start (PG refuses root; no systemd on HCE):
+Init and start (PG refuses root; no systemd on HCE). **The data directory
+MUST live on the data disk** (`/workspace`), not `/var/lib/pgsql` —
+`/var/lib/pgsql` is on the 系统盘 (system disk) and a sandbox reboot rolls it
+back to the image state, destroying all databases. `/workspace` is the data
+disk and survives reboots (#999):
 
 ```bash
-mkdir -p /var/lib/pgsql/16/data && chown postgres:postgres /var/lib/pgsql/16/data
-su - postgres -c "/usr/pgsql-16/bin/initdb -D /var/lib/pgsql/16/data"
-su - postgres -c "/usr/pgsql-16/bin/pg_ctl -D /var/lib/pgsql/16/data -l /var/lib/pgsql/16/logfile start"
+mkdir -p /workspace/pgsql/16/data && chown postgres:postgres /workspace/pgsql/16/data
+su - postgres -c "/usr/pgsql-16/bin/initdb -D /workspace/pgsql/16/data"
+su - postgres -c "/usr/pgsql-16/bin/pg_ctl -D /workspace/pgsql/16/data -l /workspace/pgsql/16/logfile start"
 ```
 
 ## Step 2: PostgREST (static build) + schema
@@ -243,3 +247,64 @@ shell; over MCP, always use the file-upload pattern:
 chmod o+r /tmp/schema.sql && su - postgres -c "/usr/pgsql-16/bin/psql -f /tmp/schema.sql"
 curl -s -X POST -H "Content-Type: application/json" -d @/tmp/payload.json http://127.0.0.1:3000/todos
 ```
+
+## Sandbox Restart Recovery Checklist (2026-10)
+
+A sandbox reboot rolls the **系统盘 (system disk)** back to the image state —
+everything installed under `/`, `/usr`, `/etc`, `$HOME` is lost. Only
+`/workspace` (the data disk) survives. Below is the measured recovery
+checklist, assuming PG data was initialized on `/workspace/pgsql/16/data` per
+Step 1 above.
+
+### Lost on reboot (系统盘 — must rebuild)
+
+| Component               | Location                 | Recovery action                                          |
+| ----------------------- | ------------------------ | -------------------------------------------------------- |
+| PostgreSQL 16 RPMs      | `/usr/pgsql-16/`         | Re-run the Step 1 `rpm -ivh --nodeps` block              |
+| Soname shims            | `/usr/lib64/lib*.so.*`   | Re-run the Step 1 symlink + `ldconfig` block             |
+| `postgres` user         | `/etc/passwd` entry      | `useradd -r -m postgres` then `chown postgres:postgres /workspace/pgsql/16/data` |
+| PostgREST binary        | `/opt/postgrest/`        | Re-download + sha256-verify + extract (Step 2)           |
+| pgrst.conf              | `/opt/postgrest/`        | Re-upload via `huaweicloud_sandbox_upload_file`          |
+| nginx config            | `/etc/nginx/conf.d/`     | Re-create via `huaweicloud_sandbox_deploy_nginx`         |
+| DevBridge 0.2.x binary  | `~/.huawei/bin/` (系统盘) | Re-install to `/workspace/.local/bin` (see #999)         |
+| DevBridge tunnel        | in-memory                | Re-run `huaweicloud_sandbox_expose_tunnel`               |
+| `/tmp` credentials      | `/tmp/hw_creds.sh` etc.  | Re-run `huaweicloud_sandbox_credentials`                 |
+
+### Survives reboot (/workspace — no rebuild needed)
+
+| Component              | Location                      | Notes                                              |
+| ---------------------- | ----------------------------- | -------------------------------------------------- |
+| Frontend pages         | `/workspace/<repo>/`          | Uploaded project persists                          |
+| PG data directory      | `/workspace/pgsql/16/data`    | Schema, roles, tables, seed data ALL survive       |
+| DevBridge 0.2.x binary | `/workspace/.local/bin/`      | If installed per #999 guidance                     |
+
+Because PG data lives on `/workspace`, a restart does **NOT** require rebuilding
+the schema (`schema.sql`) or re-seeding data — `initdb` is also unnecessary.
+Only the PG server RPMs and the `postgres` user need rebuilding; then
+`pg_ctl -D /workspace/pgsql/16/data start` resumes the surviving cluster
+immediately.
+
+### Write-permission GRANT rollback trap (POST 401 → GRANT → 201)
+
+The `postgres` system user and PG RPMs live on the 系统盘, so after a reboot
+you must recreate the user and re-install PG before `pg_ctl` can start the
+surviving data directory. Once PG starts against the surviving
+`/workspace/pgsql/16/data`, all roles and grants in the PG catalog are intact
+— no re-grant is needed.
+
+**However**, if you rebuild the schema from a `schema.sql` that only contains
+`GRANT SELECT` (the read-only anon default), writes are blocked: `POST
+/api/todos` returns **401**. The write grant (`GRANT INSERT, UPDATE, DELETE`)
+was stored in the PG catalog; re-running a SELECT-only script overwrites it.
+The measured fix (2026-10):
+
+```sql
+GRANT INSERT, UPDATE, DELETE ON api.todos TO api_user;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA api TO api_user;
+```
+
+After this targeted re-grant the same `POST /api/todos` returns **201**
+(measured 2026-10: POST 401 → `GRANT INSERT, UPDATE, DELETE` → POST 201).
+This mirrors the Step 4 anon-role gating: `db-anon-role` is read-only by
+default; targeted write grants must be re-applied after any schema rebuild.
+Never grant broad write access to the anon role.
