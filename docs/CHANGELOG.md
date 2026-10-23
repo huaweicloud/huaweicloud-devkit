@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.10-next.6
+
+- fix(sandbox): 修复 hwlink 数据面凭证 `securityToken`/`securitytoken` 字段名大小写回归——临时 STS 凭证的 x-security-token 此前被丢弃,导致 token 认证下沙箱 exec/upload/tunnel 报 APIGW.0301。
+- fix(cli): hcloud 探测超时/被信号终止降级为 unknown 而非 unavailable,避免误导。
+- fix(import): readImportFile strip UTF-8 BOM(PowerShell 写入的 creds-import.json),失败错误信息明确提示 BOM/非法 JSON/已清除。
+
 ## 1.1.10-next.5
 
 - fix(sandbox): 数据面(sandbox exec/upload/tunnel)凭证获取支持 X-Auth-Token 回退——token-auth 用户无需永久 AK/SK 即可驱动沙箱部署(experience-report 死循环修复)。
