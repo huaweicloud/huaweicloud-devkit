@@ -54,7 +54,7 @@ import {
   parseStsExpiry,
   resolveCredentialsWithRuntime,
 } from './auth/credentials.mjs';
-import { trackToolInvoke, trackSkillRetrieve, clearUserHash } from './telemetry/telemetry.mjs';
+import { trackToolInvoke, trackSkillRetrieve, clearUserHash, cacheUserHash } from './telemetry/telemetry.mjs';
 import { fetchWithProxy } from './proxy/proxy-agent.mjs';
 import { fingerprint, runHcloudConfigure, runHcloudProfileDelete, resolveManagedProfile } from './auth/reconcile.mjs';
 import {
@@ -1785,10 +1785,17 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     }
     case 'huaweicloud_voucher_status':
       return await hdkitVoucherStatus(args.domain_id);
-    case 'huaweicloud_voucher_claim':
-      return await hdkitVoucherClaim(args.domain_id);
-    case 'huaweicloud_competition_voucher_claim':
-      return await hdkitCompetitionVoucherClaim(args.domain_id);
+    case 'huaweicloud_voucher_claim': {
+      const result = await hdkitVoucherClaim(args.domain_id);
+      // #1014 P0: 领券成功后补缓存 userHash（响应携带时），flush 前兜底补齐队列缺失字段。
+      if (result?.userHash) cacheUserHash(result.userHash);
+      return result;
+    }
+    case 'huaweicloud_competition_voucher_claim': {
+      const result = await hdkitCompetitionVoucherClaim(args.domain_id);
+      if (result?.userHash) cacheUserHash(result.userHash);
+      return result;
+    }
     case 'huaweicloud_check_update':
       return await handleCheckUpdate(args, { sessionId: opts?.sessionId, doQuery: opts?.doQuery });
     case 'huaweicloud_upgrade':
