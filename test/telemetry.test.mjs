@@ -166,6 +166,37 @@ test('sanitizeValue coerces non-strings and nulls safely', async () => {
   assert.equal(sanitizeValue(123), '123');
 });
 
+test('sanitizeValue redacts AK/SK credential values incl. lowercase variants (#980 D8-9)', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  const out = sanitizeValue('AK=HPUAI12345 ak=lower123 SK=abcdef sk=lowerSK');
+  assert.doesNotMatch(out, /HPUAI12345|lower123|abcdef|lowerSK/);
+  assert.match(out, /<redacted>/);
+});
+
+test('sanitizeValue redacts token/password/adminPass values (#980 D8-9)', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  for (const input of ['token=TokenValueABCDEF', 'TOKEN=TokUpper123', 'password=pw1', 'adminPass=ap1']) {
+    const out = sanitizeValue(input);
+    assert.match(out, /<redacted>/, `${input} should be redacted`);
+    assert.doesNotMatch(out, /TokenValueABCDEF|TokUpper123|pw1|ap1/, `${input} value must not leak`);
+  }
+});
+
+test('sanitizeValue redacts credentials mixed with control characters (#980 D8-9)', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  const out = sanitizeValue('deploy\nak=secretAK123\ttoken=tok456');
+  assert.doesNotMatch(out, /secretAK123|tok456/);
+  assert.match(out, /<redacted>/);
+  assert.doesNotMatch(out, /[\r\n\t]/);
+});
+
+test('sanitizeValue redaction applies before truncation (#980 D8-9)', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+  const out = sanitizeValue(`sk=${'x'.repeat(400)}`);
+  assert.ok(out.length <= 255);
+  assert.doesNotMatch(out, /x{100}/);
+});
+
 test('cacheUserHash writes to filesystem', async () => {
   await withIsolatedTelemetry(async ({ cacheUserHash }) => {
     assert.doesNotThrow(() => cacheUserHash('sha256hash1234'));
