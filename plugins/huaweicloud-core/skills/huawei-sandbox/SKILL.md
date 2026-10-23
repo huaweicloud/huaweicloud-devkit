@@ -1,6 +1,6 @@
 ---
 name: huawei-sandbox
-description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application. Covers sandbox lifecycle (check-user, sign-agreement, connect, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
+description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application. Covers sandbox lifecycle (check-user, sign-agreement, connect, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, 工作台, workbench, 全栈, full-stack, CRUD 应用, database-backed, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
 version: 1
 ---
 
@@ -26,6 +26,19 @@ Hard rules:
 - "部署到华为云" / "deploy to Huawei Cloud" / "上线" alone is NOT a named target — still run the gate.
 - Include the OBS domain reminder and the ECS EIP pairing reminder in the options as presented.
 - After the choice: sandbox → continue with this skill; OBS → `huawei-obs`; ECS → `huawei-ecs` / `huawei-iac`; CCE → `huawei-cce`.
+
+## Stack-Selection Gate (MANDATORY — do not skip)
+
+Immediately after the Target-Selection Gate resolves (and before any code is uploaded or written), decide the **backend stack**. A frontend-only SPA path is NOT the default for workbench-style deployments.
+
+**Stack keywords** (any hit → PostgREST path, no exceptions): 工作台, workbench, 全栈, full-stack, CRUD 应用, database-backed, 数据库, 持久化, postgres, postgrest, RESTful 接口, 工作台后端, backend API, 增删改查.
+
+Hard rules:
+
+- **Keyword hit → PostgreSQL + PostgREST path.** Deploy the backend FIRST via [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) (measured procedure: `references/fullstack-postgrest.md`), then serve the frontend with nginx `/api/` reverse-proxying to PostgREST. Do NOT fall through to the plain SPA workflow.
+- **Even when the developer does NOT mention a database**, a 前后端工作台 (frontend + backend workbench) or CRUD application defaults to **PostgreSQL + PostgREST** — the SPA static path is only for requests with no backend semantics at all (pure static site / pure frontend preview).
+- Unclear whether the project needs a backend? Inspect the repo first (API routes, server code, database config, CRUD screens). When in doubt for a workbench/CRUD-shaped request, ask once via the `question` tool; do NOT silently pick the SPA path.
+- **Pre-code checkpoint**: before uploading (`huaweicloud_sandbox_upload_project` / `upload_file`) or writing ANY application code, confirm the chosen backend stack is consistent with this gate. If it is not (e.g. you drifted into the SPA workflow for a workbench request), STOP, do not write code, and redirect to the PostgREST path. Writing application code with an unconfirmed/inconsistent backend stack is a violation.
 
 ## Overview
 
@@ -116,6 +129,8 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 ## Workflow
 
 **Step 0 — Target-Selection Gate (MANDATORY)**: before any sandbox lifecycle tool, confirm the target. If the developer asked to deploy/host/publish a site without naming a target, STOP and run the [Target-Selection Gate](#target-selection-gate-mandatory--do-not-skip) first; do NOT call `huaweicloud_sandbox_connect` until it is resolved. Proceed with this workflow only if the target is already confirmed as sandbox (or a temporary runtime).
+
+**Step 0.5 — Stack-Selection Gate (MANDATORY, pre-code checkpoint)**: right after the target is confirmed, run the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). Workbench / full-stack / CRUD / database-backed requests (even without an explicit database mention) take the PostgreSQL + PostgREST path. Before uploading or writing ANY application code, re-confirm the backend selection matches the gate — if inconsistent, STOP writing code and redirect to the PostgREST path.
 
 Setup is a **plugin-side preflight** — the developer should be asked a question only once, when the agreement actually needs signing:
 
@@ -468,7 +483,7 @@ Complete measured procedure (full command chain) plus the 2026-10 field notes (A
 
 When deploying a web application to the sandbox, build the app inside the sandbox before exposing it. Source code is uploaded, dependencies installed, and the framework built in the sandbox environment.
 
-**Backend present?** If the project includes a PostgreSQL + PostgREST backend (or the developer asks for one), set up the backend FIRST by following [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) — install PostgreSQL/PostgREST, create the schema, and point the frontend's nginx `/api/` location at PostgREST — then continue with the steps below. Every tunnel exposed afterwards is auto-enrolled into the keepalive watchdog.
+**Backend present?** First re-check the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip): workbench / full-stack / CRUD / database-backed projects (even with no explicit database mention) belong on the PostgREST path. If the project includes a PostgreSQL + PostgREST backend (or the developer asks for one), set up the backend FIRST by following [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) — install PostgreSQL/PostgREST, create the schema, and point the frontend's nginx `/api/` location at PostgREST — then continue with the steps below. Only a pure frontend/static project (no backend semantics) continues directly. Every tunnel exposed afterwards is auto-enrolled into the keepalive watchdog.
 
 **沙箱无 systemd（实测 #935 报告3 问题3）**：沙箱为无 systemd 的容器环境，`systemctl` 全部失效（`System has not been booted with systemd`）—— 不要用 `systemctl start/reload/restart nginx`。Nginx 配置变更直接使用 `nginx -t` 验证 + `nginx -s reload` 热加载，或直接执行 nginx 二进制（`sudo nginx` 启动 / `nginx -s stop` 停止）。`huaweicloud_sandbox_deploy_nginx` 工具返回的 nextStep 文案与该语义一致（配置写入后自动回验存在性与 `nginx -t`，通过后即生效，无需 systemctl）。
 
@@ -1037,6 +1052,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 | Trap                                   | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Target not confirmed                   | "部署到华为云" without a named target is NOT a go signal. You MUST run the Target-Selection Gate and get an explicit choice before calling any sandbox lifecycle tool. Skipping it and defaulting to the sandbox is a violation.                                                                                                                                                                                                                                      |
+| Stack not confirmed                    | Workbench / full-stack / CRUD / database-backed requests default to PostgreSQL + PostgREST (even with no database mentioned). You MUST run the Stack-Selection Gate and confirm the backend stack BEFORE uploading or writing ANY application code; drifting into the SPA workflow and writing code anyway is a violation — STOP and redirect to the PostgREST path.                                                                                                  |
 | Agreement required first               | `sandbox_connect` fails if the agreement isn't signed; the `sandbox_check_user` preflight detects this, so surface it to the developer only when signing is needed                                                                                                                                                                                                                                                                                                    |
 | Real-name required                     | `sandbox_connect` fails if `realnameVerified=false`; tell the developer once and stop, don't loop on connect                                                                                                                                                                                                                                                                                                                                                          |
 | Never expose tunnel details            | Do not mention "DevBridge"/"tunnel"/"devbridge" to the developer — say "正在生成访问地址..." and hand over only the URL                                                                                                                                                                                                                                                                                                                                               |

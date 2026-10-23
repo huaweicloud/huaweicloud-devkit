@@ -310,6 +310,44 @@ test('web/static-site deployment intent offers target options with sandbox first
   }
 });
 
+test('huawei-sandbox skill carries a mandatory Stack-Selection Gate (workbench/CRUD default to PostgREST)', () => {
+  const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+
+  // Frontmatter triggers must surface workbench/full-stack/CRUD intents.
+  assert.match(sandbox, /工作台, workbench, 全栈, full-stack, CRUD 应用, database-backed/);
+
+  // The Stack-Selection Gate must exist, be MANDATORY, and sit right after the Target-Selection Gate.
+  const targetGate = sandbox.indexOf('## Target-Selection Gate');
+  const stackGate = sandbox.indexOf('## Stack-Selection Gate (MANDATORY');
+  const overview = sandbox.indexOf('\n## Overview');
+  assert.ok(stackGate !== -1, 'huawei-sandbox: Stack-Selection Gate section missing');
+  assert.ok(
+    targetGate !== -1 && stackGate > targetGate,
+    'huawei-sandbox: Stack-Selection Gate must follow the Target-Selection Gate',
+  );
+  assert.ok(
+    overview === -1 || stackGate < overview,
+    'huawei-sandbox: Stack-Selection Gate must precede the Overview section',
+  );
+
+  // Scope guards to the gate section only.
+  const nextHeading = sandbox.indexOf('\n## ', stackGate + 10);
+  const section = nextHeading === -1 ? sandbox.slice(stackGate) : sandbox.slice(stackGate, nextHeading);
+  assert.match(section, /PostgREST/);
+  assert.match(section, /even when the developer does NOT mention a database/i);
+  assert.match(section, /defaults to \*\*PostgreSQL \+ PostgREST\*\*/i);
+  assert.match(section, /Pre-code checkpoint/i);
+  assert.match(section, /before uploading[^.]*writing ANY application code/i);
+  assert.match(section, /STOP, do not write code, and redirect to the PostgREST path/i);
+
+  // The deployment workflow must re-state the checkpoint (Step 0.5) after the Target-Selection Gate step.
+  assert.match(sandbox, /Step 0\.5 — Stack-Selection Gate \(MANDATORY, pre-code checkpoint\)/);
+
+  // The Quick Reference (Critical Warnings) decision table must carry a "Stack not confirmed" row.
+  assert.match(sandbox, /Stack not confirmed\s*\|/);
+  assert.match(sandbox, /\| Stack not confirmed[^|]*\|[^|]*PostgREST/);
+});
+
 test('devbridge uses the valid `list` command, not the non-existent `ls`', () => {
   const sandbox = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
