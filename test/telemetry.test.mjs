@@ -66,9 +66,11 @@ test('detectAgentHarness detects opencode from env', () => {
   }
 });
 
-test('detectAgentHarness returns null when nothing matches', () => {
+test('detectAgentHarness returns unknown when nothing matches (#1029)', () => {
   withNoAgentEnv(() => {
-    assert.equal(detectAgentHarness(), null);
+    assert.equal(detectAgentHarness(), 'unknown');
+    assert.equal(detectAgentHarness({ name: 'startup' }), 'unknown');
+    assert.equal(detectAgentHarness({ name: 'some-unknown-client' }), 'unknown');
   });
 });
 
