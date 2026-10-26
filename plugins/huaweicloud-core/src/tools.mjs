@@ -3037,8 +3037,16 @@ async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, reg
   const url = new URL(endpoint + pathAndQuery);
   const canonicalUri = '/';
   const canonicalQueryString = `${subresource}=`;
-  const canonicalHeaders = `host:${url.host}\n` + `x-amz-content-sha256:${payloadHash}\n` + `x-amz-date:${amzDate}\n`;
-  const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
+  // #1025: when STS credentials carry a securityToken the request sends the
+  // x-amz-security-token header (below), so it MUST also appear in
+  // canonicalHeaders/signedHeaders or OBS rejects with 400 InvalidArgument.
+  // Header names stay lowercase and in alphabetical order per AWS4.
+  const securityTokenHeader = creds.securityToken ? `x-amz-security-token:${creds.securityToken}\n` : '';
+  const canonicalHeaders =
+    `host:${url.host}\n` + `x-amz-content-sha256:${payloadHash}\n` + `x-amz-date:${amzDate}\n` + securityTokenHeader;
+  const signedHeaders = creds.securityToken
+    ? 'host;x-amz-content-sha256;x-amz-date;x-amz-security-token'
+    : 'host;x-amz-content-sha256;x-amz-date';
   const canonicalRequest = [
     method,
     canonicalUri,
