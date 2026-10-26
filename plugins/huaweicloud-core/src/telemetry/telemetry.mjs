@@ -371,7 +371,8 @@ async function performFlush() {
   try {
     const resp = await fetchWithProxy(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // #1029: 遥测上报同样携带 agent 身份头，供服务端按 agent 归因。
+      headers: { 'Content-Type': 'application/json', 'X-HW-Agent': agentHarness },
       body: JSON.stringify(batch.map(({ _retries, ...rest }) => rest)),
       signal: controller.signal,
     });

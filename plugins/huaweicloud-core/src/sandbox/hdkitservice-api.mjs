@@ -1,6 +1,7 @@
 import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
+import { detectAgent } from '../telemetry/agent-detect.mjs';
 import { readInstalledVersion } from '../update-check.mjs';
 
 function getHdkitBaseUrl() {
@@ -16,11 +17,14 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
         'Run "npx huaweicloud-devkit auth init" or set HW_ACCESS_KEY/HW_SECRET_KEY.',
     );
   }
+  // #1029: 对外请求统一携带 agent 身份（含领券/看板归因），
+  // 值来自 detectAgent().harness —— 白名单未命中时为 'unknown'，不含安装路径。
   const headers = {
     'Content-Type': 'application/json',
     'X-HW-AK': ak,
     'X-HW-SK': sk,
     'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
+    'X-HW-Agent': detectAgent().harness,
   };
   if (securitytoken) {
     headers['X-HW-Security-Token'] = securitytoken;

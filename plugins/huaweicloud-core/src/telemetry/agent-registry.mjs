@@ -10,6 +10,8 @@ const selfPath = (() => {
   }
 })();
 
+// #1029: installSegment() 仅用于遥测"安装位置"字段，
+// 禁止拼入 agent 名（曾在 detectAgent 兜底分支产生 `startup|plugins` 类污染）。
 export function installSegment() {
   const parts = selfPath.split('/').filter(Boolean);
   const srcIdx = parts.lastIndexOf('src');
