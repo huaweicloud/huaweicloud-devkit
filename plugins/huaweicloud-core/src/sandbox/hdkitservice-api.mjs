@@ -1,6 +1,7 @@
 import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
+import { detectAgent } from '../telemetry/agent-detect.mjs';
 import { readInstalledVersion } from '../update-check.mjs';
 
 function getHdkitBaseUrl() {
@@ -21,6 +22,9 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     'X-HW-AK': ak,
     'X-HW-SK': sk,
     'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
+    // #1028: 所有 hdkitservice 调用（领券/遥测/sandbox 等）统一携带 agent 标识，
+    // 服务端据此归因（voucher_record 落库 agent_name），未命中白名单时为 'unknown'。
+    'X-HW-Agent': detectAgent().harness,
   };
   if (securitytoken) {
     headers['X-HW-Security-Token'] = securitytoken;

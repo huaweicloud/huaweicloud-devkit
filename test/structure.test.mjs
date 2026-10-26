@@ -912,9 +912,22 @@ test('hdkitservice-api sends X-HW-Client-Version; SKILL session-start wording', 
   const api = readFileSync(join(pluginRoot, 'src', 'sandbox', 'hdkitservice-api.mjs'), 'utf8');
   assert.match(api, /X-HW-Client-Version/);
   assert.match(api, /readInstalledVersion\(\)/);
+  // #1028: hdkitservice 所有调用与遥测上报统一携带 X-HW-Agent 头。
+  assert.match(api, /X-HW-Agent/);
+  assert.match(api, /detectAgent\(\)\.harness/);
+  const telemetry = readFileSync(join(pluginRoot, 'src', 'telemetry', 'telemetry.mjs'), 'utf8');
+  assert.match(telemetry, /X-HW-Agent/);
   const skill = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
   assert.match(skill, /先调用 `huaweicloud_check_update` 检查插件版本/);
   assert.match(skill, /若未先行检查，插件会在使用中收到服务端升级提示/);
+});
+
+// #1028: agent-detect 不得把安装路径段拼进 harness——未命中白名单/AGENT_HARNESS
+// 一律返回 'unknown'，探针类 clientName 同样归 'unknown'。
+test('agent-detect never appends install segment to harness (#1028)', () => {
+  const detect = readFileSync(join(pluginRoot, 'src', 'telemetry', 'agent-detect.mjs'), 'utf8');
+  assert.ok(!detect.includes('installSegment'), 'agent-detect must not use installSegment');
+  assert.match(detect, /return 'unknown'/);
 });
 
 test('READMEs recommend @latest for updates', () => {

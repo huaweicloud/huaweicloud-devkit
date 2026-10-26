@@ -11,6 +11,66 @@ process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
 const { hdkitConnect, hdkitVoucherStatus, hdkitVoucherClaim } =
   await import('../plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs');
 const { clearRuntimeCredentials } = await import('../plugins/huaweicloud-core/src/auth/credentials.mjs');
+const { AGENTS } = await import('../plugins/huaweicloud-core/src/telemetry/agent-registry.mjs');
+
+const AGENT_ENV_KEYS = ['AGENT_HARNESS', ...new Set(AGENTS.flatMap((agent) => agent.envVars || []))];
+
+// #1028: 所有 hdkitservice 调用必须携带 X-HW-Agent 头；
+// 未命中白名单/AGENT_HARNESS 时值为 'unknown'，绝不携带安装路径段。
+test('hdkitservice requests carry X-HW-Agent header (#1028)', async () => {
+  const originalFetch = global.fetch;
+  let capturedHeaders = null;
+  global.fetch = async (_url, opts) => {
+    capturedHeaders = opts.headers;
+    return new Response(JSON.stringify({ claimed: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const prevKeys = Object.fromEntries(AGENT_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of AGENT_ENV_KEYS) delete process.env[key];
+  try {
+    const result = await hdkitVoucherClaim();
+    assert.equal(result.claimed, true);
+    assert.ok(capturedHeaders, 'request headers should have been captured');
+    assert.equal(capturedHeaders['X-HW-Agent'], 'unknown');
+    assert.ok(!String(capturedHeaders['X-HW-Agent']).includes('|'), 'agent header must not contain install segment');
+  } finally {
+    for (const [key, value] of Object.entries(prevKeys)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitservice X-HW-Agent honors AGENT_HARNESS env (#1028)', async () => {
+  const originalFetch = global.fetch;
+  let capturedHeaders = null;
+  global.fetch = async (_url, opts) => {
+    capturedHeaders = opts.headers;
+    return new Response(JSON.stringify({ claimed: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+
+  const prevKeys = Object.fromEntries(AGENT_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of AGENT_ENV_KEYS) delete process.env[key];
+  process.env.AGENT_HARNESS = 'opencode';
+  try {
+    const result = await hdkitVoucherClaim();
+    assert.equal(result.claimed, true);
+    assert.equal(capturedHeaders['X-HW-Agent'], 'opencode');
+  } finally {
+    for (const [key, value] of Object.entries(prevKeys)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    global.fetch = originalFetch;
+  }
+});
 
 test('hdkitservice connect parses backend traceId (camelCase) on error', async () => {
   const originalFetch = global.fetch;

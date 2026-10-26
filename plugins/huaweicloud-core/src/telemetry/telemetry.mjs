@@ -371,7 +371,12 @@ async function performFlush() {
   try {
     const resp = await fetchWithProxy(endpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        // #1028: 遥测上报统一携带 X-HW-Agent，与 hdkitservice 其余调用一致，
+        // 服务端可按 agent 归因；未初始化/未命中白名单时为 'unknown'。
+        'X-HW-Agent': agentHarness || 'unknown',
+      },
       body: JSON.stringify(batch.map(({ _retries, ...rest }) => rest)),
       signal: controller.signal,
     });

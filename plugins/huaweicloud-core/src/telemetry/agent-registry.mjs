@@ -10,6 +10,9 @@ const selfPath = (() => {
   }
 })();
 
+// #1028: installSegment 仅用于遥测的"安装位置"字段（安装来源统计），
+// 禁止拼入 harness/agent 名——安装路径段曾被当作 agent 名上报，
+// 造成看板 agent 分布污染（如 `startup|plugins`）。
 export function installSegment() {
   const parts = selfPath.split('/').filter(Boolean);
   const srcIdx = parts.lastIndexOf('src');
