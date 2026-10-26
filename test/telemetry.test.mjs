@@ -3,7 +3,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { AGENTS } from '../plugins/huaweicloud-core/src/telemetry/agent-registry.mjs';
-import { detectAgentHarness } from '../plugins/huaweicloud-core/src/telemetry/agent-detect.mjs';
+import { detectAgent, detectAgentHarness } from '../plugins/huaweicloud-core/src/telemetry/agent-detect.mjs';
 
 const DETECTION_ENV_KEYS = ['AGENT_HARNESS', ...new Set(AGENTS.flatMap((agent) => agent.envVars || []))];
 
@@ -66,9 +66,41 @@ test('detectAgentHarness detects opencode from env', () => {
   }
 });
 
-test('detectAgentHarness returns null when nothing matches', () => {
+test('detectAgentHarness returns unknown when nothing matches (#1028)', () => {
   withNoAgentEnv(() => {
-    assert.equal(detectAgentHarness(), null);
+    assert.equal(detectAgentHarness(), 'unknown');
+  });
+});
+
+// #1028: 白名单外的 clientInfo.name（含探针类 startup / voucher-claim* / test*）
+// 不得回退为裸名称，更不得拼接安装段，一律归 'unknown'。
+test('detectAgentHarness classifies probe clientNames to unknown (#1028)', () => {
+  const probeNames = [
+    'startup',
+    'voucher-claim',
+    'voucher-claim-competition',
+    'test',
+    'test-client',
+    'unknown-mcp-client-probe',
+    'some-random-client',
+  ];
+  withNoAgentEnv(() => {
+    for (const name of probeNames) {
+      assert.equal(detectAgentHarness({ name }), 'unknown', `name=${name}`);
+    }
+  });
+});
+
+// #1028: detectAgent 未命中白名单/AGENT_HARNESS 时返回 'unknown'，不带安装路径段。
+test('detectAgent returns unknown fallback without install segment (#1028)', () => {
+  withNoAgentEnv(() => {
+    for (const clientInfo of [{}, { name: 'startup' }, { name: 'voucher-claim-x' }, { name: 'test' }]) {
+      const result = detectAgent(clientInfo);
+      assert.equal(result.harness, 'unknown', `clientInfo=${JSON.stringify(clientInfo)}`);
+      assert.ok(!result.harness.includes('|'), 'harness must not contain install segment');
+    }
+    const versioned = detectAgent({ name: 'startup', version: '1.2.3' });
+    assert.equal(versioned.version, '1.2.3');
   });
 });
 
@@ -203,6 +235,7 @@ test('flushEvents backfills userHash written after enqueue', async () => {
     };
 
     const received = [];
+    const requestHeaders = [];
     const server = http.createServer((req, res) => {
       let body = '';
       req.on('data', (chunk) => (body += chunk));
@@ -210,6 +243,7 @@ test('flushEvents backfills userHash written after enqueue', async () => {
         try {
           received.push(...JSON.parse(body));
         } catch {}
+        requestHeaders.push(req.headers);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end('{}');
       });
@@ -264,6 +298,12 @@ test('flushEvents backfills userHash written after enqueue', async () => {
       assert.equal(preIdentity.length, 5, 'pre-identity events should be in the flushed batch');
       for (const event of flushed) {
         assert.equal(event.userHash, 'sha256hash_late_identity', `event ${event.key} should carry backfilled hash`);
+      }
+
+      // #1028: 遥测上报必须携带 X-HW-Agent 头，值为 initTelemetry 注入的 harness。
+      assert.ok(requestHeaders.length > 0, 'telemetry flush should have issued at least one request');
+      for (const headers of requestHeaders) {
+        assert.equal(headers['x-hw-agent'], 'test', 'telemetry POST must carry X-HW-Agent header');
       }
     } finally {
       if (prevEndpoint === undefined) delete process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT;

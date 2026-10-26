@@ -1,15 +1,19 @@
-import { AGENTS, matchAgent, detectVersion, installSegment } from './agent-registry.mjs';
+import { AGENTS, matchAgent, detectVersion } from './agent-registry.mjs';
 
 /**
- * 仅返回 harness 字符串（或 null），不返回 version。
+ * 仅返回 harness 字符串（或 'unknown'），不返回 version。
  * 用于简单场景（如 keepalive 判断、测试断言）。
+ *
+ * #1028: 白名单/envVar 未命中时不再回退 clientInfo.name，
+ * 探针类 clientName（startup、voucher-claim*、test* 等）一律归 'unknown'，
+ * 禁止把非 agent 标识上报为 harness。
  */
 export function detectAgentHarness(clientInfo = {}) {
   if (process.env.AGENT_HARNESS) return process.env.AGENT_HARNESS;
   for (const agent of AGENTS) {
     if (matchAgent(agent, clientInfo)) return agent.id;
   }
-  return clientInfo.name || null;
+  return 'unknown';
 }
 
 export function detectAgent(clientInfo = {}) {
@@ -30,11 +34,10 @@ export function detectAgent(clientInfo = {}) {
     }
   }
 
-  const seg = installSegment();
-  const base = clientInfo.name || 'unknown';
-  const harness = seg ? `${base}|${seg}` : base;
+  // #1028: 未命中白名单/AGENT_HARNESS 时不再拼接安装路径段，
+  // 安装段只允许作为遥测的安装位置字段，禁止进入 agent 名。
   return {
-    harness: harness.length > 32 ? harness.slice(0, 32) : harness,
+    harness: 'unknown',
     version: clientInfo.version || '0.0.0',
   };
 }
