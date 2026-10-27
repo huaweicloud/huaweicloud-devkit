@@ -277,3 +277,89 @@ test('flushEvents backfills userHash written after enqueue', async () => {
     }
   });
 });
+
+// #1036 / D1-66 regression: the v1.1.12 defect was that flushEvents was
+// neither exported nor awaitable (fire-and-forget), so a child process that
+// did `await telemetry.flushAllEvents()` either no-op'd (function missing)
+// or hung on the undici keep-alive socket past the probe's spawnSync timeout,
+// producing `enabled=null` and `POST=false`. The fix (#1014 on dev) made
+// flushEvents awaitable, exported flushAllEvents, and added registerExitFlush.
+// This test locks the contract: flushAllEvents is an exported awaitable
+// function whose POST completes (resolves) and does not hang the event loop.
+test('D1-66: flushAllEvents is exported, awaitable, and delivers POST to custom endpoint', async () => {
+  const PROXY_ENV_KEYS = ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'];
+  const prevProxy = Object.fromEntries(PROXY_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of PROXY_ENV_KEYS) delete process.env[key];
+
+  await withIsolatedTelemetry(async (telemetry) => {
+    const http = await import('node:http');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+
+    // Contract: flushAllEvents is an exported function returning a Promise.
+    assert.equal(typeof telemetry.flushAllEvents, 'function', 'flushAllEvents must be exported');
+    assert.equal(typeof telemetry.flushEvents, 'function', 'flushEvents must be exported (awaitable)');
+
+    const received = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        try {
+          received.push(...JSON.parse(body));
+        } catch {}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+    const prevEndpoint = process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT;
+    process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT = `http://127.0.0.1:${server.address().port}/events`;
+    try {
+      // Pre-create AGENT_TELEMETRY_DIR stamps so initTelemetry's initial flush
+      // is a no-op and the test only observes the batch we control.
+      const agentTelemetryDir = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..',
+        'plugins',
+        'huaweicloud-core',
+        'telemetry',
+      );
+      fs.mkdirSync(agentTelemetryDir, { recursive: true });
+      fs.writeFileSync(path.join(agentTelemetryDir, 'install-counter'), '0', 'utf8');
+      fs.writeFileSync(path.join(agentTelemetryDir, 'install-stamp'), '', 'utf8');
+      fs.writeFileSync(path.join(agentTelemetryDir, 'dau-stamp'), '', 'utf8');
+      fs.writeFileSync(path.join(agentTelemetryDir, 'first-use-stamp'), '', 'utf8');
+
+      telemetry.initTelemetry({ harness: 'test', version: '1.0.0' });
+      telemetry.trackToolInvoke('d66_regression_tool');
+
+      // await flushAllEvents — if it were not awaitable (v1.1.12 regression),
+      // this would resolve immediately with no POST delivered.
+      const flushPromise = telemetry.flushAllEvents();
+      assert.ok(flushPromise instanceof Promise, 'flushAllEvents() must return a Promise');
+
+      const timeoutRace = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('flushAllEvents hung past 5s — not awaitable')), 5000),
+      );
+      await Promise.race([flushPromise, timeoutRace]);
+
+      // POST must have been delivered to the custom endpoint.
+      assert.ok(received.length > 0, 'custom endpoint must receive the POST after await flushAllEvents');
+      assert.ok(
+        received.some((e) => e.key === 'tool:d66_regression_tool'),
+        'the tracked event must be in the delivered batch',
+      );
+    } finally {
+      if (prevEndpoint === undefined) delete process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT;
+      else process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT = prevEndpoint;
+      server.close();
+    }
+  }).finally(() => {
+    for (const [key, value] of Object.entries(prevProxy)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+});
