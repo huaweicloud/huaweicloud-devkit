@@ -107,6 +107,10 @@ export async function hdkitConnect(options = {}) {
   if (options.git) body.git = options.git;
   if (options.template_id) body.template_id = options.template_id;
   if (options.flavor_id) body.flavor_id = options.flavor_id;
+  // #1045: only forward persist_mode when explicitly provided — omitting the key
+  // keeps the request body identical to legacy behavior (server-side default).
+  // `!= null` also skips an explicit null (treated as unspecified, same as omission).
+  if (options.persist_mode != null) body.persist_mode = options.persist_mode;
 
   return await hdkitRequest('POST', 'connect', body);
 }
