@@ -1709,8 +1709,11 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       // #1045: pass through sandbox mode metadata as sandbox_mode when the server
       // reports it (persist_mode or sandbox_mode) — never hardcode it (#1047 prep).
+      // `!= null` treats an explicit JSON null as "unspecified": hdkitservice's Jackson
+      // default (without @JsonInclude(NON_NULL)) serializes persist_mode:null when the
+      // client omitted it, and echoing sandbox_mode:null would mislead downstream consumers.
       const sandboxMode = connectResult?.sandbox_mode ?? connectResult?.persist_mode;
-      if (sandboxMode !== undefined) connectResult.sandbox_mode = sandboxMode;
+      if (sandboxMode != null) connectResult.sandbox_mode = sandboxMode;
       return connectResult;
     }
     case 'huaweicloud_sandbox_credentials': {

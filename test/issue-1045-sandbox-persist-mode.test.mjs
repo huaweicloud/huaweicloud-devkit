@@ -97,3 +97,21 @@ test('#1045 extra: connect result does NOT hardcode sandbox_mode when the server
     assert.equal(Object.hasOwn(result, 'sandbox_mode'), false);
   });
 });
+
+test('#1045 extra: server echoing persist_mode:null (hdkitservice Jackson default) is treated as unspecified', async () => {
+  await withMockFetch({ session_id: 's-1', persist_mode: null }, async () => {
+    const result = await callTool('huaweicloud_sandbox_connect', {});
+    assert.equal(Object.hasOwn(result, 'sandbox_mode'), false);
+  });
+});
+
+test('#1045 extra: explicit null persist_mode is not forwarded to the server (same as omitted)', async () => {
+  await withMockFetch({ session_id: 's-1' }, async (captured) => {
+    await hdkitConnect({ persist_mode: null });
+    assert.equal(
+      Object.hasOwn(captured.body, 'persist_mode'),
+      false,
+      'persist_mode:null must NOT be forwarded — treated as unspecified',
+    );
+  });
+});
