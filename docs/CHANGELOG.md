@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.1.12-next.1 (2026-10-28)
+
+- style: prettier format issue-1040 test file
+- feat: #1040 agent 识别兜底收敛 unknown + 对外请求统一携带 X-HW-Agent 头
+- fix: 升级 undici 至 ^8.12.3 修复 npm audit 高危漏洞
+- feat(sandbox): Stack-Selection Gate - 工作台/CRUD 请求强制走 PostgREST 全栈路径（#1021） (#1022)
+- test: #1014 遥测分级上报单测 + 文档
+- feat: #1014 领券类工具 P0 同步 flush + cacheUserHash
+- feat: #1014 telemetry flush 可 await + 身份字段兜底 + 退出兜底 flush
+- feat: #1019 PG data 目录迁 /workspace 数据盘 + 补充沙箱重启恢复清单 (#1020)
+- docs(sandbox): backfill 2026-10 fullstack deployment field notes into fullstack-postgrest.md (#1016) (#1017)
+- fix: #1014 setup-cli telemetry 目录尊重 HUAWEICLOUD_DEVKIT_HOME
+- fix: #1014 telemetry flush 前重新解析并回填 userHash
+- docs: #1014 遥测 user_hash 遗漏修复 spec/plan/task
+
 ## Unreleased
 
 - feat(sandbox): Stack-Selection Gate in huawei-sandbox — 工作台/workbench/全栈/CRUD requests are classified as full-stack workbench deployments (PostgreSQL + PostgREST default) with a pre-code checkpoint that redirects SPA-only starts; frontmatter trigger words widened (#1021)
