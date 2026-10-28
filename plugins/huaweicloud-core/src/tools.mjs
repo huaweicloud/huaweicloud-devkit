@@ -876,7 +876,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One user one instance - reuses existing sandbox if available, otherwise creates a new one. Returns session_id, dev_stage_id, connection_id, connection_address, and expiresAt (STS credential expiry).',
+      'Connect to a sandbox via hdkitservice. One user one instance - reuses existing sandbox if available, otherwise creates a new one. Returns session_id, dev_stage_id, connection_id, connection_address, and expiresAt (STS credential expiry). persist_mode controls the lifecycle: ephemeral (default) recycles the sandbox when the session closes; persistent keeps the data disk and instance for reconnect reuse (and allows the keepalive watchdog to auto-enrol tunnels).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -884,6 +884,12 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Source identifier (default: WEB). Options: VSCODE, CLI, WEB, WEBVNC, WEBPTY, WEBIDE, CURSOR, etc.',
+        },
+        persist_mode: {
+          type: 'string',
+          enum: ['ephemeral', 'persistent'],
+          description:
+            'Sandbox persistence mode. "ephemeral" (default): sandbox and data disk are recycled when the session closes — identical to legacy behavior; the field is not sent to the server when omitted, fully backward compatible. "persistent": closing only detaches the terminal; the data disk and instance are kept so a reconnect reuses them (one user one instance). Affects huaweicloud_sandbox_close_session and the tunnel keepalive watchdog auto-enrol.',
         },
         template_id: { type: 'string', description: 'Template ID; overrides server default (only for new sandbox)' },
         flavor_id: { type: 'string', description: 'Flavor ID; overrides server default (only for new sandbox)' },
@@ -1507,8 +1513,32 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         );
       }
       const sandboxUser4 = args.username || 'root';
+      // #1046: closeSession branches on persist_mode — ephemeral recycles the
+      // sandbox (idempotently) and stops the keepalive watchdog; persistent
+      // only detaches the terminal so /workspace survives a reconnect.
       const closed = await closeSession(sandboxWsId4, sandboxUser4);
-      return closed ? 'ok' : 'not_connected';
+      if (!closed.closed) {
+        // Backward compat: no live session (and nothing recycled on this call)
+        // keeps the old 'not_connected' signal.
+        if (!closed.recycled) return 'not_connected';
+        return {
+          status: 'not_connected',
+          persistMode: closed.persistMode,
+          recycled: closed.recycled,
+          recycleSkipped: closed.recycleSkipped,
+          watchdogStopped: closed.watchdogStopped,
+        };
+      }
+      return {
+        status: 'ok',
+        closed: true,
+        persistMode: closed.persistMode,
+        recycled: closed.recycled,
+        recycleExecuted: closed.recycleExecuted,
+        recycleSkipped: closed.recycleSkipped,
+        watchdogStopped: closed.watchdogStopped,
+        release: closed.release,
+      };
     }
     case 'huaweicloud_sandbox_upload_file': {
       if (!args.local_path || !args.remote_path) {
@@ -1677,10 +1707,21 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_sandbox_sign_agreement':
       return await hdkitSignAgreement();
     case 'huaweicloud_sandbox_connect': {
+      // #1045: invalid persist_mode must fail fast with a clear param error
+      // (no silent fallback), naming the legal values.
+      if (args.persist_mode !== undefined && !['ephemeral', 'persistent'].includes(args.persist_mode)) {
+        throw new Error(
+          `Invalid params: persist_mode must be one of "ephemeral", "persistent" (got ${JSON.stringify(args.persist_mode)}).`,
+        );
+      }
+      // #1046: persist_mode rides the connect call (server body) AND the
+      // local session metadata (setWorkspaceId) so closeSession/exposeTunnel
+      // can branch on it. Missing values normalize to 'ephemeral' (invalid
+      // values are rejected above).
       const connectResult = await hdkitConnect(args);
       const devStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
       if (devStageId) {
-        setWorkspaceId(devStageId);
+        setWorkspaceId(devStageId, args.persist_mode);
         try {
           await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
         } catch {}
@@ -1694,6 +1735,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         } catch {}
         await transferGitRepo(args, devStageId, connectResult);
       }
+      // #1045: pass through sandbox mode metadata as sandbox_mode when the server
+      // reports it (persist_mode or sandbox_mode) — never hardcode it (#1047 prep).
+      const sandboxMode = connectResult?.sandbox_mode ?? connectResult?.persist_mode;
+      if (sandboxMode !== undefined) connectResult.sandbox_mode = sandboxMode;
       return connectResult;
     }
     case 'huaweicloud_sandbox_credentials': {

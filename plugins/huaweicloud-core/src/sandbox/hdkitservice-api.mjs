@@ -107,8 +107,38 @@ export async function hdkitConnect(options = {}) {
   if (options.git) body.git = options.git;
   if (options.template_id) body.template_id = options.template_id;
   if (options.flavor_id) body.flavor_id = options.flavor_id;
+  // #1045: only forward persist_mode when explicitly provided — omitting the key
+  // keeps the request body identical to legacy behavior (server-side default).
+  if (options.persist_mode !== undefined) body.persist_mode = options.persist_mode;
 
   return await hdkitRequest('POST', 'connect', body);
+}
+
+// #1046: session recycle wrapper. The hdkitservice server currently exposes
+// NO sandbox delete/release endpoint (check-user / generatorUserIDHash /
+// sign-agreement / connect / credentials / voucher/* are the full catalog, and
+// the hwlink open-api only creates/queries connections) — so per the issue's
+// "不臆造接口" constraint this marks the release locally instead of calling an
+// invented endpoint. When the server ships a release endpoint, replace ONLY
+// the body of this function with `hdkitRequest('POST', 'release', {...})`;
+// callers (session-manager closeSession) need no changes.
+export async function hdkitReleaseSession(devStageId, { persistMode } = {}) {
+  if (!devStageId) {
+    throw new Error('dev_stage_id is required');
+  }
+  const mode = persistMode === 'persistent' ? 'persistent' : 'ephemeral';
+  return {
+    ok: true,
+    released: true,
+    // 'mark-only': connection-state mark + hint, NOT a server-side recycle.
+    mode: 'mark-only',
+    devStageId,
+    persistMode: mode,
+    note:
+      'Marked the sandbox session as released locally (mark-only). ' +
+      'The hdkitservice server does not expose a sandbox delete/release endpoint yet; ' +
+      'when it does, this wrapper will forward the recycle there transparently.',
+  };
 }
 
 export async function hdkitCredentials(sessionId, devStageId, enableSts = true) {
