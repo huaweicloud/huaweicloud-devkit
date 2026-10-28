@@ -1685,10 +1685,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_sandbox_connect': {
       // #1045: invalid persist_mode must fail fast with a clear param error
       // (no silent fallback), naming the legal values.
-      if (
-        args.persist_mode !== undefined &&
-        !['ephemeral', 'persistent'].includes(args.persist_mode)
-      ) {
+      if (args.persist_mode !== undefined && !['ephemeral', 'persistent'].includes(args.persist_mode)) {
         throw new Error(
           `Invalid params: persist_mode must be one of "ephemeral", "persistent" (got ${JSON.stringify(args.persist_mode)}).`,
         );
