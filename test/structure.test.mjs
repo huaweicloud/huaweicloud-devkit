@@ -1034,6 +1034,56 @@ test('huawei-sandbox routes tunnel persistence to references/tunnel-persistence.
   assert.match(tools, /AUTO-ENROLLS the tunnel into the keepalive watchdog/i);
 });
 
+// #1046: session-manager branches the sandbox lifecycle on persist_mode —
+// ephemeral recycles (idempotent, watchdog stopped), persistent keeps the data
+// disk for one-user-one-instance reconnects. Guards the wiring end to end:
+// metadata recording, the idempotence set, the release wrapper (mark-only, no
+// invented endpoint), the watchdog enrol mode gate, and the tool schemas.
+test('sandbox sessions branch their lifecycle on persist_mode (#1046)', () => {
+  const sessionManager = readFileSync(join(pluginRoot, 'src', 'sandbox', 'session-manager.mjs'), 'utf8');
+  const hdkitservice = readFileSync(join(pluginRoot, 'src', 'sandbox', 'hdkitservice-api.mjs'), 'utf8');
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+
+  // Mode normalization: everything that is not 'persistent' is ephemeral
+  // (backward compat — acceptance 4).
+  assert.match(sessionManager, /export function normalizePersistMode/);
+  // Connection metadata: persist_mode recorded per session key + workspace id.
+  assert.match(sessionManager, /const sessionMeta = new Map\(\)/);
+  assert.match(sessionManager, /setSessionPersistMode/);
+  assert.match(sessionManager, /setWorkspaceId\(id, persistMode\)/);
+  // Idempotent recycle guard: repeat close/disconnect must not re-release.
+  assert.match(sessionManager, /const releasedWorkspaces = new Set\(\)/);
+  assert.match(sessionManager, /releasedWorkspaces\.has\(/);
+  assert.match(sessionManager, /releasedWorkspaces\.add\(/);
+  assert.match(sessionManager, /releasedWorkspaces\.delete\(/);
+  // Recycle wrapper is consulted from the ephemeral close path.
+  assert.match(sessionManager, /releaseSessionImpl\(workspaceId, \{ persistMode: 'ephemeral' \}\)/);
+  // Ephemeral close stops the sandbox keepalive watchdog (scoped pkill).
+  assert.match(sessionManager, /buildWatchdogStopScript/);
+  assert.match(sessionManager, /pkill -f "tunnel-keepalive\.sh"/);
+  // Watchdog auto-enrol is gated on persistent mode (acceptance 3), with an
+  // explicit opt-out record for ephemeral sessions.
+  assert.match(sessionManager, /sessionPersistMode === 'persistent' \|\| keepalive === true/);
+  assert.match(sessionManager, /reason: 'ephemeral_session'/);
+
+  // hdkitservice: connect forwards persist_mode; the release wrapper is
+  // mark-only (the server has no delete/release endpoint — never invent one).
+  assert.match(hdkitservice, /options\.persist_mode/);
+  assert.match(hdkitservice, /export async function hdkitReleaseSession/);
+  assert.match(hdkitservice, /mode: 'mark-only'/);
+
+  // tools.mjs: connect schema carries the enum; close returns the branch result.
+  assert.match(tools, /persist_mode/);
+  assert.match(tools, /enum: \['ephemeral', 'persistent'\]/);
+  assert.match(tools, /setWorkspaceId\(devStageId, args\.persist_mode\)/);
+  const closeBlock = tools.match(/case 'huaweicloud_sandbox_close_session': \{[\s\S]*?\n {4}\}/);
+  assert.ok(closeBlock, 'close_session handler not found');
+  assert.match(closeBlock[0], /persistMode/);
+  assert.match(closeBlock[0], /recycled/);
+  assert.match(closeBlock[0], /watchdogStopped/);
+  assert.match(closeBlock[0], /not_connected/);
+});
+
 test('huawei-sandbox routes the PostgREST full-stack to references/fullstack-postgrest.md (2026-10 test)', () => {
   const refPath = join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'fullstack-postgrest.md');
   assert.ok(existsSync(refPath), 'Missing huawei-sandbox/references/fullstack-postgrest.md');

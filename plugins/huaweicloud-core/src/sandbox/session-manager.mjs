@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { createConnection, getCredentials } from './hwlink-api.mjs';
+import { hdkitReleaseSession } from './hdkitservice-api.mjs';
 import { getWebSocketImpl } from '../proxy/proxy-agent.mjs';
 import { trackSandboxConnect, trackSandboxDisconnect } from '../telemetry/telemetry.mjs';
 
@@ -47,16 +48,84 @@ export const TUNNEL_URL_PATTERN = /TUNNEL_URL:(https:\/\/[A-Za-z0-9_-]+-\d+\.dev
 
 let currentWorkspaceId = process.env.HW_WORKSPACE_ID || null;
 
+// #1046: persist_mode lifecycle metadata. 'ephemeral' (session-scoped, recycle
+// on close) is the default for every caller that predates the parameter —
+// acceptance 4 (backward compat). 'persistent' keeps the data disk alive for
+// one-user-one-instance reconnects.
+let currentPersistMode = 'ephemeral';
+
+// Per-session persist_mode metadata, keyed like `sessions`:
+// `${workspaceId}:${username}` → { persistMode }.
+const sessionMeta = new Map();
+
+// #1046 idempotence guard: session keys whose ephemeral recycle flow already
+// ran. A repeat close / disconnect on the same key must NOT re-trigger
+// recycling (acceptance 1).
+const releasedWorkspaces = new Set();
+
+// Overridable collaborator so tests can observe recycle calls without a real
+// hdkitservice round trip. Production path uses hdkitReleaseSession.
+let releaseSessionImpl = hdkitReleaseSession;
+// Overridable execOneShot collaborator (watchdog stop probe) for tests.
+let execOneShotImpl = null;
+
+export function normalizePersistMode(mode) {
+  return String(mode || '').toLowerCase() === 'persistent' ? 'persistent' : 'ephemeral';
+}
+
+function getCurrentPersistMode() {
+  return currentPersistMode;
+}
+
+export function resetPersistModeStateForTest() {
+  currentPersistMode = 'ephemeral';
+  sessionMeta.clear();
+  releasedWorkspaces.clear();
+  releaseSessionImpl = hdkitReleaseSession;
+  execOneShotImpl = null;
+}
+
+function setSessionPersistMode(workspaceId, username, persistMode) {
+  const key = `${workspaceId}:${username}`;
+  sessionMeta.set(key, { persistMode: normalizePersistMode(persistMode) });
+}
+
+// #1046: stop the DevBridge keepalive watchdog inside the sandbox. Scoped to
+// the exact script name — a bare pkill would kill unrelated processes. Best
+// effort by design: no watchdog installed (fresh ephemeral sandbox) must not
+// fail the close flow.
+export function buildWatchdogStopScript() {
+  return 'pkill -f "tunnel-keepalive.sh" 2>/dev/null || true; echo "DB_WATCHDOG_STOPPED=$?"';
+}
+
+async function stopSandboxWatchdog(workspaceId, username) {
+  try {
+    if (execOneShotImpl) {
+      await execOneShotImpl(workspaceId, buildWatchdogStopScript(), username, 15000);
+    } else {
+      await execOneShot(workspaceId, buildWatchdogStopScript(), username, 15000);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function getCurrentWorkspaceId() {
   return currentWorkspaceId;
 }
 
-function setWorkspaceId(id) {
+function setWorkspaceId(id, persistMode) {
   if (id && id !== currentWorkspaceId) {
     trackSandboxConnect();
   }
   currentWorkspaceId = id;
   process.env.HW_WORKSPACE_ID = id;
+  // #1046: record the lifecycle intent for the newly-connected workspace.
+  // Missing/invalid mode normalizes to 'ephemeral' (backward compat).
+  if (id) {
+    currentPersistMode = normalizePersistMode(persistMode);
+  }
 }
 
 function resolveEnv() {
@@ -122,6 +191,17 @@ async function getSession(workspaceId, username, timeoutMs) {
   });
 
   sessions.set(key, session);
+  // #1046: record the workspace's persist_mode in the connection metadata on
+  // connect. Fresh connects default to the current workspace mode (recorded by
+  // setWorkspaceId at huaweicloud_sandbox_connect time); a persistent
+  // workspace reconnecting after close re-registers its mode here, keeping the
+  // one-user-one-instance reuse semantics intact (acceptance 2).
+  if (!sessionMeta.has(key)) {
+    setSessionPersistMode(workspaceId, username, currentPersistMode);
+  }
+  // A live (re)connect means the workspace is in use again — its recycle mark
+  // must be lifted so a later close can re-enter the recycle flow.
+  releasedWorkspaces.delete(key);
   return session;
 }
 
@@ -1273,16 +1353,78 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
   };
 }
 
+// #1046: close a terminal session, branching on the workspace's persist_mode.
+//   ephemeral  → recycle flow: mark released (idempotent), call the
+//                hdkitservice release wrapper, stop the sandbox keepalive
+//                watchdog so a temporary sandbox never keeps long-lived tunnels.
+//   persistent → close the terminal ONLY: data disk and instance survive for
+//                one-user-one-instance reconnect; the watchdog stays enrolled.
+// Returns { closed, persistMode, recycled, recycleExecuted, recycleSkipped?,
+//           watchdogStopped, release? }. `closed:false` means no live session
+// (nothing to close) — mirrors the old boolean false / 'not_connected'.
 export async function closeSession(workspaceId, username) {
   const key = `${workspaceId}:${username}`;
   const session = sessions.get(key);
-  if (!session) return false;
+  const persistMode = normalizePersistMode(sessionMeta.get(key)?.persistMode ?? currentPersistMode);
+  sessionMeta.delete(key);
+
+  if (!session) {
+    // Idempotence (acceptance 1): even with no live terminal session, a prior
+    // recycle mark means the recycle flow already ran — never re-trigger it.
+    if (persistMode === 'ephemeral' && releasedWorkspaces.has(key)) {
+      return {
+        closed: false,
+        persistMode,
+        recycled: true,
+        recycleExecuted: false,
+        recycleSkipped: 'already_released',
+        watchdogStopped: false,
+      };
+    }
+    return { closed: false, persistMode, recycled: false, recycleExecuted: false, watchdogStopped: false };
+  }
+
   sessions.delete(key);
   try {
     session.close();
   } catch {}
   trackSandboxDisconnect();
-  return true;
+
+  if (persistMode === 'persistent') {
+    // Persistent: terminal only. The data disk, the instance, and the keepalive
+    // watchdog all survive — reconnect reuses the same instance (acceptance 2).
+    return { closed: true, persistMode, recycled: false, recycleExecuted: false, watchdogStopped: false };
+  }
+
+  // Ephemeral recycle flow, guarded by the releasedWorkspaces idempotence mark.
+  if (releasedWorkspaces.has(key)) {
+    return {
+      closed: true,
+      persistMode,
+      recycled: true,
+      recycleExecuted: false,
+      recycleSkipped: 'already_released',
+      watchdogStopped: false,
+    };
+  }
+  releasedWorkspaces.add(key);
+
+  let recycleResult;
+  try {
+    recycleResult = await releaseSessionImpl(workspaceId, { persistMode: 'ephemeral' });
+  } catch (error) {
+    recycleResult = { ok: false, error: error?.message || String(error) };
+  }
+  const watchdogStopped = await stopSandboxWatchdog(workspaceId, username);
+
+  return {
+    closed: true,
+    persistMode,
+    recycled: true,
+    recycleExecuted: true,
+    watchdogStopped,
+    release: recycleResult,
+  };
 }
 
 // Build a shell snippet that authenticates devbridge via a verified waterfall:
@@ -2069,15 +2211,22 @@ export async function exposeTunnel(
         ? new Date(Date.now() + parsed.expiryHours * 3_600_000).toISOString()
         : undefined;
 
-    // AUTO-ENROLL: every tunnel exposed through this tool is enrolled into the
-    // keepalive watchdog by default (user requirement: all devbridge tunnels
-    // deployed to the sandbox must be keepalive-protected — unattended renewal
-    // + host re-attach + health check). The new tunnel is MERGED into the
-    // existing watchdog tunnel list, never replacing other tunnels' coverage.
-    // keepalive:false opts out. Non-fatal: an enrollment failure is surfaced
-    // as a warning, not a failed expose — the tunnel itself is working.
+    // AUTO-ENROLL: every PERSISTENT-mode tunnel exposed through this tool is
+    // enrolled into the keepalive watchdog by default (user requirement: all
+    // devbridge tunnels deployed to a persistent sandbox must be
+    // keepalive-protected — unattended renewal + host re-attach + health
+    // check). #1046: ephemeral sessions do NOT auto-enrol — a temporary
+    // sandbox must not keep long-lived tunnels alive after close. Explicit
+    // keepalive:true overrides the mode gate (caller manages keepalive itself).
+    // The new tunnel is MERGED into the existing watchdog tunnel list, never
+    // replacing other tunnels' coverage. Non-fatal: an enrollment failure is
+    // surfaced as a warning, not a failed expose — the tunnel itself works.
+    const sessionPersistMode = normalizePersistMode(
+      sessionMeta.get(`${workspaceId}:${username}`)?.persistMode ?? currentPersistMode,
+    );
+    const autoEnrol = keepalive !== false && (sessionPersistMode === 'persistent' || keepalive === true);
     let keepaliveEnrollment = undefined;
-    if (keepalive !== false && parsed.tunnelUrl && parsed.tunnelId) {
+    if (autoEnrol && parsed.tunnelUrl && parsed.tunnelId) {
       try {
         const readResult = await execOneShot(workspaceId, buildKeepaliveTunnelsReadScript(), username, 20000);
         const existing = parseKeepaliveTunnelsOutput(readResult.stdout);
@@ -2115,7 +2264,13 @@ export async function exposeTunnel(
             logPath: keepaliveEnrollment.logPath,
             error: keepaliveEnrollment.ok ? undefined : keepaliveEnrollment.error,
           }
-        : undefined,
+        : parsed.tunnelUrl && parsed.tunnelId && !autoEnrol && keepalive !== false
+          ? {
+              // #1046 acceptance 3: ephemeral session → no auto keepalive.
+              enrolled: false,
+              reason: 'ephemeral_session',
+            }
+          : undefined,
       warnings: warnings.length > 0 ? warnings.join(' ') : undefined,
       hostLog: String(result.stdout || '').slice(0, 400),
     };
@@ -2130,12 +2285,64 @@ export async function exposeTunnel(
 }
 
 export async function closeAllSessions() {
+  const results = [];
   for (const [key, session] of sessions) {
+    // #1046: route every session through the same persist_mode branching as
+    // closeSession (ephemeral recycle + idempotence, persistent terminal-only).
+    const [workspaceId, ...userParts] = key.split(':');
+    const username = userParts.join(':');
     sessions.delete(key);
     try {
       session.close();
     } catch {}
+    trackSandboxDisconnect();
+    const persistMode = normalizePersistMode(sessionMeta.get(key)?.persistMode ?? currentPersistMode);
+    sessionMeta.delete(key);
+    if (persistMode === 'persistent') {
+      results.push({ closed: true, persistMode, recycled: false, recycleExecuted: false, watchdogStopped: false });
+      continue;
+    }
+    if (releasedWorkspaces.has(key)) {
+      results.push({
+        closed: true,
+        persistMode,
+        recycled: true,
+        recycleExecuted: false,
+        recycleSkipped: 'already_released',
+        watchdogStopped: false,
+      });
+      continue;
+    }
+    releasedWorkspaces.add(key);
+    let recycleResult;
+    try {
+      recycleResult = await releaseSessionImpl(workspaceId, { persistMode: 'ephemeral' });
+    } catch (error) {
+      recycleResult = { ok: false, error: error?.message || String(error) };
+    }
+    const watchdogStopped = await stopSandboxWatchdog(workspaceId, username);
+    results.push({
+      closed: true,
+      persistMode,
+      recycled: true,
+      recycleExecuted: true,
+      watchdogStopped,
+      release: recycleResult,
+    });
   }
+  return results;
 }
 
-export { getCurrentWorkspaceId, setWorkspaceId, runNodeExec };
+// #1046 test hook: install a fake terminal session + metadata + collaborator
+// overrides so closeSession branching is observable without a real sandbox.
+// `collaborators`: { release?, execOneShot? } — omit to keep production impls.
+export function __setSessionForTest(workspaceId, username, session, meta = {}, collaborators = {}) {
+  const key = `${workspaceId}:${username}`;
+  sessions.set(key, session);
+  sessionMeta.set(key, { persistMode: normalizePersistMode(meta?.persistMode) });
+  if (collaborators.release) releaseSessionImpl = collaborators.release;
+  if (collaborators.execOneShot) execOneShotImpl = collaborators.execOneShot;
+  return key;
+}
+
+export { getCurrentWorkspaceId, setWorkspaceId, runNodeExec, getCurrentPersistMode };
