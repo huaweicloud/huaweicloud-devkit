@@ -887,6 +887,12 @@ export const TOOL_DEFINITIONS = [
         },
         template_id: { type: 'string', description: 'Template ID; overrides server default (only for new sandbox)' },
         flavor_id: { type: 'string', description: 'Flavor ID; overrides server default (only for new sandbox)' },
+        persist_mode: {
+          type: 'string',
+          enum: ['ephemeral', 'persistent'],
+          description:
+            'Sandbox persistence mode. "ephemeral" (default): sandbox and data disk are destroyed after the session — identical to legacy behavior. "persistent": data disk is kept across sessions for reuse. Omit to keep the default (the field is not sent to the server when omitted, fully backward compatible).',
+        },
         env: { type: 'object', description: 'Environment variables to set in the sandbox (only for new sandbox)' },
         git: {
           type: 'object',
@@ -1677,6 +1683,16 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_sandbox_sign_agreement':
       return await hdkitSignAgreement();
     case 'huaweicloud_sandbox_connect': {
+      // #1045: invalid persist_mode must fail fast with a clear param error
+      // (no silent fallback), naming the legal values.
+      if (
+        args.persist_mode !== undefined &&
+        !['ephemeral', 'persistent'].includes(args.persist_mode)
+      ) {
+        throw new Error(
+          `Invalid params: persist_mode must be one of "ephemeral", "persistent" (got ${JSON.stringify(args.persist_mode)}).`,
+        );
+      }
       const connectResult = await hdkitConnect(args);
       const devStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
       if (devStageId) {
@@ -1694,6 +1710,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         } catch {}
         await transferGitRepo(args, devStageId, connectResult);
       }
+      // #1045: pass through sandbox mode metadata as sandbox_mode when the server
+      // reports it (persist_mode or sandbox_mode) — never hardcode it (#1047 prep).
+      const sandboxMode = connectResult?.sandbox_mode ?? connectResult?.persist_mode;
+      if (sandboxMode !== undefined) connectResult.sandbox_mode = sandboxMode;
       return connectResult;
     }
     case 'huaweicloud_sandbox_credentials': {
