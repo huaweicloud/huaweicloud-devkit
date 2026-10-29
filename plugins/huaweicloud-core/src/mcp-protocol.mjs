@@ -31,6 +31,13 @@ export function _isHintConsumed(sessionId) {
   return Boolean(consumedBySession.get(sessionId));
 }
 
+// #1055 D9-12: MCP lifecycle — requests must not be served before the session
+// completed `initialize`. Keyed per session id (stdio uses the fixed 'stdin').
+const initializedSessions = new Set();
+export function _resetInitializedSessions() {
+  initializedSessions.clear();
+}
+
 export async function dispatch(method, params, opts = {}) {
   const sessionId = opts?.sessionId || 'default';
   if (method === 'initialize') {
@@ -46,6 +53,7 @@ export async function dispatch(method, params, opts = {}) {
 
     const agent = detectAgent(ci);
     initTelemetry({ harness: agent.harness, version: agent.version });
+    initializedSessions.add(sessionId);
     return {
       protocolVersion: params.protocolVersion || '2024-11-05',
       capabilities: {
@@ -56,6 +64,17 @@ export async function dispatch(method, params, opts = {}) {
         version: pkgVersion,
       },
     };
+  }
+
+  // #1055 D9-12: tools/list, tools/call, and resources/list are only available
+  // after initialize — an uninitialized client gets -32002 (Server not
+  // initialized), never a full tool enumeration.
+  if (['tools/list', 'tools/call', 'resources/list'].includes(method) && !initializedSessions.has(sessionId)) {
+    const notInitializedError = new Error(
+      `Server not initialized: call initialize before ${method} (MCP lifecycle requirement).`,
+    );
+    notInitializedError.code = -32002;
+    throw notInitializedError;
   }
 
   if (method === 'tools/list') {

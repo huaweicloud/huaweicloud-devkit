@@ -2206,6 +2206,7 @@ function serviceCatalog(intent = '') {
         'image',
         '弹性云服务器',
         '云服务器',
+        '云主机',
         '服务器',
         '虚拟机',
         '镜像',
@@ -2430,12 +2431,24 @@ function serviceCatalog(intent = '') {
       matched.push(route);
     }
   }
+
+  // #1055 D3-S7: composite intents must keep their deployment target. A
+  // deployment-shaped intent ("部署一个 Web 应用并连接 RDS 数据库") used to
+  // match only RDS because the sandbox route lacked the bare deployment
+  // keywords — union the deployment-intent regex into the sandbox route so
+  // deploy/host/publish intents always carry a deployment service.
+  const deploymentIntent = /deploy|host|hosting|publish|website|web app|preview|部署|托管|发布|网站|网页/.test(it);
+  if (deploymentIntent) {
+    const sandboxRoute = routeMap.find((r) => r.services.includes('Sandbox'));
+    if (sandboxRoute && !matched.includes(sandboxRoute)) {
+      matched.push(sandboxRoute);
+    }
+  }
   const recommendedSkills = [...new Set(matched.flatMap((r) => r.skills))];
   const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
 
   // Deployment intent (deploy/host/publish a web app or static website) must never
   // default to a storage/other service — recommend the sandbox first.
-  const deploymentIntent = /deploy|host|hosting|publish|website|web app|preview|部署|托管|发布|网站|网页/.test(it);
   if (deploymentIntent && recommendedSkills.includes('huawei-sandbox')) {
     const idx = recommendedSkills.indexOf('huawei-sandbox');
     recommendedSkills.splice(idx, 1);
