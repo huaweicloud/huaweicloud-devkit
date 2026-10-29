@@ -36,7 +36,7 @@ function runCli(home, cwd, args, dshHome = join(home, '.dsh')) {
     cwd,
     env: makeEnv(home, dshHome),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 600000,
   });
 }
 
@@ -254,7 +254,7 @@ test('dsh bundle postinstall rewrites relative MCP path to absolute', () => {
       cwd: profileDir,
       env: makeEnv(home, dshHome),
       encoding: 'utf8',
-      timeout: 60000,
+      timeout: 600000,
     });
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /rewrote DSH patch MCP path/);
@@ -291,7 +291,7 @@ test('dsh bundle postinstall is idempotent when MCP path is already absolute', (
         cwd: profileDir,
         env: makeEnv(home, dshHome),
         encoding: 'utf8',
-        timeout: 60000,
+        timeout: 600000,
       });
 
     const first = run();

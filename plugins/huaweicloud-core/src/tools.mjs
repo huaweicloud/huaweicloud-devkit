@@ -54,7 +54,7 @@ import {
   parseStsExpiry,
   resolveCredentialsWithRuntime,
 } from './auth/credentials.mjs';
-import { trackToolInvoke, trackSkillRetrieve, clearUserHash } from './telemetry/telemetry.mjs';
+import { trackToolInvoke, trackSkillRetrieve, clearUserHash, cacheUserHash } from './telemetry/telemetry.mjs';
 import { fetchWithProxy } from './proxy/proxy-agent.mjs';
 import { fingerprint, runHcloudConfigure, runHcloudProfileDelete, resolveManagedProfile } from './auth/reconcile.mjs';
 import {
@@ -1022,6 +1022,47 @@ export const TOOL_DEFINITIONS = [
       required: ['action', 'bucket', 'region'],
     },
   },
+  {
+    name: 'huaweicloud_obs_set_cors',
+    description:
+      '配置 OBS 桶的 CORS 规则（浏览器直传前置条件）。KooCLI OBS 不支持 cors 子命令，此工具内部实现 AWS4 签名调用 OBS REST API（PUT/GET/DELETE /?cors），屏蔽签名细节。支持 set（配置）、get（查询）、delete（删除）三种操作。allowedMethod 必须含 HEAD（BrowserJS SDK 每次操作前发 HEAD ?apiversion 探测，缺 HEAD 时浏览器吞掉探测请求）。配置成功后用返回体中的 verify 命令做 OPTIONS 预检验证（200 + Access-Control-Allow-Origin 才算成功）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['set', 'get', 'delete'],
+          description: '操作类型：set=配置 CORS 规则，get=查询当前规则，delete=删除规则',
+        },
+        bucket: { type: 'string', description: 'OBS 桶名称' },
+        region: { type: 'string', description: 'OBS 桶所在区域，如 cn-north-4' },
+        rules: {
+          type: 'array',
+          description:
+            'CORS 规则数组（action=set 时必填）。每条规则：allowedOrigin（如 https://your-app）、allowedMethod 数组（GET/PUT/POST/DELETE/HEAD，必须含 HEAD）、allowedHeader 数组（默认 ["*"]）、maxAgeSeconds（默认 3000）',
+          items: {
+            type: 'object',
+            properties: {
+              allowedOrigin: { type: 'string', description: '允许的来源，如 https://your-app.example.com 或 *' },
+              allowedMethod: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '允许的 HTTP 方法，必须包含 HEAD',
+              },
+              allowedHeader: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '允许的请求头，默认 ["*"]',
+              },
+              maxAgeSeconds: { type: 'number', description: '预检结果缓存秒数，默认 3000' },
+            },
+            required: ['allowedOrigin', 'allowedMethod'],
+          },
+        },
+      },
+      required: ['action', 'bucket', 'region'],
+    },
+  },
 ];
 
 function toolInvokeValue(name, args) {
@@ -1644,7 +1685,12 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
           await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
         } catch {}
         try {
-          await execWithSession(devStageId, 'export PATH=$HOME/.huawei/bin${PATH:+:$PATH}', 'root', 10000);
+          await execWithSession(
+            devStageId,
+            'export PATH=/workspace/.local/bin:$HOME/.huawei/bin${PATH:+:$PATH}',
+            'root',
+            10000,
+          );
         } catch {}
         await transferGitRepo(args, devStageId, connectResult);
       }
@@ -1739,16 +1785,25 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     }
     case 'huaweicloud_voucher_status':
       return await hdkitVoucherStatus(args.domain_id);
-    case 'huaweicloud_voucher_claim':
-      return await hdkitVoucherClaim(args.domain_id);
-    case 'huaweicloud_competition_voucher_claim':
-      return await hdkitCompetitionVoucherClaim(args.domain_id);
+    case 'huaweicloud_voucher_claim': {
+      const result = await hdkitVoucherClaim(args.domain_id);
+      // #1014 P0: 领券成功后补缓存 userHash（响应携带时），flush 前兜底补齐队列缺失字段。
+      if (result?.userHash) cacheUserHash(result.userHash);
+      return result;
+    }
+    case 'huaweicloud_competition_voucher_claim': {
+      const result = await hdkitCompetitionVoucherClaim(args.domain_id);
+      if (result?.userHash) cacheUserHash(result.userHash);
+      return result;
+    }
     case 'huaweicloud_check_update':
       return await handleCheckUpdate(args, { sessionId: opts?.sessionId, doQuery: opts?.doQuery });
     case 'huaweicloud_upgrade':
       return await handleUpgrade(args, { sessionId: opts?.sessionId });
     case 'huaweicloud_obs_set_website_config':
       return await handleObsWebsiteConfig(args);
+    case 'huaweicloud_obs_set_cors':
+      return await handleObsCorsConfig(args);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -2885,7 +2940,95 @@ async function handleObsWebsiteConfig(args) {
   throw new Error(`Unknown action: ${action}. Use set, get, or delete.`);
 }
 
-async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, region) {
+// #1003: same-structure extension of handleObsWebsiteConfig — KooCLI OBS does
+// not expose a cors subcommand and there is no SetBucketCors MCP path, so
+// agents fell back to installing a Python SDK in the sandbox just to configure
+// CORS. This reuses obsSignedRequest (AWS4, s3 service) against /?cors.
+async function handleObsCorsConfig(args = {}) {
+  const { action, bucket, region, rules } = args;
+  if (!bucket || !region) {
+    throw new Error('bucket and region are required');
+  }
+  const creds = resolveCredentialsWithRuntime({});
+  if (!creds?.ak || !creds?.sk) {
+    throw new Error('OBS CORS config requires AK/SK credentials. Run huaweicloud_auth_init first.');
+  }
+
+  const host = `${bucket}.obs.${region}.myhuaweicloud.com`;
+  const endpoint = `https://${host}`;
+  const preflightHint =
+    'Verify with an OPTIONS preflight before declaring success: ' +
+    `curl -i -X OPTIONS --noproxy '*' 'https://${host}/<object-key>' -H 'Origin: <your-app-origin>' -H 'Access-Control-Request-Method: HEAD' ` +
+    'must return HTTP 200 with an Access-Control-Allow-Origin header (200 without CORS headers = config not effective; ' +
+    '403 = rule missing the requested method). See the huawei-obs skill common-pitfalls.md p05.';
+
+  if (action === 'get') {
+    const res = await obsSignedRequest('GET', endpoint, '/?cors', '', creds, region, 'cors');
+    return { ok: res.status === 200, status: res.status, rules: res.body, verify: preflightHint };
+  }
+
+  if (action === 'delete') {
+    const res = await obsSignedRequest('DELETE', endpoint, '/?cors', '', creds, region, 'cors');
+    return { ok: res.status === 204, status: res.status };
+  }
+
+  if (action === 'set') {
+    if (!Array.isArray(rules) || rules.length === 0) {
+      throw new Error('rules array is required for action=set (allowedOrigin + allowedMethod, HEAD included)');
+    }
+    for (const rule of rules) {
+      if (!rule?.allowedOrigin || !Array.isArray(rule?.allowedMethod) || rule.allowedMethod.length === 0) {
+        throw new Error('each CORS rule needs allowedOrigin and a non-empty allowedMethod array');
+      }
+      if (!rule.allowedMethod.includes('HEAD')) {
+        // p01: the BrowserJS SDK's HEAD ?apiversion probe gets swallowed by the
+        // browser when HEAD is missing — the exact failure this tool exists to
+        // prevent, so reject it at the input boundary instead of at runtime.
+        throw new Error(
+          "allowedMethod must include 'HEAD' — the BrowserJS SDK sends a HEAD ?apiversion probe before every " +
+            'operation, and a CORS rule without HEAD makes the browser swallow it as Network Error (p01).',
+        );
+      }
+    }
+    const escapeXml = (s) =>
+      String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const xmlParts = ['<CORSConfiguration>'];
+    for (const rule of rules) {
+      xmlParts.push('  <CORSRule>');
+      xmlParts.push(`    <AllowedOrigin>${escapeXml(rule.allowedOrigin)}</AllowedOrigin>`);
+      for (const method of rule.allowedMethod) {
+        xmlParts.push(`    <AllowedMethod>${escapeXml(method)}</AllowedMethod>`);
+      }
+      for (const header of rule.allowedHeader || ['*']) {
+        xmlParts.push(`    <AllowedHeader>${escapeXml(header)}</AllowedHeader>`);
+      }
+      if (rule.maxAgeSeconds != null) {
+        xmlParts.push(`    <MaxAgeSeconds>${Number(rule.maxAgeSeconds)}</MaxAgeSeconds>`);
+      }
+      xmlParts.push('  </CORSRule>');
+    }
+    xmlParts.push('</CORSConfiguration>');
+    const body = xmlParts.join('\n');
+    const res = await obsSignedRequest('PUT', endpoint, '/?cors', body, creds, region, 'cors');
+    return {
+      ok: res.status === 200,
+      status: res.status,
+      message:
+        res.status === 200
+          ? `CORS configured for ${bucket} (${rules.length} rule(s)).`
+          : `Failed to configure CORS: HTTP ${res.status}`,
+      verify: preflightHint,
+    };
+  }
+
+  throw new Error(`Unknown action: ${action}. Use set, get, or delete.`);
+}
+
+// Single AWS4-signed OBS REST API caller shared by the website/CORS tools
+// (#1003): subresource is the bucket subresource being addressed — 'website'
+// for PUT/GET/DELETE /?website, 'cors' for /?cors. Credential scope uses the
+// s3 service name (OBS is S3-compatible).
+async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, region, subresource = 'website') {
   const now = new Date();
   const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, '');
   const amzDate = dateStamp + 'T' + now.toISOString().slice(11, 19).replace(/:/g, '') + 'Z';
@@ -2893,7 +3036,7 @@ async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, reg
 
   const url = new URL(endpoint + pathAndQuery);
   const canonicalUri = '/';
-  const canonicalQueryString = 'website=';
+  const canonicalQueryString = `${subresource}=`;
   const canonicalHeaders = `host:${url.host}\n` + `x-amz-content-sha256:${payloadHash}\n` + `x-amz-date:${amzDate}\n`;
   const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
   const canonicalRequest = [

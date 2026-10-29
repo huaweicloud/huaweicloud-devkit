@@ -309,9 +309,11 @@ test('919: parseDevbridgeExposeOutput extracts expiry hours alongside tunnel fie
 
 test('919: buildDevbridgeVerifyScript issues a real GET from an independent session', () => {
   const script = buildDevbridgeVerifyScript('https://c4rdv7bv-8081.devbridge-s2.hwtunnel.com');
+  // --noproxy '*' (#1000): the injected sandbox proxy does not route the tunnel
+  // domain — a proxied verify returns 502/404 fakes (working tunnel judged dead).
   assert.match(
     script,
-    /curl -s -o \/tmp\/devbridge_verify_body -w "%\{http_code\}" --max-time 10 "https:\/\/c4rdv7bv-8081\.devbridge-s2\.hwtunnel\.com"/,
+    /curl -s --noproxy '\*' -o \/tmp\/devbridge_verify_body -w "%\{http_code\}" --max-time 10 "https:\/\/c4rdv7bv-8081\.devbridge-s2\.hwtunnel\.com"/,
   );
   assert.match(script, /DB_VERIFY_HTTP_CODE=\$VERIFY_CODE/);
 });

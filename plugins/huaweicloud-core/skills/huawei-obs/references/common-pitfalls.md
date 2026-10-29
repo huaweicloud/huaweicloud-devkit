@@ -69,7 +69,7 @@ KooCLI OBS **不支持** `SetBucketWebsite` 命令。配置静态网站托管需
 
 **避坑方法**：
 
-1. **验证网页行为必须用 GET 直连**（`curl -s -D - -o NUL <url>` 或浏览器）——HEAD 和代理层会给出假象
+1. **验证网页行为必须用 GET 直连**（`curl -s -D - -o /dev/null <url>`，Windows 下为 `-o NUL`；或浏览器）——HEAD 和代理层会给出假象
 2. **官方解法**：绑定自定义域名接入 **CDN**，在"CDN 控制台 > 域名管理 > 高级设置 > HTTP header 配置"设置 `Content-Disposition: inline`（参见华为云 CDN 文档《如何在浏览器中在线预览 OBS 中的对象？》）
 3. 跨云对照：阿里云 OSS 同样策略（Bucket 域名访问 HTML 强制下载，绑定自定义域名即可在线预览）
 
@@ -229,11 +229,13 @@ node -e "fetch('<same-url>', {method:'PUT', headers:{'Origin':'https://<your-app
 
 浏览器直传 OBS 前，桶必须先配置 CORS 规则，否则所有请求都会被预检拦截。
 
-**KooCLI 缺口**：KooCLI 的 OBS 包装层未暴露 obsutil 的 `cors` 子命令——执行 `hcloud OBS cors` 报 `No such command`（`hcloud OBS help` 列表中也无 cors）。配置 CORS 必须走以下两条替代路径（或 OBS 控制台）。
+**KooCLI 缺口**：KooCLI 的 OBS 包装层未暴露 obsutil 的 `cors` 子命令——执行 `hcloud OBS cors` 报 `No such command`（`hcloud OBS help` 列表中也无 cors）。
 
-**替代路径 ①：REST API `PUT /?cors` + CORS XML**
+**首选路径：MCP 工具 `huaweicloud_obs_set_cors`（#1003）**——内部 AWS4 签名调 OBS REST API（`PUT/GET/DELETE /?cors`），屏蔽签名细节。`action=set` 传 `rules` 数组（`allowedOrigin` / `allowedMethod[]` 必须含 HEAD / `allowedHeader[]` / `maxAgeSeconds`），工具在入参边界就拒绝缺 HEAD 的规则（p01 前置防线）；set/get 成功返回体自带 `verify` 命令（OPTIONS 预检）。SDK/控制台仅作降级路径。
 
-向桶 endpoint 发 `PUT /?cors`，body 为 CORSConfiguration XML；请求需带 AWS4 签名（Authorization 头，可用 SDK/工具生成，或使用插件内 `huaweiicloud_obs_set_website_config` 同款的 AWS4 签名方式）。`PUT /?cors` 使用的 AllowedMethod 必须覆盖浏览器直传全部五个方法：
+**降级路径 ①：REST API `PUT /?cors` + CORS XML**
+
+向桶 endpoint 发 `PUT /?cors`，body 为 CORSConfiguration XML；请求需带 AWS4 签名（Authorization 头，可用 SDK/工具生成，或使用插件内 `huaweicloud_obs_set_website_config` 同款的 AWS4 签名方式）。`PUT /?cors` 使用的 AllowedMethod 必须覆盖浏览器直传全部五个方法：
 
 ```xml
 <CORSConfiguration>
@@ -250,7 +252,7 @@ node -e "fetch('<same-url>', {method:'PUT', headers:{'Origin':'https://<your-app
 </CORSConfiguration>
 ```
 
-**替代路径 ②：esdk-obs-python `setBucketCors`**
+**降级路径 ②：esdk-obs-python `setBucketCors`**
 
 服务端 Python 环境最小示例（凭证从环境变量读取，勿硬编码）：
 
@@ -290,4 +292,4 @@ JSON 形态（供 MCP 工具/自研封装消费）：
 ]
 ```
 
-配置完成后用 p05 的 curl OPTIONS 预检命令验证：预检应返回 200 且响应头含 `Access-Control-Allow-Origin`。
+配置完成后用 p05 的 curl OPTIONS 预检命令验证：预检应返回 200 且响应头含 `Access-Control-Allow-Origin`。走 `huaweicloud_obs_set_cors` 工具时，set/get 返回体的 `verify` 字段就是这条预检命令（含 `--noproxy '*'`，#1000 的注入代理陷阱同样适用于 OPTIONS 预检）。

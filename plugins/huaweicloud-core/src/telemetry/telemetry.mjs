@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { fetchWithProxy } from '../proxy/proxy-agent.mjs';
+import { installSegment } from './agent-registry.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -68,7 +69,7 @@ const MAX_RETRIES = 3;
 const DEFAULT_ENDPOINT = 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/telemetry/events';
 
 let eventQueue = [];
-let isFlushing = false;
+let currentFlush = null;
 let flushTimer = null;
 let lastCheckedDate = '';
 let installId = null;
@@ -222,6 +223,9 @@ function buildEvent(raw) {
     os: osTypeStr,
     osVersion: osVersionStr,
   };
+  // #1040: 安装位置独立字段——原拼接进 harness 的 installSegment 改为单列上报。
+  const seg = installSegment();
+  if (seg) event.installSegment = sanitizeValue(seg);
   const cap = raw.capability || capabilityFromKey(raw.key);
   if (cap) event.capability = cap;
   return event;
@@ -229,7 +233,9 @@ function buildEvent(raw) {
 
 export function enqueueEvent(raw) {
   if (!isTelemetryEnabled()) return;
-  if (!installId) return;
+  // #1014: installId 未初始化时（如未走 initialize 直接 tools/call）不再丢弃事件，
+  // 惰性恢复，避免 telemetry_event 缺记录。
+  if (!installId) installId = generateOrRecoverInstallId();
 
   ingestHookEvents();
 
@@ -339,10 +345,37 @@ export function clearUserHash() {
   } catch {}
 }
 
-function flushEvents() {
-  if (isFlushing) return;
-  if (eventQueue.length === 0) return;
-  isFlushing = true;
+// #1014: flush 前兜底补齐队列事件的缺失身份字段——
+// userHash 在 enqueue 之后才解析到（领券响应 / user-hash 文件）时，
+// 已入队事件的 userHash 仍为 null，这里统一回填，降低 user_hash null 占比。
+function backfillIdentityFields() {
+  try {
+    if (!installId) installId = generateOrRecoverInstallId();
+    if (!userHash) loadUserHash();
+    for (const event of eventQueue) {
+      if (!event.installId && installId) event.installId = installId;
+      if (event.userHash == null && userHash) event.userHash = userHash;
+    }
+  } catch (_) {
+    debugLog('BACKFILL identity fields failed');
+  }
+}
+
+// #1014: flush 可被 await（P0 领券类工具同步上报）；
+// 并发调用复用同一次 in-flight flush（currentFlush 声明于模块顶部）。
+export function flushEvents() {
+  if (currentFlush) return currentFlush;
+  if (eventQueue.length === 0) return Promise.resolve();
+  currentFlush = performFlush().finally(() => {
+    currentFlush = null;
+  });
+  return currentFlush;
+}
+
+async function performFlush() {
+  // flush 前统一回填身份字段（含 userHash 重解析，#1014）：
+  // 入队时身份未解析的事件此前会永久携带 null userHash。
+  backfillIdentityFields();
 
   const batch = eventQueue.splice(0, BATCH_SIZE);
   const keys = batch.map((e) => e.key).join(',');
@@ -354,34 +387,72 @@ function flushEvents() {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
 
-  fetchWithProxy(endpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(batch.map(({ _retries, ...rest }) => rest)),
-    signal: controller.signal,
-  })
-    .then((resp) => {
-      clearTimeout(timer);
-      debugLog(`POST status=${resp.status} events=${batch.length}`);
-      if (resp.ok) {
-        for (const event of batch) {
-          if (event.key === 'dau:active_today') touchFile(dauStampPath());
-          if (event.key === 'plugin:install') touchFile(installStampPath());
-          if (event.key === 'plugin:first_use') touchFile(firstUseStampPath());
-        }
-      } else if (resp.status >= 400 && resp.status < 500) {
-        debugLog(`POST status=${resp.status} dropping ${batch.length} events (client error)`);
-      } else {
-        requeueEvents(batch);
-      }
-      isFlushing = false;
-    })
-    .catch((error) => {
-      clearTimeout(timer);
-      debugLog(`POST FAIL err=${error.message} events=${batch.length}`);
-      requeueEvents(batch);
-      isFlushing = false;
+  try {
+    const resp = await fetchWithProxy(endpoint, {
+      method: 'POST',
+      // #1040: 对外上报统一携带 X-HW-Agent（值=detectAgent 结果 harness，initTelemetry 缓存）
+      headers: { 'Content-Type': 'application/json', 'X-HW-Agent': agentHarness || 'unknown' },
+      body: JSON.stringify(batch.map(({ _retries, ...rest }) => rest)),
+      signal: controller.signal,
     });
+    clearTimeout(timer);
+    debugLog(`POST status=${resp.status} events=${batch.length}`);
+    if (resp.ok) {
+      for (const event of batch) {
+        if (event.key === 'dau:active_today') touchFile(dauStampPath());
+        if (event.key === 'plugin:install') touchFile(installStampPath());
+        if (event.key === 'plugin:first_use') touchFile(firstUseStampPath());
+      }
+    } else if (resp.status >= 400 && resp.status < 500) {
+      debugLog(`POST status=${resp.status} dropping ${batch.length} events (client error)`);
+    } else {
+      requeueEvents(batch);
+    }
+  } catch (error) {
+    clearTimeout(timer);
+    debugLog(`POST FAIL err=${error.message} events=${batch.length}`);
+    requeueEvents(batch);
+  }
+}
+
+// #1014 P1: 排空整个队列（退出兜底用，单次 flush 只发一个 batch）。
+export async function flushAllEvents() {
+  const maxBatches = Math.ceil(MAX_QUEUE_SIZE / BATCH_SIZE) + 1;
+  for (let i = 0; i < maxBatches && eventQueue.length > 0; i++) {
+    await flushEvents();
+  }
+}
+
+const EXIT_FLUSH_TIMEOUT_MS = 3000;
+let exitFlushRegistered = false;
+
+// #1014 P1: SIGTERM/SIGINT 退出兜底 flush（有界超时，避免阻塞退出）。
+// 返回反注册函数（仅测试使用）。
+export function registerExitFlush() {
+  if (exitFlushRegistered) return () => {};
+  exitFlushRegistered = true;
+  const flushAndExit = () => {
+    if (eventQueue.length === 0) {
+      // eslint-disable-next-line n/no-process-exit -- signal shutdown with nothing to flush
+      process.exit(0);
+    }
+    const cap = new Promise((resolve) => {
+      const t = setTimeout(resolve, EXIT_FLUSH_TIMEOUT_MS);
+      t.unref?.();
+    });
+    const done = flushAllEvents().catch(() => {});
+    Promise.race([done, cap]).finally(() => {
+      // eslint-disable-next-line n/no-process-exit -- signal shutdown after bounded exit flush
+      process.exit(0);
+    });
+  };
+  process.once('SIGTERM', flushAndExit);
+  process.once('SIGINT', flushAndExit);
+  return () => {
+    process.removeListener('SIGTERM', flushAndExit);
+    process.removeListener('SIGINT', flushAndExit);
+    exitFlushRegistered = false;
+  };
 }
 
 function requeueEvents(batch) {
@@ -404,6 +475,9 @@ export function initTelemetry({ harness, version }) {
   agentVersion = version || '0.0.0';
 
   loadUserHash();
+
+  // #1014 P1: SIGTERM/SIGINT 退出兜底 flush（队列空时立即退出，零开销）。
+  registerExitFlush();
 
   if (!isTelemetryEnabled()) return;
 

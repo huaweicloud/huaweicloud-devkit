@@ -1301,8 +1301,18 @@ export async function closeSession(workspaceId, username) {
 // DB_ATTEMPT_* lines are non-sensitive diagnostics for support escalation.
 export function buildDevbridgeAuthProbe() {
   return [
-    `export PATH="$HOME/.huawei/bin:$PATH"`,
+    // #999: /workspace/.local/bin FIRST — /workspace is the data disk and
+    // survives sandbox reboots; ~/.huawei/bin lives on the system disk and is
+    // wiped back to the image state on reboot. Prepended so a stale image
+    // binary in /usr/local/bin never wins.
+    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
     `export HOME="\${HOME:-/root}"`,
+    // #998: probe the version in the SAME exec as the auth waterfall (no extra
+    // round trip). 0.1.x binaries' AK/SK tier still logs in, so the auth probe
+    // alone would green-light an expose that can never work — the version is
+    // what names the real cause.
+    `DB_VERSION=$(devbridge version 2>/dev/null | head -1)`,
+    `echo "DB_VERSION=\${DB_VERSION}"`,
     `DB_OK=0`,
     `db_login_ok() { devbridge auth status 2>/dev/null | grep -q "Logged in"; }`,
     `db_diag() { echo "DB_ATTEMPT_$1=$2"; }`,
@@ -1391,9 +1401,10 @@ export function buildDevbridgeAuthProbe() {
   ].join('\n');
 }
 
-// Parse the raw stdout of buildDevbridgeAuthProbe into { authMode, attempts }.
+// Parse the raw stdout of buildDevbridgeAuthProbe into { authMode, attempts, version }.
 // authMode is the LAST DB_AUTH_MODE line; attempts collects the non-sensitive
-// DB_ATTEMPT_* diagnostics emitted by tiers that failed and fell through.
+// DB_ATTEMPT_* diagnostics emitted by tiers that failed and fell through;
+// version is the devbridge binary version probed in the same exec (#998).
 export function parseDevbridgeAuthOutput(stdout) {
   // #946: OSC 133 markers precede every line on integration-enabled shells; the
   // anchored ^DB_ATTEMPT_ regexes are blind to them without stripping first.
@@ -1404,7 +1415,35 @@ export function parseDevbridgeAuthOutput(stdout) {
   for (const m of text.matchAll(/^DB_ATTEMPT_([A-Z_]+)=(\S+)$/gm)) {
     attempts[m[1]] = m[2];
   }
-  return { authMode, attempts };
+  const versionMatch = text.match(/^DB_VERSION=(.*)$/m);
+  const version = versionMatch ? versionMatch[1].trim() : '';
+  return { authMode, attempts, version };
+}
+
+// #998: 0.1.x binaries cannot serve tunnels — their hardcoded pre-migration
+// gateway was retired (Sep 2026) and now serves a「服务已迁移」placeholder,
+// while their AK/SK auth tier still logs in successfully. Without a version check the auth green-light leads to an
+// expose that fails after retries with no version context, sending the caller
+// chasing credentials/network/port instead of the real cause. Block 0.1.x
+// BEFORE exposing and point at the Step 0 install path. An empty version
+// (binary absent) does not block — the auth waterfall handles that case.
+export function evaluateDevbridgeVersion(version) {
+  const v = String(version || '').trim();
+  if (!v) return { blocked: false };
+  if (/^0\.1($|[.-])/.test(v)) {
+    return {
+      blocked: true,
+      error:
+        `devbridge_too_old: ${v} cannot serve tunnels — its hardcoded gateway was migrated and now serves a 「服务已迁移」 placeholder. ` +
+        'An upgrade to 0.2.x is required before exposing; no credential change will fix this.',
+      remediation:
+        'Upgrade in place per the huawei-sandbox skill Step 0: install 0.2.x via the GitCode mirror with GitHub fallback ' +
+        '(`install.sh -s -u <gitcode URL> -v <target>`, `-s` is required in the sandbox), then re-run huaweicloud_sandbox_expose_tunnel. ' +
+        'Install to /workspace/.local/bin (survives sandbox reboots) — never ~/.huawei/bin (wiped on system-disk reset). ' +
+        'Old 0.1.x tunnels do not survive the upgrade: the expose flow pre-cleans them.',
+    };
+  }
+  return { blocked: false };
 }
 
 // Tunnel lifetime for expose-created hosts, in hours. The report that motivated
@@ -1444,7 +1483,10 @@ export function buildDevbridgeExposeScript(port, expiryHours = DEVBRIDGE_HOST_EX
     `HTTP_CODE="000"`,
     `if [ -n "$TUNNEL_URL" ]; then`,
     `  for i in 1 2 3 4; do`,
-    `    HTTP_CODE=$(curl -s -o /tmp/.db_probe_body -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
+    // #1000: --noproxy — the sandbox injects an HTTP proxy that does NOT route
+    // the tunnel domain; without it the probe returns 502/404 fakes and a
+    // working tunnel is judged dead.
+    `    HTTP_CODE=$(curl -s --noproxy '*' -o /tmp/.db_probe_body -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
     `    echo "DB_PROBE_$i=$HTTP_CODE"`,
     `    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then break; fi`,
     `    if [ "$i" != "4" ]; then sleep 5; fi`,
@@ -1480,7 +1522,9 @@ export function buildDevbridgeVerifyScript(tunnelUrl) {
   }
   const bodyFile = '/tmp/devbridge_verify_body';
   return [
-    `VERIFY_CODE=$(curl -s -o ${bodyFile} -w "%{http_code}" --max-time 10 "${url}" 2>/dev/null || echo "000")`,
+    // #1000: --noproxy — the injected proxy does not route the tunnel domain;
+    // a proxied verify returns 502/404 fakes (working tunnel judged dead).
+    `VERIFY_CODE=$(curl -s --noproxy '*' -o ${bodyFile} -w "%{http_code}" --max-time 10 "${url}" 2>/dev/null || echo "000")`,
     `VERIFY_NOT_FOUND=$(grep -ci 'tunnel not found' ${bodyFile} 2>/dev/null || true)`,
     `if [ -z "$VERIFY_NOT_FOUND" ]; then VERIFY_NOT_FOUND=0; fi`,
     `rm -f ${bodyFile} 2>/dev/null || true`,
@@ -1841,7 +1885,24 @@ export async function exposeTunnel(
 
   const authScript = buildDevbridgeAuthProbe();
   const authResult = await execOneShot(workspaceId, authScript, username, 30000);
-  const { authMode, attempts } = parseDevbridgeAuthOutput(authResult.stdout);
+  const { authMode, attempts, version: authVersion } = parseDevbridgeAuthOutput(authResult.stdout);
+
+  // #998: version gate BEFORE the expose loop. 0.1.x binaries' AK/SK tier still
+  // logs in, so authMode alone would green-light an expose that can never work.
+  // This must precede the authMode check — the structured too_old error names
+  // the real cause where the auth-failure path would point at credentials.
+  const versionCheck = evaluateDevbridgeVersion(authVersion);
+  if (versionCheck.blocked) {
+    return {
+      ok: false,
+      error: versionCheck.error,
+      error_code: 'devbridge_too_old',
+      version: authVersion,
+      authMode,
+      attempts,
+      remediation: versionCheck.remediation,
+    };
+  }
 
   if (authMode !== 'API_KEY_KEYRING' && authMode !== 'AKSK_SUPPORTED' && authMode !== 'API_KEY_FILE') {
     const loginOutput = String(authResult.stdout || '') + String(authResult.stderr || '');
@@ -1915,6 +1976,42 @@ export async function exposeTunnel(
     const warnings = [];
     if (parsed.quotaError)
       warnings.push('DevBridge tunnel quota (10006) hit — stale tunnels were cleaned up and the host was retried.');
+
+    // #998: a host that never produced a Tunnel URL must NOT surface as ok:true
+    // with an undefined publicUrl — that reads as success and sends the caller
+    // chasing credentials/network/port while the real cause is the host/版本.
+    // Read the version back into the return body: in this incident a single
+    // version field would have saved the whole diagnosis.
+    if (!parsed.tunnelUrl) {
+      let noUrlVersion = authVersion;
+      try {
+        const versionResult = await execOneShot(
+          workspaceId,
+          `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; devbridge version 2>/dev/null | head -1`,
+          username,
+          15000,
+        );
+        noUrlVersion = String(versionResult.stdout || '').trim() || authVersion;
+      } catch {}
+      const noUrlCheck = evaluateDevbridgeVersion(noUrlVersion);
+      if (noUrlCheck.blocked) {
+        warnings.push(
+          `devbridge version is ${noUrlVersion} — too old to serve tunnels; upgrade per Step 0 before retrying.`,
+        );
+      }
+      return {
+        ok: false,
+        error: noUrlCheck.blocked
+          ? noUrlCheck.error
+          : `Failed to expose a working DevBridge tunnel: the host log contains no Tunnel URL (HTTP probe code ${parsed.httpCode || '000'}) — the host did not start. Check the hostLog below for the real cause.`,
+        error_code: noUrlCheck.blocked ? 'devbridge_too_old' : 'no_tunnel_url',
+        version: noUrlVersion || undefined,
+        httpCode: parsed.httpCode,
+        authMode,
+        ...(noUrlCheck.blocked ? { remediation: noUrlCheck.remediation } : {}),
+        hostLog: String(result.stdout || '').slice(0, 400),
+      };
+    }
 
     // #919: re-verify with a real GET from a SECOND, independent exec session.
     // The in-session health check above cannot prove the host survived session

@@ -1,6 +1,7 @@
 import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
+import { detectAgent } from '../telemetry/agent-detect.mjs';
 import { readInstalledVersion } from '../update-check.mjs';
 
 function getHdkitBaseUrl() {
@@ -21,6 +22,8 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     'X-HW-AK': ak,
     'X-HW-SK': sk,
     'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
+    // #1040: 对外请求统一携带 X-HW-Agent（值=detectAgent 结果 harness）
+    'X-HW-Agent': detectAgent().harness,
   };
   if (securitytoken) {
     headers['X-HW-Security-Token'] = securitytoken;

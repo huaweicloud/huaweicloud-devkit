@@ -63,7 +63,9 @@ dead URL within 5 minutes. Install via
 ```bash
 cat > /tmp/tunnel-keepalive.sh << 'KEEPALIVE_EOF'
 #!/bin/bash
-export PATH="$HOME/.huawei/bin:$PATH"
+# /workspace/.local/bin FIRST — it survives sandbox reboots; ~/.huawei/bin is
+# on the system disk and is wiped back to the image state on reboot (#999).
+export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"
 # entries: tunnelId:url — URLs HARDCODED, never derived from port list (see trap 2)
 TUNNELS="<tunnel-id>:https://<tunnel-id>-<port>.devbridge-s2.hwtunnel.com"
 declare -A LAST_RENEW

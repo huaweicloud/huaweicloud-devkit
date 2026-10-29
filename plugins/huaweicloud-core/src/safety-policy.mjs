@@ -297,8 +297,12 @@ export function classifyHcloudArgs(args, options = {}) {
     'chattri',
     'bucketpolicy',
     'lifecycle',
-    'cors',
-    'website',
+    // #1001: 'cors' and 'website' were removed — KooCLI 7.x's OBS wrapper does
+    // NOT expose them (`hcloud OBS help cors` → "No such command"; same for
+    // website). A nonexistent command cannot produce a write side effect, so
+    // grading it as a write was safety based on a stale assumption. CORS/static-
+    // website config goes through the REST API (PUT /?cors) — see the
+    // huawei-obs skill common-pitfalls.md CORS chapter.
     'sign',
     'share-add',
     'share-update',

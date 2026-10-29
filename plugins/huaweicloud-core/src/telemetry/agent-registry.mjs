@@ -10,6 +10,10 @@ const selfPath = (() => {
   }
 })();
 
+/**
+ * #1040: 安装位置段——仅用于遥测的独立安装位置字段（telemetry 事件 installSegment），
+ * 不进入 agent 名/harness；AGENTS 白名单与 matchAgent 规则不受安装位置影响。
+ */
 export function installSegment() {
   const parts = selfPath.split('/').filter(Boolean);
   const srcIdx = parts.lastIndexOf('src');

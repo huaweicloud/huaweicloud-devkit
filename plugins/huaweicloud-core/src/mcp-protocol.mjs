@@ -1,7 +1,11 @@
 import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
 import { peekCachedUpdateInfo, applyUpdateHint, readInstalledVersion } from './update-check.mjs';
-import { initTelemetry } from './telemetry/telemetry.mjs';
+import { initTelemetry, flushEvents } from './telemetry/telemetry.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
+
+// #1014 P0: 领券类工具同步上报——callTool 完毕后 await flushEvents()，
+// 防止进程提前退出导致领券遥测丢失。
+const P0_SYNC_FLUSH_TOOLS = new Set(['huaweicloud_voucher_claim', 'huaweicloud_competition_voucher_claim']);
 
 const pkgVersion = readInstalledVersion() || '0.0.0';
 
@@ -78,6 +82,9 @@ export async function dispatch(method, params, opts = {}) {
       throw invalidParamsError;
     }
     const result = await callTool(params.name, params.arguments || {});
+    if (P0_SYNC_FLUSH_TOOLS.has(params.name)) {
+      await flushEvents().catch(() => {});
+    }
     const decorated = _decorateResult(sessionId, params.name, result);
     return {
       content: [
