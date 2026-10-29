@@ -91,9 +91,14 @@ stable number: `1.1.0-next.0` commits to stable `1.1.0`.
 Steps:
 
 1. Decide the future stable version, e.g. `1.1.0`.
-2. Bump locally, without committing:
+2. Bump locally, without committing (PowerShell or bash — the command is
+   identical):
 
    ```powershell
+   npm version 1.1.0-next.0 --no-git-tag-version
+   ```
+
+   ```bash
    npm version 1.1.0-next.0 --no-git-tag-version
    ```
 
@@ -117,6 +122,10 @@ Steps:
    changes (the repo must never drift from what is published):
 
    ```powershell
+   npm version <previous-stable> --no-git-tag-version
+   ```
+
+   ```bash
    npm version <previous-stable> --no-git-tag-version
    ```
 
