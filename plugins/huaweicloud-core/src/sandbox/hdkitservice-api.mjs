@@ -9,7 +9,21 @@ function getHdkitBaseUrl() {
 }
 
 async function hdkitRequest(method, path, body, timeoutMs = 300000) {
-  const { ak, sk, securitytoken } = getCredentials();
+  let creds;
+  try {
+    creds = getCredentials();
+  } catch (error) {
+    if (error?.code === 'HDKIT_CRED_MISSING') {
+      // #1055 D3-C14: the hdkitservice/sandbox surface must report the exact
+      // English contract string, not the Chinese messageZh guidance.
+      const notConfiguredError = new Error('credentials not configured');
+      notConfiguredError.code = error.code;
+      notConfiguredError.onboarding = error.onboarding;
+      throw notConfiguredError;
+    }
+    throw error;
+  }
+  const { ak, sk, securitytoken } = creds;
 
   if (!ak || !sk) {
     throw new Error(

@@ -86,9 +86,12 @@ test('readKooCliProfiles handles missing config', () => {
     const res = readKooCliProfiles();
     // #900: unified shape — table code + Chinese message, old English text kept
     // only as the distinguishing detail.
+    // #1055 D2-10: `error` must be the EXACT contract string (no Chinese
+    // guidance prepended); messageZh keeps the unified Chinese guidance.
     assert.equal(res.code, 'HDKIT_KOOCLI_NOT_READY');
-    assert.match(res.error, /KooCLI config not found/);
-    assert.match(res.error, /[\u4e00-\u9fff]/);
+    assert.equal(res.error, 'KooCLI config not found');
+    assert.match(res.messageZh, /KooCLI config not found/);
+    assert.match(res.messageZh, /[\u4e00-\u9fff]/);
     assert.equal(res.action, 'npx huaweicloud-devkit install-hcloud');
   });
 });

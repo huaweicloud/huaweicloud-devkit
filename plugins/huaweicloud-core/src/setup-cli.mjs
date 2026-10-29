@@ -4966,7 +4966,7 @@ async function cmdAuthInit() {
   let ak = process.env.HW_ACCESS_KEY || '';
   let sk = process.env.HW_SECRET_KEY || '';
   let securityToken = process.env.HW_SECURITY_TOKEN || '';
-  let region = process.env.HW_REGION || process.env.HUAWEICLOUD_REGION || '';
+  let region = process.env.HUAWEICLOUD_REGION || process.env.HW_REGION || '';
 
   const interactive = process.stdin.isTTY && process.stdout.isTTY;
   if (!interactive && (!ak || !sk)) {
