@@ -32,7 +32,7 @@
         "all": [
           {
             "field": "text",
-            "regex": "(^|\\s)(env|printenv|Get-ChildItem\\s+Env:|gci\\s+Env:|dir\\s+Env:)"
+            "regex": "(^|[^A-Za-z0-9_.-])(env\\b|printenv\\b|Get-ChildItem\\s+Env:|gci\\s+Env:|dir\\s+Env:)"
           },
           {
             "field": "text",
@@ -53,7 +53,7 @@
         "any": [
           {
             "field": "text",
-            "regex": "(ShowSecretVersion|ShowSecret|DownloadSecret|GetSecretValue)"
+            "regex": "(ShowSecretVersion|ShowSecret|DownloadSecret|GetSecretValue|DecryptData)"
           },
           {
             "field": "text",
@@ -206,11 +206,11 @@
           },
           {
             "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
+            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|actions\\s*=\\s*\\[\\s*\\\"(\\*|\\*:\\*)\\\"\\s*\\]|AdministratorAccess|FullAccess)"
           },
           {
             "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
+            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow|resource\\s+\\\"huaweicloud_iam_(policy|role|agency)\\\")"
           }
         ]
       },
@@ -433,6 +433,27 @@
       },
       "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",
       "remediation": "Use targeted deletions instead of recursive root removal. Avoid disk format, fork bombs, and system shutdown commands in sandbox terminals."
+    },
+    {
+      "id": "hwc-command-substitution-exec",
+      "title": "Command substitution piped into a shell interpreter",
+      "category": "execution",
+      "severity": "deny",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(\\$\\([^)]*\\)|`[^`]+`)"
+          },
+          {
+            "field": "text",
+            "regex": "(\\||;|&&)\\s*(sudo\\s+)?(sh|bash|zsh|dash|python|node|powershell|pwsh)\\b"
+          }
+        ]
+      },
+      "message": "The command embeds command substitution output and pipes it into a shell interpreter, which can execute unreviewed or remote content.",
+      "remediation": "Expand command substitution into a reviewable file, inspect the content, and execute only explicit reviewed commands."
     }
   ]
 }
