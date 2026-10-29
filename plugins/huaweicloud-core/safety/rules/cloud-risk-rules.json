@@ -382,7 +382,7 @@
           },
           {
             "field": "text",
-            "regex": "(--adminPass|--password|--secret|--token)\\s*[=:]\\s*[^\\s<]"
+            "regex": "(--adminPass|--password|--secret|--token|--api[_-]?key|--x[_-]?api[_-]?key)\\s*[=:]\\s*[^\\s<]"
           }
         ]
       },

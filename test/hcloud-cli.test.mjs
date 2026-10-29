@@ -401,6 +401,58 @@ test('koocli lang G4: approval token still rejects args that differ from the app
   );
 });
 
+test('hcloud binding path: placeholder rejection never burns the token; corrected retry executes', async () => {
+  const home = mkdtempSync(join(tmpdir(), 'huaweicloud-binding-'));
+  const binDir = mkdtempSync(join(tmpdir(), 'huaweicloud-binding-bin-'));
+  const logFile = join(binDir, 'calls.txt');
+  const fake = fakeHcloudExecutable(`
+import { appendFileSync } from 'node:fs';
+const logFile = ${JSON.stringify(logFile)};
+appendFileSync(logFile, JSON.stringify(process.argv.slice(2)) + '\\n');
+console.log('{"ok": true}');
+`);
+  const previousHome = process.env.HOME;
+  const previousBin = process.env.HCLOUD_BIN;
+  process.env.HOME = home;
+  process.env.HCLOUD_BIN = fake;
+  try {
+    // The plan displays the secret slot redacted; the approval binds the
+    // RAW args.
+    const plan = await callTool('huaweicloud_plan_cli_command', {
+      args: ['ECS', 'CreateServers', '--admin_pass', 'AAA', '--cli-region=cn-north-4'],
+      allowWrites: true,
+    });
+    assert.ok(plan.args.includes('<redacted>'), 'plan display scrubs the secret slot');
+    // Placeholder echo: loud rejection, token NOT consumed.
+    await assert.rejects(
+      callTool('huaweicloud_run_approved_command', {
+        args: ['ECS', 'CreateServers', '--admin_pass', '<redacted>', '--cli-region=cn-north-4'],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+      }),
+      /placeholder/,
+    );
+    // Corrected retry with the real value: executes (the shared
+    // binding-before-consume restructure, on the hcloud wiring).
+    const retry = await callTool('huaweicloud_run_approved_command', {
+      args: ['ECS', 'CreateServers', '--admin_pass', 'AAA', '--cli-region=cn-north-4'],
+      approvalToken: plan.approvalToken,
+      approvedByUser: true,
+    });
+    assert.equal(retry.approved, true);
+    assert.notEqual(retry.outcome, 'already_processed');
+    const calls = readFileSync(logFile, 'utf8').trim().split('\n').filter(Boolean);
+    assert.equal(calls.length, 1, 'exactly one child invocation');
+    assert.ok(JSON.parse(calls[0]).includes('AAA'), 'the real secret reached the child');
+  } finally {
+    process.env.HOME = previousHome;
+    if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+    else process.env.HCLOUD_BIN = previousBin;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(binDir, { recursive: true, force: true });
+  }
+});
+
 test('koocli lang: extractApiError keeps JSON keys stable under Chinese KooCLI output', () => {
   const result = extractApiError(
     'ListVpcs有多个版本,默认使用该API版本v3{ "error_code": "BSS.0001", "error_msg": "指定余额不足" }',
@@ -453,6 +505,26 @@ test('resolveStsInjectArgs uses obsutil -i/-k/-t for OBS subcommands', () => {
   clearRuntimeCredentials();
   setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
   const injected = resolveStsInjectArgs(['OBS', 'ls']);
+  assert.deepEqual(injected, ['-i', 'STS_AK', '-k', 'STS_SK', '-t', 'STS_TOKEN']);
+  clearRuntimeCredentials();
+});
+
+test('resolveStsInjectArgs still injects when obsutil WORD options are present (-include/-threshold are not credentials)', () => {
+  clearRuntimeCredentials();
+  setRuntimeCredentials('STS_AK', 'STS_SK', 'STS_TOKEN', 'cn-north-4');
+  // The taught static-website workflow shape: word-form options must not
+  // skip STS injection (only credential shapes -iAK/-i=AK/-kSK/-tTOKEN
+  // and the separated -i/-k/-t do).
+  const injected = resolveStsInjectArgs([
+    'OBS',
+    'cp',
+    'dist',
+    'obs://b',
+    '-include=*.html',
+    '-exclude=*.js',
+    '-threshold=52428800',
+    '-acl=public-read',
+  ]);
   assert.deepEqual(injected, ['-i', 'STS_AK', '-k', 'STS_SK', '-t', 'STS_TOKEN']);
   clearRuntimeCredentials();
 });

@@ -15,8 +15,10 @@
     "user[_-]?data",
     "metadata",
     "api[_-]?key",
+    "x[_-]?api[_-]?key",
     "ak",
-    "sk"
+    "sk",
+    "secret"
   ],
   "credentialFilePatterns": [
     "\\.hcloud(?![.\\w])",
@@ -24,6 +26,7 @@
     "hcloud[/\\\\](config|credentials)",
     "huaweicloud[/\\\\](config|credentials)",
     "\\.agentarts_config",
+    "agentarts-memory-api-key",
     "\\.env"
   ],
   "blockedConfigureSubcommands": ["show", "get", "list", "export", "init"],

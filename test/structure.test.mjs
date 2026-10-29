@@ -4,6 +4,8 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { MEMORY_STRATEGY_BUILTINS, MEMORY_STRATEGY_MEASURED } from '../plugins/huaweicloud-core/src/agentarts-cli.mjs';
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const pluginRoot = join(root, 'plugins', 'huaweicloud-core');
 
@@ -1005,6 +1007,128 @@ test('huawei-ecs routes Windows SSH to references/windows-ssh.md (#922)', () => 
   assert.match(ref, /ssh_authorized_keys/); // cloud-init key injection path
 });
 
+test('huawei-sandbox routes tunnel persistence to references/tunnel-persistence.md (2026-10 test)', () => {
+  const refPath = join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'tunnel-persistence.md');
+  assert.ok(existsSync(refPath), 'Missing huawei-sandbox/references/tunnel-persistence.md');
+
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  assert.match(skill, /references\/tunnel-persistence\.md/);
+  // Renewal + watchdog tools must be documented in the skill.
+  assert.match(skill, /huaweicloud_sandbox_renew_tunnel/);
+  assert.match(skill, /huaweicloud_sandbox_keepalive_watchdog/);
+  // AUTO-enrollment: expose_tunnel must document that every exposed tunnel is
+  // keepalive-protected by default (user requirement 2026-10).
+  assert.match(skill, /AUTO-ENROLL/i);
+
+  const ref = readFileSync(refPath, 'utf8');
+  // Rolling-window expiry (measured): renewal sets expiration = now + hours.
+  assert.match(ref, /rolling window/i);
+  // 720h = 30-day maximum; re-attach keeps the URL (bound to tunnel ID).
+  assert.match(ref, /720/);
+  assert.match(ref, /devbridge host <tunnel-id>/);
+  // Hardcoded URLs, never derived from the OSC-wrapped port list output.
+  assert.match(ref, /port list/);
+  // The MCP tool names must match the implementation in tools.mjs.
+  const tools = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  assert.match(tools, /huaweicloud_sandbox_renew_tunnel/);
+  assert.match(tools, /huaweicloud_sandbox_keepalive_watchdog/);
+  // expose_tunnel auto-enrolls by default (keepalive:false opts out).
+  assert.match(tools, /AUTO-ENROLLS the tunnel into the keepalive watchdog/i);
+});
+
+test('huawei-sandbox routes the PostgREST full-stack to references/fullstack-postgrest.md (2026-10 test)', () => {
+  const refPath = join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'fullstack-postgrest.md');
+  assert.ok(existsSync(refPath), 'Missing huawei-sandbox/references/fullstack-postgrest.md');
+
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+  assert.match(skill, /references\/fullstack-postgrest\.md/);
+
+  const ref = readFileSync(refPath, 'utf8');
+  // Measured HCE traps that must be preserved:
+  assert.match(ref, /requires PG ≥ 14|needs\s+at\s+least\s+14\.0/); // PostgREST 16.x rejects PG 13
+  assert.match(ref, /rhel-8-aarch64/); // hyphenated PGDG path (rhel8-aarch64 404s)
+  assert.match(ref, /libicu-60/); // real compat package — ICU symlinks crash on versioned symbols
+  assert.match(ref, /libldap-2\.4\.so\.2/); // el8 soname shims
+  assert.match(ref, /linux-static-aarch64/); // dynamic Ubuntu builds fail on HCE glibc
+  assert.match(ref, /chmod o\+x/); // nginx 403 traverse-permission fix
+  assert.match(ref, /db-anon-role/); // anon role gates writes
+});
+
+test('huawei-sandbox carries the Stack-Selection Gate (workbench ⇒ PostgREST default) (#1021)', () => {
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+
+  // The gate must exist as a top-level section between the Target-Selection
+  // Gate and the Overview — not buried as a conditional branch inside the
+  // Web Application Deployment section.
+  const gateStart = skill.indexOf('## Stack-Selection Gate');
+  assert.ok(gateStart !== -1, 'Stack-Selection Gate section missing');
+  const targetGate = skill.indexOf('## Target-Selection Gate');
+  const overview = skill.indexOf('## Overview');
+  assert.ok(targetGate !== -1 && targetGate < gateStart, 'Stack-Selection Gate must follow the Target-Selection Gate');
+  assert.ok(overview !== -1 && gateStart < overview, 'Stack-Selection Gate must precede the Overview');
+
+  const nextHeading = skill.indexOf('\n## ', gateStart + 1);
+  const gate = nextHeading === -1 ? skill.slice(gateStart) : skill.slice(gateStart, nextHeading);
+  assert.match(
+    gate,
+    /MUST treat it as a\s+(\*\*)?full-stack workbench deployment/,
+    'gate must force the full-stack classification',
+  );
+  assert.match(gate, /defaults to \*\*PostgreSQL \+ PostgREST\*\*/, 'gate must state the PostgREST default');
+  assert.match(gate, /`question` tool/, 'gate must mandate the question tool for ambiguous backends');
+  assert.match(gate, /NEVER infer or default the stack to SPA/, 'gate must carry the never-default-to-SPA hard rule');
+  assert.match(gate, /Pre-code checkpoint/, 'gate must carry the pre-code checkpoint');
+  assert.match(
+    gate,
+    /fullstack-postgrest\.md|Full-Stack: REST API over PostgreSQL/,
+    'gate must route to the full-stack procedure',
+  );
+
+  // Trigger words in the frontmatter description so the model hits the skill
+  // on workbench-shaped requests without postgres/数据库 keywords.
+  assert.match(skill, /工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres/);
+
+  // The workflow carries the stack gate as an explicit step before any code upload.
+  assert.match(skill, /Step 0\.5 — Stack-Selection Gate/, 'workflow must sequence the stack gate before code upload');
+});
+
+test('fullstack-postgrest.md carries the 2026-10 retest field notes (#1016)', () => {
+  const ref = readFileSync(
+    join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'fullstack-postgrest.md'),
+    'utf8',
+  );
+  // Trap 1: Aliyun mirrors replace the ~8KB/s official RPM sources.
+  assert.match(ref, /mirrors\.aliyun\.com\/postgresql/);
+  assert.match(ref, /mirrors\.aliyun\.com\/almalinux/);
+  // Trap 2: cross-mirror resume corrupts RPMs — rm + full re-download.
+  assert.match(ref, /Payload SHA256 digest: BAD/);
+  // Trap 3: asset name has no patch version — verify via the GitHub API.
+  assert.match(ref, /postgrest-v16\.5-linux-static-aarch64/);
+  assert.match(ref, /api\.github\.com\/repos\/PostgREST\/postgrest\/releases/);
+  assert.match(ref, /ghfast\.top/);
+  // Supply-chain guard: the third-party proxy download MUST be digest-verified
+  // (GitHub releases API digest + sha256sum -c) before extraction (#1016 review).
+  assert.match(ref, /releases\/tags\/v16\.5/);
+  assert.match(ref, /sha256sum -c/);
+  assert.match(ref, /--max-time 240 -C - -o \/tmp\/pgrst\.tar\.xz/);
+  // Supply-chain guard fix (review r2): digest extraction must NOT use
+  // `cut -d: -f3` — it leaves a trailing double-quote on the hash, making
+  // sha256sum -c fail every time even when the download is correct.
+  assert.ok(
+    !ref.includes('cut -d: -f3'),
+    'digest extraction must not use cut -d: -f3 (trailing quote breaks sha256sum -c)',
+  );
+  assert.match(ref, /sed.*sha256/); // sed-based extraction strips the trailing quote
+  // POST semantics: 401 is the anon default; 201 only after a targeted GRANT INSERT.
+  assert.match(ref, /POST 401 anon-default/);
+  // Trap 4: upload_file 640 permission → silent schema failure → PGRST002.
+  assert.match(ref, /chmod o\+r/);
+  assert.match(ref, /PGRST002/);
+  // Trap 5: exec-channel escaping — upload files, then psql -f / curl -d @file.
+  assert.match(ref, /psql -f/);
+  assert.match(ref, /-d @\/tmp\/payload\.json/);
+});
+
 test('huawei-sandbox distinguishes the workspace URL 401 trap from tunnel failure (#919)', () => {
   const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   // The authenticated workspace URL returns 401 when opened logged-out —
@@ -1152,6 +1276,39 @@ test('huawei-agentarts skill ships with routing floor and core registry wiring',
   assert.match(body, /AGENTARTS_BIN/);
   assert.match(body, /HUAWEICLOUD_SDK_AK/);
   assert.match(body, /cn-north-4/);
+  // Trap 15: the memory help text's cn-north-4 default contradicts the
+  // code (constant.py:79; get_region() = HUAWEICLOUD_SDK_REGION →
+  // HUAWEICLOUD_REGION → OS_REGION_NAME → cn-southwest-2 fallback). Every
+  // Region line must teach the actual fallback and the env chain, and
+  // every '. '-split sentence mentioning cn-north-4 (case-insensitive)
+  // must BOTH carry claim framing (CLAIM/help text) AND restate the
+  // cn-southwest-2 counterstatement in the same sentence — sentence-scoped
+  // because a line-level framing check is gameable by an unrelated 'help
+  // text' mention elsewhere in the bullet, same-sentence because
+  // attribution without contradiction ('defaults to cn-north-4 per the
+  // help text') is the realistic drift shape.
+  const regionLines = body.split('\n').filter((l) => /^-\s*Region:/.test(l));
+  assert.ok(regionLines.length > 0, 'SKILL.md region line missing');
+  for (const line of regionLines) {
+    assert.match(line, /actual code fallback is\s+cn-southwest-2/);
+    assert.match(line, /HUAWEICLOUD_SDK_REGION/);
+    assert.match(line, /HUAWEICLOUD_REGION/);
+    assert.match(line, /OS_REGION_NAME/);
+    for (const sentence of line.split('. ')) {
+      if (sentence.toLowerCase().includes('cn-north-4')) {
+        assert.match(
+          sentence,
+          /CLAIM|help text/i,
+          'cn-north-4 may appear on a Region line only as the quoted help-text claim (trap 15)',
+        );
+        assert.match(
+          sentence,
+          /cn-southwest-2/,
+          'the cn-north-4 sentence must restate the cn-southwest-2 counterstatement (trap 15)',
+        );
+      }
+    }
+  }
   // PR11: memory create/update/delete are approved (no blocked row remains)
   // and the one-time-key trap + file capture is taught.
   assert.doesNotMatch(body, /blocked \(this release\)/);
@@ -1161,6 +1318,122 @@ test('huawei-agentarts skill ships with routing floor and core registry wiring',
   const creds = readFileSync(join(skillDir, 'references', 'credentials.md'), 'utf8');
   assert.match(creds, /agentarts-memory-api-key/);
   assert.match(creds, /0600/);
+  // The credentials reference carries the third hand-written copy of the
+  // strategy list — pinned (with the provenance split) so it cannot drift
+  // from the wrapper's sets.
+  assert.match(creds, /semantic, episodic, user_preference, summary/);
+  assert.match(creds, /event\s+—\s+enum-evidenced/);
+  // Friction fix 1 (e2e-measured): memory create requires --strategies
+  // (server 400 [AgentArts.01010400] + orphan API key) — taught as a trap
+  // in SKILL.md and the workflows reference, enforced at plan time. The
+  // provenance split (four measured + event enum-evidenced) is pinned in
+  // BOTH doc surfaces (the wrapper derives its strings from the sets; the
+  // docs are hand-written and must not drift).
+  assert.match(body, /--strategies/);
+  assert.match(body, /AgentArts\.01010400/);
+  assert.match(body, /measured: semantic, episodic, user_preference, summary; event is enum-evidenced/);
+  const workflows = readFileSync(join(skillDir, 'references', 'cli-workflows.md'), 'utf8');
+  // Trap-15 twin pin: the reference layer carries the full resolution
+  // chain — it must not drift from the corrected SKILL.md statement.
+  assert.match(workflows, /actual code fallback is\s+cn-southwest-2/);
+  assert.match(workflows, /HUAWEICLOUD_SDK_REGION/);
+  assert.match(workflows, /HUAWEICLOUD_REGION/);
+  assert.match(workflows, /OS_REGION_NAME/);
+  assert.match(workflows, /--strategies/);
+  assert.match(workflows, /semantic, episodic, user_preference, summary, event/);
+  assert.match(workflows, /event enum-evidenced only/);
+  // Two-directional pin: the exact-string guards above catch doc EDITS,
+  // this cross-check catches SET edits — every builtin in the wrapper's
+  // exported set must appear in the taught list, so adding a strategy to
+  // the sets fails here until the docs are updated. The MEASURED set is
+  // pinned to SKILL.md's provenance phrasing the same way.
+  for (const strategy of MEMORY_STRATEGY_BUILTINS) {
+    assert.ok(
+      workflows.includes(strategy),
+      `MEMORY_STRATEGY_BUILTINS value ${strategy} is missing from cli-workflows.md`,
+    );
+  }
+  for (const strategy of MEMORY_STRATEGY_MEASURED) {
+    assert.ok(body.includes(strategy), `MEMORY_STRATEGY_MEASURED value ${strategy} is missing from SKILL.md`);
+  }
+
+  // U5 (friction fix 7, measured 2026-10-27): the memory config
+  // read-model drift and the search-semantics traps are pinned in BOTH
+  // doc surfaces — the hand-written layer must not drift from what the
+  // bridge enforces/returns.
+  // list contradicts get/create on config fields: get is the source of
+  // truth, list is inventory-only.
+  assert.match(body, /memory list.*contradict.*memory get/s);
+  assert.match(body, /never with list/);
+  assert.match(workflows, /memory get -o json` is the source of truth/);
+  assert.match(workflows, /read-model drift/);
+  assert.match(workflows, /memory_extract_enabled: false/);
+  // The get example must carry --output json (a rich table is the default).
+  assert.match(workflows, /\["memory","get","<space-id>","--region","cn-southwest-2","--output","json"\]/);
+  // Search: no default min_score on the filter path (the documented 0.5
+  // belongs to MemorySearchRequest, a class the bridge never builds),
+  // whole-space returns, searchSummary as the relevance signal, and the
+  // obsolete "omit it for the server default" teaching is gone.
+  assert.match(body, /WHOLE space ranked/);
+  assert.match(body, /NO default min_score/);
+  assert.match(body, /searchSummary score range/);
+  assert.match(workflows, /MemorySearchRequest/);
+  assert.match(workflows, /serializer\s+DROPS None/);
+  assert.match(workflows, /searchSummary/);
+  assert.match(workflows, /transplant no threshold from/);
+  assert.doesNotMatch(workflows, /for the server default/);
+  // actor_id per-operation contracts + the read-first write-loop rule.
+  assert.match(workflows, /REQUIRED, top-level \(unscoped = every actor's memories\)/);
+  assert.match(workflows, /optional, `filters\.actor_id` — omit = all actors/);
+  assert.match(workflows, /Read before writing when the\s+intent is ambiguous/);
+
+  // U6 (friction fix 8, measured 2026-10-27): explicit min_score is
+  // server-ineffective (0.01 still returned everything incl. 0.000016) —
+  // the bridge now filters client-side and every doc surface says so.
+  assert.match(body, /ineffective even when SET/);
+  assert.match(body, /client-side/);
+  assert.match(workflows, /applies a set `min_score` CLIENT-side/);
+  assert.match(workflows, /server ignores the threshold itself/);
+  assert.match(workflows, /0\.000016-0\.14/);
+  assert.doesNotMatch(workflows, /only after seeing the band/);
+  // actor_id position trap: add_messages is per-message, top-level rejected.
+  assert.match(body, /INSIDE each message/);
+  assert.match(workflows, /per-message ONLY/);
+  // CLI table truncates ids; every memory read example carries -o json.
+  assert.match(body, /TRUNCATES ids/);
+  assert.match(workflows, /TRUNCATES ids mid-string/);
+  assert.match(workflows, /\["memory","status","<space-id>","--region","cn-southwest-2","--output","json"\]/);
+  // Extraction semantics: fan-out, append-merge, subject inference.
+  assert.match(body, /one message extracts into N memories/);
+  assert.match(workflows, /fan-out, not 1:1/);
+  assert.match(workflows, /append-merge/);
+  assert.match(workflows, /never named Alice/);
+
+  // U7 (friction fix 9): batch delete_memories — one approval per id
+  // array, sorted canonical ids, partial-failure contract.
+  assert.match(body, /delete_memories batch irreversible/);
+  assert.match(body, /ONE approval covers the whole id array/);
+  assert.match(body, /delete in batches through delete_memories/);
+  assert.match(workflows, /Batch deletion \(`delete_memories`\)/);
+  assert.match(workflows, /ONE approval\s+covers the whole array/);
+  assert.match(workflows, /loops the SDK's single-record delete/);
+  assert.match(workflows, /re-plan ONLY\s+the\s+still-present ids/);
+  // R1 hardening pins: structured partial field, stderr progress trail,
+  // locale-independent canonical sort, boundary filter-value typing.
+  assert.match(workflows, /STRUCTURED/);
+  assert.match(workflows, /JSON progress line per id to STDERR/);
+  assert.match(workflows, /CODE UNIT \(locale-independent/);
+  assert.match(workflows, /mistyped value is rejected, never silently coerced/);
+  // R2 hardening pins: timeout budget auto-scale, get_memory per-id check,
+  // null-score semantics, truncation NOT-applied disclosure.
+  assert.match(workflows, /timeout auto-scales with the batch/);
+  assert.match(workflows, /2s per id \+ 30s grace, floor 120s/);
+  assert.match(workflows, /get_memory per id is the direct check/);
+  assert.match(workflows, /serialized `null` score counts as scoreless/);
+  assert.match(workflows, /NOT-applied note/);
+  // The old no-batch teaching is gone from both surfaces.
+  assert.doesNotMatch(body, /N records = N approval round-trips, no batch\/undo/);
+  assert.doesNotMatch(workflows, /no batch, no undo/);
 
   // Core skill routes agent workloads and declares the gate exemption (D15).
   const core = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
@@ -1276,9 +1549,103 @@ test('cli-workflows.md teaches gateway provisioning, session lifecycle, and the 
   assert.match(body, /60s/);
   assert.match(body, /120s/);
   assert.match(body, /3600/);
-  // The IAM-agency auto-create side effect is taught (SDK source, not yet cloud-measured).
+  // The IAM-agency auto-create side effect is taught (cloud-measured
+  // 2026-10-29; the not-reclaimed trap is pinned in the G1 test below).
   assert.match(body, /AgentArtsCoreGateway/);
   assert.doesNotMatch(body, /TODO/i);
+});
+
+test('gateway lifecycle traps from the G1 session are pinned across all skill surfaces (2026-10-29)', () => {
+  const skillDir = join(pluginRoot, 'skills', 'huawei-agentarts');
+  const body = readFileSync(join(skillDir, 'SKILL.md'), 'utf8');
+  const workflows = readFileSync(join(skillDir, 'references', 'cli-workflows.md'), 'utf8');
+  const creds = readFileSync(join(skillDir, 'references', 'credentials.md'), 'utf8');
+
+  // Trap 44 (A): 00000144 is a credential-source signal — taught in the
+  // trap table AND the auth-chain surface (credentials.md).
+  assert.match(body, /AgentArts\.00000144/);
+  assert.match(creds, /AgentArts\.00000144/);
+  assert.match(creds, /credential-SOURCE signal, not an\s+account-status signal/);
+  // Trap 45 (B): silent field drop → the readback-verification contract.
+  assert.match(body, /supported_versions/);
+  assert.match(workflows, /supported_versions/);
+  assert.match(workflows, /Success ≠ applied/);
+  assert.match(body, /success ≠ applied/);
+  // Trap 46 (C/K): the generic param error + help-invisible constraints.
+  assert.match(body, /AgentArts\.02000001/);
+  assert.match(workflows, /AgentArts\.02000001/);
+  // Trap 47 (E/F): sync absence + the undocumented state machine.
+  assert.match(workflows, /SyncCoreGatewayTargets/);
+  assert.match(workflows, /No such command/);
+  // G2 corrected the terminal-state teaching (the G1 "poll until active"
+  // pin was wrong — G2 measured terminal `ready`; the vocabulary itself
+  // is unstable, so the teaching is poll-until-STABLE with both
+  // observations dated). Pinned in the G2 test below.
+  assert.match(workflows, /poll until STABLE/);
+  // Trap 48 (H): gateway output shape.
+  assert.match(workflows, /√ SUCCESS/);
+  assert.match(workflows, /No such option: --output/);
+  assert.match(body, /No such option: --output/);
+  // Trap 49 (J): the agency auto-create is cloud-measured and NOT reclaimed.
+  assert.match(workflows, /reclaimed by gateway delete/);
+  assert.doesNotMatch(workflows, /not yet cloud-measured/);
+  // Trap 50 (G): the schema source is the API Explorer — the old
+  // "run the command's own --help" dead-end guidance must not return.
+  assert.doesNotMatch(workflows, /run the command's own --help or use the console/);
+  assert.match(workflows, /API Explorer/);
+  // The upstream asks doc carries the G1 rows.
+  const asks = readFileSync(join(root, 'docs', 'agentarts-upstream-asks.md'), 'utf8');
+  assert.match(asks, /SyncCoreGatewayTargets/);
+  assert.match(asks, /00000144/);
+});
+
+test('gateway G2 session facts are pinned across all skill surfaces (2026-10-29, second session)', () => {
+  const skillDir = join(pluginRoot, 'skills', 'huawei-agentarts');
+  const body = readFileSync(join(skillDir, 'SKILL.md'), 'utf8');
+  const workflows = readFileSync(join(skillDir, 'references', 'cli-workflows.md'), 'utf8');
+  const findings = readFileSync(join(root, 'docs', 'agentarts-pr0-findings.md'), 'utf8');
+  const asks = readFileSync(join(root, 'docs', 'agentarts-upstream-asks.md'), 'utf8');
+
+  // Trap 51: the rich 80-column wrap broke captured URLs; the wrapper
+  // fix (COLUMNS=2000 in buildChildEnv) is taught on BOTH surfaces, and
+  // the bare-shell escape (export COLUMNS=2000) with it.
+  assert.match(workflows, /COLUMNS=2000/);
+  assert.match(workflows, /export COLUMNS=2000/);
+  assert.match(workflows, /huaweicloud-agenta\\nrts\.com\/mcp/);
+  assert.match(body, /COLUMNS=2000/);
+  assert.match(findings, /trap 51|陷阱 51/);
+  // Trap 52: help discovery through the readonly runner (G2 friction 4)
+  // is taught in the tier map and the workflows reference.
+  assert.match(body, /no credentials needed/);
+  assert.match(workflows, /Help discovery \(G2 fix/);
+  // Trap 53: the unstable status vocabulary — both sessions' observations
+  // dated, terminal teaching is poll-until-STABLE, and the ~35s
+  // missing-status window is not an error.
+  assert.match(workflows, /`creating→ready`/);
+  assert.match(workflows, /`creating→active`/);
+  assert.match(workflows, /synchronizing\(90–130s\)→ready/);
+  assert.match(workflows, /NO status field/);
+  assert.match(body, /until the status is STABLE/);
+  assert.match(findings, /终态是 ready 不是 active/);
+  // Trap 54: the update-window status gap is recorded as a finding.
+  assert.match(findings, /~35s, get-target 返回体里没有 status 字段|~35s.*没有 status 字段/);
+  // Trap 55: the E2E recipe — the three undocumented facts, the
+  // argv-invisible key delivery, and the IAM side-gateway budget.
+  assert.match(workflows, /## Gateway E2E Verification/);
+  assert.match(workflows, /Authorization: Bearer <api_key>/);
+  assert.match(workflows, /X-Api-Key/);
+  assert.match(workflows, /mcp-session-id/);
+  assert.match(workflows, /curl -H @<file>/);
+  assert.match(workflows, /IAM-type gateways cannot be called with AK\/SK/);
+  assert.match(workflows, /tools\/list/);
+  assert.match(body, /api_key side-gateway/);
+  assert.match(body, /curl -H @file/);
+  // list-targets returns no target_configuration (N+1 audit cost).
+  assert.match(workflows, /returns NO target_configuration/);
+  // Upstream asks #26/#27/#28 carry the G2 evidence.
+  assert.match(asks, /ListCoreGatewayTargets/);
+  assert.match(asks, /token 铸造/);
+  assert.match(asks, /gateway verify/);
 });
 
 test('SKILL.md routes the console-only product modes (PR10)', () => {
@@ -1316,4 +1683,166 @@ test('the agentarts trio registers and the shared approval store backs both wrap
     AGENTARTS_TOOL_DEFINITIONS.length,
   );
   assert.equal(typeof callTool, 'function');
+});
+
+test('the agentarts memory data-plane read bridge registers with its safety contract pinned', async () => {
+  const { TOOL_DEFINITIONS } = await import('../plugins/huaweicloud-core/src/tools.mjs');
+  const def = TOOL_DEFINITIONS.find((t) => t.name === 'huaweicloud_agentarts_memory_read');
+  assert.ok(def, 'tools.mjs missing huaweicloud_agentarts_memory_read');
+  const { MEMORY_READ_OPERATIONS } = await import('../plugins/huaweicloud-core/src/agentarts-memory-tools.mjs');
+  // Exactly the 8 read-only data-plane methods (the 4 writes are a separate
+  // approval-gated unit; the operation enum must not grow silently).
+  assert.deepEqual(
+    [...MEMORY_READ_OPERATIONS].sort((a, b) => a.localeCompare(b)),
+    [
+      'get_last_k_messages',
+      'get_memory',
+      'get_message',
+      'get_session',
+      'list_memories',
+      'list_messages',
+      'list_sessions',
+      'search_memories',
+    ],
+  );
+  assert.deepEqual(
+    [...def.inputSchema.properties.operation.enum].sort((a, b) => a.localeCompare(b)),
+    [...MEMORY_READ_OPERATIONS].sort((a, b) => a.localeCompare(b)),
+  );
+  // The credential channel is the 0600 key file read server-side — the tool
+  // must never accept a key parameter of any spelling.
+  for (const banned of ['api_key', 'apiKey', 'api-key', 'key']) {
+    assert.equal(banned in def.inputSchema.properties, false, `tool must not accept a ${banned} parameter`);
+  }
+  assert.match(def.inputSchema.properties.space_id.pattern, /A-Za-z0-9_-/);
+  // The actor-isolation contract is taught in the tool text itself (the
+  // agent reads the description, not our source).
+  assert.match(def.description, /actor_id is REQUIRED for search_memories/);
+  assert.match(def.description, /actor-level only/);
+  assert.match(def.description, /NO data-plane subcommands/);
+  assert.match(def.description, /cn-southwest-2/);
+});
+
+test('the agentarts memory WRITE bridge registers with its approval contract pinned', async () => {
+  const { TOOL_DEFINITIONS } = await import('../plugins/huaweicloud-core/src/tools.mjs');
+  const plan = TOOL_DEFINITIONS.find((t) => t.name === 'huaweicloud_agentarts_memory_plan');
+  const write = TOOL_DEFINITIONS.find((t) => t.name === 'huaweicloud_agentarts_memory_write');
+  assert.ok(plan, 'tools.mjs missing huaweicloud_agentarts_memory_plan');
+  assert.ok(write, 'tools.mjs missing huaweicloud_agentarts_memory_write');
+  const { MEMORY_WRITE_OPERATIONS } = await import('../plugins/huaweicloud-core/src/agentarts-memory-tools.mjs');
+  // The 4 SDK write methods plus the U7 bridge-composed batch delete —
+  // the enum must not grow silently.
+  assert.deepEqual(
+    [...MEMORY_WRITE_OPERATIONS].sort((a, b) => a.localeCompare(b)),
+    ['add_messages', 'create_session', 'delete_memories', 'delete_memory', 'delete_session'],
+  );
+  // WRITE_OPERATION_META key parity (interrogate round 3): the plan
+  // path looks the registry up WITHOUT a fallback — an enum entry
+  // without a meta entry must fail loudly, and this pin makes the gap
+  // visible in CI the moment it appears (the ?? default used to absorb
+  // it silently, labels included).
+  {
+    const source = readFileSync(join(root, 'plugins/huaweicloud-core/src/agentarts-memory.mjs'), 'utf8');
+    const metaKeys = [
+      ...source.matchAll(/^ {2}(create_session|add_messages|delete_session|delete_memory|delete_memories): \{/gm),
+    ].map((m) => m[1]);
+    const byCodeUnit = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+    assert.deepEqual(
+      [...metaKeys].sort(byCodeUnit),
+      [...MEMORY_WRITE_OPERATIONS].sort(byCodeUnit),
+      'WRITE_OPERATION_META must cover every MEMORY_WRITE_OPERATIONS entry exactly',
+    );
+    assert.doesNotMatch(
+      source,
+      /WRITE_OPERATION_META\[params\.operation\] \?\?/,
+      'the meta lookup must have no ?? fallback',
+    );
+  }
+  // U7: the batch op is registered on both tool surfaces with its
+  // partial-failure contract (R1: structured partial field + stderr
+  // progress trail + timeout reconciliation).
+  assert.match(plan.description, /delete_memories \(BATCH irreversible delete/);
+  assert.match(write.description, /BATCH irreversible delete/);
+  assert.match(write.description, /structured `partial` field/);
+  assert.match(write.description, /re-plan ONLY the still-present ids/);
+  assert.match(write.description, /stderr carries one JSON progress line per completed id/);
+  assert.match(
+    write.description,
+    /authoritative reconciliation is memory_read \(get_memory per id is the direct check/,
+  );
+  assert.ok('memory_ids' in plan.inputSchema.properties, 'plan schema missing memory_ids');
+  assert.ok('memory_ids' in write.inputSchema.properties, 'write schema missing memory_ids');
+  // Writes are token-gated: the plan mints the token, the write consumes
+  // it, and the texts teach the binding + single-use semantics.
+  assert.match(plan.description, /approvalToken/);
+  assert.match(plan.description, /binds the exact planned request/);
+  assert.match(write.inputSchema.required.join(','), /^approvalToken/);
+  assert.match(write.description, /EXACT same parameters/);
+  assert.match(write.description, /irreversible/);
+  // Same no-secret-parameter rule as the read tool.
+  for (const banned of ['api_key', 'apiKey', 'api-key', 'key']) {
+    assert.equal(banned in plan.inputSchema.properties, false, `plan tool must not accept a ${banned} parameter`);
+    assert.equal(banned in write.inputSchema.properties, false, `write tool must not accept a ${banned} parameter`);
+  }
+  // The TextMessage role contract (the dataclass Literal excludes 'tool').
+  assert.match(plan.inputSchema.properties.messages.description, /user\|assistant\|system/);
+  // The three-element approval contract: the attestation is REQUIRED on
+  // the write tool (same gate as every approved runner).
+  assert.ok(write.inputSchema.required.includes('approvedByUser'));
+  assert.match(write.inputSchema.properties.approvedByUser.description, /explicitly approved/);
+  // Just-in-time teaching pinned into the tool texts: async extraction at
+  // the search surface, soft-delete semantics on the deletes.
+  assert.match(
+    TOOL_DEFINITIONS.find((t) => t.name === 'huaweicloud_agentarts_memory_read').description,
+    /search_memories results LAG add_messages/,
+  );
+  assert.match(plan.description, /90-365 days/);
+  assert.match(write.description, /90-365 days/);
+});
+
+test('huawei-agentarts SKILL.md routes the memory data-plane bridge (U2/U3)', () => {
+  const body = readFileSync(join(pluginRoot, 'skills', 'huawei-agentarts', 'SKILL.md'), 'utf8');
+  // The routing floor: all three memory tools are taught (the read bridge
+  // and the plan/write pair — an untaught tool is a dead end).
+  assert.match(body, /huaweicloud_agentarts_memory_read/);
+  assert.match(body, /huaweicloud_agentarts_memory_plan/);
+  assert.match(body, /huaweicloud_agentarts_memory_write/);
+  // Tier map rows exist for both halves.
+  assert.match(body, /readonly \(SDK data plane\)/);
+  assert.match(body, /approved \(SDK data plane\)/);
+  // Async-extraction caveat taught at the skill layer too.
+  assert.match(body, /extraction is async|not immediately searchable/);
+});
+
+test('memory data-plane retention traps and dual-path decision are taught (U4)', () => {
+  const workflows = readFileSync(
+    join(pluginRoot, 'skills', 'huawei-agentarts', 'references', 'cli-workflows.md'),
+    'utf8',
+  );
+  // The 7-day message TTL trap (SDK source) — material to any agent using
+  // add_messages as an archive.
+  assert.match(workflows, /Message TTL is 7 days by default/);
+  assert.match(workflows, /message_ttl_hours: 168/);
+  // U5 corrected the threshold teaching: the three-way divergence line
+  // (hook 0.3 / plugin 0.7 / "SDK/server default 0.5") was WRONG — the
+  // 0.5 belongs to MemorySearchRequest, a class the bridge never builds;
+  // the filter path has NO default cutoff. The old line must not return.
+  // (U6 sharpened further: even an explicit min_score is ignored
+  // server-side — pinned in the U6 block below.)
+  assert.match(
+    workflows,
+    /no default cutoff, whole-space returns, and the\s+server-side threshold filter does not work at all/,
+  );
+  assert.match(workflows, /a different\s+request class the bridge never\s+builds/);
+  assert.doesNotMatch(workflows, /hook\s+path uses 0\.3, the plugin's MCP path 0\.7, the SDK\/server default 0\.5/);
+  // The dual-path decision (governed bridge vs host-trust plugin install).
+  assert.match(workflows, /dual-path decision/);
+  assert.match(workflows, /host-trust/);
+  assert.match(workflows, /\/recall \/remember commands are broken in 0\.1\.7/);
+  // The upstream asks document exists and carries the evidence ladder.
+  const asks = readFileSync(join(root, 'docs', 'agentarts-upstream-asks.md'), 'utf8');
+  assert.match(asks, /Tier 1/);
+  assert.match(asks, /数据面子命令族/);
+  assert.match(asks, /memory update.*四旗标/);
+  assert.match(asks, /S0 待真机裁决/);
 });

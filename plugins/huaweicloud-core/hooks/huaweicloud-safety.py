@@ -237,12 +237,51 @@ def _agentarts_classify_segment(segment):
         tier = entry.get("tier", default_tier)
         labels = entry.get("labels", [])
         subs = entry.get("subcommands")
-        if subs and i + 1 < len(tokens) and not tokens[i + 1].startswith("-"):
-            sub_entry = subs.get(tokens[i + 1])
-            if sub_entry:
-                tier = sub_entry.get("tier", tier)
-                labels = sub_entry.get("labels", labels)
-                op = f"{normalized} {tokens[i + 1]}"
+        # Subcommand location walk (mirrors safety-policy.mjs
+        # resolveAgentartsGroupTokens, round 10): click parses the GROUP's
+        # own option panel before the subcommand resolves, and a
+        # group-level `--` is consumed by the group parser while the
+        # subcommand parser restarts fresh (measured: `memory -- create x`
+        # executes like `memory create x`). A naive tokens[i+1] read saw no
+        # subcommand for both shapes and denied genuine readonlys as cloud
+        # writes (`memory -- list`). Only config takes value flags at
+        # group level (fixture-pinned; keep in sync with
+        # AGENTARTS_GROUP_LEVEL_VALUE_FLAGS in safety-policy.mjs).
+        group_value_flags = {
+            "--name",
+            "-n",
+            "--entrypoint",
+            "-e",
+            "--region",
+            "-r",
+            "--dependency-file",
+            "-d",
+            "--swr-org",
+            "--swr-repo",
+        }
+        if subs:
+            j = i + 1
+            saw_separator = False
+            while j < len(tokens):
+                token = tokens[j]
+                if token == "--" and not saw_separator:
+                    saw_separator = True
+                    j += 1
+                    continue
+                if token in group_value_flags and j + 1 < len(tokens):
+                    j += 2
+                    continue
+                inline = re.match(r"^(--[a-z0-9-]+)=", token) or re.match(r"^(-[a-z0-9])(.+)$", token)
+                if inline and inline.group(1) in group_value_flags:
+                    j += 1
+                    continue
+                break
+            if j < len(tokens) and not tokens[j].startswith("-"):
+                sub_entry = subs.get(tokens[j])
+                if sub_entry:
+                    tier = sub_entry.get("tier", tier)
+                    labels = sub_entry.get("labels", labels)
+                    op = f"{normalized} {tokens[j]}"
     if tier not in ("approved", "blocked"):
         return None
     label_suffix = f" ({', '.join(labels)})" if labels else ""

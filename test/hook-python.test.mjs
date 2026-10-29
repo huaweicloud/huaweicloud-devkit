@@ -247,6 +247,53 @@ test('python hook allows agentarts local/read-only commands and blocks SDK env v
   assert.equal(typeof reason, 'string', 'SDK_SK echo should be blocked');
 });
 
+test('python hook subcommand-location walk matches the Node resolver (round 11 port, round 12 pins)', () => {
+  // Allowed readonlys that a naive next-token read misclassifies as the
+  // group's approved tier — the walk consumes a group-level `--` before
+  // locating the subcommand (mutation r4-e1/e2 pins: deleting either walk
+  // half flips these to deny). The config value-flag-pair skip is pinned
+  // on the deny side below (config get itself is policy-approved — the
+  // whole config family is credential-bearing).
+  for (const command of [
+    'agentarts memory -- list',
+    'agentarts gateway -- get',
+    'agentarts memory -- status sp1',
+    'agentarts gateway -- list-targets gw1',
+  ]) {
+    const result = runEvaluate('Bash', { command });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0, command);
+    assert.equal(
+      JSON.parse(result.stdout),
+      null,
+      `${command} should be allowed (the walk resolved the readonly subcommand)`,
+    );
+  }
+  // Writes hidden behind the same shapes stay denied, with the RESOLVED
+  // subcommand in the reason (mutation r4-e3 pin: dropping the value-flag
+  // pair skip keeps the deny but with the wrong operation label).
+  for (const command of [
+    'agentarts memory -- create x',
+    'agentarts config --name x remove foo',
+    'agentarts memory -- install opencode',
+  ]) {
+    const result = runEvaluate('Bash', { command });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0, command);
+    const blockReason = JSON.parse(result.stdout);
+    assert.equal(typeof blockReason, 'string', `${command} should be blocked`);
+    assert.match(blockReason, /memory create|config remove|memory install/, command);
+  }
+  // At most ONE group-level `--` is consumed — the double-separator form
+  // keeps the conservative group-tier deny, matching the Node resolver
+  // (mutation r4-e4 pin).
+  const double = runEvaluate('Bash', { command: 'agentarts memory -- -- list' });
+  if (pythonUnavailable(double)) return;
+  assert.equal(double.status, 0);
+  const doubleReason = JSON.parse(double.stdout);
+  assert.equal(typeof doubleReason, 'string', 'the double-separator form stays denied (Node parity)');
+});
+
 test('python hook credential file patterns match paths, not *.huaweicloud.com domains (PR5)', () => {
   for (const command of [
     'pip install agentarts-sdk==0.1.7 -i https://mirrors.huaweicloud.com/repository/pypi/simple',
@@ -594,4 +641,24 @@ test('python hook denies stdin-fed hcloud, padded-decoy chains, and padded separ
     const reason = JSON.parse(result.stdout);
     assert.equal(typeof reason, 'string', `${command.slice(0, 50)} should be blocked`);
   }
+});
+
+test('python hook denies reads of the agentarts memory one-time key file (filename pattern)', () => {
+  // Same policy.json source as the Node pin (hook-node.test.mjs); this
+  // guards the python layer's CONFIG_FILE_RE consumption of the pattern.
+  // evaluate() returns the raw block reason (a string) or null to allow.
+  for (const command of [
+    'cat ~/.config/huaweicloud/agentarts-memory-api-key-sp1.txt',
+    'head -1 agentarts-memory-api-key-x.txt',
+  ]) {
+    const result = runEvaluate('terminal', { command });
+    if (pythonUnavailable(result)) return;
+    const reason = JSON.parse(result.stdout);
+    assert.equal(typeof reason, 'string', command);
+    assert.match(reason, /credential/i, command);
+  }
+  // The truncation side files stay readable (the large-output contract).
+  const sideFile = runEvaluate('terminal', { command: 'cat /tmp/huaweicloud-devkit/agentarts-output-123.json' });
+  if (pythonUnavailable(sideFile)) return;
+  assert.equal(JSON.parse(sideFile.stdout), null);
 });

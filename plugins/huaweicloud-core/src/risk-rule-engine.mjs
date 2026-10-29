@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { redactCredentialShapes } from './redact-core.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultRulesPath = join(__dirname, '..', 'safety', 'rules', 'cloud-risk-rules.json');
 
@@ -16,13 +18,16 @@ export function loadRiskRules(options = {}) {
   return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+// Evidence strings reach the agent transcript through the risk-check tools
+// and every classify decision's findings — the "plaintext secret in
+// command argument" warning must not itself be the leak channel. Same
+// single-source scrubber as redactSecrets (findings trap 27): before the
+// unification this local copy lacked api_key entirely and tolerated no
+// quoted-key forms. The blob sweep uses the nextKey bound: evidence must
+// stay diagnosable for the fields AFTER a blob value (the display path
+// keeps the whole-line sweep).
 function redactEvidence(text) {
-  return String(text)
-    .replace(
-      /((?:access[_-]?key|secret[_-]?key|secret|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      '$1<redacted>',
-    )
-    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>');
+  return redactCredentialShapes(text, { blobBound: 'nextKey' });
 }
 
 function normalizeText(value) {

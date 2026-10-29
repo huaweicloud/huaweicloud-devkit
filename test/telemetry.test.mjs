@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { fileURLToPath } from 'node:url';
 
 import { AGENTS } from '../plugins/huaweicloud-core/src/telemetry/agent-registry.mjs';
 import { detectAgentHarness } from '../plugins/huaweicloud-core/src/telemetry/agent-detect.mjs';
@@ -176,5 +177,103 @@ test('ingestHookEvents handles empty or missing file', async () => {
   await withIsolatedTelemetry(async ({ initTelemetry, ingestHookEvents }) => {
     initTelemetry({ harness: 'test', version: '1.0.0' });
     assert.doesNotThrow(() => ingestHookEvents());
+  });
+});
+
+// #1014: events enqueued before identity resolution (no user-hash file yet)
+// must be backfilled with the hash at flush time, not permanently null.
+test('flushEvents backfills userHash written after enqueue', async () => {
+  const PROXY_ENV_KEYS = ['HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy', 'NO_PROXY', 'no_proxy'];
+  const prevProxy = Object.fromEntries(PROXY_ENV_KEYS.map((key) => [key, process.env[key]]));
+  for (const key of PROXY_ENV_KEYS) delete process.env[key];
+
+  await withIsolatedTelemetry(async (telemetry) => {
+    const http = await import('node:http');
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+
+    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const waitFor = async (predicate, timeoutMs = 8000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        if (predicate()) return true;
+        await sleep(20);
+      }
+      return false;
+    };
+
+    const received = [];
+    const server = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (chunk) => (body += chunk));
+      req.on('end', () => {
+        try {
+          received.push(...JSON.parse(body));
+        } catch {}
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end('{}');
+      });
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+    const prevEndpoint = process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT;
+    process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT = `http://127.0.0.1:${server.address().port}/events`;
+    try {
+      // Pre-create AGENT_TELEMETRY_DIR stamps (module-relative, gitignored) so the
+      // initial flush at initTelemetry time is a no-op and the test only observes
+      // the batch we control. Without this the test result depends on whether a
+      // previous run already touched first-use/dau stamps.
+      const agentTelemetryDir = path.join(
+        path.dirname(fileURLToPath(import.meta.url)),
+        '..',
+        'plugins',
+        'huaweicloud-core',
+        'telemetry',
+      );
+      fs.mkdirSync(agentTelemetryDir, { recursive: true });
+      fs.writeFileSync(path.join(agentTelemetryDir, 'install-counter'), '0', 'utf8');
+      fs.writeFileSync(path.join(agentTelemetryDir, 'install-stamp'), '', 'utf8');
+      fs.writeFileSync(path.join(agentTelemetryDir, 'dau-stamp'), '', 'utf8');
+      fs.writeFileSync(path.join(agentTelemetryDir, 'first-use-stamp'), '', 'utf8');
+
+      telemetry.initTelemetry({ harness: 'test', version: '1.0.0' });
+
+      // 1) enqueue events while NO user-hash file exists
+      for (let i = 0; i < 5; i++) telemetry.trackToolInvoke('pre_identity_tool');
+      const baseline = received.length;
+
+      // 2) identity resolves AFTER enqueue (user-hash file written by another path)
+      const userHashPath = path.join(
+        process.env.HUAWEICLOUD_DEVKIT_HOME,
+        '.huaweicloud-devkit',
+        'telemetry',
+        'user-hash',
+      );
+      fs.mkdirSync(path.dirname(userHashPath), { recursive: true });
+      fs.writeFileSync(userHashPath, 'sha256hash_late_identity', 'utf8');
+
+      // 3) fill the queue to BATCH_SIZE to trigger flush
+      for (let i = 0; i < 96; i++) telemetry.trackToolInvoke('batch_tool');
+      assert.ok(
+        await waitFor(() => received.length >= baseline + 100),
+        `flush should deliver the batch (got ${received.length - baseline})`,
+      );
+
+      const flushed = received.slice(baseline);
+      const preIdentity = flushed.filter((e) => e.key === 'tool:pre_identity_tool');
+      assert.equal(preIdentity.length, 5, 'pre-identity events should be in the flushed batch');
+      for (const event of flushed) {
+        assert.equal(event.userHash, 'sha256hash_late_identity', `event ${event.key} should carry backfilled hash`);
+      }
+    } finally {
+      if (prevEndpoint === undefined) delete process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT;
+      else process.env.HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT = prevEndpoint;
+      server.close();
+    }
+  }).finally(() => {
+    for (const [key, value] of Object.entries(prevProxy)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
   });
 });

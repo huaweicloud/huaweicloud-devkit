@@ -28,6 +28,150 @@ function sha256Hex(data) {
   return createHash('sha256').update(data).digest('hex');
 }
 
+// A positional value whose PRECEDING token names a secret (config set-env
+// HUAWEICLOUD_SDK_AK <value>, --api-key <value>, obsutil -i <ak>) must be
+// scrubbed from every display/storage surface — redactSecrets only covers
+// key[:=]value shapes, so bare positionals would otherwise ride
+// argsRedacted into approvals.json at rest. Shared by the store's
+// create(), the binding comparison below, and every wrapper's display
+// surfaces.
+// Bearer detection is CONTEXT-based, never shape-based on the positional
+// itself: (a) any dash-flag token with a secret-sounding name, (b) the
+// NAME slot of `config set-env NAME VALUE` (bare AK/SK env names match
+// there — the slot is unambiguous), (c) for the hcloud CLI, the obsutil
+// short flags -i/-k/-t. An ordinary positional (a memory space named
+// my-task / auth-token / PROD_SK / MY_TOKEN) is NEVER a bearer — treating
+// one as such corrupts the approval display and, via the scrub-tolerant
+// binding comparison, makes the successor token freely substitutable.
+// The bare ak/sk flag suffixes are SEPARATOR-GATED ([_-]ak|sk): 'flask',
+// 'task' must not match. And a dash-prefixed successor is never scrubbed:
+// no measured secret value is dash-prefixed, and scrubbing a flag token is
+// exactly the display-corruption class.
+const SECRET_FLAG_NAME_RE =
+  /(?:api[_-]?key|access[_-]?key|secret[_-]?key|admin[_-]?pass|token|credential|password|passwd|[_-](?:ak|sk))$/i;
+// Env-var names and config-set KEYS (dotted keys like env.access_key are
+// the natural config-set spelling): separator class includes '.' for the
+// key context.
+const SECRET_ENV_NAME_RE =
+  /^(?:.*[._-])?(?:ak|sk|api[_-]?key|access[_-]?key|secret[_-]?key|token|credential|password|passwd)$/i;
+// Exact-token forced secrets: the bearer short flag (-bt, any case) —
+// argv-rejected by the wrapper, but the REJECTION payload must not echo
+// its value.
+function isForcedSecretFlag(prev) {
+  return /^-bt$/i.test(prev);
+}
+
+// The obsutil credential dialect is scoped to the hcloud CLI AND the OBS
+// family. Service resolution: the first non-dash token — UNLESS a bare
+// (non-inline) dash flag immediately precedes it, in which case the
+// "service" may be that flag's VALUE (a separated --cli-region cn-north-4
+// prefix, invalid at run but plan/store surfaces run first) and the
+// position is AMBIGUOUS. In the ambiguous case the obsutil scrub applies
+// conservatively: over-scrubbing -i/-k/-t in an already-invalid argv is
+// harmless, while missing credentials leaks at rest.
+function obsutilDialectApplies(args) {
+  const idx = args.findIndex((a) => !String(a).startsWith('-'));
+  if (idx === -1) return false;
+  if (String(args[idx]).toUpperCase() === 'OBS') return true;
+  const prev = idx > 0 ? String(args[idx - 1]) : null;
+  return prev !== null && /^--?[A-Za-z0-9_.-]+$/.test(prev) && !prev.includes('=');
+}
+
+// Attached obsutil credential shapes only (-iAK, -i=AK, -kSK, -tTOKEN):
+// the value starts with '=' or an uppercase letter/digit/underscore
+// (Huawei AK/SK/token charset). Word-form obsutil OPTIONS — -include,
+// -threshold, -tempFileDir, -timeRange, core cp syntax per `OBS help cp`
+// — start with a lowercase letter and must stay visible.
+const OBSUTIL_ATTACHED_RE = /^-[ikt](?:=|[A-Z0-9_])/;
+
+export function scrubPositionalSecrets(args, cli = null) {
+  const scrubbed = [...(Array.isArray(args) ? args : []).map(String)];
+  const obsutil = cli === 'hcloud' && obsutilDialectApplies(scrubbed);
+  // Pass 1: attached obsutil credentials, ANY position (a trailing
+  // -iAK has no successor iteration, so the successor scan alone would
+  // miss it). Rewrite PRESERVING the flag letter (-i<redacted>): the form
+  // round-trips — a retry with any attached spelling (-iNEW, -i=NEW)
+  // scrubs to the same shape and passes the binding, while a literal
+  // -i<redacted> echo is rejected by the placeholder guard.
+  if (obsutil) {
+    for (let i = 0; i < scrubbed.length; i += 1) {
+      if (OBSUTIL_ATTACHED_RE.test(scrubbed[i])) {
+        scrubbed[i] = `${scrubbed[i].slice(0, 2)}<redacted>`;
+      }
+    }
+  }
+  // Bearer forms with the value INSIDE the token — neither pass 2's
+  // successor scan nor redactSecrets' name-based masking catches them:
+  // -bt=SECRET (click 8.1.6 multi-char short option with '='),
+  // -btSECRET (attached, click-invalid but must not ride a rejection
+  // payload), any case (-BT, -Bt), and the attached long form. Rewrite
+  // preserving the flag so any rejection payload / argsRedacted stays
+  // clean — the plan layer rejects the argv outright anyway.
+  for (let i = 0; i < scrubbed.length; i += 1) {
+    const t = scrubbed[i];
+    if (/^-bt=/i.test(t)) {
+      scrubbed[i] = '-bt=<redacted>';
+    } else if (/^-bt/i.test(t) && t.length > 3) {
+      scrubbed[i] = '-bt<redacted>';
+    } else if (/^--bearer-token/i.test(t) && t.length > '--bearer-token'.length && !t.includes('=')) {
+      scrubbed[i] = '--bearer-token<redacted>';
+    }
+  }
+  // Pass 2: successor scan — separated obsutil shorts, forced secret
+  // flags, generic flags, and the config set/set-env key slots.
+  for (let i = 1; i < scrubbed.length; i += 1) {
+    const prev = scrubbed[i - 1];
+    if (/^-/.test(scrubbed[i])) continue;
+    let bearer = null;
+    if (isForcedSecretFlag(prev)) bearer = 'forced';
+    else if (obsutil && /^-[ikt]$/.test(prev)) bearer = 'obsutil';
+    else if (/^--?[A-Za-z0-9_.-]+$/.test(prev)) bearer = 'flag';
+    // The set-env NAME slot AND the `config set KEY VALUE` slot (the
+    // taught fallback when set-env crashes on basic-template projects):
+    // the KEY at i-1 following config|configure set|set-env at i-2. A
+    // memory-family NAME positional never sits in that shape.
+    else if (
+      ['set-env', 'set'].includes(String(scrubbed[i - 2]).toLowerCase()) &&
+      ['config', 'configure'].includes(String(scrubbed[i - 3]).toLowerCase())
+    )
+      bearer = 'env';
+    if (!bearer) continue;
+    if (bearer === 'obsutil' || bearer === 'forced') {
+      if (scrubbed[i] !== '<redacted>') scrubbed[i] = '<redacted>';
+      continue;
+    }
+    const flagMatch = prev.match(/^--?([A-Za-z0-9_.-]+)$/);
+    const name = flagMatch ? flagMatch[1] : prev;
+    const nameRe = bearer === 'env' ? SECRET_ENV_NAME_RE : SECRET_FLAG_NAME_RE;
+    if (nameRe.test(name) && scrubbed[i] !== '<redacted>') {
+      scrubbed[i] = '<redacted>';
+    }
+  }
+  return scrubbed;
+}
+
+// Binding check shared by every CLI wrapper's approved runner. Order
+// matters: (1) the token hash binds the EXACT approved args — a
+// hash-exact replay is the approved command, even when an arg
+// legitimately contains the literal '<redacted>' (an invoke payload, a
+// description); a scrubbed copy can never hash-match (the stored hash is
+// over the raw args). (2) Any arg CONTAINING '<redacted>' — bare
+// placeholder or the inline --param=<redacted> form the plan displays
+// for KooCLI-style parameters — is rejected on the fallback path:
+// executing the placeholder would silently write the literal string as
+// the secret. (3) Scrub-tolerance ONLY for replaced secret values (the
+// documented replacement flow — both sides scrub through the same
+// scrubber).
+export function argsMatchPlanBinding(stored, providedArgs) {
+  const provided = (Array.isArray(providedArgs) ? providedArgs : []).map(String);
+  const cli = stored.cli || 'hcloud';
+  if (hashNamespacedArgs(cli, provided) === stored.argsHash) return { ok: true };
+  if (provided.some((a) => a.includes('<redacted>'))) return { ok: false, reason: 'placeholder' };
+  const storedRedacted = JSON.stringify(stored.argsRedacted);
+  const providedRedacted = JSON.stringify(scrubPositionalSecrets(redactSecrets(provided), cli));
+  return storedRedacted === providedRedacted ? { ok: true } : { ok: false, reason: 'mismatch' };
+}
+
 export function hashNamespacedArgs(cli, args) {
   return sha256Hex(JSON.stringify({ cli, args: (Array.isArray(args) ? args : []).map(String) }));
 }
@@ -92,7 +236,7 @@ export function createApprovalTokenStore(cli) {
     map[token] = {
       cli,
       argsHash: hashNamespacedArgs(cli, rawArgs),
-      argsRedacted: redactSecrets(rawArgs),
+      argsRedacted: scrubPositionalSecrets(redactSecrets(rawArgs), cli),
       createdAt: Date.now(),
     };
     pruneStale(map);

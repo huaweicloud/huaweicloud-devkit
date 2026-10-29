@@ -7,7 +7,7 @@ import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-polic
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { resolveHcloudCommand } from './hcloud-probe.mjs';
 import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.mjs';
-import { createApprovalTokenStore } from './approval-tokens.mjs';
+import { createApprovalTokenStore, scrubPositionalSecrets } from './approval-tokens.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
@@ -183,21 +183,15 @@ export function classifyUnsupported(service, metaDir) {
 // (-i AK / -k SK / -t TOKEN) carry the temporary STS as following array elements,
 // which redactSecrets can't match. We scrub those explicitly.
 export function redactArgsWithObs(rawArgs) {
-  const arr = Array.isArray(rawArgs) ? rawArgs.map(String) : [];
-  const out = [...arr];
-  for (let i = 0; i < out.length; i += 1) {
-    if (out[i] === '-i' || out[i] === '-k' || out[i] === '-t') {
-      if (i + 1 < out.length) out[i + 1] = '<redacted>';
-      i += 1;
-    } else if (/^-i[A-Za-z0-9]/.test(out[i])) {
-      out[i] = '-i<redacted>';
-    } else if (/^-k[A-Za-z0-9]/.test(out[i])) {
-      out[i] = '-k<redacted>';
-    } else if (/^-t[A-Za-z0-9]/.test(out[i])) {
-      out[i] = '-t<redacted>';
-    }
-  }
-  return redactSecrets(out);
+  // Delegates to the shared scrubber (approval-tokens.mjs) — the same one
+  // the plan display, token store, and binding comparison consume — with
+  // the hcloud/obsutil dialect (OBS-family-scoped with the ambiguous-
+  // service fallback, credential-shape attached forms). One scrubber, one
+  // coverage, no drift between the plan surface and the run-result
+  // surface. Composition order matches every other consumer:
+  // redactSecrets (inline key=value shapes) first, then the positional
+  // scrub.
+  return scrubPositionalSecrets(redactSecrets(rawArgs), 'hcloud');
 }
 
 export function resolveStsInjectArgs(rawArgs) {
@@ -243,9 +237,13 @@ export function resolveStsInjectArgs(rawArgs) {
   ) {
     return [];
   }
-  // Explicit obsutil-style credentials already present — standalone (-i AK) or
-  // attached (-iAK) — should not be overridden by an extra injection.
-  if (flat.some((a) => a === '-i' || a === '-k' || a === '-t' || /^-[ikt][A-Za-z0-9]/.test(a))) return [];
+  // Explicit obsutil-style credentials already present — standalone
+  // (-i AK) or attached (-iAK, -i=AK) — should not be overridden by an
+  // extra injection. CREDENTIAL SHAPES ONLY (same model as the shared
+  // scrubber's OBSUTIL_ATTACHED_RE): the word-form obsutil options
+  // (-include, -threshold, -tempFileDir, -timeRange — core `OBS cp`
+  // syntax) must NOT skip injection.
+  if (flat.some((a) => a === '-i' || a === '-k' || a === '-t' || /^-[ikt](?:=|[A-Z0-9_])/.test(a))) return [];
 
   let creds;
   try {
@@ -274,7 +272,13 @@ export function resolveStsInjectArgs(rawArgs) {
 export function planHcloudCommand(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const classification = classifyHcloudArgs(normalizedArgs, options);
-  const command = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
+  // Display surfaces are positional-scrubbed with the SAME scrubber the
+  // binding comparison and the token store consume (approval-tokens.mjs):
+  // bare flag values (--password X) and obsutil -i/-k/-t never ride the
+  // plan response in cleartext, and display/binding stay coherent. The
+  // approval token still binds the RAW normalized args.
+  const displayArgs = scrubPositionalSecrets(redactSecrets(normalizedArgs), 'hcloud');
+  const displayCommand = ['hcloud', ...displayArgs].map((arg) => quoteShellArg(arg)).join(' ');
   const warnings = planningWarnings(normalizedArgs);
   const obsHint = obsWriteHint(normalizedArgs);
   if (obsHint) warnings.push(obsHint);
@@ -291,9 +295,9 @@ export function planHcloudCommand(args, options = {}) {
   }
   return {
     executable: 'hcloud',
-    args: redactSecrets(normalizedArgs),
-    command: redactOutput(command),
-    executableBlock: redactOutput(command),
+    args: displayArgs,
+    command: redactOutput(displayCommand),
+    executableBlock: redactOutput(displayCommand),
     warnings,
     classification: applyPreflightFindings(classification, sgFindings),
     sgFindings,

@@ -3,6 +3,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { evaluateCommandRisk, mergeRiskDecision } from './risk-rule-engine.mjs';
+import { redactCredentialShapes } from './redact-core.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const policyPath = join(__dirname, '..', 'safety', 'policy.json');
@@ -50,20 +51,10 @@ function isSecretKeyName(key, policy = DEFAULT_POLICY) {
 }
 
 function redactString(text) {
-  return (
-    String(text)
-      // Opaque blob keys (cloud-init user_data, metadata, private_key) carry
-      // base64/scripts that may embed SSH keys, DB passwords, bootstrap tokens.
-      // Redact the ENTIRE value of this arg — not just the first whitespace token.
-      .replace(/((?:user[_-]?data|metadata|private[_-]?key)\s*[:=]\s*).*/gi, '$1<redacted>')
-      .replace(
-        /((?:access[_-]?key|secret[_-]?key|api[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-        '$1<redacted>',
-      )
-      // Case-insensitive AK/SK prefixes: agentarts/SDK CLIs print lowercase
-      // `ak: value` / `sk=value` shapes the old case-sensitive form missed.
-      .replace(/\b(ak|sk)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>')
-  );
+  // The string path is the safety net for unparseable CLI output; the
+  // shapes it must catch live in redact-core.mjs (single source, shared
+  // with risk-rule-engine's evidence scrubber — findings trap 27).
+  return redactCredentialShapes(text);
 }
 
 export function redactSecrets(value, policy = DEFAULT_POLICY) {
@@ -343,8 +334,12 @@ export function classifyHcloudArgs(args, options = {}) {
     'chattri',
     'bucketpolicy',
     'lifecycle',
-    'cors',
-    'website',
+    // #1001: 'cors' and 'website' were removed — KooCLI 7.x's OBS wrapper does
+    // NOT expose them (`hcloud OBS help cors` → "No such command"; same for
+    // website). A nonexistent command cannot produce a write side effect, so
+    // grading it as a write was safety based on a stale assumption. CORS/static-
+    // website config goes through the REST API (PUT /?cors) — see the
+    // huawei-obs skill common-pitfalls.md CORS chapter.
     'sign',
     'share-add',
     'share-update',
@@ -669,21 +664,112 @@ function isStdinFedSegment(segment) {
   return re.test(segment) || re.test(segment.replace(/['"]/g, ''));
 }
 
+// Group-level value-taking options (parsed by the GROUP's own callback
+// before any subcommand), fixture-pinned 0.1.7: only the config wizard
+// takes them (config.txt's Options panel); gateway/memory/runtime groups
+// offer --help only. CANONICAL single source — the approval wrapper's
+// GROUP_LEVEL_VALUE_FLAGS re-exports this map, and the subcommand
+// locator below consumes it, so the three cannot drift.
+export const AGENTARTS_GROUP_LEVEL_VALUE_FLAGS = new Map([
+  [
+    'config',
+    new Set([
+      '--name',
+      '-n',
+      '--entrypoint',
+      '-e',
+      '--region',
+      '-r',
+      '--dependency-file',
+      '-d',
+      '--swr-org',
+      '--swr-repo',
+    ]),
+  ],
+]);
+const GROUP_LEVEL_EMPTY_FLAGS = new Set();
+
+// Group/subcommand token resolution for an agentarts argv (WITHOUT the
+// executable token): skip leading dash tokens, lowercase, apply the
+// policy's aliases, and resolve the subcommand ONLY for groups with a
+// subcommands table. Exported so the approval wrapper's effective
+// classification mirrors THIS resolution (aliases included) instead of
+// hand-copying it — a policy alias mapping into a command family must
+// resolve identically in both places.
+// Subcommand location walk (round 10): click parses the GROUP's own
+// option panel before the subcommand resolves, and a group-level `--`
+// separator is CONSUMED by the group parser while the subcommand parser
+// restarts fresh (click core.py: `ctx.protected_args, ctx.args =
+// rest[:1], rest[1:]`; measured: `memory -- create x` executes exactly
+// like `memory create x`, `config --name x remove foo` executes
+// remove). A naive next-token read saw no subcommand for both shapes —
+// every subcommand-scoped guard (strategies, --output json
+// canonicalization, one-time-key capture, install hard-stop, irreversible
+// labels) was skipped and reads like `memory -- list` demoted to the
+// group's approved tier. The walk skips group value-flag PAIRS and at
+// most ONE `--`, then the next non-dash token is the subcommand.
+export function resolveAgentartsGroupTokens(rawArgs, policy = DEFAULT_POLICY) {
+  const commandPolicy = policy.agentartsCommandPolicy || {};
+  const commands = commandPolicy.commands || {};
+  const aliases = commandPolicy.aliases || {};
+  const args = (Array.isArray(rawArgs) ? rawArgs : []).map((token) => String(token).toLowerCase());
+  let i = 0;
+  while (i < args.length && args[i].startsWith('-')) i += 1;
+  const group = args[i] || '';
+  const normalizedGroup = aliases[group] || group;
+  const entry = commands[normalizedGroup];
+  // Only groups WITH a subcommands table can resolve a subcommand: `invoke`
+  // takes a required positional {payload}, and treating it as a subcommand
+  // glued the payload into the operation (bogus "unregistered" warnings,
+  // broken timeout selection, Node/Python reason drift).
+  if (!entry?.subcommands) return { groupIndex: i, group: normalizedGroup, sub: undefined, subIndex: undefined };
+  const groupValueFlags = AGENTARTS_GROUP_LEVEL_VALUE_FLAGS.get(normalizedGroup) ?? GROUP_LEVEL_EMPTY_FLAGS;
+  let j = i + 1;
+  let sawSeparator = false;
+  while (j < args.length) {
+    const token = args[j];
+    if (token === '--' && !sawSeparator) {
+      sawSeparator = true;
+      j += 1;
+      continue;
+    }
+    if (groupValueFlags.has(token) && j + 1 < args.length) {
+      j += 2;
+      continue;
+    }
+    // Inline group-flag forms (`--name=x`, one-letter `-nx`) are
+    // self-contained — the subcommand can resolve right after them.
+    const inline = /^(--[a-z0-9-]+)=/.exec(token) || /^(-[a-z0-9])(.+)$/.exec(token);
+    if (inline && groupValueFlags.has(inline[1])) {
+      j += 1;
+      continue;
+    }
+    break;
+  }
+  const sub = j < args.length && !args[j].startsWith('-') ? args[j] : undefined;
+  return { groupIndex: i, group: normalizedGroup, sub, subIndex: sub === undefined ? undefined : j };
+}
+
 // Registry resolution shared by the hook decision path AND the agentarts
 // approval wrapper (agentarts-cli.mjs) — one classification source, so the
 // "hook classification ≡ wrapper tier" invariant is structural, not tested
-// after the fact. Returns { tier, labels, group, subcommand, operation,
-// unregistered } for an argv array WITHOUT the executable token.
+// after the fact. ONE measured exception (findings trap 26a): the wrapper
+// re-derives help-in-value-slot argvs to their real tier; the hook's
+// position-blind help short-circuit stands until the per-command value-
+// flag metadata lands (recorded follow-up). Returns { tier, labels, group,
+// subcommand, operation, unregistered } for an argv array WITHOUT the
+// executable token.
 export function resolveAgentartsTier(rawArgs, options = {}) {
   const policy = options.policy || DEFAULT_POLICY;
   const commandPolicy = policy.agentartsCommandPolicy || {};
   const commands = commandPolicy.commands || {};
-  const aliases = commandPolicy.aliases || {};
   const defaultTier = commandPolicy.defaultTier || 'approved';
 
   const args = (Array.isArray(rawArgs) ? rawArgs : []).map((token) => token.toLowerCase());
-  let i = 0;
-  while (i < args.length && args[i].startsWith('-')) i += 1;
+  const resolved = resolveAgentartsGroupTokens(args, policy);
+  const i = resolved.groupIndex;
+  const normalizedGroup = resolved.group;
+  const subcommand = resolved.sub ?? '';
   const group = args[i] || '';
 
   // Typer eager flags: --help/-h are valid at every command level, so any
@@ -698,23 +784,15 @@ export function resolveAgentartsTier(rawArgs, options = {}) {
     return { tier: 'local', labels: [], group, subcommand: '', operation: group, unregistered: false };
   }
 
-  const normalizedGroup = aliases[group] || group;
   const entry = commands[normalizedGroup];
   let tier = defaultTier;
   let labels = [];
-  let subcommand = '';
   let unregistered = !entry;
   if (entry) {
     tier = entry.tier || defaultTier;
     labels = entry.labels || [];
-    // Only groups WITH a subcommands table can resolve a subcommand: `invoke`
-    // takes a required positional {payload}, and treating it as a subcommand
-    // glued the payload into the operation (bogus "unregistered" warnings,
-    // broken timeout selection, Node/Python reason drift).
-    const sub = args[i + 1];
-    if (entry.subcommands && sub && !sub.startsWith('-')) {
-      subcommand = sub;
-      const subEntry = entry.subcommands[sub];
+    if (subcommand) {
+      const subEntry = entry.subcommands[subcommand];
       if (subEntry) {
         tier = subEntry.tier || tier;
         labels = subEntry.labels || labels;

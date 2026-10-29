@@ -134,6 +134,43 @@ test('evidence snippets redact admin-pass / admin_pass variants (#726 D4-27 v2)'
   assert.match(JSON.stringify(underscore), /<redacted>/);
 });
 
+test('evidence snippets redact api_key and quoted JSON keys (trap 27 unification)', () => {
+  // redactEvidence shares the redact-core scrubber with redactSecrets: the
+  // pre-unification local copy lacked api_key entirely and tolerated no
+  // quoted-key forms — the "plaintext secret" warning was itself the leak
+  // channel for exactly this credential family. The secret-in-arg rule
+  // covers --api_key (extended with the credential family it warned about).
+  const unquoted = evaluateCommandRisk(
+    'hcloud ECS CreateServers --api_key=KGIAGH123SECRET --security_group_rule.remote_ip_prefix=0.0.0.0/0',
+  );
+  assert.ok(unquoted.findings.some((f) => f.ruleId === 'hwc-command-secret-in-arg'));
+  assert.doesNotMatch(JSON.stringify(unquoted), /KGIAGH123SECRET/);
+
+  // A quoted-JSON plan body (evaluateDeployPlan normalizes objects to JSON
+  // text) must not leak adminPass or api_key through the evidence field.
+  const plan = evaluateDeployPlan('{"adminPass": "pw123", "api_key": "KGIAGH123SECRET", "name": "ok"}');
+  assert.doesNotMatch(JSON.stringify(plan), /pw123|KGIAGH123SECRET/);
+  assert.match(JSON.stringify(plan), /<redacted>/);
+  // Non-secret fields stay visible (JSON-escaped inside the findings text).
+  assert.match(JSON.stringify(plan), /name\\":\\"ok|name\\": \\"ok/);
+});
+
+test('evidence blob redaction is bounded at the next key-shape (trap 27 round 2)', () => {
+  // The evidence path must stay DIAGNOSABLE: an unquoted blob value
+  // (user_data) stops its sweep at the next key-shaped token, so the
+  // subsequent flags survive for the rule reader. The DISPLAY path keeps
+  // the whole-line sweep (pinned in safety-policy tests).
+  const result = evaluateCommandRisk(
+    'hcloud ECS CreateServers --server.user_data=IyEvYmlu --adminPass=pw123 --security_group_rule.remote_ip_prefix=0.0.0.0/0 --security_group_rule.port_range_min=22',
+  );
+  assert.equal(result.decision, 'deny');
+  const evidence = JSON.stringify(result);
+  assert.doesNotMatch(evidence, /IyEvYmlu|pw123/);
+  assert.match(evidence, /user_data=<redacted>/);
+  assert.match(evidence, /remote_ip_prefix=0\.0\.0\.0\/0/);
+  assert.match(evidence, /port_range_min=22/);
+});
+
 test('evaluateCommandRisk warns on prefixed delete family (Nova*)', () => {
   for (const op of ['NovaDeleteServer', 'NovaDeleteKeypair', 'NovaDeleteServerGroup', 'NovaDeleteServerMetadataItem']) {
     const result = evaluateCommandRisk(`hcloud ECS ${op} --x=1`);

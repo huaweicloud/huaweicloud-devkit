@@ -78,6 +78,13 @@ function configRoot(target = 'opencode') {
   return join(home, '.config', target);
 }
 
+// Must match telemetry.mjs GLOBAL_TELEMETRY_DIR root: HUAWEICLOUD_DEVKIT_HOME
+// overrides homedir() so sandbox/multi-HOME environments stay consistent (#1014).
+function devkitTelemetryDir() {
+  const home = (process.env.HUAWEICLOUD_DEVKIT_HOME || '').trim() || homedir();
+  return join(home, '.huaweicloud-devkit', 'telemetry');
+}
+
 function opencodeSkillsDir() {
   return join(configRoot('opencode'), 'skills');
 }
@@ -1817,7 +1824,7 @@ function deployWorkBuddyHooks() {
 
   // 4. Ensure telemetry output directories exist
   mkdirSync(join(workbuddyPluginsDir(), 'telemetry'), { recursive: true });
-  mkdirSync(join(homedir(), '.huaweicloud-devkit', 'telemetry'), { recursive: true });
+  mkdirSync(devkitTelemetryDir(), { recursive: true });
 }
 
 // ── AtomCode hooks deployment ────────────────────────────────
@@ -1985,10 +1992,10 @@ function uninstallWorkBuddy() {
     console.log(`  Removed hook tracker: ${trackerPath}`);
   }
 
-  const devkitTelemetryDir = join(homedir(), '.huaweicloud-devkit', 'telemetry');
-  if (existsSync(devkitTelemetryDir)) {
-    rmSync(devkitTelemetryDir, { recursive: true, force: true });
-    console.log(`  Removed telemetry cache: ${devkitTelemetryDir}`);
+  const devkitTelemetryPath = devkitTelemetryDir();
+  if (existsSync(devkitTelemetryPath)) {
+    rmSync(devkitTelemetryPath, { recursive: true, force: true });
+    console.log(`  Removed telemetry cache: ${devkitTelemetryPath}`);
   }
 }
 

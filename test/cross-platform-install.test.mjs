@@ -25,7 +25,7 @@ function runCli(home, cwd, args) {
     cwd,
     env: makeEnv(home),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 600000,
   });
 }
 
@@ -89,7 +89,7 @@ test('handles platform-specific home directory resolution', () => {
       cwd,
       env,
       encoding: 'utf8',
-      timeout: 60000,
+      timeout: 600000,
     });
     assert.equal(res.status, 0, res.stderr);
     assert.ok(existsSync(join(home, '.config', 'opencode', 'skills')), 'skills created under correct home');

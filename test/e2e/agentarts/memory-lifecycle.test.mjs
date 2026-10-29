@@ -16,10 +16,11 @@ import test from 'node:test';
 // devkit account, e2e-aa-* adopt-or-abort sweeps (memory spaces AND
 // agents). NO docker preflight — memory is control-plane only.
 //
-// Region topology (PR0 findings, unresolved): the CLI's memory family
-// defaults to cn-north-4 while PR4's e2e memory list ran fine with
-// cn-southwest-2 — this run pins cn-north-4 per the CLI default and the
-// divergence lands in the report for S0 adjudication.
+// Region topology (adjudicated 2026-10-21, findings trap 15): the memory
+// family's help text CLAIMS a cn-north-4 default, but the actual chain is
+// CLI param default None → get_region() → cn-southwest-2 (constant.py:79).
+// This run pins cn-southwest-2 — the true code default and the control-
+// plane region — and still passes --region explicitly on every call.
 // Design contract: docs/agentarts-pr0-findings.md + the PR11 review rounds.
 
 const GATE = process.env.AGENTARTS_E2E === '1';
@@ -27,7 +28,7 @@ const CREDS_PATH = join(homedir(), '.config', 'agentarts-e2e', 'creds');
 const WORKTREE = join(import.meta.dirname, '..', '..', '..');
 const SCRATCH_ROOT = join(WORKTREE, '.e2e-home');
 const AGENTARTS_BIN = join(SCRATCH_ROOT, 'venv', 'bin', 'agentarts');
-const MEMORY_REGION = 'cn-north-4';
+const MEMORY_REGION = 'cn-southwest-2';
 
 process.env.AGENTARTS_BIN = AGENTARTS_BIN;
 
@@ -150,10 +151,14 @@ test(
 
       await stage('M1-create', async () => {
         // Pre-canonicalized args (the token hash binds the exact form).
+        // --strategies is REQUIRED (friction fix 1: server 400 without it,
+        // and a failed create orphans the API key).
         const result = await approvedRun([
           'memory',
           'create',
           spaceName,
+          '--strategies',
+          'semantic',
           '--region',
           MEMORY_REGION,
           '--output',

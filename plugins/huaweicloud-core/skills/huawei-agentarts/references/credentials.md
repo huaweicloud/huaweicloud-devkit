@@ -31,6 +31,15 @@ consequences:
   HUAWEICLOUD_SDK_CREDENTIALS_FILE=/dev/null as defense in depth).
 - A metadata 404 warning in output means env AND profile both failed — it is
   a failure signature, not noise.
+- A bare-shell (non-wrapper) run that answers `AgentArts.00000144 The
+current user status is unassigned` is a credential-SOURCE signal, not an
+  account-status signal (measured 2026-10-29: the CLI had fallen back to
+  the profile/metadata chain and that credential had no AgentArts access;
+  the same account succeeded immediately once credentials arrived via
+  `HUAWEICLOUD_SDK_AK/SK`). Diagnose the source, not the user — through
+  the devkit that means `huaweicloud_auth_init`; in the user's terminal,
+  their own explicit delivery, never an `export` of the SK (history +
+  transcript).
 
 ## Degraded paths (when the wrapper cannot run)
 
@@ -90,7 +99,12 @@ parsed YAML, not from the image, so the file is not needed inside the image:
 ## Memory data-plane key (measured lifecycle, PR11)
 
 `memory create` authenticates on the CONTROL plane (AK/SK via the
-wrapper's env injection) and returns a ONE-TIME data-plane `api_key`. Only
+wrapper's env injection) and returns a ONE-TIME data-plane `api_key`. The
+create REQUIRES `--strategies` — at least one built-in strategy
+(semantic, episodic, user_preference, summary — e2e-measured; event —
+enum-evidenced only) or the server answers HTTP 400 [AgentArts.01010400]
+after the CLI has already created an orphan API key (key-before-space
+order); the plan tool rejects a missing value before any cloud call. Only
 the `--output json` branch prints it (the table branch prints Space
 ID/Status and the key is lost forever), so the wrapper canonicalizes
 create to `--output json` and REJECTS an explicit non-json `--output` at
@@ -101,14 +115,18 @@ plan time. Lifecycle:
   `~/.config/huaweicloud/agentarts-memory-api-key-<space_id>.txt`
   (0600, honors `HUAWEICLOUD_HOME`). The returned payload stays redacted
   and carries only `memoryApiKeyFile` (the path, never the key).
-- The user reads the file directly for the data plane. Reading it via
-  Bash is hook-blocked (credentialFilePatterns matches the
-  `~/.huaweicloud`-adjacent state path) — that is defense in depth, not
-  an error; the agent must never `cat` it into the transcript.
-- Data-plane consumption: the `HUAWEICLOUD_SDK_MEMORY_API_KEY`
-  environment variable (or the SDK's `api_key` parameter) — inject it the
-  same argv-free way as any other secret (see the yaml recipe above);
-  echoing `$HUAWEICLOUD_SDK_MEMORY_API_KEY` is hook-blocked.
+- Reading the file via Bash is hook-blocked: credentialFilePatterns
+  matches the `agentarts-memory-api-key` filename component (the
+  `~/.config/huaweicloud` state root is NOT itself matched — the filename
+  pattern is what denies `cat`/`head`/redirect reads). That is defense in
+  depth, not an error; the agent must never `cat` it into the transcript.
+- Data-plane consumption through the devkit: the
+  `huaweicloud_agentarts_memory_read` tool reads the 0600 key file
+  server-side and injects `HUAWEICLOUD_SDK_MEMORY_API_KEY` into the SDK
+  child process env only (never argv, never the transcript). Outside the
+  devkit, the user injects the env var themselves the same argv-free way
+  as any other secret (see the yaml recipe above); echoing
+  `$HUAWEICLOUD_SDK_MEMORY_API_KEY` is hook-blocked.
 - `memory delete --force` is irreversible (deletes the space and its
   sessions/messages/memories); the wrapper canonicalizes `--force` and
   the approval carries the `irreversible` label.

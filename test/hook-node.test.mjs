@@ -122,3 +122,14 @@ test('node hook fails safe when safety/policy.json is missing or corrupt', () =>
     assert.match(output.hookSpecificOutput.permissionDecisionReason, /failed to load/i, scenario);
   }
 });
+
+test('hook denies reads of the agentarts memory one-time key file (filename pattern)', async () => {
+  const { classifyTextCommand } = await import('../plugins/huaweicloud-core/src/safety-policy.mjs');
+  // The state root (~/.config/huaweicloud) is NOT itself matched — the
+  // FILENAME component is the deny pattern (adversarial U2 round-2: the
+  // pre-fix claim of hook-blocking was aspirational, cat was allowed).
+  assert.equal(classifyTextCommand('cat ~/.config/huaweicloud/agentarts-memory-api-key-sp1.txt').decision, 'deny');
+  assert.equal(classifyTextCommand('head -1 agentarts-memory-api-key-x.txt').decision, 'deny');
+  // The truncation side files stay readable (the large-output contract).
+  assert.equal(classifyTextCommand('cat /tmp/huaweicloud-devkit/agentarts-output-123.json').decision, 'allow');
+});

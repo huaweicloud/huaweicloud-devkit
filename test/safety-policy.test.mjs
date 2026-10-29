@@ -89,6 +89,105 @@ test('redactSecrets redacts admin-pass / admin_pass / adminPass variants (#726 D
   assert.equal(obj.admin_pass, '<redacted>');
 });
 
+test('redactSecrets redacts quoted JSON/Python-dict key forms (agentarts memory api_key bypass)', () => {
+  // The quoted KEY puts a closing quote between key and separator
+  // ("api_key": "…"), which broke the old key[:=] alignment — the one-time
+  // memory api_key printed by `memory get -o json` rode payloads unmasked
+  // (adversarially demonstrated on the pre-fix regex). Quote pairs are now
+  // tolerated on every credential-shaped key.
+  assert.equal(redactSecrets('{"api_key": "KGIAGH123SECRET"}'), '{"api_key": <redacted>}');
+  assert.equal(redactSecrets('{"api_key":"KGIAGH123SECRET"}'), '{"api_key":<redacted>}');
+  // Pretty JSON: newline + indent between colon and value.
+  assert.equal(redactSecrets('{\n  "api_key":\n    "KGIAGH123SECRET"\n}'), '{\n  "api_key":\n    <redacted>\n}');
+  // Python dict (single quotes) — the SDK's failure paths print these.
+  assert.equal(redactSecrets("{'api_key': 'KGIAGH123SECRET'}"), "{'api_key': <redacted>}");
+  // Quoted ak/sk and the opaque-blob keys get the same tolerance; the ak/sk
+  // form keeps the historical separator normalization to '='.
+  assert.equal(redactSecrets('{"ak": "AKVALUE","sk": "SKVALUE"}'), '{"ak"=<redacted>,"sk"=<redacted>}');
+  assert.equal(redactSecrets('"user_data": "IyEvYmluL3No"'), '"user_data": <redacted>');
+  // A realistic mixed `memory get -o json` line: the secret disappears,
+  // the neighboring fields stay.
+  assert.equal(
+    redactSecrets('{"SpaceId": "sp1", "api_key": "KGIAGH123SECRET", "Status": "ACTIVE"}'),
+    '{"SpaceId": "sp1", "api_key": <redacted>, "Status": "ACTIVE"}',
+  );
+  // api_key_id is an identifier, not the secret — it stays visible.
+  assert.equal(redactSecrets('{"api_key_id": "bdd2539f"}'), '{"api_key_id": "bdd2539f"}');
+  // Prose mentioning the field name without a separator is untouched.
+  assert.equal(redactSecrets('the api_key field is empty'), 'the api_key field is empty');
+  // Unquoted forms remain byte-identical to the pre-fix behavior.
+  assert.equal(redactSecrets('token=t1\naccess_key=ak1'), 'token=<redacted>\naccess_key=<redacted>');
+  // Trap-27 round 2 (adversarial): one backslash escape level on the
+  // quotes covers double-encoded JSON (invoke/FunctionGraph results embed
+  // JSON as an escaped string value), and the value bodies match internal
+  // escape pairs (a full "a\"b" value redacts, not just its head). The
+  // greedy body may swallow the embedded document's trailing quotes —
+  // cosmetic loss on an already-redaction-corrupted string; erring safe
+  // beats preserving the tail of a value that might carry the secret.
+  assert.equal(
+    redactSecrets('{"data": "{\\"api_key\\": \\"KGIAGH123SECRET\\"}"}'),
+    '{"data": "{\\"api_key\\": <redacted>}',
+  );
+  assert.equal(redactSecrets('{"api_key": "a\\"bSECRET"}'), '{"api_key": <redacted>}');
+  // X-API-Key (HTTP-header dict shape) redacts in both quoted and unquoted
+  // forms — quoting must never DISABLE redaction.
+  assert.equal(redactSecrets('{"X-API-Key": "KGIAGH123SECRET"}'), '{"X-API-Key": <redacted>}');
+  assert.equal(redactSecrets('X-API-Key: KGIAGH123SECRET'), 'X-API-Key: <redacted>');
+  // Bare secret= (the risk-evidence parity token).
+  assert.equal(redactSecrets('secret=pw123'), 'secret=<redacted>');
+  // Bearer tokens redact whole (the agentarts data-plane key rides an
+  // Authorization: Bearer header — the scheme word must not eat the slot
+  // while the token survives). Basic gets the same treatment: both schemes
+  // are single-token by construction.
+  assert.equal(redactSecrets('Authorization: Bearer KEY_ONETIME_mem42'), 'Authorization: <redacted>');
+  assert.equal(redactSecrets('authorization=Bearer abc123xyz'), 'authorization=<redacted>');
+  assert.equal(redactSecrets('Authorization: Basic dGVzdA=='), 'Authorization: <redacted>');
+  // A QUOTED blob key bounds the redaction to the quoted value — mid-JSON
+  // neighbors on the same line survive (the unquoted form keeps the
+  // whole-line sweep: no reliable value terminator).
+  assert.equal(
+    redactSecrets('{"id":"i","user_data":"x","status":"s"}'),
+    '{"id":"i","user_data":<redacted>,"status":"s"}',
+  );
+  // Trap-27 round 2: the blob class gets the same escape-level and
+  // object-value tolerance as the credential keys (the string path must
+  // not be weaker than the parsed-object path for user_data/metadata).
+  assert.equal(
+    redactSecrets('{"data": "{\\"user_data\\": \\"IyEvYmlu\\"}"}'),
+    '{"data": "{\\"user_data\\": <redacted>}',
+  );
+  assert.equal(
+    redactSecrets('{"id":"i","metadata":{"owner":"team-x"},"status":"s"}'),
+    '{"id":"i","metadata":<redacted>,"status":"s"}',
+  );
+  // Two nesting levels under a quoted blob key (round 3): the object
+  // alternative matches one nested brace pair; deeper nesting is residual
+  // (ledgered) — credential-shaped keys inside are still caught by the
+  // credential pass.
+  assert.equal(redactSecrets('{"user_data": {"script": {"body": "SECRETXYZ"}}}'), '{"user_data": <redacted>}');
+  // The DISPLAY path keeps the whole-line sweep for unquoted blobs —
+  // nested non-credential content (an SSH key inside a script) rides no
+  // further than the line, and nothing after the key survives.
+  assert.equal(redactSecrets('user_data: blob password: nested'), 'user_data: <redacted>');
+});
+
+test('every string-path redaction key token is also object-path classified (single-source guard)', async () => {
+  // Trap 27's root cause was TWO redaction implementations drifting. The
+  // string path (redact-core.mjs) and the object path (isSecretKeyName)
+  // must agree: any token redacted in CLI text must also be masked when the
+  // same key appears on a parsed object — otherwise the parse-first paths
+  // (hcloud redactOutput) become the weak layer.
+  const { BLOB_KEY_TOKENS, CREDENTIAL_KEY_TOKENS, AKSK_KEY_TOKENS } =
+    await import('../plugins/huaweicloud-core/src/redact-core.mjs');
+  for (const token of [...BLOB_KEY_TOKENS, ...CREDENTIAL_KEY_TOKENS, ...AKSK_KEY_TOKENS]) {
+    assert.equal(
+      redactSecrets({ [token]: 'SENTINELVALUE1' })[token],
+      '<redacted>',
+      `${token} must be secret-classified by the object path — add it to policy.json secretKeyNamePatterns`,
+    );
+  }
+});
+
 test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) entirely', () => {
   const redacted = redactSecrets([
     'ECS',

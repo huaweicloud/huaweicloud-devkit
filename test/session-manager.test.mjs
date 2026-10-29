@@ -25,6 +25,16 @@ import {
   parseDevbridgeVerifyOutput,
   DEVBRIDGE_HOST_EXPIRY_HOURS,
   validateTunnelPort,
+  validateExpiryHours,
+  validateTunnelId,
+  DEVBRIDGE_MAX_EXPIRY_HOURS,
+  DEVBRIDGE_RENEW_HOURS,
+  buildDevbridgeRenewScript,
+  parseDevbridgeRenewOutput,
+  buildDevbridgeKeepaliveScript,
+  buildKeepaliveTunnelsReadScript,
+  parseKeepaliveTunnelsOutput,
+  mergeKeepaliveTunnels,
   classifyLocalUploadPath,
   buildUploadResetCommand,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
@@ -299,9 +309,11 @@ test('919: parseDevbridgeExposeOutput extracts expiry hours alongside tunnel fie
 
 test('919: buildDevbridgeVerifyScript issues a real GET from an independent session', () => {
   const script = buildDevbridgeVerifyScript('https://c4rdv7bv-8081.devbridge-s2.hwtunnel.com');
+  // --noproxy '*' (#1000): the injected sandbox proxy does not route the tunnel
+  // domain — a proxied verify returns 502/404 fakes (working tunnel judged dead).
   assert.match(
     script,
-    /curl -s -o \/tmp\/devbridge_verify_body -w "%\{http_code\}" --max-time 10 "https:\/\/c4rdv7bv-8081\.devbridge-s2\.hwtunnel\.com"/,
+    /curl -s --noproxy '\*' -o \/tmp\/devbridge_verify_body -w "%\{http_code\}" --max-time 10 "https:\/\/c4rdv7bv-8081\.devbridge-s2\.hwtunnel\.com"/,
   );
   assert.match(script, /DB_VERIFY_HTTP_CODE=\$VERIFY_CODE/);
 });
@@ -612,4 +624,128 @@ test('#946: stripTerminalEscapes is exported for reuse by all DB_* parsers', asy
   assert.equal(typeof mod.stripTerminalEscapes, 'function');
   const cleaned = mod.stripTerminalEscapes(oscLine('DB_HTTP_CODE=200') + '\r\n');
   assert.equal(cleaned, 'DB_HTTP_CODE=200\n');
+});
+
+// --- Tunnel persistence: expiry validation, renewal, keepalive watchdog (2026-10 measured) ---
+
+test('tunnel-persistence: validateExpiryHours accepts 1..720 and rejects everything else', () => {
+  assert.equal(validateExpiryHours(1), 1);
+  assert.equal(validateExpiryHours(72), 72);
+  assert.equal(validateExpiryHours(DEVBRIDGE_MAX_EXPIRY_HOURS), 720);
+  for (const bad of [0, -1, 721, 10000, 1.5, 'abc', NaN]) {
+    assert.throws(() => validateExpiryHours(bad), /invalid expiry_hours/, `expected rejection for ${bad}`);
+  }
+});
+
+test('tunnel-persistence: validateTunnelId accepts devbridge base36 IDs and rejects shell metacharacters', () => {
+  assert.equal(validateTunnelId('nv2dvv6w'), 'nv2dvv6w');
+  assert.equal(validateTunnelId('kag7rozs'), 'kag7rozs');
+  for (const bad of ['', 'ab', 'rm -rf /tmp', 'id;reboot', '$(id)', 'a'.repeat(33)]) {
+    assert.throws(() => validateTunnelId(bad), /invalid tunnel_id/, `expected rejection for ${bad}`);
+  }
+});
+
+test('tunnel-persistence: buildDevbridgeRenewScript splices a validated ID + expiry and surfaces expiration', () => {
+  // 720h = the devbridge 30-day maximum (measured 2026-10) — the default horizon.
+  assert.equal(DEVBRIDGE_RENEW_HOURS, 720);
+  const script = buildDevbridgeRenewScript('kag7rozs', 720);
+  assert.match(script, /devbridge update kag7rozs -e 720/);
+  // Absolute expiration is surfaced via show -v (tunnelExpiration, Unix seconds) —
+  // a bare exit code cannot distinguish "renewed" from "mgmt lost the record (10002)".
+  assert.match(script, /devbridge show kag7rozs -v/);
+  assert.match(script, /tunnelExpiration/);
+  assert.match(script, /DB_RENEW_EXIT=/);
+  assert.throws(() => buildDevbridgeRenewScript('bad id; reboot'), /invalid tunnel_id/);
+  assert.throws(() => buildDevbridgeRenewScript('kag7rozs', 721), /invalid expiry_hours/);
+  // The auto-enroll read script greps the INSTALLED watchdog's TUNNELS line —
+  // the single source of truth for currently-protected tunnels.
+  assert.match(buildKeepaliveTunnelsReadScript(), /grep -m1 '\^TUNNELS=' \/tmp\/tunnel-keepalive\.sh/);
+});
+
+test('tunnel-persistence: parseDevbridgeRenewOutput requires exit 0 AND an absolute expiration', () => {
+  const ok = parseDevbridgeRenewOutput(
+    'DB_RENEW_EXIT=0\nDB_RENEW_ID=kag7rozs\nDB_RENEW_HOURS=720\nDB_EXPIRATION=1795022391\nDB_RENEW_ERROR=',
+  );
+  assert.equal(ok.ok, true);
+  assert.equal(ok.tunnelId, 'kag7rozs');
+  assert.equal(ok.renewedForHours, 720);
+  assert.equal(ok.expiresAt, new Date(1795022391 * 1000).toISOString());
+  // 10002 "tunnel not found" — mgmt record lost while the data plane still serves:
+  const lost = parseDevbridgeRenewOutput(
+    'DB_RENEW_EXIT=1\nDB_RENEW_ID=nv2dvv6w\nDB_RENEW_HOURS=720\nDB_EXPIRATION=\nDB_RENEW_ERROR=Failed to update tunnel: error code: 10002, error message: tunnel not found',
+  );
+  assert.equal(lost.ok, false);
+  assert.match(lost.error, /10002/);
+  assert.equal(lost.expiresAt, undefined);
+});
+
+test('tunnel-persistence: buildDevbridgeKeepaliveScript installs the 3-layer watchdog with hardcoded URLs', () => {
+  const tunnels = [
+    { tunnelId: 'kag7rozs', url: 'https://kag7rozs-3000.devbridge-s2.hwtunnel.com' },
+    { tunnelId: 'qtka62w2', url: 'https://qtka62w2-8080.devbridge-s2.hwtunnel.com' },
+  ];
+  const script = buildDevbridgeKeepaliveScript(tunnels);
+  // Heredoc is single-quoted: the writer shell expands nothing.
+  assert.match(script, /cat > \/tmp\/tunnel-keepalive\.sh << 'DB_KEEPALIVE_EOF'/);
+  assert.match(script, /DB_KEEPALIVE_EOF/);
+  // Layer 1: host watchdog — tunnel-specific pgrep (a bare "devbridge host" pgrep
+  // matches ANY tunnel's host and silently skips re-attaching the dead one).
+  assert.match(script, /pgrep -f "devbridge host \$ID"/);
+  assert.match(script, /setsid nohup devbridge host "\$ID"/);
+  // Layer 2: daily renewal at the 720h maximum.
+  assert.match(script, /devbridge update "\$ID" -e 720/);
+  assert.match(script, /-ge 86400/);
+  // Layer 3: health check with hardcoded URLs (port list output is OSC-wrapped
+  // and breaks anchored greps — URLs are never derived from it).
+  assert.match(
+    script,
+    /TUNNELS="kag7rozs:https:\/\/kag7rozs-3000\.devbridge-s2\.hwtunnel\.com qtka62w2:https:\/\/qtka62w2-8080\.devbridge-s2\.hwtunnel\.com"/,
+  );
+  assert.match(script, /DB_KEEPALIVE_SYNTAX=/);
+  // Replacement kills the old loop first so two loops never double-renew.
+  assert.match(script, /pkill -f "tunnel-keepalive\.sh"/);
+});
+
+test('tunnel-persistence: buildDevbridgeKeepaliveScript validates input', () => {
+  assert.throws(() => buildDevbridgeKeepaliveScript([]), /non-empty array/);
+  assert.throws(
+    () => buildDevbridgeKeepaliveScript([{ tunnelId: 'bad id', url: 'https://x.devbridge-s2.hwtunnel.com' }]),
+    /invalid tunnel_id/,
+  );
+  assert.throws(
+    () => buildDevbridgeKeepaliveScript([{ tunnelId: 'kag7rozs', url: 'http://insecure.example.com' }]),
+    /invalid tunnel URL/,
+  );
+});
+
+test('tunnel-persistence: parseKeepaliveTunnelsOutput reads the installed watchdog tunnel list', () => {
+  const parsed = parseKeepaliveTunnelsOutput(
+    'DB_KEEPALIVE_TUNNELS=kag7rozs:https://kag7rozs-3000.devbridge-s2.hwtunnel.com qtka62w2:https://qtka62w2-8080.devbridge-s2.hwtunnel.com',
+  );
+  assert.deepEqual(parsed, [
+    { tunnelId: 'kag7rozs', url: 'https://kag7rozs-3000.devbridge-s2.hwtunnel.com' },
+    { tunnelId: 'qtka62w2', url: 'https://qtka62w2-8080.devbridge-s2.hwtunnel.com' },
+  ]);
+  // No watchdog installed yet → empty list.
+  assert.deepEqual(parseKeepaliveTunnelsOutput('DB_KEEPALIVE_TUNNELS='), []);
+  assert.deepEqual(parseKeepaliveTunnelsOutput(''), []);
+});
+
+test('tunnel-persistence: mergeKeepaliveTunnels dedupes by ID, incoming wins, order preserved', () => {
+  const existing = [
+    { tunnelId: 'kag7rozs', url: 'https://kag7rozs-3000.devbridge-s2.hwtunnel.com' },
+    { tunnelId: 'aabbccdd', url: 'https://aabbccdd-80.devbridge-s2.hwtunnel.com' },
+  ];
+  // Re-exposing kag7rozs refreshes its URL; a new tunnel is appended; aabbccdd survives.
+  const merged = mergeKeepaliveTunnels(existing, [{ tunnelId: 'kag7rozs', url: 'https://new.example.com' }]);
+  assert.deepEqual(merged, [
+    { tunnelId: 'kag7rozs', url: 'https://new.example.com' },
+    { tunnelId: 'aabbccdd', url: 'https://aabbccdd-80.devbridge-s2.hwtunnel.com' },
+  ]);
+  assert.equal(
+    mergeKeepaliveTunnels([], [{ tunnelId: 'x1y2z3w4', url: 'https://x1y2z3w4-3000.devbridge-s2.hwtunnel.com' }])
+      .length,
+    1,
+  );
+  assert.deepEqual(mergeKeepaliveTunnels(null, []), []);
 });
