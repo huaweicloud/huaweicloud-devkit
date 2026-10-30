@@ -639,6 +639,12 @@ function installRuntimeDeps(pluginsDir) {
   }
 }
 
+// Paths that failed to be removed during this run (#1061). Only removal
+// *failures* are residuals: a path that never existed is not one, so the
+// boolean return of removeIfExists (false in both cases) cannot be used to
+// infer residuals. Consumed by the uninstall summary.
+const uninstallResidualPaths = new Set();
+
 function removeIfExists(p) {
   if (existsSync(p)) {
     try {
@@ -646,9 +652,18 @@ function removeIfExists(p) {
       // giving up — uninstall should not leave a skill behind just because a
       // handle was momentarily open (#556).
       rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      uninstallResidualPaths.delete(p);
       return true;
     } catch (error) {
+      uninstallResidualPaths.add(p);
       console.log(`  \x1b[33m[WARN]\x1b[0m Could not remove ${p}: ${error.message}`);
+      console.log(`  \x1b[33m[WARN]\x1b[0m Residual left behind: ${p}`);
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m A running agent may hold a file lock on it. Close the corresponding agent to release the lock, or remove the residual manually:`,
+      );
+      console.log(`        Windows cmd:        rmdir /s /q "${p}"`);
+      console.log(`        Windows PowerShell: Remove-Item -Recurse -Force "${p}"`);
+      console.log(`        macOS/Linux:        rm -rf "${p}"`);
       return false;
     }
   }
