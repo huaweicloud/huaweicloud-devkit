@@ -14,7 +14,7 @@ export function computeNextStable() {
   }
   if (overrideBase) return overrideBase;
 
-  const allTags = execSync('git tag -l --sort=version:refname', { encoding: 'utf8', cwd: root })
+  const allTags = execSync('git tag -l --sort=-version:refname', { encoding: 'utf8', cwd: root })
     .trim()
     .split('\n')
     .filter((t) => t && t.startsWith('v'));
