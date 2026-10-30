@@ -170,6 +170,8 @@ npx --yes huaweicloud-devkit uninstall --target dsh
 ```
 
 > DSH V1 reuses the existing MCP server through `@deepseek-ai/dsh-mcp-client`. If the installer reports that the client is not detected, run: `npx @deepseek-ai/dsh plugin --profile web add @deepseek-ai/dsh-mcp-client`.
+>
+> **Reinstall reports "already installed"?** If DSH shows `already configured; skipping` after an uninstall/reinstall cycle, close all DSH sessions first to release file locks, delete `%USERPROFILE%\.dsh\huaweicloud-plugins`, then run `npx --yes huaweicloud-devkit install --target dsh` again.
 
 ### OfficeAce
 
