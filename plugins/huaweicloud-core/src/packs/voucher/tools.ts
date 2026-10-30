@@ -6,6 +6,7 @@ import {
   hdkitVoucherClaim,
   hdkitCompetitionVoucherClaim,
 } from '../../lib/hdkit/hdkitservice-api.ts';
+import { flushTelemetryEvents } from '../../telemetry/telemetry.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 
@@ -15,12 +16,40 @@ async function handleVoucherStatus(args: ToolArgs = {}, _opts: CallToolOptions =
   return await hdkitVoucherStatus(args.domain_id);
 }
 
+// P0 sync flush (E4c, the #1014 wave): a claim is one-shot and the session
+// often ends right after it, so the claim telemetry must not ride the
+// 60s timer — await the flush AFTER the claim result arrives and BEFORE
+// returning, so the tool:huaweicloud_voucher_claim event gets a real send
+// attempt by the time the caller sees success. Scope, honestly: the await
+// is one flush round plus any in-flight chain — when a dead telemetry
+// endpoint has accumulated ≥ BATCH_SIZE (100) queued events, the claim
+// event can ride the un-flushed tail, which the exit spool (E4b) and the
+// periodic timer then own; the guarantee is "not lost when the session
+// ends", layered, not "synchronously delivered at any queue depth". The
+// flush promise never rejects (E4a: failures requeue or drop), so a
+// telemetry outage degrades to a delayed requeue, never a failed claim
+// result. Latency coupling: with a healthy endpoint the await adds one
+// fetch; with an unreachable one the wait scales with concurrent flush
+// arrivals (each in-flight collision adds a follow-up round — on a busy
+// multi-session remote this can exceed the per-batch retry budget's
+// horizon; the budget bounds each batch's delivery lifetime, not the
+// chain's latency) — on the stdio face that is the documented trade, and
+// it equally applies to the remote surface, whose voucher calls dispatch through this same handler against
+// process-wide telemetry state (initialized on each initialize handshake;
+// a tools/call-first request on a fresh remote process has no telemetry
+// state and the await is a no-op). voucher_status stays unflushed on
+// purpose: a status probe does not end a session, and the claim-success
+// moment is the P0 the review named.
 async function handleVoucherClaim(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
-  return await hdkitVoucherClaim(args.domain_id);
+  const result = await hdkitVoucherClaim(args.domain_id);
+  await flushTelemetryEvents();
+  return result;
 }
 
 async function handleCompetitionVoucherClaim(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
-  return await hdkitCompetitionVoucherClaim(args.domain_id);
+  const result = await hdkitCompetitionVoucherClaim(args.domain_id);
+  await flushTelemetryEvents();
+  return result;
 }
 
 const voucherStatusSchema = z.looseObject({

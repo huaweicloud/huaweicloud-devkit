@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 
 import { getCodexPluginName, getMarketplaceName } from '../../../plugins/huaweicloud-core/src/codex-probe.ts';
 import { startGatewayProxy } from './gateway-proxy.ts';
-import { requiredModelEnv, runHeadlessAgent, verifyLegWire } from './shared.ts';
+import { MCP_ENV_LOADER_SOURCE, requiredModelEnv, runHeadlessAgent, verifyLegWire } from './shared.ts';
 import type { AgentDriver, DriverContext, DriverProbe, RunRequest, RunResult } from './types.ts';
 
 // codex adapter, spike-validated on codex-cli 0.162.1 (2026-10-21):
@@ -41,21 +41,8 @@ const PROXY_BASE_PLACEHOLDER = 'http://127.0.0.1:1/v1';
 // http too. Spike-measured: the catalog sync fails fast and codex proceeds.
 const EGRESS_BLOCK_PROXY = 'http://127.0.0.1:9';
 
-const LOADER_SOURCE = [
-  "import { readFileSync } from 'node:fs';",
-  "import { spawn } from 'node:child_process';",
-  "import { dirname, join } from 'node:path';",
-  'const server = process.argv[2];',
-  "const envFile = join(dirname(process.argv[1]), 'mcp-env.json');",
-  "const extra = JSON.parse(readFileSync(envFile, 'utf8'));",
-  "const child = spawn(process.execPath, [server], { env: { ...process.env, ...extra }, stdio: 'inherit' });",
-  // Signal death flattens to exit 0 deliberately: the runner kills the
-  // whole detached process group on timeout/abort (bypassing handlers
-  // anyway), and MCP clients observe stdio close either way.
-  "child.on('exit', (code) => process.exit(code ?? 0));",
-  "process.on('SIGTERM', () => child.kill('SIGTERM'));",
-  '',
-].join('\n');
+// The loader script itself is the shared MCP_ENV_LOADER_SOURCE (two
+// env-filtering legs now ship the identical mechanism).
 
 // TOML string escaping for values interpolated from the model env config.
 export function tomlString(value: string): string {
@@ -189,7 +176,7 @@ function mergeConfigToml(home: string, serverJs: string): void {
     '',
   ].join('\n');
   // The MCP child env is stripped to login vars, so the command must be an
-  // absolute binary — the same node that runs the suite (>= 22.18 floor).
+  // absolute binary — the same node that runs the suite (>= 22.19 floor).
   const nodeBin = process.execPath;
   const tail = [
     '',
@@ -252,7 +239,7 @@ export const codexDriver: AgentDriver = {
     finalFile = join(ctx.home, 'codex-final-message.txt');
     mkdirSync(join(ctx.home, '.codex'), { recursive: true });
     const serverJs = resolveServerJs(ctx.home);
-    writeFileSync(join(ctx.home, 'mcp-env-loader.mjs'), LOADER_SOURCE, 'utf8');
+    writeFileSync(join(ctx.home, 'mcp-env-loader.mjs'), MCP_ENV_LOADER_SOURCE, 'utf8');
     mergeConfigToml(ctx.home, serverJs);
     // The TOML env_key names exactly one variable: bridge the alternate
     // spelling so a local run configured with only E2E_TEST_API_KEY does

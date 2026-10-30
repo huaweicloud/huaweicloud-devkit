@@ -44,7 +44,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // The stray-dir scan must see exactly what the boot guard sees, so both use
 // the one SKILL.md-aware listing. Type stripping carries the .ts import on
-// the floor the whole build chain requires (engines: >= 22.18 — build,
+// the floor the whole build chain requires (engines: >= 22.19 — build,
 // validate, and prepack all run this script).
 import { listSkillDirs } from '../plugins/huaweicloud-core/src/lib/skill-tree.ts';
 

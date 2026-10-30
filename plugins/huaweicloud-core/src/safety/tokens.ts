@@ -50,6 +50,10 @@ export const COMMAND_POSITION_PREFIXES = new Set([
   '(',
   'timeout',
   'watch',
+  // busybox: the applet dispatcher — `busybox sh -c '…'` / `busybox awk
+  // '…'` run the applet named as the next token (interrogate round 14 C3:
+  // both the walk families and the interpreter table missed it).
+  'busybox',
   'nice',
   'stdbuf',
   'setsid',
@@ -109,6 +113,9 @@ export const PREFIX_FLAGS_WITH_VALUE = new Map<string, ReadonlySet<string>>([
   ['stdbuf', new Set(['-o', '-e', '-i'])],
   ['env', new Set(['-u', '--unset'])],
   ['timeout', new Set(['--signal', '-s', '-k', '--kill-after'])],
+  // watch's -n/--interval carry the interval; -d/-t/-g/-b/-e are boolean
+  // (the COMMAND words follow the flags — never consume them).
+  ['watch', new Set(['-n', '--interval'])],
   // cmd.exe's `start` takes slash flags (`/b /wait /min …`); `/d <path>`
   // carries a value.
   ['start', new Set(['/d'])],
@@ -210,9 +217,15 @@ export function matchesBinName(token: string, names: readonly string[]): boolean
 }
 
 // Peel a trailing glued redirection (with its operand) off a token:
-// `hcloud>out`, `OBS>&2` — bash still runs the bin with the service.
+// `hcloud>out`, `OBS>&2`, and the INPUT forms `hcloud<f`, `hcloud<<EOF`
+// (interrogate round 9 — bash runs `bin<file args…` as the bin with the
+// full argv; the operand is stdin, never argv) — bash still runs the bin
+// with the service.
 export function peelGluedRedirect(token: string): string {
-  return token.replace(/>{1,2}[^>;&|]*$/, '').replace(/>&\d+$/, '');
+  return token
+    .replace(/>{1,2}[^>;&|\s]*$/, '')
+    .replace(/<{1,2}[^<>;&|\s]*$/, '')
+    .replace(/>&\d+$/, '');
 }
 
 // One spelling of the hcloud bin-token predicate. The token is normalized
@@ -291,7 +304,10 @@ export function skipPrefixArguments(prefix: string, tokens: string[]): string[] 
     (isFlagOrDuration(String(rest[0])) ||
       ((prefix === 'start' || prefix === 'call') && String(rest[0]).startsWith('/')))
   ) {
-    const flag = String(rest[0]);
+    // Round 19 F1b: the value-flag comparison strips quote-mangling
+    // (`env -'u' X cat` — the flag token read raw missed its value class,
+    // eating the operand as the content head).
+    const flag = String(rest[0]).replace(/['"\\$]/g, '');
     rest = rest.slice(1);
     if (!flag.includes('=') && valueFlags.has(flag) && rest.length > 0) {
       rest = rest.slice(1);

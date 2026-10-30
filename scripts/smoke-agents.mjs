@@ -55,6 +55,15 @@ function cleanEnv(extra = {}) {
   ]) {
     delete env[key];
   }
+  // Telemetry OFF for the MCP roundtrips: they boot with the developer's
+  // real HOME, and any future roundtrip step that triggers an initialize
+  // (or a tools/call on an initialized server) would arm telemetry and,
+  // with the #1014 exit spool, persist the unflushed tail into the real
+  // ~/.huaweicloud-devkit/telemetry/ — a test→production channel. The
+  // current tools/list-only roundtrip never initializes telemetry (the
+  // installId gate keeps the queue empty), so this is a forward-looking
+  // guard, not a fix for an active leak.
+  env.HUAWEICLOUD_DEVKIT_TELEMETRY = 'off';
   return { ...env, ...extra };
 }
 

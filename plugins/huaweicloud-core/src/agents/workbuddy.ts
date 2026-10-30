@@ -10,6 +10,7 @@ import { workbuddyMcpConfigFile, workbuddyPluginsDir, workbuddySkillsDir } from 
 import { findHcloudBin } from '../hcloud-probe.ts';
 import { ensureMcpServersConfig, printMcpConfigStatus, removeMcpServerEntry } from '../mcp-config-io.ts';
 import { asRecord } from '../lib/as-record.ts';
+import { globalTelemetryDir } from '../telemetry/telemetry.ts';
 import {
   PACKAGE_ROOT,
   PLUGIN_ROOT,
@@ -124,7 +125,11 @@ function deployWorkBuddyHooks(): void {
 
   // 4. Ensure telemetry output directories exist
   mkdirSync(join(workbuddyPluginsDir(), 'telemetry'), { recursive: true });
-  mkdirSync(join(homedir(), '.huaweicloud-devkit', 'telemetry'), { recursive: true });
+  // The GLOBAL dir rides the telemetry face's derivation so an overridden
+  // HUAWEICLOUD_DEVKIT_HOME gets the dir the server actually writes
+  // (port-v2defects: the bare homedir() join left an orphan under the real
+  // home while the server wrote under the override).
+  mkdirSync(globalTelemetryDir(), { recursive: true });
 }
 
 export async function deployWorkBuddy(_mode: DeployMode): Promise<void> {
@@ -180,7 +185,10 @@ export function uninstallWorkBuddy(removeOwnedSkills: (dir: string) => number): 
     console.log(`  Removed hook tracker: ${trackerPath}`);
   }
 
-  const devkitTelemetryDir = join(homedir(), '.huaweicloud-devkit', 'telemetry');
+  // The same face-derived global dir the install created — the uninstall
+  // must remove the directory the SERVER writes (under the override when
+  // HUAWEICLOUD_DEVKIT_HOME is set), not the bare-home twin.
+  const devkitTelemetryDir = globalTelemetryDir();
   if (existsSync(devkitTelemetryDir)) {
     rmSync(devkitTelemetryDir, { recursive: true, force: true });
     console.log(`  Removed telemetry cache: ${devkitTelemetryDir}`);

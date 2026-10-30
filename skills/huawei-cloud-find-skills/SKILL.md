@@ -22,7 +22,7 @@ This skill enables users to:
 - **Search Skills**: Find skills by keyword, category, or both (matched against name, description, and triggers)
 - **Browse Categories**: Explore available skill categories
 - **View Skill Details**: Fetch full SKILL.md content from GitHub for specific skills
-- **Install Skills**: Guide users through skill installation via `npx skills add` (GitCode default), `npx clawhub install`, or fallback GitHub method
+- **Install Skills**: Guide users through skill installation via HTTP download (default), `npx clawhub install`, or fallback GitHub method. The `npx skills add` GitCode path is deprecated (实测失效) — see Step 3.
 
 **Architecture**: GitCode API v5 (`index.json` + `cn-en-map.json`) → HTTP GET (base64 decode) → In-memory search → GitHub raw fetch for details → Install
 
@@ -129,20 +129,40 @@ The agent can fetch this URL using `curl` or its web-fetch tool, then present th
 
 ### Step 3: Install Skill
 
-> **MANDATORY**: Use one of the commands below. Option A is the default; Option C is a fallback when Option A is unavailable.
+> **MANDATORY**: Use one of the commands below. Option A is the default; Option B is a fallback; Option C is deprecated (实测失效 per 2026-10 activity reports) — if attempted and it fails, use its git clone bypass. Option A requires NO git — it downloads the repo ZIP over HTTP and copies the skill folder.
 
 ```bash
-# Option A: npx skills add from GitCode (default)
-npx skills add https://gitcode.com/huaweicloud/huaweicloud-skills.git#master --skill <skill-name> -y
+# Option A: HTTP download (default, no git required)
+# Download the skills repo ZIP, extract, locate the skill folder, copy it into
+# this agent's skills dir. Replace <skills-dir> and <category>/<service> as needed;
+# with category/service from the Step 1 results, SKILL_SRC can be assigned the exact
+# path /tmp/hw-skills-net/huaweicloud-skills-master/skills/<category>/<service>/<skill-name> instead of the find.
+( curl -fsSL https://gitcode.com/huaweicloud/huaweicloud-skills/-/archive/master/huaweicloud-skills-master.zip -o /tmp/hw-skills.zip \
+  && unzip -oq /tmp/hw-skills.zip -d /tmp/hw-skills-net ) \
+  || ( curl -fsSL https://github.com/huaweicloud/huaweicloud-skills/archive/refs/heads/master.zip -o /tmp/hw-skills.zip \
+  && unzip -oq /tmp/hw-skills.zip -d /tmp/hw-skills-net ) \
+  && SKILL_SRC=$(find /tmp/hw-skills-net/huaweicloud-skills-master/skills -type d -name "<skill-name>" 2>/dev/null | head -1) \
+  && ( test -d "$SKILL_SRC" || { echo "SKILL_SRC_NOT_FOUND"; false; } ) \
+  && ( test -f "$SKILL_SRC/SKILL.md" || { echo "SKILL_SRC_NOT_FOUND"; false; } ) \
+  && mkdir -p "<skills-dir>" && cp -r "$SKILL_SRC" "<skills-dir>/<skill-name>"
 
 # Option B: npx clawhub install (OpenClaw ecosystem)
 npx clawhub install <skill-name> -y
 
-# Option C (fallback): npx skills add from GitHub
-npx skills add huaweicloud/huaweicloud-skills --skill <skill-name> -y
+# Option C (DEPRECATED — 实测失效, do NOT rely on it): npx skills add via GitCode.
+# Every 2026-10 activity-experience report hit the same failure:
+#   "Downloaded URL is not a valid SKILL.md file or supported archive"
+# (the skills CLI cannot consume GitCode repos). Only kept here as a last resort;
+# when it fails, do NOT retry — fall back to the git clone bypass below.
+# npx skills add https://gitcode.com/huaweicloud/huaweicloud-skills.git#master --skill <skill-name> -y
+
+# Option C bypass (实测可用): git clone + local-path install
+git clone --depth 1 https://gitcode.com/huaweicloud/huaweicloud-skills.git /tmp/hw-skills-git \
+  || git clone --depth 1 https://github.com/huaweicloud/huaweicloud-skills.git /tmp/hw-skills-git
+cp -r "/tmp/hw-skills-git/skills/<category>/<service>/<skill-name>" "<skills-dir>/<skill-name>"
 ```
 
-If all installation attempts fail, report the error message to the user. Do NOT attempt any method outside the commands above.
+**If all installation attempts fail** (`SKILL_SRC_NOT_FOUND`, download unreachable, `npx` errors), do NOT install git as a workaround. Download `https://github.com/huaweicloud/huaweicloud-skills/archive/refs/heads/master.zip` manually, extract it, copy the skill's folder into the agent skills directory, and tell the user how the skill was installed. <skills-dir> resolves per agent: Claude Code `~/.claude/skills`, OpenCode `~/.config/opencode/skills`, Cursor `~/.cursor/skills`.
 
 ## Parameters
 

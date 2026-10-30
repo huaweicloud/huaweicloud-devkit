@@ -42,13 +42,26 @@ export function loadPolicy(path: string): Policy {
     throw new TypeError('safety policy must be a JSON object');
   }
   const raw = parsed as Record<string, unknown>;
+  const writeOperationPrefixes = toStringArray(raw.writeOperationPrefixes, 'writeOperationPrefixes');
+  // An EMPTIED write list reclassifies write commands as safe — the exact
+  // fail-open the non-array throw above exists to prevent, one shape over
+  // (the absent field still normalizes to [] for older policies; only a
+  // present-but-empty or all-non-string list throws). Interrogate round 2:
+  // this closes the last py/TS disagreement on the degraded surface — the
+  // py hook denies fail-closed when its write vocabulary is unavailable, and
+  // the TS side now fails LOUD at load (module-load throw → the .mjs hook's
+  // fail-closed deny, the MCP server's refuse-to-boot) instead of silently
+  // classifying with no write vocabulary.
+  if (raw.writeOperationPrefixes !== undefined && writeOperationPrefixes.length === 0) {
+    throw new TypeError('safety policy field "writeOperationPrefixes" must not be empty');
+  }
   return {
     secretKeyNamePatterns: toStringArray(raw.secretKeyNamePatterns, 'secretKeyNamePatterns'),
     credentialFilePatterns: toStringArray(raw.credentialFilePatterns, 'credentialFilePatterns'),
     blockedConfigureSubcommands: toStringArray(raw.blockedConfigureSubcommands, 'blockedConfigureSubcommands'),
     blockedSecretOperations: toStringArray(raw.blockedSecretOperations, 'blockedSecretOperations'),
     blockedSecretCliPatterns: toStringArray(raw.blockedSecretCliPatterns, 'blockedSecretCliPatterns'),
-    writeOperationPrefixes: toStringArray(raw.writeOperationPrefixes, 'writeOperationPrefixes'),
+    writeOperationPrefixes,
     readOperationPrefixes: toStringArray(raw.readOperationPrefixes, 'readOperationPrefixes'),
   };
 }

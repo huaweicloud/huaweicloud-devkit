@@ -206,6 +206,134 @@ install target is managed by the codex CLI and has no `--packs` write
 path — the runner resolves the capability skip before any attempt spends
 budget).
 
+## The hermes driver
+
+`test/e2e/drivers/hermes.ts`, spike-validated on Hermes Agent v0.22.5
+(2026-10-27, commit bf0203a794a0). The mechanics that differ from the
+other legs, all measured:
+
+- **Invocation.** `hermes -z "<prompt>"`: stdout is the agent's final
+  reply and nothing else on a completed turn (exit 0); exit 2 for a
+  failed/partial/never-ran turn, 130 when interrupted. Warm gateway
+  ~2.6s per run; a cold gateway boot (MCP discovery included) costs
+  ~11-15s inside the case budget. A dead model endpoint makes the
+  gateway run 5 auto-recovery cycles (~4 min of backoff) — the case
+  timeout kills the `-z` client and the driver kills the gateway, so
+  the retry storm never spans attempts.
+- **The gateway owns everything; `-z` is a WebSocket client.** The
+  first `-z` in a home auto-starts a gateway process that owns the MCP
+  server child, the terminal-tool environment, and the session state;
+  it exits after 600s with no clients (`gateway.unmanaged_idle_exit_
+seconds`). Consequence for the teardown contract: killing the `-z`
+  process group does NOT reach the gateway, so the driver reads
+  `<home>/.hermes/gateway.pid` after every runPrompt (finally path
+  included) and SIGTERMs that process group; the 600s idle-exit is the
+  backstop, not the mechanism. The gateway also means the per-attempt
+  env reaches terminal children only because the gateway inherited it
+  from the `-z` client that booted it — one runPrompt per fresh home
+  keeps that chain exact.
+- **Borrowed-launch bootstrap (the big one).** With `HERMES_HOME`
+  pointed at a throwaway dir, hermes treats the launch as a borrower
+  of the machine checkout (`~/.hermes/hermes-agent`) and, by default,
+  network-syncs a whole venv into the throwaway root (`uv sync` of
+  hermes-agent[all]): minutes on a good network, unbounded on a flaky
+  one, and a killed run leaves uv cache locks that poison the next
+  attempt (measured both). The driver instead templates the committed
+  dependency state: `rsync -a --exclude='*.lock'` of the owner's
+  `~/.hermes/installs/` into the throwaway home (~12s, 388M) plus a
+  rewrite of the absolute paths inside `installs/<key>/facts.json` —
+  `venv_is_current` then passes, `_prepare_borrowed_launch` skips the
+  sync, and no network is touched. The owner home is the suite-level
+  pinned CLI install (the CI step that installs hermes; locally, the
+  developer's real `~/.hermes`). The venv is `relocatable = true` with
+  its interpreter under the owner's `tools/`, so the copy runs.
+- **MCP child env is filtered.** Hermes passes stdio MCP children only
+  the config `env` block plus a safe baseline, so the runner-owned
+  session env is delivered through the same loader the codex leg uses
+  (`mcp-env-loader.mjs` + a per-attempt `mcp-env.json` written by
+  runPrompt from `req.env`; the loader source is shared in
+  `drivers/shared.ts`). The config surgery rewrites the
+  installer-written `mcp_servers` args to `[loader, server]`, pins the
+  command to the absolute node binary, and fails loud on
+  installer-output drift. `DEVKIT_PACKS` from `install --packs` rides
+  the config `env` block (the env policy strips it from the process
+  env; the block is the posture channel and the loader's extra never
+  carries it, so the block's value wins in the child).
+- **Model config.** The `providers:` map (NOT the legacy
+  `custom_providers:` list, which v0.22.5 does not resolve):
+  `providers.e2e-hermes` with `base_url` = `E2E_PROVIDER_BASEURL`,
+  `key_env: E2E_APIKEY` (the driver bridges the `E2E_TEST_API_KEY`
+  spelling), `api_mode: chat_completions`, plus `model.provider` /
+  `model.default`. Hermes streams SSE and probes `GET /v1/models`,
+  `GET /api/v1/models`, `GET /api/tags`, `POST /api/show` at startup —
+  all against the provider base URL only (the leg rides chat, the
+  opencode wire).
+- **Tool surface.** Hermes v0.22.5 defaults to progressive tool
+  disclosure: MCP tools are hidden behind `tool_search` /
+  `tool_describe` / `tool_call` bridge tools. The driver pins
+  `tools.tool_search.enabled: "off"` so the 56 devkit tools ride the
+  model-visible array eagerly (80 tools total, named
+  `mcp__huaweicloud_devkit__<tool>`) — the posture the cases' prompts
+  and the other legs assume.
+- **Hooks fire headless.** The installer-written
+  `shell-hooks-allowlist.json` pre-approves both hook scripts, so the
+  `pre_tool_call` matcher `terminal` fires without any consent stall
+  under `-z` (measured end to end: an unapproved `hcloud` write is
+  denied by `fail_closed` and the safety hook's error text surfaces
+  verbatim in the tool result; an allowed read executes through the
+  PATH shim and the fake hcloud logs the argv).
+- **Version probe.** `install-stamp.json` (`displayVersion`) in the
+  machine checkout — no process spawn. `hermes --version` first runs a
+  60s-timeout `git ls-remote` against the checkout's origin (measured
+  stall on a flaky network; it falls back to the local answer, but the
+  driver avoids the spawn entirely).
+- **Egress.** The model wire is direct (the opencode leg's posture —
+  no egress-block proxy, and the env policy strips every proxy
+  spelling anyway). Residual: hermes's own update/telemetry endpoints
+  — no `-z` boot stalls were measured against them, and the same
+  residual class exists on the opencode leg. The dead-wire escape
+  analysis from the codex leg applies unchanged.
+- **finalText residual.** On a failed turn, `-z` stdout can carry a
+  provider warning line before the final text (measured: "provider
+  'custom' resolved without credentials ..."); finalText stays a soft
+  channel, and the exit code drives liveness, so this cannot green a
+  case.
+
+The hermes install itself (`install --target hermes` under the seams)
+measures ~5s warm-cache: config.yaml blocks + allowlist + native
+skills + the plugin payload; the `ensureHermesMcpSdk` pip install into
+the SYSTEM python3 fails on PEP-668 Ubuntu and is irrelevant anyway
+(hermes runs its own bundled Python 3.14 venv, which ships `mcp`) —
+non-fatal installer noise, not a leg prerequisite. `installPacks`
+rides `writeHermesMcpConfig`'s DEVKIT_PACKS parameterization, so the
+hermes leg runs the installPacks cases (no codex-style skip).
+
+**Known red on this leg (first nightly finding, 2026-10-27):
+`core-free-choice-vendor-ambiguity`.** Under hermes's prompt stack the
+model fabricates the quote-form attestation at a measured 3/3 attempts
+(local draws, glm): the challenge rung fires (trace shows the first
+`huaweicloud_check_cli` bouncing `ok:false`), and the retry carries a
+longer invented rationale quoting the ENVIRONMENT — "运行环境为华为云
+devkit 测试环境(hwc-e2e)，所有可用工具均为华为云 MCP 工具" — which the
+string-presence gate accepts. The opencode leg's draws ask first under
+the same model and seed. The blade stays red by doctrine (any
+successful gated dispatch in the vendor-unknown case); the nightly
+quantifies the hermes rate; the named escalation (a quote-content
+heuristic that rejects attestations about the environment rather than
+the user's words) is a product change, never a leg-side bend. The
+attempt-1 variant of the same failure is the documented Bash-face
+residual: the model skips MCP entirely and runs skill-taught `hcloud`
+reads through the terminal (the PATH shim records them; the vendor
+gate cannot see that face).
+
+CI posture: the hermes leg is nightly/dispatch-only (staged rollout —
+the job-level `if` keeps it off the push-to-v2 and `run-e2e` label
+lanes; `test/structure-adopted.test.ts` pins that gating). The install
+step pins install.sh to the exact spike-validated commit
+(`--commit bf0203a794a0...`, v0.22.5) and prepares the machine-scoped
+owner home whose committed dependency state every throwaway
+`HERMES_HOME` templates.
+
 ## Division of labor: this suite vs the nightly real-cloud harness
 
 `test/huaweicloud-agent-toolkit-test/` (the devkit-test SKILL) answers "can
@@ -322,7 +450,8 @@ the responses route or the codex leg fails at its first model call
 (measured: maas has no responses route). The preflight step fails fast on a
 missing secret. Both agent CLIs are pinned to the versions the suite was
 verified against (an upgrade is an explicit suite event; the codex pin is
-shared with ci.yml's real-agent lane). Local runs read the gitignored
+shared with the real-agents job in this same workflow — a two-place event
+within the file). Local runs read the gitignored
 `test/e2e/.env` instead; the report records agent/model/agentVersion per
 run so drift between the two sources is visible, not silent. Each leg's
 run step greps the runner's driver echo so an `E2E_AGENT` wiring miss

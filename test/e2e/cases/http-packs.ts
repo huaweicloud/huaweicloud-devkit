@@ -319,6 +319,12 @@ export const wsSandboxCases: E2eCase[] = [
       // re-verify of the URL (one tool call runs verify at most once; max 2 is
       // slack, not a semantic claim).
       { kind: 'ws', intent: 'devbridge-verify-script', times: { min: 1, max: 2 } },
+      // The tunnel-persistence port's AUTO-ENROLL phase: every successful
+      // expose reads the installed watchdog's tunnel list and installs the
+      // merged one — one read + one install per call (max 2 mirrors the
+      // expose-script slack for a retry).
+      { kind: 'ws', intent: 'devbridge-keepalive-read', times: { min: 1, max: 2 } },
+      { kind: 'ws', intent: 'devbridge-keepalive-install', times: { min: 1, max: 2 } },
     ],
     softExpect: [{ kind: 'agentSays', text: { any: ['devbridge-s2.hwtunnel.com', 'e2e-tunnel-1'] } }],
     budget: { timeoutMs: 420_000, attempts: 2 },

@@ -14,7 +14,7 @@ Supports OpenCode, Codex, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), Off
 
 ## Prerequisites
 
-- Node.js >= 22.18
+- Node.js >= 22.19
 
 > **China mainland users**: If you experience slow downloads or connection issues with the default npm registry, configure the Huawei Cloud npm mirror:
 >

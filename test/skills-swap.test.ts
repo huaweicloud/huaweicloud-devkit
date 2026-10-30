@@ -40,7 +40,7 @@ test(
     const realRmSync = actual.rmSync;
     const realRenameSync = actual.renameSync;
     let failOn: 'rm' | 'rename' = 'rm';
-    // namedExports, not the newer options.exports: the repo's Node 22.18
+    // namedExports, not the newer options.exports: the repo's Node 22.19
     // floor predates options.exports (Node 24 already deprecation-warns
     // namedExports) — migrate when the floor moves past the version where
     // exports exists.

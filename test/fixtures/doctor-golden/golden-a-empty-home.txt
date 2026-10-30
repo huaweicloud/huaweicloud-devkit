@@ -6,7 +6,7 @@
 
 HuaweiCloud DevKit Doctor
 
-  [PASS] Node.js >= 22.18
+  [PASS] Node.js >= 22.19
   [FAIL] MCP server installed — Run: npx huaweicloud-devkit install
   [FAIL] Runtime deps (undici) installed — Run: npx huaweicloud-devkit install
   [FAIL] Safety policy installed — Run: npx huaweicloud-devkit install

@@ -30,6 +30,10 @@ export interface TelemetryEvent {
   agentVersion: string;
   os: string;
   osVersion: string;
+  // #1040: the install-position attribution as its own field — never
+  // concatenated into harness (the '|' dashboard pollution). Optional
+  // because a null segment (unresolvable layout) emits no field.
+  installSegment?: string;
   capability?: string;
   _retries?: number;
 }
@@ -41,12 +45,23 @@ export interface TelemetryEvent {
 export interface TelemetryState {
   eventQueue: TelemetryEvent[];
   isFlushing: boolean;
+  // The in-flight flush round's promise, set when a round starts and
+  // cleared when it settles. Awaitability (flushEvents returns a Promise)
+  // needs a rendezvous point: a caller arriving mid-round cannot build a
+  // promise from the round it missed, so the round stores itself here and
+  // late callers chain onto it (see event-pipeline.ts).
+  inflightFlush: Promise<void> | null;
   flushTimer: NodeJS.Timeout | null;
   lastCheckedDate: string;
   installId: string | null;
   userHash: string | null;
   agentHarness: string;
   agentVersion: string;
+  // #1040: the install-position segment (agent-registry's installSegment),
+  // derived ONCE by the face at module scope — layout-derived like the
+  // paths, so it lives here rather than in a sibling, and never mutates
+  // after load. buildEvent stamps it onto every event as its own field.
+  installSegment: string | null;
 }
 
 // Every stamp/spool/log path the family touches, derived once by the face
@@ -55,6 +70,12 @@ export interface TelemetryState {
 export interface TelemetryPaths {
   agentTelemetryDir: string;
   hookEventsPath: string;
+  // The exit spool (full-event JSONL written synchronously at process
+  // exit, ingested on the next boot). GLOBAL-dir on purpose, unlike the
+  // hook spool: it must survive plugin updates that replace the payload
+  // dir, and it must follow HUAWEICLOUD_DEVKIT_HOME so test isolation
+  // (the query-string face re-import under a fresh home) covers it.
+  exitEventsPath: string;
   installStampPath: string;
   installCounterPath: string;
   dauStampPath: string;

@@ -18,9 +18,10 @@ export function buildDevbridgeRenewScript(tunnelId: unknown, expiryHours: unknow
   const id = validateTunnelId(tunnelId);
   const hours = validateExpiryHours(expiryHours);
   return [
-    // #999: data-disk-first PATH (the surviving binary location).
-    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
-    `devbridge update ${id} -e ${hours} > /tmp/db-renew-update.log 2>&1`,
+    // #999: data-disk-first PATH (the surviving binary location) riding the
+    // same first line as the update — the standalone-export form is
+    // byte-identical to the auth probe's first line (see devbridge-keepalive).
+    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; devbridge update ${id} -e ${hours} > /tmp/db-renew-update.log 2>&1`,
     `DB_RENEW_EXIT=$?`,
     `DB_RENEW_ERROR=$(head -1 /tmp/db-renew-update.log 2>/dev/null)`,
     `rm -f /tmp/db-renew-update.log`,

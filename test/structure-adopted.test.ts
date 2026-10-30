@@ -212,26 +212,75 @@ test(
   },
 );
 
-test('agent CLI pins stay in lockstep across ci.yml and e2e-nightly.yml', () => {
-  // The codex and opencode pins are a two-file obligation (the real-agent
-  // lane and the e2e matrix leg must test the same binaries); nothing else
-  // fails on divergence, so this pin makes the obligation mechanical.
+test('agent CLI pins stay in lockstep across e2e-nightly.yml install sites', () => {
+  // The codex and opencode pins are a two-place obligation within
+  // e2e-nightly.yml (the e2e matrix install step and the real-agents job
+  // must test the same binaries — the lane moved out of ci.yml, whose PR
+  // gate never installs agent CLIs); nothing else fails on divergence, so
+  // this pin makes the obligation mechanical.
   const ci = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8');
   const nightly = readFileSync(join(root, '.github', 'workflows', 'e2e-nightly.yml'), 'utf8');
   const extract = (text: string, pkg: string): string[] =>
     [...text.matchAll(new RegExp(`${pkg}@(\\d+\\.\\d+\\.\\d+)`, 'g'))].map((m) => m[1]!);
   for (const pkg of ['opencode-ai', '@openai/codex']) {
-    const ciPins = extract(ci, pkg);
-    const nightlyPins = extract(nightly, pkg);
-    assert.ok(ciPins.length > 0, `${pkg} must stay pinned in ci.yml`);
-    assert.ok(nightlyPins.length > 0, `${pkg} must stay pinned in e2e-nightly.yml`);
-    for (const pin of nightlyPins) {
-      assert.ok(
-        ciPins.includes(pin),
-        `${pkg}@${pin} (e2e-nightly.yml) has no matching pin in ci.yml — the agent CLI pins are a two-file event`,
-      );
-    }
+    const pins = extract(nightly, pkg);
+    assert.ok(
+      pins.length >= 2,
+      `${pkg} must stay pinned in e2e-nightly.yml's agent-CLI install sites (the e2e matrix step and the real-agents job)`,
+    );
+    assert.ok(
+      new Set(pins).size === 1,
+      `${pkg} pins disagree inside e2e-nightly.yml (${pins.join(', ')}) — the agent CLI pins are a two-place event within the file`,
+    );
+    assert.equal(
+      extract(ci, pkg).length,
+      0,
+      `${pkg} must not be pinned in ci.yml — the plain PR gate never installs agent CLIs (the real-agents lane lives in e2e-nightly.yml)`,
+    );
   }
+  // The hermes leg is E2E-only (the real-agents job installs
+  // opencode/codex, never hermes), so its pin is single-site: the
+  // install.sh invocation must carry an exact --commit (a floating
+  // --channel stable would drift the leg's spike-validated mechanism set
+  // silently).
+  const hermesCommit = [...nightly.matchAll(/install\.sh \| bash -s -- [^\n]*--commit ([0-9a-f]{40})/g)].map(
+    (m) => m[1]!,
+  );
+  assert.equal(
+    hermesCommit.length,
+    1,
+    'e2e-nightly.yml must pin the hermes install to exactly one 40-hex commit — an upgrade is an explicit suite event',
+  );
+  // And the nightly-only staging: hermes must stay off the push and PR
+  // lanes (accepted LLM cost, staged rollout). The gate lives at STEP
+  // level — GitHub rejects the matrix context in a job-level if (the
+  // shape that silently failed this whole workflow's loading from the
+  // hermes commit until the move; actionlint and the 0-jobs runs pinned
+  // it), so the job-level if must stay matrix-free while the budget
+  // control point (the suite step) must carry the gate.
+  const e2eJob = nightly.split('  e2e:')[1]!.split('\n  real-agents:')[0];
+  const ifAt = e2eJob.indexOf('if: >-');
+  assert.ok(ifAt !== -1, 'the e2e job-level if must keep its folded form (an inline re-spelling escapes this pin)');
+  const jobIf = e2eJob.slice(ifAt, e2eJob.indexOf('concurrency:'));
+  assert.ok(
+    !jobIf.includes('matrix'),
+    'the e2e job-level if must stay matrix-free (GitHub rejects matrix there and the workflow fails to load)',
+  );
+  assert.match(
+    e2eJob,
+    /name: Run agent-level E2E suite[^\n]*\n\s*# The staged gate's budget control point[^\n]*\n(?:\s*#[^\n]*\n)*\s*if: matrix\.agent != 'hermes' \|\| github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch'/,
+    'the suite step must carry the hermes staging gate — it is the only step that spends LLM budget, so dropping its if re-opens the push-lane cost',
+  );
+  // Event-discriminated trunk groups: the push-lane hermes leg is a green
+  // idle job (the staging gate skips its budget steps), and it must never
+  // share a concurrency group with the schedule/dispatch suites — a push
+  // would evict the in-flight nightly hermes run and replace it with
+  // zero coverage.
+  assert.match(
+    e2eJob,
+    /format\('e2e-trunk-\{0\}-\{1\}', github\.event_name, matrix\.agent\)/,
+    'the e2e trunk concurrency group must carry the event name — a push-lane idle leg sharing the schedule/dispatch group cancels the only real hermes venue (cancel-in-progress)',
+  );
 });
 
 test('the e2e driver echo and the workflow grep agree on the contract', () => {

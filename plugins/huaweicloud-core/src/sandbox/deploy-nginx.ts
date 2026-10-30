@@ -219,7 +219,12 @@ fi`;
     sudo nginx`,
     `# A1 (#935): verify the config write took effect before reporting success`,
     `NGINX_CONFIG_PATH=${configPath}`,
-    `if [ ! -f "$NGINX_CONFIG_PATH" ]; then echo "DB_NGINX_CONFIG_MISSING=1"; fi`,
+    `# Presence-inverted markers (interrogate round 2): the OK marker is emitted on
+    # success and the MISSING marker on failure, so EVERY marker is presence-
+    # required downstream — a selectively mangled escape sequence that swallows
+    # one marker line can only ever read as the FAILURE direction, never as a
+    # false success (the #935 defect this block exists to prevent).`,
+    `if [ -f "$NGINX_CONFIG_PATH" ]; then echo "DB_NGINX_CONFIG_OK=1"; else echo "DB_NGINX_CONFIG_MISSING=1"; fi`,
     `NGINX_T_OUTPUT=$(sudo nginx -t 2>&1 || true)`,
     `if echo "$NGINX_T_OUTPUT" | grep -Eq "syntax is ok|test is successful"; then echo "DB_NGINX_T=PASS"; else echo "DB_NGINX_T=FAIL"; echo "$NGINX_T_OUTPUT" | sed "s/^/DB_NGINX_T_OUTPUT: /"; fi`,
   ].join('\n');

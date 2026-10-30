@@ -1,4 +1,4 @@
-import { AGENTS, matchAgent, detectVersion, installSegment } from './agent-registry.ts';
+import { AGENTS, matchAgent, detectVersion } from './agent-registry.ts';
 
 export interface ClientInfo {
   name?: string | null;
@@ -11,25 +11,32 @@ export interface AgentIdentity {
 }
 
 /**
- * 仅返回 harness 字符串（或 null），不返回 version。
- * 用于简单场景（如 keepalive 判断、测试断言）。
+ * 仅返回 harness 字符串，不返回 version。
+ * #1040: 白名单 / AGENT_HARNESS 未命中时一律返回 'unknown'——
+ * 不再透传 clientInfo.name（startup、voucher-claim*、test* 等探针类
+ * clientName 同样归 unknown），也不拼接 installSegment，避免 agent 名
+ * 出现 '|' 污染。
  */
-export function detectAgentHarness(clientInfo: ClientInfo = {}): string | null {
-  if (process.env.AGENT_HARNESS) return process.env.AGENT_HARNESS;
+export function detectAgentHarness(clientInfo: ClientInfo = {}): string {
+  const envHarness = process.env.AGENT_HARNESS;
+  if (envHarness && AGENTS.some((a) => a.id === envHarness)) return envHarness;
   for (const agent of AGENTS) {
     if (matchAgent(agent, clientInfo)) return agent.id;
   }
-  return clientInfo.name || null;
+  return 'unknown';
 }
 
 export function detectAgent(clientInfo: ClientInfo = {}): AgentIdentity {
+  // AGENT_HARNESS 仅在命中白名单时生效；未命中视为不可信输入，不透传任意环境值。
   const envHarness = process.env.AGENT_HARNESS;
   if (envHarness) {
     const cfg = AGENTS.find((a) => a.id === envHarness) || null;
-    return {
-      harness: envHarness,
-      version: detectVersion(cfg ? cfg.version : null) || clientInfo.version || '0.0.0',
-    };
+    if (cfg) {
+      return {
+        harness: envHarness,
+        version: detectVersion(cfg.version) || clientInfo.version || '0.0.0',
+      };
+    }
   }
 
   for (const agent of AGENTS) {
@@ -41,11 +48,9 @@ export function detectAgent(clientInfo: ClientInfo = {}): AgentIdentity {
     }
   }
 
-  const seg = installSegment();
-  const base = clientInfo.name || 'unknown';
-  const harness = seg ? `${base}|${seg}` : base;
+  // #1040: 兜底收敛 'unknown'——安装位置信息走遥测独立字段 installSegment，不进入 agent 名。
   return {
-    harness: harness.length > 32 ? harness.slice(0, 32) : harness,
+    harness: 'unknown',
     version: clientInfo.version || '0.0.0',
   };
 }

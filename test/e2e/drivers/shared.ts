@@ -3,6 +3,29 @@ import { spawn, spawnSync } from 'node:child_process';
 import { scrubSecrets } from '../env-policy.ts';
 import type { RunRequest } from './types.ts';
 
+// The MCP child env loader every env-filtering agent leg uses (codex strips
+// MCP children to login vars + the server's config env block; hermes filters
+// to the config env block + a safe baseline). The driver writes this script
+// next to a per-attempt mcp-env.json and points the agent's server command at
+// [loader, server]: the child then runs with {...agent-passed env, ...merged
+// case env} — the runner-owned session env (seams, case env, fixed posture,
+// shim-first PATH) reaches the server with the loader's extra winning ties.
+export const MCP_ENV_LOADER_SOURCE = [
+  "import { readFileSync } from 'node:fs';",
+  "import { spawn } from 'node:child_process';",
+  "import { dirname, join } from 'node:path';",
+  'const server = process.argv[2];',
+  "const envFile = join(dirname(process.argv[1]), 'mcp-env.json');",
+  "const extra = JSON.parse(readFileSync(envFile, 'utf8'));",
+  "const child = spawn(process.execPath, [server], { env: { ...process.env, ...extra }, stdio: 'inherit' });",
+  // Signal death flattens to exit 0 deliberately: the runner kills the
+  // whole detached process group on timeout/abort (bypassing handlers
+  // anyway), and MCP clients observe stdio close either way.
+  "child.on('exit', (code) => process.exit(code ?? 0));",
+  "process.on('SIGTERM', () => child.kill('SIGTERM'));",
+  '',
+].join('\n');
+
 // Shared driver plumbing. Every driver owns the same agent-independent
 // mechanics: a shared model-env requirement vocabulary, a PATH probe, and a
 // detached process-group spawn whose whole tree (agent → MCP server → fake

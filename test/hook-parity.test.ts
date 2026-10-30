@@ -3,6 +3,11 @@ import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
 import { classifyTextCommand } from '../plugins/huaweicloud-core/src/safety-policy.ts';
+import {
+  decodeAnsiCSpans,
+  splitSimpleCommand,
+  splitSimpleCommandGlued,
+} from '../plugins/huaweicloud-core/src/safety/shell-text.ts';
 
 // The TS classifier and the python hook are two hand-maintained
 // implementations of one safety policy. This battery runs the SAME command
@@ -56,6 +61,423 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   // both layers deny via the write-vocabulary clause of the obfuscation gate.
   ["$'\\x68'cloud ECS DeleteServers --server.name=x", 'deny'],
   ["hcl$'\\x6f'ud ECS DeleteServers --server.name=x", 'deny'],
+  // port-v2defects (interrogate round): the py hook's WRITE_VOCAB_RE was a
+  // hardcoded 20-word copy of policy.json's 37 writeOperationPrefixes — the
+  // 17 missing words (invoke/execute/trigger/deploy among them, the
+  // doctrine-named write families) let these mangled writes through the
+  // py-hook faces (Hermes importlib, WorkBuddy deploy) while the TS layer
+  // denied. The py vocabulary now derives from the same policy list; these
+  // pins mirror the DeleteServers pin above for each family. Operation
+  // spellings pin the classifier's write-prefix clause — FunctionGraph
+  // InvokeFunction is the corpus-real anchor, the others are shaped.
+  ["$'\\x68'cloud FunctionGraph InvokeFunction --func_urn=x", 'deny'],
+  ["$'\\x68'cloud CodeArtsDeploy ExecuteDeployTask --task_id=x", 'deny'],
+  ["$'\\x68'cloud CES TriggerAlarmPolicy --alarm_id=x", 'deny'],
+  ["$'\\x68'cloud CodeArtsDeploy DeployApplication --app_id=x", 'deny'],
+  // port-v2defects (interrogate round 1): the mangled OBS subcommand face —
+  // routing dies with the keyword, so the obfuscation gate's write
+  // vocabulary is the only layer that can fire, and its OBS arm (unioned
+  // with OBSUTIL_WRITES on both layers) closes the non-prefix subcommand
+  // writes (rm/cp/sync/chattri…). Read subcommands stay allowed.
+  ["$'\\x68'cloud OBS rm obs://b -f", 'deny'],
+  ["$'\\x68'cloud OBS cp obs://src obs://dst", 'deny'],
+  ["$'\\x68'cloud OBS sync obs://b obs://c", 'deny'],
+  ["$'\\x68'cloud OBS chattri obs://b -acl=public-read", 'deny'],
+  // port-v2defects (interrogate round 3): with the ANSI-C decode feeding
+  // the gate's candidates, EVERY $'-mangled cloud command denies rather
+  // than parses (the #727 doctrine — an op-mangled read with a literal bin
+  // already denied); these read controls flipped from allow, and now pin
+  // the uniform mangled-read verdict.
+  ["$'\\x68'cloud OBS ls obs://bucket", 'deny'],
+  ["$'\\x68'cloud OBS stat obs://b/o", 'deny'],
+  // port-v2defects (interrogate round 3): the decode closes the
+  // mangle-past-the-marker bypass — h$'\x63'loud reconstructs to the hcloud
+  // the shell executes, so the decoded candidate feeds the bin/secret/vocab
+  // clauses no matter WHICH letters were escaped (bin, service token,
+  // operation word — hex, octal, or unicode), and bin+op both-mangled no
+  // longer sidesteps the vocabulary family.
+  ["h$'\\x63'loud $'\\x4f'BS rm mybucket", 'deny'],
+  ["h$'\\143'loud $'\\117'BS cp obs://src obs://dst", 'deny'],
+  ["h$'\\u0063'loud $'\\u004f'BS sync obs://b obs://c", 'deny'],
+  ["$'\\x68'$'\\x63'loud ECS $'\\x44'eleteServers --server.id=x", 'deny'],
+  ["h$'\\x63'loud ECS ListServers", 'deny'],
+  ["h$'\\x63'loud configure show", 'deny'],
+  // port-v2defects (interrogate round 4): the phantom-quote defeat — a
+  // backslash-escaped quote OUTSIDE quotes opened phantom quote state in
+  // the decoders and disabled the whole decode for the rest of the payload
+  // (\' ; h$'\x63'loud … allowed on every layer while bash ran the write).
+  // The outside-quote backslash branch closes it; \$' stays \$ + plain
+  // quotes (the echo \$'hcloud' shape still denies via the PRE-EXISTING
+  // stripped-shadow class — recorded residual, not pinned here).
+  ["\\' ; h$'\\x63'loud ECS $'\\x44'eleteServers --server.id=x", 'deny'],
+  ["\\\" ; h$'\\x63'loud ECS $'\\x44'eleteServers --server.id=x", 'deny'],
+  ["\\' ; h$'\\x63'loud $'\\x4f'BS rm mybucket", 'deny'],
+  ["grep foo\\' bar ; h$'\\x63'loud ECS $'\\x44'eleteServers", 'deny'],
+  // port-v2defects (interrogate round 4): the line-continuation channel —
+  // bash removes the \\<LF> pair at parser level, and the surviving
+  // newline broke contiguity in every shadow (h\\<LF>cloud never routed;
+  // De\\<LF>leteServers never matched a prefix). The pair now drops in the
+  // segment splitters, the tokenizers, and the quote-stripped shadows —
+  // inside single quotes the pair is literal and over-stripping there
+  // only ever joins text (fail-closed, never hides a marker).
+  ['h\\\ncloud ECS DeleteServers --server.id=x', 'deny'],
+  ['hcloud ECS De\\\nleteServers --server.id=x', 'deny'],
+  ['hcloud ECS "De\\\nleteServers" --server.id=x', 'deny'],
+  ['h\\\ncloud OBS rm mybucket', 'deny'],
+  ["printf $'%s\\n' hello", 'allow'],
+  ["echo $(date +$'%Y-%m-%d')", 'allow'],
+  ["awk $'\\t' '{print $1}'", 'allow'],
+  // port-v2defects (interrogate round 5): the over-cap slice — the round-4
+  // decode skip made >256 KiB the one place a fully-mangled write sailed
+  // through on every layer (executable proof supplied by the reviewer: bash
+  // ran it). The cap now denies expansion-bearing over-cap payloads
+  // fail-closed (bytes on both twins — the UTF-16/code-point boundary
+  // drift died with the unit alignment), and a benign over-cap payload
+  // stays allowed.
+  ['#' + 'x'.repeat(262200) + "\nh$'\\x63'loud ECS $'\\x44'eleteServers --server.id=x", 'deny'],
+  ['#' + 'x'.repeat(262200) + '\necho hello', 'allow'],
+  // port-v2defects (interrogate round 6): the composition channel — bash
+  // removes \\<LF> BEFORE tokenization, reassembling $'/$( across the break,
+  // so h$\\<LF>'\\x63'loud executes as a mangled write while the raw text
+  // carries only $. The expansion check and the decode now run on the
+  // continuation-dropped text (both twins): over-cap composed shapes deny
+  // at the cap, tiny ones through the obfuscation gate. Also the surrogate
+  // row (a lone \ud800 crashed the py hook verdict-less — read as allow —
+  // before the "replace" byte count) and the astral-boundary row (the cap
+  // counts BYTES: astral padding between the old unit-caps must deny with
+  // an expansion-bearing tail, on both layers).
+  ["hcloud ECS $\\\n'\\x44'eleteServers --server.id=x", 'deny'],
+  ["h$\\\n'\\x63'loud ECS DeleteServers --server.id=x", 'deny'],
+  ['#' + 'x'.repeat(262200) + "\nh$\\\n'\\x63'loud ECS $\\\n'\\x44'eleteServers --server.id=x", 'deny'],
+  ['hcloud ECS DeleteServers --server.id=x \ud800', 'deny'],
+  ['echo hello \ud800', 'allow'],
+  // The surrogate BOUNDARY parity row (interrogate round 7): 131,072 lone
+  // surrogates + an expansion tail is ~131 KB under round-6's py count (1
+  // byte each) but ~393 KB under TS's U+FFFD count (3 bytes each). This
+  // row's payload is the count-parity SHAPE (an expansion-bearing echo) —
+  // the write bypass itself was the reviewer's separate printf-mangled
+  // payload, denied by the cap's expansion arm; this row flips if the
+  // counts drift apart again (round 8 wording fix: it never reproduced the
+  // bypass).
+  ['\ud800'.repeat(131072) + 'echo $(date)', 'deny'],
+  // Whitespace-only commands (interrogate round 8): the TS twin's risk-rule
+  // engine denies them ("command must be a non-empty string" — JS trim also
+  // strips \ufeff); the py layer allowed them, a verdict drift in the
+  // battery's own contract class. Mirrored.
+  ['', 'deny'],
+  [' ', 'deny'],
+  ['\n', 'deny'],
+  ['﻿', 'deny'],
+  // port-v2defects (interrogate round 9): the glued-bin family — bash glues
+  // adjacent quoted spans and word characters into ONE word, so
+  // "hcl"oud ECS Delete runs hcloud with full argv while the span/fragment
+  // tokenizers never yield an hcloud-leading stream. The write gate's glued
+  // fallback (split_tokens_glued / splitSimpleCommandGlued, routed-only)
+  // classifies the reassembled argv; the trailing-glued INPUT redirect
+  // family (hcloud<f2 args…, xargs hcloud<f, xargs hcloud<<EOF) peels in
+  // the head predicates and routes through the narrow tail's new '<'.
+  ['"hcl"oud ECS DeleteServers --server.id=x', 'deny'],
+  ["'hcl''oud' ECS DeleteServers --server.id=x", 'deny'],
+  ['hcl"oud" ECS DeleteServers --server.id=x', 'deny'],
+  ['"hcl""oud" ECS DeleteServers --server.id=x', 'deny'],
+  ['"hcl"oud OBS rm obs://b -f', 'deny'],
+  ['"hcl"oud ECS ListServers', 'allow'],
+  ['hcloud<f2 ECS DeleteServers --server.id=x', 'deny'],
+  ['hcloud<f2 ECS ListServers', 'allow'],
+  ["printf 'ECS DeleteServers --server.id=x' >f; xargs hcloud<f", 'deny'],
+  ['xargs hcloud<<EOF\nECS DeleteServers --server.id=x\nEOF', 'deny'],
+  // port-v2defects (interrogate round 10): the glued gate's full-grammar
+  // completion — the round-9 hand-rolled prefix walk missed shells/eval/
+  // env assignments/redirections/wrappers and multi-segment payloads, and
+  // a leading READ masked a later glued write (`not saw_leading`). All
+  // real-bash-executable proofs from the round; the nested scripts flatten
+  // through the glued tokenizer (py's recursion doctrine).
+  ['bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['bash -c "\\"hcl\\"oud ECS Delete"', 'deny'],
+  ['sh -c "\'hcl\'oud ECS Delete"', 'deny'],
+  ['eval \'"hcl"oud ECS Delete\'', 'deny'],
+  ['eval "hcl"oud ECS Delete', 'deny'],
+  ['HW_REGION=x "hcl"oud ECS Delete', 'deny'],
+  ['env HW_REGION=x "hcl"oud ECS Delete', 'deny'],
+  ['2>/dev/null "hcl"oud ECS Delete', 'deny'],
+  ['<in "hcl"oud ECS Delete', 'deny'],
+  ['skill-quality-cli run -- "hcl"oud ECS Delete', 'deny'],
+  ['huaweicloud-devkit secret exec --env N=secret://s/n -- "hcl"oud ECS Delete', 'deny'],
+  ['echo x; "hcl"oud ECS Delete', 'deny'],
+  ['true && "hcl"oud ECS Delete', 'deny'],
+  ['hcloud ECS ListServers; "hcl"oud ECS Delete', 'deny'],
+  ['hcloud --help; "hcl"oud OBS rm mybucket', 'deny'],
+  // port-v2defects (interrogate round 11): the script-carrier completion —
+  // prefix-wrapped shells (env/sudo/timeout/secret-exec/skill-quality +
+  // bash -c), redirection-first scripts (2>/dev/null, 2>&1 — the `&` of a
+  // redirection-dup operator is part of the token, not a separator),
+  // heredoc/herestring bodies as shell scripts, watch's sh -c join, glued
+  // xargs bins fed by the pipe, and quote-mangled ARGV under a
+  // plain-leading bin (the ownership is the verdict comparison, not a
+  // skip). All real-bash-executable proofs from the round.
+  ['env HW_REGION=x bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['sudo bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['timeout 5 bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['huaweicloud-devkit secret exec --env K=x -- bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['skill-quality-cli run -- bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['2>/dev/null bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['2>&1 bash -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['2>/dev/null eval \'"hcl"oud ECS Delete\'', 'deny'],
+  ['hcloud ECS "De"leteServers', 'deny'],
+  ['hcloud "EC"S DeleteServers', 'deny'],
+  ['hcloud OB"S" rm obs://bucket/obj -f', 'deny'],
+  ['hcloud config"ure" show', 'deny'],
+  ['hcloud ECS Li"stServers', 'allow'],
+  ['bash <<EOF\n"hcl"oud ECS DeleteServers --server.id=x\nEOF', 'deny'],
+  ['bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ["bash <<'EOF'\nhcloud ECS DeleteServers\nEOF", 'deny'],
+  ["bash <<<'hcloud ECS Delete'", 'deny'],
+  ['bash <<EOF\nhcloud ECS ListServers\nEOF', 'allow'],
+  ['cat <<EOF\nhcloud ECS DeleteServers\nEOF', 'allow'],
+  ['echo ECS Delete | xargs "hcl"oud', 'deny'],
+  ['echo List | xargs "hcl"oud && echo done', 'allow'],
+  ['watch -n1 \'"hcl"oud ECS Delete\'', 'deny'],
+  ['watch -n 5 hcloud ECS ListServers', 'allow'],
+  ['bash -c "echo x; \\"hcl\\"oud ECS Delete"', 'deny'],
+  ['bash -c \'hcloud ECS ListServers; "hcl"oud ECS Delete\'', 'deny'],
+  ['bash -c "if true; then \\"hcl\\"oud ECS Delete; fi"', 'deny'],
+  ['bash -c "echo x; \\"hcl\\"oud ECS ListServers"', 'allow'],
+  ['2>&1 hcloud ECS ListServers', 'allow'],
+  // port-v2defects (interrogate round 12): the script-carrier details —
+  // heredoc markers with double-quoted delimiters, flags between the shell
+  // and the marker (`bash -s <<EOF`), trailing live text on the marker
+  // line (`bash <<EOF 2>/dev/null`, the `;`/`&&` splits whose body lands
+  // in the NEXT segment), flags before -c (`bash -e -c`), a `<<<` line
+  // INSIDE a body (body text, not the marker), find -exec command
+  // positions (plain and mangled), interpreter system() carriers, glued
+  // xargs bins with their own argv, 11+ strippable stacks, and the
+  // deep-nest `'\''` idiom at depths 8-9 (the script-shadow pass — both
+  // twins had missed the executable zone). The over-deny control: a shell
+  // word in ARGUMENT position (`echo sh <<EOF`) does not make the body a
+  // script.
+  ['bash <<"EOF"\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['bash -s <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['bash -x <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['bash <<EOF 2>/dev/null\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['bash <<EOF; echo hi\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['bash <<EOF && echo done\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['bash <<EOF\nhcloud ECS DeleteServers\n<<< harmless\nEOF', 'deny'],
+  ["bash -e -c 'hcloud ECS DeleteServers'", 'deny'],
+  ['bash -u -c \'"hcl"oud ECS Delete\'', 'deny'],
+  ['find /tmp -name x.log -exec hcloud ECS DeleteServers {} \\;', 'deny'],
+  ['find /tmp -name x.log -exec "hcl"oud ECS Delete {} \\;', 'deny'],
+  ['find /tmp -name x.log -exec hcloud ECS DeleteServers {} +', 'deny'],
+  ['python3 -c \'import os; os.system("hcloud ECS DeleteServers")\'', 'deny'],
+  ['perl -e \'system("hcloud ECS DeleteServers")\'', 'deny'],
+  ['awk \'BEGIN{system("hcloud ECS DeleteServers")}\'', 'deny'],
+  ['echo DeleteServers | xargs "hcl"oud ECS', 'deny'],
+  ['echo ListServers | xargs "hcl"oud ECS', 'allow'],
+  ['X0=1 X1=1 X2=1 X3=1 X4=1 X5=1 X6=1 X7=1 X8=1 X9=1 X10=1 hcloud ECS DeleteServers', 'deny'],
+  ['echo sh <<EOF\nhcloud ECS DeleteServers\nEOF', 'allow'],
+  ['bash <<EOF\nhcloud ECS ListServers\nEOF', 'allow'],
+  ["python3 -c 'print(1+1)'", 'allow'],
+  ["awk '{print $1}' file.txt", 'allow'],
+  ['find /tmp -name x.log -delete', 'allow'],
+  // port-v2defects (interrogate round 13 + the coordinator's DESIGN PIVOT):
+  // the vision tail closes by DENIAL, not enumeration — the carrier space
+  // is unbounded, so the walk denies fail-closed when it cannot traverse
+  // and our token hides fragmented/marked/in-code. The pivot's own rows:
+  // interpreter name variants + benign flags (gawk/mawk/python3.11/-u),
+  // awk -v value flags, every invocation API (subprocess/execSync/execvp —
+  // code-context opacity, not API enumeration), value/long flags before
+  // -c (-o pipefail/--noprofile/-ce), 19+ env-assignment stacks, heredoc
+  // heads with operand redirections (< in bash), multiple system() calls,
+  // and the doctrine's ACCEPTED OVER-DENIES (pinned as deliberate):
+  // interpreter code MENTIONING hcloud in any string (print-vs-execute
+  // requires parsing the code — the exact vision the pivot retires) and
+  // perl -c (syntax-check) still denying when the token rides -e.
+  ['python3 -u -c \'import os; os.system("hcloud ECS DeleteServers")\'', 'deny'],
+  ['gawk \'BEGIN{system("hcloud ECS DeleteServers")}\'', 'deny'],
+  ['python3.11 -c \'import os; os.system("hcloud ECS DeleteServers")\'', 'deny'],
+  ['awk -v sep=, \'BEGIN{system("hcloud ECS DeleteServers")}\'', 'deny'],
+  ['python3 -c \'import subprocess; subprocess.run("hcloud ECS DeleteServers", shell=True)\'', 'deny'],
+  ['node -e \'require("child_process").execSync("hcloud ECS DeleteServers")\'', 'deny'],
+  ['python3 -c \'os.execvp("hcloud", ["hcloud","ECS","DeleteServers"])\'', 'deny'],
+  ["bash -o pipefail -c 'hcloud ECS DeleteServers'", 'deny'],
+  ["bash --noprofile -c 'hcloud ECS DeleteServers'", 'deny'],
+  ["bash -ce 'hcloud ECS DeleteServers'", 'deny'],
+  [
+    'X0=1 X1=1 X2=1 X3=1 X4=1 X5=1 X6=1 X7=1 X8=1 X9=1 X10=1 X11=1 X12=1 X13=1 X14=1 X15=1 X16=1 X17=1 X18=1 hcloud ECS DeleteServers',
+    'deny',
+  ],
+  ['< in bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['2>/dev/null bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['perl -e \'system("echo hi"); system("hcloud ECS DeleteServers")\'', 'deny'],
+  ['perl -c -e \'system("hcloud ECS DeleteServers")\'', 'deny'],
+  ['sudo gawk \'BEGIN{system("hcloud ECS DeleteServers")}\'', 'deny'],
+  ['bash -c \'echo "step1; hcloud ECS DeleteServers"\'', 'allow'],
+  ['bash -c \'hcloud ECS ListServers --note="x; hcloud ECS DeleteServers"\'', 'allow'],
+  ['echo -exec hcloud ECS DeleteServers', 'allow'],
+  ['python3 -c \'print("docs about hcloud")\'', 'deny'],
+  // port-v2defects (interrogate round 14, the exit round on the pivot):
+  // ${ parameter expansion joins the marker set; the `saw` accumulator is
+  // PER-SEGMENT (a read in one segment must never mask a write in
+  // another); busybox is the applet dispatcher; and interpreter code
+  // through a stdin heredoc is code context. The benign controls pin the
+  // prose boundary.
+  ['${X:-hcloud} ECS DeleteServers', 'deny'],
+  ["bash -c '${X:-hcloud} ECS DeleteServers'", 'deny'],
+  ['${HCLOUD_BIN:-hcloud} ECS DeleteServers', 'deny'],
+  ['${X:-hcloud} OBS rm obs://b/k', 'deny'],
+  ['hcloud ECS ListServers; node -e \'require("child_process").execSync("hcloud ECS DeleteServers")\'', 'deny'],
+  [
+    'hcloud ECS ListServers; python3 -c \'import subprocess; subprocess.run(["hcloud","ECS","DeleteServers"])\'',
+    'deny',
+  ],
+  [
+    'bash -c \'hcloud ECS ListServers\'; node -e \'require("child_process").execSync("hcloud ECS DeleteServers")\'',
+    'deny',
+  ],
+  ['hcloud --help; python3 -c \'import subprocess; subprocess.run(["hcloud"])\'', 'deny'],
+  [
+    'python3 -c \'import os,subprocess; os.system("hcloud ECS ListServers"); subprocess.run(["hcloud","ECS","DeleteServers"])\'',
+    'deny',
+  ],
+  ['node -e \'require("child_process").execSync("hcloud ECS DeleteServers")\'; hcloud ECS ListServers', 'deny'],
+  ["busybox sh -c 'hcloud ECS DeleteServers'", 'deny'],
+  ['busybox awk \'BEGIN{system("hcloud ECS DeleteServers")}\'', 'deny'],
+  ["env busybox sh -c 'hcloud ECS DeleteServers'", 'deny'],
+  ['nice busybox awk \'BEGIN{system("hcloud ECS DeleteServers")}\'', 'deny'],
+  ['python3 <<\'PYEOF\'\nimport os; os.system("hcloud ECS DeleteServers")\nPYEOF', 'deny'],
+  ['python3 - <<\'PYEOF\'\nimport subprocess; subprocess.run(["hcloud","ECS","DeleteServers"])\nPYEOF', 'deny'],
+  ['git log --oneline | grep hcloud', 'allow'],
+  ['rg -n "hcloud ECS ListServers" README.md', 'allow'],
+  ['man hcloud', 'allow'],
+  ['nohup hcloud ECS ListServers', 'allow'],
+  ['timeout 30 hcloud ECS ListServers --cli-region=cn-north-4', 'allow'],
+  ['hcloud ECS ListServers; echo done && git commit -m "hcloud cleanup notes"', 'allow'],
+  // port-v2defects (interrogate round 15, the clean-round fixes): the
+  // expansion-built OPERATION/SERVICE/SUBCOMMAND slot under a seen bin
+  // (the slot rule — flag-position ${ stays allowed); prefix/env/busybox
+  // before the heredoc shell head (the probe grammar); closed-quote-
+  // mangled interpreter heads (the word-gluing doctrine); and the over-cap
+  // ${ boundary parity.
+  ['hcloud ECS ${X:-DeleteServers}', 'deny'],
+  ['sh -c "hcloud ECS ${X:-DeleteServers}"', 'deny'],
+  ['hcloud ECS ListServers; hcloud ECS ${X:-DeleteServers}', 'deny'],
+  ['hcloud ${X:-OBS} rm obs://b -f', 'deny'],
+  ['hcloud OBS ${X:-rm} obs://b -f', 'deny'],
+  ['hcloud FunctionGraph ${X:-InvokeFunction}', 'deny'],
+  ['hcloud configure ${X:-set}', 'deny'],
+  ['hcloud ECS ${X:-RebootServers --server.id=x}', 'deny'],
+  ['hcloud ECS ListServers --cli-region=${REGION}', 'allow'],
+  ['${X:-ECS} DeleteServers', 'allow'],
+  ['env bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['X=1 bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['timeout 5 bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['busybox sh <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['sudo bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['< in bash <<EOF\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ["pyth'on3' -c 'import os; os.system(\"hcloud ECS DeleteServers\")'", 'deny'],
+  ["per'l' -e 'system(\"hcloud ECS DeleteServers\")'", 'deny'],
+  ["g'awk' 'BEGIN{system(\"hcloud ECS DeleteServers\")}'", 'deny'],
+  ['no\'de\' -e \'require("child_process").execSync("hcloud ECS DeleteServers")\'', 'deny'],
+  ['py"thon3" -c \'import os; os.system("hcloud ECS DeleteServers")\'', 'deny'],
+  ['#' + 'x'.repeat(262200) + '\n${X:-hcloud} ECS DeleteServers', 'deny'],
+  // port-v2defects (interrogate round 16, the clean-round fixes): the
+  // quote-mangled SHELL heredoc heads (`ba'sh' <<EOF` — the word-gluing
+  // doctrine reached the shell twin), the quote-mangled interpreter CODE
+  // FLAGS (`python3 -'c'`), the py glued-path expansion SLOT (TS parity),
+  // and the pipe-fed shell stdin (`echo '…' | bash` — the xargs-feeder
+  // doctrine: the previous segment's args are the script; a
+  // heredoc-to-pipe composition lands the body inline).
+  ["ba'sh' <<EOF\nhcloud ECS DeleteServers\nEOF", 'deny'],
+  ["bas'h' <<EOF\nhcloud ECS DeleteServers\nEOF", 'deny'],
+  ["da'sh' <<<'hcloud ECS Delete'", 'deny'],
+  ["python3 -'c' 'import os; os.system(\"hcloud ECS DeleteServers\")'", 'deny'],
+  ["perl -'e' 'system(\"hcloud ECS DeleteServers\")'", 'deny'],
+  ['node -\'e\' \'require("child_process").execSync("hcloud ECS DeleteServers")\'', 'deny'],
+  ["pyth'on3' -'c' 'import os; os.system(\"hcloud ECS DeleteServers\")'", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | bash", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | sh", 'deny'],
+  ['cat <<EOF | bash\nhcloud ECS DeleteServers\nEOF', 'deny'],
+  ['"hcl"oud ${X:-ECS} ${X:-DeleteServers}', 'deny'],
+  ["echo 'hcloud ECS ListServers' | bash", 'allow'],
+  // port-v2defects (interrogate round 17, the clean-round fixes): the
+  // mangled shell -c flag (TS's flag-skip now normalizes), the mangled
+  // xargs/watch heads, and the pipe-feeder completions — the walk-back
+  // through pass-through middles, per-word feeder classification
+  // (printf's format arg), interpreter consumers (the code-context deny),
+  // and the glued xargs arms using the walked-back feeder.
+  ["bash -'o' pipefail -c 'hcloud ECS DeleteServers'", 'deny'],
+  ["bash -'c' 'echo; hcloud ECS DeleteServers' && echo done", 'deny'],
+  ['echo DeleteServers | x\'args\' "hcl"oud ECS', 'deny'],
+  ["echo DeleteServers | x'args' hcloud ECS", 'deny'],
+  ["wat'ch' -n1 'hcloud ECS DeleteServers'", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | cat | bash", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | tee /dev/null | bash", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | head -1 | bash", 'deny'],
+  ['echo \'import os; os.system("hcloud ECS DeleteServers")\' | python3', 'deny'],
+  ['echo \'system("hcloud ECS DeleteServers")\' | perl', 'deny'],
+  ["printf '%s\\n' 'hcloud ECS DeleteServers' | bash", 'deny'],
+  ['echo DeleteServers | cat | xargs "hcl"oud ECS', 'deny'],
+  ['ls | sh', 'allow'],
+  ["echo 'docs' | bash", 'allow'],
+  // port-v2defects (interrogate round 18, the clean-round fixes): the
+  // walk-back head comparisons use the recognition grammar — quote-strip
+  // + basename + prefix probe (`c'at'`, `/usr/bin/cat`, `command cat`),
+  // and CONTROL heads flow through BEFORE the probe (`if true; the'n' …`
+  // — probing would strip the `if` and misread `true` as the content).
+  ["echo 'hcloud ECS DeleteServers' | c'at' | bash", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | /usr/bin/cat | bash", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | command cat | bash", 'deny'],
+  ["echo DeleteServers | if true; the'n' xargs hcloud ECS; fi", 'deny'],
+  ["echo DeleteServers | i'f' true; the'n' xargs hcloud ECS; fi", 'deny'],
+  ["echo 'import os; os.system(\"hcloud ECS DeleteServers\")' | ca't' | python3", 'deny'],
+  ['echo DeleteServers | c\'at\' | xargs "hcl"oud ECS', 'deny'],
+  ["ls | c'at' | bash", 'allow'],
+  // port-v2defects (interrogate round 19, the clean-round fixes): the
+  // prefix-token and value-flag comparisons inside the probes read the
+  // token raw while the heads were normalized — `comm'and' cat`,
+  // `en'v' python3 -c`, `env -'u' X cat`, `busyb'ox' awk`, and the
+  // standard-path xargs detector (`x'args'`) all executed. Every prefix,
+  // flag, and head comparison in the probe grammar now strips
+  // quote-mangling (both twins, all sites).
+  ["echo 'hcloud ECS DeleteServers' | comm'and' cat | bash", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | en'v' cat | bash", 'deny'],
+  ["echo 'import os; os.system(\"hcloud ECS DeleteServers\")' | comm'and' cat | python3", 'deny'],
+  ["echo 'hcloud ECS DeleteServers' | env -'u' X cat | bash", 'deny'],
+  ["en'v' bash <<EOF\nhcloud ECS DeleteServers\nEOF", 'deny'],
+  ["sud'o' bash <<EOF\nhcloud ECS DeleteServers\nEOF", 'deny'],
+  ["busyb'ox' awk 'BEGIN{system(\"hcloud ECS DeleteServers\")}'", 'deny'],
+  ["en'v' watch -n1 'hcloud ECS DeleteServers'", 'deny'],
+  ["en'v' python3 -c 'import os; os.system(\"hcloud ECS DeleteServers\")'", 'deny'],
+  ["en'v' bash -c 'echo; hcloud ECS DeleteServers'", 'deny'],
+  // The astral row: 200k valid surrogate pairs = 800 KB bytes / 400,000
+  // UTF-16 units / 200,000 code points — over the byte cap on both twins,
+  // over the OLD TS unit cap (400,002 > 262,144) but under the OLD py
+  // point-cap: it discriminates the byte-unit change on py and the round-5
+  // expansion-bearing cap on TS.
+  ['𝄞'.repeat(200000) + '\necho $(date)', 'deny'],
+  // The $(…)-substitution residual (documented): printf-built bins stay
+  // opaque to the decode; the OBS-token marker arm still catches the
+  // service-token-literal form.
+  ["$(printf '\\x68\\x63loud') OBS rm mybucket", 'deny'],
+  // port-v2defects (interrogate rounds 2-3): the OBS arm is gated on the
+  // OBS TOKEN (a bare `cloud` substring was the round-2 marker and denied
+  // routine huaweicloud-bearing PATHS — the decoded-bin clause now carries
+  // the mangled-bin class). The short subcommand words are routine shell
+  // vocabulary: these legitimate expansion-bearing idioms stay allowed.
+  ['docker rm $(docker ps -aq)', 'allow'],
+  ['mkdir -p $(pwd)/build', 'allow'],
+  ['bash -c "cp $(mktemp -d)/x y"', 'allow'],
+  ['git commit -m "sync $(git rev-parse --short HEAD)"', 'allow'],
+  ['cp $(mktemp -d)/x plugins/huaweicloud-core/dist/foo', 'allow'],
+  ['cp -r $(pwd)/src plugins/huaweicloud-core/ && mv $(pwd)/old plugins/huaweicloud-core/old', 'allow'],
+  ['mkdir -p $(pwd)/build/observations', 'allow'],
+  ['gcloud storage rm gs://bucket/$(date).bak', 'allow'],
+  // port-v2defects (interrogate round 1): the write gate's read exemption is
+  // anchored at the operation token's START on both layers (TS hasReadPrefix
+  // ^prefix parity — py re.match). A write-prefixed operation with an
+  // embedded read word classifies as the write it is; a read-prefixed one
+  // with an embedded write word stays the read it is.
+  ['hcloud ECS Update-Show-x', 'deny'],
+  ['hcloud ECS ShowUpdate-x', 'allow'],
   // cors/website: real write-capable subcommands on the pinned 7.3.12 (live
   // -method=get reaches OBS and returns NoSuchBucket) — upstream #1001's
   // removal was measured on 7.2.x. Both layers keep the deny.
@@ -543,10 +965,23 @@ test('TS classifier and python hook agree on the shared adversarial battery', ()
   for (const [command, expected] of BATTERY) {
     const ts = classifyTextCommand(command).decision;
     if (ts !== expected) mismatches.push(`TS: want ${expected}, got ${ts}: ${command}`);
+    // The battery spawns the REAL hook (no copy, no redirect), so its
+    // record_cli_event side effect would append to the SHARED agent-dir
+    // spool (plugins/huaweicloud-core/telemetry/hook-events.jsonl — the
+    // path derives from the hook file's own location, immune to every test
+    // HOME isolation). ~490 hcloud rows per run then flood any later test
+    // whose telemetry ingest reads that file: enqueueTrackedEvent ingests
+    // the spool on EVERY enqueue, and one awaited flush splices only
+    // BATCH_SIZE=100 — the #1040 flush pin's tool event (enqueued last)
+    // missed its round on the windows CI legs twice (runs 40841747815 /
+    // 40849117055; reproduced red-first on Linux by staging a 120-line
+    // spool). The battery tests classification, not telemetry — the spool
+    // write is an untested side effect, gated off here.
     const py = spawnSync('python3', [hookPath], {
       input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
       encoding: 'utf8',
       timeout: 30000,
+      env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
     });
     const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
     if (unavailable) continue; // python3 not on PATH: TS-only environment
@@ -583,9 +1018,179 @@ test('the env-dump flag chain stays linear on the -u/-- adversarial shape (ReDoS
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: payload } }),
     encoding: 'utf8',
     timeout: 30000,
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
   });
   const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
   if (unavailable) return; // python3 not on PATH: TS-only environment
   assert.equal(py.status, 0, `python hook crashed on the -u/-- chain: ${py.stderr.slice(0, 200)}`);
   assert.equal(py.stdout.trim().length > 0 ? 'deny' : 'allow', 'allow');
+});
+
+// port-v2defects (interrogate round 4): the ANSI-C decoders are TWINS —
+// decodeAnsiCSpans (src/safety/shell-text.ts) and decode_ansi_c_spans
+// (hooks/huaweicloud-safety.py) must produce byte-identical output on the
+// adversarial corpus, or the layers drift at the decode seam (verdict
+// parity cannot see a digit-class drift unless a battery row happens to
+// cross it). The corpus covers the state machine's edges: escape radices
+// and digit caps, quote interactions (\' closers, \$' non-spans, $' inside
+// plain quotes), adjacent spans, unterminated spans, over-range code
+// points, and the outside-quote backslash branch (round 4's phantom-quote
+// fix).
+test('the ANSI-C decoders agree byte-for-byte on the adversarial corpus (interrogate round 4)', () => {
+  const corpus: string[] = [
+    "h$'\\x63'loud $'\\x4f'BS rm b",
+    "h$'\\143'loud $'\\117'BS cp a b",
+    "h$'\\u0063'loud $'\\U0000004f'BS sync a b",
+    "h$'\\X63'loud", // capital X: not an escape, stays literal
+    "$'\\x6'loud", // 1 hex digit
+    "$'\\x687'loud", // digit cap: \x68 then literal 7
+    "$'\\1039'loud", // octal cap: \103 then literal 9
+    "$'\\400'x", // over-range octal: masked to 8 bits both twins
+    "$'\\U00110000'x", // over-range unicode: stays literal both twins
+    "$'\\u00e9'caf\\u00e9",
+    "a$'\\x68''b", // span adjacent to plain quotes
+    "$'\\x68'$'\\x63'loud ECS",
+    "echo '$'\\x68'' is a literal", // $ inside plain quotes: not a span
+    "echo \\$'hcloud' ECS x", // \$: escaped dollar + PLAIN quotes (not a span)
+    "\\' ; h$'\\x63'loud ECS $'\\x44'eleteServers --server.id=x",
+    "\\\" ; h$'\\x63'loud ECS",
+    "grep foo\\' bar ; h$'\\x63'loud",
+    "back\\\\slash $'\\x68'x", // \\ inside and outside spans
+    "$'a\\'b'c", // \' does not close the span
+    "$'a\\qb'c", // unrecognized escape stays literal
+    "unterminated $'\\x68'loud", // no closer: original text returned
+    "$'' empty span",
+    "$''''$'\\x68'x",
+    '$"lo\\x63ale" $\'\\x68\'y', // $" passes through untouched
+    "x $'h\\$(y)e'z", // $( inside a span stays
+    "tab$'\\t'newline$'\\n'end",
+    'h\\cloud ECS x', // plain backslash escape (no span)
+    'h\\\ncloud ECS x', // line continuation outside spans
+    "printf $'%s\\n' hello",
+    "PS1=$'\\u2560\\u2500' prompt",
+  ];
+  const ts = corpus.map((probe) => decodeAnsiCSpans(probe));
+  const py = spawnSync('python3', ['-c', PY_DECODE_DRIVER], {
+    input: JSON.stringify({ decode: corpus, tokens: TOKEN_CORPUS, glued: GLUED_TOKEN_CORPUS }),
+    encoding: 'utf8',
+    timeout: 30000,
+  });
+  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+  if (unavailable) return; // python3 not on PATH: TS-only environment
+  assert.equal(py.status, 0, `decode driver crashed: ${py.stderr.slice(0, 300)}`);
+  const pyOut = JSON.parse(py.stdout) as { decode: string[]; tokens: string[][]; glued: string[][] };
+  assert.equal(pyOut.decode.length, corpus.length, 'the driver must answer one decode per probe');
+  for (let i = 0; i < corpus.length; i++) {
+    assert.deepEqual(
+      ts[i],
+      pyOut.decode[i],
+      `decode drift on ${JSON.stringify(corpus[i])}: ts=${JSON.stringify(ts[i])} py=${JSON.stringify(pyOut.decode[i])}`,
+    );
+  }
+  // The tokenizer twin corpus (interrogate round 5): splitSimpleCommand and
+  // split_tokens must agree on the continuation shapes — the preprocess leg
+  // had no pin of its own.
+  const tsTokens = TOKEN_CORPUS.map((probe) => splitSimpleCommand(probe));
+  assert.equal(pyOut.tokens.length, TOKEN_CORPUS.length, 'the driver must answer one token list per probe');
+  for (let i = 0; i < TOKEN_CORPUS.length; i++) {
+    assert.deepEqual(
+      tsTokens[i],
+      pyOut.tokens[i],
+      `tokenizer drift on ${JSON.stringify(TOKEN_CORPUS[i])}: ts=${JSON.stringify(tsTokens[i])} py=${JSON.stringify(pyOut.tokens[i])}`,
+    );
+  }
+  // The GLUED tokenizer twin corpus (interrogate round 9): the write gate's
+  // glued-bin fallback tokenizer must agree on both layers.
+  const tsGlued = GLUED_TOKEN_CORPUS.map((probe) => splitSimpleCommandGlued(probe));
+  assert.equal(pyOut.glued.length, GLUED_TOKEN_CORPUS.length, 'the driver must answer one glued list per probe');
+  for (let i = 0; i < GLUED_TOKEN_CORPUS.length; i++) {
+    assert.deepEqual(
+      tsGlued[i],
+      pyOut.glued[i],
+      `glued tokenizer drift on ${JSON.stringify(GLUED_TOKEN_CORPUS[i])}: ts=${JSON.stringify(tsGlued[i])} py=${JSON.stringify(pyOut.glued[i])}`,
+    );
+  }
+});
+
+// One python3 process decodes the whole corpus via importlib (the Hermes
+// load path) and answers JSON — kept as a string so the driver ships with
+// the test. The driver also TOKENIZES a second corpus (interrogate round
+// 5): the continuation-drop preprocess in split_tokens/splitSimpleCommand
+// was defense-in-depth with no pin of its own — a refactor dropping it
+// passed every verdict row (the splitter/shadow drops carry the verdicts).
+const PY_DECODE_DRIVER = [
+  'import importlib.util, json, sys',
+  'spec = importlib.util.spec_from_file_location("h", "plugins/huaweicloud-core/hooks/huaweicloud-safety.py")',
+  'm = importlib.util.module_from_spec(spec)',
+  'spec.loader.exec_module(m)',
+  'payload = json.load(sys.stdin)',
+  'decodes = [m.decode_ansi_c_spans(p) for p in payload["decode"]]',
+  'tokens = [m.split_tokens(p) for p in payload["tokens"]]',
+  'glued = [m.split_tokens_glued(p) for p in payload["glued"]]',
+  'print(json.dumps({"decode": decodes, "tokens": tokens, "glued": glued}))',
+].join('\n');
+
+// The tokenizer twin corpus: the line-continuation shapes (plus controls)
+// must tokenize identically on both layers — now including the GLUED
+// tokenizer pair (interrogate round 9: split_tokens_glued vs
+// splitSimpleCommandGlued, the write gate's glued-bin fallback).
+const TOKEN_CORPUS: string[] = [
+  'h\\\ncloud ECS DeleteServers --server.id=x',
+  'hcloud ECS De\\\nleteServers --server.id=x',
+  'hcloud ECS "De\\\nleteServers" --server.id=x',
+  "bash -c 'h\\\ncloud ECS DeleteServers --server.id=x'",
+  'echo a\\\nb c',
+  'hcloud ECS ListServers',
+  "echo 'a\\\nb' c",
+];
+
+const GLUED_TOKEN_CORPUS: string[] = [
+  '"hcl"oud ECS DeleteServers --server.id=x',
+  "'hcl''oud' ECS x",
+  'hcl"oud" ECS x',
+  '"hcl""oud" ECS x',
+  'bash -c "hcloud ECS ListServers"',
+  "bash -c 'hcloud ECS ListServers'",
+  "--description='a;hcloud;DeleteServers'",
+  'a"b\\"c" d',
+  "unterminated 'span",
+  'unterminated "span',
+  // Round 10: the separator-set alignment probes — py isspace() vs JS /\s/
+  // drifted on \x85/\x1c-\x1f (fail-closed over-deny, non-executable
+  // shapes); the py glued tokenizer now uses the explicit JS set.
+  '"hcl"oudECS Delete',
+  '"hcl"oudECS Delete',
+  '"hcl"oudECS Delete',
+  '"hcl"oud ECS Delete',
+  '"hcl"oud　ECS Delete',
+];
+
+// The deep-nest `'\''`-idiom rows (interrogate round 13's AC-W2 gap: the
+// battery comment claimed them but no row existed): the walk's extraction
+// succeeds level by level but the mangled script never yields a leading
+// bin — the deny-opaque gate's fragmented-token signal is the closure (the
+// round-12 script-shadow pass it replaces denied benign prose instead).
+test('deep-nest quote-idiom mangled writes deny via the opaque gate (interrogate round 13)', () => {
+  const Q = String.fromCharCode(39);
+  const DQ = String.fromCharCode(34);
+  const BS = String.fromCharCode(92);
+  const nest = (depth: number): string => {
+    const esc = (s: string): string => s.split(Q).join(Q + BS + Q + Q);
+    let script = `${DQ}hcl${DQ}oud ECS Delete`;
+    for (let i = 0; i < depth; i++) script = `bash -c ${Q}${esc(script)}${Q}`;
+    return script;
+  };
+  for (const depth of [5, 8, 9, 10]) {
+    assert.equal(classifyTextCommand(nest(depth)).decision, 'deny', `nest depth ${depth}`);
+    const py = spawnSync('python3', [hookPath], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: nest(depth) } }),
+      encoding: 'utf8',
+      timeout: 30000,
+      env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+    });
+    const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+    if (unavailable) continue;
+    assert.equal(py.status, 0, `nest ${depth} py crashed: ${py.stderr.slice(0, 200)}`);
+    assert.equal(py.stdout.trim().length > 0 ? 'deny' : 'allow', 'deny', `nest depth ${depth} py`);
+  }
 });

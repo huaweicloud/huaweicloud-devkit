@@ -6,7 +6,7 @@
 
 HuaweiCloud DevKit Doctor
 
-  [PASS] Node.js >= 22.18
+  [PASS] Node.js >= 22.19
   [PASS] MCP server installed
   [PASS] MCP server can start (OpenCode)
   [PASS] Runtime deps (undici) installed

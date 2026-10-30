@@ -158,6 +158,7 @@ export default [
       'plugins/huaweicloud-core/src/mcp-agent-config.ts',
       'plugins/huaweicloud-core/src/mcp-server.ts',
       'plugins/huaweicloud-core/src/mcp-stdio-transport.ts',
+      'plugins/huaweicloud-core/hooks/huaweicloud-safety.mjs',
       'test/huaweicloud-agent-toolkit-test/scripts/invoke-mcp.mjs',
       'test/fixtures/**',
     ],

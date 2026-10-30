@@ -1,10 +1,11 @@
-import { stdin, stdout } from 'node:process';
+import { stdin as processStdin, stdout as processStdout } from 'node:process';
 import { platform } from 'node:os';
 import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 
 import { runInitializeSideEffects, normalizeToolCallParams } from './mcp-protocol.ts';
 import { detectAgent } from './telemetry/agent-detect.ts';
+import { spoolTelemetryEvents } from './telemetry/telemetry.ts';
 import { traceOutboundDisclosure } from './lib/call-trace.ts';
 
 type JsonRpcRequest = { id?: unknown; method?: string; params?: unknown };
@@ -15,8 +16,21 @@ type JsonRpcResponse = {
   error?: { code: number; message: string };
 };
 
+// The stream surface this transport actually consumes: 'close'/'end'/'data'
+// on the input, 'close' + write() on the output. Structural (the
+// @types/node stream interfaces), so tests inject a PassThrough pair while
+// production passes the real process streams — binding the REAL streams
+// under a test harness corrupts the harness's own stream state (the
+// resumed 'data' listener holds the child's loop open against the runner's
+// held pipe; teardown 'close' events fire exit paths mid-harness).
+export interface StdioTransportStreams {
+  stdin: NodeJS.ReadableStream;
+  stdout: NodeJS.WritableStream;
+}
+
 interface StdioTransportOptions {
   initializeSideEffects?: typeof runInitializeSideEffects;
+  streams?: Partial<StdioTransportStreams>;
 }
 
 // LSP-style Content-Length frames and newline-delimited JSON on the same
@@ -51,16 +65,20 @@ export class DevkitStdioTransport implements Transport {
   private readonly needsKeepalive = detectAgent().harness === 'hermes' && platform() === 'win32';
   private keepAlive: NodeJS.Timeout | null = null;
   private readonly options: StdioTransportOptions;
+  private readonly stdin: NodeJS.ReadableStream;
+  private readonly stdout: NodeJS.WritableStream;
 
   constructor(options: StdioTransportOptions = {}) {
     this.options = options;
+    this.stdin = options.streams?.stdin ?? processStdin;
+    this.stdout = options.streams?.stdout ?? processStdout;
   }
 
   async start(): Promise<void> {
-    stdin.on('close', () => this.onStdinClose());
-    stdin.on('end', () => this.onStdinClose());
-    stdout.on('close', () => this.onStdoutClose());
-    stdin.on('data', (chunk) => {
+    this.stdin.on('close', () => this.onStdinClose());
+    this.stdin.on('end', () => this.onStdinClose());
+    this.stdout.on('close', () => this.onStdoutClose());
+    this.stdin.on('data', (chunk) => {
       this.buffer = Buffer.concat([this.buffer, chunk]);
       this.readFrames();
     });
@@ -74,9 +92,9 @@ export class DevkitStdioTransport implements Transport {
     traceOutboundDisclosure(message);
     const json = JSON.stringify(message);
     if (this.useContentLengthFraming) {
-      stdout.write(`Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`);
+      this.stdout.write(`Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`);
     } else {
-      stdout.write(json + '\n');
+      this.stdout.write(json + '\n');
     }
   }
 
@@ -95,11 +113,21 @@ export class DevkitStdioTransport implements Transport {
     if (this.needsKeepalive) {
       this.keepAlive = setInterval(() => {}, 60000);
     } else {
+      // The unflushed telemetry queue hands over to the exit spool
+      // synchronously here — process.exit runs no further event-loop
+      // turns, so no async flush can live between the two calls. The next
+      // boot ingests the spool (E4b; see spoolEventsForExit for the
+      // bounded-loss analysis).
+      spoolTelemetryEvents();
       process.exit(0);
     }
   }
 
   private onStdoutClose(): void {
+    // Same handover on the natural-drain path: the queue is spooled AND
+    // cleared, so the drain (a straggler flush round, a late timer tick)
+    // finds an empty queue and cannot double-send the spooled lines.
+    spoolTelemetryEvents();
     process.exitCode = 0;
     void this.close();
   }

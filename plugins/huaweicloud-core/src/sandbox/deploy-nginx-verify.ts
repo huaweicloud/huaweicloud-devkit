@@ -4,6 +4,8 @@
 // functions so the verdict is unit-testable. deploy-nginx.ts folds them into
 // its deploy script; session-manager.ts re-exports them as the public face.
 
+import { stripTerminalEscapes } from './sandbox-output.ts';
+
 // A1 (#935): normalize configName to a bare filename — a path-shaped value
 // (e.g. a local path echoed back by a caller) must never splice into a broken
 // target like `/etc/nginx/conf.d//root/hc-activity.conf` (nginx never serves
@@ -27,15 +29,38 @@ export interface ParsedDeployNginxVerify {
 // script. The old flow returned ok:true whenever the deploy script exited 0,
 // even when the tee write silently failed — the config file never existed and
 // the tunnel answered 502. The verification block emits explicit markers:
-//   DB_NGINX_CONFIG_MISSING=1  — the target config file does not exist
-//   DB_NGINX_T=PASS|FAIL       — nginx -t verdict, with failure output echoed
-//                                as `DB_NGINX_T_OUTPUT: ...` lines
+//   DB_NGINX_CONFIG_OK=1      — the target config file exists (the inverted,
+//                               presence-required success marker)
+//   DB_NGINX_CONFIG_MISSING=1 — it does not (the failure marker)
+//   DB_NGINX_T=PASS|FAIL      — nginx -t verdict, with failure output echoed
+//                               as `DB_NGINX_T_OUTPUT: ...` lines
+// EVERY marker is presence-required (interrogate round 2): the OK/MISSING
+// pair is emitted as if/else by the script, and configMissing reads MISSING
+// present OR OK absent — so a selectively mangled escape sequence swallowing
+// any marker line can only read as the FAILURE direction, never as the
+// pre-inversion false success (a swallowed MISSING used to read "verified").
+// The markers are ANCHORED (^…$ on the trimmed lines), so OSC-integration
+// shells that wrap every line in \x1b]133;C\x07 cannot blind the parse
+// either (port-v2defects; the #946 single-seam doctrine: stripTerminalEscapes
+// folds in here like every sandbox-output parser). Each line is also TRIMMED
+// before the anchored lookups (the deploy-check sibling doctrine, interrogate
+// round 1): residual leading/trailing whitespace — a shell variant appending
+// a space after the OSC terminator, an indented echo — escapes the
+// escape-stripper and would read the same false failure. Known cosmetic
+// delta vs the old whole-text regexes (interrogate round 2, recorded): the
+// per-line trim drops empty `DB_NGINX_T_OUTPUT: ` lines and trailing
+// whitespace inside output payloads — only the diagnostic message consumes
+// those.
 export function parseDeployNginxVerifyOutput(stdout: string | undefined): ParsedDeployNginxVerify {
-  const text = String(stdout || '');
-  const configMissing = /DB_NGINX_CONFIG_MISSING=1/.test(text);
-  const nginxTest = text.match(/^DB_NGINX_T=(\w+)$/m)?.[1] ?? '';
-  const nginxTestOutput = (text.match(/^DB_NGINX_T_OUTPUT: .*$/gm) ?? [])
-    .map((line) => line.replace(/^DB_NGINX_T_OUTPUT: /, ''))
+  const text = stripTerminalEscapes(stdout);
+  const lines = text.split('\n').map((line) => line.trim());
+  const configMissing =
+    lines.some((line) => /^DB_NGINX_CONFIG_MISSING=1$/.test(line)) ||
+    !lines.some((line) => /^DB_NGINX_CONFIG_OK=1$/.test(line));
+  const nginxTest = lines.find((line) => /^DB_NGINX_T=\w+$/.test(line))?.slice('DB_NGINX_T='.length) ?? '';
+  const nginxTestOutput = lines
+    .filter((line) => line.startsWith('DB_NGINX_T_OUTPUT: '))
+    .map((line) => line.slice('DB_NGINX_T_OUTPUT: '.length))
     .join('\n');
   return { configMissing, nginxTest, nginxTestOutput };
 }
@@ -58,7 +83,10 @@ export function evaluateDeployNginxVerify(
   if (writeVerified) return { ok: true };
   const problems: string[] = [];
   if (result.exitCode !== 0) problems.push(`deploy script exited with code ${result.exitCode}`);
-  if (verify.configMissing) problems.push(`nginx config file ${configPath} was not created (tee write failed)`);
+  if (verify.configMissing)
+    problems.push(
+      `nginx config file ${configPath} was not created (tee write failed or the verification output was corrupted)`,
+    );
   if (verify.nginxTest !== 'PASS')
     problems.push(`nginx -t did not pass${verify.nginxTestOutput ? ` — ${verify.nginxTestOutput}` : ''}`);
   return {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { cpSync, existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -48,6 +48,71 @@ test('node hook still blocks when the plugin copy has no built dist', () => {
     assert.equal(result.status, 0, result.stderr);
     const output = JSON.parse(result.stdout);
     assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('node hook denies fail-closed when the policy cannot be loaded (interrogate round 1)', () => {
+  // A payload too broken to load its own policy (safety/ missing —
+  // DEFAULT_POLICY throws at module load) must deny with the cause named
+  // instead of dying with no verdict, which a PreToolUse harness reads as
+  // "allow". The py twin's fail-closed posture. The verdict is written
+  // SYNCHRONOUSLY before process.exit (interrogate round 2) — pending async
+  // pipe writes are not waited for, and a dropped verdict reads as allow.
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-nopolicy-'));
+  try {
+    const pluginRoot = join(process.cwd(), 'plugins', 'huaweicloud-core');
+    cpSync(join(pluginRoot, 'hooks'), join(dir, 'hooks'), { recursive: true });
+    cpSync(join(pluginRoot, 'src'), join(dir, 'src'), { recursive: true });
+    assert.ok(!existsSync(join(dir, 'dist')), 'fixture must not contain dist');
+    assert.ok(!existsSync(join(dir, 'safety')), 'fixture must not contain safety/');
+
+    const result = spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
+      input: JSON.stringify({
+        tool_name: 'Bash',
+        tool_input: { command: 'hcloud ECS ListServers' },
+      }),
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, 0, `the broken-payload hook must exit 0, not crash: ${result.stderr.slice(0, 200)}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /safety policy failed to load/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('node hook denies fail-closed when classification itself throws (corrupt rules file, interrogate round 2)', () => {
+  // The load-time guard covers DEFAULT_POLICY only; a truncated
+  // cloud-risk-rules.json kills risk-rule-engine's JSON.parse INSIDE
+  // classifyTextCommand — the same verdict-less crash, one call later. The
+  // classify call is guarded with the same fail-closed deny (natural return
+  // — no exit race). The py twin degrades gracefully on the same file
+  // (load_cloud_risk_rules try/except).
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-badrules-'));
+  try {
+    const pluginRoot = join(process.cwd(), 'plugins', 'huaweicloud-core');
+    cpSync(join(pluginRoot, 'hooks'), join(dir, 'hooks'), { recursive: true });
+    cpSync(join(pluginRoot, 'src'), join(dir, 'src'), { recursive: true });
+    cpSync(join(pluginRoot, 'safety'), join(dir, 'safety'), { recursive: true });
+    mkdirSync(join(dir, 'safety', 'rules'), { recursive: true });
+    writeFileSync(join(dir, 'safety', 'rules', 'cloud-risk-rules.json'), '{"rules": [trunc', 'utf8');
+    assert.ok(!existsSync(join(dir, 'dist')), 'fixture must not contain dist');
+
+    for (const command of ['hcloud ECS ListServers', 'echo hello']) {
+      const result = spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${command}: must exit 0, not crash: ${result.stderr.slice(0, 200)}`);
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', `${command} must deny fail-closed`);
+      // The classify-time reason names the actual break (round 3: the
+      // policy parsed fine — the rules file died mid-classification).
+      assert.match(output.hookSpecificOutput.permissionDecisionReason, /safety classifier failed to run/);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -149,11 +149,13 @@ function hasCliFlag(name: string): boolean {
 function checkNode(): void {
   const v = process.versions.node.split('.').map(Number);
   // process.versions.node is always "major.minor.patch", so the major and
-  // minor exist. 22.18 is the type-stripping floor the whole build chain
-  // runs on (engines: >= 22.18) — the installer must not wave through a
-  // Node the same contract declares unsupported.
-  if (v[0]! < 22 || (v[0]! === 22 && v[1]! < 18)) {
-    console.error(`\x1b[31mNode.js >= 22.18 required (current: ${process.version})\x1b[0m`);
+  // minor exist. 22.19 is the runtime floor the whole build chain runs on
+  // (engines: >= 22.19, undici 8.12.3's requirement — the one runtime
+  // dependency — which also covers the 22.18 type-stripping floor) — the
+  // installer must not wave through a Node the same contract declares
+  // unsupported.
+  if (v[0]! < 22 || (v[0]! === 22 && v[1]! < 19)) {
+    console.error(`\x1b[31mNode.js >= 22.19 required (current: ${process.version})\x1b[0m`);
     process.exit(1);
   }
   console.log(`  Node.js ${process.version} \x1b[32mOK\x1b[0m`);
@@ -914,11 +916,12 @@ async function cmdDoctor(): Promise<void> {
     },
   };
 
-  // Node.js — the same 22.18 floor engines declares (the build chain's
-  // type-stripping requirement); a 22.0-22.17 Node must FAIL, not PASS.
+  // Node.js — the same 22.19 floor engines declares (undici 8.12.3's
+  // engines, covering the build chain's 22.18 type-stripping requirement);
+  // a 22.0-22.18 Node must FAIL, not PASS.
   const nodeParts = process.versions.node.split('.').map(Number);
-  const nodeOk = nodeParts[0]! > 22 || (nodeParts[0]! === 22 && nodeParts[1]! >= 18);
-  check('Node.js >= 22.18', nodeOk, 'Run: nvm install 22.18 && nvm use 22.18');
+  const nodeOk = nodeParts[0]! > 22 || (nodeParts[0]! === 22 && nodeParts[1]! >= 19);
+  check('Node.js >= 22.19', nodeOk, 'Run: nvm install 22.19 && nvm use 22.19');
 
   // MCP server — derived from the per-row doctor bindings (one membership
   // table for every payload check in this doctor run). The bindings run the

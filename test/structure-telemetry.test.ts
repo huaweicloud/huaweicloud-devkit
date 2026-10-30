@@ -79,6 +79,15 @@ test('telemetry family siblings stay stateless: no home-env or self-path derivat
     );
     assert.ok(!src.includes('import.meta.url'), `${name} must not derive paths from import.meta.url (face-owned)`);
     assert.ok(!src.includes('__dirname'), `${name} must not derive paths by __dirname depth (face-owned)`);
+    // The workbuddy residue class (bare homedir() path derivation): a
+    // sibling joining a home path escapes the query-string isolation the
+    // same way an env read would. identity-stamps.ts legitimately folds
+    // homedir() into the machine-finger FACTOR (not a path) — the ban is
+    // scoped to the join shape.
+    assert.ok(
+      !src.includes('join(homedir('),
+      `${name} must not derive paths from homedir() (face-owned; see the workbuddy.ts residue class)`,
+    );
   }
 });
 
@@ -91,9 +100,12 @@ test('telemetry face keeps the public surface under the same import path', () =>
   // a face export.
   for (const name of [
     'resolvePluginDir',
+    'globalTelemetryDir',
     'generateOrRecoverInstallId',
     'enqueueEvent',
+    'flushTelemetryEvents',
     'ingestHookEvents',
+    'spoolTelemetryEvents',
     'trackInstall',
     'trackToolInvoke',
     'trackSkillRetrieve',
@@ -125,4 +137,75 @@ test('agent-registry keeps the detection data face; version detectors moved out'
   // The detectors themselves no longer live in the registry.
   assert.doesNotMatch(registry, /function detectCodeArtsVersion/);
   assert.doesNotMatch(registry, /VERSION_DETECTORS/);
+});
+
+// The exit-spool handover must precede BOTH transport exit paths — no
+// event-loop turn runs between the spool and the hard exit, and that turn
+// is exactly where an async flush would otherwise have had to live. The
+// behavior tests (telemetry.test.ts) drive the real paths via the streams
+// seam and a patched process.exit; these pins keep the wiring from being
+// silently swapped, dropped, or moved during refactors.
+test('stdio transport hands the queue to the exit spool before both exit paths', () => {
+  const transport = readSource('src/mcp-stdio-transport.ts');
+  assert.match(
+    transport,
+    /spoolTelemetryEvents\(\);\s*\n\s*process\.exit\(0\);/,
+    'the stdin-close hard-exit path must spool before process.exit(0)',
+  );
+  assert.match(
+    transport,
+    /spoolTelemetryEvents\(\);\s*\n\s*process\.exitCode = 0;/,
+    'the stdout-close natural-drain path must spool before the close',
+  );
+  // The keepalive branch (Hermes on Windows) is EXACTLY the timer arm —
+  // no spool, no exit: the session continues (its tail is spooled later
+  // by the stdout-close path). The exact-shape pin trips on any statement
+  // added to the branch, which is the point.
+  assert.match(
+    transport,
+    /if \(this\.needsKeepalive\) \{\s*this\.keepAlive = setInterval\(\(\) => \{\}, 60000\);\s*\} else \{/,
+    'the keepalive branch must stay the bare timer arm (no spool, no exit)',
+  );
+  // The streams seam's production default is the REAL process streams.
+  assert.match(
+    transport,
+    /options\.streams\?\.stdin \?\? processStdin/,
+    'the streams seam must default to the real process stdin',
+  );
+  assert.match(
+    transport,
+    /options\.streams\?\.stdout \?\? processStdout/,
+    'the streams seam must default to the real process stdout',
+  );
+  const serverEntry = readSource('src/mcp-server.ts');
+  assert.match(
+    serverEntry,
+    /new DevkitStdioTransport\(\)/,
+    'the stdio entry must construct the transport with the default (real) streams',
+  );
+});
+
+// The ingest seam's call sites: the exit spool rides the SAME seam as the
+// hook spool, so the production recovery paths are (1) every enqueue, (2)
+// the initTelemetry trailing call, (3) the periodic timer tick. Losing any
+// of the three call sites strands spool files (the twin-boot behavior test
+// drives the seam directly; these pins keep the production wiring whole).
+test('the spool ingest seam fires from every enqueue, the boot tail, and the timer', () => {
+  const pipeline = readSource('src/telemetry/event-pipeline.ts');
+  assert.match(
+    pipeline,
+    /if \(!ctx\.state\.installId\) return;\s*\n\s*ingestSpools\(ctx\);/,
+    'enqueueTrackedEvent must ingest the spools on every enqueue',
+  );
+  const face = readSource(FACE);
+  assert.match(
+    face,
+    /state\.flushTimer = setInterval\(\(\) => \{\s*\n\s*ingestHookEvents\(\);/,
+    'the periodic timer tick must ingest the spools',
+  );
+  assert.match(
+    face,
+    /\n\s*ingestHookEvents\(\);\s*\n\s*if \(state\.eventQueue\.length > 0\)/,
+    'initTelemetry must run the trailing ingest before arming the boot flush',
+  );
 });

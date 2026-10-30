@@ -1,4 +1,5 @@
-// The agent-switching seam. Two adapters ship today (opencode, codex);
+// The agent-switching seam. Three adapters ship today (opencode, codex,
+// hermes);
 // the interface exists because switchability is a stated hard constraint,
 // and every case stays written against it. Drivers own exactly the agent
 // knowledge: binary resolution, config/env shape, spawn shape, final-text
@@ -40,7 +41,7 @@ export interface RunResult {
 // The closed driver vocabulary: the runner's registry literal is keyed by
 // it (a missing driver is a compile error). Env-string selection still
 // carries the runtime unknown-driver guard in the runner.
-export type DriverId = 'opencode' | 'codex';
+export type DriverId = 'opencode' | 'codex' | 'hermes';
 
 export interface AgentDriver {
   readonly id: DriverId;

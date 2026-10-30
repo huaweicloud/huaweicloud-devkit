@@ -27,11 +27,17 @@ export function makeEnv(home: string, extra: Record<string, string | undefined> 
   // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);
   // CODEX_HOME keys the uninstaller's marketplace-cache cleanup (uninstallCodex);
   // CLAUDE_CONFIG_DIR redirects the option-3 generic MCP config (configureGenericMCP
-  // resolves it first when writing .claude.json).
+  // resolves it first when writing .claude.json);
+  // HUAWEICLOUD_DEVKIT_HOME redirects the telemetry face's global dir (and,
+  // since port-v2defects, workbuddy's install/uninstall of it) — a developer
+  // shell exporting it would silently run every install test under the
+  // override (interrogate round 1; tests that need it pass it via extraEnv,
+  // which wins over this clear).
   for (const key of [
     'ATOMCODE_HOME',
     'DSH_HOME',
     'HUAWEICLOUD_HOME',
+    'HUAWEICLOUD_DEVKIT_HOME',
     'OFFICE_CLAW_CONFIG_ROOT',
     'XDG_CONFIG_HOME',
     'CODEX_HOME',

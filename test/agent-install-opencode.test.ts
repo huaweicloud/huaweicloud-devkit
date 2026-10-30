@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import test from 'node:test';
 
@@ -129,6 +129,67 @@ test('workbuddy uninstall removes installed files', () => {
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test('workbuddy telemetry dirs follow HUAWEICLOUD_DEVKIT_HOME (port-v2defects)', () => {
+  // The global telemetry dir (~/.huaweicloud-devkit/telemetry) must ride the
+  // telemetry face's HUAWEICLOUD_DEVKIT_HOME-aware derivation on BOTH the
+  // install mkdir and the uninstall rmSync: the bare homedir() join created
+  // an orphan dir under the real/fake HOME while the server (whose
+  // GLOBAL_TELEMETRY_DIR honors the override) wrote under the override —
+  // and uninstall deleted the HOME twin, leaving the override's behind.
+  // The dir creation sits inside deployWorkBuddyHooks' python-gated block
+  // (steps 1-4 share the early return), so the fake home carries WorkBuddy's
+  // managed Python to drive the real path — the harness's fake HOME has
+  // none, which would skip the whole block and test nothing.
+  const home = mkdtempSync(join(tmpdir(), 'ai-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'ai-proj-'));
+  const override = mkdtempSync(join(tmpdir(), 'ai-devkit-home-'));
+  try {
+    const managedPython = join(home, '.workbuddy', 'binaries', 'python', 'versions', '3.13.12', 'python.exe');
+    mkdirSync(dirname(managedPython), { recursive: true });
+    writeFileSync(managedPython, '#!/bin/sh\n', 'utf8');
+    const res = run('workbuddy', home, cwd, 'install', { HUAWEICLOUD_DEVKIT_HOME: override });
+    assert.equal(res.status, 0, res.stderr);
+    assert.ok(
+      existsSync(join(override, '.huaweicloud-devkit', 'telemetry')),
+      'global telemetry dir must be created under the override',
+    );
+    assert.ok(
+      !existsSync(join(home, '.huaweicloud-devkit')),
+      'no orphan .huaweicloud-devkit under the bare HOME (nothing else creates it there)',
+    );
+    const uninstall = run('workbuddy', home, cwd, 'uninstall', { HUAWEICLOUD_DEVKIT_HOME: override });
+    assert.equal(uninstall.status, 0, uninstall.stderr);
+    // The stdout line is location-bearing (interrogate round 1): the removed
+    // path printed must be the OVERRIDE twin, not the bare-HOME one.
+    assert.match(
+      uninstall.stdout,
+      /Removed telemetry cache: .*ai-devkit-home-[^\s]*[.]huaweicloud-devkit[\\/]telemetry/,
+    );
+    assert.ok(
+      !existsSync(join(override, '.huaweicloud-devkit', 'telemetry')),
+      'uninstall must remove the override dir the install created',
+    );
+    // Pre-existing uninstall shape, pinned explicitly (interrogate round 1):
+    // the rmSync targets the telemetry CHILD — the now-empty
+    // .huaweicloud-devkit parent survives under the override exactly as the
+    // bare-home parent did pre-fix. Recorded, not changed: removing the
+    // parent would need an emptiness guard and buys nothing (the dir is
+    // devkit-namespaced and self-heals on the next install/server write).
+    assert.ok(
+      existsSync(join(override, '.huaweicloud-devkit')),
+      'the empty parent dir remains (pre-existing shape, pinned deliberately)',
+    );
+    assert.ok(
+      !existsSync(join(home, '.huaweicloud-devkit')),
+      'the bare HOME stays clean through install and uninstall',
+    );
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+    rmSync(override, { recursive: true, force: true });
   }
 });
 

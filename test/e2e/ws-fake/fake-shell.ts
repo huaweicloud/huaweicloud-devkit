@@ -128,6 +128,39 @@ const INTENT_TABLE: IntentRow[] = [
     run: () => ({ stdout: DEVBRIDGE_VERIFY_OK_STDOUT }),
   },
   {
+    // The AUTO-ENROLL read one-shot of exposeTunnel (the tunnel-persistence
+    // port): reads the INSTALLED watchdog's TUNNELS line so the new tunnel
+    // MERGES into existing coverage. Empty list — no prior watchdog.
+    intent: 'devbridge-keepalive-read',
+    pattern: /^LINE=\$\(grep -m1 '\^TUNNELS=' \/tmp\/tunnel-keepalive\.sh/,
+    run: () => ({ stdout: 'DB_KEEPALIVE_TUNNELS=\n' }),
+  },
+  {
+    // The AUTO-ENROLL install one-shot (buildDevbridgeKeepaliveScript, also
+    // huaweicloud_sandbox_keepalive_watchdog's body). #999 anchor doctrine:
+    // the export rides the pkill line, so this row can sit above the generic
+    // export-path row — a standalone export first line was byte-identical to
+    // the auth probe's and the install was misread as one (measured on the
+    // e2e legs: enrollment judged failed off the probe's answer, and the
+    // retry-teaching warning inflated the auth-probe count). Success grammar
+    // verbatim: syntax 0, a live PID, the log path.
+    intent: 'devbridge-keepalive-install',
+    pattern: /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; pkill -f "tunnel-keepalive\.sh"/,
+    run: () => ({
+      stdout: 'DB_KEEPALIVE_SYNTAX=0\nDB_KEEPALIVE_PID=4242\nDB_KEEPALIVE_LOG=/tmp/tunnel-keepalive.log\n',
+    }),
+  },
+  {
+    // deployNginx's tunnel-activity probe (the version-aware #999 shape: the
+    // data-disk PATH export riding the same first line as the subshell
+    // probe). Sits ABOVE the generic export-path row or the probe would be
+    // swallowed there, answer '', and the tool would report a phantom
+    // "No active DevBridge tunnel" warning (measured on both e2e legs).
+    intent: 'devbridge-active',
+    pattern: /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; \(devbridge list -j /,
+    run: () => ({ stdout: 'ACTIVE\n' }),
+  },
+  {
     intent: 'echo',
     pattern: /^echo\s+(.*)$/,
     run: (m) => ({ stdout: `${m[1]}\n` }),
@@ -236,10 +269,11 @@ const INTENT_TABLE: IntentRow[] = [
     // deployNginx's config-write blob (resolve script + tee heredoc + embedded
     // reload + chmod fixups + the A1 (#935) verify block, one exec) opens with
     // REAL_PROJECT=. The verify block's success markers must be synthesized —
-    // deployNginx's verdict reads them (DB_NGINX_T=PASS, no CONFIG_MISSING).
+    // deployNginx's verdict reads them (DB_NGINX_CONFIG_OK, DB_NGINX_T=PASS;
+    // the OK marker is presence-required since the interrogate-r2 inversion).
     intent: 'deploy-nginx-config-write',
     pattern: /^REAL_PROJECT=\$\(readlink .*$/,
-    run: () => ({ stdout: 'DB_NGINX_T=PASS\n' }),
+    run: () => ({ stdout: 'DB_NGINX_CONFIG_OK=1\nDB_NGINX_T=PASS\n' }),
   },
   {
     // Agent-initiated verification (`ls /workspace/myproject` after an
@@ -267,12 +301,6 @@ const INTENT_TABLE: IntentRow[] = [
     intent: 'nginx-reload',
     pattern: /^sudo killall -9 nginx/,
     run: () => ({ stdout: '' }),
-  },
-  {
-    // deployNginx tunnel probe (version-aware shape, 2>/dev/null inside).
-    intent: 'devbridge-active',
-    pattern: /^\(devbridge list -j .*grep -q.*$/,
-    run: () => ({ stdout: 'ACTIVE\n' }),
   },
 ];
 

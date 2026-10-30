@@ -235,6 +235,7 @@ test('parseDeployNginxVerifyOutput detects a missing config file (tee write fail
 test('parseDeployNginxVerifyOutput captures a failing nginx -t (#935 A1)', () => {
   const stdout = [
     'deploy output',
+    'DB_NGINX_CONFIG_OK=1',
     'DB_NGINX_T=FAIL',
     'DB_NGINX_T_OUTPUT: nginx: [emerg] unknown directive "foo" in /etc/nginx/conf.d/x.conf:1',
     'DB_NGINX_T_OUTPUT: nginx: configuration file /etc/nginx/nginx.conf test failed',
@@ -246,9 +247,82 @@ test('parseDeployNginxVerifyOutput captures a failing nginx -t (#935 A1)', () =>
 });
 
 test('parseDeployNginxVerifyOutput reports PASS for a clean nginx -t (#935 A1)', () => {
-  const verify = parseDeployNginxVerifyOutput('DB_NGINX_T=PASS\n');
+  const verify = parseDeployNginxVerifyOutput('DB_NGINX_CONFIG_OK=1\nDB_NGINX_T=PASS\n');
   assert.equal(verify.configMissing, false);
   assert.equal(verify.nginxTest, 'PASS');
+});
+
+test('parseDeployNginxVerifyOutput survives OSC/CSI-wrapped output (#946 shell shape, port-v2defects)', () => {
+  // Integration-enabled shells wrap EVERY line in OSC 133 markers (the
+  // devbridge-auth/devbridge-expose comment testimony): the anchored
+  // ^DB_NGINX_T= lookup read empty, so every SUCCESSFUL deploy_nginx
+  // returned ok:false "nginx -t did not pass" with an empty diagnosis
+  // (DB_NGINX_T_OUTPUT equally blinded) — fail-closed toward false
+  // failure, but the tool was broken on a real shell class. The parser
+  // folds stripTerminalEscapes in like every sandbox-output parser.
+  const osc = '\x1b]133;C\x07';
+  const pass = parseDeployNginxVerifyOutput(
+    ['deploy output', `${osc}DB_NGINX_CONFIG_OK=1`, `${osc}DB_NGINX_T=PASS`].join('\r\n'),
+  );
+  assert.equal(pass.configMissing, false);
+  assert.equal(pass.nginxTest, 'PASS', 'OSC-wrapped PASS marker must be stripped and read');
+  // ST-terminated OSC (tmux passthrough emits \x1b\\ instead of BEL) — the
+  // OSC regex's second alternative, pinned so a BEL-only "simplification"
+  // cannot pass the suite (interrogate round 1).
+  assert.equal(
+    parseDeployNginxVerifyOutput('\x1b]133;C\x1b\\DB_NGINX_T=PASS').nginxTest,
+    'PASS',
+    'ST-terminated OSC must be stripped and read',
+  );
+  // Residual whitespace around a marker line (a shell variant appending a
+  // space after the terminator, an indented echo) — the per-line trim
+  // (deploy-check sibling doctrine) must keep the anchored lookups reading
+  // (interrogate round 1; the pre-trim parser read nginxTest "" here).
+  // Both halves pinned: the trailing space on the T= line, the leading
+  // spaces on the MISSING line (interrogate round 2), and the configMissing
+  // read on this very input (previously exercised but unasserted).
+  const residual = parseDeployNginxVerifyOutput('DB_NGINX_T=PASS \r\n  DB_NGINX_CONFIG_MISSING=1\n');
+  assert.equal(residual.nginxTest, 'PASS', 'a trailing space after the value must not blind the T= anchor');
+  assert.equal(residual.configMissing, true, 'a leading-space indented MISSING marker must still read');
+  assert.equal(
+    parseDeployNginxVerifyOutput('  DB_NGINX_T=PASS\n').nginxTest,
+    'PASS',
+    'an indented T= marker must still read',
+  );
+  const fail = parseDeployNginxVerifyOutput(
+    [
+      `${osc}DB_NGINX_CONFIG_OK=1`,
+      `${osc}DB_NGINX_T=FAIL`,
+      `${osc}DB_NGINX_T_OUTPUT: nginx: [emerg] unknown directive "foo"`,
+    ].join('\r\n'),
+  );
+  assert.equal(fail.nginxTest, 'FAIL');
+  assert.match(fail.nginxTestOutput, /unknown directive/);
+  const missing = parseDeployNginxVerifyOutput(`\x1b[?2026h${osc}DB_NGINX_CONFIG_MISSING=1\r\n`);
+  assert.equal(missing.configMissing, true, 'OSC/CSI-wrapped missing marker must be read');
+  // The selective-swallow repro (interrogate round 2): an OSC hyperlink-style
+  // sequence opened before the MISSING line and BEL-closed after it swallows
+  // the marker wholesale while the T=PASS line survives. Pre-inversion this
+  // composed to ok:true — the #935 false success resurrected; with every
+  // marker presence-required, the swallowed MISSING plus the absent OK read
+  // as the failure direction.
+  const swallowed = parseDeployNginxVerifyOutput(
+    '\x1b]8;;id=x\r\nDB_NGINX_CONFIG_MISSING=1\x07\r\nDB_NGINX_T=PASS\r\n',
+  );
+  assert.equal(swallowed.nginxTest, 'PASS');
+  assert.equal(swallowed.configMissing, true, 'a swallowed MISSING marker must read as missing (OK absent)');
+  assert.equal(
+    evaluateDeployNginxVerify({ exitCode: 0 }, swallowed, '/etc/nginx/conf.d/x.conf').ok,
+    false,
+    'the selective-swallow shape must not compose to a false success',
+  );
+  // The verdict composes: a wrapped-but-successful deploy must be ok:true.
+  const verdict = evaluateDeployNginxVerify(
+    { exitCode: 0 },
+    parseDeployNginxVerifyOutput(`${osc}DB_NGINX_CONFIG_OK=1\r\n${osc}DB_NGINX_T=PASS`),
+    '/etc/nginx/conf.d/x.conf',
+  );
+  assert.equal(verdict.ok, true, 'a successful OSC-shell deploy must not read as failed');
 });
 
 test('evaluateDeployNginxVerify returns ok:false with explicit error on tee write failure (#935 A1)', () => {
@@ -262,7 +336,9 @@ test('evaluateDeployNginxVerify returns ok:false with explicit error on tee writ
 
 test('evaluateDeployNginxVerify returns ok:false with explicit error on nginx -t failure (#935 A1)', () => {
   const result = { exitCode: 0 };
-  const verify = parseDeployNginxVerifyOutput('DB_NGINX_T=FAIL\nDB_NGINX_T_OUTPUT: nginx: [emerg] bad config\n');
+  const verify = parseDeployNginxVerifyOutput(
+    'DB_NGINX_CONFIG_OK=1\nDB_NGINX_T=FAIL\nDB_NGINX_T_OUTPUT: nginx: [emerg] bad config\n',
+  );
   const verdict = evaluateDeployNginxVerify(result, verify, '/etc/nginx/conf.d/xxx.conf');
   assert.equal(verdict.ok, false);
   assert.match(verdict.error ?? '', /nginx -t did not pass/);
@@ -281,7 +357,7 @@ test('evaluateDeployNginxVerify returns ok:false on non-zero deploy exit (#935 A
 
 test('evaluateDeployNginxVerify returns ok:true for a verified write (#935 A1)', () => {
   const result = { exitCode: 0 };
-  const verify = parseDeployNginxVerifyOutput('DB_NGINX_T=PASS\n');
+  const verify = parseDeployNginxVerifyOutput('DB_NGINX_CONFIG_OK=1\nDB_NGINX_T=PASS\n');
   assert.equal(evaluateDeployNginxVerify(result, verify, '/etc/nginx/conf.d/x.conf').ok, true);
 });
 

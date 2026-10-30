@@ -27,6 +27,15 @@ test('loadPolicy fails closed on a malformed policy file', () => {
     expectThrow('null', 'null root');
     expectThrow('{"writeOperationPrefixes": "list-vpcs"}', 'non-array field');
     expectThrow('{"secretKeyNamePatterns": null}', 'null field');
+    // Interrogate round 2: an EMPTIED write list reclassifies write commands
+    // as safe — the exact fail-open the non-array throw prevents, one shape
+    // over. Present-but-empty throws (an all-non-string list filters to
+    // empty and throws the same way); the absent field still normalizes to
+    // [] for older policies (asserted in the accept test below). A [""] list
+    // stays legal: the entry is a string, survives the filter, and the
+    // empty-branch regex matches everything — deny-all-writes, fail-closed.
+    expectThrow('{"writeOperationPrefixes": []}', 'emptied write list');
+    expectThrow('{"writeOperationPrefixes": [null, 1]}', 'all-non-string write list');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -39,6 +48,11 @@ test('loadPolicy accepts absent fields and the shipped policy', () => {
     const partial = loadPolicy(join(dir, 'policy.json'));
     assert.deepEqual(partial.writeOperationPrefixes, ['List']);
     assert.deepEqual(partial.secretKeyNamePatterns, []);
+    // The absent write field stays the older-policy compat shape ([]), the
+    // empty-present one does not (throws above).
+    writeFileSync(join(dir, 'policy.json'), '{"readOperationPrefixes": ["List"]}');
+    const absentWrite = loadPolicy(join(dir, 'policy.json'));
+    assert.deepEqual(absentWrite.writeOperationPrefixes, []);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -53,27 +53,46 @@ export function splitShellSegments(text: string, sepsOut?: string[]): string[] {
       continue;
     }
     if (quote !== null) {
-      current += ch;
-      if (ch === '\\') {
+      if (ch === '\\' && i + 1 < text.length) {
         // Backslash escapes the next char — BOTH chars stay in the segment
-        // (the base append above already keeps the backslash), so the
-        // downstream escape-aware tokenizer can regroup the span
-        // (`bash -c "cmd /c \"hcloud …\""`).
-        if (i + 1 < text.length) current += text[i + 1]!;
+        // (the downstream escape-aware tokenizer can regroup the span,
+        // `bash -c "cmd /c \"hcloud …\""`), EXCEPT the line continuation:
+        // bash removes the \<newline> PAIR at parser level inside double
+        // quotes too (interrogate round 4: `hcloud ECS "De\<LF>leteServers"`
+        // hid the operation from every shadow); the single-quote span keeps
+        // the pair (literal there).
+        if (quote === '"' && text[i + 1] === '\n') {
+          i += 2;
+          continue;
+        }
+        current += ch;
+        current += text[i + 1]!;
         i += 2;
         continue;
       }
+      current += ch;
       if (ch === quote) quote = null;
       i++;
       continue;
     }
     if (ch === '\\') {
       // Backslash escapes the next char; \<newline> is a line continuation —
-      // the joined command must NOT be split. A Windows drive path
-      // (`C:\Windows\…`) keeps its backslashes for the same reason as the
-      // quoted branch above.
-      if (i + 1 < text.length) current += (isWindowsPathWord(current) ? ch : '') + text[i + 1]!;
-      i += 2;
+      // the joined command must NOT split AND bash removes the PAIR, so the
+      // newline is dropped entirely (interrogate round 4: `h\<LF>cloud` hid
+      // the bin from every shadow — routing, vocab, and decode all saw a
+      // newline inside the token). A Windows drive path (`C:\Windows\…`)
+      // keeps its backslashes for the same reason as the quoted branch.
+      if (i + 1 < text.length) {
+        if (text[i + 1] === '\n') {
+          i += 2;
+          continue;
+        }
+        current += (isWindowsPathWord(current) ? ch : '') + text[i + 1]!;
+        i += 2;
+        continue;
+      }
+      current += ch;
+      i++;
       continue;
     }
     if (ch === '"' || ch === "'") {
@@ -111,6 +130,15 @@ export function splitShellSegments(text: string, sepsOut?: string[]): string[] {
       continue;
     }
     if (separators.has(ch)) {
+      // `&` directly after `>`/`<` is the redirection-dup operator
+      // (`2>&1`, `<&0`) — part of the redirection token, not a separator
+      // (interrogate round 11: `2>&1 bash -c '…'` split mid-redirection
+      // and the script never reached the wrapper walk).
+      if (ch === '&' && i > 0 && (text[i - 1] === '>' || text[i - 1] === '<')) {
+        current += ch;
+        i++;
+        continue;
+      }
       if (ch === '\n' && pendingHeredoc !== null) {
         // The heredoc body starts here.
         heredocDelim = pendingHeredoc;
@@ -176,11 +204,87 @@ export function splitSimpleCommand(command: unknown): string[] {
   // Windows flag (`cmd /c"hcloud …` with the closing quote stranded on
   // the last argument) re-tokenizes per-word with the leading quote
   // stripped by the edge replace.
+  //
+  // Line continuations are removed before matching (interrogate round 4):
+  // bash drops the \<newline> pair at parser level, and the \S+ branch
+  // would otherwise split `De\<LF>leteServers` into two tokens leaving the
+  // operation slot reading `De\`. Single-quoted spans keep the pair in
+  // real bash — over-stripping there only ever JOINS tokens (fail-closed
+  // toward classification, never hides one).
   return (
     String(command)
+      .replace(/\\\n/g, '')
       .match(/"(?:[^"\\]|\\.)*"|'[^']*'?|\S+/g)
       ?.map((part) => part.replace(/^['"]|['"]$/g, '')) || []
   );
+}
+
+// Bash-word-faithful tokenizer for the write gate's glued-bin fallback
+// (interrogate round 9): adjacent quoted spans and word characters form ONE
+// token — `"hcl"oud ECS Delete` is the single word hcloud to bash, with
+// ECS/Delete as real argv — unlike splitSimpleCommand, which keeps the
+// span/fragment distinction other consumers rely on (the windows-payload
+// piece-split's quote-carrying refusal, the feeder expanders).
+// Single-quoted spans keep their literal backslashes; double-quoted spans
+// resolve \" and \\ pairs; unterminated spans run to the end; \\<newline>
+// continuations drop first (bash's own first pass). Mirrored by
+// split_tokens_glued in hooks/huaweicloud-safety.py — the tokenizer twin
+// corpus pins the shared outputs.
+export function splitSimpleCommandGlued(command: unknown): string[] {
+  const text = String(command).replace(/\\\n/g, '');
+  const tokens: string[] = [];
+  let cur = '';
+  let i = 0;
+  const flush = (): void => {
+    if (cur) {
+      tokens.push(cur);
+      cur = '';
+    }
+  };
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (ch === "'") {
+      const end = text.indexOf("'", i + 1);
+      if (end < 0) {
+        cur += text.slice(i + 1);
+        i = text.length;
+        continue;
+      }
+      cur += text.slice(i + 1, end);
+      i = end + 1;
+      continue;
+    }
+    if (ch === '"') {
+      i++;
+      let closed = false;
+      while (i < text.length) {
+        const c = text[i]!;
+        if (c === '\\' && i + 1 < text.length && (text[i + 1] === '"' || text[i + 1] === '\\')) {
+          cur += c + text[i + 1]!;
+          i += 2;
+          continue;
+        }
+        if (c === '"') {
+          closed = true;
+          i++;
+          break;
+        }
+        cur += c;
+        i++;
+      }
+      if (!closed && i >= text.length) break;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      flush();
+      i++;
+      continue;
+    }
+    cur += ch;
+    i++;
+  }
+  flush();
+  return tokens;
 }
 
 // Quote/backslash-stripped shadow of a command text for PRESENCE gates: an
@@ -196,5 +300,116 @@ export function stripShellQuotes(text: string): string {
   // of `sec$'r'et` collapses to `secret`. Variable indirection ($S, ${X:-…})
   // remains a documented residual — a text-presence gate cannot see through
   // expansion.
-  return text.replace(/['"\\$`]/g, '');
+  //
+  // Line continuations drop FIRST (interrogate round 4): bash removes the
+  // \<newline> pair at parser level, and the surviving newline broke
+  // contiguity everywhere (`h\<LF>cloud` never routed, `De\<LF>leteServers`
+  // never matched a prefix). Single-quoted spans keep the pair in real
+  // bash — over-stripping there only ever JOINS text (fail-closed toward
+  // detection, never hides a marker).
+  return text.replace(/\\\n/g, '').replace(/['"\\$`]/g, '');
+}
+
+// mirrors the py twin's ANSI_C_DECODE_RE; sticky (lastIndex-anchored) so the
+// per-escape probe allocates nothing on megabyte payloads. The x/u/U
+// prefixes sit OUTSIDE the capture groups — the captured digits must parse.
+const ANSI_C_ESCAPE_RE = /\\(?:x([0-9a-fA-F]{1,2})|([0-7]{1,3})|u([0-9a-fA-F]{1,4})|U([0-9a-fA-F]{1,8}))/y;
+
+// Reconstruct the argv letters ANSI-C quoting builds: inside `$'…'` spans
+// (opened only OUTSIDE quotes — a `$` already inside a plain quoted span is
+// a literal), decode \xHH, \NNN (octal), \uHHHH, and \UHHHHHHHH escapes to
+// their characters; everything else passes through verbatim (interrogate
+// round 3: the obfuscation gate's candidates now see `h$'\x63'loud` as the
+// `hcloud` the shell actually executes, so mangling past a marker — the
+// round-2 cloud-marker gate's bypass — no longer hides the bin, the service
+// token, or the operation word). `\'` inside the span does not close it;
+// `\\` and unrecognized escapes stay literal (conservative); an unterminated
+// span returns the ORIGINAL text (no decode — today's shadow); `$"…"` spans
+// are passed through (locale quoting, no escape processing for identifiers);
+// command substitution `$(…)` stays opaque (the documented residual — the
+// printf-built bin class). Mirrored by decode_ansi_c_spans in
+// hooks/huaweicloud-safety.py — hook-parity pins the shared verdicts.
+export function decodeAnsiCSpans(text: string): string {
+  if (!text.includes("$'")) return text;
+  const out: string[] = [];
+  let i = 0;
+  let quote: '"' | "'" | null = null;
+  while (i < text.length) {
+    const ch = text[i]!;
+    if (quote !== null) {
+      out.push(ch);
+      if (ch === '\\' && quote === '"' && i + 1 < text.length) {
+        out.push(text[i + 1]!);
+        i += 2;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      i++;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      out.push(ch);
+      i++;
+      continue;
+    }
+    if (ch === '\\' && i + 1 < text.length) {
+      // Outside quotes a backslash escapes the NEXT character (both stay —
+      // the shadow's own backslash-strip handles them). Without this, an
+      // escaped quote opened PHANTOM quote state and disabled the entire
+      // decode for the rest of the payload (interrogate round 4: `\' ;
+      // h$'\x63'loud …` let the mangled write through every layer), and \$'
+      // mis-parsed as an ANSI-C span opener instead of \$ + plain quotes.
+      out.push(ch, text[i + 1]!);
+      i += 2;
+      continue;
+    }
+    if (ch === '$' && text[i + 1] === "'") {
+      const span: string[] = [];
+      let j = i + 2;
+      let closed = false;
+      while (j < text.length) {
+        const c = text[j]!;
+        if (c === "'") {
+          closed = true;
+          j++;
+          break;
+        }
+        if (c === '\\' && j + 1 < text.length) {
+          const next = text[j + 1]!;
+          if (next === "'") {
+            span.push("'");
+            j += 2;
+            continue;
+          }
+          ANSI_C_ESCAPE_RE.lastIndex = j;
+          const m = ANSI_C_ESCAPE_RE.exec(text);
+          if (m) {
+            const digits = m[1] ?? m[2] ?? m[3] ?? m[4] ?? '';
+            const isOctal = m[2] !== undefined;
+            const radix = isOctal ? 8 : 16;
+            let value = Number.parseInt(digits, radix);
+            if (isOctal) value &= 0xff; // bash masks \NNN to 8 bits (NUL-truncating >0o377)
+            if (Number.isFinite(value) && value <= 0x10ffff) {
+              span.push(String.fromCodePoint(value));
+              j += m[0].length;
+              continue;
+            }
+          }
+          span.push(c, next);
+          j += 2;
+          continue;
+        }
+        span.push(c);
+        j++;
+      }
+      if (!closed) return text;
+      out.push(span.join(''));
+      i = j;
+      continue;
+    }
+    out.push(ch);
+    i++;
+  }
+  return out.join('');
 }

@@ -1,5 +1,6 @@
 import { fetchWithProxy } from '../../proxy/proxy-agent.ts';
 import { cacheUserHash } from '../../telemetry/telemetry.ts';
+import { detectAgent } from '../../telemetry/agent-detect.ts';
 import { readInstalledVersion } from '../../update-check.ts';
 import { getCredentials } from './hwlink-api.ts';
 import { asRecord } from '../as-record.ts';
@@ -43,6 +44,9 @@ async function hdkitRequest(
     'X-HW-AK': ak,
     'X-HW-SK': sk,
     'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
+    // #1040: 对外请求统一携带 X-HW-Agent（值=detectAgent 结果 harness，
+    // 'unknown' 兜底——探针类 clientName 不再透传）。
+    'X-HW-Agent': detectAgent().harness,
   };
   if (securitytoken) {
     headers['X-HW-Security-Token'] = securitytoken;

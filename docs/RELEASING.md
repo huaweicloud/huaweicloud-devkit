@@ -116,16 +116,21 @@ Steps:
    npm run smoke:agents
    ```
 
-7. Run the agent-level E2E suite for BOTH drivers (the only gate that
+7. Run the agent-level E2E suite for the opencode and codex drivers (the only gate that
    exercises free-choice skill-disclosure behavior, including the two
    `core-free-choice-*` cases; needs `E2E_ENABLE=1` plus the gitignored
    `test/e2e/.env` model config and the real agent CLIs on PATH — never
    part of `npm test` by policy). The provider must serve the responses
-   wire for the codex leg:
+   wire for the codex leg. The hermes leg is nightly-only in CI but runs
+   locally the same way (it needs the pinned hermes CLI installed — see
+   docs/e2e-testing-design.md "The hermes driver"; expect
+   `core-free-choice-vendor-ambiguity` red there per the documented
+   fabrication-rate finding):
 
    ```powershell
    npm run test:e2e
    $env:E2E_AGENT = 'codex'; try { npm run test:e2e } finally { Remove-Item Env:E2E_AGENT }
+   $env:E2E_AGENT = 'hermes'; try { npm run test:e2e } finally { Remove-Item Env:E2E_AGENT }
    ```
 
 8. Publish to the `next` tag:

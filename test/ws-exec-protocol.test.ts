@@ -34,6 +34,10 @@ import {
   parseDevbridgeExposeOutput,
   parseDevbridgeVerifyOutput,
 } from '../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts';
+import {
+  buildDevbridgeKeepaliveScript,
+  buildKeepaliveTunnelsReadScript,
+} from '../plugins/huaweicloud-core/src/sandbox/devbridge-keepalive.ts';
 
 // Golden pins for the hwlink wire protocol the E2E ws-fake shares with the
 // product. The fake imports the product's codec, so a codec regression
@@ -294,6 +298,33 @@ test('devbridge fake rows recognize the real scripts (first-line anchors)', () =
   const verify = runShellCommand(buildDevbridgeVerifyScript('https://e2e-tunnel-1-8080.devbridge-s2.hwtunnel.com'), fs);
   assert.equal(verify.intent, 'devbridge-verify-script');
   assert.equal(verify.stdout, DEVBRIDGE_VERIFY_OK_STDOUT);
+  // The AUTO-ENROLL one-shots (the tunnel-persistence port) — builder-driven:
+  // the read script's grep first line and the install script's #999
+  // export-rides-the-pkill first line must hit their OWN rows, never the
+  // auth-probe row (a standalone export first line is byte-identical to the
+  // probe's — the misread made enrollment fail and taught the model to
+  // retry, inflating the auth-probe count on both e2e legs).
+  const keepaliveRead = runShellCommand(buildKeepaliveTunnelsReadScript(), fs);
+  assert.equal(keepaliveRead.intent, 'devbridge-keepalive-read');
+  assert.match(keepaliveRead.stdout, /^DB_KEEPALIVE_TUNNELS=$/m);
+  const keepaliveInstall = runShellCommand(
+    buildDevbridgeKeepaliveScript([
+      { tunnelId: 'e2e-tunnel-1', url: 'https://e2e-tunnel-1-8080.devbridge-s2.hwtunnel.com' },
+    ]),
+    fs,
+  );
+  assert.equal(keepaliveInstall.intent, 'devbridge-keepalive-install');
+  assert.match(keepaliveInstall.stdout, /DB_KEEPALIVE_SYNTAX=0/);
+  assert.match(keepaliveInstall.stdout, /DB_KEEPALIVE_PID=\d+/);
+  // deployNginx's tunnel-activity probe — the #999 first-line form (the PATH
+  // export riding the subshell probe, verbatim from deploy-nginx.ts) must hit
+  // its own row above the generic export-path fall-through.
+  const tunnelProbe = runShellCommand(
+    'export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; (devbridge list -j 2>/dev/null | grep -q \'"tunnelId"\' || devbridge list 2>/dev/null | grep -Eq \'^[a-z2-7]{8}[[:space:]]\') && echo "ACTIVE" || echo "INACTIVE"',
+    fs,
+  );
+  assert.equal(tunnelProbe.intent, 'devbridge-active');
+  assert.equal(tunnelProbe.stdout, 'ACTIVE\n');
   // The connect flow's unquoted PATH export still hits the generic row,
   // not the auth-probe row.
   const plain = runShellCommand('export PATH=/workspace/.local/bin:$HOME/.huawei/bin${PATH:+:$PATH}', fs);

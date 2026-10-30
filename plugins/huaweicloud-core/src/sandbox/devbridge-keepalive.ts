@@ -91,8 +91,14 @@ export function buildDevbridgeKeepaliveScript(tunnels: unknown): string {
     `done`,
   ].join('\n');
   return [
-    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
-    `pkill -f "tunnel-keepalive.sh" 2>/dev/null || true`,
+    // #999 anchor doctrine: the export rides the same first line as the pkill
+    // so first-line readers (the e2e fake, any diagnostics consumer) see one
+    // stable anchor — a standalone export first line is byte-identical to the
+    // auth probe's opening line and cannot be told apart by first-line
+    // recognition (measured on the e2e legs: the install one-shot was
+    // misread as an auth probe, its DB_ fields lost, and the resulting
+    // enrollment-failure warning taught the model to retry).
+    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; pkill -f "tunnel-keepalive.sh" 2>/dev/null || true`,
     `sleep 1`,
     `cat > /tmp/tunnel-keepalive.sh << 'DB_KEEPALIVE_EOF'`,
     body,

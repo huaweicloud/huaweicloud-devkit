@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
+
+import { fixtureDir } from './fixture-dir.ts';
 
 const hookPath = join(process.cwd(), 'plugins', 'huaweicloud-core', 'hooks', 'huaweicloud-safety.py');
 const pythonBin = process.platform === 'win32' ? 'python' : 'python3';
@@ -16,9 +18,17 @@ interface HookPayload {
 }
 
 function runHook(payload: HookPayload) {
+  // Telemetry gated off: runHook spawns the REAL hook (no copy, no path
+  // redirect), so its record_cli_event side effect would append to the
+  // SHARED agent-dir spool (plugins/huaweicloud-core/telemetry/
+  // hook-events.jsonl) and flood later tests' telemetry ingests — the
+  // windows-CI flake behind the #1040 flush pin (see hook-parity.test.ts's
+  // battery comment). The spool-writing behavior itself is pinned by the
+  // copy-based test below, which redirects the write into its own fixture.
   return spawnSync(pythonBin, [hookPath], {
     input: JSON.stringify(payload),
     encoding: 'utf8',
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
   });
 }
 
@@ -265,4 +275,160 @@ test('python hook: positional write gate, newline payloads, and OBS writes', () 
     'hcloud OBS ls obs://bucket',
   ];
   for (const command of allowCases) expectHookDecision(command, 'allow');
+});
+
+// port-v2defects (interrogate round 1): the DEGRADED-mode doctrine, pinned
+// behaviorally. The hook is copied into a fixture dir WITHOUT its safety/
+// sibling (and, in the second variant, with a policy whose LATER field
+// carries an invalid regex) so the policy-load failure modes fire for real:
+// an unavailable write vocabulary must fail its gates CLOSED (the
+// obfuscation clause's is-None arm; hcloud_write_blocked's routed deny) —
+// never reopen plain writes while the mangled forms deny — and per-field
+// isolation must keep unrelated corruption (a bad credentialFilePatterns
+// regex) from triggering the fail-closed arms while the vocabularies are
+// intact.
+test('python hook fails closed when the policy vocabulary is unavailable (degraded-mode doctrine)', () => {
+  // The copies mirror the deployed layout (hooks/ under the plugin dir,
+  // safety/ its sibling) so the hook's parents[1] resolves inside the
+  // fixture, not the surrounding tmpdir.
+  const dir = fixtureDir('hook-degraded-');
+  mkdirSync(join(dir, 'hooks'), { recursive: true });
+  const hookCopy = join(dir, 'hooks', 'huaweicloud-safety.py');
+  copyFileSync(hookPath, hookCopy);
+  const runDegraded = (command: string) =>
+    spawnSync(pythonBin, [hookCopy], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8',
+    });
+  if (pythonUnavailable(runDegraded('echo hello'))) return;
+
+  // No safety/ sibling: every policy-derived regex stays None.
+  const cases: Array<[command: string, verdict: 'deny' | 'allow', why: string]> = [
+    ["$'\\x68'cloud FunctionGraph InvokeFunction --func_urn=x", 'deny', 'mangled write: the is-None vocab arm'],
+    ['hcloud ECS DeleteServers --server.id=x', 'deny', 'plain write: the fail-closed write gate'],
+    ['hcloud ECS ListServers', 'deny', 'plain read: fail-closed with the cause named (no vocabulary to prove safety)'],
+    [
+      'bash -c "hcloud ECS DeleteServers --server.id=x"',
+      'deny',
+      'nested script: the leading-segment walk is policy-free',
+    ],
+    ['echo Delete | xargs hcloud ECS', 'deny', 'xargs feeder: the leading-segment walk'],
+    // Round 3: the walk runs UNCONDITIONALLY — the narrow routing tail
+    // ([\s)\]}'\"]) missed these executable `xargs hcloud` tails.
+    ['echo ECS DeleteServers | xargs hcloud;', 'deny', 'semicolon tail: the unconditional walk'],
+    ['echo ECS DeleteServers | xargs hcloud|cat', 'deny', 'pipe tail: the unconditional walk'],
+    ['echo ECS DeleteServers | xargs hcloud>out', 'deny', 'redirect tail: the unconditional walk'],
+    ['echo ECS DeleteServers | xargs hcloud&&true', 'deny', '&& tail: the unconditional walk'],
+    ['hcloud --help', 'deny', 'degraded mode denies all hcloud-leading invocations (the recorded trade)'],
+    [
+      'echo "see the hcloud docs"',
+      'allow',
+      'prose mention: invocation-scoped, not mention-scoped (interrogate round 2)',
+    ],
+    ['grep hcloud README.md', 'allow', 'same — one corrupt policy must not block every mention of the CLI'],
+    ['echo $(date)', 'deny', 'non-cloud obfuscation: the blast radius, chosen fail-closed'],
+    ['echo hello', 'allow', 'plain non-hcloud text keeps no jurisdiction'],
+    ['ls -la', 'allow', 'same'],
+  ];
+  for (const [command, expected, why] of cases) {
+    const result = runDegraded(command);
+    assert.equal(result.status, 0, `${command}: the degraded hook must not crash: ${result.stderr.slice(0, 200)}`);
+    assert.equal(result.stderr, '', `${command}: no stderr in degraded mode`);
+    if (expected === 'allow') {
+      assert.equal(result.stdout.trim(), '', `${command} must allow (${why})`);
+    } else {
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', `${command} must deny (${why})`);
+    }
+  }
+  // The routed deny names the cause (actionable, not a bare refusal).
+  const writeResult = JSON.parse(runDegraded('hcloud ECS DeleteServers --server.id=x').stdout);
+  assert.match(writeResult.hookSpecificOutput.permissionDecisionReason, /policy could not be loaded/);
+
+  // Per-field isolation: an invalid regex in a LATER policy field
+  // (credentialFilePatterns) must not abort the load before the
+  // write/read vocabularies compile — the fail-closed arms stay untriggered
+  // while the vocabularies are intact.
+  const isolated = fixtureDir('hook-isolated-');
+  mkdirSync(join(isolated, 'hooks'), { recursive: true });
+  mkdirSync(join(isolated, 'safety'), { recursive: true });
+  const policy = JSON.parse(
+    readFileSync(join(process.cwd(), 'plugins', 'huaweicloud-core', 'safety', 'policy.json'), 'utf8'),
+  );
+  policy.credentialFilePatterns = ['('];
+  writeFileSync(join(isolated, 'safety', 'policy.json'), JSON.stringify(policy));
+  const isolatedHook = join(isolated, 'hooks', 'huaweicloud-safety.py');
+  copyFileSync(hookPath, isolatedHook);
+  const runIsolated = (command: string) =>
+    spawnSync(pythonBin, [isolatedHook], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8',
+    });
+  if (pythonUnavailable(runIsolated('echo hello'))) return;
+  const isolatedCases: Array<[command: string, verdict: 'deny' | 'allow', why: string]> = [
+    ['echo $(date)', 'allow', 'unrelated corruption must not trigger the vocab fail-closed arm'],
+    ['hcloud ECS DeleteServers --server.id=x', 'deny', 'the intact write vocabulary still denies writes'],
+    ['hcloud ECS ListServers', 'allow', 'the intact read vocabulary still allows reads'],
+    ['hcloud ECS Update-Show-x', 'deny', 'the read exemption stays start-anchored'],
+  ];
+  for (const [command, expected, why] of isolatedCases) {
+    const result = runIsolated(command);
+    assert.equal(result.status, 0, `${command}: ${result.stderr.slice(0, 200)}`);
+    if (expected === 'allow') {
+      assert.equal(result.stdout.trim(), '', `${command} must allow (${why})`);
+    } else {
+      const output = JSON.parse(result.stdout);
+      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', `${command} must deny (${why})`);
+    }
+  }
+  assert.ok(existsSync(hookCopy), 'fixture registry owns the copies (cleaned at exit)');
+});
+
+// port-v2defects (interrogate round 2): the safety hook's own CLI telemetry
+// labeling. record_cli_event matches its regexes against the "Service
+// Operation" cmd string — the write prefix regex's (^|[A-Za-z0-9]) class
+// never matched the SPACE before the operation, so the canonical
+// `hcloud ECS CreateServers` labeled cli:invoke. The label search is now
+// per-word; OBS subcommand writes stay cli:invoke (the label vocabulary is
+// the policy prefix list, same as the gate's — recorded residual).
+test('python safety hook labels canonical writes cli:write (per-word write search)', () => {
+  const dir = fixtureDir('hook-labels-');
+  mkdirSync(join(dir, 'hooks'), { recursive: true });
+  mkdirSync(join(dir, 'safety'), { recursive: true });
+  copyFileSync(hookPath, join(dir, 'hooks', 'huaweicloud-safety.py'));
+  copyFileSync(
+    join(process.cwd(), 'plugins', 'huaweicloud-core', 'safety', 'policy.json'),
+    join(dir, 'safety', 'policy.json'),
+  );
+  const runLabeled = (command: string) =>
+    spawnSync(pythonBin, [join(dir, 'hooks', 'huaweicloud-safety.py')], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8',
+      env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: '1' },
+    });
+  if (pythonUnavailable(runLabeled('echo hello'))) return;
+  for (const command of [
+    'hcloud ECS CreateServers --server.flavorRef=xxx',
+    'hcloud ECS ListServers',
+    'hcloud ECS NovaCreateServers',
+    'hcloud OBS rm obs://b -f',
+  ]) {
+    const result = runLabeled(command);
+    assert.equal(result.status, 0, `${command}: ${result.stderr.slice(0, 200)}`);
+  }
+  const events = readFileSync(join(dir, 'telemetry', 'hook-events.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  const keys = events.map((event) => `${event.value} -> ${event.key}`);
+  assert.ok(keys.includes('hcloud ECS CreateServers -> cli:write'), `write label missing: ${keys.join(', ')}`);
+  assert.ok(keys.includes('hcloud ECS ListServers -> cli:read'), `read label missing: ${keys.join(', ')}`);
+  assert.ok(
+    keys.includes('hcloud ECS NovaCreateServers -> cli:write'),
+    `compound write label missing: ${keys.join(', ')}`,
+  );
+  // The recorded residual: OBS subcommand writes label cli:invoke (prefix
+  // vocabulary only) — pinned so a future change is deliberate.
+  assert.ok(keys.includes('hcloud OBS rm -> cli:invoke'), `OBS label drifted: ${keys.join(', ')}`);
 });

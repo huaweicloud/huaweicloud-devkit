@@ -14,6 +14,7 @@ import { scrubSecrets } from './env-policy.ts';
 import { ALL_CASES } from './cases/index.ts';
 import { opencodeDriver } from './drivers/opencode.ts';
 import { codexDriver } from './drivers/codex.ts';
+import { hermesDriver } from './drivers/hermes.ts';
 import { verifyLegWire } from './drivers/shared.ts';
 import type { AgentDriver, DriverId } from './drivers/types.ts';
 import { loadDotEnv, out, packageJson, root, sweepStaleTempDirs } from './harness.ts';
@@ -23,7 +24,11 @@ import { selfcheck } from './selfcheck.ts';
 import { emptyRecordings } from './recordings.ts';
 import { pruneReports, runnerErrorVerdict, scrubbedStack } from './report.ts';
 
-const DRIVERS: Record<DriverId, AgentDriver> = { opencode: opencodeDriver, codex: codexDriver };
+const DRIVERS: Record<DriverId, AgentDriver> = {
+  opencode: opencodeDriver,
+  codex: codexDriver,
+  hermes: hermesDriver,
+};
 
 async function main(): Promise<void> {
   loadDotEnv();
