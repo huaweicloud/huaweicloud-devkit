@@ -938,6 +938,23 @@ test('READMEs disclose telemetry with opt-out method (#871)', () => {
   assert.match(zh, /SHA-256/);
 });
 
+test('READMEs document the DSH "already installed" reinstall workaround (#1061)', () => {
+  const dshSection = (text) => {
+    const start = text.indexOf('### DeepSeek Harness');
+    assert.ok(start > 0, 'DSH section must exist');
+    return text.slice(start, text.indexOf('###', start + 1));
+  };
+  const en = dshSection(readFileSync(join(root, 'README.md'), 'utf8'));
+  assert.match(en, /close all DSH sessions/i);
+  assert.match(en, /%USERPROFILE%\\\.dsh\\huaweicloud-plugins/);
+  assert.match(en, /install --target dsh/);
+
+  const zh = dshSection(readFileSync(join(root, 'README.zh-CN.md'), 'utf8'));
+  assert.match(zh, /关闭所有 DSH 会话/);
+  assert.match(zh, /%USERPROFILE%\\\.dsh\\huaweicloud-plugins/);
+  assert.match(zh, /install --target dsh/);
+});
+
 test('cmdUpdate has no trailing unreachable reinstall; cmdReinstall keeps it', () => {
   const setup = readFileSync(join(pluginRoot, 'src', 'setup-cli.mjs'), 'utf8');
   // cmdUpdate（'update'/'upgrade' 入口）本身不得做"卸载+重装"；各 target 分支均 return。
