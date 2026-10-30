@@ -8,6 +8,7 @@ import test from 'node:test';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const rmFailWrapper = join(root, 'test', 'fixtures', 'rm-fail-wrapper.mjs');
+const setupCli = join(root, 'bin', 'setup.cjs');
 
 function makeEnv(home, dshHome) {
   return {
@@ -145,3 +146,48 @@ test('uninstall --target all also reports residuals honestly (#1061 T2)', () => 
   }
 });
 
+
+test('install --target dsh prints conservative cleanup guidance on bundle skip (#1061 T3)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'issue1061-home-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const profileDir = join(dshHome, 'profiles', 'web');
+    const pluginsDir = join(dshHome, 'huaweicloud-plugins');
+    mkdirSync(profileDir, { recursive: true });
+    writeFileSync(
+      join(profileDir, 'cordis.patch.yml'),
+      [
+        '- insert:',
+        '    - id: huaweicloud-devkit',
+        "      name: '@deepseek-ai/dsh-mcp-client'",
+        '      config:',
+        '        serverName: huaweicloud',
+        '',
+      ].join('\n'),
+    );
+    mkdirSync(pluginsDir, { recursive: true });
+    writeFileSync(join(pluginsDir, 'leftover-file.txt'), 'user data');
+
+    const res = spawnSync(process.execPath, [setupCli, 'install', '--target', 'dsh'], {
+      cwd: home,
+      env: makeEnv(home, dshHome),
+      encoding: 'utf8',
+      timeout: 600000,
+    });
+
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Installation complete!/);
+    assert.match(res.stdout, /DSH patch already configured via bundle/);
+    assert.match(res.stdout, /already configured; skipping/, 'references the DSH-side symptom');
+    assert.match(res.stdout, /Close DSH sessions/);
+    assert.match(res.stdout, /%USERPROFILE%\\\.dsh\\huaweicloud-plugins/);
+    assert.match(res.stdout, /rmdir \/s \/q "%USERPROFILE%\\\.dsh\\huaweicloud-plugins"/);
+    assert.match(res.stdout, /Remove-Item -Recurse -Force/);
+    assert.match(res.stdout, /rm -rf ~\/\.dsh\/huaweicloud-plugins/);
+    assert.match(res.stdout, /never deletes files automatically/, 'install promises no auto-deletion');
+    assert.match(res.stdout, new RegExp(`Plugin directory: .*${dshHome.replaceAll('\\', '\\\\')}/huaweicloud-plugins`));
+    assert.ok(existsSync(join(pluginsDir, 'leftover-file.txt')), 'install must not delete user files');
+  } finally {
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
