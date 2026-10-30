@@ -146,7 +146,6 @@ test('uninstall --target all also reports residuals honestly (#1061 T2)', () => 
   }
 });
 
-
 test('install --target dsh prints conservative cleanup guidance on bundle skip (#1061 T3)', () => {
   const home = mkdtempSync(join(tmpdir(), 'issue1061-home-'));
   try {
