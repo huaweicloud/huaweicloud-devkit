@@ -2273,6 +2273,18 @@ function ensureDshMcpPatch() {
   // writing a managed block to avoid duplicate entries.
   if (cleaned.includes('@deepseek-ai/dsh-mcp-client') && cleaned.includes('serverName: huaweicloud')) {
     console.log(`  DSH patch already configured via bundle: ${patchFile}`);
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m If DSH reports "already configured; skipping" after a reinstall, a leftover plugin directory may be registered by the DSH plugin manager.`,
+    );
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m Close DSH sessions first to release file locks, then remove the directory and reinstall. Install never deletes files automatically:`,
+    );
+    console.log(`        Plugin directory: ${dshPluginsDir()} (default: %USERPROFILE%\\.dsh\\huaweicloud-plugins)`);
+    console.log(`        Windows cmd:        rmdir /s /q "%USERPROFILE%\\.dsh\\huaweicloud-plugins"`);
+    console.log(
+      `        Windows PowerShell: Remove-Item -Recurse -Force "$env:USERPROFILE\\.dsh\\huaweicloud-plugins"`,
+    );
+    console.log(`        macOS/Linux:        rm -rf ~/.dsh/huaweicloud-plugins`);
     return false;
   }
 
