@@ -81,3 +81,67 @@ test('uninstall --target opencode gets the same shared-mechanism guidance (#1061
     rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 });
+
+test('uninstall summary lists residuals instead of claiming completion (#1061 T2)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'issue1061-home-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const pluginsDir = join(dshHome, 'huaweicloud-plugins');
+    mkdirSync(join(pluginsDir, 'src'), { recursive: true });
+    writeFileSync(join(pluginsDir, 'src', 'mcp-server.mjs'), 'x');
+
+    const res = runCliWithRmFailure(home, ['uninstall', '--target', 'dsh'], pluginsDir, 'EBUSY', dshHome);
+
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Uninstall finished with residuals/);
+    assert.match(res.stdout, /^  - .*huaweicloud-plugins$/m, 'residual path listed in summary');
+    assert.match(res.stdout, /Close the corresponding agent/);
+    assert.match(res.stdout, /residual paths listed above/);
+    assert.doesNotMatch(res.stdout, /Uninstall complete\./, 'must not claim completion with residuals');
+  } finally {
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('uninstall summary stays "Uninstall complete." when nothing survives (#1061 T2)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'issue1061-home-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const pluginsDir = join(dshHome, 'huaweicloud-plugins');
+    mkdirSync(join(pluginsDir, 'src'), { recursive: true });
+    writeFileSync(join(pluginsDir, 'src', 'mcp-server.mjs'), 'x');
+    mkdirSync(join(dshHome, 'skills', 'huawei-demo'), { recursive: true });
+
+    const res = runCliWithRmFailure(home, ['uninstall', '--target', 'dsh'], '', 'EBUSY', dshHome);
+
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Uninstall complete\./);
+    assert.doesNotMatch(res.stdout, /Uninstall finished with residuals/);
+    assert.doesNotMatch(res.stdout, /Residual left behind/);
+    assert.ok(!existsSync(pluginsDir), 'plugin dir removed');
+    assert.match(res.stdout, /本次仅卸载了 dsh 的插件/, 'existing follow-up hint unchanged');
+  } finally {
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
+test('uninstall --target all also reports residuals honestly (#1061 T2)', () => {
+  const home = mkdtempSync(join(tmpdir(), 'issue1061-home-'));
+  try {
+    const dshHome = join(home, '.dsh');
+    const pluginsDir = join(dshHome, 'huaweicloud-plugins');
+    mkdirSync(join(pluginsDir, 'src'), { recursive: true });
+    writeFileSync(join(pluginsDir, 'src', 'mcp-server.mjs'), 'x');
+
+    const res = runCliWithRmFailure(home, ['uninstall', '--target', 'all'], pluginsDir, 'EBUSY', dshHome);
+
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /Uninstall finished with residuals/);
+    assert.match(res.stdout, /^  - .*huaweicloud-plugins$/m);
+    assert.doesNotMatch(res.stdout, /Uninstall complete\./);
+    assert.ok(existsSync(pluginsDir), 'locked plugin dir must remain on disk');
+  } finally {
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
+});
+
