@@ -95,7 +95,7 @@ test('uninstall summary lists residuals instead of claiming completion (#1061 T2
 
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /Uninstall finished with residuals/);
-    assert.match(res.stdout, /^  - .*huaweicloud-plugins$/m, 'residual path listed in summary');
+    assert.match(res.stdout, /^ {2}- .*huaweicloud-plugins$/m, 'residual path listed in summary');
     assert.match(res.stdout, /Close the corresponding agent/);
     assert.match(res.stdout, /residual paths listed above/);
     assert.doesNotMatch(res.stdout, /Uninstall complete\./, 'must not claim completion with residuals');
@@ -138,7 +138,7 @@ test('uninstall --target all also reports residuals honestly (#1061 T2)', () => 
 
     assert.equal(res.status, 0, res.stderr);
     assert.match(res.stdout, /Uninstall finished with residuals/);
-    assert.match(res.stdout, /^  - .*huaweicloud-plugins$/m);
+    assert.match(res.stdout, /^ {2}- .*huaweicloud-plugins$/m);
     assert.doesNotMatch(res.stdout, /Uninstall complete\./);
     assert.ok(existsSync(pluginsDir), 'locked plugin dir must remain on disk');
   } finally {
