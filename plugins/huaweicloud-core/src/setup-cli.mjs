@@ -3863,7 +3863,16 @@ async function cmdUninstall() {
     await promptGlobalCleanup();
   }
 
-  console.log(`\n\x1b[32mUninstall complete.\x1b[0m`);
+  const residuals = [...uninstallResidualPaths];
+  if (residuals.length > 0) {
+    console.log(`\n\x1b[33mUninstall finished with residuals:\x1b[0m`);
+    for (const p of residuals) console.log(`  - ${p}`);
+    console.log(
+      `\n\x1b[33mClose the corresponding agent to release file locks, then remove the residual paths listed above (per-platform commands are in the [WARN] guidance).\x1b[0m`,
+    );
+  } else {
+    console.log(`\n\x1b[32mUninstall complete.\x1b[0m`);
+  }
 
   if (target !== 'all') {
     console.log(
