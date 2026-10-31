@@ -452,6 +452,23 @@ test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)
   assert.ok(nat.recommendedServices.includes('VPC'));
 });
 
+test('service_catalog routes #1066 D3-A2 miss cases to expected services', async () => {
+  // Issue #1066 D3-A2: trigger-word routing gaps (24-intent eval, 5 MISS).
+  // HIT = expected service appears in recommendedServices.
+  const cases = [
+    { id: 'D3-A2-1', intent: '帮我查一下华北北京四有哪些云主机', expect: ['ECS'] },
+    { id: 'D3-A2-2', intent: '申请 HTTPS 证书并配置到我的域名', expect: ['SCM'] },
+    { id: 'D3-A2-3', intent: '创建一个消息通知主题用于告警推送', expect: ['SMN'] },
+    { id: 'D3-A2-4', intent: '用 Terraform 管理我的云资源', expect: ['Terraform'] },
+    { id: 'D3-A2-5', intent: '创建一块云硬盘并挂载到云服务器', expect: ['EVS', 'ECS'] },
+  ];
+  for (const c of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent: c.intent });
+    const ok = c.expect.some((s) => result.recommendedServices.includes(s));
+    assert.equal(ok, true, `${c.id} ('${c.intent}') should route to ${c.expect.join('/')}`);
+  }
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
