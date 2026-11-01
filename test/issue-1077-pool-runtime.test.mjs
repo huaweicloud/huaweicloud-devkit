@@ -49,11 +49,15 @@ test('issue-1077: resolvePoolTemplate — pool_type maps via env config', () => 
   assert.deepEqual(resolvePoolTemplate('persistent', undefined), { template_id: PER, source: 'pool_map' });
 });
 
-test('issue-1077: resolvePoolTemplate — unmapped pool_type throws a config hint', () => {
+test('issue-1077: resolvePoolTemplate — built-in platform templates are the default', () => {
   delete process.env.HDKIT_POOL_TEMPLATE_EPHEMERAL;
   delete process.env.HDKIT_POOL_TEMPLATE_PERSISTENT;
-  assert.throws(() => resolvePoolTemplate('ephemeral', undefined), /HDKIT_POOL_TEMPLATE_EPHEMERAL/);
-  assert.throws(() => resolvePoolTemplate('persistent', undefined), /HDKIT_POOL_TEMPLATE_PERSISTENT/);
+  const e = resolvePoolTemplate('ephemeral', undefined);
+  const p2 = resolvePoolTemplate('persistent', undefined);
+  assert.equal(e.template_id, '9a108ab1bc354bc4979b949b36e3c8c1');
+  assert.equal(e.source, 'builtin');
+  assert.equal(p2.template_id, '05860f507ee94930844907a3a136d1a7');
+  assert.equal(p2.source, 'builtin');
 });
 
 test('issue-1077: resolvePoolTemplate — invalid pool_type rejected', () => {

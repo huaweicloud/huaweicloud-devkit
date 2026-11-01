@@ -3,6 +3,12 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 const POOL_TYPES = new Set(['ephemeral', 'persistent']);
+
+// 平台预置两池模板（需求方 2026-11-02 提供；可被配置文件/环境变量覆盖）
+const DEFAULT_POOL_TEMPLATES = {
+  ephemeral: '9a108ab1bc354bc4979b949b36e3c8c1',
+  persistent: '05860f507ee94930844907a3a136d1a7',
+};
 const ENV_KEYS = {
   ephemeral: 'HDKIT_POOL_TEMPLATE_EPHEMERAL',
   persistent: 'HDKIT_POOL_TEMPLATE_PERSISTENT',
@@ -29,7 +35,9 @@ export function resolvePoolTemplate(poolType, explicitTemplateId) {
     throw new Error(`Invalid pool_type "${poolType}" — use "ephemeral" or "persistent".`);
   }
   const cfg = readPoolConfigFile();
-  const tpl = String(cfg?.templates?.[poolType] || process.env[ENV_KEYS[poolType]] || '').trim();
+  const tpl = String(
+    cfg?.templates?.[poolType] || process.env[ENV_KEYS[poolType]] || DEFAULT_POOL_TEMPLATES[poolType] || '',
+  ).trim();
   if (!tpl) {
     throw new Error(
       `pool_type="${poolType}" requested but no pool template mapped. ` +
@@ -37,7 +45,10 @@ export function resolvePoolTemplate(poolType, explicitTemplateId) {
         `or set ${ENV_KEYS[poolType]}, or pass template_id explicitly.`,
     );
   }
-  return { template_id: tpl, source: 'pool_map' };
+  return {
+    template_id: tpl,
+    source: cfg?.templates?.[poolType] ? 'pool_map' : process.env[ENV_KEYS[poolType]] ? 'pool_map' : 'builtin',
+  };
 }
 
 export function getPoolLifecycleGuidance(poolType) {
