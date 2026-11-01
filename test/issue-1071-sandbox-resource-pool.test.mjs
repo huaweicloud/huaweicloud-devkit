@@ -33,19 +33,26 @@ test('issue-1071: resource pool routing table covers both sandbox types and sele
   assert.match(skill, /活动赚取/);
 });
 
-// Acceptance 2: lifecycle semantics (1h / 3h / 14 days / three signals) queryable in SKILL.md
-test('issue-1071: lifecycle semantics (1h idle / 3h fixed / 14-day retention / three signals)', () => {
+// Acceptance 2 (v2): lifecycle semantics — 7-day cap / connect-only signal / idle-configurable ephemeral
+test('issue-1076: lifecycle v2 (1h idle / connect-only signal / 30min+1h ephemeral idle / 7-day retention / template_id pools)', () => {
   assert.match(skill, /Sandbox Lifecycle & Retention/);
   assert.match(skill, /1h idle/i);
-  assert.match(skill, /10min/i); // relaxed-from note
-  assert.match(skill, /3h from CreateTime/i);
-  assert.match(skill, /14 days/i);
-  // three activity signals: connect / process / preview traffic
-  assert.match(skill, /terminal connect/i);
-  assert.match(skill, /running processes/i);
-  assert.match(skill, /preview traffic/i);
-  // pre-shutdown user-side reminder + no devkit-side deletion
-  assert.match(skill, /notifies the developer \*\*before\*\* shutting down an idle persistent/i);
+  // v2: connect-only activity detection (three-signal caliber superseded)
+  assert.match(skill, /当前仅 connect/i);
+  assert.doesNotMatch(skill, /Three signals/i);
+  // v2: ephemeral idle semantics (configurable, pending verification)
+  assert.match(skill, /30min idle → shutdown（待验证）/);
+  assert.match(skill, /1h idle → 自动删除（待验证）/);
+  assert.match(skill, /闲置语义（待验证）/);
+  // v2: 7-day hard cap (14-day caliber superseded)
+  assert.match(skill, /最大 7 天/i);
+  assert.doesNotMatch(skill, /14 days/i);
+  // v2: template_id pool selection, no persist_mode request param
+  assert.match(skill, /两池选择机制 = template_id/i);
+  assert.match(skill, /没有 persist_mode/i);
+  // v2: pre-shutdown notification NOT supported (G6 demand)
+  assert.match(skill, /当前不支持删除\/关机前通知/i);
+  // unchanged: no devkit-side deletion, second confirmation
   assert.match(skill, /second confirmation/i);
   assert.match(skill, /不做延后代删|never defers\/delays deletion/);
   // G1-G5 dependency markers

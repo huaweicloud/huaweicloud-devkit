@@ -47,37 +47,38 @@ Hard rules:
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
 
-## Resource Pool Selection (持久化 vs 非持久化 — 定稿口径 #1071)
+## Resource Pool Selection (持久化 vs 非持久化 — 口径 v2 · #1076 对齐修正，取代 #1071 v1)
 
 The sandbox service runs on a dedicated resource pool with **two instance types**. Select the pool by intent — the agent auto-selects from the request, and the developer may override:
 
-| Intent / scenario (按意图) | Pool type | Why                                                                 |
-| -------------------------- | --------- | ------------------------------------------------------------------- |
-| 预览 / 试用 / demo         | 非持久化  | Throwaway runtime, no state to keep                                 |
-| 一次性任务（跑完即弃）     | 非持久化  | Result leaves the sandbox; instance not reused                      |
-| 敏感内容（即焚）           | 非持久化  | Nothing persists after the fixed 3h window — data dies with the box |
-| 开发工作台 / workbench     | 持久化    | Sessions span days; state must survive reboots                      |
-| 带数据库项目（DB-backed）  | 持久化    | Data lives on the mounted EVS disk (32G)                            |
-| 跨日评审 / 展示            | 持久化    | Reviewers return on a later day; instance kept                      |
+| Intent / scenario (按意图) | Pool type | Why                                                                                              |
+| -------------------------- | --------- | ------------------------------------------------------------------------------------------------ |
+| 预览 / 试用 / demo         | 非持久化  | Throwaway runtime, no state to keep                                                              |
+| 一次性任务（跑完即弃）     | 非持久化  | Result leaves the sandbox; instance not reused                                                   |
+| 敏感内容（即焚）           | 非持久化  | Nothing persists — instance reclaimed by idle policy (target 30min shutdown / 1h delete, 待验证) |
+| 开发工作台 / workbench     | 持久化    | Sessions span days; state must survive reboots                                                   |
+| 带数据库项目（DB-backed）  | 持久化    | Data lives on the mounted EVS disk (32G)                                                         |
+| 跨日评审 / 展示            | 持久化    | Reviewers return on a later day; instance kept                                                   |
 
 Selection rules:
 
 - **Agent auto-selects by intent** using the table above (e.g. a preview/即焚 request → 非持久化; a workbench/数据库 request → 持久化). **The developer can always override** — present both types when the intent is ambiguous.
-- **持久化 sandboxes mount an EVS disk (32G)** — project code and databases survive reboots; treat them as the default for anything that must outlive the session (see also [Sandbox filesystem persistence](#sandbox-filesystem-persistence-what-survives-a-reboot-999) for the `/workspace` data-disk semantics).
-- **非持久化 sandboxes are fixed 3h** — never promise durability to the developer; finish the task and hand over results before the window closes.
+- **两池当前实际差异仅 EVS 挂盘**（待测试；资源组口头口径）；**持久化 sandboxes mount an EVS disk (32G)** — project code and databases survive reboots; treat them as the default for anything that must outlive the session (see also [Sandbox filesystem persistence](#sandbox-filesystem-persistence-what-survives-a-reboot-999) for the `/workspace` data-disk semantics).
+- **非持久化生命周期为闲置语义（待验证）**：目标口径 30 分钟闲置自动关机 + 1 小时闲置自动删除（平台侧按模板配置，参数可配性未实测）。实测结论产出前按保守口径引导：任务完成即交付成果，不向开发者承诺任何超出会话的实例存活。
+- **两池选择机制 = template_id**：平台侧预置持久化/非持久化两类模板，`huaweicloud_sandbox_connect` 的 `template_id` 参数即池选择器。上游 create/connect 参数面仅 template / timeout / envs / metadata / build_id / lifecycle——**没有 persist_mode、没有 idle 请求参数**；闲置语义由平台按模板配置，不是请求参数。
 - **烧核播报口径 (core-hour burn announcement)**: when a sandbox consumes core-hours (烧核), report the burn to the developer using the gifting wording — 核时来自「平台赠送 + 活动赚取」口径，非直接计费。Broadcast this when starting a billable-length session on the resource pool, so the developer knows where the quota comes from.
 - Quota is **1 instance per type**: a developer may hold 1 非持久化 AND 1 持久化 simultaneously; the same type is **reused** (one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second). Exceeding quota returns **HTTP 429 with a Retry-After header** plus a distinct error code — distinguish **quota exceeded** (429; wait per Retry-After, or free the slot by finishing the other task) from **capacity insufficient** (pool full; retry later or pick the other type). Full parameter table: [references/resource-pool.md](references/resource-pool.md).
 
-## Sandbox Lifecycle & Retention (定稿口径 #1071)
+## Sandbox Lifecycle & Retention (口径 v2 · #1076 对齐修正，取代 #1071 v1)
 
-| Phase            | 持久化 (persistent)                                                                                                                                                                                                                                                          | 非持久化 (ephemeral)                                   |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Idle shutdown    | **1h idle → shutdown** (relaxed from the platform's 10min)                                                                                                                                                                                                                   | n/a — fixed window                                     |
-| Activity signals | **Three signals** count as active: terminal connect / running processes / preview traffic (tunnel). Any signal within the idle window resets the 1h timer                                                                                                                    | n/a                                                    |
-| Pre-shutdown     | Platform notifies the developer **before** shutting down an idle persistent sandbox — surface this reminder, never fight it                                                                                                                                                  | n/a                                                    |
-| Hard expiry      | none (lifecycle governed by idle policy)                                                                                                                                                                                                                                     | **Fixed 3h from CreateTime** (CreateTime 判定，不可续) |
-| Retention        | **14 days after stop** (业务定稿) — then reclaimed by the resource-group idle-deletion policy                                                                                                                                                                                | Reclaimed with the instance                            |
-| Deletion         | ① developer-initiated delete (devkit asks for a **second confirmation** before user-side delete) ② resource-group policy reclaim after the 14-day retention. **No deletion API is exposed to devkit**, and **devkit never defers/delays deletion on the developer's behalf** | Same policy semantics                                  |
+| Phase            | 持久化 (persistent)                                                                                                                                                                                                                                                         | 非持久化 (ephemeral)                |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
+| Idle shutdown    | **1h idle → shutdown**（目标口径；当前平台默认 10min，放宽为 1h 属平台侧配置）                                                                                                                                                                                              | **30min idle → shutdown（待验证）** |
+| Activity signals | **当前仅 connect 连接判定**；进程 / 预览流量判定为诉求中（G2）                                                                                                                                                                                                              | 同左                                |
+| Pre-shutdown     | **当前不支持删除/关机前通知**（G6 诉求中）——通知能力上线前引导开发者自行留意实例状态                                                                                                                                                                                        | n/a                                 |
+| Hard expiry      | none（生命周期由闲置策略治理）                                                                                                                                                                                                                                              | **1h idle → 自动删除（待验证）**    |
+| Retention        | **最大 7 天**（资源组数据库 7 天上限，硬约束——原 14 天口径自 v2 起作废）                                                                                                                                                                                                    | 随实例回收                          |
+| Deletion         | ① developer-initiated delete (devkit asks for a **second confirmation** before user-side delete) ② resource-group policy reclaim after the 7-day retention. **No deletion API is exposed to devkit**, and **devkit never defers/delays deletion on the developer's behalf** | Same policy semantics               |
 
 Deletion hard rules:
 
@@ -89,11 +90,12 @@ Deletion hard rules:
 
 devkit only consumes these; they are implemented on the hdkitservice/platform side and are **not** part of this repo's acceptance:
 
-- **G1** — 资源组闲置删除策略配置 (idle-deletion policy for the resource group, drives the 14-day reclaim)
-- **G2** — 活性三信号 (connect / process / preview-traffic activity signals feeding the 1h idle timer)
-- **G3** — 状态查询 API (instance status query API)
-- **G4** — 销户开机处置 (account-closure handling for running instances)
-- **G5** — 销户实例回收 (account-closure instance reclaim)
+- **G1** — 资源组闲置删除策略配置（驱动 7 天上限回收；原 14 天口径已作废）
+- **G2** — 活性检测（**当前仅 connect 判定**；进程/预览流量信号为后续诉求）
+- **G3** — 状态查询 API（未完成，继续提）
+- **G4** — 销户开机处置（**已完成，待测试**）
+- **G5** — 销户实例回收（**已完成，待测试**）
+- **G6** — 删除前通知用户（当前不支持，诉求中）
 
 ## Activation
 

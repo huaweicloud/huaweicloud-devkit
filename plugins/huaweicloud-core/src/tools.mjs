@@ -624,7 +624,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_close_session',
     description:
-      'Close the persistent terminal session for a workspace. This closes the agent-side terminal session only — it does NOT delete the sandbox instance. Resource-pool sandbox deletion is developer-initiated (always ask for a second confirmation before guiding a delete) or handled by the platform resource-group idle-deletion policy after the 14-day retention; devkit never defers or performs deletion on the user behalf.',
+      'Close the persistent terminal session for a workspace. This closes the agent-side terminal session only — it does NOT delete the sandbox instance. Resource-pool sandbox deletion is developer-initiated (always ask for a second confirmation before guiding a delete) or handled by the platform resource-group idle-deletion policy after the 7-day retention (v2: hard DB cap, supersedes the old 14-day caliber); devkit never defers or performs deletion on the user behalf.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -877,7 +877,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One user one instance per pool type - reuses an existing sandbox of that type if available, otherwise creates a new one. Quota: 1 instance per type (a user may hold 1 ephemeral AND 1 persistent sandbox simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and an error code that distinguishes quota-exceeded (wait per Retry-After or free the slot) from capacity-insufficient (pool full; retry later or pick the other type). Resource-pool types and lifecycle: ephemeral = preview/trial/one-shot/sensitive (fixed 3h from CreateTime); persistent = workbench/DB-backed/multi-day review (EVS 32G mounted, 1h idle shutdown with connect/process/preview-traffic activity signals, 14-day retention). Returns session_id, dev_stage_id, connection_id, connection_address, and expiresAt (STS credential expiry).',
+      'Connect to a sandbox via hdkitservice. One user one instance per pool type - reuses an existing sandbox of that type if available, otherwise creates a new one. Quota: 1 instance per type (a user may hold 1 ephemeral AND 1 persistent sandbox simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and an error code that distinguishes quota-exceeded (wait per Retry-After or free the slot) from capacity-insufficient (pool full; retry later or pick the other type). Pool type is selected via template_id (the platform pre-provisions persistent/ephemeral templates — there is no persist_mode or idle request parameter; idle semantics are platform-side template config). Resource-pool lifecycle v2: ephemeral = preview/trial/one-shot/sensitive (idle-configurable, target 30min idle shutdown + 1h idle delete, pending verification); persistent = workbench/DB-backed/multi-day review (EVS 32G mounted, 1h idle shutdown with connect-only activity detection, 7-day retention cap). Returns session_id, dev_stage_id, connection_id, connection_address, and expiresAt (STS credential expiry).',
     inputSchema: {
       type: 'object',
       properties: {
