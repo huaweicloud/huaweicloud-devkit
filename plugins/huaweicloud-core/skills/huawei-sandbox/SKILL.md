@@ -47,7 +47,9 @@ Hard rules:
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
 
-## Resource Pool Selection (持久化 vs 非持久化 — 口径 v2 · #1076 对齐修正，取代 #1071 v1)
+## Resource Pool Selection (持久化 vs 非持久化)
+
+> 口径 v2（#1076 对齐修正，取代 #1071 v1 口径）
 
 The sandbox service runs on a dedicated resource pool with **two instance types**. Select the pool by intent — the agent auto-selects from the request, and the developer may override:
 
@@ -69,7 +71,9 @@ Selection rules:
 - **烧核播报口径 (core-hour burn announcement)**: when a sandbox consumes core-hours (烧核), report the burn to the developer using the gifting wording — 核时来自「平台赠送 + 活动赚取」口径，非直接计费。Broadcast this when starting a billable-length session on the resource pool, so the developer knows where the quota comes from.
 - Quota is **1 instance per type**: a developer may hold 1 非持久化 AND 1 持久化 simultaneously; the same type is **reused** (one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second). Exceeding quota returns **HTTP 429 with a Retry-After header** plus a distinct error code — distinguish **quota exceeded** (429; wait per Retry-After, or free the slot by finishing the other task) from **capacity insufficient** (pool full; retry later or pick the other type). Full parameter table: [references/resource-pool.md](references/resource-pool.md).
 
-## Sandbox Lifecycle & Retention (口径 v2 · #1076 对齐修正，取代 #1071 v1)
+## Sandbox Lifecycle & Retention
+
+> 口径 v2（#1076 对齐修正，取代 #1071 v1 口径）
 
 | Phase            | 持久化 (persistent)                                                                                                                                                                                                                                                         | 非持久化 (ephemeral)                |
 | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------- |
@@ -183,7 +187,7 @@ devkit only consumes these; they are implemented on the hdkitservice/platform si
 
 **Step 0 — Target-Selection Gate (MANDATORY)**: before any sandbox lifecycle tool, confirm the target. If the developer asked to deploy/host/publish a site without naming a target, STOP and run the [Target-Selection Gate](#target-selection-gate-mandatory--do-not-skip) first; do NOT call `huaweicloud_sandbox_connect` until it is resolved. Proceed with this workflow only if the target is already confirmed as sandbox (or a temporary runtime).
 
-**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [Resource Pool Selection](#resource-pool-selection-持久化-vs-非持久化--定稿口径-1071) table (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window ([Sandbox Lifecycle & Retention](#sandbox-lifecycle--retention-定稿口径-1071)) before connecting.
+**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [Resource Pool Selection](#resource-pool-selection-持久化-vs-非持久化) table (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window ([Sandbox Lifecycle & Retention](#sandbox-lifecycle--retention)) before connecting.
 
 **Step 0.5 — Stack-Selection Gate (MANDATORY)**: before uploading or writing any application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
 
