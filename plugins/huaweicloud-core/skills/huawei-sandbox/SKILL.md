@@ -47,6 +47,54 @@ Hard rules:
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
 
+## Resource Pool Selection (持久化 vs 非持久化 — 定稿口径 #1071)
+
+The sandbox service runs on a dedicated resource pool with **two instance types**. Select the pool by intent — the agent auto-selects from the request, and the developer may override:
+
+| Intent / scenario (按意图) | Pool type | Why                                                                 |
+| -------------------------- | --------- | ------------------------------------------------------------------- |
+| 预览 / 试用 / demo         | 非持久化  | Throwaway runtime, no state to keep                                 |
+| 一次性任务（跑完即弃）     | 非持久化  | Result leaves the sandbox; instance not reused                      |
+| 敏感内容（即焚）           | 非持久化  | Nothing persists after the fixed 3h window — data dies with the box |
+| 开发工作台 / workbench     | 持久化    | Sessions span days; state must survive reboots                      |
+| 带数据库项目（DB-backed）  | 持久化    | Data lives on the mounted EVS disk (32G)                            |
+| 跨日评审 / 展示            | 持久化    | Reviewers return on a later day; instance kept                      |
+
+Selection rules:
+
+- **Agent auto-selects by intent** using the table above (e.g. a preview/即焚 request → 非持久化; a workbench/数据库 request → 持久化). **The developer can always override** — present both types when the intent is ambiguous.
+- **持久化 sandboxes mount an EVS disk (32G)** — project code and databases survive reboots; treat them as the default for anything that must outlive the session (see also [Sandbox filesystem persistence](#sandbox-filesystem-persistence-what-survives-a-reboot-999) for the `/workspace` data-disk semantics).
+- **非持久化 sandboxes are fixed 3h** — never promise durability to the developer; finish the task and hand over results before the window closes.
+- **烧核播报口径 (core-hour burn announcement)**: when a sandbox consumes core-hours (烧核), report the burn to the developer using the gifting wording — 核时来自「平台赠送 + 活动赚取」口径，非直接计费。Broadcast this when starting a billable-length session on the resource pool, so the developer knows where the quota comes from.
+- Quota is **1 instance per type**: a developer may hold 1 非持久化 AND 1 持久化 simultaneously; the same type is **reused** (one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second). Exceeding quota returns **HTTP 429 with a Retry-After header** plus a distinct error code — distinguish **quota exceeded** (429; wait per Retry-After, or free the slot by finishing the other task) from **capacity insufficient** (pool full; retry later or pick the other type). Full parameter table: [references/resource-pool.md](references/resource-pool.md).
+
+## Sandbox Lifecycle & Retention (定稿口径 #1071)
+
+| Phase            | 持久化 (persistent)                                                                                                                                                                                                                                                          | 非持久化 (ephemeral)                                   |
+| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| Idle shutdown    | **1h idle → shutdown** (relaxed from the platform's 10min)                                                                                                                                                                                                                   | n/a — fixed window                                     |
+| Activity signals | **Three signals** count as active: terminal connect / running processes / preview traffic (tunnel). Any signal within the idle window resets the 1h timer                                                                                                                    | n/a                                                    |
+| Pre-shutdown     | Platform notifies the developer **before** shutting down an idle persistent sandbox — surface this reminder, never fight it                                                                                                                                                  | n/a                                                    |
+| Hard expiry      | none (lifecycle governed by idle policy)                                                                                                                                                                                                                                     | **Fixed 3h from CreateTime** (CreateTime 判定，不可续) |
+| Retention        | **14 days after stop** (业务定稿) — then reclaimed by the resource-group idle-deletion policy                                                                                                                                                                                | Reclaimed with the instance                            |
+| Deletion         | ① developer-initiated delete (devkit asks for a **second confirmation** before user-side delete) ② resource-group policy reclaim after the 14-day retention. **No deletion API is exposed to devkit**, and **devkit never defers/delays deletion on the developer's behalf** | Same policy semantics                                  |
+
+Deletion hard rules:
+
+- devkit does NOT expose a lifecycle deletion API for resource-pool instances — cleanup is the platform resource-group idle-deletion policy (G1).
+- On a developer-initiated delete, always ask for **explicit second confirmation** (确认要删除？数据不可恢复) before proceeding.
+- Never schedule delayed/deferred deletion on the developer's behalf (不做延后代删).
+
+### Platform dependencies (G 清单 — platform-side, tracked here for awareness)
+
+devkit only consumes these; they are implemented on the hdkitservice/platform side and are **not** part of this repo's acceptance:
+
+- **G1** — 资源组闲置删除策略配置 (idle-deletion policy for the resource group, drives the 14-day reclaim)
+- **G2** — 活性三信号 (connect / process / preview-traffic activity signals feeding the 1h idle timer)
+- **G3** — 状态查询 API (instance status query API)
+- **G4** — 销户开机处置 (account-closure handling for running instances)
+- **G5** — 销户实例回收 (account-closure instance reclaim)
+
 ## Activation
 
 - **Proactive offering**: when the developer's task needs a temporary runtime (e.g. "deploy this web app", "run this app and preview it"), offer the sandbox proactively — the developer never has to say "use sandbox". Prompt: "This task can be satisfied by a sandbox — use it?"
@@ -132,6 +180,8 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 ## Workflow
 
 **Step 0 — Target-Selection Gate (MANDATORY)**: before any sandbox lifecycle tool, confirm the target. If the developer asked to deploy/host/publish a site without naming a target, STOP and run the [Target-Selection Gate](#target-selection-gate-mandatory--do-not-skip) first; do NOT call `huaweicloud_sandbox_connect` until it is resolved. Proceed with this workflow only if the target is already confirmed as sandbox (or a temporary runtime).
+
+**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [Resource Pool Selection](#resource-pool-selection-持久化-vs-非持久化--定稿口径-1071) table (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window ([Sandbox Lifecycle & Retention](#sandbox-lifecycle--retention-定稿口径-1071)) before connecting.
 
 **Step 0.5 — Stack-Selection Gate (MANDATORY)**: before uploading or writing any application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
 
@@ -1049,6 +1099,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 
 - [Framework Commands](references/framework-commands.md) — command mapping for all supported frameworks
 - [Nginx Templates](references/nginx-templates.md) — nginx configuration templates and fallback
+- [Resource Pool](references/resource-pool.md) — 资源池定稿口径：两沙箱类型、申请/限流参数（持久 2U4G×300 + 4U8G×200、非持久 2U4G×1000、overlayer 5GB/实例、EVS 300TB）、配额 1/类型 与 429+Retry-After 语义
 
 ## Critical Warnings
 
