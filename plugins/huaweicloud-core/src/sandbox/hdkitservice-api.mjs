@@ -68,6 +68,12 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     err.code = code;
     err.status = resp.status;
     err.traceId = data.traceId;
+    const quotaInfo = classifyQuotaError(resp.status, code, resp.headers.get('retry-after'));
+    if (quotaInfo) {
+      err.kind = quotaInfo.kind;
+      err.retryAfter = quotaInfo.retryAfter;
+      err.remediation = quotaInfo.remediation;
+    }
     if (code === 'HDKIT_CRED_INVALID') {
       err.remediation = {
         hint: '已保存的凭证(S1)可能已失效。请执行以下操作之一：',
@@ -100,12 +106,65 @@ export async function hdkitSignAgreement() {
   return await hdkitRequest('POST', 'sign-agreement', {});
 }
 
+export function classifyQuotaError(status, code, retryAfterHeader) {
+  if (status !== 429) return null;
+  const retryAfter = retryAfterHeader || '';
+  if (code === 'HDKIT_QUOTA_EXCEEDED') {
+    return {
+      kind: 'quota_exceeded',
+      retryAfter,
+      remediation: {
+        hint: '沙箱配额超限（每用户每类型 1 个实例；1 非持久化 + 1 持久化可并存）。',
+        steps: [
+          retryAfter ? `按 Retry-After=${retryAfter} 秒等待后重试` : '稍后重试（服务端未返回 Retry-After）',
+          '或释放该类型名额：结束占用任务（close_session 仅关闭终端会话；删除实例需向开发者显式二次确认）',
+          '若另一类型空闲，可改选另一类型',
+        ],
+      },
+    };
+  }
+  if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
+    return {
+      kind: 'capacity_insufficient',
+      retryAfter,
+      remediation: {
+        hint: '资源池容量不足（池侧无可用容量，非用户配额问题）。',
+        steps: ['稍后重试', '或改选另一类型（池）'],
+      },
+    };
+  }
+  return null;
+}
+
+const POOL_TEMPLATE_ENV = {
+  ephemeral: 'HDKIT_POOL_TEMPLATE_EPHEMERAL',
+  persistent: 'HDKIT_POOL_TEMPLATE_PERSISTENT',
+};
+
+export function resolvePoolTemplate(poolType, explicitTemplateId) {
+  if (explicitTemplateId) return { template_id: explicitTemplateId, source: 'explicit' };
+  if (!poolType) return { template_id: '', source: 'default' };
+  if (poolType !== 'ephemeral' && poolType !== 'persistent') {
+    throw new Error(`Invalid pool_type "${poolType}" — use "ephemeral" or "persistent".`);
+  }
+  const tpl = (process.env[POOL_TEMPLATE_ENV[poolType]] || '').trim();
+  if (!tpl) {
+    throw new Error(
+      `pool_type="${poolType}" requested but no pool template mapped. ` +
+        `The platform pre-provisions per-pool templates; configure ` +
+        `${POOL_TEMPLATE_ENV[poolType]} or pass template_id explicitly.`,
+    );
+  }
+  return { template_id: tpl, source: 'pool_map' };
+}
+
 export async function hdkitConnect(options = {}) {
+  const { template_id: poolTemplateId } = resolvePoolTemplate(options.pool_type, options.template_id);
   const body = {};
   if (options.source) body.source = options.source;
   if (options.env) body.env = options.env;
   if (options.git) body.git = options.git;
-  if (options.template_id) body.template_id = options.template_id;
+  if (poolTemplateId) body.template_id = poolTemplateId;
   if (options.flavor_id) body.flavor_id = options.flavor_id;
 
   return await hdkitRequest('POST', 'connect', body);

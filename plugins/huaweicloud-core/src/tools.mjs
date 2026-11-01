@@ -886,7 +886,16 @@ export const TOOL_DEFINITIONS = [
           description:
             'Source identifier (default: WEB). Options: VSCODE, CLI, WEB, WEBVNC, WEBPTY, WEBIDE, CURSOR, etc.',
         },
-        template_id: { type: 'string', description: 'Template ID; overrides server default (only for new sandbox)' },
+        template_id: {
+          type: 'string',
+          description: 'Template ID; overrides server default and pool_type mapping (only for new sandbox)',
+        },
+        pool_type: {
+          type: 'string',
+          enum: ['ephemeral', 'persistent'],
+          description:
+            'Resource-pool selection by intent. "ephemeral" = preview/trial/one-shot/sensitive (idle-configurable lifecycle, target 30min idle shutdown + 1h idle delete — pending verification); "persistent" = workbench/DB-backed/multi-day review (EVS 32G mounted, 1h idle shutdown, 7-day retention cap). The two pools are platform pre-provisioned templates — pool_type maps to the template via HDKIT_POOL_TEMPLATE_EPHEMERAL/HDKIT_POOL_TEMPLATE_PERSISTENT config; an explicit template_id overrides. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On exhaustion the API returns HTTP 429 with a Retry-After header and an error code distinguishing quota-exceeded (wait per Retry-After or free the slot) from capacity-insufficient (pool full; retry later or pick the other type).',
+        },
         flavor_id: { type: 'string', description: 'Flavor ID; overrides server default (only for new sandbox)' },
         env: { type: 'object', description: 'Environment variables to set in the sandbox (only for new sandbox)' },
         git: {
