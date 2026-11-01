@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-const POOL_TYPES = ['ephemeral', 'persistent'];
+const POOL_TYPES = new Set(['ephemeral', 'persistent']);
 const ENV_KEYS = {
   ephemeral: 'HDKIT_POOL_TEMPLATE_EPHEMERAL',
   persistent: 'HDKIT_POOL_TEMPLATE_PERSISTENT',
@@ -25,7 +25,7 @@ function readPoolConfigFile() {
 export function resolvePoolTemplate(poolType, explicitTemplateId) {
   if (explicitTemplateId) return { template_id: explicitTemplateId, source: 'explicit' };
   if (!poolType) return { template_id: '', source: 'default' };
-  if (!POOL_TYPES.includes(poolType)) {
+  if (!POOL_TYPES.has(poolType)) {
     throw new Error(`Invalid pool_type "${poolType}" — use "ephemeral" or "persistent".`);
   }
   const cfg = readPoolConfigFile();

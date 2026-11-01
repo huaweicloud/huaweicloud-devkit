@@ -1699,17 +1699,17 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       let connectResult;
       try {
         connectResult = await hdkitConnect(connectArgs);
-      } catch (e) {
-        if (e?.kind === 'quota_exceeded' || e?.kind === 'capacity_insufficient') {
+      } catch (error) {
+        if (error?.kind === 'quota_exceeded' || error?.kind === 'capacity_insufficient') {
           return {
             ok: false,
-            error: e.message,
-            error_kind: e.kind,
-            retry_after: e.retryAfter || null,
-            remediation: e.remediation,
+            error: error.message,
+            error_kind: error.kind,
+            retry_after: error.retryAfter || null,
+            remediation: error.remediation,
           };
         }
-        throw e;
+        throw error;
       }
       const devStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
       if (devStageId) {

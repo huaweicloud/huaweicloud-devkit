@@ -1,14 +1,15 @@
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
+
 import { classifyQuotaError } from '../plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs';
 import {
   resolvePoolTemplate,
   getPoolLifecycleGuidance,
   buildConnectPoolInfo,
 } from '../plugins/huaweicloud-core/src/sandbox/sandbox-pool-config.mjs';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 
 const EPH = 'tpl-ephemeral-001';
 const PER = 'tpl-persistent-001';
@@ -141,8 +142,8 @@ test('issue-1077: buildConnectPoolInfo — full enrichment payload', () => {
 test('issue-1077: connect handler surfaces structured quota error (source check)', async () => {
   const { readFileSync } = await import('node:fs');
   const tools = readFileSync(new URL('../plugins/huaweicloud-core/src/tools.mjs', import.meta.url), 'utf8');
-  assert.match(tools, /error_kind: e\.kind/);
-  assert.match(tools, /retry_after: e\.retryAfter/);
+  assert.match(tools, /error_kind: error\.kind/);
+  assert.match(tools, /retry_after: error\.retryAfter/);
   assert.match(tools, /pool: poolInfo/);
   assert.match(tools, /resolvePoolTemplate\(args\.pool_type, args\.template_id\)/);
 });
