@@ -37,6 +37,7 @@ import {
   hdkitCompetitionVoucherClaim,
   hdkitGenerateUserHash,
 } from './sandbox/hdkitservice-api.mjs';
+import { resolvePoolTemplate, buildConnectPoolInfo } from './sandbox/sandbox-pool-config.mjs';
 import { getCredentials } from './sandbox/hwlink-api.mjs';
 import { getAuthStatus, syncAuth } from './auth/service.mjs';
 import { validateIamCredentials } from './auth/credential-validator.mjs';
@@ -1687,7 +1688,29 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_sandbox_sign_agreement':
       return await hdkitSignAgreement();
     case 'huaweicloud_sandbox_connect': {
-      const connectResult = await hdkitConnect(args);
+      // 两池选择：pool_type → 平台预置模板（显式 template_id 优先；未映射报配置指引）
+      let poolInfo = null;
+      let connectArgs = args;
+      if (args.pool_type) {
+        const resolved = resolvePoolTemplate(args.pool_type, args.template_id);
+        connectArgs = { ...args, template_id: resolved.template_id };
+        poolInfo = buildConnectPoolInfo(args.pool_type, resolved.template_id, resolved.source);
+      }
+      let connectResult;
+      try {
+        connectResult = await hdkitConnect(connectArgs);
+      } catch (e) {
+        if (e?.kind === 'quota_exceeded' || e?.kind === 'capacity_insufficient') {
+          return {
+            ok: false,
+            error: e.message,
+            error_kind: e.kind,
+            retry_after: e.retryAfter || null,
+            remediation: e.remediation,
+          };
+        }
+        throw e;
+      }
       const devStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
       if (devStageId) {
         setWorkspaceId(devStageId);
@@ -1704,7 +1727,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         } catch {}
         await transferGitRepo(args, devStageId, connectResult);
       }
-      return connectResult;
+      return poolInfo ? { ...connectResult, pool: poolInfo } : connectResult;
     }
     case 'huaweicloud_sandbox_credentials': {
       const devStageId = args.dev_stage_id || getCurrentWorkspaceId();

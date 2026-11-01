@@ -3,6 +3,7 @@ import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
 import { detectAgent } from '../telemetry/agent-detect.mjs';
 import { readInstalledVersion } from '../update-check.mjs';
+import { resolvePoolTemplate } from './sandbox-pool-config.mjs';
 
 function getHdkitBaseUrl() {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
@@ -136,27 +137,7 @@ export function classifyQuotaError(status, code, retryAfterHeader) {
   return null;
 }
 
-const POOL_TEMPLATE_ENV = {
-  ephemeral: 'HDKIT_POOL_TEMPLATE_EPHEMERAL',
-  persistent: 'HDKIT_POOL_TEMPLATE_PERSISTENT',
-};
-
-export function resolvePoolTemplate(poolType, explicitTemplateId) {
-  if (explicitTemplateId) return { template_id: explicitTemplateId, source: 'explicit' };
-  if (!poolType) return { template_id: '', source: 'default' };
-  if (poolType !== 'ephemeral' && poolType !== 'persistent') {
-    throw new Error(`Invalid pool_type "${poolType}" — use "ephemeral" or "persistent".`);
-  }
-  const tpl = (process.env[POOL_TEMPLATE_ENV[poolType]] || '').trim();
-  if (!tpl) {
-    throw new Error(
-      `pool_type="${poolType}" requested but no pool template mapped. ` +
-        `The platform pre-provisions per-pool templates; configure ` +
-        `${POOL_TEMPLATE_ENV[poolType]} or pass template_id explicitly.`,
-    );
-  }
-  return { template_id: tpl, source: 'pool_map' };
-}
+export { resolvePoolTemplate } from './sandbox-pool-config.mjs';
 
 export async function hdkitConnect(options = {}) {
   const { template_id: poolTemplateId } = resolvePoolTemplate(options.pool_type, options.template_id);
