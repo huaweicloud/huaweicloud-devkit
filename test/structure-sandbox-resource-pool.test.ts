@@ -85,6 +85,25 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     /capacity insufficient\*\* \(pool full/,
     'capacity-insufficient must carry the pool-full retry remedy',
   );
+  // The selection-rules bullet leads carry the type attributions; their
+  // doctrine tails carry the never-promise and survive-reboots rules. Both
+  // must not invert against the table.
+  assert.match(
+    poolSection,
+    /\*\*非持久化 sandboxes are fixed 3h\*\* — never promise durability/,
+    'the fixed-3h bullet must attribute the 3h window to the ephemeral type with the never-promise rule',
+  );
+  assert.match(
+    poolSection,
+    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots/,
+    'the EVS bullet must attribute the mount to the persistent type with the survive-reboots rule',
+  );
+  assert.match(poolSection, /the same type is \*\*reused\*\*/, 'the same-type reuse rule must be stated (dev pin)');
+  assert.match(
+    poolSection,
+    /Broadcast this when starting a billable-length session/,
+    'the core-hour burn broadcast trigger must be stated',
+  );
   assert.match(poolSection, /auto-selects by intent/, 'the agent must auto-select by intent');
   assert.match(poolSection, /The developer can always override/, 'the developer override rule must hold');
   assert.match(poolSection, /1 instance per type/, 'per-type quota rule must be stated');
@@ -177,12 +196,19 @@ test('workflow sequences pool selection (Step 0.3) between the target gate and t
   const step05 = skill.indexOf('**Step 0.5 — Stack-Selection Gate (MANDATORY)**');
   assert.ok(step0 !== -1 && step03 !== -1 && step0 < step03, 'Step 0.3 must follow Step 0');
   assert.ok(step05 !== -1 && step03 < step05, 'Step 0.3 must precede Step 0.5');
+  assert.match(
+    skill,
+    /1 instance per type, same type reuses/,
+    'Step 0.3 must state the per-type quota and same-type reuse',
+  );
 });
 
 test('resource-pool reference documents the pool capacity parameters and is linked (#1071)', () => {
   const resourcePool = readFileSync(referencePath, 'utf8');
   // Mapping-bearing pins: the 申请 capacity rows and the 两类沙箱 type table
   // carry the pool-type attributions — presence pins would survive a swap.
+  // Attribution pins use within-cell wildcards ([^|] cannot cross a cell
+  // boundary), so a semantics-preserving reword stays green.
   assert.match(
     resourcePool,
     /\| 持久化 2U4G 规格\s+\| 300 实例/,
@@ -200,16 +226,48 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /\| 生命周期\s+\| 固定 3h（CreateTime 判定）\s+\| 1h 闲置关机/,
+    /\| 维度\s+\| 非持久化 \(ephemeral\)\s+\| 持久化 \(persistent\)/,
+    'the type table columns must stay ephemeral-then-persistent',
+  );
+  assert.match(
+    resourcePool,
+    /\| 定位\s+\|[^|]*预览[^|]*\|[^|]*工作台/,
+    'the 定位 row must keep the intent-to-type mapping',
+  );
+  assert.match(
+    resourcePool,
+    /\| 生命周期\s+\|[^|]*固定 3h[^|]*\|[^|]*1h 闲置关机/,
     'the type table must keep 3h-with-ephemeral and 1h-idle-with-persistent',
   );
   assert.match(
     resourcePool,
-    /\| 存储\s+\| 无持久盘\s+\| 挂 EVS 32G/,
+    /\| 存储\s+\|[^|]*无持久盘[^|]*\|[^|]*EVS 32G/,
     'the type table must keep the EVS mount on the persistent side',
   );
-  assert.match(resourcePool, /5 GB \/ 实例/, 'overlayer per-instance quota must be documented');
-  assert.match(resourcePool, /300 TB/, 'EVS total capacity must be documented');
+  assert.match(
+    resourcePool,
+    /\| overlayer\s+\| 5 GB \/ 实例/,
+    'the overlayer row must carry the 5 GB per-instance quota',
+  );
+  assert.match(resourcePool, /\| EVS（持久化挂盘）\s+\| 300 TB/, 'the EVS row must carry the 300 TB total');
+  // The 配额与超限语义 section is the reference's own statement of the 429
+  // class-to-remedy mapping — the third 429-bearing surface, so its bullets
+  // carry mapping pins like the skill bullet and the connect description.
+  assert.match(
+    resourcePool,
+    /配额超限（quota exceeded）\*\* — 用户侧持有已达上限；按 `Retry-After` 等待/,
+    'the reference must map quota-exceeded to the wait-or-free remedy',
+  );
+  assert.match(
+    resourcePool,
+    /容量不足（capacity insufficient）\*\* — 资源池侧无可用容量；稍后重试或改选另一类型/,
+    'the reference must map capacity-insufficient to the retry-or-other-type remedy',
+  );
+  assert.match(
+    resourcePool,
+    /核时来源于\*\*平台赠送 \+ 活动赚取\*\*（非直接计费口径）/,
+    'the burn-hour gifting wording must be stated',
+  );
   assert.match(resourcePool, /429/, 'the 429 contract must be documented');
   assert.match(resourcePool, /Retry-After/, 'the Retry-After header must be documented');
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
@@ -232,13 +290,36 @@ test('resource-pool reference documents the pool capacity parameters and is link
   // surface an agent consults last).
   assert.match(skill, /Pool type fixes durability/, 'the Critical Warnings table must carry the pool-type row');
   // The v2-authored row is the one surface with no dev source of truth, so
-  // its 429 discriminator is pinned directly: the error code, not the HTTP
-  // status, separates the two failure classes (the dev-verbatim surfaces
-  // teach both classes arrive as 429).
+  // its full doctrine body is pinned: the 429 discriminator (the error code,
+  // not the HTTP status, separates the two failure classes — the
+  // dev-verbatim surfaces teach both classes arrive as 429), the routing
+  // tails, the lifecycle facts, the gate sentence, and the class-to-remedy
+  // mapping. The pin is the row's source of truth.
+  const warningsRow = skill.split('\n').find((line) => line.includes('Pool type fixes durability')) ?? '';
   assert.match(
-    skill,
+    warningsRow,
     /the CODE, not the status, separates the two failure classes/,
     'the warnings row must discriminate the 429 classes by error code, not status',
+  );
+  assert.match(
+    warningsRow,
+    /预览\/试用\/即焚 requests belong on the 非持久化 pool — a FIXED 3h window from CreateTime, 不可续/,
+    'the warnings row must route ephemeral intents to the 3h pool',
+  );
+  assert.match(
+    warningsRow,
+    /工作台\/带数据库\/跨日 requests belong on the 持久化 pool \(EVS 32G mounted, survives reboots, 14-day retention after stop\)/,
+    'the warnings row must route workbench intents to the EVS pool',
+  );
+  assert.match(
+    warningsRow,
+    /Pick per the Resource Pool Selection table \(Step 0\.3\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox/,
+    'the warnings row must carry the Step 0.3 gate sentence',
+  );
+  assert.match(
+    warningsRow,
+    /quota exceeded \(1 instance per type — wait per Retry-After or free the slot\) vs capacity insufficient \(pool full; retry later or pick the other type\)/,
+    'the warnings row must map each 429 class to its own remedy',
   );
   // v2-wins sync: the skill's own tool-summary table states the per-pool-type
   // quota model (dev's copy still teaches the superseded flat model — the
@@ -259,29 +340,31 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
   const tools = readFileSync(toolsPath, 'utf8');
 
   const connectDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_connect');
-  assert.match(connectDesc, /One user one instance per pool type/, 'connect must state per-pool-type reuse');
+  assert.match(connectDesc, /One user one instance per pool type/, 'connect must state the per-pool-type quota model');
+  assert.match(
+    connectDesc,
+    /reuses an existing sandbox of that type if available, otherwise creates a new one/,
+    'connect must state per-pool-type reuse',
+  );
   assert.match(connectDesc, /1 instance per type/, 'connect must state the per-type quota');
   assert.match(connectDesc, /1 ephemeral AND 1 persistent/, 'connect must state dual-type holding');
   assert.match(connectDesc, /HTTP 429 with a Retry-After header/, 'connect must state the 429 contract');
   assert.match(connectDesc, /quota-exceeded/, 'connect must name the quota-exceeded class');
   assert.match(connectDesc, /capacity-insufficient/, 'connect must name the capacity-insufficient class');
-  assert.match(connectDesc, /fixed 3h from CreateTime/, 'connect must state the ephemeral expiry');
-  assert.match(connectDesc, /EVS 32G mounted/, 'connect must state the persistent EVS mount');
-  assert.match(connectDesc, /1h idle shutdown/, 'connect must state the idle shutdown rule');
-  assert.match(connectDesc, /14-day retention/, 'connect must state the retention window');
   // Mapping-bearing pins on the description's own routing sentence — the
   // connect description is the surface an agent sees without loading the
-  // skill, so its intent-to-pool mapping must not silently contradict the
-  // skill's pinned table.
+  // skill, so its intent-to-pool mapping AND its lifecycle attribution must
+  // not silently contradict the skill's pinned table (a parenthetical swap
+  // between the two types must red the gate).
   assert.match(
     connectDesc,
-    /ephemeral = preview\/trial\/one-shot\/sensitive/,
-    'the connect description must map the ephemeral type to its intents',
+    /ephemeral = preview\/trial\/one-shot\/sensitive \(fixed 3h from CreateTime\)/,
+    'the connect description must attribute the 3h expiry to the ephemeral type',
   );
   assert.match(
     connectDesc,
-    /persistent = workbench\/DB-backed\/multi-day review/,
-    'the connect description must map the persistent type to its intents',
+    /persistent = workbench\/DB-backed\/multi-day review \(EVS 32G mounted, 1h idle shutdown with connect\/process\/preview-traffic activity signals, 14-day retention\)/,
+    'the connect description must attribute the EVS mount, idle shutdown, and retention to the persistent type',
   );
   assert.match(
     connectDesc,
