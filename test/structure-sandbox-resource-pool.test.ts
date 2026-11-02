@@ -72,19 +72,9 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     /preview\/即焚 request → 非持久化; a workbench\/数据库 request → 持久化/,
     'the auto-select example must carry the correct intent-to-pool mappings',
   );
-  // The 429 error-class-to-remediation mapping: each class keeps its own
-  // remedy (a clause swap between the classes is the same defect class as a
+  // The 429 error-class-to-remediation mapping: the full sentence is pinned
+  // (a clause swap between the classes is the same defect class as a
   // routing-row flip).
-  assert.match(
-    poolSection,
-    /quota exceeded\*\* \(429; wait per Retry-After/,
-    'quota-exceeded must carry the 429 wait-or-free remedy',
-  );
-  assert.match(
-    poolSection,
-    /capacity insufficient\*\* \(pool full/,
-    'capacity-insufficient must carry the pool-full retry remedy',
-  );
   // The selection-rules bullet leads carry the type attributions; their
   // doctrine tails carry the never-promise and survive-reboots rules. Both
   // must not invert against the table.
@@ -95,34 +85,45 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots/,
-    'the EVS bullet must attribute the mount to the persistent type with the survive-reboots rule',
+    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots; treat them as the default for anything that must outlive the session/,
+    'the EVS bullet must attribute the mount to the persistent type with the survive-reboots and default-for-durability rules',
   );
-  assert.match(poolSection, /the same type is \*\*reused\*\*/, 'the same-type reuse rule must be stated (dev pin)');
+  assert.match(
+    poolSection,
+    /the same type is \*\*reused\*\* \(one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second\)/,
+    'the same-type reuse rule must be stated with its connect semantics (dev pin)',
+  );
   assert.match(
     poolSection,
     /Broadcast this when starting a billable-length session/,
     'the core-hour burn broadcast trigger must be stated',
   );
-  assert.match(poolSection, /auto-selects by intent/, 'the agent must auto-select by intent');
+  assert.match(poolSection, /\*\*Agent auto-selects by intent\*\*/, 'the agent must auto-select by intent');
   assert.match(poolSection, /The developer can always override/, 'the developer override rule must hold');
-  assert.match(poolSection, /1 instance per type/, 'per-type quota rule must be stated');
-  assert.match(poolSection, /1 非持久化 AND 1 持久化/, 'holding both types simultaneously must be stated');
-  assert.match(poolSection, /HTTP 429 with a Retry-After header/, 'the 429 + Retry-After contract must be stated');
-  assert.match(poolSection, /quota exceeded/, 'quota-exceeded error class must be named');
-  assert.match(poolSection, /capacity insufficient/, 'capacity-insufficient error class must be named');
-  assert.match(poolSection, /赠送/, 'core-hour burn wording must carry the gifting term');
-  assert.match(poolSection, /活动赚取/, 'core-hour burn wording must carry the activity-earned term');
-  assert.match(poolSection, /EVS disk \(32G\)/, 'the persistent EVS mount must be stated');
   assert.match(
     poolSection,
-    /plus a distinct error code/,
-    'the skill bullet must state the error code as the 429 discriminator',
+    /Quota is \*\*1 instance per type\*\*/,
+    'the per-type quota rule must be stated at its sentence lead',
   );
   assert.match(
     poolSection,
-    /treat them as the default for anything that must outlive the session/,
-    'the persistent pool must be named the default for durability',
+    /a developer may hold 1 非持久化 AND 1 持久化 simultaneously/,
+    'holding both types simultaneously must be stated',
+  );
+  assert.match(
+    poolSection,
+    /Exceeding quota returns \*\*HTTP 429 with a Retry-After header\*\* plus a distinct error code/,
+    'the skill bullet must state the full 429 arrival contract',
+  );
+  assert.match(
+    poolSection,
+    /distinguish \*\*quota exceeded\*\* \(429; wait per Retry-After, or free the slot by finishing the other task\) from \*\*capacity insufficient\*\* \(pool full; retry later or pick the other type\)/,
+    'the skill bullet must state the full class-to-remedy mapping',
+  );
+  assert.match(
+    poolSection,
+    /核时来自「平台赠送 \+ 活动赚取」口径，非直接计费/,
+    'the burn-hour gifting wording must carry both terms and the non-billing qualifier',
   );
   assert.match(
     poolSection,
@@ -164,7 +165,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Hard expiry\s+\|[^|]*none[^|]*\|[^|]*Fixed 3h from CreateTime/,
+    /\| Hard expiry\s+\|[^|]*none[^|]*\|[^|]*Fixed 3h from CreateTime\*\* \(CreateTime 判定，不可续\)/,
     'the 3h hard expiry must sit in the ephemeral column with no hard expiry on the persistent side',
   );
   assert.match(
@@ -186,11 +187,6 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     lifecycleSection,
     /\| Retention\s+\|[^|]*14 days after stop[^|]*\|[^|]*Reclaimed/,
     'the 14-day retention must sit in the persistent column with reclaim on the ephemeral side',
-  );
-  assert.match(
-    lifecycleSection,
-    /\| Hard expiry\s+\|[^|]*\|[^|]*Fixed 3h from CreateTime/,
-    'the 3h hard expiry must sit in the ephemeral column',
   );
   assert.match(
     lifecycleSection,
@@ -238,17 +234,41 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(lifecycleSection, /relaxed from the platform's 10min/, 'the 10min relaxation note must be stated');
   assert.match(lifecycleSection, /不做延后代删/, 'the no-deferred-deletion rule must be stated');
-  assert.match(lifecycleSection, /No deletion API is exposed to devkit/, 'the no-deletion-API rule must be stated');
+  assert.match(
+    lifecycleSection,
+    /Never schedule delayed\/deferred deletion on the developer's behalf/,
+    'the no-deferred-deletion rule must be stated in English too',
+  );
+  assert.match(
+    lifecycleSection,
+    /devkit does NOT expose a lifecycle deletion API for resource-pool instances/,
+    'the no-deletion-API rule must be stated at the hard-rules bullet',
+  );
+  assert.match(
+    lifecycleSection,
+    /No deletion API is exposed to devkit/,
+    'the no-deletion-API rule must be stated at the table cell',
+  );
+  assert.match(
+    lifecycleSection,
+    /On a developer-initiated delete, always ask for \*\*explicit second confirmation\*\*/,
+    'the hard-rules bullet must demand the double-confirm with the always',
+  );
+  assert.match(
+    lifecycleSection,
+    /devkit never defers\/delays deletion on the developer's behalf/,
+    'the Deletion row must keep the never-defers clause',
+  );
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
     assert.match(lifecycleSection, new RegExp(`\\*\\*${g}\\*\\*`), `platform dependency ${g} must be listed`);
   }
   // G1 is the one load-bearing G mapping (it drives the 14-day reclaim the
   // deletion doctrine cites); G2-G5 stay presence-pinned (awareness-only
-  // content, recorded headroom).
+  // content, recorded headroom). Both G-list surfaces state it.
   assert.match(
     lifecycleSection,
-    /G1\*\* — 资源组闲置删除策略配置/,
-    'the G1 mapping must name the idle-deletion policy',
+    /G1\*\* — 资源组闲置删除策略配置 \(idle-deletion policy for the resource group, drives the 14-day reclaim\)/,
+    'the skill G1 mapping must be pinned in full',
   );
 });
 
@@ -314,8 +334,8 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /\| 定位\s+\|[^|]*预览[^|]*\|[^|]*工作台[^|]*带数据库[^|]*跨日/,
-    'the 定位 row must keep the full intent-to-type mapping',
+    /\| 定位\s+\| 预览\/试用\/一次性任务\/敏感即焚\s+\|[^|]*工作台[^|]*带数据库[^|]*跨日/,
+    'the 定位 row must keep the full intent-to-type mapping on both sides',
   );
   assert.match(
     resourcePool,
@@ -367,13 +387,13 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /配额超限（quota exceeded）\*\* — 用户侧持有已达上限；按 `Retry-After` 等待/,
-    'the reference must map quota-exceeded to the wait-or-free remedy',
+    /配额超限（quota exceeded）\*\* — 用户侧持有已达上限；按 `Retry-After` 等待或结束占用该类型沙箱的任务后再试/,
+    'the reference must map quota-exceeded to the full wait-or-free remedy',
   );
   assert.match(
     resourcePool,
     /容量不足（capacity insufficient）\*\* — 资源池侧无可用容量；稍后重试或改选另一类型/,
-    'the reference must map capacity-insufficient to the retry-or-other-type remedy',
+    'the reference must map capacity-insufficient to the full retry-or-other-type remedy',
   );
   assert.match(
     resourcePool,
@@ -385,6 +405,12 @@ test('resource-pool reference documents the pool capacity parameters and is link
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
     assert.match(resourcePool, new RegExp(`${g} `), `platform dependency ${g} must be mirrored`);
   }
+  // G1's mapping on the reference surface, in full (mirroring the skill pin).
+  assert.match(
+    resourcePool,
+    /- G1 闲置删除策略配置（资源组，驱动 14 天保留期回收）/,
+    'the reference G1 mapping must be pinned in full',
+  );
 
   const skill = readFileSync(skillPath, 'utf8');
   assert.match(
@@ -408,6 +434,11 @@ test('resource-pool reference documents the pool capacity parameters and is link
   // tails, the lifecycle facts, the gate sentence, and the class-to-remedy
   // mapping. The pin is the row's source of truth.
   const warningsRow = skill.split('\n').find((line) => line.includes('Pool type fixes durability')) ?? '';
+  assert.match(
+    warningsRow,
+    /A rejected connect returns HTTP 429 with a Retry-After header and an error code/,
+    'the warnings row must state the full 429 arrival contract',
+  );
   assert.match(
     warningsRow,
     /the CODE, not the status, separates the two failure classes/,
@@ -458,11 +489,17 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
     /reuses an existing sandbox of that type if available, otherwise creates a new one/,
     'connect must state per-pool-type reuse',
   );
-  assert.match(connectDesc, /1 instance per type/, 'connect must state the per-type quota');
-  assert.match(connectDesc, /1 ephemeral AND 1 persistent/, 'connect must state dual-type holding');
-  assert.match(connectDesc, /HTTP 429 with a Retry-After header/, 'connect must state the 429 contract');
-  assert.match(connectDesc, /quota-exceeded/, 'connect must name the quota-exceeded class');
-  assert.match(connectDesc, /capacity-insufficient/, 'connect must name the capacity-insufficient class');
+  assert.match(connectDesc, /Quota: 1 instance per type/, 'connect must state the per-type quota');
+  assert.match(
+    connectDesc,
+    /a user may hold 1 ephemeral AND 1 persistent sandbox simultaneously; same-type requests reuse the existing instance/,
+    'the connect quota parenthetical must keep the dual-holding and same-type-reuse mapping',
+  );
+  assert.match(
+    connectDesc,
+    /the API returns HTTP 429 with a Retry-After header and an error code that distinguishes quota-exceeded \(wait per Retry-After or free the slot\) from capacity-insufficient \(pool full; retry later or pick the other type\)/,
+    'connect must state the full 429 arrival and class-to-remedy contract',
+  );
   assert.match(
     connectDesc,
     /an error code that distinguishes/,
@@ -487,16 +524,6 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
     connectDesc,
     /persistent = workbench\/DB-backed\/multi-day review \(EVS 32G mounted, 1h idle shutdown with connect\/process\/preview-traffic activity signals, 14-day retention\)/,
     'the connect description must attribute the EVS mount, idle shutdown, and retention to the persistent type',
-  );
-  assert.match(
-    connectDesc,
-    /quota-exceeded \(wait per Retry-After/,
-    'quota-exceeded must carry the wait-or-free remedy',
-  );
-  assert.match(
-    connectDesc,
-    /capacity-insufficient \(pool full/,
-    'capacity-insufficient must carry the pool-full remedy',
   );
   // v2 divergence: the vendor-gate seam stays on the connect description.
   assert.match(connectDesc, /Vendor-gated \(vendorConfirmed\)/, 'connect must keep the vendor-gate sentence');
