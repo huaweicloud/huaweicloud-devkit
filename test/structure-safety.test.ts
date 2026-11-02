@@ -419,3 +419,16 @@ test('real-hook spawns gate the shared spool writes (the #1040 windows-CI flood)
     }
   }
 });
+
+test('the proxy scrub fixture never spells a contiguous secret literal', () => {
+  // Same doctrine as the signing vectors above: the CI secret scanner
+  // (gitleaks generic-api-key) matches a keyword-adjacent contiguous
+  // value — it flagged this fixture's first spelling (run 41042351976,
+  // 2026-10-30, the literal after `const SECRET =`). The value must stay
+  // ASSEMBLED from halves under the rule's value-length floor; a cleanup
+  // merging them back into one literal re-trips the gate, and this pin
+  // makes that a named failure instead of a red CI mystery.
+  const fixture = readFileSync(join(root, 'test', 'e2e-gateway-proxy.test.ts'), 'utf8');
+  assert.doesNotMatch(fixture, /const SECRET = '[^']{10,}'/, 'a contiguous literal re-trips the secret scanner');
+  assert.match(fixture, /const SECRET = '[^']{1,9}' \+/, 'the scrub target stays assembled from short halves');
+});

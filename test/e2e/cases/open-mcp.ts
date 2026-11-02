@@ -40,7 +40,15 @@ export const openMcpCases: E2eCase[] = [
       {
         kind: 'gateway',
         tool: 'execute_api',
-        args: { product: 'ECS' },
+        // Both ids resolve case-insensitively at the gateway (measured
+        // against apiexplorer: four spellings of product/api all return the
+        // same api id), so both fold — the 2026-10-29 nightly red was the
+        // model sending product 'ecs' against a pin of 'ECS', and the same
+        // model behavior can lowercase a camelCase api id. The pin still
+        // names the exact API identity (ECS ListServersDetails, the
+        // prompt-pinned operation), only the case is tolerance.
+        args: { product: 'ECS', api: 'ListServersDetails' },
+        argsIgnoreCase: ['product', 'api'],
         times: { min: 1, max: 2 },
       },
       // Consent-flow negative: no self-granted policy WRITE. manage_policy

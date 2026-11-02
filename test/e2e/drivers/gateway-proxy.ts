@@ -1,10 +1,21 @@
 import http from 'node:http';
 import { appendFileSync } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
+
+import { scrubSecrets } from '../env-policy.ts';
 
 // Optional wire dump (E2E_CODEX_PROXY_DUMP=<file>): one JSON line per
-// request (the shaped body) — the diagnostic for model-wire questions.
-// Read per request so a value from test/e2e/.env (loaded in main, after
-// module evaluation) also works.
+// shaped request body, plus one JSON line per complete upstream SSE
+// response frame — the diagnostic for model-wire questions. Both halves
+// pass scrubSecrets before they are written: the file rides the uploaded
+// .e2e-results artifact in CI, and the model key reaches request bodies
+// via printenv echoes under the codex leg's inherit-all shell policy, so
+// an unscrubbed line would ship a secret. The client stream is untouched
+// (byte-identical to upstream). The response half exists for the codex
+// stall forensics (ReasoningRawContentDelta without active item,
+// 2026-10-29): the exact upstream frame that trips codex 0.162.1's parser
+// is only observable on this wire. Read per request so a value from
+// test/e2e/.env (loaded in main, after module evaluation) also works.
 
 // The OpenAI-compatible gateway the E2E model config points at rejects two
 // request shapes codex 0.162.1 emits on the responses wire: the `namespace`
@@ -54,6 +65,17 @@ interface InFlight {
   controller: AbortController;
 }
 
+// One scrubbed response-frame line into the dump. Empty lines (SSE
+// separators) are skipped — a frame line is only ever complete.
+function appendDumpLine(file: string, line: string): void {
+  if (!line) return;
+  try {
+    appendFileSync(file, JSON.stringify({ frame: scrubSecrets(line) }) + '\n');
+  } catch {
+    // the dump is best-effort diagnostics
+  }
+}
+
 export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy> {
   const inFlight = new Set<InFlight>();
   return new Promise((resolveStart, rejectStart) => {
@@ -97,7 +119,7 @@ export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy>
         const dumpFile = process.env.E2E_CODEX_PROXY_DUMP;
         if (dumpFile && shaped) {
           try {
-            appendFileSync(dumpFile, JSON.stringify({ url: req.url, body: JSON.parse(shaped) }) + '\n');
+            appendFileSync(dumpFile, scrubSecrets(JSON.stringify({ url: req.url, body: JSON.parse(shaped) })) + '\n');
           } catch {
             // the dump is best-effort diagnostics
           }
@@ -119,7 +141,28 @@ export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy>
         });
         res.writeHead(upstream.status, responseHeaders);
         if (upstream.body) {
-          for await (const chunk of upstream.body) res.write(chunk);
+          if (!dumpFile) {
+            for await (const chunk of upstream.body) res.write(chunk);
+          } else {
+            // The response tee: the client still receives the upstream bytes
+            // verbatim; the dump gets complete scrubbed lines only. A
+            // StringDecoder (never per-chunk string concatenation — the
+            // request side's own comment) keeps multi-byte UTF-8 whole
+            // across chunk boundaries; the carry buffer holds the trailing
+            // partial line for the next chunk, and whatever remains at
+            // stream end is flushed best-effort.
+            const decoder = new StringDecoder('utf8');
+            let carry = '';
+            for await (const chunk of upstream.body) {
+              res.write(chunk);
+              carry += decoder.write(chunk as Buffer);
+              const lines = carry.split('\n');
+              carry = lines.pop() ?? '';
+              for (const line of lines) appendDumpLine(dumpFile, line);
+            }
+            carry += decoder.end();
+            if (carry) appendDumpLine(dumpFile, carry);
+          }
         }
         res.end();
       } catch {

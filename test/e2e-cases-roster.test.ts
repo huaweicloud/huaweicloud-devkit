@@ -21,7 +21,15 @@ test('every toolCall/noToolCall expectation names a tool that exists in the rost
   for (const caseDef of ALL_CASES) {
     for (const exp of caseDef.expect) {
       if (exp.kind === 'toolCall' || exp.kind === 'noToolCall') {
-        if (!(exp.name in PACK_OF)) offenders.push(`${caseDef.id}: ${exp.name}`);
+        // A toolCall name may be an any-of array (legitimate alternative
+        // surfaces for one behavior). Every member must be a real tool:
+        // an unknown member is exactly the vacuously-green pin this guard
+        // exists to catch — iterating the members, never the array's
+        // coerced toString, keeps the guard load-bearing under the union.
+        const names = Array.isArray(exp.name) ? exp.name : [exp.name];
+        for (const name of names) {
+          if (!(name in PACK_OF)) offenders.push(`${caseDef.id}: ${name}`);
+        }
       }
     }
   }

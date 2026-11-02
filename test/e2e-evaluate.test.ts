@@ -244,3 +244,93 @@ test('noToolCall fails with the offending args as evidence when the forbidden ca
   assert.equal(verdict.expectations[0]!.pass, false);
   assert.match(verdict.expectations[0]!.evidence, /forbidden call happened/);
 });
+
+// The any-of toolCall name (legitimate alternative surfaces for one
+// behavior, e.g. the three skill-inventory faces): any member satisfies the
+// pin, no member reds with the candidates named, and the union must not leak
+// permissiveness into noToolCall's exact-string negative.
+test('an any-of toolCall name matches when any member surface was used', () => {
+  const verdict = caseWith(
+    [{ kind: 'toolCall', name: ['huaweicloud_list_skills', 'huaweicloud_list_packs', 'huaweicloud_pack_info'] }],
+    recordings({ toolCalls: [{ name: 'huaweicloud_list_packs', args: {}, ok: true }] }),
+  );
+  assert.equal(verdict.expectations[0]!.pass, true);
+  assert.equal(verdict.liveness, true);
+});
+
+test('an any-of toolCall name reds when no member was used and the evidence names the candidates', () => {
+  const verdict = caseWith(
+    [{ kind: 'toolCall', name: ['huaweicloud_list_skills', 'huaweicloud_list_packs'] }],
+    recordings({ toolCalls: [{ name: 'huaweicloud_voucher_status', args: {}, ok: true }] }),
+  );
+  assert.equal(verdict.expectations[0]!.pass, false);
+  assert.match(
+    verdict.expectations[0]!.evidence,
+    /0 matching call\(s\) for one of \[huaweicloud_list_skills, huaweicloud_list_packs\]/,
+  );
+});
+
+test('an any-of toolCall name still applies the ok and args narrowing per member', () => {
+  const verdict = caseWith(
+    [{ kind: 'toolCall', name: ['huaweicloud_list_skills', 'huaweicloud_list_packs'], ok: true }],
+    recordings({ toolCalls: [{ name: 'huaweicloud_list_packs', args: {}, ok: false }] }),
+  );
+  assert.equal(verdict.expectations[0]!.pass, false);
+});
+
+test('noToolCall stays an exact-string negative beside array toolCall names', () => {
+  const verdict = caseWith(
+    [{ kind: 'noToolCall', name: 'huaweicloud_packs_configure' }],
+    recordings({ toolCalls: [{ name: 'huaweicloud_packs_configure', args: {}, ok: true }] }),
+  );
+  assert.equal(verdict.expectations[0]!.pass, false);
+});
+
+// The gateway args ignore-case set: product and api ids resolve
+// case-insensitively at the real gateway (measured), so a pin on those keys
+// folds; every unlisted key stays strictly compared.
+test('gateway args fold case for the named keys only', () => {
+  const exp = [
+    {
+      kind: 'gateway',
+      tool: 'execute_api',
+      args: { product: 'ECS', api: 'ListServersDetails' },
+      argsIgnoreCase: ['product', 'api'],
+    },
+  ] as const satisfies Expectation[];
+  const folded = caseWith(
+    [...exp],
+    recordings({
+      gateway: [{ method: 'tools/call', tool: 'execute_api', args: { product: 'ecs', api: 'listserversdetails' } }],
+    }),
+  );
+  assert.equal(folded.expectations[0]!.pass, true);
+
+  const strict = caseWith(
+    [...exp],
+    recordings({
+      gateway: [
+        {
+          method: 'tools/call',
+          tool: 'execute_api',
+          args: { product: 'ecs', api: 'ListServersDetails', region: 'CN-North-4' },
+        },
+      ],
+    }),
+  );
+  // region is not in the pin — irrelevant; but the same folded args with
+  // the flag REMOVED must miss (pins the strict default):
+  const noFlag = caseWith(
+    [{ kind: 'gateway', tool: 'execute_api', args: { product: 'ECS' } }],
+    recordings({ gateway: [{ method: 'tools/call', tool: 'execute_api', args: { product: 'ecs' } }] }),
+  );
+  assert.equal(noFlag.expectations[0]!.pass, false);
+});
+
+test('gateway args ignore-case applies to scalars only, never array prefix matching', () => {
+  const verdict = caseWith(
+    [{ kind: 'gateway', tool: 'manage_policy', args: { lines: ['ecs:*'] }, argsIgnoreCase: ['lines'] }],
+    recordings({ gateway: [{ method: 'tools/call', tool: 'manage_policy', args: { lines: ['ECS:*'] } }] }),
+  );
+  assert.equal(verdict.expectations[0]!.pass, false);
+});

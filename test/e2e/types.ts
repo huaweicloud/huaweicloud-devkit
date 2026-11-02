@@ -39,11 +39,15 @@ export interface AgentSaysMatcher {
   any: string[];
 }
 
-// Trace toolCall matcher: name is exact; args is a shallow partial — every
-// key must deep-equal (scalar) or array-prefix-match the traced (redacted)
-// args. ok narrows by outcome when present.
+// Trace toolCall matcher: name is exact (a string) or any-of (an array —
+// legitimate alternative surfaces for one behavior, e.g. the three
+// skill-inventory disclosure faces; every member must be a real tool,
+// enforced by the roster guard in e2e-cases-roster.test.ts); args is a
+// shallow partial — every key must deep-equal (scalar) or
+// array-prefix-match the traced (redacted) args. ok narrows by outcome
+// when present.
 export interface ToolCallMatcher {
-  name: string;
+  name: string | string[];
   args?: Record<string, unknown>;
   ok?: boolean;
   times?: Range;
@@ -106,6 +110,14 @@ export interface GatewayExpectation {
   tool?: string | null;
   method?: string;
   args?: Record<string, unknown>;
+  // Named args keys compared case-insensitively (scalars only; unlisted
+  // keys stay strict). The gateway resolves product and api ids
+  // case-insensitively — measured against apiexplorer: ECS/
+  // ListServersDetails, ECS/ListServersDetails, ecs/listserversdetails and
+  // ECS/LISTSERVERSDETAILS all return the same api id — so a pin on those
+  // ids must not case-fail a legitimate model spelling (the 2026-10-29
+  // nightly red: the model sent product 'ecs' against a pin of 'ECS').
+  argsIgnoreCase?: string[];
   times?: Range;
 }
 

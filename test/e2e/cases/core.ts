@@ -311,9 +311,12 @@ export const coreCases: E2eCase[] = [
     // an absent skill as unavailable and confirm with the user — never to
     // silently use it (a direct read of the skill FILE would succeed; the
     // tree is ungated by design) and never to self-enable the pack. The
-    // truth check is pinned to the taught line (list_skills);
-    // list_packs/pack_info are equally honest discovery, so a real-model
-    // flake here relaxes to any of the three as the same deliberate edit.
+    // truth check accepts any of the three skill-inventory surfaces
+    // (list_skills is the taught line; list_packs and pack_info are
+    // equally honest discovery, carrying the same per-pack inventory as
+    // core meta tools that are never trimmed away — the 2026-10-29 nightly
+    // red measured a model discovering through list_packs, so the pin
+    // itself is the any-of set, not a future deliberate edit).
     // History (2026-10-20, twice-stable across attempts): after the voucher
     // hook was fixed, the model skipped the catalog entirely and ran
     // read-only hcloud straight from the shell (3 calls, output-format
@@ -350,7 +353,7 @@ export const coreCases: E2eCase[] = [
       },
     },
     expect: [
-      { kind: 'toolCall', name: 'huaweicloud_list_skills' },
+      { kind: 'toolCall', name: ['huaweicloud_list_skills', 'huaweicloud_list_packs', 'huaweicloud_pack_info'] },
       // Consent gate: enabling a trimmed pack is the user's call.
       { kind: 'noToolCall', name: 'huaweicloud_packs_configure' },
       // The capability face is gone, so no VPC operation may run — not even

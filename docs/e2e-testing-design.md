@@ -177,8 +177,15 @@ mechanics that differ from opencode, all measured:
   rejects (`function_call.namespace`, array-form
   `function_call_output.output`) and mirrors the provider base URL's
   pathname so path-prefixed gateways reconstruct correctly. The
-  `E2E_CODEX_PROXY_DUMP=<file>` knob dumps the shaped wire for triage.
-  Auth rides the config.toml `env_key` naming `E2E_APIKEY` (the driver
+  `E2E_CODEX_PROXY_DUMP=<file>` knob tees the wire for triage: scrubbed
+  shaped request bodies and scrubbed complete upstream SSE response frames
+  (the file rides the uploaded artifact, and the model key reaches request
+  bodies via printenv echoes under the inherit-all shell policy — hence
+  scrubSecrets on every line; the client stream stays byte-identical). The
+  nightly sets it for the codex leg as the stall forensics: the
+  `ReasoningRawContentDelta without active item` parser stall (2026-10-29)
+  is only diagnosable from the exact upstream frame, which only this wire
+  sees. Auth rides the config.toml `env_key` naming `E2E_APIKEY` (the driver
   bridges the `E2E_TEST_API_KEY` spelling); the value reaches the MCP
   child via the 0600 mcp-env.json inside the throwaway home.
 - **Posture.** danger-full-access: plain workspace-write denies every MCP

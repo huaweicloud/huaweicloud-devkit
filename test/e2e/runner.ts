@@ -65,6 +65,19 @@ async function main(): Promise<void> {
   const reportDir = join(root, '.e2e-results');
   mkdirSync(reportDir, { recursive: true });
   pruneReports(reportDir);
+  // The codex wire dump is per-run diagnostics: a stale file from an
+  // earlier run would interleave frames across runs and mislead triage of
+  // the exact frame that trips the parser. The workflow points
+  // E2E_CODEX_PROXY_DUMP into .e2e-results; local runs point it wherever
+  // they like — both get the fresh-file guarantee here.
+  const wireDump = process.env.E2E_CODEX_PROXY_DUMP;
+  if (wireDump) {
+    try {
+      rmSync(wireDump, { force: true });
+    } catch {
+      // best-effort: triage of a mixed dump must note the stale risk
+    }
+  }
   const report: Record<string, unknown> = {
     startedAt: new Date().toISOString(),
     agent: null,

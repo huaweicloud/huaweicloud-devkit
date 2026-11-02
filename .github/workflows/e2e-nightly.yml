@@ -180,6 +180,15 @@ jobs:
           E2E_PROVIDER_ID: ${{ vars.E2E_TEST_PROVIDER_ID || 'opengw' }}
           E2E_PROVIDER_BASEURL: ${{ vars.E2E_TEST_PROVIDER_BASEURL || 'https://opengw.clouddeveloper.club/v1' }}
           E2E_MODEL: ${{ vars.E2E_TEST_MODEL || 'glm-5.2' }}
+          # The codex leg's model-wire forensics: the driver's in-process
+          # shaping proxy tees the SCRUBBED shaped request bodies and SSE
+          # response frames here. Inert on the other legs (only the codex
+          # driver spawns the proxy); rides the .e2e-results artifact
+          # upload; removed fresh at every suite start by the runner so
+          # frames never interleave across runs. Exists for the stall
+          # forensics (ReasoningRawContentDelta without active item,
+          # 2026-10-29) — the exact upstream frame is only observable here.
+          E2E_CODEX_PROXY_DUMP: ${{ github.workspace }}/.e2e-results/codex-proxy-dump.jsonl
         # Every lane resolves to a ref that carries the suite (v2 is the
         # suite's bloodline; PR merge refs sit on it) — a missing test:e2e
         # here means someone broke it, so fail loud instead of a green
