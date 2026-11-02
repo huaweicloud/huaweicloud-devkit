@@ -244,6 +244,11 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     /On a developer-initiated delete, always ask for \*\*explicit second confirmation\*\* \(确认要删除？数据不可恢复\) before proceeding\./,
     'the hard-rules bullet must demand the double-confirm with the always',
   );
+  assert.match(
+    lifecycleSection,
+    /G1\*\* — 资源组闲置删除策略配置 \(idle-deletion policy for the resource group, drives the 14-day reclaim\)/,
+    'the skill G1 mapping must be pinned in full',
+  );
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
     assert.match(lifecycleSection, new RegExp(`\\*\\*${g}\\*\\*`), `platform dependency ${g} must be listed`);
   }
@@ -252,7 +257,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   // content, recorded headroom). Both G-list surfaces state it.
   assert.match(
     lifecycleSection,
-    /G1\*\* — 资源组闲置删除策略配置 \(idle-deletion policy for the resource group, drives the 14-day reclaim\)/,
+    /devkit only consumes these; they are implemented on the hdkitservice\/platform side and are \*\*not\*\* part of this repo's acceptance:/,
     'the skill G1 mapping must be pinned in full',
   );
 });
@@ -391,8 +396,8 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /核时来源于\*\*平台赠送 \+ 活动赚取\*\*（非直接计费口径）/,
-    'the burn-hour gifting wording must be stated',
+    /沙箱消耗核时（烧核）时向用户播报：核时来源于\*\*平台赠送 \+ 活动赚取\*\*（非直接计费口径）。/,
+    'the reference burn sentence must be pinned from its duty lead through the gifting compound',
   );
   assert.match(resourcePool, /429/, 'the 429 contract must be documented');
   assert.match(resourcePool, /Retry-After/, 'the Retry-After header must be documented');
@@ -406,7 +411,17 @@ test('resource-pool reference documents the pool capacity parameters and is link
     'the reference G1 mapping must be pinned in full',
   );
 
+  assert.match(
+    resourcePool,
+    /^## 平台侧关键依赖（G 清单，非 devkit 交付）$/m,
+    'the reference G-list heading must keep its not-devkit-delivery posture',
+  );
   const skill = readFileSync(skillPath, 'utf8');
+  assert.match(
+    skill,
+    /^### Platform dependencies \(G 清单 — platform-side, tracked here for awareness\)$/m,
+    'the skill G-list heading must keep its platform-side awareness posture',
+  );
   assert.match(
     skill,
     /- \[Resource Pool\]\(references\/resource-pool\.md\) — 资源池定稿口径/,
