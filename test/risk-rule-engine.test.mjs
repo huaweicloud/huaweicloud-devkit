@@ -336,3 +336,65 @@ test('evaluateDeployPlan warns when plan contains adminPass field (#733 D4-6)', 
   assert.equal(result.decision, 'warn');
   assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
 });
+
+// ===== #1066 D4-21: HCL/Terraform IAM admin policy detection =====
+// The hwc-iam-admin-policy rule previously matched only JSON ("Action":"*")
+// and bare YAML/CLI (Action=*) forms. HCL/Terraform uses lowercase plural
+// `actions = ["*"]` arrays and `Effect = "Allow"` (spaced equals, quoted
+// value), which slipped through and left generated IAM artifacts unblocked.
+
+test('evaluateArtifacts denies HCL identity policy with wildcard actions (#1066 D4-21)', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'main.tf',
+      content:
+        'resource "huaweicloud_identity_policy" "admin" {\n' +
+        '  policy = jsonencode({\n' +
+        '    Statement = [{\n' +
+        '      Effect = "Allow"\n' +
+        '      Action = ["*"]\n' +
+        '    }]\n' +
+        '  })\n' +
+        '}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
+test('evaluateArtifacts denies lowercase plural HCL actions array (#1066 D4-21)', () => {
+  for (const [label, content] of [
+    ['actions=["*"]', 'statement {\n  actions = ["*"]\n  effect = "Allow"\n}'],
+    ['actions=["*:*"]', 'statement {\n  actions = ["*:*"]\n  Effect = "Allow"\n}'],
+    ['Action="*:*"', 'statement {\n  Action = "*:*"\n  Effect = "Allow"\n}'],
+  ]) {
+    const result = evaluateArtifacts([{ path: 'policy.tf', content }]);
+    assert.equal(result.decision, 'deny', `${label} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+  }
+});
+
+test('evaluateArtifacts does not flag service-scoped HCL actions (#1066 D4-21)', () => {
+  for (const content of [
+    'statement {\n  actions = ["ecs:*"]\n  effect = "Allow"\n}',
+    'statement {\n  actions = ["ecs:servers:list"]\n  effect = "Allow"\n}',
+  ]) {
+    const result = evaluateArtifacts([{ path: 'scoped.tf', content }]);
+    assert.equal(
+      result.findings.some((f) => f.ruleId === 'hwc-iam-admin-policy'),
+      false,
+      'service-scoped actions must not trigger the admin-policy rule',
+    );
+  }
+});
+
+test('evaluateArtifacts does not flag HCL Deny effect (#1066 D4-21)', () => {
+  const result = evaluateArtifacts([
+    { path: 'deny.tf', content: 'statement {\n  actions = ["*"]\n  effect = "Deny"\n}' },
+  ]);
+  assert.equal(
+    result.findings.some((f) => f.ruleId === 'hwc-iam-admin-policy'),
+    false,
+    'Deny effect must not trigger the admin-policy rule',
+  );
+});
