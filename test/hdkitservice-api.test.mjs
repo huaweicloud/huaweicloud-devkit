@@ -148,3 +148,129 @@ test('voucher status does NOT include remediation for non-CRED_INVALID errors', 
     global.fetch = originalFetch;
   }
 });
+
+// ── 两池：pool_type 透传与钉扎 ──
+
+test('hdkitConnect passes pool_type through without template pinning by default', async () => {
+  const originalFetch = global.fetch;
+  let capturedBody = null;
+  global.fetch = async (_url, opts) => {
+    capturedBody = opts.body;
+    return new Response(
+      JSON.stringify({ session_id: 's1', dev_stage_id: 'd1', pool_type: 'persistent', template_id: 'tplp' }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  };
+  try {
+    const result = await hdkitConnect({ pool_type: 'persistent' });
+    const body = JSON.parse(capturedBody);
+    assert.equal(body.pool_type, 'persistent');
+    assert.equal(body.template_id, undefined); // 未钉扎：模板由服务端权威映射
+    assert.equal(result.pool_type, 'persistent');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitConnect attaches pinned template when HW_POOL_TEMPLATE_* is configured', async () => {
+  const originalFetch = global.fetch;
+  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
+  let capturedBody = null;
+  global.fetch = async (_url, opts) => {
+    capturedBody = opts.body;
+    return new Response(JSON.stringify({ session_id: 's1', dev_stage_id: 'd1' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    await hdkitConnect({ pool_type: 'ephemeral' });
+    const body = JSON.parse(capturedBody);
+    assert.equal(body.pool_type, 'ephemeral');
+    assert.equal(body.template_id, 'pinned-eph-tpl'); // 钉扎：附带映射模板（老服务端兼容）
+  } finally {
+    global.fetch = originalFetch;
+    delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
+  }
+});
+
+// ── 429 双错误码结构化处理 ──
+
+test('HDKIT_QUOTA_EXCEEDED carries retryAfter and release-oriented remediation', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        code: 'HDKIT_QUOTA_EXCEEDED',
+        message: '沙箱并发配额已满（每账号最多 5 台实例），请释放闲置沙箱后重试',
+      }),
+      { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },
+    );
+  try {
+    const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_QUOTA_EXCEEDED');
+    assert.equal(err.status, 429);
+    assert.equal(err.retryAfter, '60');
+    assert.ok(err.remediation, 'expected remediation');
+    assert.match(err.remediation.hint, /配额已满/);
+    assert.ok(Array.isArray(err.remediation.steps));
+    assert.match(err.remediation.steps.join(' '), /复用/); // 引导复用/释放，而非重试
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('HDKIT_CAPACITY_INSUFFICIENT carries retryAfter and off-peak remediation', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(
+      JSON.stringify({ code: 'HDKIT_CAPACITY_INSUFFICIENT', message: 'devkit提供的免费资源紧张，建议错峰使用' }),
+      { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },
+    );
+  try {
+    const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_CAPACITY_INSUFFICIENT');
+    assert.equal(err.status, 429);
+    assert.equal(err.retryAfter, '60');
+    assert.match(err.remediation.hint, /平台池容量暂时不足/);
+    assert.match(err.remediation.steps.join(' '), /错峰/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+// ── 烧核播报（HD.97520422 消息内识别）──
+
+test('core-hours exhausted upstream code surfaces friendly remediation', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        code: 'HDKIT_UPSTREAM_ERROR',
+        message:
+          '沙箱编排上游调用失败: GET /open-api-public/v2/devenvs upstream error HD.97520422: The remaining core hours has been used up',
+      }),
+      { status: 502, headers: { 'Content-Type': 'application/json' } },
+    );
+  try {
+    const err = await hdkitConnect({}).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_UPSTREAM_ERROR');
+    assert.equal(err.coreHoursExhausted, true);
+    assert.match(err.remediation.hint, /核心时长/);
+    assert.ok(Array.isArray(err.remediation.steps));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});

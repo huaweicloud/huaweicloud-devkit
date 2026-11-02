@@ -47,53 +47,33 @@ Hard rules:
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
 
-## Resource Pool Selection (持久化 vs 非持久化 — 定稿口径 #1071)
+## 两池沙箱（pool_type）
 
-The sandbox service runs on a dedicated resource pool with **two instance types**. Select the pool by intent — the agent auto-selects from the request, and the developer may override:
+`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
 
-| Intent / scenario (按意图) | Pool type | Why                                                                 |
-| -------------------------- | --------- | ------------------------------------------------------------------- |
-| 预览 / 试用 / demo         | 非持久化  | Throwaway runtime, no state to keep                                 |
-| 一次性任务（跑完即弃）     | 非持久化  | Result leaves the sandbox; instance not reused                      |
-| 敏感内容（即焚）           | 非持久化  | Nothing persists after the fixed 3h window — data dies with the box |
-| 开发工作台 / workbench     | 持久化    | Sessions span days; state must survive reboots                      |
-| 带数据库项目（DB-backed）  | 持久化    | Data lives on the mounted EVS disk (32G)                            |
-| 跨日评审 / 展示            | 持久化    | Reviewers return on a later day; instance kept                      |
+| pool_type           | 语义               | 生命周期（已实测）                                         | 适用                        |
+| ------------------- | ------------------ | ---------------------------------------------------------- | --------------------------- |
+| `ephemeral`（默认） | 非持久沙箱         | 闲置 30 分钟自动关机 + 闲置 1 小时自动删除（平台定时任务） | 临时运行/预览，勿存重要数据 |
+| `persistent`        | 持久沙箱（EVS 盘） | 数据跨关机保留；闲置回收保留期上限 7 天                    | 需要跨会话保留数据          |
 
-Selection rules:
+Selection rules（agent 按意图自动选池，开发者可覆盖；意图不明确时呈现两类供选择）：
 
-- **Agent auto-selects by intent** using the table above (e.g. a preview/即焚 request → 非持久化; a workbench/数据库 request → 持久化). **The developer can always override** — present both types when the intent is ambiguous.
-- **持久化 sandboxes mount an EVS disk (32G)** — project code and databases survive reboots; treat them as the default for anything that must outlive the session (see also [Sandbox filesystem persistence](#sandbox-filesystem-persistence-what-survives-a-reboot-999) for the `/workspace` data-disk semantics).
-- **非持久化 sandboxes are fixed 3h** — never promise durability to the developer; finish the task and hand over results before the window closes.
-- **烧核播报口径 (core-hour burn announcement)**: when a sandbox consumes core-hours (烧核), report the burn to the developer using the gifting wording — 核时来自「平台赠送 + 活动赚取」口径，非直接计费。Broadcast this when starting a billable-length session on the resource pool, so the developer knows where the quota comes from.
-- Quota is **1 instance per type**: a developer may hold 1 非持久化 AND 1 持久化 simultaneously; the same type is **reused** (one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second). Exceeding quota returns **HTTP 429 with a Retry-After header** plus a distinct error code — distinguish **quota exceeded** (429; wait per Retry-After, or free the slot by finishing the other task) from **capacity insufficient** (pool full; retry later or pick the other type). Full parameter table: [references/resource-pool.md](references/resource-pool.md).
+| 意图 / 场景               | pool_type  | 理由                                |
+| ------------------------- | ---------- | ----------------------------------- |
+| 预览 / 试用 / demo        | ephemeral  | 用完即弃，无需保留状态              |
+| 一次性任务（跑完即弃）    | ephemeral  | 结果带出沙箱；实例随闲置回收        |
+| 敏感内容（即焚）          | ephemeral  | 闲置 1 小时自动删除，数据随实例消亡 |
+| 开发工作台 / workbench    | persistent | 会话跨天；状态需跨关机保留          |
+| 带数据库项目（DB-backed） | persistent | 数据落在挂载的 EVS 盘（32G）        |
+| 跨日评审 / 展示           | persistent | 评审者后续日期回访；实例保留        |
 
-## Sandbox Lifecycle & Retention (定稿口径 #1071)
-
-| Phase            | 持久化 (persistent)                                                                                                                                                                                                                                                          | 非持久化 (ephemeral)                                   |
-| ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
-| Idle shutdown    | **1h idle → shutdown** (relaxed from the platform's 10min)                                                                                                                                                                                                                   | n/a — fixed window                                     |
-| Activity signals | **Three signals** count as active: terminal connect / running processes / preview traffic (tunnel). Any signal within the idle window resets the 1h timer                                                                                                                    | n/a                                                    |
-| Pre-shutdown     | Platform notifies the developer **before** shutting down an idle persistent sandbox — surface this reminder, never fight it                                                                                                                                                  | n/a                                                    |
-| Hard expiry      | none (lifecycle governed by idle policy)                                                                                                                                                                                                                                     | **Fixed 3h from CreateTime** (CreateTime 判定，不可续) |
-| Retention        | **14 days after stop** (业务定稿) — then reclaimed by the resource-group idle-deletion policy                                                                                                                                                                                | Reclaimed with the instance                            |
-| Deletion         | ① developer-initiated delete (devkit asks for a **second confirmation** before user-side delete) ② resource-group policy reclaim after the 14-day retention. **No deletion API is exposed to devkit**, and **devkit never defers/delays deletion on the developer's behalf** | Same policy semantics                                  |
-
-Deletion hard rules:
-
-- devkit does NOT expose a lifecycle deletion API for resource-pool instances — cleanup is the platform resource-group idle-deletion policy (G1).
-- On a developer-initiated delete, always ask for **explicit second confirmation** (确认要删除？数据不可恢复) before proceeding.
-- Never schedule delayed/deferred deletion on the developer's behalf (不做延后代删).
-
-### Platform dependencies (G 清单 — platform-side, tracked here for awareness)
-
-devkit only consumes these; they are implemented on the hdkitservice/platform side and are **not** part of this repo's acceptance:
-
-- **G1** — 资源组闲置删除策略配置 (idle-deletion policy for the resource group, drives the 14-day reclaim)
-- **G2** — 活性三信号 (connect / process / preview-traffic activity signals feeding the 1h idle timer)
-- **G3** — 状态查询 API (instance status query API)
-- **G4** — 销户开机处置 (account-closure handling for running instances)
-- **G5** — 销户实例回收 (account-closure instance reclaim)
+- **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
+- **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足→建议错峰重试）。响应带 `Retry-After`
+- **TTL 播报**：connect 与执行类工具返回值带池模式/生命周期提示——**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须附带该提示
+- **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
+- **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
+- 显式 `template_id` 优先于 `pool_type`（自定义模板场景）
+- 完整口径、容量规划与 G 清单：[references/resource-pool.md](references/resource-pool.md)
 
 ## Activation
 
@@ -122,10 +102,10 @@ devkit only consumes these; they are implemented on the hdkitservice/platform si
 
 ### Sandbox Lifecycle
 
-| Tool                              | Purpose                                                                  |
-| --------------------------------- | ------------------------------------------------------------------------ |
-| `huaweicloud_sandbox_connect`     | Connect to sandbox (one user one instance, reuses existing if available) |
-| `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                            |
+| Tool                              | Purpose                                                                                                          |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `huaweicloud_sandbox_connect`     | Connect to sandbox (one instance per user per pool; `pool_type` selects ephemeral/persistent, default ephemeral) |
+| `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                                                                    |
 
 ### Tunnel Persistence (public URL lifetime)
 
@@ -181,7 +161,7 @@ devkit only consumes these; they are implemented on the hdkitservice/platform si
 
 **Step 0 — Target-Selection Gate (MANDATORY)**: before any sandbox lifecycle tool, confirm the target. If the developer asked to deploy/host/publish a site without naming a target, STOP and run the [Target-Selection Gate](#target-selection-gate-mandatory--do-not-skip) first; do NOT call `huaweicloud_sandbox_connect` until it is resolved. Proceed with this workflow only if the target is already confirmed as sandbox (or a temporary runtime).
 
-**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [Resource Pool Selection](#resource-pool-selection-持久化-vs-非持久化--定稿口径-1071) table (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window ([Sandbox Lifecycle & Retention](#sandbox-lifecycle--retention-定稿口径-1071)) before connecting.
+**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [两池沙箱（pool_type）](#两池沙箱pool_type) selection rules (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window (ephemeral: idle 30min shutdown + 1h delete; persistent: 7-day idle reclaim cap) before connecting.
 
 **Step 0.5 — Stack-Selection Gate (MANDATORY)**: before uploading or writing any application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
 
