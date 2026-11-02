@@ -160,17 +160,17 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\*[^|]*\|[^|]*n\/a/,
+    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\*[^|]*\|\s*n\/a/,
     'the 1h idle rule must sit in the persistent column with n/a on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Activity signals\s+\|\s*\*\*Three signals\*\* count as active: terminal connect \/ running processes \/ preview traffic \(tunnel\)\. Any signal within the idle window resets the 1h timer[^|]*\|[^|]*n\/a/,
+    /\| Activity signals\s+\|\s*\*\*Three signals\*\* count as active: terminal connect \/ running processes \/ preview traffic \(tunnel\)\. Any signal within the idle window resets the 1h timer[^|]*\|\s*n\/a/,
     'the three activity signals and the 1h-timer reset rule must sit in the persistent column with n/a on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Pre-shutdown\s+\|\s*Platform notifies the developer \*\*before\*\*[^|]*— surface this reminder, never fight it[^|]*\|[^|]*n\/a/,
+    /\| Pre-shutdown\s+\|\s*Platform notifies the developer \*\*before\*\*[^|]*— surface this reminder, never fight it[^|]*\|\s*n\/a/,
     'the pre-shutdown notification reminder must sit in the persistent column with n/a on the ephemeral side (dev pin)',
   );
   assert.match(
@@ -180,12 +180,12 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Retention\s+\|\s*\*\*14 days after stop\*\* \(业务定稿\) — then reclaimed by the resource-group idle-deletion policy[^|]*\|[^|]*Reclaimed/,
+    /\| Retention\s+\|\s*\*\*14 days after stop\*\* \(业务定稿\) — then reclaimed by the resource-group idle-deletion policy[^|]*\|\s*Reclaimed with the instance/,
     'the 14-day retention with its reclaim path must sit in the persistent column with reclaim on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Deletion\s+\|\s*① developer-initiated delete \(devkit asks for a \*\*second confirmation\*\* before user-side delete\) ② resource-group policy reclaim after the 14-day retention[^|]*\|[^|]*Same policy semantics/,
+    /\| Deletion\s+\|\s*① developer-initiated delete \(devkit asks for a \*\*second confirmation\*\* before user-side delete\) ② resource-group policy reclaim after the 14-day retention[^|]*\|\s*Same policy semantics/,
     'the Deletion row must keep the developer-initiated double-confirm and the 14-day policy reclaim on the persistent side with same-policy ephemeral semantics',
   );
   // Absence pins (the paired-cell doctrine-leak class): the doctrine must
@@ -222,7 +222,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     /\| Deletion\s+\|[^|]*\|[^|]*second confirmation/,
     'the deletion double-confirm must not leak into the ephemeral column',
   );
-  assert.match(lifecycleSection, /relaxed from the platform's 10min/, 'the 10min relaxation note must be stated');
+  assert.match(lifecycleSection, / \(relaxed from the platform's 10min\)/, 'the 10min relaxation note must be stated');
   assert.match(lifecycleSection, /不做延后代删/, 'the no-deferred-deletion rule must be stated');
   assert.match(
     lifecycleSection,
@@ -329,7 +329,7 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /\| 生命周期\s+\|\s*固定 3h（CreateTime 判定）\s+\|\s*1h 闲置关机[^|]*三信号活性/,
+    /\| 生命周期\s+\|\s*固定 3h（CreateTime 判定）\s+\|\s*1h 闲置关机[\s+与、]*三信号活性/,
     'the type table must keep 3h-with-ephemeral (CreateTime) and 1h-idle-with-three-signal-activity on the persistent side',
   );
   assert.match(
