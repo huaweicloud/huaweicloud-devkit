@@ -117,8 +117,8 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /Exceeding quota returns \*\*HTTP 429 with a Retry-After header\*\* plus a distinct error code/,
-    'the skill bullet must state the full 429 arrival contract',
+    /Exceeding quota returns \*\*HTTP 429 with a Retry-After header\*\* plus a distinct error code — distinguish \*\*quota exceeded\*\* \(429; wait per Retry-After, or free the slot by finishing the other task\) from \*\*capacity insufficient\*\* \(pool full; retry later or pick the other type\)/,
+    'the skill bullet must state the full 429 arrival and class-to-remedy sentence',
   );
   assert.match(
     poolSection,
@@ -129,6 +129,11 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     poolSection,
     /核时来自「平台赠送 \+ 活动赚取」口径，非直接计费/,
     'the burn-hour gifting wording must carry both terms and the non-billing qualifier',
+  );
+  assert.match(
+    poolSection,
+    /when a sandbox consumes core-hours \(烧核\), report the burn to the developer using the gifting wording/,
+    'the burn-report duty sentence must be stated at its lead',
   );
   assert.match(
     poolSection,
@@ -160,17 +165,17 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\*[^|]*\|\s*n\/a/,
-    'the 1h idle rule must sit in the persistent column with n/a on the ephemeral side',
+    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\* \(relaxed from the platform's 10min\)\s*\|\s*n\/a/,
+    'the 1h idle rule with its relaxation note must sit contiguous in the persistent column with n/a on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Activity signals\s+\|\s*\*\*Three signals\*\* count as active: terminal connect \/ running processes \/ preview traffic \(tunnel\)\. Any signal within the idle window resets the 1h timer[^|]*\|\s*n\/a/,
+    /\| Activity signals\s+\|\s*\*\*Three signals\*\* count as active: terminal connect \/ running processes \/ preview traffic \(tunnel\)\. Any signal within the idle window resets the 1h timer\s*\|\s*n\/a/,
     'the three activity signals and the 1h-timer reset rule must sit in the persistent column with n/a on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Pre-shutdown\s+\|\s*Platform notifies the developer \*\*before\*\*[^|]*— surface this reminder, never fight it[^|]*\|\s*n\/a/,
+    /\| Pre-shutdown\s+\|\s*Platform notifies the developer \*\*before\*\*[^|]*— surface this reminder, never fight it\s*\|\s*n\/a/,
     'the pre-shutdown notification reminder must sit in the persistent column with n/a on the ephemeral side (dev pin)',
   );
   assert.match(
@@ -180,13 +185,13 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Retention\s+\|\s*\*\*14 days after stop\*\* \(业务定稿\) — then reclaimed by the resource-group idle-deletion policy[^|]*\|\s*Reclaimed with the instance/,
+    /\| Retention\s+\|\s*\*\*14 days after stop\*\* \(业务定稿\) — then reclaimed by the resource-group idle-deletion policy\s*\|\s*Reclaimed with the instance/,
     'the 14-day retention with its reclaim path must sit in the persistent column with reclaim on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Deletion\s+\|\s*① developer-initiated delete \(devkit asks for a \*\*second confirmation\*\* before user-side delete\) ② resource-group policy reclaim after the 14-day retention[^|]*\|\s*Same policy semantics/,
-    'the Deletion row must keep the developer-initiated double-confirm and the 14-day policy reclaim on the persistent side with same-policy ephemeral semantics',
+    /\| Deletion\s+\|\s*① developer-initiated delete \(devkit asks for a \*\*second confirmation\*\* before user-side delete\) ② resource-group policy reclaim after the 14-day retention\. \*\*No deletion API is exposed to devkit\*\*, and \*\*devkit never defers\/delays deletion on the developer's behalf\*\*\s*\|\s*Same policy semantics/,
+    'the Deletion row must keep its full doctrine cell — developer-initiated double-confirm, 14-day policy reclaim, no deletion API, never-defers — with same-policy ephemeral semantics',
   );
   // Absence pins (the paired-cell doctrine-leak class): the doctrine must
   // not ALSO appear in the other column — duplication and single-cell
@@ -222,7 +227,6 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     /\| Deletion\s+\|[^|]*\|[^|]*second confirmation/,
     'the deletion double-confirm must not leak into the ephemeral column',
   );
-  assert.match(lifecycleSection, / \(relaxed from the platform's 10min\)/, 'the 10min relaxation note must be stated');
   assert.match(lifecycleSection, /不做延后代删/, 'the no-deferred-deletion rule must be stated');
   assert.match(
     lifecycleSection,
@@ -231,23 +235,13 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /devkit does NOT expose a lifecycle deletion API for resource-pool instances/,
-    'the no-deletion-API rule must be stated at the hard-rules bullet',
-  );
-  assert.match(
-    lifecycleSection,
-    /No deletion API is exposed to devkit/,
-    'the no-deletion-API rule must be stated at the table cell',
+    /devkit does NOT expose a lifecycle deletion API for resource-pool instances — cleanup is the platform resource-group idle-deletion policy \(G1\)/,
+    'the hard-rules bullet must state the no-API rule with the platform cleanup path',
   );
   assert.match(
     lifecycleSection,
     /On a developer-initiated delete, always ask for \*\*explicit second confirmation\*\*/,
     'the hard-rules bullet must demand the double-confirm with the always',
-  );
-  assert.match(
-    lifecycleSection,
-    /devkit never defers\/delays deletion on the developer's behalf/,
-    'the Deletion row must keep the never-defers clause',
   );
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
     assert.match(lifecycleSection, new RegExp(`\\*\\*${g}\\*\\*`), `platform dependency ${g} must be listed`);
@@ -293,7 +287,11 @@ test('workflow sequences pool selection (Step 0.3) between the target gate and t
     /auto by intent, developer may override/,
     'Step 0.3 must keep the auto-select-with-override clause',
   );
-  assert.match(skill, /Check the task survives/, 'Step 0.3 must keep the lifecycle survival check');
+  assert.match(
+    skill,
+    /same type reuses\)\. Check the task survives/,
+    'Step 0.3 must keep the lifecycle survival check at its sentence lead',
+  );
 });
 
 test('resource-pool reference documents the pool capacity parameters and is linked (#1071)', () => {
@@ -367,8 +365,8 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /`Retry-After` 头 \+ 错误码/,
-    'the reference 429 response must carry the error-code discriminator',
+    /超限响应：\*\*HTTP 429 \+ `Retry-After` 头 \+ 错误码\*\*/,
+    'the reference must state the full 429 response compound',
   );
   assert.match(
     resourcePool,
@@ -436,7 +434,7 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     warningsRow,
-    /预览\/试用\/即焚 requests belong on the 非持久化 pool — a FIXED 3h window from CreateTime, 不可续/,
+    /预览\/试用\/即焚 requests belong on the 非持久化 pool — a FIXED 3h window from CreateTime, 不可续, nothing survives it/,
     'the warnings row must route ephemeral intents to the 3h pool',
   );
   assert.match(
@@ -473,7 +471,11 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
   const tools = readFileSync(toolsPath, 'utf8');
 
   const connectDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_connect');
-  assert.match(connectDesc, /One user one instance per pool type/, 'connect must state the per-pool-type quota model');
+  assert.match(
+    connectDesc,
+    /One user one instance per pool type - reuses an existing sandbox of that type if available, otherwise creates a new one\./,
+    'connect must state the full per-pool-type reuse sentence',
+  );
   assert.match(
     connectDesc,
     /reuses an existing sandbox of that type if available, otherwise creates a new one/,
@@ -487,7 +489,7 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
   );
   assert.match(
     connectDesc,
-    /the API returns HTTP 429 with a Retry-After header and an error code that distinguishes quota-exceeded \(wait per Retry-After or free the slot\) from capacity-insufficient \(pool full; retry later or pick the other type\)/,
+    /On quota exhaustion the API returns HTTP 429 with a Retry-After header and an error code that distinguishes quota-exceeded \(wait per Retry-After or free the slot\) from capacity-insufficient \(pool full; retry later or pick the other type\)/,
     'connect must state the full 429 arrival and class-to-remedy contract',
   );
   assert.match(
@@ -521,19 +523,7 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
   );
   assert.match(
     closeDesc,
-    /deletion is developer-initiated/,
-    'close_session must attribute deletion to the developer, not the platform',
-  );
-  assert.match(
-    closeDesc,
-    /always ask for a second confirmation/,
-    'close_session must demand the deletion double-confirm (the always is load-bearing)',
-  );
-  assert.match(closeDesc, /14-day retention/, 'close_session must state the retention window');
-  assert.match(closeDesc, /idle-deletion policy/, 'close_session must name the platform reclaim path');
-  assert.match(
-    closeDesc,
-    /devkit never defers or performs deletion on the user behalf/,
-    'close_session must carry the never-defers clause',
+    /Resource-pool sandbox deletion is developer-initiated \(always ask for a second confirmation before guiding a delete\) or handled by the platform resource-group idle-deletion policy after the 14-day retention; devkit never defers or performs deletion on the user behalf\./,
+    'close_session must state the full deletion-attribution and never-defers sentence',
   );
 });
