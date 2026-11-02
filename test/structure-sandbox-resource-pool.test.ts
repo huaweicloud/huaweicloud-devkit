@@ -40,9 +40,31 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   assert.ok(activation !== -1 && lifecycle.index < activation, 'lifecycle section must precede Activation');
 
   const poolSection = skill.slice(pool.index, lifecycle.index);
-  for (const kw of ['预览', '一次性任务', '敏感内容', '开发工作台', '带数据库项目', '跨日']) {
-    assert.match(poolSection, new RegExp(kw), `routing table must cover the ${kw} intent row`);
-  }
+  // Mapping-bearing pins (the #1021 doctrine: pin the routing semantics with
+  // regexes that carry the mapping, not keyword presence — a pool-type flip
+  // in any row must red the gate).
+  assert.match(
+    poolSection,
+    /预览 \/ 试用 \/ demo\s+\| 非持久化\s+\|/,
+    'preview/trial/demo must route to the ephemeral pool',
+  );
+  assert.match(
+    poolSection,
+    /一次性任务（跑完即弃）\s+\| 非持久化\s+\|/,
+    'one-shot tasks must route to the ephemeral pool',
+  );
+  assert.match(
+    poolSection,
+    /敏感内容（即焚）\s+\| 非持久化\s+\|/,
+    'sensitive burn-after content must route to the ephemeral pool',
+  );
+  assert.match(poolSection, /开发工作台 \/ workbench\s+\| 持久化\s+\|/, 'workbench must route to the persistent pool');
+  assert.match(
+    poolSection,
+    /带数据库项目（DB-backed）\s+\| 持久化\s+\|/,
+    'DB-backed projects must route to the persistent pool',
+  );
+  assert.match(poolSection, /跨日评审 \/ 展示\s+\| 持久化\s+\|/, 'multi-day review must route to the persistent pool');
   assert.match(poolSection, /auto-selects by intent/, 'the agent must auto-select by intent');
   assert.match(poolSection, /The developer can always override/, 'the developer override rule must hold');
   assert.match(poolSection, /1 instance per type/, 'per-type quota rule must be stated');
@@ -67,6 +89,34 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
 
   const lifecycleSection = skill.slice(lifecycle.index, activation);
+  // Column attribution: the persistent column owns the 1h idle rule, the
+  // ephemeral column owns the 3h hard expiry — a header swap or a cell move
+  // between columns must red the gate.
+  assert.match(
+    lifecycleSection,
+    /\| Phase\s+\| 持久化 \(persistent\)\s+\| 非持久化 \(ephemeral\)/,
+    'the lifecycle table columns must stay persistent-then-ephemeral',
+  );
+  assert.match(
+    lifecycleSection,
+    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\*/,
+    'the 1h idle rule must sit in the persistent column',
+  );
+  assert.match(
+    lifecycleSection,
+    /\| Hard expiry\s+\| none \(lifecycle governed by idle policy\)\s+\|\s*\*\*Fixed 3h from CreateTime\*\*/,
+    'the 3h hard expiry must sit in the ephemeral column',
+  );
+  assert.match(
+    lifecycleSection,
+    /notifies the developer \*\*before\*\* shutting down an idle persistent/,
+    'the pre-shutdown notification reminder must be stated (dev pin)',
+  );
+  assert.match(
+    lifecycleSection,
+    /surface this reminder, never fight it/,
+    'the pre-shutdown reminder must be surfaced, never fought',
+  );
   assert.match(lifecycleSection, /1h idle → shutdown/, 'the 1h idle rule must be stated');
   assert.match(lifecycleSection, /relaxed from the platform's 10min/, 'the 10min relaxation note must be stated');
   assert.match(
