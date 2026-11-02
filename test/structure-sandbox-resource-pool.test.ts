@@ -99,6 +99,11 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     'the core-hour burn broadcast trigger must be stated',
   );
   assert.match(poolSection, /\*\*Agent auto-selects by intent\*\*/, 'the agent must auto-select by intent');
+  assert.match(
+    poolSection,
+    /the agent auto-selects from the request, and the developer may override/,
+    'the section intro must keep the auto-select/override restatement',
+  );
   assert.match(poolSection, /The developer can always override/, 'the developer override rule must hold');
   assert.match(
     poolSection,
@@ -160,8 +165,8 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Activity signals\s+\|[^|]*Three signals[^|]*terminal connect \/ running processes \/ preview traffic/,
-    'the three activity signals must sit in the persistent column',
+    /\| Activity signals\s+\|[^|]*Three signals[^|]*terminal connect \/ running processes \/ preview traffic \(tunnel\)\. Any signal within the idle window resets the 1h timer/,
+    'the three activity signals and the 1h-timer reset rule must sit in the persistent column',
   );
   assert.match(
     lifecycleSection,
@@ -185,8 +190,8 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Retention\s+\|[^|]*14 days after stop[^|]*\|[^|]*Reclaimed/,
-    'the 14-day retention must sit in the persistent column with reclaim on the ephemeral side',
+    /\| Retention\s+\|[^|]*14 days after stop[^|]*reclaimed by the resource-group idle-deletion policy[^|]*\|[^|]*Reclaimed/,
+    'the 14-day retention with its reclaim path must sit in the persistent column with reclaim on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
@@ -195,8 +200,8 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Deletion\s+\|[^|]*second confirmation[^|]*\|[^|]*Same policy semantics/,
-    'the deletion double-confirm must sit in the persistent column with same-policy ephemeral semantics',
+    /\| Deletion\s+\| ① developer-initiated delete[^|]*second confirmation[^|]*② resource-group policy reclaim after the 14-day retention[^|]*\|[^|]*Same policy semantics/,
+    'the Deletion row must keep the developer-initiated double-confirm and the 14-day policy reclaim on the persistent side with same-policy ephemeral semantics',
   );
   // Absence pins (the paired-cell doctrine-leak class): the doctrine must
   // not ALSO appear in the other column — duplication and single-cell
@@ -334,13 +339,13 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /\| 定位\s+\| 预览\/试用\/一次性任务\/敏感即焚\s+\|[^|]*工作台[^|]*带数据库[^|]*跨日/,
+    /\| 定位\s+\| 预览\/试用\/一次性任务\/敏感即焚\s+\|[^|]*开发工作台[^|]*带数据库项目[^|]*跨日评审展示/,
     'the 定位 row must keep the full intent-to-type mapping on both sides',
   );
   assert.match(
     resourcePool,
-    /\| 生命周期\s+\|[^|]*固定 3h（CreateTime 判定[^|]*\|[^|]*1h 闲置关机[^|]*三信号/,
-    'the type table must keep 3h-with-ephemeral (CreateTime) and 1h-idle-with-persistent (three signals)',
+    /\| 生命周期\s+\|[^|]*固定 3h（CreateTime 判定）[^|]*\|[^|]*1h 闲置关机[^|]*三信号活性/,
+    'the type table must keep 3h-with-ephemeral (CreateTime) and 1h-idle-with-three-signal-activity on the persistent side',
   );
   assert.match(
     resourcePool,
