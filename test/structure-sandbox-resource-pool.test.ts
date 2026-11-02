@@ -65,6 +65,26 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     'DB-backed projects must route to the persistent pool',
   );
   assert.match(poolSection, /跨日评审 \/ 展示\s+\| 持久化\s+\|/, 'multi-day review must route to the persistent pool');
+  // The selection-rules bullet carries the same mapping inline — its example
+  // must not invert against the table.
+  assert.match(
+    poolSection,
+    /preview\/即焚 request → 非持久化; a workbench\/数据库 request → 持久化/,
+    'the auto-select example must carry the correct intent-to-pool mappings',
+  );
+  // The 429 error-class-to-remediation mapping: each class keeps its own
+  // remedy (a clause swap between the classes is the same defect class as a
+  // routing-row flip).
+  assert.match(
+    poolSection,
+    /quota exceeded\*\* \(429; wait per Retry-After/,
+    'quota-exceeded must carry the 429 wait-or-free remedy',
+  );
+  assert.match(
+    poolSection,
+    /capacity insufficient\*\* \(pool full/,
+    'capacity-insufficient must carry the pool-full retry remedy',
+  );
   assert.match(poolSection, /auto-selects by intent/, 'the agent must auto-select by intent');
   assert.match(poolSection, /The developer can always override/, 'the developer override rule must hold');
   assert.match(poolSection, /1 instance per type/, 'per-type quota rule must be stated');
@@ -89,9 +109,10 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
 
   const lifecycleSection = skill.slice(lifecycle.index, activation);
-  // Column attribution: the persistent column owns the 1h idle rule, the
-  // ephemeral column owns the 3h hard expiry — a header swap or a cell move
-  // between columns must red the gate.
+  // Column attribution for every doctrine-bearing lifecycle row: the pin
+  // anchors the phrase to its cell ([^|] cannot cross a cell boundary), so a
+  // cell swap or a header swap reds the gate while a semantics-preserving
+  // reword of neighboring prose stays green.
   assert.match(
     lifecycleSection,
     /\| Phase\s+\| 持久化 \(persistent\)\s+\| 非持久化 \(ephemeral\)/,
@@ -99,34 +120,35 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\*/,
+    /\| Idle shutdown\s+\|[^|]*1h idle → shutdown/,
     'the 1h idle rule must sit in the persistent column',
   );
   assert.match(
     lifecycleSection,
-    /\| Hard expiry\s+\| none \(lifecycle governed by idle policy\)\s+\|\s*\*\*Fixed 3h from CreateTime\*\*/,
+    /\| Activity signals\s+\|[^|]*Three signals[^|]*terminal connect \/ running processes \/ preview traffic/,
+    'the three activity signals must sit in the persistent column',
+  );
+  assert.match(
+    lifecycleSection,
+    /\| Pre-shutdown\s+\|[^|]*notifies the developer \*\*before\*\*[^|]*surface this reminder, never fight it/,
+    'the pre-shutdown notification reminder must sit in the persistent column (dev pin)',
+  );
+  assert.match(
+    lifecycleSection,
+    /\| Hard expiry\s+\|[^|]*\|[^|]*Fixed 3h from CreateTime/,
     'the 3h hard expiry must sit in the ephemeral column',
   );
   assert.match(
     lifecycleSection,
-    /notifies the developer \*\*before\*\* shutting down an idle persistent/,
-    'the pre-shutdown notification reminder must be stated (dev pin)',
+    /\| Retention\s+\|[^|]*14 days after stop/,
+    'the 14-day retention must sit in the persistent column',
   );
   assert.match(
     lifecycleSection,
-    /surface this reminder, never fight it/,
-    'the pre-shutdown reminder must be surfaced, never fought',
+    /\| Deletion\s+\|[^|]*second confirmation/,
+    'the deletion double-confirm must sit in the persistent column',
   );
-  assert.match(lifecycleSection, /1h idle → shutdown/, 'the 1h idle rule must be stated');
   assert.match(lifecycleSection, /relaxed from the platform's 10min/, 'the 10min relaxation note must be stated');
-  assert.match(
-    lifecycleSection,
-    /terminal connect \/ running processes \/ preview traffic/,
-    'the three activity signals must be named',
-  );
-  assert.match(lifecycleSection, /Fixed 3h from CreateTime/, 'the ephemeral hard expiry must be stated');
-  assert.match(lifecycleSection, /14 days after stop/, 'the 14-day retention must be stated');
-  assert.match(lifecycleSection, /second confirmation/, 'the deletion double-confirm must be stated');
   assert.match(lifecycleSection, /不做延后代删/, 'the no-deferred-deletion rule must be stated');
   assert.match(lifecycleSection, /No deletion API is exposed to devkit/, 'the no-deletion-API rule must be stated');
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
@@ -159,12 +181,35 @@ test('workflow sequences pool selection (Step 0.3) between the target gate and t
 
 test('resource-pool reference documents the pool capacity parameters and is linked (#1071)', () => {
   const resourcePool = readFileSync(referencePath, 'utf8');
-  assert.match(resourcePool, /300 实例/, 'persistent 2U4G capacity must be documented');
-  assert.match(resourcePool, /200 实例/, 'persistent 4U8G capacity must be documented');
-  assert.match(resourcePool, /1000 实例/, 'ephemeral 2U4G capacity must be documented');
+  // Mapping-bearing pins: the 申请 capacity rows and the 两类沙箱 type table
+  // carry the pool-type attributions — presence pins would survive a swap.
+  assert.match(
+    resourcePool,
+    /\| 持久化 2U4G 规格\s+\| 300 实例/,
+    'persistent 2U4G must be documented at 300 instances',
+  );
+  assert.match(
+    resourcePool,
+    /\| 持久化 4U8G 规格\s+\| 200 实例/,
+    'persistent 4U8G must be documented at 200 instances',
+  );
+  assert.match(
+    resourcePool,
+    /\| 非持久化 2U4G 规格\s+\| 1000 实例/,
+    'ephemeral 2U4G must be documented at 1000 instances',
+  );
+  assert.match(
+    resourcePool,
+    /\| 生命周期\s+\| 固定 3h（CreateTime 判定）\s+\| 1h 闲置关机/,
+    'the type table must keep 3h-with-ephemeral and 1h-idle-with-persistent',
+  );
+  assert.match(
+    resourcePool,
+    /\| 存储\s+\| 无持久盘\s+\| 挂 EVS 32G/,
+    'the type table must keep the EVS mount on the persistent side',
+  );
   assert.match(resourcePool, /5 GB \/ 实例/, 'overlayer per-instance quota must be documented');
   assert.match(resourcePool, /300 TB/, 'EVS total capacity must be documented');
-  assert.match(resourcePool, /32G/, 'the persistent EVS mount size must be documented');
   assert.match(resourcePool, /429/, 'the 429 contract must be documented');
   assert.match(resourcePool, /Retry-After/, 'the Retry-After header must be documented');
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
@@ -177,10 +222,37 @@ test('resource-pool reference documents the pool capacity parameters and is link
     /- \[Resource Pool\]\(references\/resource-pool\.md\) — 资源池定稿口径/,
     'the References list must link the resource-pool reference',
   );
+  assert.match(
+    skill,
+    /持久 2U4G×300 \+ 4U8G×200、非持久 2U4G×1000/,
+    'the References link line must carry the capacity mapping it advertises',
+  );
   // The late-flow catch-all surface: the warnings table carries the pool row
   // beside the two gate rows (the #1021 v2-wins precedent — the table is the
   // surface an agent consults last).
   assert.match(skill, /Pool type fixes durability/, 'the Critical Warnings table must carry the pool-type row');
+  // The v2-authored row is the one surface with no dev source of truth, so
+  // its 429 discriminator is pinned directly: the error code, not the HTTP
+  // status, separates the two failure classes (the dev-verbatim surfaces
+  // teach both classes arrive as 429).
+  assert.match(
+    skill,
+    /the CODE, not the status, separates the two failure classes/,
+    'the warnings row must discriminate the 429 classes by error code, not status',
+  );
+  // v2-wins sync: the skill's own tool-summary table states the per-pool-type
+  // quota model (dev's copy still teaches the superseded flat model — the
+  // port changed the doctrine, so the in-file summary follows).
+  assert.match(
+    skill,
+    /Connect to sandbox \(one user one instance per pool type, reuses existing of that type\)/,
+    'the tool table must state the per-pool-type quota model',
+  );
+  assert.doesNotMatch(
+    skill,
+    /Connect to sandbox \(one user one instance, reuses existing if available\)/,
+    'the superseded flat quota model must not survive in the tool table',
+  );
 });
 
 test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#1071)', () => {
@@ -197,12 +269,45 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
   assert.match(connectDesc, /EVS 32G mounted/, 'connect must state the persistent EVS mount');
   assert.match(connectDesc, /1h idle shutdown/, 'connect must state the idle shutdown rule');
   assert.match(connectDesc, /14-day retention/, 'connect must state the retention window');
+  // Mapping-bearing pins on the description's own routing sentence — the
+  // connect description is the surface an agent sees without loading the
+  // skill, so its intent-to-pool mapping must not silently contradict the
+  // skill's pinned table.
+  assert.match(
+    connectDesc,
+    /ephemeral = preview\/trial\/one-shot\/sensitive/,
+    'the connect description must map the ephemeral type to its intents',
+  );
+  assert.match(
+    connectDesc,
+    /persistent = workbench\/DB-backed\/multi-day review/,
+    'the connect description must map the persistent type to its intents',
+  );
+  assert.match(
+    connectDesc,
+    /quota-exceeded \(wait per Retry-After/,
+    'quota-exceeded must carry the wait-or-free remedy',
+  );
+  assert.match(
+    connectDesc,
+    /capacity-insufficient \(pool full/,
+    'capacity-insufficient must carry the pool-full remedy',
+  );
   // v2 divergence: the vendor-gate seam stays on the connect description.
   assert.match(connectDesc, /Vendor-gated \(vendorConfirmed\)/, 'connect must keep the vendor-gate sentence');
 
   const closeDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_close_session');
   assert.match(closeDesc, /does NOT delete the sandbox instance/, 'close_session must disclaim deletion');
-  assert.match(closeDesc, /second confirmation/, 'close_session must demand the deletion double-confirm');
+  assert.match(
+    closeDesc,
+    /always ask for a second confirmation/,
+    'close_session must demand the deletion double-confirm (the always is load-bearing)',
+  );
   assert.match(closeDesc, /14-day retention/, 'close_session must state the retention window');
   assert.match(closeDesc, /idle-deletion policy/, 'close_session must name the platform reclaim path');
+  assert.match(
+    closeDesc,
+    /devkit never defers or performs deletion on the user behalf/,
+    'close_session must carry the never-defers clause',
+  );
 });
