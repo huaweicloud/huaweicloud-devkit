@@ -45,31 +45,39 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   // in any row must red the gate).
   assert.match(
     poolSection,
-    /预览 \/ 试用 \/ demo\s+\| 非持久化\s+\|/,
+    /\|\s*预览 \/ 试用 \/ demo\s+\| 非持久化\s+\|/,
     'preview/trial/demo must route to the ephemeral pool',
   );
   assert.match(
     poolSection,
-    /一次性任务（跑完即弃）\s+\| 非持久化\s+\|/,
+    /\|\s*一次性任务（跑完即弃）\s+\| 非持久化\s+\|/,
     'one-shot tasks must route to the ephemeral pool',
   );
   assert.match(
     poolSection,
-    /敏感内容（即焚）\s+\| 非持久化\s+\|/,
+    /\|\s*敏感内容（即焚）\s+\| 非持久化\s+\|/,
     'sensitive burn-after content must route to the ephemeral pool',
   );
-  assert.match(poolSection, /开发工作台 \/ workbench\s+\| 持久化\s+\|/, 'workbench must route to the persistent pool');
   assert.match(
     poolSection,
-    /带数据库项目（DB-backed）\s+\| 持久化\s+\|/,
+    /\|\s*开发工作台 \/ workbench\s+\| 持久化\s+\|/,
+    'workbench must route to the persistent pool',
+  );
+  assert.match(
+    poolSection,
+    /\|\s*带数据库项目（DB-backed）\s+\| 持久化\s+\|/,
     'DB-backed projects must route to the persistent pool',
   );
-  assert.match(poolSection, /跨日评审 \/ 展示\s+\| 持久化\s+\|/, 'multi-day review must route to the persistent pool');
+  assert.match(
+    poolSection,
+    /\|\s*跨日评审 \/ 展示\s+\| 持久化\s+\|/,
+    'multi-day review must route to the persistent pool',
+  );
   // The selection-rules bullet carries the same mapping inline — its example
   // must not invert against the table.
   assert.match(
     poolSection,
-    /preview\/即焚 request → 非持久化; a workbench\/数据库 request → 持久化/,
+    /preview\/即焚 request → 非持久化; a workbench\/数据库 request → 持久化\)/,
     'the auto-select example must carry the correct intent-to-pool mappings',
   );
   // The 429 error-class-to-remediation mapping: the full sentence is pinned
@@ -85,12 +93,12 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots; treat them as the default for anything that must outlive the session/,
+    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots; treat them as the default for anything that must outlive the session \(see also/,
     'the EVS bullet must attribute the mount to the persistent type with the survive-reboots and default-for-durability rules',
   );
   assert.match(
     poolSection,
-    /the same type is \*\*reused\*\* \(one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second\)/,
+    /the same type is \*\*reused\*\* \(one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second\)\./,
     'the same-type reuse rule must be stated with its connect semantics (dev pin)',
   );
   assert.match(
@@ -101,13 +109,13 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   assert.match(poolSection, /\*\*Agent auto-selects by intent\*\*/, 'the agent must auto-select by intent');
   assert.match(
     poolSection,
-    /the agent auto-selects from the request, and the developer may override/,
+    /the agent auto-selects from the request, and the developer may override:/,
     'the section intro must keep the auto-select/override restatement',
   );
   assert.match(poolSection, /The developer can always override/, 'the developer override rule must hold');
   assert.match(
     poolSection,
-    /Quota is \*\*1 instance per type\*\*/,
+    /Quota is \*\*1 instance per type\*\*:/,
     'the per-type quota rule must be stated at its sentence lead',
   );
   assert.match(
@@ -117,7 +125,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /Exceeding quota returns \*\*HTTP 429 with a Retry-After header\*\* plus a distinct error code — distinguish \*\*quota exceeded\*\* \(429; wait per Retry-After, or free the slot by finishing the other task\) from \*\*capacity insufficient\*\* \(pool full; retry later or pick the other type\)/,
+    /Exceeding quota returns \*\*HTTP 429 with a Retry-After header\*\* plus a distinct error code — distinguish \*\*quota exceeded\*\* \(429; wait per Retry-After, or free the slot by finishing the other task\) from \*\*capacity insufficient\*\* \(pool full; retry later or pick the other type\)\./,
     'the skill bullet must state the full 429 arrival and class-to-remedy sentence',
   );
   assert.match(
@@ -127,13 +135,8 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /核时来自「平台赠送 \+ 活动赚取」口径，非直接计费/,
-    'the burn-hour gifting wording must carry both terms and the non-billing qualifier',
-  );
-  assert.match(
-    poolSection,
-    /when a sandbox consumes core-hours \(烧核\), report the burn to the developer using the gifting wording/,
-    'the burn-report duty sentence must be stated at its lead',
+    /when a sandbox consumes core-hours \(烧核\), report the burn to the developer using the gifting wording — 核时来自「平台赠送 \+ 活动赚取」口径，非直接计费。/,
+    'the burn-report duty sentence must carry its gifting compound through the sentence end',
   );
   assert.match(
     poolSection,
@@ -180,7 +183,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Hard expiry\s+\|\s*none[^|]*\|\s*\*\*Fixed 3h from CreateTime\*\* \(CreateTime 判定，不可续\)/,
+    /\| Hard expiry\s+\|\s*none[^|]*\|\s*\*\*Fixed 3h from CreateTime\*\* \(CreateTime 判定，不可续\)\s*\|/,
     'the 3h hard expiry must sit in the ephemeral column with no hard expiry on the persistent side',
   );
   assert.match(
@@ -230,17 +233,17 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   assert.match(lifecycleSection, /不做延后代删/, 'the no-deferred-deletion rule must be stated');
   assert.match(
     lifecycleSection,
-    /Never schedule delayed\/deferred deletion on the developer's behalf/,
+    /Never schedule delayed\/deferred deletion on the developer's behalf \(不做延后代删\)\./,
     'the no-deferred-deletion rule must be stated in English too',
   );
   assert.match(
     lifecycleSection,
-    /devkit does NOT expose a lifecycle deletion API for resource-pool instances — cleanup is the platform resource-group idle-deletion policy \(G1\)/,
+    /devkit does NOT expose a lifecycle deletion API for resource-pool instances — cleanup is the platform resource-group idle-deletion policy \(G1\)\./,
     'the hard-rules bullet must state the no-API rule with the platform cleanup path',
   );
   assert.match(
     lifecycleSection,
-    /On a developer-initiated delete, always ask for \*\*explicit second confirmation\*\*/,
+    /On a developer-initiated delete, always ask for \*\*explicit second confirmation\*\* \(确认要删除？数据不可恢复\) before proceeding\./,
     'the hard-rules bullet must demand the double-confirm with the always',
   );
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
@@ -284,12 +287,12 @@ test('workflow sequences pool selection (Step 0.3) between the target gate and t
   );
   assert.match(
     skill,
-    /auto by intent, developer may override/,
+    /auto by intent, developer may override;/,
     'Step 0.3 must keep the auto-select-with-override clause',
   );
   assert.match(
     skill,
-    /same type reuses\)\. Check the task survives/,
+    /same type reuses\)\. Check the task survives the chosen type's lifecycle window \(\[Sandbox Lifecycle & Retention\]/,
     'Step 0.3 must keep the lifecycle survival check at its sentence lead',
   );
 });
@@ -302,17 +305,17 @@ test('resource-pool reference documents the pool capacity parameters and is link
   // boundary), so a semantics-preserving reword stays green.
   assert.match(
     resourcePool,
-    /\| 持久化 2U4G 规格\s+\| 300 实例/,
+    /\| 持久化 2U4G 规格\s+\| 300 实例\s*\|/,
     'persistent 2U4G must be documented at 300 instances',
   );
   assert.match(
     resourcePool,
-    /\| 持久化 4U8G 规格\s+\| 200 实例/,
+    /\| 持久化 4U8G 规格\s+\| 200 实例\s*\|/,
     'persistent 4U8G must be documented at 200 instances',
   );
   assert.match(
     resourcePool,
-    /\| 非持久化 2U4G 规格\s+\| 1000 实例/,
+    /\| 非持久化 2U4G 规格\s+\| 1000 实例\s*\|/,
     'ephemeral 2U4G must be documented at 1000 instances',
   );
   assert.match(
@@ -322,17 +325,17 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /\| 定位\s+\|\s*预览\/试用\/一次性任务\/敏感即焚\s+\|\s*开发工作台\/带数据库项目\/跨日评审展示/,
+    /\| 定位\s+\|\s*预览\/试用\/一次性任务\/敏感即焚\s+\|\s*开发工作台\/带数据库项目\/跨日评审展示\s*\|/,
     'the 定位 row must keep the full intent-to-type mapping on both sides',
   );
   assert.match(
     resourcePool,
-    /\| 生命周期\s+\|\s*固定 3h（CreateTime 判定）\s+\|\s*1h 闲置关机[\s+与、]*三信号活性/,
+    /\| 生命周期\s+\|\s*固定 3h（CreateTime 判定）\s+\|\s*1h 闲置关机[\s+与、]*三信号活性\s*\|/,
     'the type table must keep 3h-with-ephemeral (CreateTime) and 1h-idle-with-three-signal-activity on the persistent side',
   );
   assert.match(
     resourcePool,
-    /\| 存储\s+\|\s*无持久盘\s+\|\s*挂 EVS 32G/,
+    /\| 存储\s+\|\s*无持久盘\s+\|\s*挂 EVS 32G\s*\|/,
     'the type table must keep the EVS mount on the persistent side',
   );
   // Absence pins (the paired-cell doctrine-leak class, mirroring the skill's
@@ -350,17 +353,17 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /\| overlayer\s+\| 5 GB \/ 实例/,
+    /\| overlayer\s+\| 5 GB \/ 实例\s*\|/,
     'the overlayer row must carry the 5 GB per-instance quota',
   );
-  assert.match(resourcePool, /\| EVS（持久化挂盘）\s+\| 300 TB/, 'the EVS row must carry the 300 TB total');
+  assert.match(resourcePool, /\| EVS（持久化挂盘）\s+\| 300 TB 总量\s*\|/, 'the EVS row must carry the 300 TB total');
   // The 配额与超限语义 section is the reference's own statement of the quota
   // model and the 429 class-to-remedy mapping — the third 429-bearing
   // surface, so its bullets carry mapping pins like the skill bullet and the
   // connect description.
   assert.match(
     resourcePool,
-    /每用户每类型 1 个实例；可同时持有 1 非持久化 \+ 1 持久化；同类请求复用现有实例/,
+    /每用户每类型 1 个实例；可同时持有 1 非持久化 \+ 1 持久化；同类请求复用现有实例。/,
     'the reference quota bullet must restate the per-type/dual-holding/reuse model',
   );
   assert.match(
@@ -375,12 +378,12 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /配额超限（quota exceeded）\*\* — 用户侧持有已达上限；按 `Retry-After` 等待或结束占用该类型沙箱的任务后再试/,
+    /配额超限（quota exceeded）\*\* — 用户侧持有已达上限；按 `Retry-After` 等待或结束占用该类型沙箱的任务后再试。/,
     'the reference must map quota-exceeded to the full wait-or-free remedy',
   );
   assert.match(
     resourcePool,
-    /容量不足（capacity insufficient）\*\* — 资源池侧无可用容量；稍后重试或改选另一类型/,
+    /容量不足（capacity insufficient）\*\* — 资源池侧无可用容量；稍后重试或改选另一类型。/,
     'the reference must map capacity-insufficient to the full retry-or-other-type remedy',
   );
   assert.match(
@@ -444,12 +447,12 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     warningsRow,
-    /Pick per the Resource Pool Selection table \(Step 0\.3\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox/,
+    /Pick per the Resource Pool Selection table \(Step 0\.3\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox\./,
     'the warnings row must carry the Step 0.3 gate sentence',
   );
   assert.match(
     warningsRow,
-    /quota exceeded \(1 instance per type — wait per Retry-After or free the slot\) vs capacity insufficient \(pool full; retry later or pick the other type\)/,
+    /quota exceeded \(1 instance per type — wait per Retry-After or free the slot\) vs capacity insufficient \(pool full; retry later or pick the other type\)\./,
     'the warnings row must map each 429 class to its own remedy',
   );
   // v2-wins sync: the skill's own tool-summary table states the per-pool-type
@@ -457,7 +460,7 @@ test('resource-pool reference documents the pool capacity parameters and is link
   // port changed the doctrine, so the in-file summary follows).
   assert.match(
     skill,
-    /Connect to sandbox \(one user one instance per pool type, reuses existing of that type\)/,
+    /Connect to sandbox \(one user one instance per pool type, reuses existing of that type\)\s*\|/,
     'the tool table must state the per-pool-type quota model',
   );
   assert.doesNotMatch(
@@ -481,15 +484,15 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
     /reuses an existing sandbox of that type if available, otherwise creates a new one/,
     'connect must state per-pool-type reuse',
   );
-  assert.match(connectDesc, /Quota: 1 instance per type/, 'connect must state the per-type quota');
+  assert.match(connectDesc, /Quota: 1 instance per type \(/, 'connect must state the per-type quota');
   assert.match(
     connectDesc,
-    /a user may hold 1 ephemeral AND 1 persistent sandbox simultaneously; same-type requests reuse the existing instance/,
+    /a user may hold 1 ephemeral AND 1 persistent sandbox simultaneously; same-type requests reuse the existing instance\)\./,
     'the connect quota parenthetical must keep the dual-holding and same-type-reuse mapping',
   );
   assert.match(
     connectDesc,
-    /On quota exhaustion the API returns HTTP 429 with a Retry-After header and an error code that distinguishes quota-exceeded \(wait per Retry-After or free the slot\) from capacity-insufficient \(pool full; retry later or pick the other type\)/,
+    /On quota exhaustion the API returns HTTP 429 with a Retry-After header and an error code that distinguishes quota-exceeded \(wait per Retry-After or free the slot\) from capacity-insufficient \(pool full; retry later or pick the other type\)\./,
     'connect must state the full 429 arrival and class-to-remedy contract',
   );
   assert.match(
