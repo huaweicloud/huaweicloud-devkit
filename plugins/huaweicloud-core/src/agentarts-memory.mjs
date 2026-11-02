@@ -578,6 +578,13 @@ function shapeMemoryResult(result, candidate, params, timeoutMs, parsed = parseS
             'exit 0 but stdout was not parseable JSON — output pollution suspected (the snippet prints clean JSON on success).',
         }
       : {}),
+    // R13 (trap 78): the family invariant — an ok:false payload ALWAYS
+    // carries an error — propagated from the browser envelope. A plain
+    // exit-1 failure previously carried none, and any downstream
+    // `${payload.error}` interpolation would prefix "undefined".
+    ...(failed && !result.timedOut && !parsePolluted
+      ? { error: 'Execution failed (see stderr for the SDK error).' }
+      : {}),
   };
 }
 

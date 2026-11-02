@@ -1,14 +1,26 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import { redactSecrets } from './safety-policy.mjs';
 
 // Shared approval-token machinery, consumed by every CLI wrapper
-// (hcloud-cli.mjs, agentarts-cli.mjs). Extracted from hcloud-cli.mjs so the
-// cross-process persistence, TTL pruning, single-use tombstones, and atomic
-// writes (#578, #745) have exactly one implementation.
+// (hcloud-cli.mjs, agentarts-cli.mjs, and the SDK bridges' dedicated
+// namespaces). Extracted from hcloud-cli.mjs so the cross-process
+// persistence, TTL pruning, single-use tombstones, and atomic writes
+// (#578, #745) have exactly one implementation.
 //
 // Cross-CLI confusion guard: the CLI id is mixed into the args hash AND
 // stored on each entry, so a token minted by one wrapper can never approve
@@ -17,11 +29,180 @@ import { redactSecrets } from './safety-policy.mjs';
 //
 // Only the sha256 of the namespaced args plus the redacted form are stored —
 // never the raw args, which may carry secrets.
+//
+// Mutations are serialized cross-process by an O_EXCL lock file (R2 review
+// round, browser bridge): create and consume are read-modify-write cycles,
+// and two wrapper processes racing the cycle could both consume the SAME
+// token (tombstone lost to a last-rename-wins write — the single-use
+// guarantee broken, reviewer-reproduced 15/15 at store level). In-process
+// the synchronous ops are event-loop-atomic; the lock covers the
+// multi-process dimension (two MCP servers, or the CLI plus MCP).
+// writeApprovals FAILS CLOSED (throws) since the same round: a swallowed
+// write failure used to let consume() report success without persisting
+// the tombstone — a replay then re-executed an approved write.
 
 const APPROVAL_TTL_MS = 5 * 60_000;
+// Tombstones (consumedAt set) survive this long FROM CONSUMPTION, not from
+// creation: a slow approval whose plan aged past the TTL still replays as
+// already_processed instead of not_found's "re-plan" advice (R2).
+const TOMBSTONE_TTL_MS = 5 * 60_000;
+// Lock parameters (R3/R4): a lock whose holder pid is DEAD breaks at any
+// age (pid-liveness via process.kill(pid, 0)); mtime is only the backstop
+// for unreadable content or pid-recycling paranoia. A LIVE pid is never
+// broken — mutual exclusion beats availability (the R3 mtime-only break
+// could kill a slow-but-alive holder's critical section and resurrect the
+// exact lost-tombstone class the lock exists to prevent). The atomic break
+// is a RENAME: exactly one breaker's renameSync succeeds, so two waiters
+// cannot both claim a stale lock.
+const LOCK_STALE_MS = 10_000;
+const LOCK_WAIT_MS = 15_000;
 
 function approvalFilePath() {
   return join(process.env.HUAWEICLOUD_HOME || homedir(), '.config', 'huaweicloud', 'approvals.json');
+}
+
+function lockFilePath() {
+  return `${approvalFilePath()}.lock`;
+}
+
+// Synchronous sleep (Atomics.wait blocks the main thread in Node) — the
+// store ops are already fully synchronous.
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function lockOwnerId() {
+  return `${process.pid}:${randomUUID()}`;
+}
+
+function readLockOwner(lockPath) {
+  try {
+    return readFileSync(lockPath, 'utf8').trim();
+  } catch {
+    return null;
+  }
+}
+
+function pidIsRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // ESRCH: no such process (dead). EPERM: exists but not ours (alive).
+    return error.code === 'EPERM';
+  }
+}
+
+// A lock is breakable ONLY when its holder cannot be vouched for: the
+// owner line is unparseable (torn write — fall back to mtime age), or the
+// recorded pid is dead (age-gated against pid recycling). A live pid is
+// never breakable, however old — the waiter times out instead.
+function lockIsBreakable(lockPath, owner) {
+  const match = owner && owner.match(/^(\d+):/);
+  if (!match) {
+    try {
+      return Date.now() - statSync(lockPath).mtimeMs > LOCK_STALE_MS;
+    } catch {
+      return false;
+    }
+  }
+  if (!pidIsRunning(Number(match[1]))) {
+    try {
+      return Date.now() - statSync(lockPath).mtimeMs > 1_000;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+// Cross-process mutual exclusion around the read-modify-write mutations.
+// Acquisition is O_EXCL with the holder identity (pid:uuid) written into
+// the lock; a stale lock is claimed ATOMICALLY by renaming it away
+// (renameSync succeeds for exactly ONE breaker — the loser's rename hits
+// ENOENT and rejoins the wait loop); release re-reads the lock and unlinks
+// ONLY if the content still matches this holder (a late finally-unlink
+// must never delete a replacement lock another process legitimately
+// acquired, R3).
+function withStoreLock(fn) {
+  const lockPath = lockFilePath();
+  // The store directory may not exist yet on the first-ever create — the
+  // lock needs it before writeApprovals ever mkdirs.
+  mkdirSync(dirname(lockPath), { recursive: true });
+  const owner = lockOwnerId();
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  let fd;
+  for (;;) {
+    try {
+      fd = openSync(lockPath, 'wx');
+      break;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const current = readLockOwner(lockPath);
+      if (current !== null && lockIsBreakable(lockPath, current)) {
+        // Atomic claim (R4): exactly one breaker wins the rename; a loser
+        // ENOENTs. Post-rename CONTENT VERIFICATION (R5/R6): the rename is
+        // content-blind — a preempted break decision can steal a lock a
+        // second breaker already claimed and re-acquired with a LIVE
+        // owner. Verify the claimed file still carries the dead owner we
+        // judged; on mismatch, restore it atomically (linkSync fails
+        // EEXIST if a third party already re-acquired the path — then the
+        // claim is simply dropped) and rejoin the wait.
+        const claimed = `${lockPath}.breaking.${randomUUID()}`;
+        try {
+          renameSync(lockPath, claimed);
+        } catch {
+          continue; // lost the break race — retry the loop
+        }
+        if (readLockOwner(claimed) !== current) {
+          try {
+            linkSync(claimed, lockPath);
+          } catch {
+            // The path was re-acquired in the gap — drop the claim.
+          }
+        }
+        try {
+          unlinkSync(claimed);
+        } catch {
+          // Best effort.
+        }
+        // No sleep — retry immediately after freeing a stale lock; the
+        // deadline check below bounds the pathological loop.
+      } else {
+        // Unreadable lock content (vanished mid-read, torn write, or an
+        // unexpected shape like a directory at the lock path) and live
+        // holders take the SAME bounded wait — an unreadable-but-present
+        // lock must never spin unbounded (R4: the lock-path-is-a-directory
+        // shape hung the original loop).
+        sleepSync(25);
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`approval-token store lock could not be acquired (another process holds ${lockPath})`, {
+          cause: error,
+        });
+      }
+    }
+  }
+  try {
+    writeFileSync(fd, owner, { encoding: 'utf8' });
+    return fn();
+  } finally {
+    closeSync(fd);
+    // Ownership-verified release: unlink only the lock we still own, or
+    // the EMPTY lock a failed owner write left behind (R5: a fresh
+    // unparseable lock waits out the full 10s mtime backstop before any
+    // breaker can claim it — releasing it here keeps one transient write
+    // failure from stalling every store mutation; no one can hold a
+    // legitimate claim on microseconds-old empty content).
+    const finalOwner = readLockOwner(lockPath);
+    if (finalOwner === owner || finalOwner === '') {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        // Best effort — the stale break will reclaim it.
+      }
+    }
+  }
 }
 
 function sha256Hex(data) {
@@ -187,22 +368,32 @@ function readApprovals() {
   }
 }
 
+// Fail CLOSED (R2 review round): a write failure must not let create or
+// consume report success without persistence — the old swallow let a
+// consume return the entry with the tombstone never written, and a replay
+// re-executed an approved write. Callers surface the fs error.
 function writeApprovals(map) {
-  try {
-    const path = approvalFilePath();
-    mkdirSync(dirname(path), { recursive: true });
-    const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(map), { encoding: 'utf8', mode: 0o600 });
-    renameSync(tmp, path);
-  } catch {
-    // Best-effort: an in-file failure degrades cross-process persistence but a
-    // token created/consumed within one process still works.
-  }
+  const path = approvalFilePath();
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.${process.pid}.tmp`;
+  writeFileSync(tmp, JSON.stringify(map), { encoding: 'utf8', mode: 0o600 });
+  renameSync(tmp, path);
 }
 
 function pruneStale(map, now = Date.now()) {
   let changed = false;
   for (const [key, value] of Object.entries(map)) {
+    // Tombstones age from CONSUMPTION (R2): a consumed entry survives
+    // TOMBSTONE_TTL_MS past its consumedAt so slow approvals keep the
+    // already_processed replay semantics instead of degrading to
+    // not_found's re-plan advice.
+    if (value.consumedAt !== undefined) {
+      if (now - value.consumedAt > TOMBSTONE_TTL_MS) {
+        delete map[key];
+        changed = true;
+      }
+      continue;
+    }
     if (now - value.createdAt > APPROVAL_TTL_MS) {
       delete map[key];
       changed = true;
@@ -230,19 +421,20 @@ function entryBelongsToCli(entry, cli) {
 }
 
 export function createApprovalTokenStore(cli) {
-  const create = (rawArgs) => {
-    const token = randomUUID();
-    const map = readApprovals();
-    map[token] = {
-      cli,
-      argsHash: hashNamespacedArgs(cli, rawArgs),
-      argsRedacted: scrubPositionalSecrets(redactSecrets(rawArgs), cli),
-      createdAt: Date.now(),
-    };
-    pruneStale(map);
-    writeApprovals(map);
-    return token;
-  };
+  const create = (rawArgs) =>
+    withStoreLock(() => {
+      const token = randomUUID();
+      const map = readApprovals();
+      map[token] = {
+        cli,
+        argsHash: hashNamespacedArgs(cli, rawArgs),
+        argsRedacted: scrubPositionalSecrets(redactSecrets(rawArgs), cli),
+        createdAt: Date.now(),
+      };
+      pruneStale(map);
+      writeApprovals(map);
+      return token;
+    });
 
   const inspect = (token) => {
     const map = readApprovals();
@@ -253,20 +445,21 @@ export function createApprovalTokenStore(cli) {
     return { state: TOKEN_STATE_VALID, entry };
   };
 
-  const consume = (token) => {
-    const map = readApprovals();
-    const entry = map[token];
-    if (!entry || !entryBelongsToCli(entry, cli)) return null;
-    if (entry.consumedAt !== undefined) return null;
-    if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) {
-      delete map[token];
+  const consume = (token) =>
+    withStoreLock(() => {
+      const map = readApprovals();
+      const entry = map[token];
+      if (!entry || !entryBelongsToCli(entry, cli)) return null;
+      if (entry.consumedAt !== undefined) return null;
+      if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) {
+        delete map[token];
+        writeApprovals(map);
+        return null;
+      }
+      map[token] = { cli, consumedAt: Date.now(), createdAt: entry.createdAt };
       writeApprovals(map);
-      return null;
-    }
-    map[token] = { cli, consumedAt: Date.now(), createdAt: entry.createdAt };
-    writeApprovals(map);
-    return entry;
-  };
+      return entry;
+    });
 
   return {
     create,

@@ -130,3 +130,26 @@ plan time. Lifecycle:
 - `memory delete --force` is irreversible (deletes the space and its
   sessions/messages/memories); the wrapper canonicalizes `--force` and
   the approval carries the `irreversible` label.
+
+## Browser credential model (IAM-typed default, B1-measured 2026-10-30)
+
+The browser family is deliberately key-free by default:
+
+- **The create write canonicalizes auth_type=IAM** — the data plane then
+  signs with the same injected `HUAWEICLOUD_SDK_AK/SK` the wrapper
+  injects (plus `HUAWEICLOUD_SDK_SECURITY_TOKEN` for STS-shaped
+  credentials). No key file, no console round-trip, nothing to lose.
+- **API_KEY-typed browsers** (console-created): the key value exists
+  ONLY in the console — create/get responses never return it (trap 61),
+  and the identity-plane fetch is refused
+  (AgentIdentityDirectoryService.1003, service-managed workload
+  identity). Export the console key as `HUAWEICLOUD_SDK_BROWSER_API_KEY`
+  in the agent LAUNCHER's environment (the bridge's allowlist passes it
+  through to the SDK child; the SDK reads it natively). Never put it in
+  argv or the transcript.
+- **The session state file** (`agentarts-browser-session-<session_id>.json`,
+  0600, honors HUAWEICLOUD_HOME) carries NO credentials — only browser
+  and session ids, the data-plane endpoint, stream endpoints, and the
+  lease expiry. It is not a secret, but treat it as internal state: it
+  is what the free session/invoke tools resolve the session context
+  from.

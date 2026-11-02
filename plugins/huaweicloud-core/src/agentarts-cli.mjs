@@ -47,7 +47,7 @@ export const DEFAULT_APPROVED_TIMEOUT_MS = 120_000;
 // own deadline.
 const STREAM_DRAIN_GRACE_MS = 5_000;
 const LARGE_OUTPUT_THRESHOLD = 50_000;
-const OUTPUT_DIR = join('/tmp', 'huaweicloud-devkit');
+export const OUTPUT_DIR = join('/tmp', 'huaweicloud-devkit');
 
 // The pinned agentarts-sdk version. Primary source: safety/policy.json
 // (agentartsSdkVersion) — that file ships with src/ in EVERY install layout
@@ -1071,6 +1071,23 @@ export function buildChildEnv(options = {}) {
     if (creds?.ak && creds?.sk) {
       env.HUAWEICLOUD_SDK_AK = creds.ak;
       env.HUAWEICLOUD_SDK_SK = creds.sk;
+      // STS temporary credentials (R1 browser round, reviewer-reproduced):
+      // the SDK core reads HUAWEICLOUD_SDK_SECURITY_TOKEN
+      // (provider.py:53,83) and signs X-Security-Token only when present.
+      // Without this injection a caller whose runtime credentials are STS
+      // passes every pre-spawn gate while the child signs WITHOUT the
+      // token and fails auth — burning approval tokens on guaranteed
+      // no-ops.
+      if (creds.securityToken) env.HUAWEICLOUD_SDK_SECURITY_TOKEN = creds.securityToken;
+      // Browser data-plane key for API_KEY-typed browsers (B1 verdict,
+      // trap 61): the SDK reads HUAWEICLOUD_SDK_BROWSER_API_KEY
+      // (browser_client.py:893). Only meaningful for browser tools, but
+      // riding the allowlist is harmless for the CLI (no browser CLI
+      // exists) and the memory bridges pass injectCredentials: false and
+      // never see it.
+      if (process.env.HUAWEICLOUD_SDK_BROWSER_API_KEY) {
+        env.HUAWEICLOUD_SDK_BROWSER_API_KEY = process.env.HUAWEICLOUD_SDK_BROWSER_API_KEY;
+      }
     } else {
       // The measured auth chain is env → ~/.huaweicloud/credentials profile
       // → metadata: without injected env vars the CLI silently authenticates
@@ -1485,7 +1502,7 @@ function missingCredentialError() {
   };
 }
 
-function hasInjectableCredentials() {
+export function hasInjectableCredentials() {
   try {
     const creds = resolveCredentialsWithRuntime({ allowMissing: true });
     return Boolean(creds?.ak && creds?.sk);

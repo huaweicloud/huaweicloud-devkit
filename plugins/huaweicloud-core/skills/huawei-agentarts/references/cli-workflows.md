@@ -421,6 +421,97 @@ supported host: install the plugin (user's terminal), then use the
 bridge tools for governed search/ops. For every other host or purpose:
 the bridge alone.
 
+## Browser Sessions and Actions (SDK bridge — no CLI subcommands in 0.1.7)
+
+The 0.1.7 CLI has ZERO browser subcommands (toolkit tree grep). All four
+tools below are SDK bridges, B1-measured against the real cloud
+(2026-10-30, findings traps 61-70; the adversarial hardening is traps
+71-78). Region: cn-southwest-2 (the only e2e-measured region).
+
+### The four tools and the lease model
+
+1. `huaweicloud_agentarts_browser_read` — control-plane reads
+   (list/get browsers and profiles; 0-based pagination, limit 1-100,
+   sort_key created_at|updated_at, sort_dir asc|desc).
+2. `huaweicloud_agentarts_browser_plan` → `huaweicloud_agentarts_browser_write`
+   — the approval pair for browser/profile lifecycle writes AND the
+   session lifecycle (start_session, save_profile, update_stream).
+3. `huaweicloud_agentarts_browser_session` — free session ops on a
+   recorded lease: get_session, stop_session, take_control.
+4. `huaweicloud_agentarts_browser_invoke` — all 18 actions, lease-gated.
+
+The LEASE is the approval boundary for actions: one approval of
+start_session consents to its domain fence (allowed_domains/blocked_domains)
+and its timeout (session_timeout, default 900s, bridge window 60-3600).
+The start write records a 0600 state file
+(`~/.config/huaweicloud/agentarts-browser-session-<session_id>.json`,
+honors HUAWEICLOUD_HOME — no credentials inside) carrying browser/session
+ids, the data-plane endpoint, and the stream endpoints. Actions address
+the session by that session_id. The bridge rejects a second start on a
+live lease (the SDK silently overwrites and orphans the cloud session —
+BC:904-905); the write-time recheck returns SESSION_LEASE_CONFLICT with
+the token unconsumed.
+
+### Golden path (browser automation loop)
+
+```text
+1. browser_read (list_browsers)            → pick an IAM-typed browser
+2. browser_plan/write (start_session)      → present fence + timeout → approve
+3. browser_invoke (navigate)               → then get_page_info to verify
+4. browser_invoke (get_page_info)          → DOMAIN FENCE HIT note if blocked
+   browser_invoke (screenshot / mouse_click / key_type / list_tabs …)
+5. browser_session (take_control)          → optional human handoff
+6. browser_session (stop_session)          → ends the lease, deletes the record
+7. browser_plan/write (delete_browser)     → poll list_browsers to confirm
+```
+
+### Traps (B1-measured; the skill's trap table carries the summary)
+
+- **api_key 值只在控制台** (trap 61): create/get responses NEVER return
+  the key value; the identity-plane fetch is refused
+  (AgentIdentityDirectoryService.1003 — service-managed workload
+  identity). The bridge's create canonicalizes auth_type=IAM — the data
+  plane then signs with the same injected AK/SK, no key file, no console
+  round-trip. API_KEY-typed browsers (console-created) need the console
+  key exported as HUAWEICLOUD_SDK_BROWSER_API_KEY in the launcher env
+  (the bridge passes it through; the SDK reads it natively).
+- **access_endpoint** (trap 62): the data-plane base URL once https:// is
+  prepended; no region default; missing-endpoint failures never mention
+  endpoints. The start write resolves it via a control-plane probe that
+  ASSERTS the exact name (a fuzzy list match refuses to start the wrong
+  browser).
+- **Domain fence detection** (trap 65): blocked navigations answer
+  is_error FALSE with current_url = chrome-error://chromewebdata/. The
+  invoke tool flags it (DOMAIN FENCE HIT — also under output truncation,
+  derived from raw stdout); get_page_info is the documented check.
+  allowed_domains syntax is unvalidated and unmeasured — treat patterns
+  as opaque.
+- **Session death vs human handoff** (traps 66+80): expired/stopped
+  sessions answer `ToolsAPIError: Tools API Error: Session not found` or
+  `ToolsAPIError: Tools API Error: No active session` — the WORDING is
+  unstable across same-shaped runs (the gateway-family trap-54 class;
+  B1 measured the first, B7 the second, both on the real cloud) — the
+  invoke tool maps both to restart guidance, and a locally-expired lease
+  is rejected up front with SESSION_LEASE_EXPIRED. A human holding
+  control answers `Tools API Error: Stream is disabled for this session`
+  (mapped to the approved re-arm: update_stream enabled). take_control
+  (free) disables the automation stream with page state PRESERVED;
+  get_session still reports Healthy.
+- **stop_session is a no-op True on a gone session** (trap 67): success
+  says the cleanup ran, not that the session was live. The session file
+  is deleted on success either way.
+- **Deletes lag the list** (trap 63): a seconds-scale window still shows
+  the resource — poll list_browsers. The tenant-shared default gateway
+  (same agent_gateway_id across browsers) is NEVER reclaimed by delete.
+- **Screenshots** (trap 64): native MCP image blocks (~72KB base64 for a
+  trivial page); the invoke snippet decodes them to 0600 files under
+  /tmp/huaweicloud-devkit/ BEFORE printing — the result carries
+  saved_to/mime_type/base64_chars, never the bytes. get_page_info's
+  content text is a doubly-encoded JSON string the tool parses for you.
+- **Update semantics** (trap 45 family): update_browser accepts and
+  silently drops schema-absent fields — verify with get_browser after
+  any update (the tool's notes remind you).
+
 ## Wrapper Rules (why some commands hard-stop)
 
 | Shape                              | Wrapper behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |

@@ -52,3 +52,16 @@
 - bridge 工具族真机 e2e（12 方法信封/分页/序列化实测）。【部分裁决 2026-10-27: 8 读 + 4 写全族已在真实 space 上使用（U2-U6 会话），信封/分页/检索/抽取扇出行为实测——剩余: top_k 显式调大时的截断行为; U7 批量 delete_memories 整批 e2e（组合已单测, 待用户批准一次真实批量删除裁决）】
 - 检索阈值三分叉（0.3 hook / 0.7 插件 MCP / 0.5 SDK 默认）的召回行为差异。【裁决 2026-10-27: 桥路径（MemorySearchFilter）默认**无过滤**——min_score None 被序列化丢弃（陷阱 29）; **显式 min_score=0.01 实测仍全量返回——服务端过滤整体不生效**（陷阱 31, U6）, 0.5 未单独测但同一代码路径推断相同; 0.3/0.7 常量在实测分数量级（0.000016-0.14）上会滤空一切, 不可移植】
 - `add_messages` 抽取管道延迟量级（多快可检索）。
+
+## Browser 面诉求（B1 spike 实测, 2026-10-30, 陷阱 61-70）
+
+| #   | 诉求                                                                                                          | 证据                                                                                                                                                                        |
+| --- | ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 29  | browser 数据面 key 程序化获取（API_KEY 型）: CLI/SDK 取钥命令, 或放行服务托管 workload identity 的 token 铸造 | 【实测】create/get 响应只含 api_key_name; `create_workload_access_token` 报 AgentIdentityDirectoryService.1003（service-managed 拒绝）; 控制台是唯一路径（G2 陷阱 55 同型） |
+| 30  | `access_endpoint` 文档化 + 补全 scheme（裸域名返回, 拼接规则无文档）; 或数据面端点给 region 默认              | 【实测】裸域名须自行补 `https://`; 不注入端点报 "Invalid URL ... No scheme supplied" 只字不提端点缺失（陷阱 62）                                                            |
+| 31  | `allowed_domains`/`blocked_domains` 语法文档化 + start 期校验; 拦截以可检测信号回传（错误位或结构化字段）     | 【实测】畸形值不拒会话照建; 拦截后 current_url 变 chrome-error:// 且 is_error 仍 false（陷阱 65）                                                                           |
+| 32  | browser 资源计费/quota 面（响应零计费字段, 计费模型不可发现）                                                 | 【实测】全链路响应无 pricing/quota 键（陷阱 70）                                                                                                                            |
+| 33  | delete browser 的资源回收面文档化: 共享 defaultgw 与关联工件是否回收; list 的秒级残留窗口                     | 【实测】跨 delete 持存的共享网关 + list 最终一致窗口（陷阱 63）                                                                                                             |
+| 34  | 会话/资源错误码细分: "Session not found"（过期与不存在同码）、"Stream is disabled"（人类接管）无 code 无文档  | 【实测】B1 全错误形状均为裸文案 ToolsAPIError（陷阱 66）                                                                                                                    |
+
+browser CLI 化诉求并入既有 #9。0.1.9 的 browser 面与 0.1.7 字节级一致（wheel diff 实测）, 钉版不受影响。
