@@ -88,40 +88,38 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   // must not invert against the table.
   assert.match(
     poolSection,
-    /\*\*非持久化 sandboxes are fixed 3h\*\* — never promise durability/,
+    /\*\*非持久化 sandboxes are fixed 3h\*\* — never promise durability to the developer; finish the task and hand over results before the window closes\./,
     'the fixed-3h bullet must attribute the 3h window to the ephemeral type with the never-promise rule',
   );
   assert.match(
     poolSection,
-    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots; treat them as the default for anything that must outlive the session \(see also/,
+    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots; treat them as the default for anything that must outlive the session \(see also \[Sandbox filesystem persistence\]\(#sandbox-filesystem-persistence-what-survives-a-reboot-999\) for the `\/workspace` data-disk semantics\)/,
     'the EVS bullet must attribute the mount to the persistent type with the survive-reboots and default-for-durability rules',
   );
   assert.match(
     poolSection,
-    /the same type is \*\*reused\*\* \(one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second\)\./,
-    'the same-type reuse rule must be stated with its connect semantics (dev pin)',
+    /Broadcast this when starting a billable-length session on the resource pool,/,
+    'the core-hour burn broadcast trigger must be stated',
   );
   assert.match(
     poolSection,
-    /Broadcast this when starting a billable-length session/,
-    'the core-hour burn broadcast trigger must be stated',
+    /\*\*Agent auto-selects by intent\*\* using the table above/,
+    'the agent must auto-select by intent',
   );
-  assert.match(poolSection, /\*\*Agent auto-selects by intent\*\*/, 'the agent must auto-select by intent');
   assert.match(
     poolSection,
     /the agent auto-selects from the request, and the developer may override:/,
     'the section intro must keep the auto-select/override restatement',
   );
-  assert.match(poolSection, /The developer can always override/, 'the developer override rule must hold');
   assert.match(
     poolSection,
-    /Quota is \*\*1 instance per type\*\*:/,
-    'the per-type quota rule must be stated at its sentence lead',
+    /The developer can always override\*\* — present both types when the intent is ambiguous\./,
+    'the developer override rule must hold',
   );
   assert.match(
     poolSection,
-    /a developer may hold 1 非持久化 AND 1 持久化 simultaneously/,
-    'holding both types simultaneously must be stated',
+    /Quota is \*\*1 instance per type\*\*: a developer may hold 1 非持久化 AND 1 持久化 simultaneously; the same type is \*\*reused\*\* \(one user one instance per pool — `huaweicloud_sandbox_connect` reuses an existing instance of that type instead of creating a second\)\./,
+    'the per-type quota rule must be stated at its sentence lead',
   );
   assert.match(
     poolSection,
@@ -168,17 +166,17 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\* \(relaxed from the platform's 10min\)\s*\|\s*n\/a/,
+    /\| Idle shutdown\s+\|\s*\*\*1h idle → shutdown\*\* \(relaxed from the platform's 10min\)\s*\|\s*n\/a — fixed window\s*\|/,
     'the 1h idle rule with its relaxation note must sit contiguous in the persistent column with n/a on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Activity signals\s+\|\s*\*\*Three signals\*\* count as active: terminal connect \/ running processes \/ preview traffic \(tunnel\)\. Any signal within the idle window resets the 1h timer\s*\|\s*n\/a/,
+    /\| Activity signals\s+\|\s*\*\*Three signals\*\* count as active: terminal connect \/ running processes \/ preview traffic \(tunnel\)\. Any signal within the idle window resets the 1h timer\s*\|\s*n\/a\s*\|/,
     'the three activity signals and the 1h-timer reset rule must sit in the persistent column with n/a on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Pre-shutdown\s+\|\s*Platform notifies the developer \*\*before\*\*[^|]*— surface this reminder, never fight it\s*\|\s*n\/a/,
+    /\| Pre-shutdown\s+\|\s*Platform notifies the developer \*\*before\*\*[^|]*— surface this reminder, never fight it\s*\|\s*n\/a\s*\|/,
     'the pre-shutdown notification reminder must sit in the persistent column with n/a on the ephemeral side (dev pin)',
   );
   assert.match(
@@ -188,12 +186,12 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /\| Retention\s+\|\s*\*\*14 days after stop\*\* \(业务定稿\) — then reclaimed by the resource-group idle-deletion policy\s*\|\s*Reclaimed with the instance/,
+    /\| Retention\s+\|\s*\*\*14 days after stop\*\* \(业务定稿\) — then reclaimed by the resource-group idle-deletion policy\s*\|\s*Reclaimed with the instance\s*\|/,
     'the 14-day retention with its reclaim path must sit in the persistent column with reclaim on the ephemeral side',
   );
   assert.match(
     lifecycleSection,
-    /\| Deletion\s+\|\s*① developer-initiated delete \(devkit asks for a \*\*second confirmation\*\* before user-side delete\) ② resource-group policy reclaim after the 14-day retention\. \*\*No deletion API is exposed to devkit\*\*, and \*\*devkit never defers\/delays deletion on the developer's behalf\*\*\s*\|\s*Same policy semantics/,
+    /\| Deletion\s+\|\s*① developer-initiated delete \(devkit asks for a \*\*second confirmation\*\* before user-side delete\) ② resource-group policy reclaim after the 14-day retention\. \*\*No deletion API is exposed to devkit\*\*, and \*\*devkit never defers\/delays deletion on the developer's behalf\*\*\s*\|\s*Same policy semantics\s*\|/,
     'the Deletion row must keep its full doctrine cell — developer-initiated double-confirm, 14-day policy reclaim, no deletion API, never-defers — with same-policy ephemeral semantics',
   );
   // Absence pins (the paired-cell doctrine-leak class): the doctrine must
@@ -274,6 +272,11 @@ test('workflow sequences pool selection (Step 0.3) between the target gate and t
     skill,
     /\[Sandbox Lifecycle & Retention\]\(#sandbox-lifecycle--retention-定稿口径-1071\)\) before connecting/,
     'Step 0.3 must link the lifecycle table at its real heading anchor',
+  );
+  assert.match(
+    skill,
+    /\*\*Step 0\.3 — Resource pool selection\*\*: once the target is sandbox, pick the pool type per the \[Resource Pool Selection\]\(#resource-pool-selection-持久化-vs-非持久化--定稿口径-1071\) table \(auto by intent, developer may override; 1 instance per type, same type reuses\)\. Check the task survives the chosen type's lifecycle window \(\[Sandbox Lifecycle & Retention\]\(#sandbox-lifecycle--retention-定稿口径-1071\)\) before connecting\./,
+    'Step 0.3 must be pinned as its full line, seam to seam',
   );
   const step0 = skill.indexOf('**Step 0 — Target-Selection Gate (MANDATORY)**');
   const step03 = skill.indexOf('**Step 0.3 — Resource pool selection**');
@@ -427,13 +430,8 @@ test('resource-pool reference documents the pool capacity parameters and is link
   const warningsRow = skill.split('\n').find((line) => line.includes('Pool type fixes durability')) ?? '';
   assert.match(
     warningsRow,
-    /A rejected connect returns HTTP 429 with a Retry-After header and an error code/,
+    /A rejected connect returns HTTP 429 with a Retry-After header and an error code — the CODE, not the status, separates the two failure classes: quota exceeded \(1 instance per type — wait per Retry-After or free the slot\) vs capacity insufficient \(pool full; retry later or pick the other type\)\./,
     'the warnings row must state the full 429 arrival contract',
-  );
-  assert.match(
-    warningsRow,
-    /the CODE, not the status, separates the two failure classes/,
-    'the warnings row must discriminate the 429 classes by error code, not status',
   );
   assert.match(
     warningsRow,
@@ -449,11 +447,6 @@ test('resource-pool reference documents the pool capacity parameters and is link
     warningsRow,
     /Pick per the Resource Pool Selection table \(Step 0\.3\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox\./,
     'the warnings row must carry the Step 0.3 gate sentence',
-  );
-  assert.match(
-    warningsRow,
-    /quota exceeded \(1 instance per type — wait per Retry-After or free the slot\) vs capacity insufficient \(pool full; retry later or pick the other type\)\./,
-    'the warnings row must map each 429 class to its own remedy',
   );
   // v2-wins sync: the skill's own tool-summary table states the per-pool-type
   // quota model (dev's copy still teaches the superseded flat model — the
@@ -484,11 +477,10 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
     /reuses an existing sandbox of that type if available, otherwise creates a new one/,
     'connect must state per-pool-type reuse',
   );
-  assert.match(connectDesc, /Quota: 1 instance per type \(/, 'connect must state the per-type quota');
   assert.match(
     connectDesc,
-    /a user may hold 1 ephemeral AND 1 persistent sandbox simultaneously; same-type requests reuse the existing instance\)\./,
-    'the connect quota parenthetical must keep the dual-holding and same-type-reuse mapping',
+    /Quota: 1 instance per type \(a user may hold 1 ephemeral AND 1 persistent sandbox simultaneously; same-type requests reuse the existing instance\)\./,
+    'connect must state the per-type quota',
   );
   assert.match(
     connectDesc,
