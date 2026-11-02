@@ -43,6 +43,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   // Mapping-bearing pins (the #1021 doctrine: pin the routing semantics with
   // regexes that carry the mapping, not keyword presence — a pool-type flip
   // in any row must red the gate).
+  assert.match(poolSection, /Intent \/ scenario \(按意图\)/, 'the routing header must keep its by-intent gloss');
   assert.match(
     poolSection,
     /\|\s*预览 \/ 试用 \/ demo\s+\| 非持久化\s+\|/,
@@ -73,13 +74,47 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
     /\|\s*跨日评审 \/ 展示\s+\| 持久化\s+\|/,
     'multi-day review must route to the persistent pool',
   );
+
+  // Shield-class absence pins (the round-4 countermeasure, applied to the
+  // routing table): a flipped row plus a re-provided correct duplicate must
+  // red — the wrong-mapping forms must not appear anywhere in the section.
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*预览 \/ 试用 \/ demo\s+\| 持久化\s+\|/,
+    'preview must never route to the persistent pool',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*一次性任务（跑完即弃）\s+\| 持久化\s+\|/,
+    'one-shot tasks must never route to the persistent pool',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*敏感内容（即焚）\s+\| 持久化\s+\|/,
+    'sensitive content must never route to the persistent pool',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*开发工作台 \/ workbench\s+\| 非持久化\s+\|/,
+    'workbench must never route to the ephemeral pool',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*带数据库项目（DB-backed）\s+\| 非持久化\s+\|/,
+    'DB-backed projects must never route to the ephemeral pool',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*跨日评审 \/ 展示\s+\| 非持久化\s+\|/,
+    'multi-day review must never route to the ephemeral pool',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /\*\*持久化 sandboxes are fixed 3h\*\*/,
+    'the fixed-3h doctrine must never be attributed to the persistent type',
+  );
   // The selection-rules bullet carries the same mapping inline — its example
   // must not invert against the table.
-  assert.match(
-    poolSection,
-    /preview\/即焚 request → 非持久化; a workbench\/数据库 request → 持久化\)/,
-    'the auto-select example must carry the correct intent-to-pool mappings',
-  );
   // The 429 error-class-to-remediation mapping: the full sentence is pinned
   // (a clause swap between the classes is the same defect class as a
   // routing-row flip).
@@ -93,7 +128,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots; treat them as the default for anything that must outlive the session \(see also \[Sandbox filesystem persistence\]\(#sandbox-filesystem-persistence-what-survives-a-reboot-999\) for the `\/workspace` data-disk semantics\)/,
+    /\*\*持久化 sandboxes mount an EVS disk \(32G\)\*\* — project code and databases survive reboots; treat them as the default for anything that must outlive the session \(see also \[Sandbox filesystem persistence\]\(#sandbox-filesystem-persistence-what-survives-a-reboot-999\) for the `\/workspace` data-disk semantics\)\./,
     'the EVS bullet must attribute the mount to the persistent type with the survive-reboots and default-for-durability rules',
   );
   assert.match(
@@ -103,12 +138,12 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /\*\*Agent auto-selects by intent\*\* using the table above/,
+    /\*\*Agent auto-selects by intent\*\* using the table above \(e\.g\. a preview\/即焚 request → 非持久化; a workbench\/数据库 request → 持久化\)\./,
     'the agent must auto-select by intent',
   );
   assert.match(
     poolSection,
-    /the agent auto-selects from the request, and the developer may override:/,
+    /Select the pool by intent — the agent auto-selects from the request, and the developer may override:/,
     'the section intro must keep the auto-select/override restatement',
   );
   assert.match(
@@ -138,7 +173,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     poolSection,
-    /Full parameter table: \[references\/resource-pool\.md\]\(references\/resource-pool\.md\)/,
+    /Full parameter table: \[references\/resource-pool\.md\]\(references\/resource-pool\.md\)\./,
     'the quota bullet must link the parameter table in context',
   );
   // The see-also link must not dead-end: the #999 heading it targets has to
@@ -246,7 +281,7 @@ test('huawei-sandbox carries the resource-pool selection and lifecycle sections 
   );
   assert.match(
     lifecycleSection,
-    /G1\*\* — 资源组闲置删除策略配置 \(idle-deletion policy for the resource group, drives the 14-day reclaim\)/,
+    /G1\*\* — 资源组闲置删除策略配置 \(idle-deletion policy for the resource group, drives the 14-day reclaim\)\n- \*\*G2\*\*/,
     'the skill G1 mapping must be pinned in full',
   );
   for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
@@ -376,12 +411,12 @@ test('resource-pool reference documents the pool capacity parameters and is link
   );
   assert.match(
     resourcePool,
-    /超限响应：\*\*HTTP 429 \+ `Retry-After` 头 \+ 错误码\*\*/,
+    /超限响应：\*\*HTTP 429 \+ `Retry-After` 头 \+ 错误码\*\*。/,
     'the reference must state the full 429 response compound',
   );
   assert.match(
     resourcePool,
-    /错误码必须区分两类失败/,
+    /错误码必须区分两类失败：/,
     'the reference must name the error code as the class discriminator',
   );
   assert.match(
@@ -407,7 +442,7 @@ test('resource-pool reference documents the pool capacity parameters and is link
   // G1's mapping on the reference surface, in full (mirroring the skill pin).
   assert.match(
     resourcePool,
-    /- G1 闲置删除策略配置（资源组，驱动 14 天保留期回收）/,
+    /- G1 闲置删除策略配置（资源组，驱动 14 天保留期回收）\n- G2/,
     'the reference G1 mapping must be pinned in full',
   );
 
@@ -514,13 +549,8 @@ test('sandbox tool descriptions carry the quota/429 and no-delete semantics (#10
   // between the two types must red the gate).
   assert.match(
     connectDesc,
-    /ephemeral = preview\/trial\/one-shot\/sensitive \(fixed 3h from CreateTime\)/,
+    /ephemeral = preview\/trial\/one-shot\/sensitive \(fixed 3h from CreateTime\); persistent = workbench\/DB-backed\/multi-day review \(EVS 32G mounted, 1h idle shutdown with connect\/process\/preview-traffic activity signals, 14-day retention\)\./,
     'the connect description must attribute the 3h expiry to the ephemeral type',
-  );
-  assert.match(
-    connectDesc,
-    /persistent = workbench\/DB-backed\/multi-day review \(EVS 32G mounted, 1h idle shutdown with connect\/process\/preview-traffic activity signals, 14-day retention\)/,
-    'the connect description must attribute the EVS mount, idle shutdown, and retention to the persistent type',
   );
   // v2 divergence: the vendor-gate seam stays on the connect description.
   assert.match(connectDesc, /Vendor-gated \(vendorConfirmed\)/, 'connect must keep the vendor-gate sentence');
