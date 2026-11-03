@@ -117,6 +117,15 @@ test('huawei-openapi skill teaches only vocabulary-table tools and the real para
   // while an agent believes it is consenting.
   assert.match(skill, /delegated to the gateway's own policy engine/, 'the consent authority is named');
   assert.match(skill, /confirm with the user in conversation/, 'the refusal-guided consent flow is taught');
+  // The 2026-11-03 nightly refusal-consent red: the agent read the user's
+  // standing "just execute" instruction as grant consent and self-granted
+  // manage_policy add. The taught consent is for the grant, asked after
+  // the refusal — a standing task instruction never covers it.
+  assert.match(
+    skill,
+    /standing go-ahead for the task is not consent for a policy write/,
+    'standing task instructions are excluded from grant consent',
+  );
   assert.match(skill, /ephemeral scope/, 'the grant scope vocabulary is taught');
   assert.doesNotMatch(skill, /approvalToken/, 'the retired approvalToken field must not be taught');
   assert.doesNotMatch(skill, /approvedByUser/, 'the retired approvedByUser field must not be taught');
@@ -187,6 +196,27 @@ test('the served gateway_call description teaches the readonly discovery surface
     description,
     /Discovery chain: search_apis → list_apis → get_api → get_api_examples/,
     'the description teaches the discovery chain sentence verbatim',
+  );
+});
+
+test('the served gateway_call description scopes grant consent to a post-refusal confirmation', async () => {
+  // The 2026-11-03 nightly (run 41636889890) refusal-consent red: the
+  // agent read the user's standing "just execute" instruction as the
+  // in-conversation confirmation the consent flow teaches, and
+  // self-granted manage_policy add. The description now names what the
+  // confirmation is FOR and WHEN: the grant, after the refusal — never a
+  // standing task instruction.
+  const gatewayCall = TOOL_DEFINITIONS.find((tool) => tool.name === 'huaweicloud_gateway_call');
+  assert.ok(gatewayCall, 'huaweicloud_gateway_call must exist in TOOL_DEFINITIONS');
+  assert.match(
+    gatewayCall.description,
+    /confirm the grant with the user in conversation after the refusal/,
+    'the consent object and timing are named',
+  );
+  assert.match(
+    gatewayCall.description,
+    /a standing go-ahead for the task is not consent for a policy write/,
+    'a standing task instruction is excluded from grant consent',
   );
 });
 

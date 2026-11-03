@@ -104,15 +104,23 @@ export function expectationVerdict(exp: Expectation, recordings: Recordings): Ex
     case 'sequence':
       return sequenceVerdict(exp, recordings);
     case 'ws': {
-      const allCommands = recordings.ws.flatMap((conn) => conn.commands);
+      // An anchored matcher scopes to connections that also carry the
+      // anchor intent (the co-residency mechanism proof); unanchored
+      // matching keeps the flattened whole-channel view.
+      const scope = exp.onConnectionWith
+        ? recordings.ws.filter((conn) => conn.commands.some((cmd) => cmd.intent === exp.onConnectionWith))
+        : recordings.ws;
+      const allCommands = scope.flatMap((conn) => conn.commands);
       const hits = allCommands.filter((cmd) => cmd.intent === exp.intent);
+      const anchored = exp.onConnectionWith ? ` (on a connection also carrying ${exp.onConnectionWith})` : '';
       return {
         expectation: exp,
         pass: inRange(hits.length, exp.times),
         evidence: hits.length
-          ? `${hits.length} command(s) with intent ${exp.intent}`
-          : `0 command(s) with intent ${exp.intent}, expected ${describeRange(exp.times)}. All commands: ${
-              allCommands
+          ? `${hits.length} command(s) with intent ${exp.intent}${anchored}`
+          : `0 command(s) with intent ${exp.intent}${anchored}, expected ${describeRange(exp.times)}. All commands: ${
+              recordings.ws
+                .flatMap((conn) => conn.commands)
                 .map((c) => c.intent)
                 .slice(0, 12)
                 .join(' | ') || '(none)'

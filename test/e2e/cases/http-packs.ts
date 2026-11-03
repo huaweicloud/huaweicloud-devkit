@@ -406,14 +406,48 @@ export const wsSandboxCases: E2eCase[] = [
     expect: [
       CONNECT_POST,
       { kind: 'toolCall', name: 'huaweicloud_sandbox_upload_file', ok: true },
-      // Upload rides the CACHED session: connect's two connections, zero
-      // more — same reuse arithmetic as the reuse case.
-      { kind: 'wsConnections', times: { min: 2, max: 2 } },
-      { kind: 'ws', intent: 'rm', times: { min: 1, max: 1 } },
-      { kind: 'ws', intent: 'printf-append', times: { min: 1, max: 3 } },
-      { kind: 'ws', intent: 'base64-decode', times: { min: 1, max: 1 } },
-      { kind: 'ws', intent: 'md5sum', times: { min: 1, max: 1 } },
-      ZERO_UNKNOWN,
+      // The session-reuse mechanism proof is CO-RESIDENCY, not the raw
+      // total: the four upload intents must ride the SAME connection as
+      // connect's export-path (the cached session). The 2026-11-03 nightly
+      // (run 41636889890) red a 2..2 total-count pin on a HEALTHY upload:
+      // the prompt asks for the md5 story, and the agent verified with its
+      // own exec_one_shot ("ls && md5sum") — a third, agent-initiated
+      // connection the upload tool never opened (conn2 carried
+      // export-path + all four upload intents). The ws channel carries no
+      // tool-vs-agent attribution, so a TOTAL-count pin (and the
+      // zero-unknown drift gate, which fires on whatever command shape
+      // the agent improvises — the same run's attempt-1 agent composed
+      // "md5sum <p> && cat <p>") is a budget on LLM improvisation, not a
+      // mechanism bound, and this case's prompt invites improvisation.
+      // Both are dropped here for the same reason the sibling
+      // sandbox-upload-project-tunnel asserts neither: that case omitted
+      // them at birth (its introducing comment already said
+      // agent-initiated verification one-shots make connection counts
+      // meaningless) — this case is the one that carried them and lost
+      // them. The regression teeth survive as the four ANCHORED pins
+      // below: a shape change in any product exec reds its own pin, and
+      // a connection-wiring regression that separates the upload
+      // intents from export-path reds all four at ANY total (interrogate
+      // rounds 1-2: own-session regression red at 3 and 4 connections,
+      // per-command one-shots red at 6, connect losing its export-path
+      // session reds with nothing else moved).
+      { kind: 'ws', intent: 'rm', onConnectionWith: 'export-path', times: { min: 1, max: 1 } },
+      { kind: 'ws', intent: 'printf-append', onConnectionWith: 'export-path', times: { min: 1, max: 3 } },
+      { kind: 'ws', intent: 'base64-decode', onConnectionWith: 'export-path', times: { min: 1, max: 1 } },
+      // md5sum 1..2, anchored: exactly one product verify exec, plus at
+      // most ONE agent re-verify through exec_with_session on the same
+      // cached session (interrogate rounds 1-2) — a second agent
+      // re-verify reds at 3, the deliberate boundary: the
+      // actually-observed agent style (6 nightlies, zero session-exec'd
+      // verifications) never needed the tolerance at all, and an
+      // unbounded ceiling would erase the product-double-verify tooth
+      // entirely. Both bounds share the channel's attribution
+      // limit: min 1 proves SOMEONE md5'd on the session (a product
+      // verify-drop can green when the agent re-verifies — round 2's
+      // recorded residual); the REAL md5 gate is the toolCall ok pin
+      // above: the product throws on hash mismatch, so corruption
+      // anywhere in the chain fails this case for the right reason.
+      { kind: 'ws', intent: 'md5sum', onConnectionWith: 'export-path', times: { min: 1, max: 2 } },
     ],
     softExpect: [{ kind: 'agentSays', text: { any: ['md5', '校验', 'upload', '上传'] } }],
     budget: { timeoutMs: 360_000, attempts: 2 },
