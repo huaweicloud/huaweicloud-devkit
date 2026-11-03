@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.13-next.3 (2026-11-03)
+
+- Release
+
 ## 1.1.13-next.2 (2026-11-03)
 
 - fix(sandbox): 回显字段双读兜底——pool_type/poolType 命名漂移防御
