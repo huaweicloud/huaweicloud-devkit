@@ -149,6 +149,34 @@ test('callTool connect: success path validates, connects, remembers pool, and br
   }
 });
 
+test('callTool connect: camelCase poolType echo still populates the pool cache (wire naming drift guard)', async () => {
+  const restore = withFetchResponse(
+    {
+      session_id: 'dev-cc',
+      dev_stage_id: 'dev-cc',
+      connection_id: '42',
+      connection_address: 'wss://stub',
+      status: 'connected',
+      poolType: 'ephemeral',
+      templateId: 'tpl-eph',
+    },
+    { status: 200 },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+    assert.ok(result.pool, 'camelCase echo must still broadcast lifecycle');
+    assert.equal(result.pool.pool_type, 'ephemeral');
+    // 池缓存同样双读兜底：exec 返回值仍带 poolMode
+    const execResult = await callTool('huaweicloud_sandbox_exec_one_shot', {
+      workspace_id: 'dev-cc',
+      command: 'echo hi',
+    });
+    assert.equal(execResult.poolMode, 'ephemeral');
+  } finally {
+    restore();
+  }
+});
+
 test('callTool exec carries pool mode; close_session clears the pool cache (S4)', async () => {
   // 前置：connect 记录 dev-1 为 ephemeral 池
   const restore = withFetchResponse(

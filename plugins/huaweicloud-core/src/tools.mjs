@@ -1746,7 +1746,8 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       if (devStageId) {
         setWorkspaceId(devStageId);
         // 池归属缓存：exec/upload/deploy 等工具返回值据此附带池模式提示（缺口#2）
-        rememberWorkspacePool(devStageId, connectResult?.pool_type);
+        // 双读兜底与 devStageId 同型（防服务端 wire 命名漂移，QA #1082 配对复审教训）
+        rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType);
         try {
           await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
         } catch {}

@@ -73,10 +73,12 @@ export function poolContextFor(workspaceId) {
  * connect 结果池富化（缺口#1 TTL 播报）。
  * 仅当服务端回显 pool_type 才播报（两种状态制：服务端未确认池语义不编造）。
  * 钉扎/自定义模板（服务端回显 null）不播报。
+ * 读取做 pool_type/poolType 双读兜底（与 devStageId 双读同型，防 wire 命名漂移）。
  */
 export function enrichConnectResult(result) {
   if (!result || typeof result !== 'object') return result;
-  if (result.pool_type === 'ephemeral') {
+  const poolType = result.pool_type || result.poolType;
+  if (poolType === 'ephemeral') {
     result.pool = {
       pool_type: 'ephemeral',
       lifecycle: 'idle 30min auto-shutdown + 1h auto-delete (platform scheduled task, verified)',
@@ -84,7 +86,7 @@ export function enrichConnectResult(result) {
         '非持久沙箱：闲置 30 分钟将自动关机、闲置 1 小时将自动删除（平台定时任务已生效）。' +
         '重要数据请及时保存或迁出；需要跨会话保留数据请改用 pool_type=persistent。',
     };
-  } else if (result.pool_type === 'persistent') {
+  } else if (poolType === 'persistent') {
     result.pool = {
       pool_type: 'persistent',
       lifecycle: 'EVS data disk retained; idle reclaim within 7 days max',

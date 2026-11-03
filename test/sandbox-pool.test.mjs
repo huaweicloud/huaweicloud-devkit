@@ -84,6 +84,18 @@ test('enrichConnectResult broadcasts persistent lifecycle on server echo', () =>
   assert.match(result.pool.ttl_hint, /7 天/);
 });
 
+test('enrichConnectResult falls back to camelCase poolType echo (wire naming drift guard)', () => {
+  // QA #1082 配对复审教训：服务端 wire 命名可能漂移（camelCase/snake_case），
+  // 双读兜底保证 TTL 播报不因命名漂移静默失效
+  const result = enrichConnectResult({ session_id: 's1', poolType: 'ephemeral' });
+  assert.ok(result.pool, 'camelCase echo must still broadcast lifecycle');
+  assert.equal(result.pool.pool_type, 'ephemeral');
+  assert.match(result.pool.ttl_hint, /30 分钟/);
+
+  const persistent = enrichConnectResult({ session_id: 's1', poolType: 'persistent' });
+  assert.equal(persistent.pool.pool_type, 'persistent');
+});
+
 test('enrichConnectResult adds nothing without server pool echo (custom template / old server)', () => {
   const result = enrichConnectResult({ session_id: 's1', template_id: 'custom' });
   assert.equal(result.pool, undefined);
