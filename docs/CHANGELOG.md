@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.1.13-next.2 (2026-11-03)
+
+- fix(sandbox): 回显字段双读兜底——pool_type/poolType 命名漂移防御
+- fix(sandbox): QA 审查返修——remediation 穿透 MCP 边界 + 判断项五连
+- feat(sandbox): 两池 pool_type 客户端适配——透传/429 双码/TTL 播报/模式提示/烧核播报
+- style: fix prettier formatting (plugin manifests capabilities collapse, plan.md table align) #1071
+- docs(sandbox): #1071 spec/plan/task for resource pool finalized semantics
+- chore(release): #1071 bump 1.1.13-next.1
+- test(sandbox): #1071 acceptance guards for resource pool finalized semantics
+- feat(sandbox): #1071 quota/429+Retry-After semantics in sandbox tool descriptions
+- feat(sandbox): #1071 resource pool routing + lifecycle finalized semantics in skill
+
 ## 1.1.13-next.0 (2026-10-29)
 
 - chore: set version-override to 1.1.13 (#1050)
