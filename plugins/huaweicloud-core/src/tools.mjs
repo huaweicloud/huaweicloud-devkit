@@ -31,8 +31,8 @@ import {
   validatePoolType,
   rememberWorkspacePool,
   enrichConnectResult,
-  poolContextFor,
   withPoolContext,
+  forgetWorkspacePool,
 } from './sandbox/sandbox-pool.mjs';
 import {
   hdkitCheckUser,
@@ -1497,7 +1497,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       const sandboxUser2 = args.username || 'root';
       const sandboxTimeout2 = args.timeout_ms || 120000;
       const sandboxResult2 = await execWithSession(sandboxWsId2, args.command, sandboxUser2, sandboxTimeout2);
-      return { stdout: sandboxResult2.stdout, exitCode: sandboxResult2.exitCode, ...poolContextFor(sandboxWsId2) };
+      return withPoolContext(sandboxWsId2, {
+        stdout: sandboxResult2.stdout,
+        exitCode: sandboxResult2.exitCode,
+      });
     }
     case 'huaweicloud_sandbox_exec_one_shot': {
       const sandboxWsId3 = args.workspace_id || getCurrentWorkspaceId();
@@ -1510,7 +1513,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       const sandboxUser3 = args.username || 'root';
       const sandboxTimeout3 = args.timeout_ms || 120000;
       const sandboxResult3 = await execOneShot(sandboxWsId3, args.command, sandboxUser3, sandboxTimeout3);
-      return { stdout: sandboxResult3.stdout, exitCode: sandboxResult3.exitCode, ...poolContextFor(sandboxWsId3) };
+      return withPoolContext(sandboxWsId3, {
+        stdout: sandboxResult3.stdout,
+        exitCode: sandboxResult3.exitCode,
+      });
     }
     case 'huaweicloud_sandbox_close_session': {
       const sandboxWsId4 = args.workspace_id || getCurrentWorkspaceId();
@@ -1522,6 +1528,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser4 = args.username || 'root';
       const closed = await closeSession(sandboxWsId4, sandboxUser4);
+      if (closed) {
+        // 池归属缓存随会话关闭清理：长驻进程防只增不减/陈旧池归属
+        forgetWorkspacePool(sandboxWsId4);
+      }
       return closed ? 'ok' : 'not_connected';
     }
     case 'huaweicloud_sandbox_upload_file': {
@@ -1660,11 +1670,14 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
             'or set HW_WORKSPACE_ID environment variable before starting the agent.',
         );
       }
-      return await renewTunnel(
+      return withPoolContext(
         sandboxWsId10,
-        { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
-        args.username || 'root',
-        args.timeout_ms || 60000,
+        await renewTunnel(
+          sandboxWsId10,
+          { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
+          args.username || 'root',
+          args.timeout_ms || 60000,
+        ),
       );
     }
     case 'huaweicloud_sandbox_keepalive_watchdog': {
@@ -1681,11 +1694,14 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         );
       }
       const tunnels11 = args.tunnels.map((t) => ({ tunnelId: t.tunnel_id || t.tunnelId, url: t.url }));
-      return await installKeepaliveWatchdog(
+      return withPoolContext(
         sandboxWsId11,
-        { tunnels: tunnels11 },
-        args.username || 'root',
-        args.timeout_ms || 60000,
+        await installKeepaliveWatchdog(
+          sandboxWsId11,
+          { tunnels: tunnels11 },
+          args.username || 'root',
+          args.timeout_ms || 60000,
+        ),
       );
     }
     case 'huaweicloud_sandbox_check_user':
@@ -1695,10 +1711,37 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_sandbox_connect': {
       // 两池：客户端校验 pool_type（非法值在本地即报错，不发无效请求）；未传交由服务端默认 ephemeral
       const connectArgs = { ...args };
-      if (connectArgs.pool_type !== undefined) {
-        connectArgs.pool_type = validatePoolType(connectArgs.pool_type);
+      let poolType;
+      try {
+        poolType = connectArgs.pool_type !== undefined ? validatePoolType(connectArgs.pool_type) : null;
+        if (poolType) connectArgs.pool_type = poolType;
+      } catch (error) {
+        // 非法 pool_type 结构化返回：MCP 错误信封只携带 code+message，指引字段在 throw 路径会丢失（参照 voucher 模式）
+        return { ok: false, code: 'HDKIT_INVALID_POOL_TYPE', message: error.message };
       }
-      const connectResult = await hdkitConnect(connectArgs);
+      let connectResult;
+      try {
+        connectResult = await hdkitConnect(connectArgs);
+      } catch (error) {
+        // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
+        // 其余错误维持抛出（MCP 层透传 code+message）
+        if (
+          error?.code === 'HDKIT_QUOTA_EXCEEDED' ||
+          error?.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
+          error?.code === 'HDKIT_CRED_INVALID' ||
+          error?.coreHoursExhausted
+        ) {
+          return {
+            ok: false,
+            code: error.code,
+            message: error.message,
+            ...(error.retryAfter !== undefined ? { retryAfter: error.retryAfter } : {}),
+            ...(error.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+            ...(error.remediation ? { remediation: error.remediation } : {}),
+          };
+        }
+        throw error;
+      }
       const devStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
       if (devStageId) {
         setWorkspaceId(devStageId);

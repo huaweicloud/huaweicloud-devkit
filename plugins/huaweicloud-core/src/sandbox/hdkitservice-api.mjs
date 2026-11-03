@@ -103,8 +103,9 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
       };
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
-    // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别
-    if (String(data.message || '').includes('HD.97520422')) {
+    // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。
+    // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 双码/凭证指引）
+    if (!err.remediation && String(data.message || '').includes('HD.97520422')) {
       err.coreHoursExhausted = true;
       err.remediation = {
         hint: '账号核心时长（核时）已耗尽，沙箱无法继续运行：',
