@@ -14,74 +14,77 @@ const resourcePool = readFileSync(
   'utf8',
 );
 
-// Acceptance 1: SKILL.md routing table covers both sandbox types + selection rules
+// Acceptance 1: SKILL.md 两池 routing covers both pool types + selection rules
+// （v3 口径：pool_type 选池，意图表 + 1+1 配额 + 同池复用）
 test('issue-1071: resource pool routing table covers both sandbox types and selection rules', () => {
-  assert.match(skill, /Resource Pool Selection/);
-  assert.match(skill, /非持久化/);
-  assert.match(skill, /持久化/);
-  // scenario rows
+  assert.match(skill, /两池沙箱（pool_type）|两池沙箱/);
+  assert.match(skill, /ephemeral/);
+  assert.match(skill, /persistent/);
+  assert.match(skill, /pool_type/);
+  // 口径基调声明（#1076 修正 #7：两文档章节头均需注明"以实测为准"）
+  assert.match(skill, /以实测为准/);
+  // scenario rows（意图选池表）
   for (const kw of ['预览', '一次性任务', '敏感内容', '开发工作台', '带数据库项目', '跨日']) {
     assert.match(skill, new RegExp(kw));
   }
-  // selection rules: agent auto-select + user override + per-type reuse
-  assert.match(skill, /auto-select/i);
-  assert.match(skill, /override/i);
-  assert.match(skill, /1 instance per type/i);
-  assert.match(skill, /non-persistent AND .* persistent|非持久化 AND 1 持久化|may hold 1 ephemeral AND 1 persistent/i);
+  // selection rules: agent auto-select + user override + per-type quota (1+1, same-type reuse)
+  assert.match(skill, /按意图自动选池/);
+  assert.match(skill, /开发者可覆盖/);
+  assert.match(skill, /1\+1 可并存/);
+  assert.match(skill, /同池 connect 自动复用/);
   // burning-core announcement wording (gifting + activity-earned)
   assert.match(skill, /赠送/);
   assert.match(skill, /活动赚取/);
 });
 
-// Acceptance 2: lifecycle semantics (1h / 3h / 14 days / three signals) queryable in SKILL.md
-test('issue-1071: lifecycle semantics (1h idle / 3h fixed / 14-day retention / three signals)', () => {
-  assert.match(skill, /Sandbox Lifecycle & Retention/);
-  assert.match(skill, /1h idle/i);
-  assert.match(skill, /10min/i); // relaxed-from note
-  assert.match(skill, /3h from CreateTime/i);
-  assert.match(skill, /14 days/i);
-  // three activity signals: connect / process / preview traffic
-  assert.match(skill, /terminal connect/i);
-  assert.match(skill, /running processes/i);
-  assert.match(skill, /preview traffic/i);
-  // pre-shutdown user-side reminder + no devkit-side deletion
-  assert.match(skill, /notifies the developer \*\*before\*\* shutting down an idle persistent/i);
-  assert.match(skill, /second confirmation/i);
-  assert.match(skill, /不做延后代删|never defers\/delays deletion/);
-  // G1-G5 dependency markers
-  for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
-    assert.match(skill, new RegExp(`\\*\\*${g}\\*\\*`));
+// Acceptance 2: lifecycle semantics（v3 口径：ephemeral 闲置 30min 关机 + 1h 删除；
+// persistent 闲置回收上限 7 天；单信号现状；无删除前通知）
+test('issue-1071: lifecycle semantics (30min/1h ephemeral, 7-day persistent cap, single signal)', () => {
+  assert.match(skill, /闲置 30 分钟自动关机/);
+  assert.match(skill, /闲置 1 小时自动删除/);
+  assert.match(skill, /上限 7 天/);
+  // deletion discipline: no devkit-side lifecycle deletion API, second confirmation, no deferred delete
+  assert.match(skill, /删除纪律/);
+  assert.match(skill, /二次确认/);
+  assert.match(skill, /不做延后代删|绝不做延后代删/);
+  // activity signal status + G list live in the reference doc
+  assert.match(resourcePool, /仅 connect 单信号|单信号/);
+  for (const g of ['G1', 'G2', 'G3', 'G4', 'G5', 'G6']) {
+    assert.match(resourcePool, new RegExp(`${g} `));
   }
 });
 
-// Acceptance 3: 429 + Retry-After semantics in tool descriptions
+// Acceptance 3: 429 + Retry-After dual error codes in tool descriptions
 test('issue-1071: 429 + Retry-After quota semantics present in tool descriptions', () => {
   const connectDesc = tools.slice(tools.indexOf("'huaweicloud_sandbox_connect'"));
   const connectDescBlock = connectDesc.slice(0, connectDesc.indexOf('inputSchema'));
   assert.match(connectDescBlock, /429/);
   assert.match(connectDescBlock, /Retry-After/);
-  assert.match(connectDescBlock, /quota-exceeded/i);
-  assert.match(connectDescBlock, /capacity-insufficient/i);
-  assert.match(connectDescBlock, /1 instance per type/i);
-  // close_session clarifies it does not delete the sandbox
+  assert.match(connectDescBlock, /HDKIT_QUOTA_EXCEEDED/);
+  assert.match(connectDescBlock, /HDKIT_CAPACITY_INSUFFICIENT/);
+  assert.match(connectDescBlock, /1 instance per pool type/);
+  assert.match(connectDescBlock, /pool_type/);
+  assert.match(connectDescBlock, /30min/);
+  assert.match(connectDescBlock, /7 days/);
+  // close_session clarifies it does not delete the sandbox（v3：7 天口径）
   const closeDesc = tools.slice(tools.indexOf("'huaweicloud_sandbox_close_session'"));
   const closeDescBlock = closeDesc.slice(0, closeDesc.indexOf('inputSchema'));
   assert.match(closeDescBlock, /does NOT delete the sandbox instance/);
   assert.match(closeDescBlock, /second confirmation/);
+  assert.match(closeDescBlock, /7-day/);
 });
 
 // Reference doc: resource/rate parameters
 test('issue-1071: resource-pool reference documents pool capacity parameters', () => {
-  assert.match(resourcePool, /300 实例/); // persistent 2U4G x300
-  assert.match(resourcePool, /200 实例/); // persistent 4U8G x200
-  assert.match(resourcePool, /1000 实例/); // ephemeral 2U4G x1000
+  assert.match(resourcePool, /300 实例/); // persistent 2U4G x300（原始申请口径）
+  assert.match(resourcePool, /200 实例/); // persistent 4U8G x200（原始申请口径）
+  assert.match(resourcePool, /1000 实例/); // ephemeral 2U4G x1000（原始申请口径）
   assert.match(resourcePool, /5 GB \/ 实例/); // overlayer per instance
   assert.match(resourcePool, /300 TB/); // EVS total
   assert.match(resourcePool, /EVS 32G|32G/); // persistent EVS mount
+  assert.match(resourcePool, /3U6G/); // 实配 flavor（尾号 54）
   assert.match(resourcePool, /429/);
   assert.match(resourcePool, /Retry-After/);
-  // G list mirrored in reference
-  for (const g of ['G1', 'G2', 'G3', 'G4', 'G5']) {
-    assert.match(resourcePool, new RegExp(`${g} `));
-  }
+  assert.match(resourcePool, /hcdke/); // 池前缀归属
+  assert.match(resourcePool, /hcdkp/);
 });
