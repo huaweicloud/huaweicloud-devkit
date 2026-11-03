@@ -795,8 +795,13 @@ export function resolveNginxConfigPath(configName, project) {
 //   DB_NGINX_CONFIG_MISSING=1  — the target config file does not exist
 //   DB_NGINX_T=PASS|FAIL       — nginx -t verdict, with failure output echoed
 //                                as `DB_NGINX_T_OUTPUT: ...` lines
+// #946 (regression, 2026-11-03 E2E): strip OSC/CSI escapes + \r BEFORE the
+// anchored ^DB_NGINX_ lookups — integration-enabled shells wrap every line in
+// \x1b]133;C\x07, which used to blind the nginxTest match and turn a PASS into
+// "nginx -t did not pass" (deploy_nginx ok:false false negative; the config was
+// written and nginx -t actually passed — measured twice on real sandboxes).
 export function parseDeployNginxVerifyOutput(stdout) {
-  const text = String(stdout || '');
+  const text = stripTerminalEscapes(stdout);
   const configMissing = /DB_NGINX_CONFIG_MISSING=1/.test(text);
   const nginxTest = (text.match(/^DB_NGINX_T=(\w+)$/m) || [])[1] || '';
   const nginxTestOutput = (text.match(/^DB_NGINX_T_OUTPUT: .*$/gm) || [])
@@ -1537,8 +1542,11 @@ export function buildDevbridgeVerifyScript(tunnelUrl) {
 // Each probe echo is `DB_PROBE_<n>=<code>`; reachability is decided by the
 // LAST probe — intermediate 502/000 probes are gateway-not-ready noise, not
 // failures, so they must not leak into the tool's verdict.
+// #946 (regression): strip OSC/CSI escapes + \r first — integration-enabled
+// shells wrap every line in \x1b]133;C\x07 and blind the anchored
+// ^DB_PROBE_ match (probes came back empty, finalHttpCode always '').
 export function parseDevbridgeProbeSequence(stdout) {
-  const text = String(stdout || '');
+  const text = stripTerminalEscapes(stdout);
   const probes = [];
   for (const m of text.matchAll(/^DB_PROBE_(\d+)=(\S*)$/gm)) {
     probes.push({ attempt: Number(m[1]), httpCode: m[2] });
