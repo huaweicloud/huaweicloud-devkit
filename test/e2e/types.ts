@@ -84,6 +84,15 @@ export type Expectation =
 // degrade).
 export interface WsCommandMatcher {
   intent: string;
+  // Co-residency scope: a matching command counts only when its connection
+  // ALSO carries an `anchor`-intent command. The session-reuse mechanism
+  // proof: connect's export-path runs on the cached session connection, so
+  // asserting e.g. rm/md5sum onConnectionWith 'export-path' proves the tool
+  // rode that SAME cached session rather than opening its own connection —
+  // a claim the raw wsConnections total cannot make once agent-initiated
+  // one-shot execs share the channel (the 2026-11-03 nightly: the upload
+  // agent's own verification one-shot made the healthy total 3).
+  onConnectionWith?: string;
   times?: Range;
 }
 
