@@ -6,7 +6,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { getCodexPluginName, getMarketplaceName } from '../plugins/huaweicloud-core/src/codex-probe.ts';
-import { shapeForGateway, startGatewayProxy } from './e2e/drivers/gateway-proxy.ts';
+import {
+  indexNamespaceDecls,
+  reattachNamespaceInFrame,
+  shapeForGateway,
+  startGatewayProxy,
+} from './e2e/drivers/gateway-proxy.ts';
 import { codexDriver, tomlString } from './e2e/drivers/codex.ts';
 import type { DriverContext } from './e2e/drivers/types.ts';
 import { fixtureDir } from './fixture-dir.ts';
@@ -249,6 +254,109 @@ test('shapeForGateway strips the namespace field and joins array outputs', () =>
   assert.equal(shapeForGateway(clean), clean);
 });
 
+test('indexNamespaceDecls maps declared tools to their namespaces, unambiguous only', () => {
+  const index = indexNamespaceDecls({
+    tools: [
+      { type: 'function', name: 'exec_command' },
+      {
+        type: 'namespace',
+        name: 'mcp__hwc',
+        tools: [
+          { type: 'function', name: 'huaweicloud_sandbox_connect' },
+          { type: 'function', name: 'huaweicloud_list_packs' },
+        ],
+      },
+      {
+        type: 'namespace',
+        name: 'mcp__other',
+        tools: [{ type: 'function', name: 'huaweicloud_list_packs' }],
+      },
+    ],
+  });
+  assert.equal(index.toolNamespaces.get('huaweicloud_sandbox_connect'), 'mcp__hwc');
+  // A name claimed by two namespaces stays unrewritten (ambiguous).
+  assert.equal(index.toolNamespaces.has('huaweicloud_list_packs'), false);
+  // Top-level flat functions are never namespace-attached.
+  assert.equal(index.flatTools.has('exec_command'), true);
+  // A flat shadow of a namespaced name wins the flat reading.
+  const shadowed = indexNamespaceDecls({
+    tools: [
+      { type: 'function', name: 'huaweicloud_sandbox_connect' },
+      { type: 'namespace', name: 'mcp__hwc', tools: [{ type: 'function', name: 'huaweicloud_sandbox_connect' }] },
+    ],
+  });
+  assert.equal(shadowed.toolNamespaces.has('huaweicloud_sandbox_connect'), false);
+  // Bodies without a tools array yield the empty index.
+  assert.equal(indexNamespaceDecls({ input: [] }).toolNamespaces.size, 0);
+  assert.equal(indexNamespaceDecls('not an object' as unknown as Record<string, unknown>).toolNamespaces.size, 0);
+});
+
+test('reattachNamespaceInFrame attaches namespaces to flat function_call done items only', () => {
+  const index = indexNamespaceDecls({
+    tools: [
+      { type: 'function', name: 'exec_command' },
+      {
+        type: 'namespace',
+        name: 'mcp__hwc',
+        tools: [{ type: 'function', name: 'huaweicloud_sandbox_connect' }],
+      },
+    ],
+  });
+  const flatCall =
+    'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","call_id":"c1"}}';
+  const rewritten = reattachNamespaceInFrame(flatCall, index);
+  assert.equal(
+    rewritten,
+    'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","call_id":"c1","namespace":"mcp__hwc"}}',
+    'the missing namespace must be re-attached so codex can dispatch the call',
+  );
+  // Already-namespaced items pass through untouched.
+  const namespaced =
+    'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","namespace":"mcp__hwc","call_id":"c2"}}';
+  assert.equal(reattachNamespaceInFrame(namespaced, index), namespaced);
+  // Unknown names, non-call items, non-done events, and non-data lines are verbatim.
+  assert.equal(
+    reattachNamespaceInFrame(
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","call_id":"c3"}}',
+      index,
+    ),
+    'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","call_id":"c3"}}',
+  );
+  assert.equal(
+    reattachNamespaceInFrame(
+      'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant"}}',
+      index,
+    ),
+    'data: {"type":"response.output_item.done","item":{"type":"message","role":"assistant"}}',
+  );
+  assert.equal(
+    reattachNamespaceInFrame('data: {"type":"response.created"}', index),
+    'data: {"type":"response.created"}',
+  );
+  assert.equal(reattachNamespaceInFrame('event: response.output_item.done', index), 'event: response.output_item.done');
+  assert.equal(reattachNamespaceInFrame('data: not json', index), 'data: not json');
+  // The empty-namespace-string form is treated as missing.
+  const emptyNs =
+    'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","namespace":"","call_id":"c4"}}';
+  assert.equal(JSON.parse(reattachNamespaceInFrame(emptyNs, index).slice(6)).item.namespace, 'mcp__hwc');
+  // CRLF-framed data lines still rewrite and keep their \r (interrogate
+  // round 1: the raw regex silently no-oped on \r-terminated lines).
+  const crlf =
+    'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","call_id":"c5"}}\r';
+  const crlfOut = reattachNamespaceInFrame(crlf, index);
+  assert.ok(crlfOut.endsWith('\r'), 'the CR terminator must survive the rewrite');
+  assert.equal(JSON.parse(crlfOut.slice(6, -1)).item.namespace, 'mcp__hwc', 'CRLF lines must be rewritten too');
+  // A CRLF line that is not a data line stays verbatim, \r included.
+  const crlfOther = 'event: response.output_item.done\r';
+  assert.equal(reattachNamespaceInFrame(crlfOther, index), crlfOther);
+  // A raw U+2028 line separator inside valid JSON still rewrites (JSON
+  // stringifies it unescaped; JS `.` cannot match through it — interrogate
+  // round 2's missed-rewrite class).
+  const ls = `data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","call_id":"c6","arguments":"{}\u2028{}"}}`;
+  const lsOut = reattachNamespaceInFrame(ls, index);
+  assert.equal(JSON.parse(lsOut.slice(6)).item.namespace, 'mcp__hwc', 'U+2028 lines must be rewritten');
+});
+
 test('gateway proxy forwards shaped requests and streams responses through', async () => {
   const seen: { url?: string; body?: string }[] = [];
   const upstream = http.createServer((req, res) => {
@@ -286,6 +394,88 @@ test('gateway proxy forwards shaped requests and streams responses through', asy
     const forwarded = JSON.parse(seen[0]?.body ?? '{}');
     assert.equal(forwarded.input[0].namespace, undefined);
     assert.equal(forwarded.input[1].output, 'x');
+  } finally {
+    await proxy.close();
+    await new Promise<void>((resolveClose) => upstream.close(() => resolveClose()));
+  }
+});
+
+test('gateway proxy re-attaches namespaces to flat function_call done frames', async () => {
+  // The 2026-11-03 nightly failure shape: the model emits MCP tool calls
+  // without the namespace field (imitating the namespace-stripped history),
+  // codex answers "unsupported call", and the tool never dispatches. The
+  // proxy must hand codex the namespace the request's own tools declared.
+  const upstream = http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+    res.write('event: response.created\n');
+    res.write('data: {"type":"response.created"}\n\n');
+    res.write(
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","call_id":"c1"}}\n\n',
+    );
+    res.write(
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","namespace":"mcp__hwc","call_id":"c2"}}\n\n',
+    );
+    res.write(
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"exec_command","call_id":"c3"}}\n\n',
+    );
+    // One CRLF-framed flat call: the streaming path (line split, rewrite,
+    // re-emit) must preserve the \r while attaching the namespace.
+    res.write(
+      'data: {"type":"response.output_item.done","item":{"type":"function_call","name":"huaweicloud_sandbox_connect","call_id":"c7"}}\r\n\n',
+    );
+    res.end();
+  });
+  await new Promise<void>((resolveListen) => upstream.listen(0, '127.0.0.1', resolveListen));
+  const upstreamPort = (upstream.address() as { port: number }).port;
+  const proxy = await startGatewayProxy(`http://127.0.0.1:${upstreamPort}`);
+  try {
+    const response = await fetch(`http://127.0.0.1:${proxy.port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        input: [],
+        tools: [
+          { type: 'function', name: 'exec_command' },
+          {
+            type: 'namespace',
+            name: 'mcp__hwc',
+            tools: [{ type: 'function', name: 'huaweicloud_sandbox_connect' }],
+          },
+        ],
+      }),
+    });
+    assert.equal(response.status, 200);
+    const streamed = await response.text();
+    const frames = streamed
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice(6)));
+    const doneItems = frames.filter((frame) => frame.type === 'response.output_item.done').map((frame) => frame.item);
+    assert.equal(doneItems[0].namespace, 'mcp__hwc', 'the flat call must arrive namespaced');
+    assert.equal(doneItems[0].call_id, 'c1', 'the rewrite must not touch correlation');
+    assert.equal(doneItems[1].namespace, 'mcp__hwc', 'an already-namespaced call stays as-is');
+    assert.equal(doneItems[2].namespace, undefined, 'a top-level flat tool stays flat');
+    // The CRLF-framed call arrived rewritten with its \r preserved.
+    const crlfLine = streamed.split('\n').find((line) => line.includes('"call_id":"c7"'));
+    assert.ok(crlfLine !== undefined, 'the CRLF-framed call must reach the client');
+    assert.ok(crlfLine.endsWith('\r'), 'the CR terminator must survive the streaming rewrite');
+    assert.equal(JSON.parse(crlfLine.slice(6, -1)).item.namespace, 'mcp__hwc');
+    // A tools-less POST that follows must not wipe the index (interrogate
+    // round 1: a future wire shape would silently disable the repair).
+    const second = await fetch(`http://127.0.0.1:${proxy.port}/v1/responses`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ input: [] }),
+    });
+    assert.equal(second.status, 200);
+    const secondStreamed = await second.text();
+    const secondDone = secondStreamed
+      .split('\n')
+      .filter((line) => line.startsWith('data: '))
+      .map((line) => JSON.parse(line.slice(6)))
+      .filter((frame) => frame.type === 'response.output_item.done')
+      .map((frame) => frame.item);
+    assert.equal(secondDone[0].namespace, 'mcp__hwc', 'the index must survive a tools-less POST');
   } finally {
     await proxy.close();
     await new Promise<void>((resolveClose) => upstream.close(() => resolveClose()));
