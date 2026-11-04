@@ -450,7 +450,19 @@
         "any": [
           {
             "field": "text",
-            "regex": "(\\||;|&&)\\s*(sudo\\s+)?(bash|sh|zsh|dash|ksh|python|node|powershell|pwsh)\\b"
+            "regex": "(\\||;|&&)\\s*(sudo\\s+)?((/usr/bin/|/bin/)?(bash|zsh|dash|ksh|sh|python2|python3|python|ruby|perl|php|node|lua|powershell|pwsh)(\\.exe)?\\b)"
+          },
+          {
+            "field": "text",
+            "regex": "\\b(sudo\\s+)?((/usr/bin/|/bin/)?(bash|zsh|dash|ksh|sh|python2|python3|python|ruby|perl|php|node|lua)(\\.exe)?\\s+-[a-zA-Z]*c[a-zA-Z]*\\b|\\b(powershell|pwsh)(\\.exe)?\\s+(-Command|-c|-ic)\\b)"
+          },
+          {
+            "field": "text",
+            "regex": "\\b(sudo\\s+)?(/(usr/)?bin/)?(bash|zsh|dash|ksh|sh|python2|python3|python|ruby|perl|php|node|lua)(\\.exe)?\\b[^\\n|;&]*(\\$\\(|`)"
+          },
+          {
+            "field": "text",
+            "regex": "\\beval\\b[^\\n]*?(\\$\\(|`)"
           }
         ]
       },
