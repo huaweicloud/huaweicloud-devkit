@@ -31,7 +31,7 @@
 | 删除/关机前通知 | 不支持（G6 诉求中）→ 客户端 TTL 播报为补偿方案 | 现状          |
 | 两池实际差异    | 仅 EVS 32GiB 数据盘（非持久池无 disks 字段）   | ✅ 已实证     |
 
-> 生命周期数值是**播报口径**，由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` / `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` / `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` / `POOL_PERSISTENT_RECLAIM_DAYS`）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机/删除策略由平台资源池执行，hdkitservice 不控制。
+> 生命周期数值是**播报口径**，由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` / `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` / `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` / `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以**分钟**为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机/删除策略由平台资源池执行，hdkitservice 不控制。
 
 ## 容量规划（原始申请口径）
 

@@ -69,7 +69,7 @@ test('poolContextFor uses server-configured lifecycle and defaults when absent',
   const per = poolContextFor('ws2');
   assert.equal(per.poolMode, 'persistent');
   assert.equal(per.poolLifecycle.idleShutdownMinutes, 60);
-  assert.equal(per.poolLifecycle.reclaimDays, 7);
+  assert.equal(per.poolLifecycle.reclaimMinutes, 10080);
   assert.match(per.persistenceHint, /1 小时自动关机/);
   assert.match(per.persistenceHint, /7 天/);
 
@@ -92,17 +92,17 @@ test('poolContextFor uses server-configured lifecycle and defaults when absent',
 
 test('workspace pool cache persists to disk and reloads in a fresh module instance', async () => {
   forgetWorkspacePool();
-  rememberWorkspacePool('ws-cache', 'persistent', { pool_reclaim_days: 9 });
+  rememberWorkspacePool('ws-cache', 'persistent', { pool_reclaim_minutes: 12960 });
 
   const persisted = JSON.parse(readFileSync(process.env.HW_SANDBOX_POOL_CACHE_PATH, 'utf8'));
   assert.equal(persisted.workspaces['ws-cache'].poolType, 'persistent');
-  assert.equal(persisted.workspaces['ws-cache'].lifecycle.reclaimDays, 9);
+  assert.equal(persisted.workspaces['ws-cache'].lifecycle.reclaimMinutes, 12960);
 
   // 模拟 MCP 进程重启：新模块实例从磁盘缓存恢复（进程内 announcement 状态不落盘）
   const fresh = await import(`../plugins/huaweicloud-core/src/sandbox/sandbox-pool.mjs?restart=${Date.now()}`);
   const ctx = fresh.poolContextFor('ws-cache');
   assert.equal(ctx.poolMode, 'persistent');
-  assert.equal(ctx.poolLifecycle.reclaimDays, 9);
+  assert.equal(ctx.poolLifecycle.reclaimMinutes, 12960);
   forgetWorkspacePool();
 });
 
@@ -152,7 +152,7 @@ test('enrichConnectResult supports camelCase lifecycle echo (wire naming drift g
     session_id: 's1',
     poolType: 'persistent',
     poolIdleShutdownMinutes: 90,
-    poolReclaimDays: 5,
+    poolReclaimMinutes: 7200,
   });
   assert.ok(result.pool, 'camelCase echo must still broadcast lifecycle');
   assert.match(result.pool.ttl_hint, /1 小时 30 分钟|90 分钟/);
@@ -182,7 +182,7 @@ test('buildExposeLifetimeNotice renders ephemeral URL lifetime with tunnel expir
         poolType: 'ephemeral',
         idleShutdownMinutes: 30,
         idleDeleteMinutes: 60,
-        reclaimDays: null,
+        reclaimMinutes: null,
       },
     },
     72,
@@ -204,13 +204,13 @@ test('buildExposeLifetimeNotice renders persistent URL lifetime (data retained o
         poolType: 'persistent',
         idleShutdownMinutes: 60,
         idleDeleteMinutes: null,
-        reclaimDays: 7,
+        reclaimMinutes: 10080,
       },
     },
     720,
   );
   assert.equal(notice.sandboxLifetime.poolType, 'persistent');
-  assert.equal(notice.sandboxLifetime.reclaimDays, 7);
+  assert.equal(notice.sandboxLifetime.reclaimMinutes, 10080);
   assert.match(notice.urlLifetimeHint, /闲置 1 小时自动关机/);
   assert.match(notice.urlLifetimeHint, /实例与数据盘保留/);
   assert.match(notice.urlLifetimeHint, /隧道有效期 720 小时/);
