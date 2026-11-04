@@ -137,6 +137,55 @@ test('callTool accepts maxRetries 0 and integer timeoutMs (no false rejection)',
   );
 });
 
+test('callTool normalizes model-emitted string numbers for the sandbox port family', async () => {
+  // The 2026-11-03 e2e-nightly codex leg (fork PR-1, run 41730851595): the
+  // model emitted "port": "8080" — the SDK zod (numericArg unions) passes
+  // the string to callTool, and normalizeNumericArgs converts it before
+  // dispatch (deploy-nginx's nodePort arithmetic reads port + 1; a string
+  // would concatenate). With no sandbox connected the workspace guard is
+  // the deterministic observable that the numeric layer passed the call
+  // through; a non-numeric or non-positive port still rejects with the
+  // #530 error shape.
+  await assert.rejects(
+    () =>
+      callTool('huaweicloud_sandbox_deploy_nginx', {
+        nginx_type: 'spa',
+        port: '8080',
+        project: 'myproject',
+        output_dir: 'dist',
+      } as unknown as ToolArgs),
+    /workspace_id is required/,
+  );
+  await assert.rejects(
+    () =>
+      callTool('huaweicloud_sandbox_deploy_nginx', {
+        nginx_type: 'spa',
+        port: 'eighty',
+        project: 'myproject',
+        output_dir: 'dist',
+      } as unknown as ToolArgs),
+    /positive number/,
+  );
+  await assert.rejects(
+    () =>
+      callTool('huaweicloud_sandbox_deploy_nginx', {
+        nginx_type: 'spa',
+        port: 0,
+        project: 'myproject',
+        output_dir: 'dist',
+      } as unknown as ToolArgs),
+    /positive number/,
+  );
+  await assert.rejects(
+    () =>
+      callTool('huaweicloud_sandbox_expose_tunnel', {
+        port: '8080',
+        expiry_hours: '72',
+      } as unknown as ToolArgs),
+    /workspace_id is required/,
+  );
+});
+
 test('huaweicloud_hook_check_artifacts detects broad IAM policy', async () => {
   const result = (await callTool('huaweicloud_hook_check_artifacts', {
     artifacts: [

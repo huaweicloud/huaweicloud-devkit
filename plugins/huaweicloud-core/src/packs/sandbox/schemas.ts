@@ -110,16 +110,15 @@ export const deployNginxSchema = z.looseObject({
     .describe(
       'Nginx config type from framework detection: spa (try_files fallback for SPA/SSG/cross-platform), proxy (reverse proxy for SSR), or static (plain root for Hugo/Hexo).',
     ),
-  port: z.number().describe('Listen port (from framework detection).'),
+  port: numericArg.describe('Listen port (from framework detection).'),
   project: z.string().describe('Project directory name under /workspace, e.g. movie-ticket.'),
   output_dir: z.string().describe('Build output directory relative to /workspace/<project>, e.g. dist/build/h5.'),
-  node_port: z
-    .number()
+  node_port: numericArg
     .optional()
     .describe(
       'Node.js app port for SSR proxy. Defaults to the resolved nginx listen port plus one (targetPort + 1) when omitted; the result carries nodePort so you know which port to bind the Node process to.',
     ),
-  public_port: z.number().optional().describe('Public listen port for SSR proxy (optional, defaults to port).'),
+  public_port: numericArg.optional().describe('Public listen port for SSR proxy (optional, defaults to port).'),
   config_name: z
     .string()
     .optional()
@@ -134,7 +133,7 @@ export const deployNginxSchema = z.looseObject({
 });
 
 export const deployCheckSchema = z.looseObject({
-  port: z.number().describe('App listen port (from framework detection).'),
+  port: numericArg.describe('App listen port (from framework detection).'),
   project: z.string().describe('Project directory name under /workspace.'),
   output_dir: z.string().describe('Build output directory relative to /workspace/<project>, e.g. dist/build/h5.'),
   framework_type: z
@@ -151,16 +150,10 @@ export const deployCheckSchema = z.looseObject({
 export const checkUserSchema = z.looseObject({});
 
 export const exposeTunnelSchema = z.looseObject({
-  port: z
-    .number()
-    .describe(
-      'Port nginx actually serves on — use the "port" value returned by huaweicloud_sandbox_deploy_nginx, not the originally requested port.',
-    ),
-  expiry_hours: z
-    .number()
-    .int()
-    .min(1)
-    .max(720)
+  port: numericArg.describe(
+    'Port nginx actually serves on — use the "port" value returned by huaweicloud_sandbox_deploy_nginx, not the originally requested port.',
+  ),
+  expiry_hours: numericArg
     .optional()
     .describe(
       'Tunnel lifetime in hours, 1-720 (default 72). 720 = the devbridge 30-day maximum; the keepalive watchdog renews to 720h daily.',
@@ -184,11 +177,7 @@ export const renewTunnelSchema = z.looseObject({
     .describe(
       "DevBridge tunnel ID to renew (from expose_tunnel's tunnelId field, or extract from the URL https://<tunnel_id>-<port>.devbridge-s2.hwtunnel.com).",
     ),
-  expiry_hours: z
-    .number()
-    .int()
-    .min(1)
-    .max(720)
+  expiry_hours: numericArg
     .optional()
     .describe(
       'New lifetime in hours, 1-720 (default 720 = the 30-day maximum). Renewal is a rolling window — the same URL stays alive.',
