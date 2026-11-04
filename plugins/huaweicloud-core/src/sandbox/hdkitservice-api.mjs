@@ -79,8 +79,9 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
         ],
       };
     }
-    // 429 双错误码结构化处理（两池配额契约）：配额满（用户侧，重试无效）与
-    // 池容量不足（平台侧，错峰重试）给出差异化引导；携带服务端 Retry-After
+    // 429 双错误码（两池配额契约）：配额满给出释放/复用引导；池容量不足只透传服务端
+    // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
+    // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
     if (code === 'HDKIT_QUOTA_EXCEEDED') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       err.remediation = {
@@ -94,13 +95,8 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     }
     if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
-      err.remediation = {
-        hint: '平台池容量暂时不足（非账号问题）：',
-        steps: [
-          '稍后错峰重试（devkit提供的免费资源紧张，建议错峰使用）',
-          '急需使用时可尝试另一 pool_type（另一池可能有余量）',
-        ],
-      };
+      // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
+      err.message = data.message || err.message;
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
     // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。

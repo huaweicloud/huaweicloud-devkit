@@ -49,14 +49,14 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 
 ## 两池沙箱（pool_type）
 
-> 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状，平台调参后本节随之更新）。
+> 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状；数值为服务端配置下发的默认口径，平台调参以服务端回显为准）。
 
 `huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
 
-| pool_type           | 语义               | 生命周期（已实测）                                         | 适用                        |
-| ------------------- | ------------------ | ---------------------------------------------------------- | --------------------------- |
-| `ephemeral`（默认） | 非持久沙箱         | 闲置 30 分钟自动关机 + 闲置 1 小时自动删除（平台定时任务） | 临时运行/预览，勿存重要数据 |
-| `persistent`        | 持久沙箱（EVS 盘） | 数据跨关机保留；闲置回收保留期上限 7 天                    | 需要跨会话保留数据          |
+| pool_type           | 语义               | 生命周期（平台策略）                                                          | 适用                        |
+| ------------------- | ------------------ | ----------------------------------------------------------------------------- | --------------------------- |
+| `ephemeral`（默认） | 非持久沙箱         | 闲置 30 分钟自动关机 + 闲置 1 小时自动删除（平台定时任务）                   | 临时运行/预览，勿存重要数据 |
+| `persistent`        | 持久沙箱（EVS 盘） | 数据跨关机保留；闲置 1 小时自动关机；闲置回收保留期上限 7 天                  | 需要跨会话保留数据          |
 
 Selection rules（agent 按意图自动选池，开发者可覆盖；意图不明确时呈现两类供选择）：
 
@@ -70,8 +70,8 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | 跨日评审 / 展示           | persistent | 评审者后续日期回访；实例保留        |
 
 - **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
-- **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足→建议错峰重试）。响应带 `Retry-After`
-- **TTL 播报**：connect 与执行类工具返回值带池模式/生命周期提示——**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须附带该提示
+- **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`
+- **TTL 播报**：仅 connect（会话首次连接 / 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须转述 `urlLifetimeHint` / `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底
 - **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
 - **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
 - 显式 `template_id` 优先于 `pool_type`（自定义模板场景）
@@ -212,7 +212,7 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
 
 8. **Execute commands**: use `huaweicloud_sandbox_exec_with_session` for interactive work (cd, env setup), or `huaweicloud_sandbox_exec_one_shot` for long-running builds/installs. See [Tool Selection Guide](#tool-selection-guide).
 9. **Upload project** (if deploying local code): `huaweicloud_sandbox_upload_project` to transfer a local project directory into `/workspace/<name>` — uses HTTP tunnel, much faster than base64 for multi-file projects. Use `huaweicloud_sandbox_upload_file` for single files.
-10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer
+10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer. **Every URL handoff MUST include the sandbox-lifetime notice from `urlLifetimeHint` (or `warnings`)**: the address dies when the sandbox idles out (ephemeral: shutdown/delete; persistent: shutdown, data retained), and the tunnel expiry is not the sandbox lifetime
 
 ## File Transfer (local → sandbox)
 
