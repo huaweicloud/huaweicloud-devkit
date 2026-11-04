@@ -1,6 +1,6 @@
 ---
 name: huawei-sandbox
-description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application. Covers sandbox lifecycle (check-user, sign-agreement, connect, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
+description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application, backend service, or full-stack workbench. Covers sandbox lifecycle (check-user, sign-agreement, connect, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, backend service, 工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
 version: 1
 ---
 
@@ -27,9 +27,55 @@ Hard rules:
 - Include the OBS domain reminder and the ECS EIP pairing reminder in the options as presented.
 - After the choice: sandbox → continue with this skill; OBS → `huawei-obs`; ECS → `huawei-ecs` / `huawei-iac`; CCE → `huawei-cce`.
 
+## Stack-Selection Gate (MANDATORY — do not skip)
+
+When the request involves a **workbench / 工作台 / 全栈 / full-stack project** — front-end plus back-end, CRUD with persistence, or a database-backed app — you MUST treat it as a **full-stack workbench deployment**: the back end defaults to **PostgreSQL + PostgREST** even when the developer never mentions 数据库/postgres/CRUD. Do NOT silently fall through to the SPA/nginx-only path.
+
+Use the `question` tool to confirm the stack whenever the backend is ambiguous, presenting the PostgREST default first:
+
+1. **PostgreSQL + PostgREST 全栈 (recommended)** — schema + read-only `api_user` role, nginx `/api/` reverse proxy; the REST layer needs zero application code
+2. **应用自带后端** — the project ships its own server (Express/Next API/Nuxt server routes); deploy it inside the sandbox per its framework
+3. **纯静态/SPA** — no persistence; nginx-only
+
+Hard rules:
+
+- **NEVER infer or default the stack to SPA** when persistence is implied: 工作台/workbench/全栈/full-stack/CRUD/数据库/持久化 ⇒ full-stack (PostgREST default) unless the developer explicitly picks otherwise.
+- **Pre-code checkpoint (MANDATORY)**: before uploading or writing ANY application code, verify the backend choice matches this gate. If an SPA-only deployment already started and persistence turns out to be implied, STOP, tell the developer, and redirect to the full-stack path — do not paper over it with a bolted-on static backend.
+- After the choice: PostgREST → follow [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) **FIRST** (backend before any frontend code), then continue with the web deployment steps; 自带后端 / 纯静态 → continue with [Web Application Deployment](#web-application-deployment).
+
 ## Overview
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
+
+## 两池沙箱（pool_type）
+
+> 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状；数值为服务端配置下发的默认口径，平台调参以服务端回显为准）。
+
+`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
+
+| pool_type           | 语义               | 生命周期（平台策略）                                         | 适用                        |
+| ------------------- | ------------------ | ------------------------------------------------------------ | --------------------------- |
+| `ephemeral`（默认） | 非持久沙箱         | 闲置 30 分钟自动关机 + 闲置 1 小时自动删除（平台定时任务）   | 临时运行/预览，勿存重要数据 |
+| `persistent`        | 持久沙箱（EVS 盘） | 数据跨关机保留；闲置 1 小时自动关机；闲置回收保留期上限 7 天 | 需要跨会话保留数据          |
+
+Selection rules（agent 按意图自动选池，开发者可覆盖；意图不明确时呈现两类供选择）：
+
+| 意图 / 场景               | pool_type  | 理由                                |
+| ------------------------- | ---------- | ----------------------------------- |
+| 预览 / 试用 / demo        | ephemeral  | 用完即弃，无需保留状态              |
+| 一次性任务（跑完即弃）    | ephemeral  | 结果带出沙箱；实例随闲置回收        |
+| 敏感内容（即焚）          | ephemeral  | 闲置 1 小时自动删除，数据随实例消亡 |
+| 开发工作台 / workbench    | persistent | 会话跨天；状态需跨关机保留          |
+| 带数据库项目（DB-backed） | persistent | 数据落在挂载的 EVS 盘（32G）        |
+| 跨日评审 / 展示           | persistent | 评审者后续日期回访；实例保留        |
+
+- **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
+- **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`
+- **TTL 播报**：仅 connect（会话首次连接 / 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须转述 `urlLifetimeHint` / `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底
+- **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
+- **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
+- 显式 `template_id` 优先于 `pool_type`（自定义模板场景）
+- 完整口径、容量规划与 G 清单：[references/resource-pool.md](references/resource-pool.md)
 
 ## Activation
 
@@ -58,10 +104,18 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 
 ### Sandbox Lifecycle
 
-| Tool                              | Purpose                                                                  |
-| --------------------------------- | ------------------------------------------------------------------------ |
-| `huaweicloud_sandbox_connect`     | Connect to sandbox (one user one instance, reuses existing if available) |
-| `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                            |
+| Tool                              | Purpose                                                                                                          |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `huaweicloud_sandbox_connect`     | Connect to sandbox (one instance per user per pool; `pool_type` selects ephemeral/persistent, default ephemeral) |
+| `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                                                                    |
+
+### Tunnel Persistence (public URL lifetime)
+
+| Tool                                     | Purpose                                                                                                                                                                                                    |
+| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `huaweicloud_sandbox_expose_tunnel`      | Expose a port → public tunnel URL (auth, pre-clean, health check; `expiry_hours` 1-720, def 72). **AUTO-enrolls into the keepalive watchdog** (merged into existing coverage; `keepalive: false` opts out) |
+| `huaweicloud_sandbox_renew_tunnel`       | Renew a tunnel lifetime (`update -e`, rolling window; returns absolute expiresAt)                                                                                                                          |
+| `huaweicloud_sandbox_keepalive_watchdog` | Install/replace the 3-layer watchdog: host re-attach + daily 720h renewal + 5-min health check                                                                                                             |
 
 ### Tunnel Persistence (public URL lifetime)
 
@@ -117,6 +171,10 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 
 **Step 0 — Target-Selection Gate (MANDATORY)**: before any sandbox lifecycle tool, confirm the target. If the developer asked to deploy/host/publish a site without naming a target, STOP and run the [Target-Selection Gate](#target-selection-gate-mandatory--do-not-skip) first; do NOT call `huaweicloud_sandbox_connect` until it is resolved. Proceed with this workflow only if the target is already confirmed as sandbox (or a temporary runtime).
 
+**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [两池沙箱（pool_type）](#两池沙箱pool_type) selection rules (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window (ephemeral: idle 30min shutdown + 1h delete; persistent: 7-day idle reclaim cap) before connecting.
+
+**Step 0.5 — Stack-Selection Gate (MANDATORY)**: before uploading or writing any application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
+
 Setup is a **plugin-side preflight** — the developer should be asked a question only once, when the agreement actually needs signing:
 
 1. **Check user** (transparent): `huaweicloud_sandbox_check_user` — returns `realnameVerified`/`agreementSigned` (200) when all good, OR throws a 403 error with one of these codes:
@@ -158,11 +216,11 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
 
    If `source /tmp/hw_creds.sh` returns empty, the credentials injection may not have completed — re-run `huaweicloud_sandbox_credentials`.
 
-   **DevBridge API Key 前置引导（before expose, not mid-expose）**: the address-generation service (DevBridge 0.2.x) requires an API Key. Recent sandbox images auto-acquire one from the platform keyring — but if the sandbox was created on an older image (cannot auto-acquire), prepare the key at THIS stage instead of being interrupted halfway through the expose flow: create it once at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (value shown only once, `devbridge_` prefix), hand it over via `export HW_API_KEY=<key>` locally (preferred) or paste it in the conversation for the `api_key` param, then run `huaweicloud_sandbox_credentials`. Full why/where/how guide: [Step 1, NO_CREDENTIAL branch](#step-1-authenticate--verified-waterfall-keyring-first).
+   **DevBridge API Key 前置引导（before expose, not mid-expose）**: the address-generation service (DevBridge 0.2.x) requires an API Key. Recent sandbox images auto-acquire one from the platform keyring — but if the sandbox was created on an older image (cannot auto-acquire), prepare the key at THIS stage instead of being interrupted halfway through the expose flow: create it once at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (value shown only once, `devbridge_` prefix), hand it over via `export HW_API_KEY=<key>` locally (preferred) or paste it in the conversation for the `api_key` param, then run `huaweicloud_sandbox_credentials`. Full why/where/how guide: [Step 1, NO_CREDENTIAL branch](#step-1-authenticate--api-key-only-aksk-removed-auto-create-fallback).
 
 8. **Execute commands**: use `huaweicloud_sandbox_exec_with_session` for interactive work (cd, env setup), or `huaweicloud_sandbox_exec_one_shot` for long-running builds/installs. See [Tool Selection Guide](#tool-selection-guide).
 9. **Upload project** (if deploying local code): `huaweicloud_sandbox_upload_project` to transfer a local project directory into `/workspace/<name>` — uses HTTP tunnel, much faster than base64 for multi-file projects. Use `huaweicloud_sandbox_upload_file` for single files.
-10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer
+10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer. **Every URL handoff MUST include the sandbox-lifetime notice from `urlLifetimeHint` (or `warnings`)**: the address dies when the sandbox idles out (ephemeral: shutdown/delete; persistent: shutdown, data retained), and the tunnel expiry is not the sandbox lifetime
 
 ## File Transfer (local → sandbox)
 
@@ -321,60 +379,52 @@ fi
 
 Measured (2026-10-22): an overnight reboot reverted `~/.huawei/bin/devbridge` 0.2.2 to the image's 0.1.13 — **yesterday's successful operation replayed as today's unexplained failure**. Recovery after a reboot: re-run the Step 0 install (or just re-export the PATH to the surviving `/workspace/.local/bin`), re-run `huaweicloud_sandbox_credentials` to re-inject `/tmp` credentials, and re-run `huaweicloud_sandbox_keepalive_watchdog` to restore the keepalive loop.
 
-### Step 1: Authenticate — verified waterfall, keyring first
+### Step 1: Authenticate — API Key only (AK/SK removed, auto-create fallback)
 
-Authentication tries three credential sources in order, each verified with a real login + `auth status` before use; a failure falls through to the next tier:
+DevBridge authentication is **fixed to API Key** (定稿决策，2026-11-04)。AK/SK login (`--access-key/--secret-key`) has been REMOVED — the auth waterfall no longer reads `/tmp/hw_creds.sh` for devbridge purposes.
 
-- **Tier 1 — keyring API Key** (preferred): recent sandbox images (hd-space-ai-shell line) get `HW_DEVBRIDGE_API_KEY` auto-injected by the platform into the sandbox keyring — **zero user action, long-lived key**. Read it via `hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1` (⚠ the value goes to **stderr** — `2>&1` is mandatory or you silently capture an empty string) and accept only values starting with `devbridge_` (`(not found)` and error text are rejected). If the first read fails, a light revive (restart the D-Bus session bus at `unix:path=/run/dbus-session`, replace a locked keyring daemon with `printf '\n' | gnome-keyring-daemon --unlock`) retries once — no package installs.
-- **Tier 2 — AK/SK** (image builds, legacy sandboxes): image builds keep `--access-key/--secret-key`. STS credentials **must** include `--security-token "$HW_SECURITY_TOKEN"` or the gateway rejects the request with 401 `APIGW.0301`. **The `--huaweicloud` SSO login flag does NOT exist in sandbox devbridge 0.2.x binaries (e.g. 0.2.2)** — 文档超前于二进制：不要尝试 `--huaweicloud`，直接使用 `devbridge auth login --access-key/--secret-key`（上方脚本以 `auth login --help` 探测为准）。0.1.x binaries additionally advertised `--huaweicloud` (use it only when their help advertises it).
-- **Tier 3 — `/tmp/hw_api_key`** (release builds, user-provided one-time): the file is written by `huaweicloud_sandbox_credentials` from the local `HW_API_KEY` env (preferred) or the `api_key` param.
+Authentication tries sources in order, each verified with a real `devbridge auth login --api-key` + `auth status` before use. Note: the probe tests keyring and file in one exec — file hits before auto-create triggers (if a user-provided key exists, it wins over auto-creation):
 
-`huaweicloud_sandbox_expose_tunnel` runs this waterfall automatically and reports the winning mode (`API_KEY_KEYRING` / `AKSK_SUPPORTED` / `API_KEY_FILE`) or `NO_CREDENTIAL` with a non-sensitive per-tier `attempts` diagnostic. Manual equivalent:
+- **Tier 1 — keyring API Key** (preferred): read via `hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1` (⚠ stderr). Sources: (a) self-injected by the plugin's auto-create (devbridge-key.mjs, key names `devkit-ephemeral`/`devkit-persistent` per pool); (b) platform legacy injection (compatible, not relied upon). A light revive (D-Bus restart + keyring unlock) retries once.
+- **Tier 2 — `/tmp/hw_api_key` file** (manual channel): written by `huaweicloud_sandbox_credentials` from the local `HW_API_KEY` env or the `api_key` param. If a file exists, it wins over auto-create.
+- **Tier 3 — auto-create fallback** (host-orchestrated): keyring/file both empty → plugin calls the DevStation relay API (`POST /api-key` via hdkitservice proxy) to create a key → injects into sandbox keyring (file fallback if keyring unavailable) → re-runs probe → reports `API_KEY_AUTO`.
+- **Self-healing**: key invalid (login fails) → clear cache → recreate → inject → retry probe.
+
+`huaweicloud_sandbox_expose_tunnel` runs this waterfall automatically and reports the winning mode (`API_KEY_KEYRING` / `API_KEY_AUTO` / `API_KEY_FILE`) or `NO_CREDENTIAL`.
+
+**Key lifecycle** (per account × pool, fixed name):
+
+- ephemeral pool → `devkit-ephemeral`
+- persistent pool → `devkit-persistent`
+- Local cache at `~/.config/huaweicloud/devbridge-api-keys.json` (0600) stores the full key (list API only returns mask — the full key is visible only at creation time)
+- Cache miss → list (delete same-name orphan) → create → cache
+- Key invalid (login fails) → clear cache → recreate
+
+**Quota handling** (实测 2026-11-04): 20 key limit per account, error code `13002` → `429 HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED`. The structured fallback includes the current key list (with `last_used_at` for stale detection) and the console cleanup URL: https://devstation.connect.huaweicloud.com/space/devbridge/apikey. `devkit-*` prefixed keys are plugin-managed (auto-recreated after deletion) — advise users to clean OTHER stale keys first.
+
+Manual equivalent (for debugging, not for agent use):
 
 ```bash
 export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"
 export HOME="${HOME:-/root}"
-# Tier 1: platform-injected keyring key (stderr! prefix filter!)
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus-session}"
+# Tier 1: keyring (stderr! prefix filter!)
 HW_DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)
 case "$HW_DB_KEY" in
   devbridge_*) devbridge auth login --api-key "$HW_DB_KEY" ;;
-  *) # Tier 2: AK/SK (image builds; STS needs --security-token)
-    source /tmp/hw_creds.sh 2>/dev/null
-    if devbridge auth login --help 2>&1 | grep -q -- '--access-key'; then
-      devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" \
-        ${HW_SECURITY_TOKEN:+--security-token "$HW_SECURITY_TOKEN"}
-    else # Tier 3: user-provided API Key file
-      source /tmp/hw_api_key 2>/dev/null
-      if [ -n "$HW_API_KEY" ]; then devbridge auth login --api-key "$HW_API_KEY"; fi
-    fi ;;
+  *) # Tier 3: file fallback
+    source /tmp/hw_api_key 2>/dev/null
+    if [ -n "$HW_API_KEY" ]; then devbridge auth login --api-key "$HW_API_KEY"; fi ;;
 esac
-devbridge auth status   # separate step: a status failure must not mask the login result
+devbridge auth status
 ```
 
-- **`API_KEY_KEYRING`** → done, nothing was asked of the user (recent images only; the platform injects and rotates the key).
-- **`AKSK_SUPPORTED`** → done. The temporary AK/SK injected by `huaweicloud_sandbox_credentials` is used directly (validated against IAM before injection). If login fails, surface the CLI error — expired STS token → re-run `huaweicloud_sandbox_credentials`.
-- **`NO_CREDENTIAL`** → first re-run `huaweicloud_sandbox_credentials` and retry (refreshes STS, most common quick fix). Still failing means an older sandbox whose image cannot auto-acquire (images are frozen at sandbox creation and cannot be upgraded in place) — guide the developer through a one-time API Key creation (wait for the key before continuing):
-
-**沙箱凭证与 devbridge 版本差异陷阱（实测 #935 坑2/坑3）**：
-
-- 沙箱内 devbridge 0.2.2 无技能文档所述 `--huaweicloud` 登录标志（文档超前于二进制）—— 应直接使用 `devbridge auth login --access-key/--secret-key`（`auth login --help` 探测到 `--access-key` 支持时走该分支，见上方手动等价脚本）。
-- 沙箱内 MCP 注入的 STS 凭证为 obsutil 加密态存储：devbridge 读到密文凭证会报 `APIGW.0301`。需先上传本地 DevKit 明文凭证库（AK 20 位 / SK 40 位，通过 `huaweicloud_sandbox_credentials` 注入），再创建隧道。
-
-1. **Why (one sentence)**: "沙箱的地址生成服务发布版构建已移除 AK/SK 登录，仅支持 API Key（镜像内置构建仍支持 AK/SK，Agent 已自动探测）。API Key 按账号管理，创建一次长期可用、所有沙箱通用。"
-2. **Where (exact steps)**: open https://devstation.connect.huaweicloud.com/space/devbridge/apikey → 登录控制台 → 选择 DevBridge 场景 → 点击"创建"。**完整值仅在创建时展示一次，立即复制**（`devbridge_` 开头）。
-3. **How to hand it over** (present both, recommend the first):
-   - **Recommended**: 在本地终端执行 `export HW_API_KEY=<粘贴Key>`（或写入 shell profile），然后告知"已设置" — Key 不经过对话记录；随后 agent 重新调用 `huaweicloud_sandbox_credentials`（本地 `HW_API_KEY` 会被自动透传注入沙箱）。
-   - **Alternative**: 直接把 Key 粘贴在对话中 — agent 通过 `huaweicloud_sandbox_credentials` 的 `api_key` 参数注入，**绝不回显、不复述、不写入日志**。
-4. **Security**: 不要提交到代码库或分享；怀疑泄露时在同页面删除并重建（1 分钟）。
-
-**Failure paths (API Key branch)**:
-
-| Symptom                                | Guidance                                             |
-| -------------------------------------- | ---------------------------------------------------- |
-| `auth login` returns 401/403           | Key 已被删除或禁用 — 引导在同页面删除旧 Key 重新创建 |
-| 无法访问 API Key 管理页面              | 账号无该页面权限 — 引导联系账号管理员处理            |
-| Key 带空格/换行/缺失 `devbridge_` 前缀 | 引导重新完整复制粘贴                                 |
+- **`API_KEY_KEYRING`** → done (zero user action; key is ours or platform legacy).
+- **`API_KEY_AUTO`** → done (plugin auto-created and injected; zero user action).
+- **`API_KEY_FILE`** → done (user-provided or auto-injected file fallback).
+- **`NO_CREDENTIAL`** → auto-create failed. Check the error:
+  - **Quota full** (`HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED`): guide the user to clean unused keys at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (the `currentKeys` field shows the list). `devkit-*` keys auto-recreate — clean other stale keys first.
+  - **Other errors**: one-time manual fallback — create a key at the console page, `export HW_API_KEY=<key>` locally, re-run `huaweicloud_sandbox_credentials`, then retry.
 
 ### Step 2: Expose
 
@@ -462,13 +512,13 @@ When deploying a **full-stack workbench project** (前后端工作台) or asking
 3. **Nginx single-origin** — `/` serves the frontend, `/api/` reverse-proxies to PostgREST (no CORS, same origin). The frontend dir needs `chmod o+x` on the whole path chain or nginx returns 403.
 4. **Expose + keep alive (automatic)** — `huaweicloud_sandbox_expose_tunnel` with the nginx port; it AUTO-enrolls the tunnel into the keepalive watchdog (merged into existing coverage). Prefer `expiry_hours: 720` for long-lived workbench deployments.
 
-Complete measured procedure (with the full command chain): see `references/fullstack-postgrest.md`.
+Complete measured procedure (full command chain) plus the 2026-10 field notes (Aliyun mirror URLs, cross-mirror resume corruption, `upload_file` 640 → PGRST002, exec-channel escaping → upload files and run `psql -f` / `curl -d @file`): see `references/fullstack-postgrest.md`. For the sandbox restart recovery checklist (what survives on `/workspace` vs what is lost on the 系统盘, plus the write-GRANT rollback trap): see the `Sandbox Restart Recovery Checklist` section in the same file.
 
 ## Web Application Deployment
 
 When deploying a web application to the sandbox, build the app inside the sandbox before exposing it. Source code is uploaded, dependencies installed, and the framework built in the sandbox environment.
 
-**Backend present?** If the project includes a PostgreSQL + PostgREST backend (or the developer asks for one), set up the backend FIRST by following [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) — install PostgreSQL/PostgREST, create the schema, and point the frontend's nginx `/api/` location at PostgREST — then continue with the steps below. Every tunnel exposed afterwards is auto-enrolled into the keepalive watchdog.
+**Backend selection (Stack-Selection Gate)**: the backend choice was already confirmed by the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip) before any code was uploaded. If the project includes a PostgreSQL + PostgREST backend (or the developer asked for one), set up the backend FIRST by following [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) — install PostgreSQL/PostgREST, create the schema, and point the frontend's nginx `/api/` location at PostgREST — then continue with the steps below. Every tunnel exposed afterwards is auto-enrolled into the keepalive watchdog.
 
 **沙箱无 systemd（实测 #935 报告3 问题3）**：沙箱为无 systemd 的容器环境，`systemctl` 全部失效（`System has not been booted with systemd`）—— 不要用 `systemctl start/reload/restart nginx`。Nginx 配置变更直接使用 `nginx -t` 验证 + `nginx -s reload` 热加载，或直接执行 nginx 二进制（`sudo nginx` 启动 / `nginx -s stop` 停止）。`huaweicloud_sandbox_deploy_nginx` 工具返回的 nextStep 文案与该语义一致（配置写入后自动回验存在性与 `nginx -t`，通过后即生效，无需 systemctl）。
 
@@ -1031,6 +1081,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 
 - [Framework Commands](references/framework-commands.md) — command mapping for all supported frameworks
 - [Nginx Templates](references/nginx-templates.md) — nginx configuration templates and fallback
+- [Resource Pool](references/resource-pool.md) — 资源池定稿口径：两沙箱类型、申请/限流参数（持久 2U4G×300 + 4U8G×200、非持久 2U4G×1000、overlayer 5GB/实例、EVS 300TB）、配额 1/类型 与 429+Retry-After 语义
 
 ## Critical Warnings
 
@@ -1040,7 +1091,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 | Agreement required first               | `sandbox_connect` fails if the agreement isn't signed; the `sandbox_check_user` preflight detects this, so surface it to the developer only when signing is needed                                                                                                                                                                                                                                                                                                    |
 | Real-name required                     | `sandbox_connect` fails if `realnameVerified=false`; tell the developer once and stop, don't loop on connect                                                                                                                                                                                                                                                                                                                                                          |
 | Never expose tunnel details            | Do not mention "DevBridge"/"tunnel"/"devbridge" to the developer — say "正在生成访问地址..." and hand over only the URL                                                                                                                                                                                                                                                                                                                                               |
-| devbridge auth: probe the build        | `0.2.2-release` has two builds: image builds retain AK/SK login + env auto-read (fully automatic via `/tmp/hw_creds.sh`); release builds accept only API Key (`/tmp/hw_api_key`). Never assume — probe with `devbridge auth login --help 2>&1 \| grep -q -- '--access-key'` (Step 1 of "Expose the deployed app")                                                                                                                                                     |
+| devbridge auth: API Key only           | DevBridge auth is fixed to API Key (AK/SK login removed, 2026-11-04). The waterfall: keyring (ours + platform legacy) → auto-create fallback → file. Use `devbridge auth login --api-key` only — never `--access-key/--secret-key`.                                                                                                                                                                                                                                   |
 | devbridge 0.1.x is dead                | Sandboxes created before Sep 2026 ship 0.1.13, which connects to a migrated gateway serving a 「服务已迁移」 placeholder with HTTP 200. Check `devbridge version` first and upgrade in place (Step 0) — old tunnels never survive the upgrade                                                                                                                                                                                                                         |
 | CLI PATH                               | The installer only writes `~/.bashrc`; run `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"` (prepend) in the session before using `devbridge` — appending lets a stale image binary in `/usr/local/bin` win. `/workspace/.local/bin` survives sandbox reboots; `~/.huawei/bin` is on the system disk and is wiped on reboot (#999)                                                                                                                       |
 | Never install tunnel tooling locally   | If the sandbox cannot install it, report a generic error and stop — installing on the developer's machine defeats sandbox deployment                                                                                                                                                                                                                                                                                                                                  |
