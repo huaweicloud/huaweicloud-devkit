@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.13-next.4 (2026-11-04)
+
+- refactor(sandbox): 去掉孤儿清理的 last_used_at 检查（1+1 配额下过度设计）
+- fix(sandbox): QA 审查返修——AK/SK 残留清理 + 失效自愈接线 + 孤儿活跃检查
+- feat(sandbox): devbridge 认证固定 API Key——AK/SK 移除 + 自动创建 + 两池分流
+- fix(sandbox): deploy_nginx/probe 标记解析补齐 OSC 转义剥离（#946 漏网）
+
 ## 1.1.13-next.3 (2026-11-03)
 
 - Release
