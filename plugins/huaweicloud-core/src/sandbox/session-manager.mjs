@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createConnection, getCredentials } from './hwlink-api.mjs';
 import { getWebSocketImpl } from '../proxy/proxy-agent.mjs';
 import { trackSandboxConnect, trackSandboxDisconnect } from '../telemetry/telemetry.mjs';
+import { buildExposeLifetimeNotice } from './sandbox-pool.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -1862,7 +1863,16 @@ export async function installKeepaliveWatchdog(workspaceId, { tunnels }, usernam
 // session-surviving URL from one that dies with the deploying session.
 export async function exposeTunnel(
   workspaceId,
-  { port, expiryHours, keepalive, poolType, ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
+  {
+    port,
+    expiryHours,
+    keepalive,
+    poolType,
+    poolContext,
+    ensureDevbridgeKey,
+    buildKeyringInjectScript,
+    listKeysForQuotaHint,
+  },
   username = 'root',
   timeoutMs = 90000,
 ) {
@@ -2140,10 +2150,17 @@ export async function exposeTunnel(
       }
     }
 
+    // 交付地址时必须播报沙箱存活期（隧道有效期 ≠ 沙箱存活期；keepalive 只保隧道不保沙箱）
+    const lifetimeNotice = buildExposeLifetimeNotice(poolContext, parsed.expiryHours);
+    if (lifetimeNotice) warnings.push(lifetimeNotice.warning);
+
     return {
       ok: true,
       publicUrl: parsed.tunnelUrl || undefined,
       port: validatedPort,
+      ...(lifetimeNotice
+        ? { sandboxLifetime: lifetimeNotice.sandboxLifetime, urlLifetimeHint: lifetimeNotice.urlLifetimeHint }
+        : {}),
       tunnelId: parsed.tunnelId || undefined,
       authMode,
       httpCode: parsed.httpCode,

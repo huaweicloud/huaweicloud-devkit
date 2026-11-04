@@ -32,7 +32,7 @@ import {
   rememberWorkspacePool,
   enrichConnectResult,
   poolContextFor,
-  withPoolContext,
+  shouldAnnounceConnect,
   forgetWorkspacePool,
 } from './sandbox/sandbox-pool.mjs';
 import { ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint } from './sandbox/devbridge-key.mjs';
@@ -776,7 +776,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_expose_tunnel',
     description:
-      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (probing AK/SK vs API-Key builds, using /tmp/hw_creds.sh and /tmp/hw_api_key as injected by huaweicloud_sandbox_credentials), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, and warnings. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
+      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (probing AK/SK vs API-Key builds, using /tmp/hw_creds.sh and /tmp/hw_api_key as injected by huaweicloud_sandbox_credentials), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, warnings, sandboxLifetime and urlLifetimeHint. The urlLifetimeHint MUST be relayed to the developer together with the URL: the tunnel expiry is NOT the sandbox lifetime — an idle sandbox shuts down (ephemeral also auto-deletes), which kills the URL. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
     inputSchema: {
       type: 'object',
       required: ['port'],
@@ -886,7 +886,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), and pool_type/template_id echo. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle reclaim capped at 7 days.',
+      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_days) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1499,10 +1499,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       const sandboxUser2 = args.username || 'root';
       const sandboxTimeout2 = args.timeout_ms || 120000;
       const sandboxResult2 = await execWithSession(sandboxWsId2, args.command, sandboxUser2, sandboxTimeout2);
-      return withPoolContext(sandboxWsId2, {
+      return {
         stdout: sandboxResult2.stdout,
         exitCode: sandboxResult2.exitCode,
-      });
+      };
     }
     case 'huaweicloud_sandbox_exec_one_shot': {
       const sandboxWsId3 = args.workspace_id || getCurrentWorkspaceId();
@@ -1515,10 +1515,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       const sandboxUser3 = args.username || 'root';
       const sandboxTimeout3 = args.timeout_ms || 120000;
       const sandboxResult3 = await execOneShot(sandboxWsId3, args.command, sandboxUser3, sandboxTimeout3);
-      return withPoolContext(sandboxWsId3, {
+      return {
         stdout: sandboxResult3.stdout,
         exitCode: sandboxResult3.exitCode,
-      });
+      };
     }
     case 'huaweicloud_sandbox_close_session': {
       const sandboxWsId4 = args.workspace_id || getCurrentWorkspaceId();
@@ -1549,9 +1549,12 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser5 = args.username || 'root';
       const sandboxTimeout5 = args.timeout_ms || 120000;
-      return withPoolContext(
+      return await uploadFileWithSession(
         sandboxWsId5,
-        await uploadFileWithSession(sandboxWsId5, args.local_path, args.remote_path, sandboxUser5, sandboxTimeout5),
+        args.local_path,
+        args.remote_path,
+        sandboxUser5,
+        sandboxTimeout5,
       );
     }
     case 'huaweicloud_sandbox_upload_project': {
@@ -1567,12 +1570,16 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser6 = args.username || 'root';
       const sandboxTimeout6 = args.timeout_ms || 120000;
-      return withPoolContext(
+      return await uploadProjectWithSession(
         sandboxWsId6,
-        await uploadProjectWithSession(sandboxWsId6, args.local_dir, args.remote_dir, sandboxUser6, sandboxTimeout6, {
+        args.local_dir,
+        args.remote_dir,
+        sandboxUser6,
+        sandboxTimeout6,
+        {
           exclude: args.exclude,
           extract: args.extract,
-        }),
+        },
       );
     }
     case 'huaweicloud_sandbox_deploy_nginx': {
@@ -1588,22 +1595,19 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser7 = args.username || 'root';
       const sandboxTimeout7 = args.timeout_ms || 60000;
-      return withPoolContext(
+      return await deployNginx(
         sandboxWsId7,
-        await deployNginx(
-          sandboxWsId7,
-          {
-            nginxType: args.nginx_type,
-            port: args.port,
-            project: args.project,
-            outputDir: args.output_dir,
-            nodePort: args.node_port,
-            publicPort: args.public_port,
-            configName: args.config_name,
-          },
-          sandboxUser7,
-          sandboxTimeout7,
-        ),
+        {
+          nginxType: args.nginx_type,
+          port: args.port,
+          project: args.project,
+          outputDir: args.output_dir,
+          nodePort: args.node_port,
+          publicPort: args.public_port,
+          configName: args.config_name,
+        },
+        sandboxUser7,
+        sandboxTimeout7,
       );
     }
     case 'huaweicloud_sandbox_deploy_check': {
@@ -1619,19 +1623,16 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser8 = args.username || 'root';
       const sandboxTimeout8 = args.timeout_ms || 30000;
-      return withPoolContext(
+      return await deployCheck(
         sandboxWsId8,
-        await deployCheck(
-          sandboxWsId8,
-          {
-            port: args.port,
-            project: args.project,
-            outputDir: args.output_dir,
-            frameworkType: args.framework_type,
-          },
-          sandboxUser8,
-          sandboxTimeout8,
-        ),
+        {
+          port: args.port,
+          project: args.project,
+          outputDir: args.output_dir,
+          frameworkType: args.framework_type,
+        },
+        sandboxUser8,
+        sandboxTimeout8,
       );
     }
     case 'huaweicloud_sandbox_expose_tunnel': {
@@ -1649,23 +1650,22 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser9 = args.username || 'root';
       const sandboxTimeout9 = args.timeout_ms || 90000;
-      return withPoolContext(
+      const exposePoolContext = poolContextFor(sandboxWsId9);
+      return await exposeTunnel(
         sandboxWsId9,
-        await exposeTunnel(
-          sandboxWsId9,
-          {
-            port: args.port,
-            expiryHours: args.expiry_hours,
-            keepalive: args.keepalive,
-            // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
-            poolType: poolContextFor(sandboxWsId9)?.poolMode || 'ephemeral',
-            ensureDevbridgeKey,
-            buildKeyringInjectScript,
-            listKeysForQuotaHint,
-          },
-          sandboxUser9,
-          sandboxTimeout9,
-        ),
+        {
+          port: args.port,
+          expiryHours: args.expiry_hours,
+          keepalive: args.keepalive,
+          // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
+          poolType: exposePoolContext?.poolMode || 'ephemeral',
+          poolContext: exposePoolContext,
+          ensureDevbridgeKey,
+          buildKeyringInjectScript,
+          listKeysForQuotaHint,
+        },
+        sandboxUser9,
+        sandboxTimeout9,
       );
     }
     case 'huaweicloud_sandbox_renew_tunnel': {
@@ -1681,14 +1681,11 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
             'or set HW_WORKSPACE_ID environment variable before starting the agent.',
         );
       }
-      return withPoolContext(
+      return await renewTunnel(
         sandboxWsId10,
-        await renewTunnel(
-          sandboxWsId10,
-          { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
-          args.username || 'root',
-          args.timeout_ms || 60000,
-        ),
+        { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
+        args.username || 'root',
+        args.timeout_ms || 60000,
       );
     }
     case 'huaweicloud_sandbox_keepalive_watchdog': {
@@ -1705,14 +1702,11 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         );
       }
       const tunnels11 = args.tunnels.map((t) => ({ tunnelId: t.tunnel_id || t.tunnelId, url: t.url }));
-      return withPoolContext(
+      return await installKeepaliveWatchdog(
         sandboxWsId11,
-        await installKeepaliveWatchdog(
-          sandboxWsId11,
-          { tunnels: tunnels11 },
-          args.username || 'root',
-          args.timeout_ms || 60000,
-        ),
+        { tunnels: tunnels11 },
+        args.username || 'root',
+        args.timeout_ms || 60000,
       );
     }
     case 'huaweicloud_sandbox_check_user':
@@ -1754,11 +1748,14 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         throw error;
       }
       const devStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
+      let announceConnect = true;
       if (devStageId) {
         setWorkspaceId(devStageId);
-        // 池归属缓存：exec/upload/deploy 等工具返回值据此附带池模式提示（缺口#2）
+        // 播报判定：会话首次 connect 或复用实例被唤醒（started=true）才提示，其余复用静默
+        announceConnect = shouldAnnounceConnect(devStageId, connectResult || {});
+        // 池归属 + 生命周期口径缓存（服务端回显优先，缺失时客户端默认兜底）。
         // 双读兜底与 devStageId 同型（防服务端 wire 命名漂移，QA #1082 配对复审教训）
-        rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType);
+        rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType, connectResult || {});
         try {
           await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
         } catch {}
@@ -1772,8 +1769,8 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         } catch {}
         await transferGitRepo(args, devStageId, connectResult);
       }
-      // TTL 播报（缺口#1）：服务端回显 pool_type 才附带生命周期提示
-      return enrichConnectResult(connectResult);
+      // 生命周期提示：仅首次连接 / 关机唤醒时播报（服务端回显 pool_type 才生成）
+      return enrichConnectResult(connectResult, { announce: announceConnect });
     }
     case 'huaweicloud_sandbox_credentials': {
       const devStageId = args.dev_stage_id || getCurrentWorkspaceId();

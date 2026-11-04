@@ -262,13 +262,14 @@ test('HDKIT_QUOTA_EXCEEDED carries retryAfter and release-oriented remediation',
   }
 });
 
-test('HDKIT_CAPACITY_INSUFFICIENT carries retryAfter and off-peak remediation', async () => {
+test('HDKIT_CAPACITY_INSUFFICIENT passes the final server copy through untouched', async () => {
   const originalFetch = global.fetch;
+  const finalCopy = 'DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！';
   global.fetch = async () =>
-    new Response(
-      JSON.stringify({ code: 'HDKIT_CAPACITY_INSUFFICIENT', message: 'devkit提供的免费资源紧张，建议错峰使用' }),
-      { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },
-    );
+    new Response(JSON.stringify({ code: 'HDKIT_CAPACITY_INSUFFICIENT', message: finalCopy }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
+    });
   try {
     const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
       () => null,
@@ -278,8 +279,8 @@ test('HDKIT_CAPACITY_INSUFFICIENT carries retryAfter and off-peak remediation', 
     assert.equal(err.code, 'HDKIT_CAPACITY_INSUFFICIENT');
     assert.equal(err.status, 429);
     assert.equal(err.retryAfter, '60');
-    assert.match(err.remediation.hint, /平台池容量暂时不足/);
-    assert.match(err.remediation.steps.join(' '), /错峰/);
+    assert.match(err.message, new RegExp(finalCopy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+    assert.equal(err.remediation, undefined, 'capacity copy must not be wrapped in remediation');
   } finally {
     global.fetch = originalFetch;
   }
