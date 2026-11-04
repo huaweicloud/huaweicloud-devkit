@@ -230,7 +230,10 @@ export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus
 # Tier 1: keyring (ours + platform legacy)
 HW_DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)
 case "$HW_DB_KEY" in
-  devbridge_*) devbridge auth login --api-key "$HW_DB_KEY" ;;
+  devbridge_*)
+    devbridge auth login --api-key "$HW_DB_KEY"
+    devbridge auth status
+    ;;
   *) # Tier 2: file fallback
     source /tmp/hw_api_key 2>/dev/null
     if [ -n "$HW_API_KEY" ]; then
@@ -797,7 +800,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 | Agreement required first             | `sandbox_connect` fails if the agreement isn't signed; the `sandbox_check_user` preflight detects this, so surface it to the developer only when signing is needed                                                                      |
 | Real-name required                   | `sandbox_connect` fails if `realnameVerified=false`; tell the developer once and stop, don't loop on connect                                                                                                                            |
 | Never expose tunnel details          | Do not mention "DevBridge"/"tunnel"/"devbridge" to the developer — say "正在生成访问地址..." and hand over only the URL                                                                                                                 |
-| devbridge auth: API Key only        | DevBridge auth is fixed to API Key (AK/SK removed). Use --api-key only.                                    |                                    |
+| devbridge auth: API Key only        | DevBridge auth is fixed to API Key (AK/SK removed). Use --api-key only. |
 | devbridge 0.1.x is dead              | Sandboxes created before Sep 2026 ship 0.1.13, which connects to a migrated gateway serving a 「服务已迁移」 placeholder with HTTP 200. Check `devbridge version` first and upgrade in place — old tunnels never survive the upgrade                                                                     |
 | CLI PATH                             | The installer only writes `~/.bashrc`; run `export PATH=$PATH:$HOME/.huawei/bin` in the session before using `devbridge`                                                                                                                |
 | Never install tunnel tooling locally | If the sandbox cannot install it, report a generic error and stop — installing on the developer's machine defeats sandbox deployment                                                                                                    |
