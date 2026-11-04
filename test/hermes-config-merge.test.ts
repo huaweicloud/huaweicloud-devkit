@@ -75,13 +75,24 @@ mcp_servers:
     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
 `;
 
+// Windows-honest path embedding for YAML text: the writer normalizes every
+// path it renders to forward slashes (hermes-config.ts follows the
+// hermes-hooks.ts convention), and a NATIVE join() path interpolated raw
+// into a double-quoted YAML string is not merely a mismatch — it is invalid
+// YAML on Windows (\L is the spec's LINE SEPARATOR escape, so
+// AppData\Local parses to AppData + U+2028 + ocal and no round-trip can
+// hold). Every path that enters fixture or expectation TEXT goes through
+// the same normalization; join()-derived paths for real filesystem IO stay
+// native. A no-op on POSIX.
+const yamlPath = (p: string): string => p.replace(/\\/g, '/');
+
 function devkitChild(hermesHome: string, home: string): string {
   return `  huaweicloud-devkit:
     command: "node"
-    args: ["${hermesHome}/huaweicloud-plugins/dist/mcp-server.js"]
+    args: ["${yamlPath(hermesHome)}/huaweicloud-plugins/dist/mcp-server.js"]
     env:
       HUAWEICLOUD_AGENT_TOOLKIT_MODE: "local"
-      HCLOUD_BIN: "${home}/fake-bin/hcloud"
+      HCLOUD_BIN: "${yamlPath(home)}/fake-bin/hcloud"
 `;
 }
 
@@ -491,7 +502,7 @@ test('a devkit-named key under another parent with nested args never leaks into 
 test('the extras parse reads the child own args line, not a nested sub-key line', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  huaweicloud-devkit:',
@@ -514,7 +525,7 @@ test('the extras parse reads the child own args line, not a nested sub-key line'
 test('a single-quoted args restyle keeps its extras through the rewrite', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const restyled = `mcp_servers:\n  huaweicloud-devkit:\n    command: "node"\n    args: ['${mcpPath}', '--hdkitservice-endpoint', 'https://example.test']\n`;
     seedConfig(ctx.configPath, restyled);
 
@@ -563,7 +574,7 @@ test('a duplicated managed child heals to one on rewrite', () => {
 test('a foreign DEVKIT_PACKS line never satisfies the child packs check', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  filesystem:',
@@ -661,7 +672,7 @@ test('remove never eats devkit-named lines inside a user block scalar', () => {
       '      huaweicloud-devkit: fake',
       '      more prompt text',
       `  huaweicloud-devkit:`,
-      `    args: ["${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js"]`,
+      `    args: ["${yamlPath(ctx.hermesHome)}/huaweicloud-plugins/dist/mcp-server.js"]`,
       '',
     ].join('\n');
     seedConfig(ctx.configPath, seeded);
@@ -705,7 +716,7 @@ test('a BOM on the mcp_servers key stays visible to the scanner across write and
 test('args elements with escaped quotes, brackets, and spaces survive the rewrite verbatim', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  huaweicloud-devkit:',
@@ -728,7 +739,7 @@ test('args elements with escaped quotes, brackets, and spaces survive the rewrit
 test('a trailing comment on the args line defeats neither the rewrite nor the delta', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}", "--user-flag"] # note\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -747,7 +758,7 @@ test('the uninstall delta survives quotes, brackets, and apostrophes in extras',
   const ctx = isolatedHermesHome();
   try {
     const { uninstallHermes } = await import('../plugins/huaweicloud-core/src/agents/hermes.ts');
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     for (const extra of [`--note=don't`, `--range=[1,2]`, `--prefix`, `say "hi"`]) {
       const yamlExtra = extra.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
       seedConfig(ctx.configPath, `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}", "${yamlExtra}"]\n`);
@@ -906,7 +917,7 @@ test('consolidation moves the duplicate key body exactly once, at the sibling in
 test('a trailing comment ending with a bracket stays out of the args', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}", "--user-flag"] # see [docs]\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -924,7 +935,7 @@ test('a trailing comment ending with a bracket stays out of the args', () => {
 test('a plain mapping key starting with a dash is a child, not a sequence item', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  -verbose: true\n  huaweicloud-devkit:\n    args: ["${mcpPath}", "--keep-me"]\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -945,7 +956,7 @@ test('a plain mapping key starting with a dash is a child, not a sequence item',
 test('a quoted managed-child key spelling is recognized by write and remove', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  "huaweicloud-devkit":\n    args: ["${mcpPath}", "--user-flag"]\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -997,7 +1008,7 @@ test('a refused write never consumes the saved delta', () => {
 test('a mixed bare and flow-form mcp_servers config is left untouched whole', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}"]\nmcp_servers: { other: true }\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -1030,7 +1041,7 @@ test('a DEVKIT_PACKS line nested under a user sub-key never satisfies the packs 
 test('a sequence-form mcp_servers key anywhere refuses the write before any mutation', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const withChildSecond = [
       'mcp_servers:',
       '  - command: "npx"',
@@ -1090,7 +1101,7 @@ test('duplicate bare mcp_servers keys with no managed child are left untouched',
 test('YAML escape spellings in args round-trip through the rewrite byte for byte', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}", "-fmt\\ttab", "-nl\\nline"]\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -1109,7 +1120,7 @@ test('YAML escape spellings in args round-trip through the rewrite byte for byte
 test('a quoted env key and a trailing comment still resolve the packs value', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  huaweicloud-devkit:',
@@ -1133,7 +1144,7 @@ test('a quoted env key and a trailing comment still resolve the packs value', ()
 test('a duplicate-key heal consolidates every duplicate, child under the first key', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  filesystem:',
@@ -1164,7 +1175,7 @@ test('a duplicate-key heal consolidates every duplicate, child under the first k
 test('NEL and C1 escapes keep their values through the rewrite', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}", "-nel\\N", "-c1\\x80"]\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -1183,7 +1194,7 @@ test('NEL and C1 escapes keep their values through the rewrite', () => {
 test('a hash or escaped quote inside a quoted DEVKIT_PACKS value reads whole', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  huaweicloud-devkit:',
@@ -1223,7 +1234,7 @@ test('in-file extras take precedence over a stale uninstall delta', () => {
   try {
     const backupPath = seedDeltaBackup(ctx.home, ['--stale-delta']);
 
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     seedConfig(ctx.configPath, `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}", "--manual-repair"]\n`);
 
     writeHermesMcpConfig('core');
@@ -1257,7 +1268,13 @@ test('a quote in the hcloud path renders escaped in HCLOUD_BIN', () => {
   const ctx = isolatedHermesHome();
   try {
     const oddBin = join(ctx.home, 'fake-bin', 'hcloud"weird');
-    writeFileSync(oddBin, '#!/bin/sh\n');
+    // The quote-bearing filename itself is illegal on Windows filesystems
+    // (writeFileSync answers ENOENT), so the fixture file only exists where
+    // the platform allows it — the assertion exercises the WRITER's
+    // rendering of the env value, and the writer never stats the path.
+    if (process.platform !== 'win32') {
+      writeFileSync(oddBin, '#!/bin/sh\n');
+    }
     process.env.HCLOUD_BIN = oddBin;
 
     writeHermesMcpConfig(null);
@@ -1290,7 +1307,7 @@ test('a non-mapping config root is left untouched', () => {
 test('a hand-re-indented env member still resolves the packs value', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  huaweicloud-devkit:',
@@ -1312,7 +1329,7 @@ test('a hand-re-indented env member still resolves the packs value', () => {
 test('an empty-form duplicate key retires in the heal, child lands live', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers: {}',
       'mcp_servers:',
@@ -1368,7 +1385,7 @@ test('flow roots and document-marker mapping roots get the right verdicts', () =
 test('a column-0 comment inside a retired duplicate block drops with it', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  huaweicloud-devkit:',
@@ -1394,7 +1411,7 @@ test('a column-0 comment inside a retired duplicate block drops with it', () => 
 test('unquoted args elements with mid-scalar quotes survive verbatim', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  huaweicloud-devkit:\n    args: ["${mcpPath}", --format="json", --note=don't]\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -1417,7 +1434,7 @@ test('a flow-form managed child keeps its args through rewrite and delta', async
   const ctx = isolatedHermesHome();
   try {
     const { uninstallHermes } = await import('../plugins/huaweicloud-core/src/agents/hermes.ts');
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  huaweicloud-devkit: {command: "node", args: ["${mcpPath}", "--precious-extra"]}\n`;
     seedConfig(ctx.configPath, seeded);
 
@@ -1437,7 +1454,7 @@ test('a flow-form managed child keeps its args through rewrite and delta', async
 test('an escaped DEVKIT_PACKS value round-trips through update', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = [
       'mcp_servers:',
       '  huaweicloud-devkit:',
@@ -1501,7 +1518,7 @@ test('a trailing document-end marker opens a new document for the fresh key', ()
 test('a flow-form child env is visible to the packs reader and set math', () => {
   const ctx = isolatedHermesHome();
   try {
-    const mcpPath = `${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`;
+    const mcpPath = yamlPath(`${ctx.hermesHome}/huaweicloud-plugins/dist/mcp-server.js`);
     const seeded = `mcp_servers:\n  filesystem:\n    command: "npx"\n  huaweicloud-devkit: {command: "node", args: ["${mcpPath}"], env: {HUAWEICLOUD_AGENT_TOOLKIT_MODE: "local", DEVKIT_PACKS: "core"}}\n`;
     seedConfig(ctx.configPath, seeded);
 
