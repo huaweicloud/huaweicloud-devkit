@@ -82,7 +82,7 @@ test('getCachedKey reads what setCachedKey writes (via ensureDevbridgeKey)', asy
 });
 
 test('clearCachedKey invalidates the cache', async () => {
-  clearCachedKey('test-ak', 'ephemeral');
+  clearCachedKey('TESTAK', 'ephemeral');
   // After clear, next call re-creates
   mockCreateResult = { api_key: 'devbridge_TEST2', name: 'devkit-ephemeral', id: 'id2' };
   const result = await recreateDevbridgeKey('ephemeral');
@@ -90,30 +90,62 @@ test('clearCachedKey invalidates the cache', async () => {
   assert.equal(result.apiKey, 'devbridge_TEST2');
 });
 
-// ── 孤儿清理 ──
+// ── 孤儿清理（#1090 边缘安全守卫）──
 
-test('ensureDevbridgeKey deletes same-name orphan before creating', async () => {
+test('ensureDevbridgeKey deletes a same-name orphan only when it is stale (last_used_at older than 5 min)', async () => {
   clearCachedKey('test-ak', 'persistent');
   mockDeleteCalls = [];
   mockKeys = [
-    { name: 'devkit-persistent', id: 'orphan-id' },
-    { name: 'other-key', id: 'other-id' },
+    { name: 'devkit-persistent', id: 'orphan-id', last_used_at: '2020-01-01T00:00:00Z' },
+    { name: 'other-key', id: 'other-id', last_used_at: '2020-01-01T00:00:00Z' },
   ];
   mockCreateResult = { api_key: 'devbridge_NEW', name: 'devkit-persistent', id: 'new-id' };
   const result = await ensureDevbridgeKey('persistent');
   assert.equal(result.mode, 'CREATED');
-  // Same-name orphan deleted, other key untouched
+  // Stale same-name orphan deleted, other key untouched
   assert.ok(mockDeleteCalls.includes('orphan-id'));
   assert.ok(!mockDeleteCalls.includes('other-id'));
 });
 
-test('ensureDevbridgeKey does not delete when no orphan exists', async () => {
-  clearCachedKey('test-ak', 'ephemeral');
+test('#1090: live same-name orphan (recent last_used_at) is kept and NOT blindly recreated', async () => {
+  clearCachedKey('TESTAK', 'ephemeral');
   mockDeleteCalls = [];
-  mockKeys = [{ name: 'other-key', id: 'other-id' }];
+  mockKeys = [{ name: 'devkit-ephemeral', id: 'live-id', last_used_at: new Date(Date.now() - 60_000).toISOString() }];
+  await assert.rejects(ensureDevbridgeKey('ephemeral'), (err) => {
+    assert.equal(err.code, 'HDKIT_DEVBRIDGE_KEY_IN_USE');
+    assert.match(err.message, /in use by another live sandbox/);
+    assert.match(err.message, /devkit-ephemeral/);
+    return true;
+  });
+  // LIVE key must NOT be deleted
+  assert.equal(mockDeleteCalls.length, 0);
+});
+
+test('#1090: missing/unparseable last_used_at is treated as LIVE (conservative, fail-closed)', async () => {
+  clearCachedKey('TESTAK', 'ephemeral');
+  mockDeleteCalls = [];
+  mockKeys = [{ name: 'devkit-ephemeral', id: 'fresh-id' }];
+  await assert.rejects(ensureDevbridgeKey('ephemeral'), (err) => err.code === 'HDKIT_DEVBRIDGE_KEY_IN_USE');
+  mockKeys = [{ name: 'devkit-ephemeral', id: 'nan-id', last_used_at: 'not-a-date' }];
+  await assert.rejects(ensureDevbridgeKey('ephemeral'), (err) => err.code === 'HDKIT_DEVBRIDGE_KEY_IN_USE');
+  assert.equal(mockDeleteCalls.length, 0);
+});
+
+test('ensureDevbridgeKey does not delete when no orphan exists', async () => {
+  clearCachedKey('TESTAK', 'ephemeral');
+  mockDeleteCalls = [];
+  mockKeys = [{ name: 'other-key', id: 'other-id', last_used_at: '2020-01-01T00:00:00Z' }];
   mockCreateResult = { api_key: 'devbridge_NO_ORPHAN', name: 'devkit-ephemeral', id: 'no-orphan-id' };
   await ensureDevbridgeKey('ephemeral');
   assert.equal(mockDeleteCalls.length, 0);
+});
+
+test('ensureDevbridgeKey propagates upstream create errors (e.g. quota) with their code', async () => {
+  clearCachedKey('TESTAK', 'ephemeral');
+  mockKeys = [];
+  mockCreateError = Object.assign(new Error('13002: quota exceeded'), { code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED' });
+  await assert.rejects(ensureDevbridgeKey('ephemeral'), (err) => err.code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED');
+  mockCreateError = null;
 });
 
 // ── 配额满降级数据 ──
@@ -137,6 +169,14 @@ test('buildKeyringInjectScript includes keyring set and file fallback', () => {
   assert.ok(script.includes('echo "export HW_API_KEY=\'devbridge_INJECT_TEST\'" > /tmp/hw_api_key'));
   assert.ok(script.includes('chmod 600 /tmp/hw_api_key'));
   assert.ok(script.includes('DB_KEY_INJECTED'));
+});
+
+test('#1090: buildKeyringInjectScript rejects keys with quote/escape characters (single-quote splicing)', () => {
+  assert.throws(() => buildKeyringInjectScript("devbridge_ev'il"), /invalid DevBridge API Key characters/);
+  assert.throws(() => buildKeyringInjectScript('devbridge_ev"il'), /invalid DevBridge API Key characters/);
+  assert.throws(() => buildKeyringInjectScript('devbridge_ev\\il'), /invalid DevBridge API Key characters/);
+  assert.throws(() => buildKeyringInjectScript('devbridge_ev$il'), /invalid DevBridge API Key characters/);
+  assert.throws(() => buildKeyringInjectScript(''), /invalid DevBridge API Key characters/);
 });
 
 // ── 清理 ──
