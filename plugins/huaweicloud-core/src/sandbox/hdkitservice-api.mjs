@@ -168,6 +168,28 @@ export async function hdkitCredentials(sessionId, devStageId, enableSts = true) 
   return await hdkitRequest('POST', 'credentials', body);
 }
 
+// ── DevBridge API Key relay 代理（经 hdkitservice 透传 DevStation relay 接口）──
+// 凭证由 hdkitRequest 内部 getCredentials() 统一解析，调用方无需传
+
+/**
+ * 创建 DevBridge API Key。响应含完整 api_key（仅创建时可见）。
+ * 配额满（13002）时服务端返回 429 HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED，
+ * hdkitRequest 抛错 err.code 携带该码。
+ */
+export async function hdkitCreateApiKey(name, scope = 'devbridge') {
+  return await hdkitRequest('POST', 'api-key', { name, scope });
+}
+
+/** 列出当前账号所有 API Key（仅 mask + last_used_at）。 */
+export async function hdkitListApiKeys() {
+  return await hdkitRequest('GET', 'api-keys', undefined, 30000);
+}
+
+/** 按 keyId 删除 API Key（上游 DELETE 方法）。 */
+export async function hdkitDeleteApiKey(keyId) {
+  return await hdkitRequest('DELETE', `api-keys/${encodeURIComponent(keyId)}`, undefined, 30000);
+}
+
 export async function hdkitVoucherStatus(domainId) {
   try {
     const path = domainId ? `voucher/status?domain_id=${encodeURIComponent(domainId)}` : 'voucher/status';

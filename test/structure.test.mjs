@@ -357,24 +357,18 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.doesNotMatch(sandbox, /Login needs --huaweicloud/);
   assert.match(sandbox, /Never expose tunnel details/);
 
-  // Auth must be decided by probing the binary's capability, not by the version string —
-  // the verified waterfall prefers the platform-injected keyring key (API_KEY_KEYRING),
-  // falls back to image-build AK/SK (AKSK_SUPPORTED), then to the user-provided file
-  // (API_KEY_FILE). STS credentials carry --security-token (401 APIGW.0301 without it).
-  assert.match(sandbox, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
+  // Auth is API Key only (2026-11-04 定稿：AK/SK login removed).
+  // The waterfall: keyring (ours + platform legacy) → auto-create fallback → file.
   assert.match(sandbox, /API_KEY_KEYRING/);
-  assert.match(sandbox, /AKSK_SUPPORTED/);
+  assert.match(sandbox, /API_KEY_AUTO/);
   assert.match(sandbox, /API_KEY_FILE|NO_CREDENTIAL/);
   assert.match(sandbox, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/, 'keyring read must capture stderr');
   assert.match(sandbox, /devbridge_/);
-  assert.match(
-    sandbox,
-    /auth login --access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/,
-    'image-build branch must teach the direct AK/SK login',
-  );
-  assert.match(sandbox, /--security-token "\$HW_SECURITY_TOKEN"/, 'STS login must include the security token');
+  // AK/SK login commands must NOT appear
+  assert.doesNotMatch(sandbox, /auth login --access-key/, 'AK/SK login must be removed from skill');
+  assert.doesNotMatch(sandbox, /AKSK_SUPPORTED/, 'AKSK_SUPPORTED mode must be removed from skill');
 
-  // The API Key guidance (release-build branch) must survive, incl. version detection
+  // The API Key guidance must survive, incl. version detection
   // and the in-place upgrade.
   assert.match(sandbox, /auth login --api-key "\$HW_API_KEY"/);
   assert.match(sandbox, /devbridge version/);
@@ -1174,13 +1168,12 @@ test('1024-batch2 (#935): skill docs carry the verified trap guidance', () => {
     }
   }
 
-  // B5/B6: sandbox has no systemd; devbridge 0.2.x has no --huaweicloud flag;
-  // STS ciphertext → APIGW.0301 with the plaintext-store upload remedy.
+  // B5/B6: sandbox has no systemd; devbridge auth is API Key only (AK/SK removed);
+  // the --huaweicloud flag and AK/SK login are gone from every 0.2.x path.
   const sandbox = readSkill('huawei-sandbox');
   assert.match(sandbox, /systemctl/);
   assert.match(sandbox, /无 systemd|nginx -s reload/);
-  assert.match(sandbox, /devbridge auth login --access-key/);
-  assert.match(sandbox, /APIGW\.0301/);
+  assert.doesNotMatch(sandbox, /devbridge auth login --access-key/, 'AK/SK login must be removed');
   // The removed 0.1.x login flow must not be taught as the 0.2.x path.
   assert.doesNotMatch(sandbox, /auth login --huaweicloud/);
 

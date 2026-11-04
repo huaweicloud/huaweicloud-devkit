@@ -1292,18 +1292,21 @@ export async function closeSession(workspaceId, username) {
 
 // Build a shell snippet that authenticates devbridge via a verified waterfall:
 //   Tier 1  keyring API Key  — hwcloud keyring get HW_DEVBRIDGE_API_KEY (platform-injected
-//           on hd-space-ai-shell images; the value goes to STDERR so 2>&1 is mandatory and
-//           the devbridge_ prefix filters "(not found)" / error text). A light revive step
-//           (restart the D-Bus session bus + re-unlock the keyring daemon, no dnf) retries
-//           once when the first read fails. Preferred: devbridge is deprecating AK/SK auth.
-//   Tier 2  AK/SK            — image builds keep --access-key/--secret-key; STS credentials
-//           from /tmp/hw_creds.sh need --security-token or the gateway rejects with 401
-//           APIGW.0301; 0.1.x binaries additionally advertise --huaweicloud in help.
-//   Tier 3  /tmp/hw_api_key  — release builds accept only --api-key; the file is written by
-//           huaweicloud_sandbox_credentials from HW_API_KEY / the api_key param.
-// Every tier performs a real `devbridge auth login` and verifies with `auth status`
-// (must print "Logged in"); on failure the waterfall falls through to the next tier.
+//           on hd-space-ai-shell images, or self-injected by devbridge-key.mjs; the value
+//           goes to STDERR so 2>&1 is mandatory and the devbridge_ prefix filters
+//           "(not found)" / error text). A light revive step (restart the D-Bus session
+//           bus + re-unlock the keyring daemon, no dnf) retries once when the first read fails.
+//   Tier 2  /tmp/hw_api_key  — file channel: written by huaweicloud_sandbox_credentials
+//           from HW_API_KEY / the api_key param (user-provided), or by the auto-create
+//           fallback (devbridge-key.mjs) when keyring injection is unavailable.
+// AK/SK login (--access-key/--secret-key) was REMOVED: devbridge authentication is
+// now fixed to API Key only (定稿决策，2026-11-04).
+// Every tier performs a real `devbridge auth login --api-key` and verifies with
+// `auth status` (must print "Logged in"); on failure the waterfall falls through.
 // DB_ATTEMPT_* lines are non-sensitive diagnostics for support escalation.
+// The HOST orchestrates an auto-create fallback between probe rounds: when the
+// first probe returns NO_CREDENTIAL, the host calls ensureDevbridgeKey() and
+// injects the key (keyring preferred, file fallback), then runs a second probe.
 export function buildDevbridgeAuthProbe() {
   return [
     // #999: /workspace/.local/bin FIRST — /workspace is the data disk and
@@ -1360,29 +1363,7 @@ export function buildDevbridgeAuthProbe() {
     `  db_diag KEYRING "no-valid-key"`,
     `fi`,
     ``,
-    `# ---- Tier 2: AK/SK from /tmp/hw_creds.sh (image builds; STS needs --security-token) ----`,
-    `if [ "$DB_OK" -eq 0 ]; then`,
-    `  source /tmp/hw_creds.sh 2>/dev/null`,
-    `  if devbridge auth login --help 2>&1 | grep -q -- '--access-key' && [ -n "$HW_ACCESS_KEY" ]; then`,
-    `    DB_TOKEN_ARGS=""`,
-    `    [ -n "$HW_SECURITY_TOKEN" ] && DB_TOKEN_ARGS="--security-token \\"$HW_SECURITY_TOKEN\\""`,
-    `    if devbridge auth login --help 2>&1 | grep -q -- '--huaweicloud'; then`,
-    `      devbridge auth login --huaweicloud --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
-    `    else`,
-    `      devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
-    `    fi`,
-    `    if db_login_ok; then`,
-    `      echo "DB_AUTH_MODE=AKSK_SUPPORTED"`,
-    `      DB_OK=1`,
-    `    else`,
-    `      db_diag AKSK "login-failed"`,
-    `    fi`,
-    `  else`,
-    `    db_diag AKSK "binary-or-creds-unavailable"`,
-    `  fi`,
-    `fi`,
-    ``,
-    `# ---- Tier 3: API Key from /tmp/hw_api_key (release builds, user-provided) ----`,
+    `# ---- Tier 2: API Key from /tmp/hw_api_key (file channel; auto-injected or user-provided) ----`,
     `if [ "$DB_OK" -eq 0 ]; then`,
     `  source /tmp/hw_api_key 2>/dev/null`,
     `  if [ -n "$HW_API_KEY" ]; then`,
@@ -1881,7 +1862,7 @@ export async function installKeepaliveWatchdog(workspaceId, { tunnels }, usernam
 // session-surviving URL from one that dies with the deploying session.
 export async function exposeTunnel(
   workspaceId,
-  { port, expiryHours, keepalive },
+  { port, expiryHours, keepalive, poolType, ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
   username = 'root',
   timeoutMs = 90000,
 ) {
@@ -1912,7 +1893,45 @@ export async function exposeTunnel(
     };
   }
 
-  if (authMode !== 'API_KEY_KEYRING' && authMode !== 'AKSK_SUPPORTED' && authMode !== 'API_KEY_FILE') {
+  // Auth waterfall: probe → (auto-create fallback) → expose loop
+  let effectiveAuthMode = authMode;
+  if (authMode !== 'API_KEY_KEYRING' && authMode !== 'API_KEY_FILE' && ensureDevbridgeKey) {
+    // keyring/文件均无 key → host 调 relay API 自动创建 → 注入沙箱 → 重跑 probe
+    try {
+      const { apiKey } = await ensureDevbridgeKey(poolType || 'ephemeral');
+      const injectScript = buildKeyringInjectScript(apiKey);
+      await execOneShot(workspaceId, injectScript, username, 15000);
+      const authResult2 = await execOneShot(workspaceId, authScript, username, 30000);
+      const parsed2 = parseDevbridgeAuthOutput(authResult2.stdout);
+      if (parsed2.authMode === 'API_KEY_KEYRING' || parsed2.authMode === 'API_KEY_FILE') {
+        effectiveAuthMode = 'API_KEY_AUTO';
+      }
+    } catch (error) {
+      // 自动创建失败（含配额满 13002）→ 结构化降级
+      if (error.code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
+        const keysHint = listKeysForQuotaHint ? await listKeysForQuotaHint() : [];
+        return {
+          ok: false,
+          error: error.message,
+          error_code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
+          authMode: authMode || 'UNKNOWN',
+          attempts,
+          currentKeys: keysHint,
+          hint:
+            'API Key 数量已达上限。请到控制台清理不再使用的 key：' +
+            'https://devstation.connect.huaweicloud.com/space/devbridge/apikey\n' +
+            'devkit-* 开头的是插件自动管理的 key（删除后会自动重建），可优先清理其他闲置 key。',
+        };
+      }
+      // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）
+    }
+  }
+
+  if (
+    effectiveAuthMode !== 'API_KEY_KEYRING' &&
+    effectiveAuthMode !== 'API_KEY_FILE' &&
+    effectiveAuthMode !== 'API_KEY_AUTO'
+  ) {
     const loginOutput = String(authResult.stdout || '') + String(authResult.stderr || '');
     return {
       ok: false,
@@ -1920,14 +1939,11 @@ export async function exposeTunnel(
       authMode: authMode || 'UNKNOWN',
       attempts,
       hint:
-        'No DevBridge credential is available in this sandbox. Suggested next steps:\n' +
-        '1) Re-run huaweicloud_sandbox_credentials once, then retry huaweicloud_sandbox_expose_tunnel — ' +
-        'this refreshes the temporary AK/SK (most common quick fix when they simply expired) and rewrites /tmp/hw_creds.sh.\n' +
-        '2) If it still fails, this sandbox was created on an older image and cannot auto-acquire an API Key ' +
-        '(the image cannot be upgraded in place). One-time manual fallback: create an API Key at ' +
-        'https://devstation.connect.huaweicloud.com/space/devbridge/apikey, run `export HW_API_KEY=<key>` locally, ' +
-        're-run huaweicloud_sandbox_credentials, then retry.\n' +
-        '3) The "attempts" field shows which tiers were tried and why they failed — include it when escalating to the platform team.',
+        'No DevBridge API Key is available in this sandbox. Suggested next steps:\n' +
+        '1) Re-run huaweicloud_sandbox_credentials, then retry huaweicloud_sandbox_expose_tunnel.\n' +
+        '2) If auto-creation failed due to quota (20 key limit), clean up unused keys at ' +
+        'https://devstation.connect.huaweicloud.com/space/devbridge/apikey, then retry.\n' +
+        '3) The "attempts" field shows which tiers were tried and why they failed — include it when escalating.',
       loginOutput,
     };
   }
