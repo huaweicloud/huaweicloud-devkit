@@ -17,7 +17,7 @@ process.env.USERPROFILE = tmpHome;
 // Mock hdkitservice-api 的三个 relay 函数 + hwlink-api 的 getCredentials
 let mockKeys = [];
 let mockCreateResult = null;
-const mockCreateError = null;
+let mockCreateError = null;
 let mockDeleteCalls = [];
 
 mock.module('../plugins/huaweicloud-core/src/sandbox/hwlink-api.mjs', {

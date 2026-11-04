@@ -389,17 +389,19 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.ok(credsWrite, 'credsScript block not found in tools.mjs');
   assert.doesNotMatch(credsWrite[0], /HW_API_KEY/);
 
-  // The CodeArts Doer sidecopy must mirror the probe-branch flow and not regress
-  // to the removed 0.1.x flow either.
+  // The CodeArts Doer sidecopy must mirror the API-Key-only flow and not regress
+  // to the removed AK/SK or 0.1.x flows.
   const sidecopy = readFileSync(join(root, '.codeartsdoer', 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   assert.doesNotMatch(sidecopy, /auth login --huaweicloud/);
   assert.doesNotMatch(sidecopy, /res-hd\.hc-cdn\.cn/);
   assert.doesNotMatch(sidecopy, /devbridge ls\b/);
   assert.doesNotMatch(sidecopy, /https:\/\/<id>-<port>\.cn-north-4-bridge/);
-  assert.match(sidecopy, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
-  assert.match(sidecopy, /AUTH_MODE=AKSK_SUPPORTED/);
-  assert.match(sidecopy, /AUTH_MODE=API_KEY_ONLY/);
+  // AK/SK login must be removed from sidecopy (API Key only, 2026-11-04)
+  assert.doesNotMatch(sidecopy, /auth login --access-key/, 'sidecopy must not teach AK/SK login');
+  assert.doesNotMatch(sidecopy, /AUTH_MODE=AKSK_SUPPORTED/, 'sidecopy must not reference AKSK_SUPPORTED');
+  assert.doesNotMatch(sidecopy, /AUTH_MODE=API_KEY_ONLY/);
   assert.match(sidecopy, /auth login --api-key "\$HW_API_KEY"/);
+  assert.match(sidecopy, /API_KEY_KEYRING|hwcloud keyring get HW_DEVBRIDGE_API_KEY/);
   assert.match(sidecopy, /devbridge-s2\.hwtunnel\.com/);
   assert.match(sidecopy, /\/tmp\/hw_api_key/);
 });

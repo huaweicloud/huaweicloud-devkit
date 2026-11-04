@@ -1894,8 +1894,29 @@ export async function exposeTunnel(
   }
 
   // Auth waterfall: probe → (auto-create fallback) → expose loop
+  // 失效自愈：probe 报 login-failed（key 被删/过期）→ 清缓存 → 重建 → 注入 → 重跑 probe
   let effectiveAuthMode = authMode;
-  if (authMode !== 'API_KEY_KEYRING' && authMode !== 'API_KEY_FILE' && ensureDevbridgeKey) {
+  const isLoginFailed =
+    authMode !== 'API_KEY_KEYRING' && authMode !== 'API_KEY_FILE' && attempts.KEYRING === 'login-failed';
+
+  if (isLoginFailed && ensureDevbridgeKey) {
+    // key 失效（缓存里有 key 但 login 失败）→ 清缓存重建
+    try {
+      const { recreateDevbridgeKey } = await import('./devbridge-key.mjs');
+      const { apiKey } = await recreateDevbridgeKey(poolType || 'ephemeral');
+      const injectScript = buildKeyringInjectScript(apiKey);
+      await execOneShot(workspaceId, injectScript, username, 15000);
+      const healResult = await execOneShot(workspaceId, authScript, username, 30000);
+      const healParsed = parseDevbridgeAuthOutput(healResult.stdout);
+      if (healParsed.authMode === 'API_KEY_KEYRING' || healParsed.authMode === 'API_KEY_FILE') {
+        effectiveAuthMode = 'API_KEY_AUTO';
+      }
+    } catch {
+      // 自愈失败 → 走泛化降级
+    }
+  }
+
+  if (effectiveAuthMode !== 'API_KEY_KEYRING' && effectiveAuthMode !== 'API_KEY_FILE' && ensureDevbridgeKey) {
     // keyring/文件均无 key → host 调 relay API 自动创建 → 注入沙箱 → 重跑 probe
     try {
       const { apiKey } = await ensureDevbridgeKey(poolType || 'ephemeral');

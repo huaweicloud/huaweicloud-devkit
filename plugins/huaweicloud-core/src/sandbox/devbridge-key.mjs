@@ -107,11 +107,12 @@ export async function ensureDevbridgeKey(poolType) {
     return { apiKey: cached, mode: 'CACHE_HIT', ak };
   }
 
-  // 2. list → 删同名孤儿（配额安全：每池恰 1 个）
+  // 2. list → 删同名孤儿（配额安全：每池恰 1 个；last_used_at 活跃检查防误删跨宿主 LIVE key）
   try {
     const keys = await hdkitListApiKeys();
     const orphan = Array.isArray(keys) ? keys.find((k) => k.name === name) : null;
-    if (orphan) {
+    // 安全删除条件：同名且 5 分钟内未使用（跨宿主 LIVE key 的 last_used_at 会持续刷新）
+    if (orphan && (!orphan.last_used_at || Date.parse(orphan.last_used_at) < Date.now() - 5 * 60 * 1000)) {
       await hdkitDeleteApiKey(orphan.id);
     }
   } catch {
