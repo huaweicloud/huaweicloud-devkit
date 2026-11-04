@@ -10,6 +10,37 @@ import { z } from 'zod';
 // presence-only validation accepted for NUMERIC_ARG_KEYS fields.
 export const numericArg = z.union([z.number(), z.string()]).nullable();
 
+// A JSON-encoded string of a string array — the model's double-encoded
+// wire form ("args": "[\"VPC\", \"CreateSecurityGroup\"]", measured on the
+// 2026-11-03 e2e-nightly runs: glm-3 re-wrapped the planned command as a
+// JSON string on EVERY huaweicloud_run_approved_command retry) — parsed
+// back to the array before validation. The preprocess is TRANSPARENT in
+// z.toJSONSchema (zod 4.6.7 renders the inner schema), so tools/list and
+// the legacy registry snapshot keep teaching the canonical array shape;
+// a string that does not parse to a string array fails the inner check
+// with the instructive expected-array message.
+export const stringArrayArg = z.preprocess((value) => {
+  if (typeof value !== 'string') return value;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((item) => typeof item === 'string') ? parsed : value;
+  } catch {
+    return value;
+  }
+}, z.array(z.string()));
+
+// "true"/"false" as strings — the model's boolean wire form (measured in
+// the same run: "approvedByUser": "true" on every retry) — converted to
+// real booleans before validation. Garbage strings fail the inner
+// z.boolean() with the instructive message. Like numericArg this is
+// wire-shape tolerance, not semantics change: the approvedByUser
+// attestation still must be explicitly present and true, and the
+// approvalToken still binds the exact command.
+export const booleanArg = z.preprocess(
+  (value) => (value === 'true' ? true : value === 'false' ? false : value),
+  z.boolean(),
+);
+
 // Free-form object the tool narrows itself (env vars, deploy plans).
 export const looseObject = z.record(z.string(), z.unknown());
 

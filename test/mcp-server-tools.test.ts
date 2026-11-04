@@ -246,6 +246,73 @@ test('tools/call accepts string numerics and passes unknown keys through (#530 l
   }
 });
 
+test('tools/call accepts the model-wire double-encoded args and string booleans (CLI execution family)', async () => {
+  const client = createClient();
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+    // The 2026-11-03 e2e-nightly codex leg (PR-1, runs 41730851595/41739397204):
+    // every huaweicloud_run_approved_command retry arrived with args as a
+    // JSON-encoded STRING and approvedByUser as the string "true" (glm-3's
+    // wire form, dump-measured) — the SDK-boundary zod rejected them before
+    // dispatch and the model never self-corrected within the attempt budget.
+    // stringArrayArg/booleanArg now convert both forms at the parse boundary;
+    // tools/list keeps teaching the canonical shapes (the preprocess is
+    // transparent in z.toJSONSchema). Plan arm: the coerced array plans.
+    const planned = await client.request('tools/call', {
+      name: 'huaweicloud_plan_cli_command',
+      arguments: {
+        vendorConfirmed: 'test: vendor established by the harness',
+        args: '["VPC", "CreateSecurityGroup", "--name=e2e-test-sg-01"]',
+        allowWrites: 'true',
+      },
+    });
+    assert.ok(planned.result, `expected a plan result: ${JSON.stringify(planned).slice(0, 300)}`);
+    assert.equal(planned.result.isError, false, 'the double-encoded args must plan (stringArrayArg coercion)');
+    assert.match(planned.result.content[0].text, /CreateSecurityGroup/);
+
+    // Approval arm: a never-minted token keeps the call hermetic (no hcloud
+    // spawn) while proving BOTH coercions landed — approvedByUser "true" past
+    // the handler's boolean check, the coerced args past the zod boundary.
+    // Before the fix this shape died as a protocol-level zod reject.
+    const approved = await client.request('tools/call', {
+      name: 'huaweicloud_run_approved_command',
+      arguments: {
+        vendorConfirmed: 'test: vendor established by the harness',
+        approvalToken: 'never-minted-test-token',
+        args: '["VPC", "CreateSecurityGroup", "--name=e2e-test-sg-01"]',
+        approvedByUser: 'true',
+      },
+    });
+    assert.ok(approved.result, 'the wire-shaped approval call must answer as a tool result, not a protocol error');
+    assert.match(
+      approved.result.content[0].text,
+      /CONFIRM_TOKEN_NOT_FOUND/,
+      'the wire forms must reach the token inspection (past the type boundary)',
+    );
+
+    // Garbage arm: a string that does not parse to a string array is still
+    // rejected — the inner z.array check owns the reject, never a silent
+    // accept of arbitrary strings.
+    const garbage = await client.request('tools/call', {
+      name: 'huaweicloud_plan_cli_command',
+      arguments: {
+        vendorConfirmed: 'test: vendor established by the harness',
+        args: 'not json at all',
+      },
+    });
+    assert.ok(
+      garbage.error || garbage.result?.isError === true,
+      'a non-JSON args string must not dispatch successfully',
+    );
+  } finally {
+    client.close();
+  }
+});
+
 test('tools/call works with arguments omitted entirely', async () => {
   const client = createClient();
   try {
