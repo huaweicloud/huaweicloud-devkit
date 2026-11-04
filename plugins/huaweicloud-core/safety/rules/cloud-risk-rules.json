@@ -433,6 +433,29 @@
       },
       "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",
       "remediation": "Use targeted deletions instead of recursive root removal. Avoid disk format, fork bombs, and system shutdown commands in sandbox terminals."
+    },
+    {
+      "id": "hwc-command-substitution-exec",
+      "title": "Command substitution or remote fetch piped into a shell interpreter",
+      "category": "execution",
+      "severity": "deny",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(\\$\\((?!\\()[^)]*\\)|`[^`]+`|\\b(curl|wget)\\b)"
+          }
+        ],
+        "any": [
+          {
+            "field": "text",
+            "regex": "(\\||;|&&)\\s*(sudo\\s+)?(bash|sh|zsh|dash|ksh|python|node|powershell|pwsh)\\b"
+          }
+        ]
+      },
+      "message": "The command embeds command substitution or pipes remote content into a shell interpreter, which can execute unreviewed or dynamic content.",
+      "remediation": "Expand command substitution into a reviewable file, inspect the content, and execute only explicit reviewed commands instead of piping dynamic output into an interpreter."
     }
   ]
 }
