@@ -79,12 +79,14 @@ function normalizeLifecycle(poolType, raw = {}) {
   const idleShutdownMinutes =
     pick('pool_idle_shutdown_minutes', 'poolIdleShutdownMinutes', 'idleShutdownMinutes') ??
     defaults.idleShutdownMinutes;
-  const idleDeleteMinutes = poolType === 'ephemeral'
-    ? (pick('pool_idle_delete_minutes', 'poolIdleDeleteMinutes', 'idleDeleteMinutes') ?? defaults.idleDeleteMinutes)
-    : null;
-  const reclaimDays = poolType === 'persistent'
-    ? (pick('pool_reclaim_days', 'poolReclaimDays', 'reclaimDays') ?? defaults.reclaimDays)
-    : null;
+  const idleDeleteMinutes =
+    poolType === 'ephemeral'
+      ? (pick('pool_idle_delete_minutes', 'poolIdleDeleteMinutes', 'idleDeleteMinutes') ?? defaults.idleDeleteMinutes)
+      : null;
+  const reclaimDays =
+    poolType === 'persistent'
+      ? (pick('pool_reclaim_days', 'poolReclaimDays', 'reclaimDays') ?? defaults.reclaimDays)
+      : null;
   return { idleShutdownMinutes, idleDeleteMinutes, reclaimDays };
 }
 

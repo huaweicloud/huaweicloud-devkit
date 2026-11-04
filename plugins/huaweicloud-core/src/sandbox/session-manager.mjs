@@ -1863,7 +1863,16 @@ export async function installKeepaliveWatchdog(workspaceId, { tunnels }, usernam
 // session-surviving URL from one that dies with the deploying session.
 export async function exposeTunnel(
   workspaceId,
-  { port, expiryHours, keepalive, poolType, poolContext, ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
+  {
+    port,
+    expiryHours,
+    keepalive,
+    poolType,
+    poolContext,
+    ensureDevbridgeKey,
+    buildKeyringInjectScript,
+    listKeysForQuotaHint,
+  },
   username = 'root',
   timeoutMs = 90000,
 ) {

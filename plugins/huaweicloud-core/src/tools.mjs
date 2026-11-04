@@ -1755,11 +1755,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         announceConnect = shouldAnnounceConnect(devStageId, connectResult || {});
         // 池归属 + 生命周期口径缓存（服务端回显优先，缺失时客户端默认兜底）。
         // 双读兜底与 devStageId 同型（防服务端 wire 命名漂移，QA #1082 配对复审教训）
-        rememberWorkspacePool(
-          devStageId,
-          connectResult?.pool_type || connectResult?.poolType,
-          connectResult || {},
-        );
+        rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType, connectResult || {});
         try {
           await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
         } catch {}

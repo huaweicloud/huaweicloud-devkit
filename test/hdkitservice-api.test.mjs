@@ -266,10 +266,10 @@ test('HDKIT_CAPACITY_INSUFFICIENT passes the final server copy through untouched
   const originalFetch = global.fetch;
   const finalCopy = 'DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！';
   global.fetch = async () =>
-    new Response(
-      JSON.stringify({ code: 'HDKIT_CAPACITY_INSUFFICIENT', message: finalCopy }),
-      { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '60' } },
-    );
+    new Response(JSON.stringify({ code: 'HDKIT_CAPACITY_INSUFFICIENT', message: finalCopy }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
+    });
   try {
     const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
       () => null,

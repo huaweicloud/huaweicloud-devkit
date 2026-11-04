@@ -99,9 +99,7 @@ test('workspace pool cache persists to disk and reloads in a fresh module instan
   assert.equal(persisted.workspaces['ws-cache'].lifecycle.reclaimDays, 9);
 
   // 模拟 MCP 进程重启：新模块实例从磁盘缓存恢复（进程内 announcement 状态不落盘）
-  const fresh = await import(
-    `../plugins/huaweicloud-core/src/sandbox/sandbox-pool.mjs?restart=${Date.now()}`
-  );
+  const fresh = await import(`../plugins/huaweicloud-core/src/sandbox/sandbox-pool.mjs?restart=${Date.now()}`);
   const ctx = fresh.poolContextFor('ws-cache');
   assert.equal(ctx.poolMode, 'persistent');
   assert.equal(ctx.poolLifecycle.reclaimDays, 9);
@@ -162,10 +160,7 @@ test('enrichConnectResult supports camelCase lifecycle echo (wire naming drift g
 });
 
 test('enrichConnectResult suppresses the hint when announce=false (reuse)', () => {
-  const result = enrichConnectResult(
-    { session_id: 's1', pool_type: 'ephemeral' },
-    { announce: false },
-  );
+  const result = enrichConnectResult({ session_id: 's1', pool_type: 'ephemeral' }, { announce: false });
   assert.equal(result.pool, undefined);
 });
 

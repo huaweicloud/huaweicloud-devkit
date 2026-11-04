@@ -42,9 +42,8 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', {
 });
 
 const { callTool } = await import('../plugins/huaweicloud-core/src/tools.mjs');
-const { forgetWorkspacePool, poolContextFor } = await import(
-  '../plugins/huaweicloud-core/src/sandbox/sandbox-pool.mjs'
-);
+const { forgetWorkspacePool, poolContextFor } =
+  await import('../plugins/huaweicloud-core/src/sandbox/sandbox-pool.mjs');
 
 function withFetchResponse(payload, init) {
   const originalFetch = global.fetch;
