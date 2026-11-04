@@ -1267,19 +1267,35 @@ test('a failed write re-saves the consumed delta', () => {
 test('a quote in the hcloud path renders escaped in HCLOUD_BIN', () => {
   const ctx = isolatedHermesHome();
   try {
-    const oddBin = join(ctx.home, 'fake-bin', 'hcloud"weird');
-    // The quote-bearing filename itself is illegal on Windows filesystems
-    // (writeFileSync answers ENOENT), so the fixture file only exists where
-    // the platform allows it — the assertion exercises the WRITER's
-    // rendering of the env value, and the writer never stats the path.
-    if (process.platform !== 'win32') {
-      writeFileSync(oddBin, '#!/bin/sh\n');
-    }
+    // The quote-bearing filename is creatable only on POSIX — a `"` is
+    // illegal in Windows filenames — and the file IS load-bearing: the
+    // writer embeds HCLOUD_BIN only when dep-resolve's existsSync gate
+    // accepts the env path (the first Windows cut of this fix lost the line
+    // entirely by skipping the creation). The Windows arm keeps a REAL odd
+    // file (a `^` is legal everywhere) and asserts the custom-bin line
+    // renders normalized and quote-wrapped; yamlArgQuoted's inner-quote
+    // escaping itself is platform-independent logic, covered by the POSIX
+    // arm and the DEVKIT_PACKS value tests.
+    const oddName = process.platform === 'win32' ? 'hcloud^weird' : 'hcloud"weird';
+    const oddBin = join(ctx.home, 'fake-bin', oddName);
+    writeFileSync(oddBin, '#!/bin/sh\n');
     process.env.HCLOUD_BIN = oddBin;
 
     writeHermesMcpConfig(null);
     const cfg = readFileSync(ctx.configPath, 'utf8');
-    assert.match(cfg, /^ {6}HCLOUD_BIN: "[^"]*\\"[^"]*"$/m, 'the inner quote is escaped so the line stays valid YAML');
+    if (process.platform === 'win32') {
+      assert.match(
+        cfg,
+        /^ {6}HCLOUD_BIN: "[^"]*hcloud\^weird"$/m,
+        'the custom bin line renders, path normalized and value quote-wrapped',
+      );
+    } else {
+      assert.match(
+        cfg,
+        /^ {6}HCLOUD_BIN: "[^"]*\\"[^"]*"$/m,
+        'the inner quote is escaped so the line stays valid YAML',
+      );
+    }
   } finally {
     ctx.restore();
   }
