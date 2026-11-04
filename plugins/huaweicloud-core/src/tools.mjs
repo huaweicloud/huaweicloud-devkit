@@ -31,9 +31,11 @@ import {
   validatePoolType,
   rememberWorkspacePool,
   enrichConnectResult,
+  poolContextFor,
   withPoolContext,
   forgetWorkspacePool,
 } from './sandbox/sandbox-pool.mjs';
+import { ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint } from './sandbox/devbridge-key.mjs';
 import {
   hdkitCheckUser,
   hdkitSignAgreement,
@@ -1651,7 +1653,16 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         sandboxWsId9,
         await exposeTunnel(
           sandboxWsId9,
-          { port: args.port, expiryHours: args.expiry_hours, keepalive: args.keepalive },
+          {
+            port: args.port,
+            expiryHours: args.expiry_hours,
+            keepalive: args.keepalive,
+            // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
+            poolType: poolContextFor(sandboxWsId9)?.poolMode || 'ephemeral',
+            ensureDevbridgeKey,
+            buildKeyringInjectScript,
+            listKeysForQuotaHint,
+          },
           sandboxUser9,
           sandboxTimeout9,
         ),
