@@ -110,5 +110,5 @@ export function cmdPacksWrite(mode: 'enable' | 'disable' | 'all'): void {
     console.log(`  \x1b[33m[WARN]\x1b[0m Packs (${slot.label}): ${detail}`);
   }
   renderCodexPacksWriteNote(codexPluginProbe());
-  if (written === 0 && refusals > 0) process.exitCode = 1;
+  if (refusals > 0) process.exitCode = 1;
 }

@@ -21,7 +21,6 @@ import {
   codexDesktopPluginsDir,
   dshPatchFile,
   dshPluginsDir,
-  hermesConfigFile,
   hermesPluginsDir,
   opencodeConfigFile,
   opencodePluginsDir,
@@ -30,7 +29,7 @@ import {
   workbuddyPluginsDir,
 } from '../targets.ts';
 import { readDevkitPacksFromJson, readDevkitPacksFromYaml } from '../packs-policy.ts';
-import { writeHermesMcpConfig } from '../agents/hermes-config.ts';
+import { readHermesDevkitPacks, writeHermesMcpConfigResult } from '../agents/hermes-config.ts';
 import { readOfficeaceDevkitPacks, writeDevkitPacksInOfficeace } from '../agents/officeace-sqlite.ts';
 import { officeacePluginsDir } from '../officeace-paths.ts';
 import { mcpServerInstalled } from '../install-payload.ts';
@@ -38,7 +37,7 @@ import { writeCodeartsDevkitPacks, writeDevkitPacksInDshPatch, writeDevkitPacksI
 
 export type PackWriteResult =
   | { ok: true; changed: boolean }
-  | { ok: false; reason: 'parse-failed' | 'bundle-owned' | 'not-installed'; detail: string };
+  | { ok: false; reason: 'parse-failed' | 'bundle-owned' | 'not-installed' | 'refused'; detail: string };
 
 export interface PackSlot {
   /** SUPPORTED_AGENT_TARGETS member; codex has no slot (display-only). */
@@ -112,8 +111,15 @@ export const PACK_SLOTS: PackSlot[] = [
     id: 'hermes',
     label: 'Hermes Agent',
     installed: () => mcpServerInstalled(hermesPluginsDir()),
-    read: () => readDevkitPacksFromYaml(hermesConfigFile()),
-    write: (next) => ({ ok: true, changed: writeHermesMcpConfig(next) }),
+    read: () => readHermesDevkitPacks(),
+    write: (next) => {
+      // A refused write (non-mergeable config shape) must surface as a
+      // failure, not report "unchanged" with a green exit code.
+      const result = writeHermesMcpConfigResult(next);
+      return result.refused !== null
+        ? { ok: false as const, reason: 'refused' as const, detail: result.refused }
+        : { ok: true as const, changed: result.changed };
+    },
   },
   {
     id: 'officeace',
