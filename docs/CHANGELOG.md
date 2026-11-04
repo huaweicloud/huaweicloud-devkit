@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.13-next.5 (2026-11-04)
+
+- refactor(sandbox): use reclaimMinutes for consistent units
+- style(sandbox): apply prettier formatting
+- feat(sandbox): server-driven pool lifecycle hints on connect/expose
+
 ## 1.1.13-next.4 (2026-11-04)
 
 - refactor(sandbox): 去掉孤儿清理的 last_used_at 检查（1+1 配额下过度设计）
