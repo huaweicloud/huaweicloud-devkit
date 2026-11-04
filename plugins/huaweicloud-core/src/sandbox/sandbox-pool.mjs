@@ -14,8 +14,9 @@ const POOL_TYPES = new Set(['ephemeral', 'persistent']);
 
 /** 默认生命周期口径：与服务端默认一致；服务端回显优先，缺失时兜底 */
 export const DEFAULT_POOL_LIFECYCLE = {
-  ephemeral: { idleShutdownMinutes: 30, idleDeleteMinutes: 60, reclaimDays: null },
-  persistent: { idleShutdownMinutes: 60, idleDeleteMinutes: null, reclaimDays: 7 },
+  ephemeral: { idleShutdownMinutes: 30, idleDeleteMinutes: 60, reclaimMinutes: null },
+  // 7 天 = 10080 分钟（与服务端一致，统一以分钟为单位）
+  persistent: { idleShutdownMinutes: 60, idleDeleteMinutes: null, reclaimMinutes: 7 * 24 * 60 },
 };
 
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -83,11 +84,11 @@ function normalizeLifecycle(poolType, raw = {}) {
     poolType === 'ephemeral'
       ? (pick('pool_idle_delete_minutes', 'poolIdleDeleteMinutes', 'idleDeleteMinutes') ?? defaults.idleDeleteMinutes)
       : null;
-  const reclaimDays =
+  const reclaimMinutes =
     poolType === 'persistent'
-      ? (pick('pool_reclaim_days', 'poolReclaimDays', 'reclaimDays') ?? defaults.reclaimDays)
+      ? (pick('pool_reclaim_minutes', 'poolReclaimMinutes', 'reclaimMinutes') ?? defaults.reclaimMinutes)
       : null;
-  return { idleShutdownMinutes, idleDeleteMinutes, reclaimDays };
+  return { idleShutdownMinutes, idleDeleteMinutes, reclaimMinutes };
 }
 
 function ensureCacheLoaded() {
@@ -177,9 +178,11 @@ function formatMinutes(minutes, fallback) {
   return `${n} 分钟`;
 }
 
-function formatDays(days, fallback) {
-  const n = Number(days) > 0 ? Number(days) : fallback;
-  return `${n} 天`;
+/** 回收保留期：分钟 → 中文口径（1440 的整数倍显示为天） */
+function formatReclaim(minutes, fallback) {
+  const n = Number(minutes) > 0 ? Number(minutes) : fallback;
+  if (n % 1440 === 0 && n >= 1440) return `${n / 1440} 天`;
+  return `${n} 分钟`;
 }
 
 /**
@@ -200,7 +203,7 @@ export function poolContextFor(workspaceId) {
       persistenceHint: `非持久沙箱：闲置 ${shutdown}自动关机、${del}自动删除，重要数据请及时保存或迁出`,
     };
   }
-  const reclaim = formatDays(lifecycle.reclaimDays, DEFAULT_POOL_LIFECYCLE.persistent.reclaimDays);
+  const reclaim = formatReclaim(lifecycle.reclaimMinutes, DEFAULT_POOL_LIFECYCLE.persistent.reclaimMinutes);
   return {
     poolMode: 'persistent',
     poolLifecycle: { poolType, ...lifecycle },
@@ -218,9 +221,9 @@ function buildConnectTtlHint(poolType, lifecycle) {
     };
   }
   const shutdown = formatMinutes(lifecycle.idleShutdownMinutes, DEFAULT_POOL_LIFECYCLE.persistent.idleShutdownMinutes);
-  const reclaim = formatDays(lifecycle.reclaimDays, DEFAULT_POOL_LIFECYCLE.persistent.reclaimDays);
+  const reclaim = formatReclaim(lifecycle.reclaimMinutes, DEFAULT_POOL_LIFECYCLE.persistent.reclaimMinutes);
   return {
-    lifecycle: `idle shutdown ${lifecycle.idleShutdownMinutes}min; EVS data disk retained; idle reclaim within ${lifecycle.reclaimDays} days max`,
+    lifecycle: `idle shutdown ${lifecycle.idleShutdownMinutes}min; EVS data disk retained; idle reclaim within ${lifecycle.reclaimMinutes}min max`,
     ttl_hint: `持久沙箱：闲置 ${shutdown}自动关机（实例与数据盘保留，重新连接可继续使用）；闲置回收保留期最长 ${reclaim}，到期实例与数据将被删除，长期不用请自行导出。`,
   };
 }
@@ -275,12 +278,12 @@ export function buildExposeLifetimeNotice(poolContext, expiryHours) {
     };
   }
   const shutdown = formatMinutes(lifecycle.idleShutdownMinutes, DEFAULT_POOL_LIFECYCLE.persistent.idleShutdownMinutes);
-  const reclaim = formatDays(lifecycle.reclaimDays, DEFAULT_POOL_LIFECYCLE.persistent.reclaimDays);
+  const reclaim = formatReclaim(lifecycle.reclaimMinutes, DEFAULT_POOL_LIFECYCLE.persistent.reclaimMinutes);
   return {
     sandboxLifetime: {
       poolType,
       idleShutdownMinutes: lifecycle.idleShutdownMinutes,
-      reclaimDays: lifecycle.reclaimDays,
+      reclaimMinutes: lifecycle.reclaimMinutes,
     },
     urlLifetimeHint:
       `该公网地址随沙箱存亡：持久沙箱闲置 ${shutdown}自动关机（地址失效，但实例与数据盘保留，` +
