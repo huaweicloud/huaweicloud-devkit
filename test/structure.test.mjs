@@ -358,12 +358,17 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.match(sandbox, /Never expose tunnel details/);
 
   // Auth is API Key only (2026-11-04 定稿：AK/SK login removed).
-  // The waterfall: keyring (ours + platform legacy) → auto-create fallback → file.
+  // The waterfall: keyring (ours + platform legacy) → file (manual channel,
+  // present file wins over auto-create) → auto-create fallback (#1090 口径统一).
   assert.match(sandbox, /API_KEY_KEYRING/);
   assert.match(sandbox, /API_KEY_AUTO/);
   assert.match(sandbox, /API_KEY_FILE|NO_CREDENTIAL/);
   assert.match(sandbox, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/, 'keyring read must capture stderr');
   assert.match(sandbox, /devbridge_/);
+  // #1090: priority order must be stated consistently — file beats auto-create,
+  // and the obsolete "auto-create before file" ordering must stay gone.
+  assert.match(sandbox, /file hits before auto-create/);
+  assert.doesNotMatch(sandbox, /auto-create fallback → file/, '#1090: stale priority order');
   // AK/SK login commands must NOT appear
   assert.doesNotMatch(sandbox, /auth login --access-key/, 'AK/SK login must be removed from skill');
   assert.doesNotMatch(sandbox, /AKSK_SUPPORTED/, 'AKSK_SUPPORTED mode must be removed from skill');
