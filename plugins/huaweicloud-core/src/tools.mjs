@@ -35,7 +35,12 @@ import {
   withPoolContext,
   forgetWorkspacePool,
 } from './sandbox/sandbox-pool.mjs';
-import { ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint } from './sandbox/devbridge-key.mjs';
+import {
+  ensureDevbridgeKey,
+  recreateDevbridgeKey,
+  buildKeyringInjectScript,
+  listKeysForQuotaHint,
+} from './sandbox/devbridge-key.mjs';
 import {
   hdkitCheckUser,
   hdkitSignAgreement,
@@ -776,7 +781,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_expose_tunnel',
     description:
-      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (probing AK/SK vs API-Key builds, using /tmp/hw_creds.sh and /tmp/hw_api_key as injected by huaweicloud_sandbox_credentials), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, and warnings. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
+      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically with a DevBridge API Key (auth waterfall: sandbox keyring → /tmp/hw_api_key file → host-orchestrated auto-create, with stale-key self-healing), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, and warnings. If no credential can be obtained it returns ok:false with structured diagnostics.',
     inputSchema: {
       type: 'object',
       required: ['port'],
@@ -1657,9 +1662,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
             port: args.port,
             expiryHours: args.expiry_hours,
             keepalive: args.keepalive,
-            // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
+            // DevBridge API Key 自动创建兜底 + 失效自愈（认证固定 apikey，AK/SK 已移除）
             poolType: poolContextFor(sandboxWsId9)?.poolMode || 'ephemeral',
             ensureDevbridgeKey,
+            recreateDevbridgeKey,
             buildKeyringInjectScript,
             listKeysForQuotaHint,
           },
@@ -1852,7 +1858,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       if (sandboxWsIdCred) result.apiKeyInjected = Boolean(apiKey);
       if (apiKey) {
         result.apiKeyHint =
-          'DevBridge API Key written to /tmp/hw_api_key (0600, kept separate from the temporary AK/SK in /tmp/hw_creds.sh — it is a long-lived account-level credential). At expose time the auth waterfall prefers the platform-injected keyring key (API_KEY_KEYRING), falls back to AK/SK, then to this file (API_KEY_FILE). Never echo the key into logs.';
+          'DevBridge API Key written to /tmp/hw_api_key (0600, kept separate from the temporary AK/SK in /tmp/hw_creds.sh — it is a long-lived account-level credential). At expose time the auth waterfall prefers the sandbox keyring key (API_KEY_KEYRING), then this file (API_KEY_FILE), then the host-orchestrated auto-create fallback (API_KEY_AUTO). Never echo the key into logs.';
       } else {
         result.apiKeyHint =
           'No DevBridge API Key provided locally — that is fine on recent sandbox images (hd-space-ai-shell line): the platform auto-injects the key into the sandbox keyring (HW_DEVBRIDGE_API_KEY via hwcloud) and the expose-time auth waterfall picks it up with zero user action. Only older sandboxes (created before the injection existed, image not upgradeable in place) need the one-time manual fallback: create an API Key at https://devstation.connect.huaweicloud.com/space/devbridge/apikey, set the local HW_API_KEY environment variable (preferred — keeps the key out of the conversation), and re-run this tool to inject it as /tmp/hw_api_key.';

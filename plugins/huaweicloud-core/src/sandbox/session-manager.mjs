@@ -1382,7 +1382,7 @@ export function buildDevbridgeAuthProbe() {
     `if [ "$DB_OK" -eq 0 ]; then`,
     `  echo "DB_AUTH_MODE=NO_CREDENTIAL"`,
     `fi`,
-    `unset HW_DB_KEY HW_API_KEY DB_TOKEN_ARGS 2>/dev/null`,
+    `unset HW_DB_KEY HW_API_KEY 2>/dev/null`,
     `devbridge auth status > /tmp/db_status.log 2>&1 || true`,
   ].join('\n');
 }
@@ -1853,6 +1853,109 @@ export async function installKeepaliveWatchdog(workspaceId, { tunnels }, usernam
   };
 }
 
+// DevBridge API-Key auth modes that count as "usable credential".
+const DEVBRIDGE_KEY_AUTH_MODES = new Set(['API_KEY_KEYRING', 'API_KEY_FILE', 'API_KEY_AUTO']);
+const isKeyAuthMode = (mode) => DEVBRIDGE_KEY_AUTH_MODES.has(mode);
+
+/**
+ * Host-orchestrated DevBridge auth waterfall (post-probe phases), #1090 rework.
+ *
+ * Given the FIRST probe's parsed result, runs:
+ *   Phase 1 — self-heal: keyring key login-failed → recreate (clear cache →
+ *             rebuild) → inject → re-probe.
+ *   Phase 2 — ensure fallback: still no credential → ensureDevbridgeKey →
+ *             inject → re-probe. #1090 blind spot: when ensure returned a
+ *             CACHE_HIT key and the re-probe STILL login-fails (keyring was
+ *             empty, the cached key is stale), the cache is never validated —
+ *             recreate once so a stale CACHE_HIT cannot loop forever.
+ *
+ * Failure attribution (#1090): `attempts` in the result is the MERGED per-tier
+ * diagnostics of every probe round, so the final generic error points at the
+ * tier that actually failed last (probe2's KEYRING=login-failed, not probe1's
+ * no-valid-key). `loginOutput` accumulates raw probe stdout/stderr for support.
+ *
+ * All sandbox I/O is injected (`run`/`probe`) so this is unit-testable without
+ * a live sandbox; every devbridge-key function comes in via DI (tools.mjs).
+ *
+ * @returns {Promise<{effectiveAuthMode: string, attempts: Object,
+ *                    loginOutput: string, quota: null|
+ *                    {error: Error, keysHint: Array}}>}
+ */
+export async function resolveDevbridgeAuth({
+  authMode,
+  attempts,
+  probe,
+  run,
+  poolType = 'ephemeral',
+  ensureDevbridgeKey,
+  recreateDevbridgeKey,
+  buildKeyringInjectScript,
+  listKeysForQuotaHint,
+}) {
+  let effectiveAuthMode = authMode;
+  let mergedAttempts = { ...(attempts || {}) };
+  let loginOutput = '';
+  const canInject = typeof buildKeyringInjectScript === 'function' && typeof run === 'function';
+
+  const probeOnce = async () => {
+    const r = await probe();
+    loginOutput += String(r?.stdout || '') + String(r?.stderr || '');
+    return parseDevbridgeAuthOutput(r?.stdout || '');
+  };
+  const injectAndProbe = async (apiKey) => {
+    await run(buildKeyringInjectScript(apiKey), 15000);
+    return probeOnce();
+  };
+
+  // Phase 1 — 失效自愈：keyring key login 失败（key 被删/过期）→ 清缓存重建
+  if (
+    !isKeyAuthMode(effectiveAuthMode) &&
+    mergedAttempts.KEYRING === 'login-failed' &&
+    typeof recreateDevbridgeKey === 'function' &&
+    canInject
+  ) {
+    try {
+      const { apiKey } = await recreateDevbridgeKey(poolType);
+      const parsed = await injectAndProbe(apiKey);
+      mergedAttempts = { ...mergedAttempts, ...parsed.attempts };
+      if (isKeyAuthMode(parsed.authMode)) effectiveAuthMode = 'API_KEY_AUTO';
+    } catch {
+      // 自愈失败 → 继续 Phase 2 / 泛化降级
+    }
+  }
+
+  // Phase 2 — ensure 兜底（含 #1090 盲区：keyring 空 + 本地缓存陈旧）
+  if (!isKeyAuthMode(effectiveAuthMode) && typeof ensureDevbridgeKey === 'function' && canInject) {
+    try {
+      const ensured = await ensureDevbridgeKey(poolType);
+      const parsed = await injectAndProbe(ensured.apiKey);
+      mergedAttempts = { ...mergedAttempts, ...parsed.attempts };
+      if (isKeyAuthMode(parsed.authMode)) {
+        effectiveAuthMode = 'API_KEY_AUTO';
+      } else if (ensured.mode === 'CACHE_HIT' && typeof recreateDevbridgeKey === 'function') {
+        // 陈旧缓存命中：keyring 原本为空、注入后 login 仍失败（CACHE_HIT 不校验）→
+        // 清缓存重建一次，否则文件兜底/沙箱重启子路径永久死环
+        try {
+          const rebuilt = await recreateDevbridgeKey(poolType);
+          const reparsed = await injectAndProbe(rebuilt.apiKey);
+          mergedAttempts = { ...mergedAttempts, ...reparsed.attempts };
+          if (isKeyAuthMode(reparsed.authMode)) effectiveAuthMode = 'API_KEY_AUTO';
+        } catch {
+          // 重建失败 → 泛化降级（attempts 已合并，归因正确）
+        }
+      }
+    } catch (error) {
+      if (error?.code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
+        const keysHint = typeof listKeysForQuotaHint === 'function' ? await listKeysForQuotaHint() : [];
+        return { effectiveAuthMode: '', attempts: mergedAttempts, loginOutput, quota: { error, keysHint } };
+      }
+      // 其他自动创建失败 → 降级（keyring/file 后续可能可用）
+    }
+  }
+
+  return { effectiveAuthMode, attempts: mergedAttempts, loginOutput, quota: null };
+}
+
 // Expose a sandbox port to a public DevBridge tunnel URL. `port` MUST be the
 // ACTUAL port reported by deployNginx (deploy_nginx auto-increments on conflict),
 // otherwise the tunnel is bound to a dead port. Returns ok, publicUrl, port,
@@ -1862,7 +1965,16 @@ export async function installKeepaliveWatchdog(workspaceId, { tunnels }, usernam
 // session-surviving URL from one that dies with the deploying session.
 export async function exposeTunnel(
   workspaceId,
-  { port, expiryHours, keepalive, poolType, ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
+  {
+    port,
+    expiryHours,
+    keepalive,
+    poolType,
+    ensureDevbridgeKey,
+    recreateDevbridgeKey,
+    buildKeyringInjectScript,
+    listKeysForQuotaHint,
+  },
   username = 'root',
   timeoutMs = 90000,
 ) {
@@ -1893,72 +2005,47 @@ export async function exposeTunnel(
     };
   }
 
-  // Auth waterfall: probe → (auto-create fallback) → expose loop
-  // 失效自愈：probe 报 login-failed（key 被删/过期）→ 清缓存 → 重建 → 注入 → 重跑 probe
-  let effectiveAuthMode = authMode;
-  const isLoginFailed =
-    authMode !== 'API_KEY_KEYRING' && authMode !== 'API_KEY_FILE' && attempts.KEYRING === 'login-failed';
+  // Auth waterfall: probe → self-heal / auto-create fallback → expose loop.
+  // #1090: single orchestrator (resolveDevbridgeAuth) covers BOTH failure
+  // entry points — keyring login-failed (stale key) AND keyring empty with a
+  // stale local CACHE_HIT — and merges per-tier attempts so the generic
+  // failure attributes the tier that failed LAST, not the first probe's.
+  const resolved = await resolveDevbridgeAuth({
+    authMode,
+    attempts,
+    poolType: poolType || 'ephemeral',
+    ensureDevbridgeKey,
+    recreateDevbridgeKey,
+    buildKeyringInjectScript,
+    listKeysForQuotaHint,
+    run: (script, timeout) => execOneShot(workspaceId, script, username, timeout),
+    probe: () => execOneShot(workspaceId, authScript, username, 30000),
+  });
+  const effectiveAuthMode = resolved.effectiveAuthMode;
 
-  if (isLoginFailed && ensureDevbridgeKey) {
-    // key 失效（缓存里有 key 但 login 失败）→ 清缓存重建
-    try {
-      const { recreateDevbridgeKey } = await import('./devbridge-key.mjs');
-      const { apiKey } = await recreateDevbridgeKey(poolType || 'ephemeral');
-      const injectScript = buildKeyringInjectScript(apiKey);
-      await execOneShot(workspaceId, injectScript, username, 15000);
-      const healResult = await execOneShot(workspaceId, authScript, username, 30000);
-      const healParsed = parseDevbridgeAuthOutput(healResult.stdout);
-      if (healParsed.authMode === 'API_KEY_KEYRING' || healParsed.authMode === 'API_KEY_FILE') {
-        effectiveAuthMode = 'API_KEY_AUTO';
-      }
-    } catch {
-      // 自愈失败 → 走泛化降级
-    }
+  if (resolved.quota) {
+    // 自动创建配额满（13002 → 429 HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED）→ 结构化降级
+    return {
+      ok: false,
+      error: resolved.quota.error.message,
+      error_code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
+      authMode: authMode || 'UNKNOWN',
+      attempts: resolved.attempts,
+      currentKeys: resolved.quota.keysHint,
+      hint:
+        'API Key 数量已达上限。请到控制台清理不再使用的 key：' +
+        'https://devstation.connect.huaweicloud.com/space/devbridge/apikey\n' +
+        'devkit-* 开头的是插件自动管理的 key（删除后会自动重建），可优先清理其他闲置 key。',
+    };
   }
 
-  if (effectiveAuthMode !== 'API_KEY_KEYRING' && effectiveAuthMode !== 'API_KEY_FILE' && ensureDevbridgeKey) {
-    // keyring/文件均无 key → host 调 relay API 自动创建 → 注入沙箱 → 重跑 probe
-    try {
-      const { apiKey } = await ensureDevbridgeKey(poolType || 'ephemeral');
-      const injectScript = buildKeyringInjectScript(apiKey);
-      await execOneShot(workspaceId, injectScript, username, 15000);
-      const authResult2 = await execOneShot(workspaceId, authScript, username, 30000);
-      const parsed2 = parseDevbridgeAuthOutput(authResult2.stdout);
-      if (parsed2.authMode === 'API_KEY_KEYRING' || parsed2.authMode === 'API_KEY_FILE') {
-        effectiveAuthMode = 'API_KEY_AUTO';
-      }
-    } catch (error) {
-      // 自动创建失败（含配额满 13002）→ 结构化降级
-      if (error.code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
-        const keysHint = listKeysForQuotaHint ? await listKeysForQuotaHint() : [];
-        return {
-          ok: false,
-          error: error.message,
-          error_code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
-          authMode: authMode || 'UNKNOWN',
-          attempts,
-          currentKeys: keysHint,
-          hint:
-            'API Key 数量已达上限。请到控制台清理不再使用的 key：' +
-            'https://devstation.connect.huaweicloud.com/space/devbridge/apikey\n' +
-            'devkit-* 开头的是插件自动管理的 key（删除后会自动重建），可优先清理其他闲置 key。',
-        };
-      }
-      // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）
-    }
-  }
-
-  if (
-    effectiveAuthMode !== 'API_KEY_KEYRING' &&
-    effectiveAuthMode !== 'API_KEY_FILE' &&
-    effectiveAuthMode !== 'API_KEY_AUTO'
-  ) {
-    const loginOutput = String(authResult.stdout || '') + String(authResult.stderr || '');
+  if (!isKeyAuthMode(effectiveAuthMode)) {
+    const loginOutput = String(authResult.stdout || '') + String(authResult.stderr || '') + resolved.loginOutput;
     return {
       ok: false,
       error: 'DevBridge authentication failed: no usable credential in the sandbox.',
       authMode: authMode || 'UNKNOWN',
-      attempts,
+      attempts: resolved.attempts,
       hint:
         'No DevBridge API Key is available in this sandbox. Suggested next steps:\n' +
         '1) Re-run huaweicloud_sandbox_credentials, then retry huaweicloud_sandbox_expose_tunnel.\n' +
