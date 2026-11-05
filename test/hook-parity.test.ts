@@ -1012,7 +1012,15 @@ test('the env-dump flag chain stays linear on the -u/-- adversarial shape (ReDoS
   const payload = `env${' -u -- '.repeat(5000)}plainword`;
   const tsStart = Date.now();
   assert.equal(classifyTextCommand(payload).decision, 'allow');
-  assert.ok(Date.now() - tsStart < 1000, 'TS classifier spent exponential time on the -u/-- chain');
+  // 5s, not 1s: node:test runs the suite's files concurrently, and a
+  // loaded host starves the budget — measured 2026-11-04: ~1.1s at load
+  // average 24 (clean tree, twice-stable) against the old 1000ms bound,
+  // and the classifier's cost at this fixed size is load-sensitive
+  // (adversarially re-measured: ~0.5s unloaded, 1-2.6s in-suite). The
+  // blade keeps its margin — the pre-fix exponential form measured 14.3s
+  // at 26 repetitions, orders of magnitude past this bound, and the
+  // python twin keeps its own independent 30s spawnSync bound.
+  assert.ok(Date.now() - tsStart < 5000, 'TS classifier spent exponential time on the -u/-- chain');
 
   const py = spawnSync('python3', [hookPath], {
     input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: payload } }),

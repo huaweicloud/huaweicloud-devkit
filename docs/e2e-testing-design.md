@@ -176,12 +176,22 @@ mechanics that differ from opencode, all measured:
   (driver-owned, ephemeral port) strips the two request shapes the gateway
   rejects (`function_call.namespace`, array-form
   `function_call_output.output`) and mirrors the provider base URL's
-  pathname so path-prefixed gateways reconstruct correctly. The
-  `E2E_CODEX_PROXY_DUMP=<file>` knob tees the wire for triage: scrubbed
-  shaped request bodies and scrubbed complete upstream SSE response frames
-  (the file rides the uploaded artifact, and the model key reaches request
-  bodies via printenv echoes under the inherit-all shell policy — hence
-  scrubSecrets on every line; the client stream stays byte-identical). The
+  pathname so path-prefixed gateways reconstruct correctly. It also strips
+  the `namespace` field codex 0.162.1 adds to function_call items for
+  MCP-namespaced tools, and restores it on the way back: the strip is
+  gateway compat (a 400 was measured on the field), but a stripped history
+  teaches the model the wrong call shape — a regenerated retry (the vendor
+  gate's first-assertion challenge says "Retry the same call") arrives
+  namespace-less and codex answers `unsupported call: <tool>` without
+  dispatching (measured 2026-11-03, run 41636889890, every vendor-gated
+  codex-leg case, both attempts), so response frames gain the namespace
+  back on function_call items whose name matches a namespace tool of the
+  same request. The `E2E_CODEX_PROXY_DUMP=<file>` knob tees the wire for
+  triage: scrubbed shaped request bodies and scrubbed complete response
+  frames (the file rides the uploaded artifact, and the model key reaches
+  request bodies via printenv echoes under the inherit-all shell policy —
+  hence scrubSecrets on every line; the client stream stays byte-identical
+  except on function_call lines whose namespace was restored). The
   nightly sets it for the codex leg as the stall forensics: the
   `ReasoningRawContentDelta without active item` parser stall (2026-10-29)
   is only diagnosable from the exact upstream frame, which only this wire

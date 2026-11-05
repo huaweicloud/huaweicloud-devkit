@@ -334,3 +334,75 @@ test('gateway args ignore-case applies to scalars only, never array prefix match
   );
   assert.equal(verdict.expectations[0]!.pass, false);
 });
+
+// The ws co-residency anchor (onConnectionWith): a command counts only when
+// its connection also carries the anchor intent. This is the session-reuse
+// mechanism proof the 2026-11-03 nightly made necessary — the raw
+// wsConnections total cannot separate "the tool rode connect's cached
+// session" from "the tool opened its own connection" once agent-initiated
+// one-shot execs share the channel.
+function wsConn(commands: string[]) {
+  return {
+    source: 778899,
+    username: 'root',
+    commands: commands.map((intent) => ({ intent, exitCode: 0 })),
+    close: null,
+  } as const;
+}
+
+test('an anchored ws intent counts only commands on a connection that also carries the anchor', () => {
+  // Healthy upload shape: the upload intents ride the SAME connection as
+  // connect's export-path (the cached session).
+  const healthy = caseWith(
+    [{ kind: 'ws', intent: 'md5sum', onConnectionWith: 'export-path', times: { min: 1, max: 1 } }],
+    recordings({
+      ws: [
+        wsConn(['devbridge-delete-all']),
+        wsConn(['export-path', 'rm', 'printf-append', 'base64-decode', 'md5sum']),
+        wsConn(['ls']),
+      ],
+    }),
+  );
+  assert.equal(healthy.expectations[0]!.pass, true);
+  assert.match(healthy.expectations[0]!.evidence, /on a connection also carrying export-path/);
+
+  // The session-reuse regression the anchor exists to catch: the upload
+  // intents exist on the channel but landed on their OWN connection, away
+  // from connect's cached export-path session.
+  const regression = caseWith(
+    [{ kind: 'ws', intent: 'md5sum', onConnectionWith: 'export-path', times: { min: 1, max: 1 } }],
+    recordings({
+      ws: [wsConn(['devbridge-delete-all']), wsConn(['export-path']), wsConn(['rm', 'base64-decode', 'md5sum'])],
+    }),
+  );
+  assert.equal(regression.expectations[0]!.pass, false);
+  assert.match(regression.expectations[0]!.evidence, /0 command\(s\) with intent md5sum/);
+  // The miss evidence still shows the whole flattened channel, so the
+  // human debugging the red sees where the intents actually landed.
+  assert.match(
+    regression.expectations[0]!.evidence,
+    /All commands: devbridge-delete-all \| export-path \| rm \| base64-decode \| md5sum/,
+  );
+});
+
+test('an unanchored ws intent keeps the flattened whole-channel view', () => {
+  const verdict = caseWith(
+    [{ kind: 'ws', intent: 'md5sum', times: { min: 1, max: 1 } }],
+    recordings({ ws: [wsConn(['export-path']), wsConn(['md5sum'])] }),
+  );
+  assert.equal(verdict.expectations[0]!.pass, true);
+  assert.doesNotMatch(verdict.expectations[0]!.evidence, /connection also carrying/);
+});
+
+test('the anchor matches its intent exactly, never by prefix', () => {
+  // Interrogate round 1, the prefix-anchor mutant: changing the anchor
+  // comparison to startsWith survived every other pin. An anchor 'md5'
+  // must not scope to a connection carrying only 'md5sum' — exact intent
+  // equality, the same rule the command-intent pins themselves follow.
+  const verdict = caseWith(
+    [{ kind: 'ws', intent: 'md5sum', onConnectionWith: 'md5', times: { min: 1, max: 1 } }],
+    recordings({ ws: [wsConn(['md5sum'])] }),
+  );
+  assert.equal(verdict.expectations[0]!.pass, false);
+  assert.match(verdict.expectations[0]!.evidence, /0 command\(s\) with intent md5sum/);
+});

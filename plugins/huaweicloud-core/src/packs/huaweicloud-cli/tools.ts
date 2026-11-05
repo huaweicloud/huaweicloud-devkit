@@ -5,7 +5,7 @@ import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud, type ProbeHcloudOptio
 import { redactSecrets } from '../../safety-policy.ts';
 import { asText } from '../../lib/as-text.ts';
 import { consumeApprovalToken, hashArgs, inspectApprovalToken } from '../../lib/approval-tokens.ts';
-import { numericArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
+import { booleanArg, numericArg, stringArrayArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { asRecord } from '../../lib/as-record.ts';
@@ -334,12 +334,12 @@ async function handleListRegions(_args: ToolArgs = {}, _opts: CallToolOptions = 
 const checkCliSchema = z.looseObject({ vendorConfirmed });
 const planCliCommandSchema = z.looseObject({
   vendorConfirmed,
-  args: z.array(z.string()).describe('hcloud arguments, excluding the hcloud executable.'),
-  allowWrites: z.boolean().optional().describe('Only true after explicit user approval for this exact operation.'),
+  args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
+  allowWrites: booleanArg.optional().describe('Only true after explicit user approval for this exact operation.'),
 });
 const runReadonlyCommandSchema = z.looseObject({
   vendorConfirmed,
-  args: z.array(z.string()),
+  args: stringArrayArg,
   timeoutMs: numericArg.optional().describe('Optional timeout in milliseconds. Defaults to 60000.'),
   maxRetries: numericArg.optional().describe('Optional retry count for transient network errors. Defaults to 1.'),
   cwd: z.string().optional().describe('Optional working directory for the hcloud process.'),
@@ -351,9 +351,9 @@ const listOperationsSchema = z.looseObject({
 });
 const runApprovedCommandSchema = z.looseObject({
   vendorConfirmed,
-  args: z.array(z.string()).describe('hcloud arguments, excluding the hcloud executable.'),
+  args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
   approvalToken: z.string().describe('The approvalToken returned by huaweicloud_plan_cli_command.'),
-  approvedByUser: z.boolean().describe('Must be true only after the user explicitly approves this exact command.'),
+  approvedByUser: booleanArg.describe('Must be true only after the user explicitly approves this exact command.'),
   timeoutMs: numericArg.optional().describe('Optional timeout in milliseconds. Defaults to 60000.'),
   maxRetries: numericArg.optional().describe('Optional retry count for transient network errors. Defaults to 1.'),
   cwd: z.string().optional().describe('Optional working directory for the hcloud process.'),

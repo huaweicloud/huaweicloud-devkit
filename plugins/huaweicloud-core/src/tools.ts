@@ -183,7 +183,24 @@ export interface CallToolOptions {
 
 // Reject invalid numeric args up front instead of silently coercing them to
 // NaN (which downstream defaults would absorb as "no timeout set") — see #530.
-const NUMERIC_ARG_KEYS = ['timeoutMs', 'maxRetries', 'timeout_ms'] as const;
+// The sandbox port/expiry family joined the same doctrine after the
+// 2026-11-03 e2e-nightly (fork run 41636889890, PR-1 codex leg): glm-5.3
+// emits numeric tool args as JSON strings ("port": "8080" — the wire dump
+// shows every deploy_nginx/deploy_check call shaped that way), and the SDK
+// boundary zod (numericArg unions since this wave) passes the string to
+// callTool, which converts it here so handlers see real numbers
+// (deploy-nginx.ts's nodePort arithmetic reads port + 1 — a string would
+// concatenate). Detailed bounds stay downstream: validateExpiryHours keeps
+// the 1..720 int range for expiry_hours in both tunnel flows.
+const NUMERIC_ARG_KEYS = [
+  'timeoutMs',
+  'maxRetries',
+  'timeout_ms',
+  'port',
+  'node_port',
+  'public_port',
+  'expiry_hours',
+] as const;
 
 function normalizeNumericArgs(args: ToolArgs): ToolArgs {
   const out: ToolArgs = { ...args };

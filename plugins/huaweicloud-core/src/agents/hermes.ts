@@ -22,7 +22,12 @@ import {
   serverSkillCount,
   type DeployMode,
 } from '../install-payload.ts';
-import { ensureHermesMcpConfig, removeHermesMcpConfigBlock } from './hermes-config.ts';
+import {
+  ensureHermesMcpConfig,
+  removeHermesMcpConfigBlock,
+  devkitChildArgsLine,
+  parseArgsElements,
+} from './hermes-config.ts';
 import {
   ensureHermesHookAllowlist,
   ensureHermesHooksConfig,
@@ -111,22 +116,19 @@ export function uninstallHermes(removeOwnedSkills: (dir: string) => number): voi
     }
   }
 
-  // 3. Remove MCP config from config.yaml (back up user args first, issue #615)
+  // 3. Remove MCP config from config.yaml (back up user args first, issue #615).
+  // The args line is scoped to the devkit child's own body and parsed with
+  // the same quote-aware parser the writer uses: a merged config's first
+  // `args:` line belongs to a user server and must not become the devkit
+  // delta, and args containing quotes or brackets must survive.
   const hermesConfig = hermesConfigFile();
   if (existsSync(hermesConfig)) {
     try {
       const text = readFileSync(hermesConfig, 'utf8');
-      const argsLine = text.match(/^\s*args:\s*\[([^\]]*)\]\s*$/m);
-      if (argsLine) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(`[${argsLine[1]!.replace(/'/g, '"')}]`);
-        } catch {
-          parsed = null;
-        }
-        if (Array.isArray(parsed) && parsed.length > 1) {
-          saveAgentDelta('hermes', { argsExtra: parsed.slice(1) });
-        }
+      const argsLine = devkitChildArgsLine(text);
+      const elements = argsLine ? parseArgsElements(argsLine) : null;
+      if (elements && elements.length > 1) {
+        saveAgentDelta('hermes', { argsExtra: elements.slice(1) });
       }
     } catch {
       // best-effort backup: no delta means reinstall uses default args

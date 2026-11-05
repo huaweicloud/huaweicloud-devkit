@@ -251,3 +251,68 @@ test('hermes update refreshes payload, config, and hooks', () => {
   assert.ok(existsSync(join(pluginDir, 'hooks', 'huaweicloud-safety.mjs')), 'safety hook missing');
   assert.ok(existsSync(join(pluginDir, 'hooks', 'huaweicloud-telemetry.py')), 'telemetry hook missing');
 });
+
+test('hermes lifecycle merges into and out of a user-owned mcp_servers config', () => {
+  // A hermes config that already registers a user MCP server: the devkit
+  // entry must merge under the existing mcp_servers mapping on install and
+  // leave the user's server untouched on update and uninstall (the
+  // duplicate-key writer corrupted exactly this shape).
+  const home = fixtureDir('hm-merge-home-');
+  const cwd = fixtureDir('hm-merge-proj-');
+  const pluginDir = join(home, '.hermes', 'huaweicloud-plugins');
+  const configPath = join(home, '.hermes', 'config.yaml');
+
+  mkdirSync(join(home, '.hermes'), { recursive: true });
+  writeFileSync(
+    configPath,
+    'model:\n  provider: "openrouter"\nmcp_servers:\n  filesystem:\n    command: "npx"\n    args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]\n',
+    'utf8',
+  );
+
+  const mcpKeyCount = (content: string): number => (content.match(/^mcp_servers:$/gm) || []).length;
+
+  const install = runCli(home, cwd, ['install', '--target', 'hermes']);
+  assert.equal(install.status, 0, install.stderr);
+  assertPayloadInstalled(pluginDir);
+  let config = readFileSync(configPath, 'utf8');
+  assert.equal(mcpKeyCount(config), 1, 'install must not add a second mcp_servers key');
+  assert.match(
+    config,
+    /^mcp_servers:\n {2}filesystem:\n {4}command: "npx"$/m,
+    'user server stays nested under mcp_servers',
+  );
+  assert.match(config, /^ {2}huaweicloud-devkit:\n {4}command: "node"$/m, 'devkit entry merges as a sibling child');
+
+  const update = runCli(home, cwd, ['update', '--target', 'hermes']);
+  assert.equal(update.status, 0, update.stderr);
+  assertPayloadInstalled(pluginDir);
+  config = readFileSync(configPath, 'utf8');
+  assert.equal(mcpKeyCount(config), 1, 'update must not add a second mcp_servers key');
+  assert.match(config, /^mcp_servers:\n {2}filesystem:\n {4}command: "npx"$/m, 'user server survives the update');
+  assert.match(config, /^ {2}huaweicloud-devkit:\n {4}command: "node"$/m, 'devkit entry survives the update');
+
+  const uninstall = runCli(home, cwd, ['uninstall', '--target', 'hermes']);
+  assert.equal(uninstall.status, 0, uninstall.stderr);
+  assert.ok(!existsSync(pluginDir), 'plugin dir survived uninstall');
+  config = readFileSync(configPath, 'utf8');
+  assert.equal(mcpKeyCount(config), 1, 'uninstall must keep the user-owned mcp_servers key');
+  assert.doesNotMatch(config, /huaweicloud-devkit/, 'devkit entry survived uninstall');
+  assert.match(config, /^mcp_servers:\n {2}filesystem:\n {4}command: "npx"$/m, 'user server survives the uninstall');
+
+  // Reinstall after uninstall must not inherit the user server's args: the
+  // #615 delta save is scoped to the devkit child's own args line.
+  const reinstall = runCli(home, cwd, ['install', '--target', 'hermes']);
+  assert.equal(reinstall.status, 0, reinstall.stderr);
+  config = readFileSync(configPath, 'utf8');
+  assert.equal(mcpKeyCount(config), 1, 'reinstall keeps a single mcp_servers key');
+  assert.match(
+    config,
+    /^ {2}huaweicloud-devkit:\n {4}command: "node"\n {4}args: \["[^\]]*mcp-server\.js"\]$/m,
+    'reinstalled devkit args carry only the server path',
+  );
+  assert.match(
+    config,
+    /^ {2}filesystem:\n {4}command: "npx"\n {4}args: \["-y", "@modelcontextprotocol\/server-filesystem", "\/tmp"\]$/m,
+    'the user server is intact after reinstall',
+  );
+});
