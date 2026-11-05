@@ -2018,8 +2018,7 @@ function cleanupSection(text, name) {
   return m ? m[1] : '';
 }
 
-async function syncKeepaliveAfterCleanup(workspaceId, deletedIds, username) {
-  if (!deletedIds?.length) return;
+async function syncKeepaliveAfterCleanup(workspaceId, { deletedIds, liveTunnelIds, username }) {
   let current;
   try {
     const read = await execOneShot(workspaceId, buildKeepaliveTunnelsReadScript(), username, 20000);
@@ -2028,8 +2027,11 @@ async function syncKeepaliveAfterCleanup(workspaceId, deletedIds, username) {
     return;
   }
   if (!current.length) return;
-  const deleted = new Set(deletedIds);
-  const remaining = current.filter((t) => !deleted.has(t.tunnelId));
+  const deleted = new Set(deletedIds || []);
+  // Prune deleted IDs AND entries that no longer exist in the management plane
+  // (ghost tunnels from earlier delete-all calls would otherwise be re-hosted
+  // and renewed forever).
+  const remaining = current.filter((t) => !deleted.has(t.tunnelId) && liveTunnelIds.has(t.tunnelId));
   if (remaining.length === current.length) return;
   if (remaining.length === 0) {
     try {
@@ -2062,15 +2064,31 @@ export async function cleanupDevbridgeTunnels(
   try {
     const stateResult = await execOneShot(workspaceId, buildDevbridgeCleanupStateScript(), username, 30000);
     const text = stripTerminalEscapes(stateResult.stdout);
-    const tunnels = parseDevbridgeTunnelList(cleanupSection(text, 'TUNNELS'));
+    const tunnelSection = cleanupSection(text, 'TUNNELS');
+    const listOk = /Tunnel ID|No tunnels found/i.test(tunnelSection);
+    if (!listOk) {
+      // list/auth/network failed — do not delete or kill anything on a guess.
+      return { ok: false, listFailed: true, deleteIds: [], killPids: [] };
+    }
+    const tunnels = parseDevbridgeTunnelList(tunnelSection);
     const hosts = parseDevbridgeHostProcesses(cleanupSection(text, 'HOSTS'));
     const keepalive = parseKeepaliveTunnelsOutput(text);
+    const liveTunnelIds = new Set(tunnels.map((t) => t.id));
     const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode, samePort, maxExtra });
     if (plan.deleteIds.length === 0 && plan.killPids.length === 0) {
+      await syncKeepaliveAfterCleanup(workspaceId, {
+        deletedIds: [],
+        liveTunnelIds,
+        username,
+      });
       return { ok: true, deleteIds: [], killPids: [], tunnelCount: tunnels.length };
     }
     await execOneShot(workspaceId, buildDevbridgeCleanupApplyScript(plan), username, 30000);
-    await syncKeepaliveAfterCleanup(workspaceId, plan.deleteIds, username);
+    await syncKeepaliveAfterCleanup(workspaceId, {
+      deletedIds: plan.deleteIds,
+      liveTunnelIds,
+      username,
+    });
     return { ok: true, ...plan, tunnelCount: tunnels.length };
   } finally {
     try {
