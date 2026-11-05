@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.1.13-next.6 (2026-11-05)
+
+- fix(sandbox): address devbridge cleanup review findings
+- test(sandbox): mock selective cleanup in the connect call-tool test
+- fix(sandbox): refresh the devbridge CLI token before cleanup listing
+- fix(sandbox): give devbridge cleanup execs enough time and retry transient terminal timeouts
+- fix(sandbox): prune ghost keepalive entries and skip cleanup on list failure
+- feat(sandbox): selective devbridge tunnel cleanup
+- fix(sandbox): validate devbridge keys with a real API call and heal renew failures
+- fix(sandbox): report the effective devbridge auth mode after auto-create
+
 ## 1.1.13-next.5 (2026-11-04)
 
 - refactor(sandbox): use reclaimMinutes for consistent units
