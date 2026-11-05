@@ -286,6 +286,41 @@ test('HDKIT_CAPACITY_INSUFFICIENT passes the final server copy through untouched
   }
 });
 
+test('HDKIT_VERSION_TOO_OLD carries client/min version and upgrade remediation', async () => {
+  const originalFetch = global.fetch;
+  const serverMessage =
+    '插件版本过旧，请升级至正式版 1.1.13 及以上。请升级插件：npx --yes huaweicloud-devkit@latest update --target <agent> 后重启会话';
+  global.fetch = async () =>
+    new Response(
+      JSON.stringify({
+        code: 'HDKIT_VERSION_TOO_OLD',
+        message: serverMessage,
+        clientVersion: '1.1.12',
+        minVersion: '1.1.13',
+        traceId: 'trace-v',
+      }),
+      { status: 409, headers: { 'Content-Type': 'application/json' } },
+    );
+  try {
+    const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(err.status, 409);
+    assert.equal(err.clientVersion, '1.1.12');
+    assert.equal(err.minVersion, '1.1.13');
+    assert.match(err.message, /正式版 1\.1\.13/);
+    assert.ok(err.remediation, 'expected structured remediation');
+    assert.match(err.remediation.hint, /1\.1\.13/);
+    assert.match(err.remediation.steps.join(' '), /npx --yes huaweicloud-devkit@latest update/);
+    assert.match(err.remediation.steps.join(' '), /重启/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 // ── 烧核播报（HD.97520422 消息内识别）──
 
 test('core-hours exhausted upstream code surfaces friendly remediation', async () => {
