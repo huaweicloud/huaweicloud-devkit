@@ -34,6 +34,10 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', {
     exposeTunnel: async () => ({ ok: true, publicUrl: 'https://stub.example' }),
     renewTunnel: async () => ({ ok: true, renewedForHours: 720 }),
     installKeepaliveWatchdog: async () => ({ ok: true, pid: '123' }),
+    cleanupDevbridgeTunnels: async (ws, opts) => {
+      execLog.push(`cleanup:${JSON.stringify(opts || {})}`);
+      return { ok: true, deleteIds: [], killPids: [] };
+    },
     getCurrentWorkspaceId: () => currentWs,
     setWorkspaceId: (id) => {
       currentWs = id;
@@ -153,8 +157,9 @@ test('callTool connect: first connect broadcasts server-configured lifecycle', a
     assert.match(result.pool.ttl_hint, /45 分钟自动关机/);
     assert.match(result.pool.ttl_hint, /2 小时自动删除/);
     assert.equal(currentWs, 'dev-1');
-    // 连接后的沙箱预清理命令确实下发（session-manager mock 记录）
-    assert.ok(execLog.some((c) => String(c).includes('devbridge delete-all')));
+    // 连接后执行选择性清理（不再使用全局 delete-all）
+    assert.ok(execLog.some((c) => String(c).startsWith('cleanup:')));
+    assert.ok(!execLog.some((c) => String(c).includes('devbridge delete-all')));
     // 生命周期口径进入缓存（expose_tunnel 后续使用）
     assert.equal(poolContextFor('dev-1').poolLifecycle.idleShutdownMinutes, 45);
   } finally {
