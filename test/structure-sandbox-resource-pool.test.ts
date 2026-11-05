@@ -38,6 +38,15 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   assert.ok(activation !== -1 && pool.index < activation, 'pool section must precede Activation');
 
   const poolSection = skill.slice(pool.index, activation);
+  // 口径基调 blockquote（dev 805f24ba）：实测基调声明必须以块引用形态先于
+  // 本节一切表格（口头支持不作数——平台调参后随实测更新）。
+  const caliber =
+    /^> 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测\/平台侧现状，平台调参后本节随之更新）。$/m.exec(
+      poolSection,
+    );
+  assert.ok(caliber, 'the section must open with the measured-caliber blockquote');
+  const mechanism = poolSection.indexOf('用 `pool_type` 选择资源池');
+  assert.ok(mechanism !== -1 && caliber.index < mechanism, 'the caliber blockquote must precede the mechanism lead');
   // Mapping-bearing pins (the #1021 doctrine: pin the routing semantics with
   // regexes that carry the mapping, not keyword presence — a pool-type flip
   // in any row must red the gate).
@@ -351,12 +360,22 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /^## 平台侧关键依赖（G 清单，非 devkit 交付）$/m,
     'the reference G-list heading must keep its not-devkit-delivery posture',
   );
-  // Known boundaries: the untested-upstream honesty note.
+  // Known boundaries: the whitelist-conditional honesty note (dev 805f24ba)
+  // leads the list ahead of the untested-upstream note.
+  const whitelist = resourcePool.indexOf(
+    '池模板当前为**白名单条件实测**（仅对测试账号加白），公开上线后需复测模板 ID 与口径',
+  );
+  assert.ok(
+    whitelist !== -1,
+    'the known-boundary list must keep the whitelist-conditional template recalibration duty',
+  );
   assert.match(
     resourcePool,
     /上游 429 真实响应结构未实测：服务端映射先按已知错误码实现，联调实测后校准/,
     'the known-boundary note must keep the untested-upstream honesty',
   );
+  const untested429 = resourcePool.indexOf('上游 429 真实响应结构未实测');
+  assert.ok(whitelist < untested429, 'the whitelist note must lead the known-boundary list');
 
   // The skill's own tool-summary table and References link (v2-wins sync:
   // they follow the ported doctrine).

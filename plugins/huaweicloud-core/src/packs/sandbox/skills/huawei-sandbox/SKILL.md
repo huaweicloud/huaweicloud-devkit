@@ -49,6 +49,8 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 
 ## 两池沙箱（pool_type）
 
+> 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状，平台调参后本节随之更新）。
+
 `huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
 
 | pool_type           | 语义               | 生命周期（已实测）                                         | 适用                        |

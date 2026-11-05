@@ -59,11 +59,14 @@ export async function handleRenewTunnel(args: ToolArgs = {}, _opts: CallToolOpti
   // Fail fast on a malformed ID before any exec (the validator's error names
   // the expected shape).
   validateTunnelId(args.tunnel_id);
-  return await renewTunnel(
+  return withPoolContext(
     wsId,
-    { tunnelId: args.tunnel_id, expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined },
-    args.username || 'root',
-    args.timeout_ms || SANDBOX_TIMEOUT_MS.renew_tunnel,
+    await renewTunnel(
+      wsId,
+      { tunnelId: args.tunnel_id, expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined },
+      args.username || 'root',
+      args.timeout_ms || SANDBOX_TIMEOUT_MS.renew_tunnel,
+    ),
   );
 }
 
@@ -84,10 +87,13 @@ export async function handleKeepaliveWatchdog(args: ToolArgs = {}, _opts: CallTo
     tunnelId: t.tunnel_id ?? t.tunnelId,
     url: t.url,
   }));
-  return await installKeepaliveWatchdog(
+  return withPoolContext(
     wsId,
-    { tunnels },
-    args.username || 'root',
-    args.timeout_ms || SANDBOX_TIMEOUT_MS.keepalive_watchdog,
+    await installKeepaliveWatchdog(
+      wsId,
+      { tunnels },
+      args.username || 'root',
+      args.timeout_ms || SANDBOX_TIMEOUT_MS.keepalive_watchdog,
+    ),
   );
 }

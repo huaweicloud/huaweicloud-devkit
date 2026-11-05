@@ -1,5 +1,6 @@
 import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
 import { hdkitCheckUser, hdkitSignAgreement, hdkitConnect } from '../../lib/hdkit/hdkitservice-api.ts';
+import type { HdkitError } from '../../lib/hdkit/hdkitservice-api.ts';
 import { validatePoolType, rememberWorkspacePool, enrichConnectResult } from '../../lib/hdkit/sandbox-pool.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { transferGitRepo } from './git-transfer.ts';
@@ -21,12 +22,38 @@ export async function handleSignAgreement(_args: ToolArgs = {}, _opts: CallToolO
 export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
   // 两池：客户端校验 pool_type（非法值在本地即报错，不发无效请求）；未传交由服务端默认 ephemeral
   const connectArgs = { ...args };
-  if (connectArgs.pool_type !== undefined) {
-    const poolType = validatePoolType(connectArgs.pool_type);
-    if (poolType === null) delete connectArgs.pool_type;
-    else connectArgs.pool_type = poolType;
+  let poolType: ReturnType<typeof validatePoolType>;
+  try {
+    poolType = connectArgs.pool_type !== undefined ? validatePoolType(connectArgs.pool_type) : null;
+    if (poolType) connectArgs.pool_type = poolType;
+  } catch (error) {
+    // 非法 pool_type 结构化返回：MCP 错误信封只携带 code+message，指引字段在 throw 路径会丢失（参照 voucher 模式）
+    return { ok: false, code: 'HDKIT_INVALID_POOL_TYPE', message: (error as Error).message };
   }
-  const connectResult = await hdkitConnect(connectArgs);
+  let connectResult: Record<string, unknown>;
+  try {
+    connectResult = await hdkitConnect(connectArgs);
+  } catch (error) {
+    // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
+    // 其余错误维持抛出（MCP 层透传 code+message）
+    const err = error as HdkitError;
+    if (
+      err.code === 'HDKIT_QUOTA_EXCEEDED' ||
+      err.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
+      err.code === 'HDKIT_CRED_INVALID' ||
+      err.coreHoursExhausted
+    ) {
+      return {
+        ok: false,
+        code: err.code,
+        message: err.message,
+        ...(err.retryAfter !== undefined ? { retryAfter: err.retryAfter } : {}),
+        ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+        ...(err.remediation ? { remediation: err.remediation } : {}),
+      };
+    }
+    throw error;
+  }
   const rawDevStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
   const devStageId = typeof rawDevStageId === 'string' ? rawDevStageId : undefined;
   if (devStageId) {
