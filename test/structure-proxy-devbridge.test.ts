@@ -623,8 +623,9 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   // either string cannot hide behind a matching prefix. (?:\\'[^']*)* lets the
   // span cross the literals\' escaped apostrophes. Recorded residual (the
   // substring-pinning limit shared with this repo's entire guard convention):
-  // a contradictory sentence INSERTED mid-span stays green — end-appends and
-  // rewording-to-removal go red; mid-span fiction is not catchable by pinning.
+  // a contradictory sentence INSERTED mid-span or PREPENDED before the pin's
+  // lead stays green — end-appends and rewording-to-removal go red; insertion
+  // fiction is not catchable by pinning.
   assert.match(
     sandboxCredentials,
     /written to \/tmp\/hw_api_key \(0600[^']*(?:\\'[^']*)*DevBridge auth is fixed to API Key \(AK\/SK login removed\)[^']*(?:\\'[^']*)*auto-creates the per-account × per-pool key when neither the keyring nor this file has one[^']*(?:\\'[^']*)*Never echo the key into logs\.'/,
@@ -645,8 +646,8 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.match(sandbox, /HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED/);
   assert.match(sandbox, /devbridge-api-keys\.json/);
 
-  // The API Key guidance (release-build branch) must survive, incl. version detection
-  // and the in-place upgrade.
+  // The API Key guidance (the manual waterfall's file-fallback tier, SKILL.md
+  // Tier 2) must survive, incl. version detection and the in-place upgrade.
   assert.match(sandbox, /auth login --api-key "\$HW_API_KEY"/);
   assert.match(sandbox, /devbridge version/);
   assert.match(sandbox, /devbridge-install\.sh -s/);
