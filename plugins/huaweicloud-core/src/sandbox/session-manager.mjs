@@ -1993,6 +1993,20 @@ export function buildDevbridgeCleanupApplyScript({ deleteIds = [], killPids = []
 function buildDevbridgeCleanupStateScript() {
   return [
     `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
+    // Refresh the CLI token from an existing key. A valid API key can leave an
+    // expired CLI token; without this, devbridge list returns 40100 and cleanup
+    // is skipped even though the key is usable. Never creates a new key here.
+    `DB_KEY=""`,
+    `if command -v hwcloud >/dev/null 2>&1; then`,
+    `  DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `  case "$DB_KEY" in "devbridge_"*) : ;; *) DB_KEY="";; esac`,
+    `fi`,
+    `if [ -z "$DB_KEY" ] && [ -s /tmp/hw_api_key ]; then`,
+    `  source /tmp/hw_api_key 2>/dev/null || true`,
+    `  DB_KEY="\${HW_API_KEY:-}"`,
+    `fi`,
+    `if [ -n "$DB_KEY" ]; then devbridge auth login --api-key "$DB_KEY" >/dev/null 2>&1 || true; fi`,
+    `unset DB_KEY HW_API_KEY 2>/dev/null`,
     `echo "DB_CLEANUP_TUNNELS_BEGIN"`,
     `devbridge list 2>&1 || true`,
     `echo "DB_CLEANUP_TUNNELS_END"`,
