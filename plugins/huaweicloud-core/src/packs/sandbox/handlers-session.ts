@@ -1,5 +1,5 @@
 import { execWithSession, execOneShot, closeSession, getCurrentWorkspaceId } from '../../sandbox/session-manager.ts';
-import { withPoolContext, forgetWorkspacePool } from '../../lib/hdkit/sandbox-pool.ts';
+import { forgetWorkspacePool } from '../../lib/hdkit/sandbox-pool.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { SANDBOX_TIMEOUT_MS } from './schemas.ts';
 
@@ -18,10 +18,10 @@ export async function handleExecWithSession(args: ToolArgs = {}, _opts: CallTool
   const sandboxUser2 = args.username || 'root';
   const sandboxTimeout2 = args.timeout_ms || SANDBOX_TIMEOUT_MS.exec_with_session;
   const sandboxResult2 = await execWithSession(sandboxWsId2, args.command || '', sandboxUser2, sandboxTimeout2);
-  return withPoolContext(sandboxWsId2, {
+  return {
     stdout: sandboxResult2.stdout,
     exitCode: sandboxResult2.exitCode,
-  });
+  };
 }
 
 export async function handleExecOneShot(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
@@ -35,10 +35,10 @@ export async function handleExecOneShot(args: ToolArgs = {}, _opts: CallToolOpti
   const sandboxUser3 = args.username || 'root';
   const sandboxTimeout3 = args.timeout_ms || SANDBOX_TIMEOUT_MS.exec_one_shot;
   const sandboxResult3 = await execOneShot(sandboxWsId3, args.command || '', sandboxUser3, sandboxTimeout3);
-  return withPoolContext(sandboxWsId3, {
+  return {
     stdout: sandboxResult3.stdout,
     exitCode: sandboxResult3.exitCode,
-  });
+  };
 }
 
 export async function handleCloseSession(args: ToolArgs = {}, _opts: CallToolOptions = {}) {

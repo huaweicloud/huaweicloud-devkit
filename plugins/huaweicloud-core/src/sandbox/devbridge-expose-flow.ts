@@ -11,6 +11,7 @@ import {
 } from './devbridge-expose.ts';
 import { verifyTunnelPersistence } from './devbridge-verify.ts';
 import { enrollKeepalive, type KeepaliveWatchdogResult } from './devbridge-keepalive.ts';
+import { buildExposeLifetimeNotice, type PoolContext } from '../lib/hdkit/sandbox-pool.ts';
 
 // The DevBridge expose-tunnel orchestration, extracted from devbridge-tunnel so
 // the tunnel helpers stay a cohesive unit with a pure-function test surface.
@@ -97,6 +98,7 @@ export async function exposeTunnel(
     expiryHours,
     keepalive,
     poolType,
+    poolContext,
     keyUpgrade,
   }: {
     port?: number | string;
@@ -108,6 +110,9 @@ export async function exposeTunnel(
     // probe rounds. Omitted by non-production callers (tests) — the gate then
     // degrades to the plain probe verdict.
     poolType?: string;
+    // connect 回显缓存的池上下文：仅在成功结果上生成沙箱存活期提示（隧道有效期
+    // ≠ 沙箱存活期）；未传/无缓存（自定义模板）时结果不带 sandboxLifetime 字段。
+    poolContext?: PoolContext;
     keyUpgrade?: DevbridgeAuthGateOptions['keyUpgrade'];
   },
   username = 'root',
@@ -227,6 +232,10 @@ export async function exposeTunnel(
     const verification = await verifyTunnelPersistence(workspaceId, parsed.tunnelUrl, username);
     if (verification.warning) warnings.push(verification.warning);
 
+    // 交付地址时必须播报沙箱存活期（隧道有效期 ≠ 沙箱存活期；keepalive 只保隧道不保沙箱）
+    const lifetimeNotice = buildExposeLifetimeNotice(poolContext, parsed.expiryHours);
+    if (lifetimeNotice) warnings.push(lifetimeNotice.warning);
+
     const expiresAt =
       parsed.expiryHours !== undefined
         ? new Date(Date.now() + parsed.expiryHours * 3_600_000).toISOString()
@@ -245,6 +254,9 @@ export async function exposeTunnel(
       ok: true,
       publicUrl: parsed.tunnelUrl,
       port: validatedPort,
+      ...(lifetimeNotice
+        ? { sandboxLifetime: lifetimeNotice.sandboxLifetime, urlLifetimeHint: lifetimeNotice.urlLifetimeHint }
+        : {}),
       tunnelId: parsed.tunnelId || undefined,
       authMode,
       httpCode: parsed.httpCode,

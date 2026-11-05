@@ -29,6 +29,13 @@ export interface ExposeTunnelResult {
   persistent?: boolean;
   expiresAt?: string;
   expiresInHours?: number;
+  sandboxLifetime?: {
+    poolType: string;
+    idleShutdownMinutes: number;
+    idleDeleteMinutes?: number;
+    reclaimMinutes?: number;
+  };
+  urlLifetimeHint?: string;
   warnings?: string;
   hostLog?: string;
   error?: string;

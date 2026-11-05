@@ -1,7 +1,12 @@
 import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
 import { hdkitCheckUser, hdkitSignAgreement, hdkitConnect } from '../../lib/hdkit/hdkitservice-api.ts';
 import type { HdkitError } from '../../lib/hdkit/hdkitservice-api.ts';
-import { validatePoolType, rememberWorkspacePool, enrichConnectResult } from '../../lib/hdkit/sandbox-pool.ts';
+import {
+  validatePoolType,
+  rememberWorkspacePool,
+  shouldAnnounceConnect,
+  enrichConnectResult,
+} from '../../lib/hdkit/sandbox-pool.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { transferGitRepo } from './git-transfer.ts';
 
@@ -56,11 +61,14 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
   }
   const rawDevStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
   const devStageId = typeof rawDevStageId === 'string' ? rawDevStageId : undefined;
+  let announceConnect = true;
   if (devStageId) {
     setWorkspaceId(devStageId);
-    // 池归属缓存：exec/upload/deploy 等工具返回值据此附带池模式提示（缺口#2）；
+    // 播报判定：会话首次 connect 或复用实例被唤醒（started=true）才提示，其余复用静默
+    announceConnect = shouldAnnounceConnect(devStageId, connectResult || {});
+    // 池归属 + 生命周期口径缓存（服务端回显优先，缺失时客户端默认兜底）。
     // 双读兜底与 devStageId 同型（防服务端 wire 命名漂移，QA #1082 配对复审教训）
-    rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType);
+    rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType, connectResult || {});
     try {
       await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
     } catch {
@@ -80,6 +88,6 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     }
     await transferGitRepo(args, devStageId, connectResult);
   }
-  // TTL 播报（缺口#1）：服务端回显 pool_type 才附带生命周期提示
-  return enrichConnectResult(connectResult);
+  // 生命周期提示：仅首次连接 / 关机唤醒时播报（服务端回显 pool_type 才生成）
+  return enrichConnectResult(connectResult, { announce: announceConnect });
 }

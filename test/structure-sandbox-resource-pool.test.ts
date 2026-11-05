@@ -38,10 +38,10 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   assert.ok(activation !== -1 && pool.index < activation, 'pool section must precede Activation');
 
   const poolSection = skill.slice(pool.index, activation);
-  // 口径基调 blockquote（dev 805f24ba）：实测基调声明必须以块引用形态先于
-  // 本节一切表格（口头支持不作数——平台调参后随实测更新）。
+  // 口径基调 blockquote（dev 5c09d225 终态）：实测基调声明必须以块引用形态先于
+  // 本节一切表格（口头支持不作数——数值为服务端配置下发的默认口径，平台调参以回显为准）。
   const caliber =
-    /^> 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测\/平台侧现状，平台调参后本节随之更新）。$/m.exec(
+    /^> 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测\/平台侧现状；数值为服务端配置下发的默认口径，平台调参以服务端回显为准）。$/m.exec(
       poolSection,
     );
   assert.ok(caliber, 'the section must open with the measured-caliber blockquote');
@@ -62,8 +62,8 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   );
   assert.match(
     poolSection,
-    /\| `persistent`\s+\| 持久沙箱（EVS 盘）\s+\| 数据跨关机保留；闲置回收保留期上限 7 天\s+\| 需要跨会话保留数据\s*\|/,
-    'the type table must keep the persistent row with the 7-day reclaim cap',
+    /\| `persistent`\s+\| 持久沙箱（EVS 盘）\s+\| 数据跨关机保留；闲置 1 小时自动关机；闲置回收保留期上限 7 天\s+\| 需要跨会话保留数据\s*\|/,
+    'the type table must keep the persistent row with the 1h idle shutdown and the 7-day reclaim cap',
   );
   // Selection-rules table rows: intent → pool_type mapping with the reason.
   for (const [intent, poolType] of [
@@ -110,9 +110,10 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   );
   // The 429 dual-code doctrine: the two codes with their opposite remedies,
   // plus the Retry-After arrival — a code-to-remedy swap reds the gate.
+  // dev 5c09d225 终态：capacity 由服务端返回最终文案，客户端不再附加引导。
   assert.match(
     poolSection,
-    /\*\*429 双错误码\*\*：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放\/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足→建议错峰重试）。响应带 `Retry-After`/,
+    /\*\*429 双错误码\*\*：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放\/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`/,
     'the 429 dual-code bullet must map each code to its distinct remedy with the Retry-After arrival',
   );
   assert.doesNotMatch(
@@ -125,12 +126,22 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     /HDKIT_CAPACITY_INSUFFICIENT`（账号配额满/,
     'capacity-insufficient must never carry the quota remedy',
   );
-  // TTL broadcast duty (缺口#1/#2 teaching): the ephemeral URL-invalidity
-  // warning is the load-bearing clause for URL handover.
+  assert.doesNotMatch(
+    poolSection,
+    /HDKIT_CAPACITY_INSUFFICIENT`（池容量不足→建议错峰重试/,
+    'the client-side off-peak remediation must not survive (server copy is final)',
+  );
+  // TTL broadcast duty (dev 5c09d225 终态)：播报只出现在 connect（首次/唤醒）与
+  // expose_tunnel 两个时机；URL 交付时必须转述 urlLifetimeHint/warnings。
   assert.match(
     poolSection,
-    /\*\*TTL 播报\*\*：connect 与执行类工具返回值带池模式\/生命周期提示——\*\*ephemeral 池部署的公网地址会随沙箱闲置关机失效\*\*，向开发者交付 URL 时必须附带该提示/,
-    'the TTL broadcast bullet must pin the ephemeral-URL-dies warning as a URL-handover duty',
+    /\*\*TTL 播报\*\*：仅 connect（会话首次连接 \/ 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。\*\*ephemeral 池部署的公网地址会随沙箱闲置关机失效\*\*，向开发者交付 URL 时必须转述 `urlLifetimeHint` \/ `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底/,
+    'the TTL broadcast bullet must pin the two announce occasions and the MUST-relay duty',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /\*\*TTL 播报\*\*：connect 与执行类工具返回值带池模式/,
+    'the per-call pool-context broadcast doctrine must not survive',
   );
   // Burn-core caliber: gifting wording + the HD.97520422 exhaustion code.
   assert.match(
@@ -183,6 +194,13 @@ test('workflow sequences pool selection (Step 0.3) between the target gate and t
   const step05 = skill.indexOf('**Step 0.5 — Stack-Selection Gate (MANDATORY)**');
   assert.ok(step0 !== -1 && step03 !== -1 && step0 < step03, 'Step 0.3 must follow Step 0');
   assert.ok(step05 !== -1 && step03 < step05, 'Step 0.3 must precede Step 0.5');
+
+  // Step 10 的 URL 交付纪律（dev 5c09d225）：每次交付 URL 必须附带 sandbox 存活期提示。
+  assert.match(
+    skill,
+    /\*\*Every URL handoff MUST include the sandbox-lifetime notice from `urlLifetimeHint` \(or `warnings`\)\*\*: the address dies when the sandbox idles out \(ephemeral: shutdown\/delete; persistent: shutdown, data retained\), and the tunnel expiry is not the sandbox lifetime/,
+    'Step 10 must carry the URL-handoff MUST-relay duty with both pool lifetimes',
+  );
 });
 
 test('resource-pool reference documents the v3 mechanism, lifecycle, and error codes', () => {
@@ -230,8 +248,8 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /\| 生命周期\s+\|\s*闲置 30min 自动关机 \+ 1h 删除（已实测）\s+\|\s*闲置回收保留期上限 7 天（资源组 DB 硬约束）\s*\|/,
-    'the lifecycle row must keep 30min/1h on the ephemeral side and the 7-day cap on the persistent side',
+    /\| 生命周期\s+\|\s*闲置 30min 自动关机 \+ 1h 删除（已实测）\s+\|\s*闲置 1h 自动关机（实例与数据保留）；回收上限 7 天（资源组 DB 硬约束）\s*\|/,
+    'the lifecycle row must keep 30min/1h on the ephemeral side and the 1h-shutdown/7-day cap on the persistent side',
   );
   assert.match(
     resourcePool,
@@ -251,11 +269,26 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     'the 14-day doctrine must not survive in the persistent cell',
   );
   // Lifecycle table (measured caliber): the status column pins what is
-  // verified vs platform-side.
+  // verified vs platform-side. dev 5c09d225 增补持久闲置策略行 + 播报口径引用块。
   assert.match(
     resourcePool,
     /\| 非持久闲置策略\s+\| 30min 自动关机 \+ 1h 删除（平台定时任务）\s+\|\s*✅ 已验证生效\s*\|/,
     'the ephemeral idle policy must be pinned as verified',
+  );
+  assert.match(
+    resourcePool,
+    /\| 持久闲置策略\s+\| 闲置 1h 自动关机（实例与数据盘保留）\s+\|\s*平台侧\s*\|/,
+    'the persistent idle-shutdown row must be pinned as platform-side',
+  );
+  assert.match(
+    resourcePool,
+    /> 生命周期数值是\*\*播报口径\*\*，由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` \/ `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` \/ `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` \/ `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以\*\*分钟\*\*为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机\/删除策略由平台资源池执行，hdkitservice 不控制。/,
+    'the broadcast-caliber blockquote must pin the minute-based env contract (RECLAIM_MINUTES, 7 天 = 10080)',
+  );
+  assert.doesNotMatch(
+    resourcePool,
+    /POOL_PERSISTENT_RECLAIM_DAYS/,
+    'the day-based reclaim env must not survive (minute-based per ef9e977b)',
   );
   assert.match(
     resourcePool,
@@ -317,8 +350,8 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /`HDKIT_CAPACITY_INSUFFICIENT`：池容量不足（上游 `HD\.99003001`\/`HD\.99008001`\/`HD\.98330021`）→ 建议错峰重试/,
-    'capacity-insufficient must map to its upstream codes and off-peak remedy',
+    /`HDKIT_CAPACITY_INSUFFICIENT`：池容量不足（上游 `HD\.99003001`\/`HD\.99008001`\/`HD\.98330021`）→ 服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端原样透传不再附加引导/,
+    'capacity-insufficient must map to its upstream codes and the server-final copy passthrough',
   );
   assert.match(
     resourcePool,
@@ -336,10 +369,26 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /`sandbox_connect` 传 `pool_type`；非法值本地即报错（不发无效请求）；未传由服务端默认 ephemeral/,
     'the client must validate pool_type locally and defer absence to the server',
   );
+  // dev 5c09d225 终态客户端行为：播报时机两处、口径落盘缓存、429 差异化透传。
   assert.match(
     resourcePool,
-    /connect 返回值富化 `pool` 块（TTL 播报，仅服务端回显 pool_type 时）；exec\/upload\/deploy\/expose 返回值带 `poolMode`\/`persistenceHint`/,
-    'the enrichment surfaces must be stated with their echo-only condition',
+    /生命周期提示只在两个时机播报：connect（会话首次连接，或复用实例被唤醒 `started=true`）与 `expose_tunnel`（交付地址时，返回 `urlLifetimeHint` \+ `warnings`）；其余 exec\/upload\/deploy 工具不逐次播报/,
+    'the two announce occasions must be stated with the expose-tunnel relay surface',
+  );
+  assert.match(
+    resourcePool,
+    /connect 返回值富化 `pool` 块（数值取服务端回显，缺失时用默认口径）；生命周期口径按 workspace 缓存到 `~\/\.config\/huaweicloud\/sandbox-pools\.json`（0600，7 天过期），进程重启后仍可播报/,
+    'the pool-block enrichment and the 0600 7-day cache contract must be stated',
+  );
+  assert.match(
+    resourcePool,
+    /429：配额满给 `remediation` 引导；容量不足只透传服务端最终文案 \+ `retryAfter`/,
+    'the 429 split must pin quota remediation vs capacity passthrough',
+  );
+  assert.doesNotMatch(
+    resourcePool,
+    /exec\/upload\/deploy\/expose 返回值带 `poolMode`\/`persistenceHint`/,
+    'the per-call poolMode/persistenceHint doctrine must not survive',
   );
   assert.match(
     resourcePool,
@@ -444,8 +493,24 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   assert.match(
     connectDesc,
-    /Persistent pool: data disk retained \(EVS 32G\), idle reclaim capped at 7 days\./,
-    'the connect description must attribute the EVS retention and 7-day cap to the persistent pool',
+    /Persistent pool: data disk retained \(EVS 32G\), idle shutdown after 1h, idle reclaim capped at 7 days\./,
+    'the connect description must attribute the EVS retention, 1h shutdown, and 7-day cap to the persistent pool',
+  );
+  // dev 5c09d225/ef9e977b 终态：服务端配置字段（分钟口径）、started 字段、播报时机。
+  assert.match(
+    connectDesc,
+    /pool_type\/template_id echo, server-configured lifecycle numbers \(pool_idle_shutdown_minutes \/ pool_idle_delete_minutes \/ pool_reclaim_minutes\) and started \(true when a reused instance was woken from shutdown\)\./,
+    'the connect description must promise the server-configured minute-based lifecycle echo and the started field',
+  );
+  assert.match(
+    connectDesc,
+    /Lifecycle hints are announced only on the first connect of a session or when started=true\./,
+    'the connect description must pin the announce occasions',
+  );
+  assert.match(
+    connectDesc,
+    /Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults\./,
+    'the connect description must state the server-echo-first fallback doctrine',
   );
   assert.match(
     connectDesc,
@@ -454,6 +519,19 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   // v2 divergence: the vendor-gate seam stays on the connect description.
   assert.match(connectDesc, /Vendor-gated \(vendorConfirmed\)/, 'connect must keep the vendor-gate sentence');
+
+  // dev 5c09d225 终态：expose 返回 sandboxLifetime/urlLifetimeHint 且 MUST-relay。
+  const exposeDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_expose_tunnel');
+  assert.match(
+    exposeDesc,
+    /keepalive\.enrolled\/tunnelCount\/watchdogPid, warnings, sandboxLifetime and urlLifetimeHint\./,
+    'the expose description must promise the sandboxLifetime and urlLifetimeHint fields',
+  );
+  assert.match(
+    exposeDesc,
+    /The urlLifetimeHint MUST be relayed to the developer together with the URL: the tunnel expiry is NOT the sandbox lifetime — an idle sandbox shuts down \(ephemeral also auto-deletes\), which kills the URL\./,
+    'the expose description must carry the MUST-relay sentence',
+  );
 
   const closeDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_close_session');
   assert.match(

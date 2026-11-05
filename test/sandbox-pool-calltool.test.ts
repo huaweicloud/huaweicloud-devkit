@@ -1,19 +1,22 @@
 import { test, after, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { join } from 'node:path';
 
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
+import { fixtureDir } from './fixture-dir.ts';
 
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 process.env.HUAWEICLOUD_DEVKIT_TELEMETRY = 'off';
+// 池缓存落盘路径隔离（fixtureDir 注册，进程退出回收）
+process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('sandbox-pool-calltool'), 'sandbox-pools.json');
 delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
 delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 
-// callTool 级行为测试：validate → hdkitConnect（真实实现 + fetch mock）→
-// rememberWorkspacePool → enrich 全链路；终端层走 session-manager 模块 mock，
-// 不触真实 DevStation。
+// callTool 级行为测试：validate → hdkitConnect（真实实现 + fetch mock）→ 播报判定 →
+// rememberWorkspacePool 全链路；终端层走 session-manager 模块 mock，不触真实 DevStation。
 const restoreFetchEnv = isolateDirectFetchEnv();
 after(() => {
   restoreFetchEnv();
@@ -45,7 +48,7 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.ts', {
   },
 });
 
-// 隧道层 mock：805f24ba 把 renew_tunnel/keepalive_watchdog 也包进 withPoolContext；
+// 隧道层 mock：renew_tunnel/keepalive_watchdog/expose_tunnel 走 devbridge-tunnel 面；
 // dev 的 mock 面携带同名 stub（renewTunnel/installKeepaliveWatchdog/exposeTunnel）。
 mock.module('../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts', {
   namedExports: {
@@ -57,6 +60,8 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts', {
 });
 
 const { callTool } = await import('../plugins/huaweicloud-core/src/tools.ts');
+const { forgetWorkspacePool, poolContextFor } =
+  await import('../plugins/huaweicloud-core/src/lib/hdkit/sandbox-pool.ts');
 
 function withFetchResponse(payload: unknown, init: ResponseInit = {}) {
   const originalFetch = global.fetch;
@@ -79,6 +84,7 @@ interface ConnectResult {
 }
 
 interface ExecResult {
+  ok?: boolean;
   stdout?: string;
   exitCode?: number;
   poolMode?: string;
@@ -171,15 +177,17 @@ test('callTool connect: 429 quota-exceeded remediation survives the MCP boundary
   assert.equal(json.retryAfter, '60');
 });
 
-test('callTool connect: capacity-insufficient remediation survives the MCP boundary', async () => {
+test('callTool connect: capacity-insufficient shows exactly the server message (no extra remediation)', async () => {
+  const finalCopy = 'DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！';
   const result = await connect429Structured({
     code: 'HDKIT_CAPACITY_INSUFFICIENT',
-    message: 'devkit提供的免费资源紧张，建议错峰使用',
+    message: finalCopy,
   });
   assert.equal(result.ok, false);
   assert.equal(result.code, 'HDKIT_CAPACITY_INSUFFICIENT');
+  assert.equal(result.message, finalCopy);
+  assert.equal(result.remediation, undefined, 'capacity copy must not be wrapped in remediation');
   assert.equal(result.retryAfter, '60');
-  assert.match(result.remediation?.hint ?? '', /平台池容量暂时不足/);
 });
 
 test('callTool connect: core-hours exhausted surfaces structured guidance', async () => {
@@ -211,9 +219,18 @@ test('callTool connect: unexpected server errors keep the throw path (rethrow pa
   }
 });
 
-test('callTool connect: success path validates, connects, remembers pool, and broadcasts TTL', async () => {
+test('callTool connect: first connect broadcasts server-configured lifecycle', async () => {
   execLog.length = 0;
-  const restore = withFetchResponse(CONNECTED_EPHEMERAL, { status: 200 });
+  forgetWorkspacePool();
+  const restore = withFetchResponse(
+    {
+      ...CONNECTED_EPHEMERAL,
+      pool_idle_shutdown_minutes: 45,
+      pool_idle_delete_minutes: 120,
+      started: false,
+    },
+    { status: 200 },
+  );
   try {
     // 大小写归一化：EPHEMERAL → ephemeral（validatePoolType 链路）
     const result = (await callTool('huaweicloud_sandbox_connect', {
@@ -223,48 +240,68 @@ test('callTool connect: success path validates, connects, remembers pool, and br
     assert.equal(result.pool_type, 'ephemeral');
     assert.equal(result.template_id, 'tpl-eph');
     assert.ok(result.pool, 'expected TTL broadcast block');
-    assert.match(result.pool.ttl_hint, /30 分钟/);
-    assert.match(result.pool.ttl_hint, /1 小时/);
+    assert.match(result.pool.ttl_hint, /45 分钟自动关机/);
+    assert.match(result.pool.ttl_hint, /2 小时自动删除/);
     assert.equal(currentWs, 'dev-1');
     // 连接后的沙箱预清理命令确实下发（session-manager mock 记录）
     assert.ok(execLog.some((c) => c.includes('devbridge delete-all')));
+    // 生命周期口径进入缓存（expose_tunnel 后续使用）
+    assert.equal(poolContextFor('dev-1')?.poolLifecycle.idleShutdownMinutes, 45);
   } finally {
     restore();
   }
 });
 
-test('callTool connect: camelCase poolType echo still populates the pool cache (wire naming drift guard)', async () => {
-  const restore = withFetchResponse(
-    {
-      session_id: 'dev-cc',
-      dev_stage_id: 'dev-cc',
-      connection_id: '42',
-      connection_address: 'wss://stub',
-      status: 'connected',
-      poolType: 'ephemeral',
-      templateId: 'tpl-eph',
-    },
-    { status: 200 },
-  );
+test('callTool connect: reuse is silent, wake-up re-announces, camelCase echo still caches', async () => {
+  forgetWorkspacePool();
+  const payload = (started: boolean) => ({
+    session_id: 'dev-reuse',
+    dev_stage_id: 'dev-reuse',
+    connection_id: '42',
+    connection_address: 'wss://stub',
+    status: 'connected',
+    poolType: 'ephemeral',
+    templateId: 'tpl-eph',
+    started,
+  });
+
+  let restore = withFetchResponse(payload(false), { status: 200 });
   try {
-    const result = (await callTool('huaweicloud_sandbox_connect', {
+    const first = (await callTool('huaweicloud_sandbox_connect', {
       vendorConfirmed: VENDOR,
       pool_type: 'ephemeral',
     })) as ConnectResult;
-    assert.ok(result.pool, 'camelCase echo must still broadcast lifecycle');
-    assert.equal(result.pool.pool_type, 'ephemeral');
-    // 池缓存同样双读兜底：exec 返回值仍带 poolMode
-    const execResult = (await callTool('huaweicloud_sandbox_exec_one_shot', {
-      workspace_id: 'dev-cc',
-      command: 'echo hi',
-    })) as ExecResult;
-    assert.equal(execResult.poolMode, 'ephemeral');
+    assert.ok(first.pool, 'first connect must broadcast');
+    assert.equal(poolContextFor('dev-reuse')?.poolMode, 'ephemeral');
+  } finally {
+    restore();
+  }
+
+  restore = withFetchResponse(payload(false), { status: 200 });
+  try {
+    const second = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ConnectResult;
+    assert.equal(second.pool, undefined, 'silent reuse must not repeat the lifecycle hint');
+  } finally {
+    restore();
+  }
+
+  restore = withFetchResponse(payload(true), { status: 200 });
+  try {
+    const woken = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ConnectResult;
+    assert.ok(woken.pool, 'wake-up (started=true) must re-announce lifecycle');
   } finally {
     restore();
   }
 });
 
-test('callTool exec carries pool mode; close_session clears the pool cache (S4)', async () => {
+test('callTool exec stays clean; close_session clears the pool cache', async () => {
+  forgetWorkspacePool();
   await connectEphemeralDev1();
 
   const execResult = (await callTool('huaweicloud_sandbox_exec_one_shot', {
@@ -273,34 +310,41 @@ test('callTool exec carries pool mode; close_session clears the pool cache (S4)'
   })) as ExecResult;
   assert.equal(execResult.stdout, 'STUB');
   assert.equal(execResult.exitCode, 0);
-  assert.equal(execResult.poolMode, 'ephemeral');
-  assert.match(execResult.persistenceHint ?? '', /非持久沙箱/);
+  // 逐次调用不刷池提示（提示只在 connect / expose_tunnel 出现）
+  assert.equal(execResult.poolMode, undefined);
+  assert.equal(execResult.persistenceHint, undefined);
 
   const closed = await callTool('huaweicloud_sandbox_close_session', { workspace_id: 'dev-1' });
   assert.equal(closed, 'ok');
+  assert.equal(poolContextFor('dev-1'), undefined, 'pool cache must be cleared on session close');
 
   const after = (await callTool('huaweicloud_sandbox_exec_one_shot', {
     workspace_id: 'dev-1',
     command: 'echo hi',
   })) as ExecResult;
-  assert.equal(after.poolMode, undefined, 'pool cache must be cleared on session close');
+  assert.equal(after.poolMode, undefined);
   assert.equal(after.persistenceHint, undefined);
 });
 
-test('callTool renew_tunnel and keepalive_watchdog carry the pool context (805f24ba wrap, v2-authored)', async () => {
+// 新教义（dev 5c09d225）：renew/watchdog 不再带池上下文——Unit C 的 v2-authored
+// 「带池上下文」断言随 withPoolContext 拆除一并翻转（只拆不删，钉住静默面）。
+test('callTool renew_tunnel and keepalive_watchdog stay clean (no per-call pool context)', async () => {
+  forgetWorkspacePool();
   await connectEphemeralDev1();
 
   const renewed = (await callTool('huaweicloud_sandbox_renew_tunnel', {
     workspace_id: 'dev-1',
     tunnel_id: 't-1',
   })) as ExecResult;
-  assert.equal(renewed.poolMode, 'ephemeral');
-  assert.match(renewed.persistenceHint ?? '', /非持久沙箱/);
+  assert.equal(renewed.ok, true);
+  assert.equal(renewed.poolMode, undefined);
+  assert.equal(renewed.persistenceHint, undefined);
 
   const watched = (await callTool('huaweicloud_sandbox_keepalive_watchdog', {
     workspace_id: 'dev-1',
     tunnels: [{ tunnel_id: 't-1', url: 'https://stub.example' }],
   })) as ExecResult;
-  assert.equal(watched.poolMode, 'ephemeral');
-  assert.match(watched.persistenceHint ?? '', /非持久沙箱/);
+  assert.equal(watched.ok, true);
+  assert.equal(watched.poolMode, undefined);
+  assert.equal(watched.persistenceHint, undefined);
 });

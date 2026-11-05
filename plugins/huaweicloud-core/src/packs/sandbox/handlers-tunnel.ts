@@ -5,7 +5,7 @@ import {
   validateTunnelId,
 } from '../../sandbox/devbridge-tunnel.ts';
 import { getCurrentWorkspaceId } from '../../sandbox/session-manager.ts';
-import { poolContextFor, withPoolContext } from '../../lib/hdkit/sandbox-pool.ts';
+import { poolContextFor } from '../../lib/hdkit/sandbox-pool.ts';
 import {
   buildKeyringInjectScript,
   ensureDevbridgeKey,
@@ -34,21 +34,20 @@ export async function handleExposeTunnel(args: ToolArgs = {}, _opts: CallToolOpt
   }
   const sandboxUser9 = args.username || 'root';
   const sandboxTimeout9 = args.timeout_ms || SANDBOX_TIMEOUT_MS.expose_tunnel;
-  return withPoolContext(
+  const exposePoolContext = poolContextFor(sandboxWsId9);
+  return await exposeTunnel(
     sandboxWsId9,
-    await exposeTunnel(
-      sandboxWsId9,
-      {
-        port: args.port,
-        expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
-        keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
-        // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
-        poolType: poolContextFor(sandboxWsId9)?.poolMode || 'ephemeral',
-        keyUpgrade: { ensureDevbridgeKey, recreateDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
-      },
-      sandboxUser9,
-      sandboxTimeout9,
-    ),
+    {
+      port: args.port,
+      expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
+      keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
+      // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
+      poolType: exposePoolContext?.poolMode || 'ephemeral',
+      poolContext: exposePoolContext,
+      keyUpgrade: { ensureDevbridgeKey, recreateDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
+    },
+    sandboxUser9,
+    sandboxTimeout9,
   );
 }
 
@@ -68,14 +67,11 @@ export async function handleRenewTunnel(args: ToolArgs = {}, _opts: CallToolOpti
   // Fail fast on a malformed ID before any exec (the validator's error names
   // the expected shape).
   validateTunnelId(args.tunnel_id);
-  return withPoolContext(
+  return await renewTunnel(
     wsId,
-    await renewTunnel(
-      wsId,
-      { tunnelId: args.tunnel_id, expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined },
-      args.username || 'root',
-      args.timeout_ms || SANDBOX_TIMEOUT_MS.renew_tunnel,
-    ),
+    { tunnelId: args.tunnel_id, expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined },
+    args.username || 'root',
+    args.timeout_ms || SANDBOX_TIMEOUT_MS.renew_tunnel,
   );
 }
 
@@ -96,13 +92,10 @@ export async function handleKeepaliveWatchdog(args: ToolArgs = {}, _opts: CallTo
     tunnelId: t.tunnel_id ?? t.tunnelId,
     url: t.url,
   }));
-  return withPoolContext(
+  return await installKeepaliveWatchdog(
     wsId,
-    await installKeepaliveWatchdog(
-      wsId,
-      { tunnels },
-      args.username || 'root',
-      args.timeout_ms || SANDBOX_TIMEOUT_MS.keepalive_watchdog,
-    ),
+    { tunnels },
+    args.username || 'root',
+    args.timeout_ms || SANDBOX_TIMEOUT_MS.keepalive_watchdog,
   );
 }
