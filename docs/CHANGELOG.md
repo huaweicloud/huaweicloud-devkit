@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.13-next.7 (2026-11-05)
+
+- feat(sandbox): structured guidance for the forced version gate
+
 ## 1.1.13-next.6 (2026-11-05)
 
 - fix(sandbox): address devbridge cleanup review findings
