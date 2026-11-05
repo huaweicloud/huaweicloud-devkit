@@ -221,8 +221,11 @@ test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → 
   assert.match(script, /source \/tmp\/hw_api_key/);
   assert.match(script, /--api-key "\$HW_API_KEY"/);
   assert.match(script, /DB_AUTH_MODE=API_KEY_FILE/);
-  // All tiers verified via real login + auth status; diagnostics emitted; final failure mode
-  assert.match(script, /db_login_ok\(\) \{ devbridge auth status.*Logged in/);
+  // All tiers verified via real login (exit code) + auth status + a real API call
+  assert.match(script, /db_login_ok\(\) \{/);
+  assert.match(script, /devbridge auth status.*Logged in.*return 1/);
+  assert.match(script, /devbridge list >\/dev\/null 2>&1/);
+  assert.match(script, /devbridge auth login --api-key "\$HW_DB_KEY".*&& db_login_ok/);
   assert.match(script, /DB_ATTEMPT_/);
   assert.match(script, /DB_AUTH_MODE=NO_CREDENTIAL/);
   // Secrets are not left in the environment after the probe
@@ -687,9 +690,13 @@ test('tunnel-persistence: buildDevbridgeKeepaliveScript installs the 3-layer wat
   // matches ANY tunnel's host and silently skips re-attaching the dead one).
   assert.match(script, /pgrep -f "devbridge host \$ID"/);
   assert.match(script, /setsid nohup devbridge host "\$ID"/);
-  // Layer 2: daily renewal at the 720h maximum.
+  // Layer 2: daily renewal at the 720h maximum, with re-login self-heal on failure.
   assert.match(script, /devbridge update "\$ID" -e 720/);
   assert.match(script, /-ge 86400/);
+  assert.match(script, /keepalive-auth\.log/);
+  assert.match(script, /after re-login/);
+  assert.match(script, /AUTH_FAILED/);
+  assert.match(script, /DBUS_SESSION_BUS_ADDRESS/);
   // Layer 3: health check with hardcoded URLs (port list output is OSC-wrapped
   // and breaks anchored greps — URLs are never derived from it).
   assert.match(
