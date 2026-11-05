@@ -2018,10 +2018,24 @@ function cleanupSection(text, name) {
   return m ? m[1] : '';
 }
 
+async function execCleanupWithRetry(workspaceId, script, username, timeoutMs = 60000) {
+  let lastError;
+  for (let i = 1; i <= 2; i += 1) {
+    try {
+      return await execOneShot(workspaceId, script, username, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (i === 2 || !/timeout|websocket/i.test(String(error?.message || ''))) throw error;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  throw lastError;
+}
+
 async function syncKeepaliveAfterCleanup(workspaceId, { deletedIds, liveTunnelIds, username }) {
   let current;
   try {
-    const read = await execOneShot(workspaceId, buildKeepaliveTunnelsReadScript(), username, 20000);
+    const read = await execCleanupWithRetry(workspaceId, buildKeepaliveTunnelsReadScript(), username, 30000);
     current = parseKeepaliveTunnelsOutput(read.stdout);
   } catch {
     return;
@@ -2035,11 +2049,11 @@ async function syncKeepaliveAfterCleanup(workspaceId, { deletedIds, liveTunnelId
   if (remaining.length === current.length) return;
   if (remaining.length === 0) {
     try {
-      await execOneShot(
+      await execCleanupWithRetry(
         workspaceId,
         `pkill -f "tunnel-keepalive.sh" 2>/dev/null || true; rm -f /tmp/tunnel-keepalive.sh`,
         username,
-        15000,
+        30000,
       );
     } catch {}
     return;
@@ -2056,13 +2070,18 @@ export async function cleanupDevbridgeTunnels(
   if (!workspaceId) throw new Error('devbridge cleanup: workspace_id is required.');
   if (mode === 'none') return { ok: true, skipped: true, deleteIds: [], killPids: [] };
 
-  const lockResult = await execOneShot(workspaceId, buildDevbridgeCleanupLockScript(), username, 10000);
+  let lockResult;
+  try {
+    lockResult = await execOneShot(workspaceId, buildDevbridgeCleanupLockScript(), username, 30000);
+  } catch {
+    return { ok: false, locked: true, deleteIds: [], killPids: [] };
+  }
   if (!stripTerminalEscapes(lockResult.stdout).includes('LOCK_OK')) {
     return { ok: false, locked: true, deleteIds: [], killPids: [] };
   }
 
   try {
-    const stateResult = await execOneShot(workspaceId, buildDevbridgeCleanupStateScript(), username, 30000);
+    const stateResult = await execCleanupWithRetry(workspaceId, buildDevbridgeCleanupStateScript(), username, 60000);
     const text = stripTerminalEscapes(stateResult.stdout);
     const tunnelSection = cleanupSection(text, 'TUNNELS');
     const listOk = /Tunnel ID|No tunnels found/i.test(tunnelSection);
@@ -2083,7 +2102,7 @@ export async function cleanupDevbridgeTunnels(
       });
       return { ok: true, deleteIds: [], killPids: [], tunnelCount: tunnels.length };
     }
-    await execOneShot(workspaceId, buildDevbridgeCleanupApplyScript(plan), username, 30000);
+    await execCleanupWithRetry(workspaceId, buildDevbridgeCleanupApplyScript(plan), username, 60000);
     await syncKeepaliveAfterCleanup(workspaceId, {
       deletedIds: plan.deleteIds,
       liveTunnelIds,
@@ -2092,7 +2111,7 @@ export async function cleanupDevbridgeTunnels(
     return { ok: true, ...plan, tunnelCount: tunnels.length };
   } finally {
     try {
-      await execOneShot(workspaceId, `rmdir /tmp/devbridge-cleanup.lock 2>/dev/null || true`, username, 10000);
+      await execCleanupWithRetry(workspaceId, `rmdir /tmp/devbridge-cleanup.lock 2>/dev/null || true`, username, 30000);
     } catch {}
   }
 }
