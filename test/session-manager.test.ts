@@ -143,7 +143,7 @@ test('formatPortDriftWarning names both ports and the re-bind command', () => {
 
 test('buildExposeRemediation includes credential sourcing and host command with port', () => {
   const msg = buildExposeRemediation(82);
-  assert.match(msg, /source \/tmp\/hw_creds\.sh/);
+  assert.doesNotMatch(msg, /source \/tmp\/hw_creds\.sh/, 'devbridge chain must not read the STS AK/SK file');
   assert.match(msg, /source \/tmp\/hw_api_key/);
   assert.match(msg, /devbridge port create <tunnelId> -p 82 --protocol http -a/);
   assert.match(msg, /use THAT port instead/);

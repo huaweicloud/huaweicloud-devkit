@@ -588,13 +588,47 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   // The doctrine thesis itself and the Step 7 waterfall phrase must teach the
   // flip (interrogate round 1: a rewording that drops the banned tokens could
   // otherwise reintroduce the removed tier behind vocabulary-free pins).
-  assert.match(sandbox, /DevBridge authentication is \*\*fixed to API Key\*\*/);
-  assert.match(sandbox, /credential waterfall \(keyring → auto-created API Key → API-Key file\)/);
+  // Round 2: the real ladder order is keyring → file → auto-create (the probe
+  // tries the file channel before the host ever calls ensureDevbridgeKey), so
+  // the pinned order and the thesis line are seam-to-seam anchored.
+  assert.match(
+    sandbox,
+    /^DevBridge authentication is \*\*fixed to API Key\*\*.*no longer reads `\/tmp\/hw_creds\.sh` for devbridge purposes\.$/m,
+  );
+  assert.match(
+    sandbox,
+    /credential waterfall \(keyring → API-Key file → auto-created API Key\), pre-cleans stale tunnels/,
+  );
   assert.doesNotMatch(sandbox, /keyring → AK\/SK/, 'the removed tier must not reappear in the Step 7 waterfall');
+  assert.doesNotMatch(
+    sandbox,
+    /keyring \(ours \+ platform legacy\) → auto-create fallback → file/,
+    'the gotchas waterfall must not invert the real ladder order',
+  );
+  assert.match(sandbox, /The waterfall: keyring \(ours \+ platform legacy\) → file → auto-create fallback\./);
+  assert.match(sandbox, /# Tier 1: keyring \(stderr! prefix filter!\)/);
+  assert.match(sandbox, /# Tier 2: file fallback/, 'the manual script numbers the file channel Tier 2');
+  assert.doesNotMatch(sandbox, /# Tier 3: file fallback/, 'the file channel is not Tier 3');
+  assert.doesNotMatch(
+    sandbox,
+    /after `source \/tmp\/hw_creds\.sh`/,
+    'the remediation mirror must not wire the STS file into the devbridge chain',
+  );
   assert.doesNotMatch(
     sandboxCredentials,
     /retain AK\/SK login/,
     'credentials hint must not teach the removed image-build tier',
+  );
+  // Both hint literals pinned seam-to-seam so an appended contradiction inside
+  // either string cannot hide behind a matching prefix. (?:\\'[^']*)* lets the
+  // span cross the literals\' escaped apostrophes.
+  assert.match(
+    sandboxCredentials,
+    /written to \/tmp\/hw_api_key \(0600[^']*(?:\\'[^']*)*DevBridge auth is fixed to API Key \(AK\/SK login removed\)[^']*(?:\\'[^']*)*auto-creates the per-account × per-pool key when neither the keyring nor this file has one[^']*(?:\\'[^']*)*Never echo the key into logs\.'/,
+  );
+  assert.match(
+    sandboxCredentials,
+    /No DevBridge API Key provided — devbridge auth is fixed to API Key[^']*(?:\\'[^']*)*auto-creates the per-account × per-pool key \(devkit-ephemeral\/devkit-persistent\)[^']*(?:\\'[^']*)*keeps the key out of the conversation\)\.'/,
   );
   assert.match(
     sandboxCredentials,

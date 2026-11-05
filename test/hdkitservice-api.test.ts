@@ -379,3 +379,31 @@ test('core-hours exhausted upstream code surfaces friendly remediation', async (
     restore();
   }
 });
+
+test('hdkitListApiKeys returns the array payload verbatim (asRecord must not collapse lists to {})', async () => {
+  const originalFetch = global.fetch;
+  let requestedMethod = '';
+  global.fetch = async (_url, opts) => {
+    requestedMethod = (opts as { method?: string }).method ?? '';
+    return new Response(
+      JSON.stringify([
+        { name: 'devkit-ephemeral', id: 'k1' },
+        { name: 'other', id: 'k2' },
+      ]),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    );
+  };
+  try {
+    const keys = await hdkitListApiKeys();
+    assert.ok(Array.isArray(keys), `expected the array payload, got: ${JSON.stringify(keys)}`);
+    assert.equal(requestedMethod, 'GET');
+    assert.equal(keys.length, 2);
+    assert.equal((keys as Array<Record<string, unknown>>)[0]?.name, 'devkit-ephemeral');
+    assert.equal((keys as Array<Record<string, unknown>>)[1]?.id, 'k2');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
