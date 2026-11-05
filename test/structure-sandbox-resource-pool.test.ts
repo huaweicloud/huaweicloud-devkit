@@ -135,8 +135,8 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   // expose_tunnel 两个时机；URL 交付时必须转述 urlLifetimeHint/warnings。
   assert.match(
     poolSection,
-    /\*\*TTL 播报\*\*：仅 connect（会话首次连接 \/ 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。\*\*ephemeral 池部署的公网地址会随沙箱闲置关机失效\*\*，向开发者交付 URL 时必须转述 `urlLifetimeHint` \/ `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底/,
-    'the TTL broadcast bullet must pin the two announce occasions and the MUST-relay duty',
+    /\*\*TTL 播报\*\*：仅 connect（会话首次连接 \/ 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。\*\*ephemeral 池部署的公网地址会随沙箱闲置关机失效\*\*，向开发者交付 URL 时必须转述 `urlLifetimeHint` \/ `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底$/m,
+    'the TTL broadcast bullet must pin the two announce occasions and the MUST-relay duty (line-anchored: appended rewordings cannot hide behind this pin)',
   );
   assert.doesNotMatch(
     poolSection,
@@ -282,8 +282,8 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /> 生命周期数值是\*\*播报口径\*\*，由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` \/ `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` \/ `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` \/ `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以\*\*分钟\*\*为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机\/删除策略由平台资源池执行，hdkitservice 不控制。/,
-    'the broadcast-caliber blockquote must pin the minute-based env contract (RECLAIM_MINUTES, 7 天 = 10080)',
+    /> 生命周期数值是\*\*播报口径\*\*，由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` \/ `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` \/ `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` \/ `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以\*\*分钟\*\*为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机\/删除策略由平台资源池执行，hdkitservice 不控制。$/m,
+    'the broadcast-caliber blockquote must pin the minute-based env contract (RECLAIM_MINUTES, 7 天 = 10080; line-anchored: appended rewordings cannot hide behind this pin)',
   );
   assert.doesNotMatch(
     resourcePool,

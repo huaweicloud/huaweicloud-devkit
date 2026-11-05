@@ -1001,7 +1001,7 @@ If the status code is not 2xx/3xx:
 
 ### Step 7: Expose via DevBridge [REQUIRED — deployment incomplete without this]
 
-**Preferred: call `huaweicloud_sandbox_expose_tunnel` with the ACTUAL port returned by `deploy_nginx` (`{"port": <port>}`)** — it authenticates automatically through the credential waterfall (keyring → AK/SK → API-Key file), pre-cleans stale tunnels, starts the host, extracts the public URL, and health-checks it before returning. If it reports `ok: false` with an API-Key hint, create the key and re-run `sandbox_credentials`, then call it again. The tool's returned `publicUrl` is the deployment result; an `ok: false` verdict (including a migrated-placeholder URL) means the deployment is NOT complete — never fabricate or reuse a dead URL.
+**Preferred: call `huaweicloud_sandbox_expose_tunnel` with the ACTUAL port returned by `deploy_nginx` (`{"port": <port>}`)** — it authenticates automatically through the credential waterfall (keyring → auto-created API Key → API-Key file), pre-cleans stale tunnels, starts the host, extracts the public URL, and health-checks it before returning. If it reports `ok: false` with an API-Key hint, create the key and re-run `sandbox_credentials`, then call it again. The tool's returned `publicUrl` is the deployment result; an `ok: false` verdict (including a migrated-placeholder URL) means the deployment is NOT complete — never fabricate or reuse a dead URL.
 
 **Manual fallback** (only when the tool is unavailable or must be debugged by hand): follow the rest of this section.
 

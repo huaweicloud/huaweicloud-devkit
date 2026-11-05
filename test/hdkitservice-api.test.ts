@@ -20,7 +20,7 @@ after(() => {
   restoreFetchEnv();
 });
 
-const { hdkitConnect, hdkitVoucherStatus, hdkitVoucherClaim, hdkitCompetitionVoucherClaim } =
+const { hdkitConnect, hdkitVoucherStatus, hdkitVoucherClaim, hdkitCompetitionVoucherClaim, hdkitListApiKeys } =
   await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts');
 const { clearRuntimeCredentials } = await import('../plugins/huaweicloud-core/src/auth/credentials.ts');
 

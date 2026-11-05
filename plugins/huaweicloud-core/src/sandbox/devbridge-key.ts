@@ -130,9 +130,9 @@ export async function ensureDevbridgeKey(poolType: string | undefined | null): P
   // 3. 创建
   const created = await hdkitCreateApiKey(name, 'devbridge');
 
-  // 4. 缓存
+  // 4. 缓存（空 key 不缓存：与 dev 终态的 JSON-drop 语义等效，下次调用走重建自愈）
   const apiKey = typeof created['api_key'] === 'string' ? created['api_key'] : '';
-  setCachedKey(ak, pool, apiKey);
+  if (apiKey) setCachedKey(ak, pool, apiKey);
 
   return { apiKey, mode: 'CREATED', ak };
 }

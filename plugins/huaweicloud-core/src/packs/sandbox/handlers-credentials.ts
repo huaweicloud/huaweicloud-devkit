@@ -132,10 +132,10 @@ export async function handleCredentials(args: ToolArgs = {}, _opts: CallToolOpti
   if (sandboxWsIdCred) result.apiKeyInjected = Boolean(apiKey);
   if (apiKey) {
     result.apiKeyHint =
-      'DevBridge API Key written to /tmp/hw_api_key (0600, kept separate from the temporary AK/SK in /tmp/hw_creds.sh — it is a long-lived account-level credential). Release builds of devbridge 0.2.x use it via: source /tmp/hw_api_key && devbridge auth login --api-key "$HW_API_KEY". Image builds retain AK/SK login — the huawei-sandbox skill probes the capability at expose time. Never echo the key into logs.';
+      'DevBridge API Key written to /tmp/hw_api_key (0600, kept separate from the temporary AK/SK in /tmp/hw_creds.sh — it is a long-lived account-level credential). Release builds of devbridge 0.2.x use it via: source /tmp/hw_api_key && devbridge auth login --api-key "$HW_API_KEY". DevBridge auth is fixed to API Key (AK/SK login removed) — the huawei-sandbox skill\'s expose ladder auto-creates the per-account × per-pool key when neither the keyring nor this file has one. Never echo the key into logs.';
   } else {
     result.apiKeyHint =
-      'No DevBridge API Key provided — release builds of devbridge 0.2.x cannot log in with AK/SK (image builds retain AK/SK; the huawei-sandbox skill probes the build at expose time and uses the injected AK/SK directly when supported). For release builds, ask the user for an API Key (created at https://devstation.connect.huaweicloud.com/space/devbridge/apikey) and re-run with api_key, or set the local HW_API_KEY environment variable (preferred — keeps the key out of the conversation).';
+      'No DevBridge API Key provided — devbridge auth is fixed to API Key (AK/SK login removed), and you can skip providing one: the expose ladder auto-creates the per-account × per-pool key (devkit-ephemeral/devkit-persistent) via the relay API, injects it, and reports authMode API_KEY_AUTO. To bring your own key instead, create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey and re-run with api_key, or set the local HW_API_KEY environment variable (preferred — keeps the key out of the conversation).';
   }
   if (validation.projectId) result.projectId = validation.projectId;
   if (validation.warning) result.warning = validation.warning;

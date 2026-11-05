@@ -585,6 +585,22 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   // AK/SK login commands must NOT appear
   assert.doesNotMatch(sandbox, /auth login --access-key/, 'AK/SK login must be removed from skill');
   assert.doesNotMatch(sandbox, /AKSK_SUPPORTED/, 'AKSK_SUPPORTED mode must be removed from skill');
+  // The doctrine thesis itself and the Step 7 waterfall phrase must teach the
+  // flip (interrogate round 1: a rewording that drops the banned tokens could
+  // otherwise reintroduce the removed tier behind vocabulary-free pins).
+  assert.match(sandbox, /DevBridge authentication is \*\*fixed to API Key\*\*/);
+  assert.match(sandbox, /credential waterfall \(keyring → auto-created API Key → API-Key file\)/);
+  assert.doesNotMatch(sandbox, /keyring → AK\/SK/, 'the removed tier must not reappear in the Step 7 waterfall');
+  assert.doesNotMatch(
+    sandboxCredentials,
+    /retain AK\/SK login/,
+    'credentials hint must not teach the removed image-build tier',
+  );
+  assert.match(
+    sandboxCredentials,
+    /auto-creates the per-account × per-pool key/,
+    'no-key hint must teach the auto-create path first',
+  );
   assert.match(sandbox, /huaweicloud_sandbox_expose_tunnel/);
   // The two-pool key doctrine and the quota degradation must be taught.
   assert.match(sandbox, /devkit-ephemeral/);
