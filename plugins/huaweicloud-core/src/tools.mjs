@@ -40,7 +40,7 @@ import { ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint } fr
 import {
   hdkitCheckUser,
   hdkitSignAgreement,
-  hdkitConnect,
+  hdkitConnectWithRetry,
   hdkitCredentials,
   hdkitVoucherStatus,
   hdkitVoucherClaim,
@@ -893,7 +893,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults.',
+      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1749,7 +1749,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       let connectResult;
       try {
-        connectResult = await hdkitConnect(connectArgs);
+        connectResult = await hdkitConnectWithRetry(connectArgs);
       } catch (error) {
         // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
         // 其余错误维持抛出（MCP 层透传 code+message）

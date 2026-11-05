@@ -166,6 +166,37 @@ export async function hdkitConnect(options = {}) {
   return await hdkitRequest('POST', 'connect', body);
 }
 
+// Gateway 504/502 during sandbox orchestration is a response timeout, not a
+// failed create: the server keeps provisioning and a retry usually reuses the
+// instance. Retry connect twice with a 30s/45s backoff instead of surfacing the
+// raw HTML gateway page to the agent.
+const CONNECT_RETRY_DELAYS_MS = [30000, 45000];
+
+function isGatewayTransient(error) {
+  if (error?.status === 502 || error?.status === 504) return true;
+  const message = String(error?.message || '');
+  return /non-JSON \(status (502|504)\)/i.test(message) || /Gateway Time-out|Bad Gateway/i.test(message);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function hdkitConnectWithRetry(options = {}, { delaysMs = CONNECT_RETRY_DELAYS_MS } = {}) {
+  const delays = Array.isArray(delaysMs) ? delaysMs : CONNECT_RETRY_DELAYS_MS;
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await hdkitConnect(options);
+    } catch (error) {
+      if (!isGatewayTransient(error) || attempt >= delays.length) {
+        error.connectRetries = attempt;
+        throw error;
+      }
+      await sleep(delays[attempt]);
+      attempt += 1;
+    }
+  }
+}
+
 export async function hdkitCredentials(sessionId, devStageId, enableSts = true) {
   const body = { enable_sts: enableSts };
   if (sessionId) body.session_id = sessionId;

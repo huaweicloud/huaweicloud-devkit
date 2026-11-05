@@ -8,7 +8,7 @@ process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
 
-const { hdkitConnect, hdkitVoucherStatus, hdkitVoucherClaim } =
+const { hdkitConnect, hdkitConnectWithRetry, hdkitVoucherStatus, hdkitVoucherClaim } =
   await import('../plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs');
 const { clearRuntimeCredentials } = await import('../plugins/huaweicloud-core/src/auth/credentials.mjs');
 
@@ -316,6 +316,82 @@ test('HDKIT_VERSION_TOO_OLD carries client/min version and upgrade remediation',
     assert.match(err.remediation.hint, /1\.1\.13/);
     assert.match(err.remediation.steps.join(' '), /npx --yes huaweicloud-devkit@latest update/);
     assert.match(err.remediation.steps.join(' '), /重启/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitConnectWithRetry retries gateway 504/502 and reuses the eventual success', async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    if (calls === 1) {
+      return new Response('<html>504 Gateway Time-out</html>', {
+        status: 504,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+    if (calls === 2) {
+      return new Response('<html>502 Bad Gateway</html>', {
+        status: 502,
+        headers: { 'Content-Type': 'text/html' },
+      });
+    }
+    return new Response(JSON.stringify({ session_id: 's1', dev_stage_id: 'd1', pool_type: 'ephemeral' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const result = await hdkitConnectWithRetry({ pool_type: 'ephemeral' }, { delaysMs: [0, 0] });
+    assert.equal(result.session_id, 's1');
+    assert.equal(calls, 3);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitConnectWithRetry does not retry business errors', async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ code: 'HDKIT_QUOTA_EXCEEDED', message: 'quota' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
+    });
+  };
+  try {
+    const err = await hdkitConnectWithRetry({}, { delaysMs: [0, 0] }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.equal(err.code, 'HDKIT_QUOTA_EXCEEDED');
+    assert.equal(calls, 1);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitConnectWithRetry exhausts retries and reports connectRetries', async () => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return new Response('<html>504 Gateway Time-out</html>', {
+      status: 504,
+      headers: { 'Content-Type': 'text/html' },
+    });
+  };
+  try {
+    const err = await hdkitConnectWithRetry({}, { delaysMs: [0] }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.match(err.message, /504/);
+    assert.equal(err.connectRetries, 1);
+    assert.equal(calls, 2);
   } finally {
     global.fetch = originalFetch;
   }
