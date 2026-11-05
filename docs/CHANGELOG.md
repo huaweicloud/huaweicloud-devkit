@@ -1,51 +1,72 @@
 # Changelog
 
-## 1.1.12 (2026-10-22)
+## 1.1.13-next.8 (2026-11-05)
 
-- chore: merge dev into main for 1.1.12 release (#1012)
-- chore(release): 1.1.10
-- chore: merge dev into main for 1.1.10 release (#973)
-- chore(release): 1.1.9 (#950)
-- chore: advance main to 1.1.9-next.3 (prepare 1.1.9 stable release) (#949)
-- chore(release): 1.1.8
-- chore: merge dev into main for 1.1.8 release (#892)
-- chore(release): 1.1.7
-- chore: merge dev into main for 1.1.7 release (#812)
-- chore(release): 1.1.6 (#796)
-- style: prettier normalize plugin manifests
-- chore(release): 1.1.6
-- chore(release): 1.1.5
-- chore: sync README beta badge to v1.1.5
-- chore: version override for 1.1.5 stable release
-- chore(release): 1.1.4
-- chore(release): 1.1.3 (#620)
-- chore: advance main to 1.1.3-next.4 (business keeps dev; prepare stable 1.1.3) (#619)
-- test(update-check): decouple upgrade-tag logic from repo package.json version
-- chore(release): 1.1.2
-- test: resolve structure.test.mjs to dev version (union-merge artifact)
-- chore(release): 1.1.1 (#515)
-- chore: merge dev into main for 1.1.1 stable release (#513)
-- chore: add dsh.bundle manifest for DSH plugin ecosystem
-- chore(release): 1.1.0 (#440)
-- chore: merge dev into main for 1.1.0 release (#438)
-- chore: version override for 1.1.0 stable release (#433)
-- docs: add Huawei Cloud npm mirror recommendation for China users
-- chore(release): 1.0.2
-- style: prettier format fix
-- feat: v1.0.2 stable - merge all dev changes
-- fix(release): update release trigger to workflow_dispatch and main push only
-- feat(release): sync release workflow to main, seed manifest with 1.0.1
-- fix(release): retire the live Publish Dev workflow on main
-- fix(release): restore full publish flow with quoted step names
-- fix(release): probe publish job with environment only
-- fix(release): probe without job outputs and needs.outputs wiring
-- fix(release): restore full tag-gated publish logic
-- fix(release): reduce npm-publish workflow to minimal probe
-- fix(release): drop workflow_dispatch inputs, derive dist-tag from the tag version
-- fix(release): rename publish workflow to npm-publish to recover a fresh workflow_dispatch index
-- fix(release): add pack-verify script to main
-- fix(release): sync ci.yml with pack verification to main
-- fix(release): add tag-gated Publish workflow to main so workflow_dispatch works from tags
+- feat(sandbox): auto-retry connect on gateway 502/504
+
+## 1.1.13-next.7 (2026-11-05)
+
+- feat(sandbox): structured guidance for the forced version gate
+
+## 1.1.13-next.6 (2026-11-05)
+
+- fix(sandbox): address devbridge cleanup review findings
+- test(sandbox): mock selective cleanup in the connect call-tool test
+- fix(sandbox): refresh the devbridge CLI token before cleanup listing
+- fix(sandbox): give devbridge cleanup execs enough time and retry transient terminal timeouts
+- fix(sandbox): prune ghost keepalive entries and skip cleanup on list failure
+- feat(sandbox): selective devbridge tunnel cleanup
+- fix(sandbox): validate devbridge keys with a real API call and heal renew failures
+- fix(sandbox): report the effective devbridge auth mode after auto-create
+
+## 1.1.13-next.5 (2026-11-04)
+
+- refactor(sandbox): use reclaimMinutes for consistent units
+- style(sandbox): apply prettier formatting
+- feat(sandbox): server-driven pool lifecycle hints on connect/expose
+
+## 1.1.13-next.4 (2026-11-04)
+
+- refactor(sandbox): 去掉孤儿清理的 last_used_at 检查（1+1 配额下过度设计）
+- fix(sandbox): QA 审查返修——AK/SK 残留清理 + 失效自愈接线 + 孤儿活跃检查
+- feat(sandbox): devbridge 认证固定 API Key——AK/SK 移除 + 自动创建 + 两池分流
+- fix(sandbox): deploy_nginx/probe 标记解析补齐 OSC 转义剥离（#946 漏网）
+
+## 1.1.13-next.3 (2026-11-03)
+
+- Release
+
+## 1.1.13-next.2 (2026-11-03)
+
+- fix(sandbox): 回显字段双读兜底——pool_type/poolType 命名漂移防御
+- fix(sandbox): QA 审查返修——remediation 穿透 MCP 边界 + 判断项五连
+- feat(sandbox): 两池 pool_type 客户端适配——透传/429 双码/TTL 播报/模式提示/烧核播报
+- style: fix prettier formatting (plugin manifests capabilities collapse, plan.md table align) #1071
+- docs(sandbox): #1071 spec/plan/task for resource pool finalized semantics
+- chore(release): #1071 bump 1.1.13-next.1
+- test(sandbox): #1071 acceptance guards for resource pool finalized semantics
+- feat(sandbox): #1071 quota/429+Retry-After semantics in sandbox tool descriptions
+- feat(sandbox): #1071 resource pool routing + lifecycle finalized semantics in skill
+
+## 1.1.13-next.0 (2026-10-29)
+
+- chore: set version-override to 1.1.13 (#1050)
+- style: prettier format issue-1040 test file
+- feat: #1040 agent 识别兜底收敛 unknown + 对外请求统一携带 X-HW-Agent 头
+- fix: 升级 undici 至 ^8.12.3 修复 npm audit 高危漏洞
+- feat(sandbox): Stack-Selection Gate - 工作台/CRUD 请求强制走 PostgREST 全栈路径（#1021） (#1022)
+- test: #1014 遥测分级上报单测 + 文档
+- feat: #1014 领券类工具 P0 同步 flush + cacheUserHash
+- feat: #1014 telemetry flush 可 await + 身份字段兜底 + 退出兜底 flush
+- feat: #1019 PG data 目录迁 /workspace 数据盘 + 补充沙箱重启恢复清单 (#1020)
+- docs(sandbox): backfill 2026-10 fullstack deployment field notes into fullstack-postgrest.md (#1016) (#1017)
+- fix: #1014 setup-cli telemetry 目录尊重 HUAWEICLOUD_DEVKIT_HOME
+- fix: #1014 telemetry flush 前重新解析并回填 userHash
+- docs: #1014 遥测 user_hash 遗漏修复 spec/plan/task
+
+## Unreleased
+
+- feat(sandbox): Stack-Selection Gate in huawei-sandbox — 工作台/workbench/全栈/CRUD requests are classified as full-stack workbench deployments (PostgreSQL + PostgREST default) with a pre-code checkpoint that redirects SPA-only starts; frontmatter trigger words widened (#1021)
 
 ## 1.1.12-next.0 (2026-10-22)
 

@@ -1,7 +1,9 @@
 import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
+import { detectAgent } from '../telemetry/agent-detect.mjs';
 import { readInstalledVersion } from '../update-check.mjs';
+import { pinnedTemplateFor } from './sandbox-pool.mjs';
 
 function getHdkitBaseUrl() {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
@@ -21,6 +23,8 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     'X-HW-AK': ak,
     'X-HW-SK': sk,
     'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
+    // #1040: 对外请求统一携带 X-HW-Agent（值=detectAgent 结果 harness）
+    'X-HW-Agent': detectAgent().harness,
   };
   if (securitytoken) {
     headers['X-HW-Security-Token'] = securitytoken;
@@ -75,6 +79,53 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
         ],
       };
     }
+    // 429 双错误码（两池配额契约）：配额满给出释放/复用引导；池容量不足只透传服务端
+    // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
+    // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
+    if (code === 'HDKIT_QUOTA_EXCEEDED') {
+      err.retryAfter = resp.headers.get('Retry-After') || undefined;
+      err.remediation = {
+        hint: '沙箱并发配额已满（每账号最多 5 台、每类型 1 台），重试无效：',
+        steps: [
+          '确认已有实例是否够用：connect 对同池实例自动复用，无需重复创建',
+          '释放不再使用的沙箱（控制台或平台回收）后重试',
+          '如需两种生命周期语义并存：ephemeral 与 persistent 各可持有 1 台',
+        ],
+      };
+    }
+    if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
+      err.retryAfter = resp.headers.get('Retry-After') || undefined;
+      // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
+      err.message = data.message || err.message;
+    }
+    // 版本硬门禁（UPGRADE_MIN_VERSION）：结构化升级引导，保证 remediation 能穿透 MCP 边界
+    if (code === 'HDKIT_VERSION_TOO_OLD') {
+      err.clientVersion = data.clientVersion || undefined;
+      err.minVersion = data.minVersion || undefined;
+      err.message = data.message || err.message;
+      err.remediation = {
+        hint: `插件版本过旧（当前 ${data.clientVersion || '未知'}，需升级至正式版 ${data.minVersion || '最新版'} 及以上）：`,
+        steps: [
+          '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+          '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+          '也可直接调用 huaweicloud_upgrade 工具完成升级',
+        ],
+      };
+    }
+    // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
+    // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。
+    // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 双码/凭证指引）
+    if (!err.remediation && String(data.message || '').includes('HD.97520422')) {
+      err.coreHoursExhausted = true;
+      err.remediation = {
+        hint: '账号核心时长（核时）已耗尽，沙箱无法继续运行：',
+        steps: [
+          '核时按沙箱运行时长消耗，当前账号余额为 0',
+          '更换有核时余额的账号，或等待/申请核时补充',
+          '详见华为云开发者空间核心时长说明',
+        ],
+      };
+    }
     throw err;
   }
 
@@ -104,8 +155,46 @@ export async function hdkitConnect(options = {}) {
   if (options.git) body.git = options.git;
   if (options.template_id) body.template_id = options.template_id;
   if (options.flavor_id) body.flavor_id = options.flavor_id;
+  if (options.pool_type) {
+    // 两池：pool_type 由服务端权威映射（不传默认 ephemeral）。
+    // 可选运维钉扎：配置 HW_POOL_TEMPLATE_* 时附带映射模板（服务端与老服务端均按显式模板处理）
+    body.pool_type = options.pool_type;
+    const pinned = pinnedTemplateFor(options.pool_type);
+    if (pinned && !body.template_id) body.template_id = pinned;
+  }
 
   return await hdkitRequest('POST', 'connect', body);
+}
+
+// Gateway 504/502 during sandbox orchestration is a response timeout, not a
+// failed create: the server keeps provisioning and a retry usually reuses the
+// instance. Retry connect twice with a 30s/45s backoff instead of surfacing the
+// raw HTML gateway page to the agent.
+const CONNECT_RETRY_DELAYS_MS = [30000, 45000];
+
+function isGatewayTransient(error) {
+  if (error?.status === 502 || error?.status === 504) return true;
+  const message = String(error?.message || '');
+  return /non-JSON \(status (502|504)\)/i.test(message) || /Gateway Time-out|Bad Gateway/i.test(message);
+}
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function hdkitConnectWithRetry(options = {}, { delaysMs = CONNECT_RETRY_DELAYS_MS } = {}) {
+  const delays = Array.isArray(delaysMs) ? delaysMs : CONNECT_RETRY_DELAYS_MS;
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await hdkitConnect(options);
+    } catch (error) {
+      if (!isGatewayTransient(error) || attempt >= delays.length) {
+        error.connectRetries = attempt;
+        throw error;
+      }
+      await sleep(delays[attempt]);
+      attempt += 1;
+    }
+  }
 }
 
 export async function hdkitCredentials(sessionId, devStageId, enableSts = true) {
@@ -118,6 +207,28 @@ export async function hdkitCredentials(sessionId, devStageId, enableSts = true) 
   }
 
   return await hdkitRequest('POST', 'credentials', body);
+}
+
+// ── DevBridge API Key relay 代理（经 hdkitservice 透传 DevStation relay 接口）──
+// 凭证由 hdkitRequest 内部 getCredentials() 统一解析，调用方无需传
+
+/**
+ * 创建 DevBridge API Key。响应含完整 api_key（仅创建时可见）。
+ * 配额满（13002）时服务端返回 429 HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED，
+ * hdkitRequest 抛错 err.code 携带该码。
+ */
+export async function hdkitCreateApiKey(name, scope = 'devbridge') {
+  return await hdkitRequest('POST', 'api-key', { name, scope });
+}
+
+/** 列出当前账号所有 API Key（仅 mask + last_used_at）。 */
+export async function hdkitListApiKeys() {
+  return await hdkitRequest('GET', 'api-keys', undefined, 30000);
+}
+
+/** 按 keyId 删除 API Key（上游 DELETE 方法）。 */
+export async function hdkitDeleteApiKey(keyId) {
+  return await hdkitRequest('DELETE', `api-keys/${encodeURIComponent(keyId)}`, undefined, 30000);
 }
 
 export async function hdkitVoucherStatus(domainId) {

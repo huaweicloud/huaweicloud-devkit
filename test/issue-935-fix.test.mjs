@@ -67,6 +67,26 @@ test('parseDeployNginxVerifyOutput reports PASS for a clean nginx -t (#935 A1)',
   assert.equal(verify.nginxTest, 'PASS');
 });
 
+test('parseDeployNginxVerifyOutput reads PASS through OSC 133 shell-integration pollution (#946 regression)', () => {
+  // Real-world fixture from the 2026-11-03 two-pool E2E: integration-enabled
+  // shells wrap every line in \x1b]133;C\x07 and use \r\n endings. The anchored
+  // ^DB_NGINX_T= match used to miss → deploy_nginx reported ok:false
+  // "nginx -t did not pass" while the config was written and nginx -t passed.
+  const ESC = '\x1b';
+  const stdout = [`${ESC}]133;C${''}deploy script output`, `${ESC}]133;C${''}DB_NGINX_T=PASS`].join('\r\n');
+  const verify = parseDeployNginxVerifyOutput(stdout);
+  assert.equal(verify.configMissing, false);
+  assert.equal(verify.nginxTest, 'PASS');
+});
+
+test('parseDeployNginxVerifyOutput keeps FAIL verdict readable through OSC pollution (#946 regression)', () => {
+  const ESC = '\x1b';
+  const stdout = `${ESC}]133;C${''}DB_NGINX_T=FAIL\r\n${ESC}]133;C${''}DB_NGINX_T_OUTPUT: nginx: [emerg] bad directive\r\n`;
+  const verify = parseDeployNginxVerifyOutput(stdout);
+  assert.equal(verify.nginxTest, 'FAIL');
+  assert.match(verify.nginxTestOutput, /bad directive/);
+});
+
 test('evaluateDeployNginxVerify returns ok:false with explicit error on tee write failure (#935 A1)', () => {
   const result = { exitCode: 0 };
   const verify = parseDeployNginxVerifyOutput('DB_NGINX_CONFIG_MISSING=1\n');
@@ -124,6 +144,18 @@ test('parseDevbridgeProbeSequence takes the final probe as the verdict (#935 A2)
   assert.equal(probes[1].httpCode, '000');
   assert.equal(probes[2].httpCode, '200');
   // The final verdict comes from the LAST probe, not the first.
+  assert.equal(finalHttpCode, '200');
+});
+
+test('parseDevbridgeProbeSequence reads probes through OSC 133 shell-integration pollution (#946 regression)', () => {
+  // Same pollution class as the deploy_nginx verify parser: without stripping,
+  // the anchored ^DB_PROBE_ match returned zero probes and finalHttpCode ''
+  // (spurious reachability warning + lost retry signal).
+  const ESC = '\x1b';
+  const stdout = [`${ESC}]133;C${''}DB_PROBE_1=000`, `${ESC}]133;C${''}DB_PROBE_2=200`].join('\r\n');
+  const { probes, finalHttpCode } = parseDevbridgeProbeSequence(stdout);
+  assert.equal(probes.length, 2);
+  assert.equal(probes[0].httpCode, '000');
   assert.equal(finalHttpCode, '200');
 });
 
