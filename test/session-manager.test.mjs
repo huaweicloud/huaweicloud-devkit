@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 
@@ -743,4 +743,14 @@ test('tunnel-persistence: mergeKeepaliveTunnels dedupes by ID, incoming wins, or
     1,
   );
   assert.deepEqual(mergeKeepaliveTunnels(null, []), []);
+});
+
+test('exposeTunnel reports the post-auto-create auth mode (API_KEY_AUTO, not the first-probe NO_CREDENTIAL)', () => {
+  // 回归：auto-create 兜底成功时，曾经把首轮 probe 的 authMode 写进返回体（实测
+  // authMode=NO_CREDENTIAL 但 tunnel 正常工作）；成功返回必须使用 effectiveAuthMode。
+  const src = readFileSync(
+    new URL('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', import.meta.url),
+    'utf8',
+  );
+  assert.match(src, /authMode: effectiveAuthMode/);
 });

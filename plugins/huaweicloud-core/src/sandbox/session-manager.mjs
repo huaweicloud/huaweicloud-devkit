@@ -2162,7 +2162,8 @@ export async function exposeTunnel(
         ? { sandboxLifetime: lifetimeNotice.sandboxLifetime, urlLifetimeHint: lifetimeNotice.urlLifetimeHint }
         : {}),
       tunnelId: parsed.tunnelId || undefined,
-      authMode,
+      // 报告最终生效的认证方式：自动创建兜底成功后应为 API_KEY_AUTO（而非首轮 probe 的 NO_CREDENTIAL）
+      authMode: effectiveAuthMode,
       httpCode: parsed.httpCode,
       verifyHttpCode: verifyHttpCode || undefined,
       verifyNotFound: verifyNotFound || undefined,
