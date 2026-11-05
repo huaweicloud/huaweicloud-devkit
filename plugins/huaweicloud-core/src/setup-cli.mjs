@@ -639,6 +639,12 @@ function installRuntimeDeps(pluginsDir) {
   }
 }
 
+// Paths that failed to be removed during this run (#1061). Only removal
+// *failures* are residuals: a path that never existed is not one, so the
+// boolean return of removeIfExists (false in both cases) cannot be used to
+// infer residuals. Consumed by the uninstall summary.
+const uninstallResidualPaths = new Set();
+
 function removeIfExists(p) {
   if (existsSync(p)) {
     try {
@@ -646,9 +652,18 @@ function removeIfExists(p) {
       // giving up — uninstall should not leave a skill behind just because a
       // handle was momentarily open (#556).
       rmSync(p, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+      uninstallResidualPaths.delete(p);
       return true;
     } catch (error) {
+      uninstallResidualPaths.add(p);
       console.log(`  \x1b[33m[WARN]\x1b[0m Could not remove ${p}: ${error.message}`);
+      console.log(`  \x1b[33m[WARN]\x1b[0m Residual left behind: ${p}`);
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m A running agent may hold a file lock on it. Close the corresponding agent to release the lock, or remove the residual manually:`,
+      );
+      console.log(`        Windows cmd:        rmdir /s /q "${p}"`);
+      console.log(`        Windows PowerShell: Remove-Item -Recurse -Force "${p}"`);
+      console.log(`        macOS/Linux:        rm -rf "${p}"`);
       return false;
     }
   }
@@ -2258,6 +2273,18 @@ function ensureDshMcpPatch() {
   // writing a managed block to avoid duplicate entries.
   if (cleaned.includes('@deepseek-ai/dsh-mcp-client') && cleaned.includes('serverName: huaweicloud')) {
     console.log(`  DSH patch already configured via bundle: ${patchFile}`);
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m If DSH reports "already configured; skipping" after a reinstall, a leftover plugin directory may be registered by the DSH plugin manager.`,
+    );
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m Close DSH sessions first to release file locks, then remove the directory and reinstall. Install never deletes files automatically:`,
+    );
+    console.log(`        Plugin directory: ${dshPluginsDir()} (default: %USERPROFILE%\\.dsh\\huaweicloud-plugins)`);
+    console.log(`        Windows cmd:        rmdir /s /q "%USERPROFILE%\\.dsh\\huaweicloud-plugins"`);
+    console.log(
+      `        Windows PowerShell: Remove-Item -Recurse -Force "$env:USERPROFILE\\.dsh\\huaweicloud-plugins"`,
+    );
+    console.log(`        macOS/Linux:        rm -rf ~/.dsh/huaweicloud-plugins`);
     return false;
   }
 
@@ -3848,7 +3875,16 @@ async function cmdUninstall() {
     await promptGlobalCleanup();
   }
 
-  console.log(`\n\x1b[32mUninstall complete.\x1b[0m`);
+  const residuals = [...uninstallResidualPaths];
+  if (residuals.length > 0) {
+    console.log(`\n\x1b[33mUninstall finished with residuals:\x1b[0m`);
+    for (const p of residuals) console.log(`  - ${p}`);
+    console.log(
+      `\n\x1b[33mClose the corresponding agent to release file locks, then remove the residual paths listed above (per-platform commands are in the [WARN] guidance).\x1b[0m`,
+    );
+  } else {
+    console.log(`\n\x1b[32mUninstall complete.\x1b[0m`);
+  }
 
   if (target !== 'all') {
     console.log(
