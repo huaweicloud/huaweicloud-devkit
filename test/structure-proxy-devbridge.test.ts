@@ -575,8 +575,8 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.match(deployNginx, /fix_and_retry/);
 
   // Auth is API Key only (2026-11-04 定稿：AK/SK login removed).
-  // The waterfall: keyring (ours + platform legacy) → auto-create fallback →
-  // file. The probe vocabulary is DB_AUTH_MODE modes, not AUTH_MODE.
+  // The waterfall: keyring (ours + platform legacy) → file → auto-create
+  // fallback. The probe vocabulary is DB_AUTH_MODE modes, not AUTH_MODE.
   assert.match(sandbox, /API_KEY_KEYRING/);
   assert.match(sandbox, /API_KEY_AUTO/);
   assert.match(sandbox, /API_KEY_FILE|NO_CREDENTIAL/);
@@ -621,7 +621,10 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   );
   // Both hint literals pinned seam-to-seam so an appended contradiction inside
   // either string cannot hide behind a matching prefix. (?:\\'[^']*)* lets the
-  // span cross the literals\' escaped apostrophes.
+  // span cross the literals\' escaped apostrophes. Recorded residual (the
+  // substring-pinning limit shared with this repo's entire guard convention):
+  // a contradictory sentence INSERTED mid-span stays green — end-appends and
+  // rewording-to-removal go red; mid-span fiction is not catchable by pinning.
   assert.match(
     sandboxCredentials,
     /written to \/tmp\/hw_api_key \(0600[^']*(?:\\'[^']*)*DevBridge auth is fixed to API Key \(AK\/SK login removed\)[^']*(?:\\'[^']*)*auto-creates the per-account × per-pool key when neither the keyring nor this file has one[^']*(?:\\'[^']*)*Never echo the key into logs\.'/,
