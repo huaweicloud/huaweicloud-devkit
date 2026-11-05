@@ -9,6 +9,7 @@ import {
 import { DEVBRIDGE_HOST_EXPIRY_HOURS, evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import { stripTerminalEscapes } from './sandbox-output.ts';
 import { runOneShot, type OneShotResult } from './devbridge-exec.ts';
+import type { DevbridgeQuotaKeyHint } from './devbridge-key.ts';
 
 // The expose attempt contract, extracted from devbridge-tunnel: the script that
 // starts the host and probes reachability, the DB_* stdout grammar (readDbField
@@ -44,6 +45,10 @@ export interface ExposeTunnelResult {
   attempts?: Record<string, string>;
   hint?: string;
   loginOutput?: string;
+  // The quota-degradation key list (the HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED
+  // failure only): masked keys with last_used_at so the caller can pick what
+  // to clean up in the console.
+  currentKeys?: DevbridgeQuotaKeyHint[];
 }
 
 // Start (or replace) a devbridge host bound to a single port, extract the public

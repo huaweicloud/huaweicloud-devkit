@@ -1,6 +1,6 @@
 import { DEVBRIDGE_HOST_EXPIRY_HOURS, validateExpiryHours, validateTunnelPort } from './devbridge-validation.ts';
 import { runOneShot, type OneShotResult } from './devbridge-exec.ts';
-import { gateExposeAuth } from './devbridge-auth.ts';
+import { gateExposeAuth, type DevbridgeAuthGateOptions } from './devbridge-auth.ts';
 import {
   buildDevbridgeExposeScript,
   formatTunnelReachabilityWarning,
@@ -92,7 +92,24 @@ function keepaliveResultField(enrollment: KeepaliveWatchdogResult | undefined) {
 // deployment result" contract.
 export async function exposeTunnel(
   workspaceId: string,
-  { port, expiryHours, keepalive }: { port?: number | string; expiryHours?: number; keepalive?: boolean },
+  {
+    port,
+    expiryHours,
+    keepalive,
+    poolType,
+    keyUpgrade,
+  }: {
+    port?: number | string;
+    expiryHours?: number;
+    keepalive?: boolean;
+    // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）：poolType
+    // selects which fixed-name key the ladder manages (两池分流，未知归 ephemeral);
+    // keyUpgrade is the injected key-lifecycle bundle the gate runs between
+    // probe rounds. Omitted by non-production callers (tests) — the gate then
+    // degrades to the plain probe verdict.
+    poolType?: string;
+    keyUpgrade?: DevbridgeAuthGateOptions['keyUpgrade'];
+  },
   username = 'root',
   timeoutMs = 90000,
 ): Promise<ExposeTunnelResult> {
@@ -102,7 +119,7 @@ export async function exposeTunnel(
   const validatedPort = validateTunnelPort(port);
   const validatedExpiryHours = validateExpiryHours(expiryHours ?? DEVBRIDGE_HOST_EXPIRY_HOURS);
 
-  const gate = await gateExposeAuth(workspaceId, username, validatedPort);
+  const gate = await gateExposeAuth(workspaceId, username, validatedPort, { poolType, keyUpgrade });
   if (!gate.ok) {
     return gate.failure;
   }

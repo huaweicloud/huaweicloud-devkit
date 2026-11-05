@@ -35,10 +35,16 @@ export type { DevbridgeVersionVerdict } from './devbridge-validation.ts';
 // The one-shot exec seam lives in devbridge-exec.ts; re-exported as the public
 // face (the test harness imports _setOneShotForTests here).
 export { _setOneShotForTests } from './devbridge-exec.ts';
-// The DevBridge auth waterfall (probe script + stdout parser) lives in
-// devbridge-auth.ts; re-exported as the public face.
-export { buildDevbridgeAuthProbe, parseDevbridgeAuthOutput } from './devbridge-auth.ts';
-export type { DevbridgeAuth } from './devbridge-auth.ts';
+// The DevBridge auth waterfall (probe script + stdout parser + the expose
+// auth/version gate with the key-upgrade ladder) lives in devbridge-auth.ts;
+// re-exported as the public face.
+export { buildDevbridgeAuthProbe, gateExposeAuth, parseDevbridgeAuthOutput } from './devbridge-auth.ts';
+export type {
+  DevbridgeAuth,
+  DevbridgeAuthGateOptions,
+  DevbridgeKeyUpgradeDeps,
+  ExposeAuthGate,
+} from './devbridge-auth.ts';
 // The expose attempt contract (script, stdout grammar, reachability warning,
 // result interface) lives in devbridge-expose.ts; re-exported as the public
 // face.

@@ -48,8 +48,11 @@ export function exposeStdoutWithProbes(url: string, probes: string[], httpCode: 
 }
 
 // The auth-branch boilerplate shared by the A2 seam tests — the pre-existing
-// seam tests carry their own baselined copies of this shape.
-export function withAuthOk(delegate: (command: string) => { stdout: string; exitCode: number }): OneShotSeam {
+// seam tests carry their own baselined copies of this shape. The delegate may
+// be async (a throwing verify exec, for instance).
+export function withAuthOk(
+  delegate: (command: string) => { stdout: string; exitCode: number } | Promise<{ stdout: string; exitCode: number }>,
+): OneShotSeam {
   return async (_ws, command) => {
     if (command.includes('DB_AUTH_MODE')) {
       return { stdout: 'DB_AUTH_MODE=API_KEY_KEYRING\n', exitCode: 0 };

@@ -52,7 +52,7 @@ test('v2 deviation: a final unreachable attempt returns ok:false, never ok:true 
   // ok:false (main returned ok:true with publicUrl undefined + HTTP 000).
   const { calls, seam } = recordingSeam(async (_ws, command) => {
     if (command.includes('DB_AUTH_MODE')) {
-      return { stdout: 'DB_AUTH_MODE=AKSK_SUPPORTED\n', exitCode: 0 };
+      return { stdout: 'DB_AUTH_MODE=API_KEY_KEYRING\n', exitCode: 0 };
     }
     if (command.includes('nohup devbridge host')) {
       return { stdout: exposeStdout('', '000'), exitCode: 0 };

@@ -208,7 +208,7 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
 
    If `source /tmp/hw_creds.sh` returns empty, the credentials injection may not have completed — re-run `huaweicloud_sandbox_credentials`.
 
-   **DevBridge API Key 前置引导（before expose, not mid-expose）**: the address-generation service (DevBridge 0.2.x) requires an API Key. Recent sandbox images auto-acquire one from the platform keyring — but if the sandbox was created on an older image (cannot auto-acquire), prepare the key at THIS stage instead of being interrupted halfway through the expose flow: create it once at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (value shown only once, `devbridge_` prefix), hand it over via `export HW_API_KEY=<key>` locally (preferred) or paste it in the conversation for the `api_key` param, then run `huaweicloud_sandbox_credentials`. Full why/where/how guide: [Step 1, NO_CREDENTIAL branch](#step-1-authenticate--verified-waterfall-keyring-first).
+   **DevBridge API Key 前置引导（before expose, not mid-expose）**: the address-generation service (DevBridge 0.2.x) requires an API Key. Recent sandbox images auto-acquire one from the platform keyring — but if the sandbox was created on an older image (cannot auto-acquire), prepare the key at THIS stage instead of being interrupted halfway through the expose flow: create it once at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (value shown only once, `devbridge_` prefix), hand it over via `export HW_API_KEY=<key>` locally (preferred) or paste it in the conversation for the `api_key` param, then run `huaweicloud_sandbox_credentials`. Full why/where/how guide: [Step 1, NO_CREDENTIAL branch](#step-1-authenticate--api-key-only-aksk-removed-auto-create-fallback).
 
 8. **Execute commands**: use `huaweicloud_sandbox_exec_with_session` for interactive work (cd, env setup), or `huaweicloud_sandbox_exec_one_shot` for long-running builds/installs. See [Tool Selection Guide](#tool-selection-guide).
 9. **Upload project** (if deploying local code): `huaweicloud_sandbox_upload_project` to transfer a local project directory into `/workspace/<name>` — uses HTTP tunnel, much faster than base64 for multi-file projects. Use `huaweicloud_sandbox_upload_file` for single files.
@@ -377,60 +377,52 @@ fi
 
 Measured (2026-10-22): an overnight reboot reverted `~/.huawei/bin/devbridge` 0.2.2 to the image's 0.1.13 — **yesterday's successful operation replayed as today's unexplained failure**. Recovery after a reboot: re-run the Step 0 install (or just re-export the PATH to the surviving `/workspace/.local/bin`), and re-run `huaweicloud_sandbox_credentials` to re-inject `/tmp` credentials. The watchdog's tunnel LIST dies with `/tmp` — re-run `huaweicloud_sandbox_keepalive_watchdog` with the full `{tunnel_id, url}` list to restore coverage (a re-expose enrolls only the NEW tunnel it creates).
 
-### Step 1: Authenticate — verified waterfall, keyring first
+### Step 1: Authenticate — API Key only (AK/SK removed, auto-create fallback)
 
-Authentication tries three credential sources in order, each verified with a real login + `auth status` before use; a failure falls through to the next tier:
+DevBridge authentication is **fixed to API Key** (定稿决策，2026-11-04)。AK/SK login (`--access-key/--secret-key`) has been REMOVED — the auth waterfall no longer reads `/tmp/hw_creds.sh` for devbridge purposes.
 
-- **Tier 1 — keyring API Key** (preferred): recent sandbox images (hd-space-ai-shell line) get `HW_DEVBRIDGE_API_KEY` auto-injected by the platform into the sandbox keyring — **zero user action, long-lived key**. Read it via `hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1` (⚠ the value goes to **stderr** — `2>&1` is mandatory or you silently capture an empty string) and accept only values starting with `devbridge_` (`(not found)` and error text are rejected). If the first read fails, a light revive (restart the D-Bus session bus at `unix:path=/run/dbus-session`, replace a locked keyring daemon with `printf '\n' | gnome-keyring-daemon --unlock`) retries once — no package installs.
-- **Tier 2 — AK/SK** (image builds, legacy sandboxes): image builds keep `--access-key/--secret-key`. STS credentials **must** include `--security-token "$HW_SECURITY_TOKEN"` or the gateway rejects the request with 401 `APIGW.0301`. **The `--huaweicloud` SSO login flag does NOT exist in sandbox devbridge 0.2.x binaries (e.g. 0.2.2)** — 文档超前于二进制：不要尝试 `--huaweicloud`，直接使用 `devbridge auth login --access-key/--secret-key`（以下方手动等价脚本以 `auth login --help` 探测为准；0.1.x 的 `--huaweicloud` 条件分支仅 `huaweicloud_sandbox_expose_tunnel` 工具内置的瀑布脚本实现，手动回退一律用直连 `--access-key` 形式）。0.1.x binaries additionally advertised `--huaweicloud` (use it only when their help advertises it).
-- **Tier 3 — `/tmp/hw_api_key`** (release builds, user-provided one-time): the file is written by `huaweicloud_sandbox_credentials` from the local `HW_API_KEY` env (preferred) or the `api_key` param.
+Authentication tries sources in order, each verified with a real `devbridge auth login --api-key` + `auth status` before use. Note: the probe tests keyring and file in one exec — file hits before auto-create triggers (if a user-provided key exists, it wins over auto-creation):
 
-`huaweicloud_sandbox_expose_tunnel` runs this waterfall automatically and reports the winning mode (`API_KEY_KEYRING` / `AKSK_SUPPORTED` / `API_KEY_FILE`) or `NO_CREDENTIAL` with a non-sensitive per-tier `attempts` diagnostic. Manual equivalent:
+- **Tier 1 — keyring API Key** (preferred): read via `hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1` (⚠ stderr). Sources: (a) self-injected by the plugin's auto-create (devbridge-key.ts, key names `devkit-ephemeral`/`devkit-persistent` per pool); (b) platform legacy injection (compatible, not relied upon). A light revive (D-Bus restart + keyring unlock) retries once.
+- **Tier 2 — `/tmp/hw_api_key` file** (manual channel): written by `huaweicloud_sandbox_credentials` from the local `HW_API_KEY` env or the `api_key` param. If a file exists, it wins over auto-create.
+- **Tier 3 — auto-create fallback** (host-orchestrated): keyring/file both empty → plugin calls the DevStation relay API (`POST /api-key` via hdkitservice proxy) to create a key → injects into sandbox keyring (file fallback if keyring unavailable) → re-runs probe → reports `API_KEY_AUTO`.
+- **Self-healing**: key invalid (login fails) → clear cache → recreate → inject → retry probe.
+
+`huaweicloud_sandbox_expose_tunnel` runs this waterfall automatically and reports the winning mode (`API_KEY_KEYRING` / `API_KEY_AUTO` / `API_KEY_FILE`) or `NO_CREDENTIAL`.
+
+**Key lifecycle** (per account × pool, fixed name):
+
+- ephemeral pool → `devkit-ephemeral`
+- persistent pool → `devkit-persistent`
+- Local cache at `~/.config/huaweicloud/devbridge-api-keys.json` (0600) stores the full key (list API only returns mask — the full key is visible only at creation time)
+- Cache miss → list (delete same-name orphan) → create → cache
+- Key invalid (login fails) → clear cache → recreate
+
+**Quota handling** (实测 2026-11-04): 20 key limit per account, error code `13002` → `429 HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED`. The structured fallback includes the current key list (with `last_used_at` for stale detection) and the console cleanup URL: https://devstation.connect.huaweicloud.com/space/devbridge/apikey. `devkit-*` prefixed keys are plugin-managed (auto-recreated after deletion) — advise users to clean OTHER stale keys first.
+
+Manual equivalent (for debugging, not for agent use):
 
 ```bash
 export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"
 export HOME="${HOME:-/root}"
-# Tier 1: platform-injected keyring key (stderr! prefix filter!)
 export DBUS_SESSION_BUS_ADDRESS="${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus-session}"
+# Tier 1: keyring (stderr! prefix filter!)
 HW_DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)
 case "$HW_DB_KEY" in
   devbridge_*) devbridge auth login --api-key "$HW_DB_KEY" ;;
-  *) # Tier 2: AK/SK (image builds; STS needs --security-token)
-    source /tmp/hw_creds.sh 2>/dev/null
-    if devbridge auth login --help 2>&1 | grep -q -- '--access-key'; then
-      devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" \
-        ${HW_SECURITY_TOKEN:+--security-token "$HW_SECURITY_TOKEN"}
-    else # Tier 3: user-provided API Key file
-      source /tmp/hw_api_key 2>/dev/null
-      if [ -n "$HW_API_KEY" ]; then devbridge auth login --api-key "$HW_API_KEY"; fi
-    fi ;;
+  *) # Tier 3: file fallback
+    source /tmp/hw_api_key 2>/dev/null
+    if [ -n "$HW_API_KEY" ]; then devbridge auth login --api-key "$HW_API_KEY"; fi ;;
 esac
-devbridge auth status   # separate step: a status failure must not mask the login result
+devbridge auth status
 ```
 
-- **`API_KEY_KEYRING`** → done, nothing was asked of the user (recent images only; the platform injects and rotates the key).
-- **`AKSK_SUPPORTED`** → done. The temporary AK/SK injected by `huaweicloud_sandbox_credentials` is used directly (validated against IAM before injection). If login fails, surface the CLI error — expired STS token → re-run `huaweicloud_sandbox_credentials`.
-- **`NO_CREDENTIAL`** → first re-run `huaweicloud_sandbox_credentials` and retry (refreshes STS, most common quick fix). Still failing means an older sandbox whose image cannot auto-acquire (images are frozen at sandbox creation and cannot be upgraded in place) — guide the developer through a one-time API Key creation (wait for the key before continuing):
-
-**沙箱凭证与 devbridge 版本差异陷阱（实测 #935 坑2/坑3）**：
-
-- 沙箱内 devbridge 0.2.2 无旧版技能文档所述 `--huaweicloud` 登录标志（文档超前于二进制）—— 应直接使用 `devbridge auth login --access-key/--secret-key`（`auth login --help` 探测到 `--access-key` 支持时走该分支，见上方手动等价脚本）。
-- 沙箱**平台侧**（hdkitservice）注入的 STS 凭证为 obsutil 加密态存储：devbridge 读到密文凭证会报 `APIGW.0301`。这与 DevKit 自己经 `huaweicloud_sandbox_credentials` 写入 `/tmp/hw_creds.sh` 的**明文**凭证是两条通道（该工具一次调用同时刷新两者）；devbridge 瀑布只读明文通道。遇到密文态报错时，重跑 `huaweicloud_sandbox_credentials`（或传 `enable_sts: false` 跳过平台侧 STS 注入）后再创建隧道。
-
-1. **Why (one sentence)**: "沙箱的地址生成服务发布版构建已移除 AK/SK 登录，仅支持 API Key（镜像内置构建仍支持 AK/SK，Agent 已自动探测）。API Key 按账号管理，创建一次长期可用、所有沙箱通用。"
-2. **Where (exact steps)**: open https://devstation.connect.huaweicloud.com/space/devbridge/apikey → 登录控制台 → 选择 DevBridge 场景 → 点击"创建"。**完整值仅在创建时展示一次，立即复制**（`devbridge_` 开头）。
-3. **How to hand it over** (present both, recommend the first):
-   - **Recommended**: 在本地终端执行 `export HW_API_KEY=<粘贴Key>`（或写入 shell profile），然后告知"已设置" — Key 不经过对话记录；随后 agent 重新调用 `huaweicloud_sandbox_credentials`（本地 `HW_API_KEY` 会被自动透传注入沙箱）。
-   - **Alternative**: 直接把 Key 粘贴在对话中 — agent 通过 `huaweicloud_sandbox_credentials` 的 `api_key` 参数注入，**绝不回显、不复述、不写入日志**。
-4. **Security**: 不要提交到代码库或分享；怀疑泄露时在同页面删除并重建（1 分钟）。
-
-**Failure paths (API Key branch)**:
-
-| Symptom                                | Guidance                                             |
-| -------------------------------------- | ---------------------------------------------------- |
-| `auth login` returns 401/403           | Key 已被删除或禁用 — 引导在同页面删除旧 Key 重新创建 |
-| 无法访问 API Key 管理页面              | 账号无该页面权限 — 引导联系账号管理员处理            |
-| Key 带空格/换行/缺失 `devbridge_` 前缀 | 引导重新完整复制粘贴                                 |
+- **`API_KEY_KEYRING`** → done (zero user action; key is ours or platform legacy).
+- **`API_KEY_AUTO`** → done (plugin auto-created and injected; zero user action).
+- **`API_KEY_FILE`** → done (user-provided or auto-injected file fallback).
+- **`NO_CREDENTIAL`** → auto-create failed. Check the error:
+  - **Quota full** (`HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED`): guide the user to clean unused keys at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (the `currentKeys` field shows the list). `devkit-*` keys auto-recreate — clean other stale keys first.
+  - **Other errors**: one-time manual fallback — create a key at the console page, `export HW_API_KEY=<key>` locally, re-run `huaweicloud_sandbox_credentials`, then retry.
 
 ### Step 2: Expose
 
@@ -1100,7 +1092,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 | Agreement required first               | `sandbox_connect` fails if the agreement isn't signed; the `sandbox_check_user` preflight detects this, so surface it to the developer only when signing is needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | Real-name required                     | `sandbox_connect` fails if `realnameVerified=false`; tell the developer once and stop, don't loop on connect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | Never expose tunnel details            | Do not mention "DevBridge"/"tunnel"/"devbridge" to the developer — say "正在生成访问地址..." and hand over only the URL                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| devbridge auth: probe the build        | `0.2.2-release` has two builds: image builds retain AK/SK login + env auto-read (fully automatic via `/tmp/hw_creds.sh`); release builds accept only API Key (`/tmp/hw_api_key`). Never assume — probe with `devbridge auth login --help 2>&1 \| grep -q -- '--access-key'` (Step 1 of "Expose the deployed app")                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| devbridge auth: API Key only           | DevBridge auth is fixed to API Key (AK/SK login removed, 2026-11-04). The waterfall: keyring (ours + platform legacy) → auto-create fallback → file. Use `devbridge auth login --api-key` only — never `--access-key/--secret-key`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | devbridge 0.1.x is dead                | Sandboxes created before Sep 2026 ship 0.1.13, which connects to a migrated gateway serving a 「服务已迁移」 placeholder with HTTP 200. Check `devbridge version` first and upgrade in place (Step 0) — old tunnels never survive the upgrade                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | CLI PATH                               | The installer only writes `~/.bashrc`; run `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"` (prepend, data-disk first) in the session before using `devbridge` — appending lets a stale image binary in `/usr/local/bin` win, and `~/.huawei/bin` alone is wiped on reboot (#999)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | Never install tunnel tooling locally   | If the sandbox cannot install it, report a generic error and stop — installing on the developer's machine defeats sandbox deployment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |

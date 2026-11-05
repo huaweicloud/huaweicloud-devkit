@@ -7,7 +7,7 @@ import {
   parseKeepaliveTunnelsOutput,
   renewTunnel,
 } from '../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts';
-import { exposeStdout, exposeViaSeam, healthyOneShot, verifyStdout } from './devbridge-harness.ts';
+import { exposeStdout, exposeViaSeam, healthyOneShot, verifyStdout, withAuthOk } from './devbridge-harness.ts';
 
 test('#919: a URL that fails the fresh-session recheck is flagged non-persistent with the 请勿分享 warning', async () => {
   const url = 'https://c4rdv7bv-8080.devbridge-s2.hwtunnel.com';
@@ -56,15 +56,14 @@ test('#919 primary death mode: a 404 verify with the not-found body is non-persi
 
 test('#919: a verify exec that throws degrades to non-persistent (best-effort recheck)', async () => {
   const url = 'https://c4rdv7bv-8080.devbridge-s2.hwtunnel.com';
-  const result = await exposeViaSeam(async (_ws, command) => {
-    if (command.includes('DB_AUTH_MODE')) {
-      return { stdout: 'DB_AUTH_MODE=AKSK_SUPPORTED\n', exitCode: 0 };
-    }
-    if (command.startsWith('VERIFY_CODE=')) {
-      throw new Error('fresh session died');
-    }
-    return { stdout: exposeStdout(url, '200'), exitCode: 0 };
-  });
+  const result = await exposeViaSeam(
+    withAuthOk(async (command) => {
+      if (command.startsWith('VERIFY_CODE=')) {
+        throw new Error('fresh session died');
+      }
+      return { stdout: exposeStdout(url, '200'), exitCode: 0 };
+    }),
+  );
   assert.equal(result.ok, true);
   assert.equal(result.verifyHttpCode, undefined);
   assert.equal(result.persistent, false);
