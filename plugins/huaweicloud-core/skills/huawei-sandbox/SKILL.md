@@ -117,14 +117,6 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | `huaweicloud_sandbox_renew_tunnel`       | Renew a tunnel lifetime (`update -e`, rolling window; returns absolute expiresAt)                                                                                                                          |
 | `huaweicloud_sandbox_keepalive_watchdog` | Install/replace the 3-layer watchdog: host re-attach + daily 720h renewal + 5-min health check                                                                                                             |
 
-### Tunnel Persistence (public URL lifetime)
-
-| Tool                                     | Purpose                                                                                                                                                                                                    |
-| ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `huaweicloud_sandbox_expose_tunnel`      | Expose a port → public tunnel URL (auth, pre-clean, health check; `expiry_hours` 1-720, def 72). **AUTO-enrolls into the keepalive watchdog** (merged into existing coverage; `keepalive: false` opts out) |
-| `huaweicloud_sandbox_renew_tunnel`       | Renew a tunnel lifetime (`update -e`, rolling window; returns absolute expiresAt)                                                                                                                          |
-| `huaweicloud_sandbox_keepalive_watchdog` | Install/replace the 3-layer watchdog: host re-attach + daily 720h renewal + 5-min health check                                                                                                             |
-
 ### Terminal Execution
 
 | Tool                                    | Purpose                                                                     |
@@ -1019,8 +1011,6 @@ Follow the standard [Expose the deployed app](#expose-the-deployed-app-public-ur
 Use `exec_with_session` to background DevBridge. For SSR, DevBridge tunnels the nginx public port (not the Node port directly).
 
 **Pre-flight**: `huaweicloud_sandbox_expose_tunnel` now performs **selective cleanup** automatically (default `cleanup_mode=stale`): it removes orphan records/hosts and replaces the tunnel bound to the requested port; all other ports, other sessions and keepalive-protected tunnels are preserved (the same-port tunnel is the one documented exception — a port cannot have two tunnels). On `10006: quota exceeded` it removes all orphans first, then the oldest non-keepalive tunnel one at a time; keepalive-protected tunnels are never auto-deleted and a still-full quota returns `devbridge_tunnel_quota_exceeded`. `cleanup_mode=none` skips cleanup entirely (a stale same-port host can then conflict). For manual flows, prefer `devbridge list` + `devbridge delete <id>` for stale entries; use `devbridge delete-all` only for an explicit full reset (shared-sandbox warning below).
-
-> **Concurrency warning**: `devbridge delete-all` and `pkill -f "devbridge host"` are GLOBAL operations scoped to the whole sandbox — if multiple sessions share the same sandbox, pre-cleaning can kill tunnels published by other sessions and invalidate URLs you handed out earlier. For shared sandboxes, prefer `devbridge list` and delete only stale/your-own tunnels instead of blanket `delete-all`, and re-expose only after confirming the target port is still served.
 
 > **Concurrency warning**: `devbridge delete-all` and `pkill -f "devbridge host"` are GLOBAL operations scoped to the whole sandbox — if multiple sessions share the same sandbox, pre-cleaning can kill tunnels published by other sessions and invalidate URLs you handed out earlier. For shared sandboxes, prefer `devbridge list` and delete only stale/your-own tunnels instead of blanket `delete-all`, and re-expose only after confirming the target port is still served.
 
