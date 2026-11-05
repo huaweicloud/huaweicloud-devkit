@@ -1717,8 +1717,23 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         args.timeout_ms || 60000,
       );
     }
-    case 'huaweicloud_sandbox_check_user':
-      return await hdkitCheckUser();
+    case 'huaweicloud_sandbox_check_user': {
+      try {
+        return await hdkitCheckUser();
+      } catch (error) {
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') {
+          return {
+            ok: false,
+            code: error.code,
+            message: error.message,
+            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
+            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
+            ...(error.remediation ? { remediation: error.remediation } : {}),
+          };
+        }
+        throw error;
+      }
+    }
     case 'huaweicloud_sandbox_sign_agreement':
       return await hdkitSignAgreement();
     case 'huaweicloud_sandbox_connect': {
@@ -1742,6 +1757,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
           error?.code === 'HDKIT_QUOTA_EXCEEDED' ||
           error?.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
           error?.code === 'HDKIT_CRED_INVALID' ||
+          error?.code === 'HDKIT_VERSION_TOO_OLD' ||
           error?.coreHoursExhausted
         ) {
           return {
@@ -1750,6 +1766,8 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
             message: error.message,
             ...(error.retryAfter !== undefined ? { retryAfter: error.retryAfter } : {}),
             ...(error.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
+            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
             ...(error.remediation ? { remediation: error.remediation } : {}),
           };
         }

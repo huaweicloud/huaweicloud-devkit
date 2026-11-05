@@ -98,6 +98,20 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
       err.message = data.message || err.message;
     }
+    // 版本硬门禁（UPGRADE_MIN_VERSION）：结构化升级引导，保证 remediation 能穿透 MCP 边界
+    if (code === 'HDKIT_VERSION_TOO_OLD') {
+      err.clientVersion = data.clientVersion || undefined;
+      err.minVersion = data.minVersion || undefined;
+      err.message = data.message || err.message;
+      err.remediation = {
+        hint: `插件版本过旧（当前 ${data.clientVersion || '未知'}，需升级至正式版 ${data.minVersion || '最新版'} 及以上）：`,
+        steps: [
+          '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+          '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+          '也可直接调用 huaweicloud_upgrade 工具完成升级',
+        ],
+      };
+    }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
     // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。
     // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 双码/凭证指引）

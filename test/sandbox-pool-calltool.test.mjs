@@ -111,6 +111,52 @@ test('callTool connect: capacity-insufficient shows exactly the server message (
   }
 });
 
+test('callTool connect: version-too-old remediation survives the MCP boundary', async () => {
+  const restore = withFetchResponse(
+    {
+      code: 'HDKIT_VERSION_TOO_OLD',
+      message: '插件版本过旧，请升级至正式版 1.1.13 及以上。',
+      clientVersion: '1.1.12',
+      minVersion: '1.1.13',
+    },
+    { status: 409, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(result.clientVersion, '1.1.12');
+    assert.equal(result.minVersion, '1.1.13');
+    assert.ok(result.remediation, 'remediation must reach the tool result');
+    assert.match(result.remediation.steps.join(' '), /huaweicloud-devkit@latest update/);
+    const json = JSON.parse(JSON.stringify(result));
+    assert.equal(json.remediation.hint, result.remediation.hint);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool check_user: version-too-old returns structured guidance', async () => {
+  const restore = withFetchResponse(
+    {
+      code: 'HDKIT_VERSION_TOO_OLD',
+      message: '插件版本过旧，请升级至正式版 1.1.13 及以上。',
+      clientVersion: '1.1.12',
+      minVersion: '1.1.13',
+    },
+    { status: 409, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_check_user', {});
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(result.minVersion, '1.1.13');
+    assert.ok(result.remediation);
+  } finally {
+    restore();
+  }
+});
+
 test('callTool connect: core-hours exhausted surfaces structured guidance', async () => {
   const restore = withFetchResponse(
     {
