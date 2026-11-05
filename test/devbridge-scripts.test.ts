@@ -15,7 +15,7 @@ import {
 } from '../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
-test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → AK/SK → file)', () => {
+test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → file, AK/SK removed)', () => {
   const script = buildDevbridgeAuthProbe();
   // Tier 1: keyring API Key — stderr capture (2>&1), devbridge_ prefix filter, env self-heal
   assert.match(script, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/);
@@ -27,14 +27,12 @@ test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → 
   assert.match(script, /dbus-daemon --session/);
   assert.match(script, /gnome-keyring-daemon --unlock/);
   assert.ok(!script.includes('dnf install'), 'waterfall must not install packages at runtime');
-  // Tier 2: AK/SK — STS token is mandatory (401 APIGW.0301 without it), 0.1.x --huaweicloud is conditional
-  assert.match(script, /devbridge auth login --help.*--access-key/s);
-  assert.match(script, /--access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/);
-  assert.match(script, /DB_TOKEN_ARGS="--security-token \\"\$HW_SECURITY_TOKEN\\""|DB_TOKEN_ARGS=.*--security-token/);
-  assert.match(script, /grep -q -- '--huaweicloud'/);
-  assert.match(script, /DB_AUTH_MODE=AKSK_SUPPORTED/);
-  // Tier 3: user-provided file fallback
-  assert.match(script, /source \/tmp\/hw_creds\.sh/);
+  // AK/SK login REMOVED (2026-11-04 定稿：devbridge 认证固定 API Key)
+  assert.ok(!script.includes('--access-key'), 'AK/SK login must be removed from the probe');
+  assert.ok(!script.includes('AKSK_SUPPORTED'), 'AKSK_SUPPORTED mode must be removed');
+  assert.ok(!script.includes('source /tmp/hw_creds.sh'), 'probe must not read STS AK/SK file for devbridge auth');
+  assert.ok(!script.includes('DB_TOKEN_ARGS'), 'the dead AK/SK token-arg vocabulary must be gone');
+  // Tier 2: file fallback (auto-injected or user-provided)
   assert.match(script, /source \/tmp\/hw_api_key/);
   assert.match(script, /--api-key "\$HW_API_KEY"/);
   assert.match(script, /DB_AUTH_MODE=API_KEY_FILE/);
@@ -43,26 +41,24 @@ test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → 
   assert.match(script, /DB_ATTEMPT_/);
   assert.match(script, /DB_AUTH_MODE=NO_CREDENTIAL/);
   // Secrets are not left in the environment after the probe
-  assert.match(script, /unset HW_DB_KEY HW_API_KEY DB_TOKEN_ARGS/);
+  assert.match(script, /unset HW_DB_KEY HW_API_KEY/);
 });
 
 test('D: parseDevbridgeAuthOutput extracts the final auth mode and per-tier attempt diagnostics', () => {
   const stdout = [
     'DB_ATTEMPT_KEYRING=no-valid-key',
-    'DB_ATTEMPT_AKSK=binary-or-creds-unavailable',
     'DB_ATTEMPT_APIKEY_FILE=no-file',
     'DB_AUTH_MODE=NO_CREDENTIAL',
   ].join('\n');
   const parsed = parseDevbridgeAuthOutput(stdout);
   assert.equal(parsed.authMode, 'NO_CREDENTIAL');
   assert.equal(parsed.attempts.KEYRING, 'no-valid-key');
-  assert.equal(parsed.attempts.AKSK, 'binary-or-creds-unavailable');
   assert.equal(parsed.attempts.APIKEY_FILE, 'no-file');
 
-  const success = parseDevbridgeAuthOutput('DB_ATTEMPT_KEYRING=no-valid-key\nDB_AUTH_MODE=AKSK_SUPPORTED\n');
-  assert.equal(success.authMode, 'AKSK_SUPPORTED');
+  const success = parseDevbridgeAuthOutput('DB_ATTEMPT_KEYRING=no-valid-key\nDB_AUTH_MODE=API_KEY_FILE\n');
+  assert.equal(success.authMode, 'API_KEY_FILE');
   assert.equal(success.attempts.KEYRING, 'no-valid-key');
-  assert.equal(success.attempts.AKSK, undefined);
+  assert.deepEqual(success.attempts.AKSK, undefined);
 
   const empty = parseDevbridgeAuthOutput('');
   assert.equal(empty.authMode, '');
@@ -342,8 +338,8 @@ test('D: parseDevbridgeExposeOutput and the auth parser survive OSC/CSI-wrapped 
   assert.equal(parsed.httpCode, '200');
   assert.equal(parsed.expiryHours, 72);
   const noisyAuth = parseDevbridgeAuthOutput(
-    '\x1b]133;C\x07DB_ATTEMPT_KEYRING=no-valid-key\r\n\x1b]133;C\x07DB_AUTH_MODE=AKSK_SUPPORTED\r\n',
+    '\x1b]133;C\x07DB_ATTEMPT_KEYRING=no-valid-key\r\n\x1b]133;C\x07DB_AUTH_MODE=API_KEY_FILE\r\n',
   );
-  assert.equal(noisyAuth.authMode, 'AKSK_SUPPORTED');
+  assert.equal(noisyAuth.authMode, 'API_KEY_FILE');
   assert.equal(noisyAuth.attempts.KEYRING, 'no-valid-key');
 });

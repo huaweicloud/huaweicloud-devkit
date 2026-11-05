@@ -5,6 +5,13 @@ import {
   validateTunnelId,
 } from '../../sandbox/devbridge-tunnel.ts';
 import { getCurrentWorkspaceId } from '../../sandbox/session-manager.ts';
+import { poolContextFor } from '../../lib/hdkit/sandbox-pool.ts';
+import {
+  buildKeyringInjectScript,
+  ensureDevbridgeKey,
+  listKeysForQuotaHint,
+  recreateDevbridgeKey,
+} from '../../sandbox/devbridge-key.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { SANDBOX_TIMEOUT_MS } from './schemas.ts';
 
@@ -27,12 +34,17 @@ export async function handleExposeTunnel(args: ToolArgs = {}, _opts: CallToolOpt
   }
   const sandboxUser9 = args.username || 'root';
   const sandboxTimeout9 = args.timeout_ms || SANDBOX_TIMEOUT_MS.expose_tunnel;
+  const exposePoolContext = poolContextFor(sandboxWsId9);
   return await exposeTunnel(
     sandboxWsId9,
     {
       port: args.port,
       expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
       keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
+      // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
+      poolType: exposePoolContext?.poolMode || 'ephemeral',
+      poolContext: exposePoolContext,
+      keyUpgrade: { ensureDevbridgeKey, recreateDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
     },
     sandboxUser9,
     sandboxTimeout9,

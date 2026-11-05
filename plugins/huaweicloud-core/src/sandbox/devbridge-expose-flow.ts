@@ -1,6 +1,6 @@
 import { DEVBRIDGE_HOST_EXPIRY_HOURS, validateExpiryHours, validateTunnelPort } from './devbridge-validation.ts';
 import { runOneShot, type OneShotResult } from './devbridge-exec.ts';
-import { gateExposeAuth } from './devbridge-auth.ts';
+import { gateExposeAuth, type DevbridgeAuthGateOptions } from './devbridge-auth.ts';
 import {
   buildDevbridgeExposeScript,
   formatTunnelReachabilityWarning,
@@ -11,6 +11,7 @@ import {
 } from './devbridge-expose.ts';
 import { verifyTunnelPersistence } from './devbridge-verify.ts';
 import { enrollKeepalive, type KeepaliveWatchdogResult } from './devbridge-keepalive.ts';
+import { buildExposeLifetimeNotice, type PoolContext } from '../lib/hdkit/sandbox-pool.ts';
 
 // The DevBridge expose-tunnel orchestration, extracted from devbridge-tunnel so
 // the tunnel helpers stay a cohesive unit with a pure-function test surface.
@@ -92,7 +93,28 @@ function keepaliveResultField(enrollment: KeepaliveWatchdogResult | undefined) {
 // deployment result" contract.
 export async function exposeTunnel(
   workspaceId: string,
-  { port, expiryHours, keepalive }: { port?: number | string; expiryHours?: number; keepalive?: boolean },
+  {
+    port,
+    expiryHours,
+    keepalive,
+    poolType,
+    poolContext,
+    keyUpgrade,
+  }: {
+    port?: number | string;
+    expiryHours?: number;
+    keepalive?: boolean;
+    // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）：poolType
+    // selects which fixed-name key the ladder manages (两池分流，未知归 ephemeral);
+    // keyUpgrade is the injected key-lifecycle bundle the gate runs between
+    // probe rounds. Omitted by non-production callers (tests) — the gate then
+    // degrades to the plain probe verdict.
+    poolType?: string;
+    // connect 回显缓存的池上下文：仅在成功结果上生成沙箱存活期提示（隧道有效期
+    // ≠ 沙箱存活期）；未传/无缓存（自定义模板）时结果不带 sandboxLifetime 字段。
+    poolContext?: PoolContext;
+    keyUpgrade?: DevbridgeAuthGateOptions['keyUpgrade'];
+  },
   username = 'root',
   timeoutMs = 90000,
 ): Promise<ExposeTunnelResult> {
@@ -102,7 +124,7 @@ export async function exposeTunnel(
   const validatedPort = validateTunnelPort(port);
   const validatedExpiryHours = validateExpiryHours(expiryHours ?? DEVBRIDGE_HOST_EXPIRY_HOURS);
 
-  const gate = await gateExposeAuth(workspaceId, username, validatedPort);
+  const gate = await gateExposeAuth(workspaceId, username, validatedPort, { poolType, keyUpgrade });
   if (!gate.ok) {
     return gate.failure;
   }
@@ -210,6 +232,10 @@ export async function exposeTunnel(
     const verification = await verifyTunnelPersistence(workspaceId, parsed.tunnelUrl, username);
     if (verification.warning) warnings.push(verification.warning);
 
+    // 交付地址时必须播报沙箱存活期（隧道有效期 ≠ 沙箱存活期；keepalive 只保隧道不保沙箱）
+    const lifetimeNotice = buildExposeLifetimeNotice(poolContext, parsed.expiryHours);
+    if (lifetimeNotice) warnings.push(lifetimeNotice.warning);
+
     const expiresAt =
       parsed.expiryHours !== undefined
         ? new Date(Date.now() + parsed.expiryHours * 3_600_000).toISOString()
@@ -228,6 +254,9 @@ export async function exposeTunnel(
       ok: true,
       publicUrl: parsed.tunnelUrl,
       port: validatedPort,
+      ...(lifetimeNotice
+        ? { sandboxLifetime: lifetimeNotice.sandboxLifetime, urlLifetimeHint: lifetimeNotice.urlLifetimeHint }
+        : {}),
       tunnelId: parsed.tunnelId || undefined,
       authMode,
       httpCode: parsed.httpCode,

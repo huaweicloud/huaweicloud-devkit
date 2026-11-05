@@ -19,9 +19,9 @@ test('the auth probe reads the version in the same exec, data-disk PATH first (#
 
 test('parseDevbridgeAuthOutput reads the version field, OSC-noise tolerant (#998 + #946)', () => {
   const osc = '\x1b]133;C\x07';
-  const parsed = parseDevbridgeAuthOutput(`${osc}DB_VERSION=0.1.13-release\n${osc}DB_AUTH_MODE=AKSK_SUPPORTED\n`);
+  const parsed = parseDevbridgeAuthOutput(`${osc}DB_VERSION=0.1.13-release\n${osc}DB_AUTH_MODE=API_KEY_FILE\n`);
   assert.equal(parsed.version, '0.1.13-release');
-  assert.equal(parsed.authMode, 'AKSK_SUPPORTED');
+  assert.equal(parsed.authMode, 'API_KEY_FILE');
   assert.equal(parseDevbridgeAuthOutput('DB_AUTH_MODE=API_KEY_KEYRING\n').version, '', 'absent version parses empty');
 });
 
@@ -50,8 +50,8 @@ test('exposeTunnel blocks 0.1.x BEFORE the expose loop — auth green-light is n
   let exposeCalls = 0;
   const result = await exposeViaSeam(async (_ws, command) => {
     if (command.includes('DB_AUTH_MODE')) {
-      // 0.1.x: the AK/SK tier still logs in — the auth alone would pass.
-      return { stdout: 'DB_VERSION=0.1.13-release\nDB_AUTH_MODE=AKSK_SUPPORTED\n', exitCode: 0 };
+      // 0.1.x: the keyring tier still logs in — the auth alone would pass.
+      return { stdout: 'DB_VERSION=0.1.13-release\nDB_AUTH_MODE=API_KEY_KEYRING\n', exitCode: 0 };
     }
     if (command.includes('pkill -f "devbridge host"')) {
       exposeCalls += 1;
@@ -71,7 +71,7 @@ test('#998 read-back rescues a no-URL failure when the auth probe lost the versi
   // noise), auth green — the read-back catches the 0.1.x on the final attempt.
   const result = await exposeViaSeam(async (_ws, command) => {
     if (command.includes('DB_AUTH_MODE')) {
-      return { stdout: 'DB_AUTH_MODE=AKSK_SUPPORTED\n', exitCode: 0 };
+      return { stdout: 'DB_AUTH_MODE=API_KEY_KEYRING\n', exitCode: 0 };
     }
     if (command.includes('devbridge version')) {
       // #946 shell shape: OSC-wrapped DB_VERSION field — the read-back must

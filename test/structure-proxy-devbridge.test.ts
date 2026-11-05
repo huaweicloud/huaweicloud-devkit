@@ -461,12 +461,9 @@ test('deploy_check judges reachability by non-000 and probes listed tunnels boun
 test('stripTerminalEscapes is the single escape-stripping seam for sandbox output parsers (#946)', () => {
   const sessionManager = readSource(join('src', 'sandbox', 'session-manager.ts'));
   const devbridgeTunnel = readSource(join('src', 'sandbox', 'devbridge-tunnel.ts'));
-  // The face pin: the auth parser re-exports from its canonical module
+  // The face pin: the auth waterfall re-exports from its canonical module
   // (devbridge-auth.ts) since the devbridge-tunnel modularization.
-  assert.match(
-    devbridgeTunnel,
-    /export \{ buildDevbridgeAuthProbe, parseDevbridgeAuthOutput \} from '\.\/devbridge-auth\.ts';/,
-  );
+  assert.match(devbridgeTunnel, /export \{[^}]*buildDevbridgeAuthProbe[^}]*\} from '\.\/devbridge-auth\.ts';/);
   // sandbox-output.ts is the canonical home since the session-manager
   // modularization; the whole sandbox sibling family is swept so no sibling
   // (new or old) re-rolls the seam.
@@ -550,12 +547,10 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.doesNotMatch(sandbox, /Login needs --huaweicloud/);
   assert.match(sandbox, /Never expose tunnel details/);
 
-  // The #935 sandbox traps (ported from main 1.1.10): 0.2.x has no
-  // --huaweicloud flag (docs ran ahead of the binary — teach the direct
-  // --access-key form); platform-side STS credentials are obsutil-encrypted
-  // (devbridge reads ciphertext → APIGW.0301); sandboxes have no systemd.
-  assert.match(sandbox, /does NOT exist in sandbox devbridge 0\.2\.x binaries/);
-  assert.match(sandbox, /obsutil 加密态存储/);
+  // The #935 sandbox traps (ported from main 1.1.10): the auth-doctrine traps
+  // (the --huaweicloud SSO flag, the obsutil-ciphertext/APIGW.0301 AK/SK
+  // reading) died with the AK/SK tier in the 2026-11-04 reversal; the deploy
+  // traps (no systemd, nginx -t hot reload) survive.
   assert.match(sandbox, /沙箱无 systemd/);
   assert.match(sandbox, /nginx -t` 验证 \+ `nginx -s reload` 热加载/);
 
@@ -579,31 +574,80 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.match(deployNginxVerify, /export function resolveNginxConfigPath/);
   assert.match(deployNginx, /fix_and_retry/);
 
-  // Auth is a verified three-tier waterfall (keyring → AK/SK → api-key file);
-  // the preferred path is the expose_tunnel tool, the manual script is the
+  // Auth is API Key only (2026-11-04 定稿：AK/SK login removed).
+  // The waterfall: keyring (ours + platform legacy) → file → auto-create
   // fallback. The probe vocabulary is DB_AUTH_MODE modes, not AUTH_MODE.
-  assert.match(sandbox, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
-  assert.match(sandbox, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/);
-  assert.match(sandbox, /devbridge_"\*\)|devbridge_\*\)/);
   assert.match(sandbox, /API_KEY_KEYRING/);
-  assert.match(sandbox, /AKSK_SUPPORTED/);
-  assert.match(sandbox, /API_KEY_FILE/);
-  assert.match(sandbox, /NO_CREDENTIAL/);
+  assert.match(sandbox, /API_KEY_AUTO/);
+  assert.match(sandbox, /API_KEY_FILE|NO_CREDENTIAL/);
+  assert.match(sandbox, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/, 'keyring read must capture stderr');
+  assert.match(sandbox, /devbridge_/);
+  // AK/SK login commands must NOT appear
+  assert.doesNotMatch(sandbox, /auth login --access-key/, 'AK/SK login must be removed from skill');
+  assert.doesNotMatch(sandbox, /AKSK_SUPPORTED/, 'AKSK_SUPPORTED mode must be removed from skill');
+  // The doctrine thesis itself and the Step 7 waterfall phrase must teach the
+  // flip (interrogate round 1: a rewording that drops the banned tokens could
+  // otherwise reintroduce the removed tier behind vocabulary-free pins).
+  // Round 2: the real ladder order is keyring → file → auto-create (the probe
+  // tries the file channel before the host ever calls ensureDevbridgeKey), so
+  // the pinned order and the thesis line are seam-to-seam anchored.
   assert.match(
     sandbox,
-    /--security-token "\$HW_SECURITY_TOKEN"/,
-    'STS credentials must carry the security token or the gateway rejects with 401 APIGW.0301',
+    /^DevBridge authentication is \*\*fixed to API Key\*\*.*no longer reads `\/tmp\/hw_creds\.sh` for devbridge purposes\.$/m,
   );
   assert.match(
     sandbox,
-    /auth login --access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/,
-    'image-build branch must teach the direct AK/SK login',
+    /credential waterfall \(keyring → API-Key file → auto-created API Key\), pre-cleans stale tunnels/,
+  );
+  assert.doesNotMatch(sandbox, /keyring → AK\/SK/, 'the removed tier must not reappear in the Step 7 waterfall');
+  assert.doesNotMatch(
+    sandbox,
+    /keyring \(ours \+ platform legacy\) → auto-create fallback → file/,
+    'the gotchas waterfall must not invert the real ladder order',
+  );
+  assert.match(sandbox, /The waterfall: keyring \(ours \+ platform legacy\) → file → auto-create fallback\./);
+  assert.match(sandbox, /# Tier 1: keyring \(stderr! prefix filter!\)/);
+  assert.match(sandbox, /# Tier 2: file fallback/, 'the manual script numbers the file channel Tier 2');
+  assert.doesNotMatch(sandbox, /# Tier 3: file fallback/, 'the file channel is not Tier 3');
+  assert.doesNotMatch(
+    sandbox,
+    /after `source \/tmp\/hw_creds\.sh`/,
+    'the remediation mirror must not wire the STS file into the devbridge chain',
+  );
+  assert.doesNotMatch(
+    sandboxCredentials,
+    /retain AK\/SK login/,
+    'credentials hint must not teach the removed image-build tier',
+  );
+  // Both hint literals pinned seam-to-seam so an appended contradiction inside
+  // either string cannot hide behind a matching prefix. (?:\\'[^']*)* lets the
+  // span cross the literals\' escaped apostrophes. Recorded residual (the
+  // substring-pinning limit shared with this repo's entire guard convention):
+  // a contradictory sentence INSERTED mid-span or PREPENDED before the pin's
+  // lead stays green — end-appends and rewording-to-removal go red; insertion
+  // fiction is not catchable by pinning.
+  assert.match(
+    sandboxCredentials,
+    /written to \/tmp\/hw_api_key \(0600[^']*(?:\\'[^']*)*DevBridge auth is fixed to API Key \(AK\/SK login removed\)[^']*(?:\\'[^']*)*auto-creates the per-account × per-pool key when neither the keyring nor this file has one[^']*(?:\\'[^']*)*Never echo the key into logs\.'/,
+  );
+  assert.match(
+    sandboxCredentials,
+    /No DevBridge API Key provided — devbridge auth is fixed to API Key[^']*(?:\\'[^']*)*auto-creates the per-account × per-pool key \(devkit-ephemeral\/devkit-persistent\)[^']*(?:\\'[^']*)*keeps the key out of the conversation\)\.'/,
+  );
+  assert.match(
+    sandboxCredentials,
+    /auto-creates the per-account × per-pool key/,
+    'no-key hint must teach the auto-create path first',
   );
   assert.match(sandbox, /huaweicloud_sandbox_expose_tunnel/);
-  assert.match(sandbox, /attempts/);
+  // The two-pool key doctrine and the quota degradation must be taught.
+  assert.match(sandbox, /devkit-ephemeral/);
+  assert.match(sandbox, /devkit-persistent/);
+  assert.match(sandbox, /HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED/);
+  assert.match(sandbox, /devbridge-api-keys\.json/);
 
-  // The API Key guidance (release-build branch) must survive, incl. version detection
-  // and the in-place upgrade.
+  // The API Key guidance (the manual waterfall's file-fallback tier, SKILL.md
+  // Tier 2) must survive, incl. version detection and the in-place upgrade.
   assert.match(sandbox, /auth login --api-key "\$HW_API_KEY"/);
   assert.match(sandbox, /devbridge version/);
   assert.match(sandbox, /devbridge-install\.sh -s/);
@@ -623,8 +667,8 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.ok(credsWrite, 'credsScript block not found in packs/sandbox/handlers-credentials.ts');
   assert.doesNotMatch(credsWrite[0], /HW_API_KEY/);
 
-  // The CodeArts Doer sidecopy must mirror the probe-branch flow and not regress
-  // to the removed 0.1.x flow either. .codeartsdoer is a gitignored install
+  // The CodeArts Doer sidecopy must mirror the API-Key-only flow and not regress
+  // to the removed AK/SK or 0.1.x flows. .codeartsdoer is a gitignored install
   // copy (never tracked), so a clean checkout has no sidecopy to check.
   const sidecopyPath = join(root, '.codeartsdoer', 'skills', 'huawei-sandbox', 'SKILL.md');
   if (existsSync(sidecopyPath)) {
@@ -633,11 +677,12 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
     assert.doesNotMatch(sidecopy, /res-hd\.hc-cdn\.cn/);
     assert.doesNotMatch(sidecopy, /devbridge ls\b/);
     assert.doesNotMatch(sidecopy, /https:\/\/<id>-<port>\.cn-north-4-bridge/);
-    assert.match(sidecopy, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
-    assert.match(sidecopy, /API_KEY_KEYRING/);
-    assert.match(sidecopy, /AKSK_SUPPORTED/);
-    assert.match(sidecopy, /NO_CREDENTIAL/);
+    // AK/SK login must be removed from sidecopy (API Key only, 2026-11-04)
+    assert.doesNotMatch(sidecopy, /auth login --access-key/, 'sidecopy must not teach AK/SK login');
+    assert.doesNotMatch(sidecopy, /AUTH_MODE=AKSK_SUPPORTED/, 'sidecopy must not reference AKSK_SUPPORTED');
+    assert.doesNotMatch(sidecopy, /AUTH_MODE=API_KEY_ONLY/);
     assert.match(sidecopy, /auth login --api-key "\$HW_API_KEY"/);
+    assert.match(sidecopy, /API_KEY_KEYRING|hwcloud keyring get HW_DEVBRIDGE_API_KEY/);
     assert.match(sidecopy, /devbridge-s2\.hwtunnel\.com/);
     assert.match(sidecopy, /\/tmp\/hw_api_key/);
   }

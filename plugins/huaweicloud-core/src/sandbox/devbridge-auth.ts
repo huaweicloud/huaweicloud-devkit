@@ -2,6 +2,7 @@ import { stripTerminalEscapes } from './sandbox-output.ts';
 import { runOneShot } from './devbridge-exec.ts';
 import { evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import type { ExposeTunnelResult } from './devbridge-expose.ts';
+import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
 
 // The DevBridge auth waterfall, extracted from devbridge-tunnel so the auth
 // probe script, its stdout parser, and (with the devbridge-tunnel
@@ -10,18 +11,21 @@ import type { ExposeTunnelResult } from './devbridge-expose.ts';
 
 // Build a shell snippet that authenticates devbridge via a verified waterfall:
 //   Tier 1  keyring API Key  — hwcloud keyring get HW_DEVBRIDGE_API_KEY (platform-injected
-//           on hd-space-ai-shell images; the value goes to STDERR so 2>&1 is mandatory and
-//           the devbridge_ prefix filters "(not found)" / error text). A light revive step
-//           (restart the D-Bus session bus + re-unlock the keyring daemon, no dnf) retries
-//           once when the first read fails. Preferred: devbridge is deprecating AK/SK auth.
-//   Tier 2  AK/SK            — image builds keep --access-key/--secret-key; STS credentials
-//           from /tmp/hw_creds.sh need --security-token or the gateway rejects with 401
-//           APIGW.0301; 0.1.x binaries additionally advertise --huaweicloud in help.
-//   Tier 3  /tmp/hw_api_key  — release builds accept only --api-key; the file is written by
-//           huaweicloud_sandbox_credentials from HW_API_KEY / the api_key param.
-// Every tier performs a real `devbridge auth login` and verifies with `auth status`
-// (must print "Logged in"); on failure the waterfall falls through to the next tier.
+//           on hd-space-ai-shell images, or self-injected by devbridge-key.ts; the value
+//           goes to STDERR so 2>&1 is mandatory and the devbridge_ prefix filters
+//           "(not found)" / error text). A light revive step (restart the D-Bus session
+//           bus + re-unlock the keyring daemon, no dnf) retries once when the first read fails.
+//   Tier 2  /tmp/hw_api_key  — file channel: written by huaweicloud_sandbox_credentials
+//           from HW_API_KEY / the api_key param (user-provided), or by the auto-create
+//           fallback (devbridge-key.ts) when keyring injection is unavailable.
+// AK/SK login (--access-key/--secret-key) was REMOVED: devbridge authentication is
+// now fixed to API Key only (定稿决策，2026-11-04).
+// Every tier performs a real `devbridge auth login --api-key` and verifies with
+// `auth status` (must print "Logged in"); on failure the waterfall falls through.
 // DB_ATTEMPT_* lines are non-sensitive diagnostics for support escalation.
+// The HOST orchestrates an auto-create fallback between probe rounds: when the
+// first probe returns NO_CREDENTIAL, the host calls ensureDevbridgeKey() and
+// injects the key (keyring preferred, file fallback), then runs a second probe.
 export function buildDevbridgeAuthProbe(): string {
   return [
     // #999: /workspace/.local/bin FIRST — /workspace is the data disk and
@@ -31,9 +35,9 @@ export function buildDevbridgeAuthProbe(): string {
     `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
     `export HOME="\${HOME:-/root}"`,
     // #998: probe the version in the SAME exec as the auth waterfall (no extra
-    // round trip). 0.1.x binaries' AK/SK tier still logs in, so the auth probe
-    // alone would green-light an expose that can never work — the version is
-    // what names the real cause.
+    // round trip). A 0.1.x binary can never serve tunnels (migrated gateway)
+    // no matter which credential succeeds, so the version is what names the
+    // real cause when auth or expose fails.
     `DB_VERSION=$(devbridge version 2>/dev/null | head -1)`,
     `echo "DB_VERSION=\${DB_VERSION}"`,
     `DB_OK=0`,
@@ -78,29 +82,7 @@ export function buildDevbridgeAuthProbe(): string {
     `  db_diag KEYRING "no-valid-key"`,
     `fi`,
     ``,
-    `# ---- Tier 2: AK/SK from /tmp/hw_creds.sh (image builds; STS needs --security-token) ----`,
-    `if [ "$DB_OK" -eq 0 ]; then`,
-    `  source /tmp/hw_creds.sh 2>/dev/null`,
-    `  if devbridge auth login --help 2>&1 | grep -q -- '--access-key' && [ -n "$HW_ACCESS_KEY" ]; then`,
-    `    DB_TOKEN_ARGS=""`,
-    `    [ -n "$HW_SECURITY_TOKEN" ] && DB_TOKEN_ARGS="--security-token \\"$HW_SECURITY_TOKEN\\""`,
-    `    if devbridge auth login --help 2>&1 | grep -q -- '--huaweicloud'; then`,
-    `      devbridge auth login --huaweicloud --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
-    `    else`,
-    `      devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
-    `    fi`,
-    `    if db_login_ok; then`,
-    `      echo "DB_AUTH_MODE=AKSK_SUPPORTED"`,
-    `      DB_OK=1`,
-    `    else`,
-    `      db_diag AKSK "login-failed"`,
-    `    fi`,
-    `  else`,
-    `    db_diag AKSK "binary-or-creds-unavailable"`,
-    `  fi`,
-    `fi`,
-    ``,
-    `# ---- Tier 3: API Key from /tmp/hw_api_key (release builds, user-provided) ----`,
+    `# ---- Tier 2: API Key from /tmp/hw_api_key (file channel; auto-injected or user-provided) ----`,
     `if [ "$DB_OK" -eq 0 ]; then`,
     `  source /tmp/hw_api_key 2>/dev/null`,
     `  if [ -n "$HW_API_KEY" ]; then`,
@@ -119,7 +101,7 @@ export function buildDevbridgeAuthProbe(): string {
     `if [ "$DB_OK" -eq 0 ]; then`,
     `  echo "DB_AUTH_MODE=NO_CREDENTIAL"`,
     `fi`,
-    `unset HW_DB_KEY HW_API_KEY DB_TOKEN_ARGS 2>/dev/null`,
+    `unset HW_DB_KEY HW_API_KEY 2>/dev/null`,
     `devbridge auth status > /tmp/db_status.log 2>&1 || true`,
   ].join('\n');
 }
@@ -148,21 +130,70 @@ export function parseDevbridgeAuthOutput(stdout: unknown): DevbridgeAuth {
   return { authMode, attempts, version };
 }
 
+// The auth modes the expose loop accepts. API_KEY_AUTO is the winning verdict
+// the host records when its self-heal/auto-create fallback established the
+// credential between probe rounds.
+const USABLE_AUTH_MODES: ReadonlySet<string> = new Set(['API_KEY_KEYRING', 'API_KEY_FILE', 'API_KEY_AUTO']);
+
+function isUsableAuthMode(mode: string): boolean {
+  return USABLE_AUTH_MODES.has(mode);
+}
+
+// The key-upgrade injection bundle: every function the host needs to establish
+// a DevBridge API Key travels together (a key without its injection script is
+// not a representable state). handlers-tunnel.ts passes the real bundle; tests
+// pass fakes.
+export interface DevbridgeKeyUpgradeDeps {
+  ensureDevbridgeKey: (poolType: string | undefined | null) => Promise<DevbridgeKeyResult>;
+  recreateDevbridgeKey: (poolType: string | undefined | null) => Promise<DevbridgeKeyResult>;
+  buildKeyringInjectScript: (apiKey: string) => string;
+  listKeysForQuotaHint: () => Promise<DevbridgeQuotaKeyHint[]>;
+}
+
+export interface DevbridgeAuthGateOptions {
+  poolType?: string;
+  keyUpgrade?: DevbridgeKeyUpgradeDeps;
+}
+
+// 配额满（上游 13002 → 429 HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED）的结构化降级提示。
+const DEVBRIDGE_KEY_QUOTA_HINT =
+  'API Key 数量已达上限。请到控制台清理不再使用的 key：' +
+  'https://devstation.connect.huaweicloud.com/space/devbridge/apikey\n' +
+  'devkit-* 开头的是插件自动管理的 key（删除后会自动重建），可优先清理其他闲置 key。';
+
+const NO_KEY_HINT =
+  'No DevBridge API Key is available in this sandbox. Suggested next steps:\n' +
+  '1) Re-run huaweicloud_sandbox_credentials, then retry huaweicloud_sandbox_expose_tunnel.\n' +
+  '2) If auto-creation failed due to quota (20 key limit), clean up unused keys at ' +
+  'https://devstation.connect.huaweicloud.com/space/devbridge/apikey, then retry.\n' +
+  '3) The "attempts" field shows which tiers were tried and why they failed — include it when escalating.';
+
 export type ExposeAuthGate =
   { ok: true; authMode: string; version: string } | { ok: false; failure: ExposeTunnelResult };
 
 // The auth+version gate phase of exposeTunnel: run the auth waterfall probe,
-// parse it, and decide whether the expose loop may start at all. The failure
-// shapes are the flow's verbatim returns (moved here, not reworded).
-export async function gateExposeAuth(workspaceId: string, username: string, port: number): Promise<ExposeAuthGate> {
+// parse it, and decide whether the expose loop may start at all. Between the
+// probe and the verdict the host orchestrates the key-upgrade ladder (dev
+// doctrine, 2026-11-04): self-heal first when the keyring tier reports a dead
+// cached key (recreate → inject → re-probe), then the generic auto-create
+// fallback (ensure → inject → re-probe → API_KEY_AUTO); a quota-exhausted
+// create degrades to the structured failure with the currentKeys list. The
+// failure shapes are the flow's verbatim returns (moved here, not reworded).
+export async function gateExposeAuth(
+  workspaceId: string,
+  username: string,
+  port: number,
+  { poolType, keyUpgrade }: DevbridgeAuthGateOptions = {},
+): Promise<ExposeAuthGate> {
   const authScript = buildDevbridgeAuthProbe();
   const authResult = await runOneShot(workspaceId, authScript, username, 30000);
   const { authMode, attempts, version: authVersion } = parseDevbridgeAuthOutput(authResult.stdout);
 
-  // #998: version gate BEFORE the expose loop. 0.1.x binaries' AK/SK tier still
-  // logs in, so authMode alone would green-light an expose that can never work.
-  // This must precede the authMode check — the structured too_old error names
-  // the real cause where the auth-failure path would point at credentials.
+  // #998: version gate BEFORE the expose loop AND before the key-upgrade
+  // ladder. A 0.1.x binary can never serve tunnels, so creating a key for it
+  // is wasted work — the version check must precede the authMode check: the
+  // structured too_old error names the real cause where the auth-failure path
+  // would point at credentials.
   const versionCheck = evaluateDevbridgeVersion(authVersion);
   if (versionCheck.blocked) {
     return {
@@ -189,7 +220,56 @@ export async function gateExposeAuth(workspaceId: string, username: string, port
     };
   }
 
-  if (authMode !== 'API_KEY_KEYRING' && authMode !== 'AKSK_SUPPORTED' && authMode !== 'API_KEY_FILE') {
+  let effectiveAuthMode = authMode;
+  if (!isUsableAuthMode(effectiveAuthMode) && keyUpgrade) {
+    // 失效自愈：probe 报 login-failed（key 被删/过期）→ 清缓存 → 重建 → 注入 → 重跑 probe
+    if (attempts.KEYRING === 'login-failed') {
+      try {
+        const { apiKey } = await keyUpgrade.recreateDevbridgeKey(poolType || 'ephemeral');
+        await runOneShot(workspaceId, keyUpgrade.buildKeyringInjectScript(apiKey), username, 15000);
+        const healResult = await runOneShot(workspaceId, authScript, username, 30000);
+        const healParsed = parseDevbridgeAuthOutput(healResult.stdout);
+        if (isUsableAuthMode(healParsed.authMode)) {
+          effectiveAuthMode = 'API_KEY_AUTO';
+        }
+      } catch {
+        // 自愈失败 → 走泛化降级
+      }
+    }
+    // keyring/文件均无 key → host 调 relay API 自动创建 → 注入沙箱 → 重跑 probe
+    if (!isUsableAuthMode(effectiveAuthMode)) {
+      try {
+        const { apiKey } = await keyUpgrade.ensureDevbridgeKey(poolType || 'ephemeral');
+        await runOneShot(workspaceId, keyUpgrade.buildKeyringInjectScript(apiKey), username, 15000);
+        const retryResult = await runOneShot(workspaceId, authScript, username, 30000);
+        const retryParsed = parseDevbridgeAuthOutput(retryResult.stdout);
+        if (isUsableAuthMode(retryParsed.authMode)) {
+          effectiveAuthMode = 'API_KEY_AUTO';
+        }
+      } catch (error) {
+        // 自动创建失败（含配额满 13002）→ 结构化降级
+        if ((error as { code?: string }).code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
+          const keysHint = await keyUpgrade.listKeysForQuotaHint();
+          return {
+            ok: false,
+            failure: {
+              ok: false,
+              port,
+              error: (error as Error).message,
+              error_code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
+              authMode: authMode || 'UNKNOWN',
+              attempts,
+              currentKeys: keysHint,
+              hint: DEVBRIDGE_KEY_QUOTA_HINT,
+            },
+          };
+        }
+        // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）
+      }
+    }
+  }
+
+  if (!isUsableAuthMode(effectiveAuthMode)) {
     // v2 deviation: truncation like hostLog — raw auth output is diagnostics,
     // and the auth script never echoes key values, but bound it anyway.
     const loginOutput = (String(authResult.stdout ?? '') + String(authResult.error ?? '')).slice(0, 400);
@@ -201,19 +281,11 @@ export async function gateExposeAuth(workspaceId: string, username: string, port
         error: 'DevBridge authentication failed: no usable credential in the sandbox.',
         authMode: authMode || 'UNKNOWN',
         attempts,
-        hint:
-          'No DevBridge credential is available in this sandbox. Suggested next steps:\n' +
-          '1) Re-run huaweicloud_sandbox_credentials once, then retry huaweicloud_sandbox_expose_tunnel — ' +
-          'this refreshes the temporary AK/SK (most common quick fix when they simply expired) and rewrites /tmp/hw_creds.sh.\n' +
-          '2) If it still fails, this sandbox was created on an older image and cannot auto-acquire an API Key ' +
-          '(the image cannot be upgraded in place). One-time manual fallback: create an API Key at ' +
-          'https://devstation.connect.huaweicloud.com/space/devbridge/apikey, run `export HW_API_KEY=<key>` locally, ' +
-          're-run huaweicloud_sandbox_credentials, then retry.\n' +
-          '3) The "attempts" field shows which tiers were tried and why they failed — include it when escalating to the platform team.',
+        hint: NO_KEY_HINT,
         loginOutput,
       },
     };
   }
 
-  return { ok: true, authMode, version: authVersion };
+  return { ok: true, authMode: effectiveAuthMode, version: authVersion };
 }
