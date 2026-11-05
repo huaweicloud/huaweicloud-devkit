@@ -3,6 +3,7 @@ import { cacheUserHash } from '../../telemetry/telemetry.ts';
 import { detectAgent } from '../../telemetry/agent-detect.ts';
 import { readInstalledVersion } from '../../update-check.ts';
 import { getCredentials } from './hwlink-api.ts';
+import { pinnedTemplateFor } from './sandbox-pool.ts';
 import { asRecord } from '../as-record.ts';
 import { asText } from '../as-text.ts';
 
@@ -11,14 +12,17 @@ interface HdkitError extends Error {
   status?: number;
   traceId?: unknown;
   remediation?: { hint: string; steps: string[] };
+  retryAfter?: string;
+  coreHoursExhausted?: boolean;
 }
 
 // Structural surface shared by the global and undici Response implementations;
-// only ok/status/text are consumed below.
+// only ok/status/text/headers.get are consumed below.
 interface HttpResponseLike {
   ok: boolean;
   status: number;
   text(): Promise<string>;
+  headers: { get(name: string): string | null };
 }
 
 function getHdkitBaseUrl(): string {
@@ -94,6 +98,42 @@ async function hdkitRequest(
         ],
       };
     }
+    // 429 双错误码结构化处理（两池配额契约）：配额满（用户侧，重试无效）与
+    // 池容量不足（平台侧，错峰重试）给出差异化引导；携带服务端 Retry-After
+    if (code === 'HDKIT_QUOTA_EXCEEDED') {
+      err.retryAfter = resp.headers.get('Retry-After') || undefined;
+      err.remediation = {
+        hint: '沙箱并发配额已满（每账号最多 5 台、每类型 1 台），重试无效：',
+        steps: [
+          '确认已有实例是否够用：connect 对同池实例自动复用，无需重复创建',
+          '释放不再使用的沙箱（控制台或平台回收）后重试',
+          '如需两种生命周期语义并存：ephemeral 与 persistent 各可持有 1 台',
+        ],
+      };
+    }
+    if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
+      err.retryAfter = resp.headers.get('Retry-After') || undefined;
+      err.remediation = {
+        hint: '平台池容量暂时不足（非账号问题）：',
+        steps: [
+          '稍后错峰重试（devkit提供的免费资源紧张，建议错峰使用）',
+          '急需使用时可尝试另一 pool_type（另一池可能有余量）',
+        ],
+      };
+    }
+    // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
+    // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别
+    if (asText(data.message || '').includes('HD.97520422')) {
+      err.coreHoursExhausted = true;
+      err.remediation = {
+        hint: '账号核心时长（核时）已耗尽，沙箱无法继续运行：',
+        steps: [
+          '核时按沙箱运行时长消耗，当前账号余额为 0',
+          '更换有核时余额的账号，或等待/申请核时补充',
+          '详见华为云开发者空间核心时长说明',
+        ],
+      };
+    }
     throw err;
   }
 
@@ -123,6 +163,13 @@ export async function hdkitConnect(options: Record<string, unknown> = {}): Promi
   if (options.git) body.git = options.git;
   if (options.template_id) body.template_id = options.template_id;
   if (options.flavor_id) body.flavor_id = options.flavor_id;
+  if (options.pool_type) {
+    // 两池：pool_type 由服务端权威映射（不传默认 ephemeral）。
+    // 可选运维钉扎：配置 HW_POOL_TEMPLATE_* 时附带映射模板（服务端与老服务端均按显式模板处理）
+    body.pool_type = options.pool_type;
+    const pinned = pinnedTemplateFor(options.pool_type);
+    if (pinned && !body.template_id) body.template_id = pinned;
+  }
 
   return await hdkitRequest('POST', 'connect', body);
 }

@@ -5,6 +5,7 @@ import {
   validateTunnelId,
 } from '../../sandbox/devbridge-tunnel.ts';
 import { getCurrentWorkspaceId } from '../../sandbox/session-manager.ts';
+import { withPoolContext } from '../../lib/hdkit/sandbox-pool.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { SANDBOX_TIMEOUT_MS } from './schemas.ts';
 
@@ -27,15 +28,18 @@ export async function handleExposeTunnel(args: ToolArgs = {}, _opts: CallToolOpt
   }
   const sandboxUser9 = args.username || 'root';
   const sandboxTimeout9 = args.timeout_ms || SANDBOX_TIMEOUT_MS.expose_tunnel;
-  return await exposeTunnel(
+  return withPoolContext(
     sandboxWsId9,
-    {
-      port: args.port,
-      expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
-      keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
-    },
-    sandboxUser9,
-    sandboxTimeout9,
+    await exposeTunnel(
+      sandboxWsId9,
+      {
+        port: args.port,
+        expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
+        keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
+      },
+      sandboxUser9,
+      sandboxTimeout9,
+    ),
   );
 }
 

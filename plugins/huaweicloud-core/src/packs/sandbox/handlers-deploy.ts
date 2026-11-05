@@ -1,4 +1,5 @@
 import { deployNginx, deployCheck, getCurrentWorkspaceId } from '../../sandbox/session-manager.ts';
+import { withPoolContext } from '../../lib/hdkit/sandbox-pool.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { SANDBOX_TIMEOUT_MS } from './schemas.ts';
 
@@ -20,19 +21,22 @@ export async function handleDeployNginx(args: ToolArgs = {}, _opts: CallToolOpti
   }
   const sandboxUser7 = args.username || 'root';
   const sandboxTimeout7 = args.timeout_ms || SANDBOX_TIMEOUT_MS.deploy_nginx;
-  return await deployNginx(
+  return withPoolContext(
     sandboxWsId7,
-    {
-      nginxType: args.nginx_type,
-      port: args.port,
-      project: args.project,
-      outputDir: args.output_dir,
-      nodePort: args.node_port,
-      publicPort: args.public_port,
-      configName: args.config_name,
-    },
-    sandboxUser7,
-    sandboxTimeout7,
+    await deployNginx(
+      sandboxWsId7,
+      {
+        nginxType: args.nginx_type,
+        port: args.port,
+        project: args.project,
+        outputDir: args.output_dir,
+        nodePort: args.node_port,
+        publicPort: args.public_port,
+        configName: args.config_name,
+      },
+      sandboxUser7,
+      sandboxTimeout7,
+    ),
   );
 }
 
@@ -49,15 +53,18 @@ export async function handleDeployCheck(args: ToolArgs = {}, _opts: CallToolOpti
   }
   const sandboxUser8 = args.username || 'root';
   const sandboxTimeout8 = args.timeout_ms || SANDBOX_TIMEOUT_MS.deploy_check;
-  return await deployCheck(
+  return withPoolContext(
     sandboxWsId8,
-    {
-      port: args.port,
-      project: args.project,
-      outputDir: args.output_dir,
-      frameworkType: args.framework_type,
-    },
-    sandboxUser8,
-    sandboxTimeout8,
+    await deployCheck(
+      sandboxWsId8,
+      {
+        port: args.port,
+        project: args.project,
+        outputDir: args.output_dir,
+        frameworkType: args.framework_type,
+      },
+      sandboxUser8,
+      sandboxTimeout8,
+    ),
   );
 }

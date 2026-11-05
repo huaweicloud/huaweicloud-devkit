@@ -3,6 +3,7 @@ import {
   uploadProjectWithSession,
   getCurrentWorkspaceId,
 } from '../../sandbox/session-manager.ts';
+import { withPoolContext } from '../../lib/hdkit/sandbox-pool.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { SANDBOX_TIMEOUT_MS } from './schemas.ts';
 
@@ -23,7 +24,10 @@ export async function handleUploadFile(args: ToolArgs = {}, _opts: CallToolOptio
   }
   const sandboxUser5 = args.username || 'root';
   const sandboxTimeout5 = args.timeout_ms || SANDBOX_TIMEOUT_MS.upload_file;
-  return await uploadFileWithSession(sandboxWsId5, args.local_path, args.remote_path, sandboxUser5, sandboxTimeout5);
+  return withPoolContext(
+    sandboxWsId5,
+    await uploadFileWithSession(sandboxWsId5, args.local_path, args.remote_path, sandboxUser5, sandboxTimeout5),
+  );
 }
 
 export async function handleUploadProject(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
@@ -39,8 +43,11 @@ export async function handleUploadProject(args: ToolArgs = {}, _opts: CallToolOp
   }
   const sandboxUser6 = args.username || 'root';
   const sandboxTimeout6 = args.timeout_ms || SANDBOX_TIMEOUT_MS.upload_project;
-  return await uploadProjectWithSession(sandboxWsId6, args.local_dir, args.remote_dir, sandboxUser6, sandboxTimeout6, {
-    exclude: args.exclude,
-    extract: args.extract,
-  });
+  return withPoolContext(
+    sandboxWsId6,
+    await uploadProjectWithSession(sandboxWsId6, args.local_dir, args.remote_dir, sandboxUser6, sandboxTimeout6, {
+      exclude: args.exclude,
+      extract: args.extract,
+    }),
+  );
 }

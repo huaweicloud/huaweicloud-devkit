@@ -136,6 +136,7 @@ export type ToolArgs = {
   config_name?: string;
   framework_type?: string;
   source?: string;
+  pool_type?: string;
   template_id?: string;
   flavor_id?: string;
   env?: Record<string, unknown>;
