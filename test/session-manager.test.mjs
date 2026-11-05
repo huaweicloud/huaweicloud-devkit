@@ -35,6 +35,10 @@ import {
   buildKeepaliveTunnelsReadScript,
   parseKeepaliveTunnelsOutput,
   mergeKeepaliveTunnels,
+  parseDevbridgeTunnelList,
+  parseDevbridgeHostProcesses,
+  planDevbridgeCleanup,
+  buildDevbridgeCleanupApplyScript,
   classifyLocalUploadPath,
   buildUploadResetCommand,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
@@ -260,8 +264,9 @@ test('919: buildDevbridgeExposeScript starts a session-surviving host on the cal
   assert.match(script, /& fi\ndisown 2>\/dev\/null \|\| true/);
   // #922 (S8): bare-nohup fallback so the host still starts without setsid.
   assert.match(script, /else nohup devbridge host -p 8081 -e 72/);
-  assert.match(script, /devbridge delete-all/);
-  assert.match(script, /pkill -f "devbridge host"/);
+  // Selective cleanup now runs before expose; the script must NOT blanket-delete.
+  assert.doesNotMatch(script, /delete-all/);
+  assert.doesNotMatch(script, /pkill -f "devbridge host"/);
   assert.match(script, /DB_TUNNEL_URL=/);
   assert.match(script, /DB_HTTP_CODE=/);
   // The tunnel lifetime (-e, hours) is echoed so the return value can carry it.
@@ -743,4 +748,130 @@ test('tunnel-persistence: mergeKeepaliveTunnels dedupes by ID, incoming wins, or
     1,
   );
   assert.deepEqual(mergeKeepaliveTunnels(null, []), []);
+});
+
+test('devbridge cleanup: parses tunnel list and host processes behind OSC/CRLF noise', () => {
+  const list =
+    '\u001b]133;C\u0007Tunnel ID  Name              Description  Tunnel Expiration  Port Count\r\n' +
+    '\u001b]133;C\u0007ncwa54gr   tunnel-18082-6097               30 days            1\r\n' +
+    'up5kfkbb   tunnel-18084-789                23 hours           1\r\n' +
+    'No tunnels found.\r\n';
+  const tunnels = parseDevbridgeTunnelList(list);
+  assert.equal(tunnels.length, 2);
+  assert.deepEqual(
+    tunnels.map((t) => ({ id: t.id, port: t.port, expirySeconds: t.expirySeconds })),
+    [
+      { id: 'ncwa54gr', port: 18082, expirySeconds: 30 * 86400 },
+      { id: 'up5kfkbb', port: 18084, expirySeconds: 23 * 3600 },
+    ],
+  );
+
+  const hosts =
+    '\u001b]133;C\u00077962 devbridge host -p 18085 -e 1\r\n' +
+    '\u001b]133;C\u00071234 devbridge host ncwa54gr\r\n' +
+    '5678 /usr/bin/devbridge host up5kfkbb -p 18084 -e 72\r\n';
+  assert.deepEqual(
+    parseDevbridgeHostProcesses(hosts).map((h) => ({ pid: h.pid, id: h.id, port: h.port })),
+    [
+      { pid: 7962, id: null, port: 18085 },
+      { pid: 1234, id: 'ncwa54gr', port: null },
+      { pid: 5678, id: 'up5kfkbb', port: 18084 },
+    ],
+  );
+});
+
+test('devbridge cleanup: stale mode removes orphans but preserves protected/other-port tunnels', () => {
+  const keepalive = [{ tunnelId: 'aaaa2345', url: 'https://aaaa2345-18082.devbridge-s2.hwtunnel.com' }];
+  const tunnels = [
+    { id: 'aaaa2345', name: 'tunnel-18082-1', port: 18082, expirySeconds: 30 * 86400 },
+    { id: 'bbbb2345', name: 'tunnel-18083-2', port: 18083, expirySeconds: 29 * 86400 },
+    { id: 'cccc2345', name: 'old-tunnel', port: null, expirySeconds: null },
+  ];
+  const hosts = [
+    { pid: 100, id: 'aaaa2345', port: null },
+    { pid: 200, id: null, port: 18083 },
+    { pid: 300, id: 'dddd2345', port: null }, // host for a tunnel record that no longer exists
+  ];
+
+  const stale = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'stale' });
+  assert.deepEqual(stale.deleteIds, ['cccc2345']);
+  assert.deepEqual(stale.killPids, [300]);
+
+  const sameOtherPort = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'stale', samePort: 18083 });
+  assert.deepEqual(
+    sameOtherPort.deleteIds.sort((a, b) => a.localeCompare(b)),
+    ['bbbb2345', 'cccc2345'],
+  );
+  assert.deepEqual(
+    sameOtherPort.killPids.sort((a, b) => a - b),
+    [200, 300],
+  );
+
+  const sameProtectedPort = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'stale', samePort: 18082 });
+  assert.deepEqual(
+    sameProtectedPort.deleteIds.sort((a, b) => a.localeCompare(b)),
+    ['aaaa2345', 'cccc2345'],
+  );
+  assert.deepEqual(
+    sameProtectedPort.killPids.sort((a, b) => a - b),
+    [100, 300],
+  );
+
+  const none = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'none' });
+  assert.deepEqual(none, { deleteIds: [], killPids: [] });
+
+  const all = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'all' });
+  assert.deepEqual(
+    all.deleteIds.sort((a, b) => a.localeCompare(b)),
+    ['aaaa2345', 'bbbb2345', 'cccc2345'],
+  );
+  assert.deepEqual(
+    all.killPids.sort((a, b) => a - b),
+    [100, 200, 300],
+  );
+});
+
+test('devbridge cleanup: quota mode removes all orphans then oldest non-protected live tunnel', () => {
+  const keepalive = [{ tunnelId: 'aaaa2345', url: 'https://aaaa2345-18082.devbridge-s2.hwtunnel.com' }];
+  const tunnels = [
+    { id: 'aaaa2345', name: 'tunnel-18082-1', port: 18082, expirySeconds: 30 * 86400 }, // protected
+    { id: 'bbbb2345', name: 'tunnel-18083-2', port: 18083, expirySeconds: 29 * 86400 }, // oldest live
+    { id: 'eeee2345', name: 'tunnel-18086-3', port: 18086, expirySeconds: 30 * 86400 },
+    { id: 'cccc2345', name: 'old-tunnel', port: null, expirySeconds: null }, // orphan
+  ];
+  const hosts = [
+    { pid: 100, id: 'aaaa2345', port: null },
+    { pid: 200, id: null, port: 18083 },
+    { pid: 400, id: null, port: 18086 },
+  ];
+
+  const quota = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'quota', maxExtra: 1 });
+  assert.deepEqual(
+    quota.deleteIds.sort((a, b) => a.localeCompare(b)),
+    ['bbbb2345', 'cccc2345'],
+  );
+  assert.deepEqual(
+    quota.killPids.sort((a, b) => a - b),
+    [200],
+  );
+
+  const quotaMore = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'quota', maxExtra: 2 });
+  assert.deepEqual(
+    quotaMore.deleteIds.sort((a, b) => a.localeCompare(b)),
+    ['bbbb2345', 'cccc2345', 'eeee2345'],
+  );
+  assert.deepEqual(
+    quotaMore.killPids.sort((a, b) => a - b),
+    [200, 400],
+  );
+});
+
+test('devbridge cleanup: apply script validates IDs/PIDs and emits kill/delete commands', () => {
+  const script = buildDevbridgeCleanupApplyScript({ deleteIds: ['aaaa2345'], killPids: [100, 200] });
+  assert.match(script, /kill 100/);
+  assert.match(script, /kill 200/);
+  assert.match(script, /devbridge delete aaaa2345/);
+  assert.match(script, /DB_CLEANUP_DELETED=aaaa2345/);
+  assert.throws(() => buildDevbridgeCleanupApplyScript({ deleteIds: ['bad;id'] }), /invalid tunnel id/);
+  assert.throws(() => buildDevbridgeCleanupApplyScript({ killPids: ['1; rm -rf /'] }), /invalid pid/);
 });

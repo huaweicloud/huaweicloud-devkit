@@ -1450,9 +1450,8 @@ export const DEVBRIDGE_HOST_EXPIRY_HOURS = 72;
 export function buildDevbridgeExposeScript(port, expiryHours = DEVBRIDGE_HOST_EXPIRY_HOURS) {
   const hostLog = '/tmp/host.log';
   return [
-    `pkill -f "devbridge host" 2>/dev/null || true`,
-    `sleep 2`,
-    `devbridge delete-all > /dev/null 2>&1 || true`,
+    // Pre-clean is now selective (cleanupDevbridgeTunnels) and runs before this
+    // script, so other ports/sessions are preserved.
     // #922 (S8): setsid is unavailable on some sandbox images — fall back to a
     // bare nohup launch so the host still starts; persistence is then judged by
     // the independent re-verify below, which emits the 请勿分享 warning in the
@@ -1854,6 +1853,232 @@ export async function installKeepaliveWatchdog(workspaceId, { tunnels }, usernam
   };
 }
 
+// ── DevBridge selective cleanup ─────────────────────────────────────────────
+// delete-all is intentionally NOT used: it kills other sessions/ports on a shared
+// sandbox. Cleanup removes only orphan tunnels/hosts and (for expose) tunnels bound
+// to the same port, preserving keepalive-protected and live-unknown tunnels.
+
+export function parseDevbridgeTunnelList(stdout) {
+  const text = stripTerminalEscapes(String(stdout || ''));
+  const tunnels = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^([a-z2-7]{8})\s+(.+)$/);
+    if (!m) continue;
+    const id = m[1];
+    const rest = m[2];
+    const name = rest.trim().split(/\s{2,}|\t+/)[0] || '';
+    const portMatch = rest.match(/tunnel-(\d+)-/);
+    const expMatch = rest.match(/(\d+)\s*(day|days|hour|hours|minute|minutes)/i);
+    const unit = expMatch ? expMatch[2].toLowerCase() : '';
+    const multiplier = { day: 86400, days: 86400, hour: 3600, hours: 3600, minute: 60, minutes: 60 }[unit];
+    tunnels.push({
+      id,
+      name,
+      port: portMatch ? Number(portMatch[1]) : null,
+      expiryText: expMatch ? expMatch[0] : '',
+      expirySeconds: expMatch && multiplier ? Number(expMatch[1]) * multiplier : null,
+    });
+  }
+  return tunnels;
+}
+
+export function parseDevbridgeHostProcesses(stdout) {
+  const text = stripTerminalEscapes(String(stdout || ''));
+  const hosts = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+    if (!m || !/devbridge\s+host\b/.test(m[2])) continue;
+    const args = m[2];
+    const portMatch = args.match(/-p\s+(\d+)/);
+    const afterHost = args.slice(args.indexOf('host') + 4).trim();
+    const idToken = afterHost.split(/\s+/).find((token) => /^[a-z2-7]{8}$/.test(token));
+    hosts.push({
+      pid: Number(m[1]),
+      id: idToken || null,
+      port: portMatch ? Number(portMatch[1]) : null,
+    });
+  }
+  return hosts;
+}
+
+/**
+ * Decide which tunnels/hosts to remove.
+ * - protected: keepalive TUNNELS entries (never removed unless mode=all or samePort)
+ * - orphan: tunnel record with no live host  -> removed in stale/quota
+ * - orphan host: host process with no matching tunnel record -> killed
+ * - quota: also removes the oldest non-protected live tunnels (maxExtra per call)
+ */
+export function planDevbridgeCleanup({
+  tunnels = [],
+  hosts = [],
+  keepalive = [],
+  mode = 'stale',
+  samePort = null,
+  maxExtra = 1,
+} = {}) {
+  if (mode === 'none') return { deleteIds: [], killPids: [] };
+
+  const tunnelIds = new Set(tunnels.map((t) => t.id));
+  const protectedIds = new Set(keepalive.map((k) => k.tunnelId).filter(Boolean));
+  const portById = new Map();
+  for (const t of tunnels) if (t.port != null) portById.set(t.id, t.port);
+  for (const k of keepalive) {
+    const m = String(k.url || '').match(/-(\d+)\.devbridge-s2\./);
+    if (m && tunnelIds.has(k.tunnelId)) portById.set(k.tunnelId, Number(m[1]));
+  }
+
+  if (mode === 'all') {
+    return { deleteIds: [...tunnelIds], killPids: hosts.map((h) => h.pid) };
+  }
+
+  const liveIds = new Set();
+  const mappedPids = new Set();
+  for (const h of hosts) {
+    if (h.id && tunnelIds.has(h.id)) {
+      liveIds.add(h.id);
+      mappedPids.add(h.pid);
+    } else if (h.port != null) {
+      for (const [id, port] of portById) {
+        if (port === h.port) {
+          liveIds.add(id);
+          mappedPids.add(h.pid);
+        }
+      }
+    }
+  }
+
+  const killPids = new Set(hosts.filter((h) => !mappedPids.has(h.pid)).map((h) => h.pid));
+  const samePortIds = samePort == null ? [] : tunnels.filter((t) => portById.get(t.id) === samePort).map((t) => t.id);
+  const orphanIds = tunnels.filter((t) => !protectedIds.has(t.id) && !liveIds.has(t.id)).map((t) => t.id);
+  const deleteSet = new Set([...orphanIds, ...samePortIds]);
+
+  if (mode === 'quota') {
+    const candidates = tunnels
+      .filter((t) => !protectedIds.has(t.id) && !deleteSet.has(t.id) && liveIds.has(t.id))
+      .sort((a, b) => (a.expirySeconds ?? Number.MAX_SAFE_INTEGER) - (b.expirySeconds ?? Number.MAX_SAFE_INTEGER));
+    for (let i = 0; i < Math.max(0, maxExtra) && i < candidates.length; i += 1) {
+      deleteSet.add(candidates[i].id);
+    }
+  }
+
+  for (const h of hosts) {
+    if (h.id && deleteSet.has(h.id)) killPids.add(h.pid);
+    else if (h.port != null && [...deleteSet].some((id) => portById.get(id) === h.port)) killPids.add(h.pid);
+  }
+
+  return { deleteIds: [...deleteSet], killPids: [...killPids] };
+}
+
+export function buildDevbridgeCleanupApplyScript({ deleteIds = [], killPids = [] } = {}) {
+  for (const id of deleteIds) {
+    if (!/^[a-z2-7]{8}$/.test(String(id))) {
+      throw new Error(`devbridge cleanup: invalid tunnel id ${JSON.stringify(id)}`);
+    }
+  }
+  for (const pid of killPids) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error(`devbridge cleanup: invalid pid ${JSON.stringify(pid)}`);
+    }
+  }
+  return [
+    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
+    ...killPids.map((pid) => `kill ${pid} >/dev/null 2>&1 || true`),
+    `sleep 1`,
+    ...deleteIds.map((id) => `devbridge delete ${id} >/dev/null 2>&1 || true`),
+    `echo "DB_CLEANUP_DELETED=${deleteIds.join(',')}"`,
+    `echo "DB_CLEANUP_KILLED=${killPids.join(',')}"`,
+  ].join('\n');
+}
+
+function buildDevbridgeCleanupStateScript() {
+  return [
+    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
+    `echo "DB_CLEANUP_TUNNELS_BEGIN"`,
+    `devbridge list 2>&1 || true`,
+    `echo "DB_CLEANUP_TUNNELS_END"`,
+    `echo "DB_CLEANUP_HOSTS_BEGIN"`,
+    `pgrep -af "devbridge host" 2>&1 || true`,
+    `echo "DB_CLEANUP_HOSTS_END"`,
+    buildKeepaliveTunnelsReadScript(),
+  ].join('\n');
+}
+
+function buildDevbridgeCleanupLockScript() {
+  return [
+    `LOCK=/tmp/devbridge-cleanup.lock`,
+    `if mkdir "$LOCK" 2>/dev/null; then echo LOCK_OK; else`,
+    `  if find "$LOCK" -maxdepth 0 -mmin +2 2>/dev/null | grep -q .; then rmdir "$LOCK" 2>/dev/null || true; fi`,
+    `  if mkdir "$LOCK" 2>/dev/null; then echo LOCK_OK; else echo LOCK_BUSY; fi`,
+    `fi`,
+  ].join('\n');
+}
+
+function cleanupSection(text, name) {
+  const m = String(text || '').match(new RegExp(`DB_CLEANUP_${name}_BEGIN\\r?\\n([\\s\\S]*?)DB_CLEANUP_${name}_END`));
+  return m ? m[1] : '';
+}
+
+async function syncKeepaliveAfterCleanup(workspaceId, deletedIds, username) {
+  if (!deletedIds?.length) return;
+  let current;
+  try {
+    const read = await execOneShot(workspaceId, buildKeepaliveTunnelsReadScript(), username, 20000);
+    current = parseKeepaliveTunnelsOutput(read.stdout);
+  } catch {
+    return;
+  }
+  if (!current.length) return;
+  const deleted = new Set(deletedIds);
+  const remaining = current.filter((t) => !deleted.has(t.tunnelId));
+  if (remaining.length === current.length) return;
+  if (remaining.length === 0) {
+    try {
+      await execOneShot(
+        workspaceId,
+        `pkill -f "tunnel-keepalive.sh" 2>/dev/null || true; rm -f /tmp/tunnel-keepalive.sh`,
+        username,
+        15000,
+      );
+    } catch {}
+    return;
+  }
+  try {
+    await installKeepaliveWatchdog(workspaceId, { tunnels: remaining }, username, 30000);
+  } catch {}
+}
+
+export async function cleanupDevbridgeTunnels(
+  workspaceId,
+  { mode = 'stale', samePort = null, maxExtra = 1, username = 'root' } = {},
+) {
+  if (!workspaceId) throw new Error('devbridge cleanup: workspace_id is required.');
+  if (mode === 'none') return { ok: true, skipped: true, deleteIds: [], killPids: [] };
+
+  const lockResult = await execOneShot(workspaceId, buildDevbridgeCleanupLockScript(), username, 10000);
+  if (!stripTerminalEscapes(lockResult.stdout).includes('LOCK_OK')) {
+    return { ok: false, locked: true, deleteIds: [], killPids: [] };
+  }
+
+  try {
+    const stateResult = await execOneShot(workspaceId, buildDevbridgeCleanupStateScript(), username, 30000);
+    const text = stripTerminalEscapes(stateResult.stdout);
+    const tunnels = parseDevbridgeTunnelList(cleanupSection(text, 'TUNNELS'));
+    const hosts = parseDevbridgeHostProcesses(cleanupSection(text, 'HOSTS'));
+    const keepalive = parseKeepaliveTunnelsOutput(text);
+    const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode, samePort, maxExtra });
+    if (plan.deleteIds.length === 0 && plan.killPids.length === 0) {
+      return { ok: true, deleteIds: [], killPids: [], tunnelCount: tunnels.length };
+    }
+    await execOneShot(workspaceId, buildDevbridgeCleanupApplyScript(plan), username, 30000);
+    await syncKeepaliveAfterCleanup(workspaceId, plan.deleteIds, username);
+    return { ok: true, ...plan, tunnelCount: tunnels.length };
+  } finally {
+    try {
+      await execOneShot(workspaceId, `rmdir /tmp/devbridge-cleanup.lock 2>/dev/null || true`, username, 10000);
+    } catch {}
+  }
+}
+
 // Expose a sandbox port to a public DevBridge tunnel URL. `port` MUST be the
 // ACTUAL port reported by deployNginx (deploy_nginx auto-increments on conflict),
 // otherwise the tunnel is bound to a dead port. Returns ok, publicUrl, port,
@@ -1869,6 +2094,7 @@ export async function exposeTunnel(
     keepalive,
     poolType,
     poolContext,
+    cleanupMode = 'stale',
     ensureDevbridgeKey,
     buildKeyringInjectScript,
     listKeysForQuotaHint,
@@ -1979,18 +2205,36 @@ export async function exposeTunnel(
     };
   }
 
+  // Selective pre-clean: remove same-port tunnels + orphan records/hosts only.
+  // Other ports and keepalive-protected tunnels are preserved.
+  const validatedCleanupMode = ['stale', 'all', 'none'].includes(cleanupMode) ? cleanupMode : 'stale';
+  try {
+    await cleanupDevbridgeTunnels(workspaceId, {
+      mode: validatedCleanupMode,
+      samePort: validatedPort,
+      username,
+    });
+  } catch {}
+
   let result = null;
   let attempt = 0;
-  const maxAttempts = 2;
+  const maxAttempts = 4;
   while (attempt < maxAttempts) {
     attempt += 1;
     const exposeScript = buildDevbridgeExposeScript(validatedPort, validatedExpiryHours);
     result = await execOneShot(workspaceId, exposeScript, username, timeoutMs);
     const parsed = parseDevbridgeExposeOutput(result.stdout);
 
-    // 10006 quota exceeded: clean up stale tunnels and retry.
+    // 10006 quota exceeded: remove orphan tunnels first, then the oldest non-protected
+    // live tunnel (one per retry) until the new tunnel fits. Never touches keepalive keys.
     if (parsed.quotaError && attempt < maxAttempts) {
-      continue;
+      const quotaCleanup = await cleanupDevbridgeTunnels(workspaceId, {
+        mode: 'quota',
+        samePort: validatedPort,
+        maxExtra: 1,
+        username,
+      }).catch(() => null);
+      if (quotaCleanup?.deleteIds?.length || quotaCleanup?.killPids?.length) continue;
     }
     // Unreachable (000), migrated-gateway placeholder, or gateway-level tunnel errors
     // (404 "tunnel not found" / "port not configured"): one cleanup + rebuild retry.
@@ -2003,12 +2247,12 @@ export async function exposeTunnel(
     if (unreachable || migration || gatewayTunnelError || backendDown) {
       if (attempt === 1) {
         try {
-          await execOneShot(
-            workspaceId,
-            `pkill -f "devbridge host" 2>/dev/null || true; sleep 2; devbridge delete-all > /dev/null 2>&1 || true`,
+          // Only the same-port tunnel + orphans; other ports/sessions stay untouched.
+          await cleanupDevbridgeTunnels(workspaceId, {
+            mode: 'stale',
+            samePort: validatedPort,
             username,
-            20000,
-          );
+          });
         } catch {}
         continue;
       }
