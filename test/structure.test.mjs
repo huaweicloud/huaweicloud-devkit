@@ -357,24 +357,18 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.doesNotMatch(sandbox, /Login needs --huaweicloud/);
   assert.match(sandbox, /Never expose tunnel details/);
 
-  // Auth must be decided by probing the binary's capability, not by the version string —
-  // the verified waterfall prefers the platform-injected keyring key (API_KEY_KEYRING),
-  // falls back to image-build AK/SK (AKSK_SUPPORTED), then to the user-provided file
-  // (API_KEY_FILE). STS credentials carry --security-token (401 APIGW.0301 without it).
-  assert.match(sandbox, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
+  // Auth is API Key only (2026-11-04 定稿：AK/SK login removed).
+  // The waterfall: keyring (ours + platform legacy) → auto-create fallback → file.
   assert.match(sandbox, /API_KEY_KEYRING/);
-  assert.match(sandbox, /AKSK_SUPPORTED/);
+  assert.match(sandbox, /API_KEY_AUTO/);
   assert.match(sandbox, /API_KEY_FILE|NO_CREDENTIAL/);
   assert.match(sandbox, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1/, 'keyring read must capture stderr');
   assert.match(sandbox, /devbridge_/);
-  assert.match(
-    sandbox,
-    /auth login --access-key "\$HW_ACCESS_KEY" --secret-key "\$HW_SECRET_KEY"/,
-    'image-build branch must teach the direct AK/SK login',
-  );
-  assert.match(sandbox, /--security-token "\$HW_SECURITY_TOKEN"/, 'STS login must include the security token');
+  // AK/SK login commands must NOT appear
+  assert.doesNotMatch(sandbox, /auth login --access-key/, 'AK/SK login must be removed from skill');
+  assert.doesNotMatch(sandbox, /AKSK_SUPPORTED/, 'AKSK_SUPPORTED mode must be removed from skill');
 
-  // The API Key guidance (release-build branch) must survive, incl. version detection
+  // The API Key guidance must survive, incl. version detection
   // and the in-place upgrade.
   assert.match(sandbox, /auth login --api-key "\$HW_API_KEY"/);
   assert.match(sandbox, /devbridge version/);
@@ -395,17 +389,19 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   assert.ok(credsWrite, 'credsScript block not found in tools.mjs');
   assert.doesNotMatch(credsWrite[0], /HW_API_KEY/);
 
-  // The CodeArts Doer sidecopy must mirror the probe-branch flow and not regress
-  // to the removed 0.1.x flow either.
+  // The CodeArts Doer sidecopy must mirror the API-Key-only flow and not regress
+  // to the removed AK/SK or 0.1.x flows.
   const sidecopy = readFileSync(join(root, '.codeartsdoer', 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   assert.doesNotMatch(sidecopy, /auth login --huaweicloud/);
   assert.doesNotMatch(sidecopy, /res-hd\.hc-cdn\.cn/);
   assert.doesNotMatch(sidecopy, /devbridge ls\b/);
   assert.doesNotMatch(sidecopy, /https:\/\/<id>-<port>\.cn-north-4-bridge/);
-  assert.match(sidecopy, /auth login --help 2>&1 \| grep -q -- '--access-key'/);
-  assert.match(sidecopy, /AUTH_MODE=AKSK_SUPPORTED/);
-  assert.match(sidecopy, /AUTH_MODE=API_KEY_ONLY/);
+  // AK/SK login must be removed from sidecopy (API Key only, 2026-11-04)
+  assert.doesNotMatch(sidecopy, /auth login --access-key/, 'sidecopy must not teach AK/SK login');
+  assert.doesNotMatch(sidecopy, /AUTH_MODE=AKSK_SUPPORTED/, 'sidecopy must not reference AKSK_SUPPORTED');
+  assert.doesNotMatch(sidecopy, /AUTH_MODE=API_KEY_ONLY/);
   assert.match(sidecopy, /auth login --api-key "\$HW_API_KEY"/);
+  assert.match(sidecopy, /API_KEY_KEYRING|hwcloud keyring get HW_DEVBRIDGE_API_KEY/);
   assert.match(sidecopy, /devbridge-s2\.hwtunnel\.com/);
   assert.match(sidecopy, /\/tmp\/hw_api_key/);
 });
@@ -1052,6 +1048,81 @@ test('huawei-sandbox routes the PostgREST full-stack to references/fullstack-pos
   assert.match(ref, /db-anon-role/); // anon role gates writes
 });
 
+test('huawei-sandbox carries the Stack-Selection Gate (workbench ⇒ PostgREST default) (#1021)', () => {
+  const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
+
+  // The gate must exist as a top-level section between the Target-Selection
+  // Gate and the Overview — not buried as a conditional branch inside the
+  // Web Application Deployment section.
+  const gateStart = skill.indexOf('## Stack-Selection Gate');
+  assert.ok(gateStart !== -1, 'Stack-Selection Gate section missing');
+  const targetGate = skill.indexOf('## Target-Selection Gate');
+  const overview = skill.indexOf('## Overview');
+  assert.ok(targetGate !== -1 && targetGate < gateStart, 'Stack-Selection Gate must follow the Target-Selection Gate');
+  assert.ok(overview !== -1 && gateStart < overview, 'Stack-Selection Gate must precede the Overview');
+
+  const nextHeading = skill.indexOf('\n## ', gateStart + 1);
+  const gate = nextHeading === -1 ? skill.slice(gateStart) : skill.slice(gateStart, nextHeading);
+  assert.match(
+    gate,
+    /MUST treat it as a\s+(\*\*)?full-stack workbench deployment/,
+    'gate must force the full-stack classification',
+  );
+  assert.match(gate, /defaults to \*\*PostgreSQL \+ PostgREST\*\*/, 'gate must state the PostgREST default');
+  assert.match(gate, /`question` tool/, 'gate must mandate the question tool for ambiguous backends');
+  assert.match(gate, /NEVER infer or default the stack to SPA/, 'gate must carry the never-default-to-SPA hard rule');
+  assert.match(gate, /Pre-code checkpoint/, 'gate must carry the pre-code checkpoint');
+  assert.match(
+    gate,
+    /fullstack-postgrest\.md|Full-Stack: REST API over PostgreSQL/,
+    'gate must route to the full-stack procedure',
+  );
+
+  // Trigger words in the frontmatter description so the model hits the skill
+  // on workbench-shaped requests without postgres/数据库 keywords.
+  assert.match(skill, /工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres/);
+
+  // The workflow carries the stack gate as an explicit step before any code upload.
+  assert.match(skill, /Step 0\.5 — Stack-Selection Gate/, 'workflow must sequence the stack gate before code upload');
+});
+
+test('fullstack-postgrest.md carries the 2026-10 retest field notes (#1016)', () => {
+  const ref = readFileSync(
+    join(pluginRoot, 'skills', 'huawei-sandbox', 'references', 'fullstack-postgrest.md'),
+    'utf8',
+  );
+  // Trap 1: Aliyun mirrors replace the ~8KB/s official RPM sources.
+  assert.match(ref, /mirrors\.aliyun\.com\/postgresql/);
+  assert.match(ref, /mirrors\.aliyun\.com\/almalinux/);
+  // Trap 2: cross-mirror resume corrupts RPMs — rm + full re-download.
+  assert.match(ref, /Payload SHA256 digest: BAD/);
+  // Trap 3: asset name has no patch version — verify via the GitHub API.
+  assert.match(ref, /postgrest-v16\.5-linux-static-aarch64/);
+  assert.match(ref, /api\.github\.com\/repos\/PostgREST\/postgrest\/releases/);
+  assert.match(ref, /ghfast\.top/);
+  // Supply-chain guard: the third-party proxy download MUST be digest-verified
+  // (GitHub releases API digest + sha256sum -c) before extraction (#1016 review).
+  assert.match(ref, /releases\/tags\/v16\.5/);
+  assert.match(ref, /sha256sum -c/);
+  assert.match(ref, /--max-time 240 -C - -o \/tmp\/pgrst\.tar\.xz/);
+  // Supply-chain guard fix (review r2): digest extraction must NOT use
+  // `cut -d: -f3` — it leaves a trailing double-quote on the hash, making
+  // sha256sum -c fail every time even when the download is correct.
+  assert.ok(
+    !ref.includes('cut -d: -f3'),
+    'digest extraction must not use cut -d: -f3 (trailing quote breaks sha256sum -c)',
+  );
+  assert.match(ref, /sed.*sha256/); // sed-based extraction strips the trailing quote
+  // POST semantics: 401 is the anon default; 201 only after a targeted GRANT INSERT.
+  assert.match(ref, /POST 401 anon-default/);
+  // Trap 4: upload_file 640 permission → silent schema failure → PGRST002.
+  assert.match(ref, /chmod o\+r/);
+  assert.match(ref, /PGRST002/);
+  // Trap 5: exec-channel escaping — upload files, then psql -f / curl -d @file.
+  assert.match(ref, /psql -f/);
+  assert.match(ref, /-d @\/tmp\/payload\.json/);
+});
+
 test('huawei-sandbox distinguishes the workspace URL 401 trap from tunnel failure (#919)', () => {
   const skill = readFileSync(join(pluginRoot, 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8');
   // The authenticated workspace URL returns 401 when opened logged-out —
@@ -1099,13 +1170,12 @@ test('1024-batch2 (#935): skill docs carry the verified trap guidance', () => {
     }
   }
 
-  // B5/B6: sandbox has no systemd; devbridge 0.2.x has no --huaweicloud flag;
-  // STS ciphertext → APIGW.0301 with the plaintext-store upload remedy.
+  // B5/B6: sandbox has no systemd; devbridge auth is API Key only (AK/SK removed);
+  // the --huaweicloud flag and AK/SK login are gone from every 0.2.x path.
   const sandbox = readSkill('huawei-sandbox');
   assert.match(sandbox, /systemctl/);
   assert.match(sandbox, /无 systemd|nginx -s reload/);
-  assert.match(sandbox, /devbridge auth login --access-key/);
-  assert.match(sandbox, /APIGW\.0301/);
+  assert.doesNotMatch(sandbox, /devbridge auth login --access-key/, 'AK/SK login must be removed');
   // The removed 0.1.x login flow must not be taught as the 0.2.x path.
   assert.doesNotMatch(sandbox, /auth login --huaweicloud/);
 
