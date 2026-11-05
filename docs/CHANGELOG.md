@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.13-next.8 (2026-11-05)
+
+- feat(sandbox): auto-retry connect on gateway 502/504
+
 ## 1.1.13-next.7 (2026-11-05)
 
 - feat(sandbox): structured guidance for the forced version gate
