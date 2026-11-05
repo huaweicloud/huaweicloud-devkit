@@ -24,6 +24,7 @@ import {
   exposeTunnel,
   renewTunnel,
   installKeepaliveWatchdog,
+  cleanupDevbridgeTunnels,
   getCurrentWorkspaceId,
   setWorkspaceId,
 } from './sandbox/session-manager.mjs';
@@ -776,7 +777,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_expose_tunnel',
     description:
-      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (probing AK/SK vs API-Key builds, using /tmp/hw_creds.sh and /tmp/hw_api_key as injected by huaweicloud_sandbox_credentials), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, warnings, sandboxLifetime and urlLifetimeHint. The urlLifetimeHint MUST be relayed to the developer together with the URL: the tunnel expiry is NOT the sandbox lifetime — an idle sandbox shuts down (ephemeral also auto-deletes), which kills the URL. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
+      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (keyring → auto-create → /tmp/hw_api_key), selectively cleans only same-port/orphan tunnels (cleanup_mode=stale, default — other ports, other sessions and keepalive-protected tunnels are preserved, except a tunnel bound to THIS port which is replaced), starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. On 10006 quota it removes orphans first, then the oldest non-keepalive tunnel one at a time. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, warnings, sandboxLifetime and urlLifetimeHint. The urlLifetimeHint MUST be relayed to the developer together with the URL: the tunnel expiry is NOT the sandbox lifetime — an idle sandbox shuts down (ephemeral also auto-deletes), which kills the URL. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
     inputSchema: {
       type: 'object',
       required: ['port'],
@@ -795,6 +796,12 @@ export const TOOL_DEFINITIONS = [
           type: 'boolean',
           description:
             'Auto-enroll the tunnel into the keepalive watchdog (default true — every tunnel deployed to the sandbox must be keepalive-protected). Pass false only when the caller explicitly manages keepalive itself.',
+        },
+        cleanup_mode: {
+          type: 'string',
+          enum: ['stale', 'all', 'none'],
+          description:
+            'Tunnel cleanup before exposing. stale (default): delete same-port tunnels + orphan records/hosts; preserve other ports, other sessions and keepalive-protected tunnels — except a tunnel bound to THIS port, which is always replaced. all: wipe every tunnel/host (manual reset only). none: no cleanup (a stale same-port host can then conflict).',
         },
         workspace_id: {
           type: 'string',
@@ -1657,6 +1664,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
           port: args.port,
           expiryHours: args.expiry_hours,
           keepalive: args.keepalive,
+          cleanupMode: args.cleanup_mode,
           // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
           poolType: exposePoolContext?.poolMode || 'ephemeral',
           poolContext: exposePoolContext,
@@ -1756,8 +1764,9 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         // 池归属 + 生命周期口径缓存（服务端回显优先，缺失时客户端默认兜底）。
         // 双读兜底与 devStageId 同型（防服务端 wire 命名漂移，QA #1082 配对复审教训）
         rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType, connectResult || {});
+        // 只清理孤儿隧道/宿主；保留其他端口、其他会话与 keepalive 名单内的隧道
         try {
-          await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
+          await cleanupDevbridgeTunnels(devStageId, { mode: 'stale' });
         } catch {}
         try {
           await execWithSession(

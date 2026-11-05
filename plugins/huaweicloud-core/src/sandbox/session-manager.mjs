@@ -1455,9 +1455,8 @@ export const DEVBRIDGE_HOST_EXPIRY_HOURS = 72;
 export function buildDevbridgeExposeScript(port, expiryHours = DEVBRIDGE_HOST_EXPIRY_HOURS) {
   const hostLog = '/tmp/host.log';
   return [
-    `pkill -f "devbridge host" 2>/dev/null || true`,
-    `sleep 2`,
-    `devbridge delete-all > /dev/null 2>&1 || true`,
+    // Pre-clean is now selective (cleanupDevbridgeTunnels) and runs before this
+    // script, so other ports/sessions are preserved.
     // #922 (S8): setsid is unavailable on some sandbox images — fall back to a
     // bare nohup launch so the host still starts; persistence is then judged by
     // the independent re-verify below, which emits the 请勿分享 warning in the
@@ -1880,6 +1879,337 @@ export async function installKeepaliveWatchdog(workspaceId, { tunnels }, usernam
   };
 }
 
+// ── DevBridge selective cleanup ─────────────────────────────────────────────
+// delete-all is intentionally NOT used: it kills other sessions/ports on a shared
+// sandbox. Cleanup removes only orphan tunnels/hosts and (for expose) tunnels bound
+// to the same port, preserving keepalive-protected and live-unknown tunnels.
+// Same-port is the one documented exception: a keepalive-protected tunnel on the
+// target port is replaced (you cannot bind two tunnels to one port).
+
+// Same charset as validateTunnelId: real IDs may contain 0/1/8/9, so parsing must
+// not assume the base32 subset.
+const DEVBRIDGE_TUNNEL_ID_RE = /^[A-Za-z0-9_-]{4,32}$/;
+const DEVBRIDGE_PATH_EXPORT = 'export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"';
+const DEVBRIDGE_LOCK_PATH = '/tmp/devbridge-cleanup.lock';
+// Worst-case hold: state 60x2 + apply 60x2 + sync ~150 + release 60 ≈ 450s;
+// keep the stale threshold above the worst case so a second cleanup cannot
+// break a lock that is still legitimately held.
+const DEVBRIDGE_LOCK_STALE_MINUTES = 10;
+const DEVBRIDGE_CLEANUP_TIMEOUT_MS = 60000;
+
+export function normalizeCleanupMode(raw) {
+  return ['stale', 'all', 'none'].includes(raw) ? raw : 'stale';
+}
+
+export function parseDevbridgeTunnelList(stdout) {
+  const text = stripTerminalEscapes(String(stdout || ''));
+  const tunnels = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*Tunnel\s+ID\b/i.test(line)) continue;
+    const m = line.match(/^\s*([A-Za-z0-9_-]{4,32})\s+(.+)$/);
+    if (!m || !DEVBRIDGE_TUNNEL_ID_RE.test(m[1])) continue;
+    const id = m[1];
+    const rest = m[2];
+    const name = rest.trim().split(/\s{2,}|\t+/)[0] || '';
+    const portMatch = rest.match(/tunnel-(\d+)-/);
+    const expMatch = rest.match(/(\d+)\s*(day|days|hour|hours|minute|minutes)/i);
+    const unit = expMatch ? expMatch[2].toLowerCase() : '';
+    const multiplier = { day: 86400, days: 86400, hour: 3600, hours: 3600, minute: 60, minutes: 60 }[unit];
+    tunnels.push({
+      id,
+      name,
+      port: portMatch ? Number(portMatch[1]) : null,
+      expiryText: expMatch ? expMatch[0] : '',
+      expirySeconds: expMatch && multiplier ? Number(expMatch[1]) * multiplier : null,
+    });
+  }
+  return tunnels;
+}
+
+export function parseDevbridgeHostProcesses(stdout) {
+  const text = stripTerminalEscapes(String(stdout || ''));
+  const hosts = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+    if (!m) continue;
+    // Anchor the executable so a shell wrapper (`bash -c "...devbridge host..."`)
+    // is never mistaken for a real host process.
+    const execMatch = m[2].match(/^(?:\S*\/)?devbridge\s+host\b(.*)$/);
+    if (!execMatch) continue;
+    const rest = execMatch[1].trim();
+    const tokens = rest ? rest.split(/\s+/) : [];
+    let id = null;
+    let port = null;
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (token === '-p' && /^\d+$/.test(tokens[i + 1] || '')) {
+        port = Number(tokens[i + 1]);
+        i += 1;
+      } else if (token === '-e') {
+        i += 1;
+      } else if (token.startsWith('-')) {
+        // unknown flag: skip it
+      } else if (!id && DEVBRIDGE_TUNNEL_ID_RE.test(token) && !/^\d+$/.test(token)) {
+        id = token;
+      }
+    }
+    if (!id && port == null) continue; // unparseable host: ignore, never kill blindly
+    hosts.push({ pid: Number(m[1]), id, port });
+  }
+  return hosts;
+}
+
+/**
+ * Decide which tunnels/hosts to remove.
+ * - protected: keepalive TUNNELS entries (never removed unless mode=all or samePort)
+ * - orphan: tunnel record with no live host  -> removed in stale/quota
+ * - orphan host: host process with no matching tunnel record -> killed
+ * - quota: also removes the oldest non-protected live tunnels (maxExtra per call)
+ */
+export function planDevbridgeCleanup({
+  tunnels = [],
+  hosts = [],
+  keepalive = [],
+  mode = 'stale',
+  samePort = null,
+  maxExtra = 1,
+} = {}) {
+  if (mode === 'none') return { deleteIds: [], killPids: [] };
+
+  const tunnelIds = new Set(tunnels.map((t) => t.id));
+  const protectedIds = new Set(keepalive.map((k) => k.tunnelId).filter(Boolean));
+  const portById = new Map();
+  for (const t of tunnels) if (t.port != null) portById.set(t.id, t.port);
+  for (const k of keepalive) {
+    const m = String(k.url || '').match(/-(\d+)\.devbridge-s2\./);
+    if (m && tunnelIds.has(k.tunnelId)) portById.set(k.tunnelId, Number(m[1]));
+  }
+
+  if (mode === 'all') {
+    return { deleteIds: [...tunnelIds], killPids: hosts.map((h) => h.pid) };
+  }
+
+  const liveIds = new Set();
+  const mappedPids = new Set();
+  for (const h of hosts) {
+    if (!h.id && h.port == null) continue; // unattributable host: never kill blindly
+    if (h.id && tunnelIds.has(h.id)) {
+      liveIds.add(h.id);
+      mappedPids.add(h.pid);
+    } else if (h.port != null) {
+      for (const [id, port] of portById) {
+        if (port === h.port) {
+          liveIds.add(id);
+          mappedPids.add(h.pid);
+        }
+      }
+    }
+  }
+
+  const killPids = new Set(hosts.filter((h) => (h.id || h.port != null) && !mappedPids.has(h.pid)).map((h) => h.pid));
+  const samePortIds = samePort == null ? [] : tunnels.filter((t) => portById.get(t.id) === samePort).map((t) => t.id);
+  const orphanIds = tunnels.filter((t) => !protectedIds.has(t.id) && !liveIds.has(t.id)).map((t) => t.id);
+  const deleteSet = new Set([...orphanIds, ...samePortIds]);
+
+  if (mode === 'quota') {
+    const candidates = tunnels
+      .filter((t) => !protectedIds.has(t.id) && !deleteSet.has(t.id) && liveIds.has(t.id))
+      .sort((a, b) => (a.expirySeconds ?? Number.MAX_SAFE_INTEGER) - (b.expirySeconds ?? Number.MAX_SAFE_INTEGER));
+    for (let i = 0; i < Math.max(0, maxExtra) && i < candidates.length; i += 1) {
+      deleteSet.add(candidates[i].id);
+    }
+  }
+
+  for (const h of hosts) {
+    if (h.id && deleteSet.has(h.id)) killPids.add(h.pid);
+    else if (h.port != null && [...deleteSet].some((id) => portById.get(id) === h.port)) killPids.add(h.pid);
+  }
+
+  return { deleteIds: [...deleteSet], killPids: [...killPids] };
+}
+
+export function buildDevbridgeCleanupApplyScript({ deleteIds = [], killPids = [] } = {}) {
+  for (const id of deleteIds) {
+    if (!DEVBRIDGE_TUNNEL_ID_RE.test(String(id))) {
+      throw new Error(`devbridge cleanup: invalid tunnel id ${JSON.stringify(id)}`);
+    }
+  }
+  for (const pid of killPids) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error(`devbridge cleanup: invalid pid ${JSON.stringify(pid)}`);
+    }
+  }
+  return [
+    DEVBRIDGE_PATH_EXPORT,
+    // Re-check the process identity before killing: state→apply can take minutes,
+    // so a recycled PID must not hit an unrelated process.
+    ...killPids.map(
+      (pid) =>
+        `if ps -p ${pid} -o args= 2>/dev/null | grep -q "devbridge host"; then kill ${pid} >/dev/null 2>&1 || true; fi`,
+    ),
+    `sleep 1`,
+    ...deleteIds.map((id) => `devbridge delete ${id} >/dev/null 2>&1 || true`),
+    `echo "DB_CLEANUP_DELETED=${deleteIds.join(',')}"`,
+    `echo "DB_CLEANUP_KILLED=${killPids.join(',')}"`,
+  ].join('\n');
+}
+
+export function buildDevbridgeCleanupStateScript() {
+  return [
+    DEVBRIDGE_PATH_EXPORT,
+    // Refresh the CLI token from an existing key. A valid API key can leave an
+    // expired CLI token; without this, devbridge list returns 40100 and cleanup
+    // is skipped even though the key is usable. Never creates a new key here.
+    `DB_KEY=""`,
+    `if command -v hwcloud >/dev/null 2>&1; then`,
+    `  DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `  case "$DB_KEY" in "devbridge_"*) : ;; *) DB_KEY="";; esac`,
+    `fi`,
+    `if [ -z "$DB_KEY" ] && [ -s /tmp/hw_api_key ]; then`,
+    `  source /tmp/hw_api_key 2>/dev/null || true`,
+    `  DB_KEY="\${HW_API_KEY:-}"`,
+    `fi`,
+    `if [ -n "$DB_KEY" ]; then devbridge auth login --api-key "$DB_KEY" >/dev/null 2>&1 || true; fi`,
+    `unset DB_KEY HW_API_KEY 2>/dev/null`,
+    `echo "DB_CLEANUP_TUNNELS_BEGIN"`,
+    `devbridge list 2>&1 || true`,
+    `echo "DB_CLEANUP_TUNNELS_END"`,
+    `echo "DB_CLEANUP_HOSTS_BEGIN"`,
+    `pgrep -af "devbridge host" 2>&1 || true`,
+    `echo "DB_CLEANUP_HOSTS_END"`,
+    buildKeepaliveTunnelsReadScript(),
+  ].join('\n');
+}
+
+export function buildDevbridgeCleanupLockScript() {
+  return [
+    `LOCK=${DEVBRIDGE_LOCK_PATH}`,
+    `if mkdir "$LOCK" 2>/dev/null; then echo LOCK_OK; else`,
+    `  if find "$LOCK" -maxdepth 0 -mmin +${DEVBRIDGE_LOCK_STALE_MINUTES} 2>/dev/null | grep -q .; then rmdir "$LOCK" 2>/dev/null || true; fi`,
+    `  if mkdir "$LOCK" 2>/dev/null; then echo LOCK_OK; else echo LOCK_BUSY; fi`,
+    `fi`,
+  ].join('\n');
+}
+
+function cleanupSection(text, name) {
+  const m = String(text || '').match(new RegExp(`DB_CLEANUP_${name}_BEGIN\\r?\\n([\\s\\S]*?)DB_CLEANUP_${name}_END`));
+  return m ? m[1] : '';
+}
+
+async function execCleanupWithRetry(workspaceId, script, username, timeoutMs = 60000) {
+  let lastError;
+  for (let i = 1; i <= 2; i += 1) {
+    try {
+      return await execOneShot(workspaceId, script, username, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (i === 2 || !/timeout|websocket/i.test(String(error?.message || ''))) throw error;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  throw lastError;
+}
+
+async function syncKeepaliveAfterCleanup(workspaceId, { deletedIds, liveTunnelIds, pruneMissing, username }) {
+  let current;
+  try {
+    const read = await execCleanupWithRetry(workspaceId, buildKeepaliveTunnelsReadScript(), username, 30000);
+    current = parseKeepaliveTunnelsOutput(read.stdout);
+  } catch {
+    return;
+  }
+  if (!current.length) return;
+  const deleted = new Set(deletedIds || []);
+  // Prune deleted IDs AND entries that no longer exist in the management plane
+  // (ghost tunnels from earlier delete-all calls would otherwise be re-hosted
+  // and renewed forever).
+  // Only prune "absent" entries when we have at least one confirmed live tunnel
+  // (or an explicit all-mode reset). A transient empty list must not wipe the
+  // watchdog and silently stop renewals.
+  const remaining = current.filter((t) => !deleted.has(t.tunnelId) && (!pruneMissing || liveTunnelIds.has(t.tunnelId)));
+  if (remaining.length === current.length) return;
+  if (remaining.length === 0) {
+    try {
+      await execCleanupWithRetry(
+        workspaceId,
+        `pkill -f "tunnel-keepalive.sh" 2>/dev/null || true; rm -f /tmp/tunnel-keepalive.sh`,
+        username,
+        30000,
+      );
+    } catch {}
+    return;
+  }
+  try {
+    await installKeepaliveWatchdog(workspaceId, { tunnels: remaining }, username, 30000);
+  } catch {}
+}
+
+export async function cleanupDevbridgeTunnels(
+  workspaceId,
+  { mode = 'stale', samePort = null, maxExtra = 1, username = 'root' } = {},
+) {
+  if (!workspaceId) throw new Error('devbridge cleanup: workspace_id is required.');
+  if (mode === 'none') return { ok: true, skipped: true, deleteIds: [], killPids: [] };
+
+  let lockResult;
+  try {
+    lockResult = await execOneShot(workspaceId, buildDevbridgeCleanupLockScript(), username, 30000);
+  } catch {
+    return { ok: false, locked: true, deleteIds: [], killPids: [] };
+  }
+  if (!stripTerminalEscapes(lockResult.stdout).includes('LOCK_OK')) {
+    return { ok: false, locked: true, deleteIds: [], killPids: [] };
+  }
+
+  try {
+    const stateResult = await execCleanupWithRetry(workspaceId, buildDevbridgeCleanupStateScript(), username, 60000);
+    const text = stripTerminalEscapes(stateResult.stdout);
+    const tunnelSection = cleanupSection(text, 'TUNNELS');
+    const listOk = /Tunnel ID|No tunnels found/i.test(tunnelSection);
+    if (!listOk) {
+      // list/auth/network failed — do not delete or kill anything on a guess.
+      return { ok: false, listFailed: true, deleteIds: [], killPids: [] };
+    }
+    const tunnels = parseDevbridgeTunnelList(tunnelSection);
+    const hosts = parseDevbridgeHostProcesses(cleanupSection(text, 'HOSTS'));
+    // Output-format drift guard: header matched but rows didn't parse, while host
+    // processes exist. Never mass-kill hosts on a parse we don't trust.
+    if (tunnels.length === 0 && hosts.length > 0 && !/No tunnels found/i.test(tunnelSection)) {
+      return { ok: false, listFailed: true, deleteIds: [], killPids: [] };
+    }
+    const keepalive = parseKeepaliveTunnelsOutput(text);
+    const liveTunnelIds = new Set(tunnels.map((t) => t.id));
+    const pruneMissing = mode === 'all' || liveTunnelIds.size > 0;
+    const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode, samePort, maxExtra });
+    if (plan.deleteIds.length === 0 && plan.killPids.length === 0) {
+      await syncKeepaliveAfterCleanup(workspaceId, {
+        deletedIds: [],
+        liveTunnelIds,
+        pruneMissing,
+        username,
+      });
+      return { ok: true, deleteIds: [], killPids: [], tunnelCount: tunnels.length };
+    }
+    await execCleanupWithRetry(
+      workspaceId,
+      buildDevbridgeCleanupApplyScript(plan),
+      username,
+      DEVBRIDGE_CLEANUP_TIMEOUT_MS,
+    );
+    await syncKeepaliveAfterCleanup(workspaceId, {
+      deletedIds: plan.deleteIds,
+      liveTunnelIds,
+      pruneMissing,
+      username,
+    });
+    return { ok: true, ...plan, tunnelCount: tunnels.length };
+  } finally {
+    try {
+      await execCleanupWithRetry(workspaceId, `rmdir ${DEVBRIDGE_LOCK_PATH} 2>/dev/null || true`, username, 30000);
+    } catch {}
+  }
+}
+
 // Expose a sandbox port to a public DevBridge tunnel URL. `port` MUST be the
 // ACTUAL port reported by deployNginx (deploy_nginx auto-increments on conflict),
 // otherwise the tunnel is bound to a dead port. Returns ok, publicUrl, port,
@@ -1895,6 +2225,7 @@ export async function exposeTunnel(
     keepalive,
     poolType,
     poolContext,
+    cleanupMode = 'stale',
     ensureDevbridgeKey,
     buildKeyringInjectScript,
     listKeysForQuotaHint,
@@ -2005,18 +2336,39 @@ export async function exposeTunnel(
     };
   }
 
+  // Selective pre-clean: remove same-port tunnels + orphan records/hosts only.
+  // Other ports and keepalive-protected tunnels are preserved.
+  const validatedCleanupMode = normalizeCleanupMode(cleanupMode);
+  try {
+    await cleanupDevbridgeTunnels(workspaceId, {
+      mode: validatedCleanupMode,
+      samePort: validatedPort,
+      username,
+    });
+  } catch {}
+
   let result = null;
   let attempt = 0;
-  const maxAttempts = 2;
+  let lastQuotaCleanup = null;
+  const maxAttempts = 4;
   while (attempt < maxAttempts) {
     attempt += 1;
     const exposeScript = buildDevbridgeExposeScript(validatedPort, validatedExpiryHours);
     result = await execOneShot(workspaceId, exposeScript, username, timeoutMs);
     const parsed = parseDevbridgeExposeOutput(result.stdout);
 
-    // 10006 quota exceeded: clean up stale tunnels and retry.
+    // 10006 quota exceeded: remove orphan tunnels first, then the oldest non-protected
+    // live tunnel (one per retry) until the new tunnel fits. Never touches keepalive keys.
     if (parsed.quotaError && attempt < maxAttempts) {
-      continue;
+      const quotaCleanup = await cleanupDevbridgeTunnels(workspaceId, {
+        mode: 'quota',
+        samePort: validatedPort,
+        maxExtra: 1,
+        username,
+      }).catch(() => null);
+      lastQuotaCleanup = quotaCleanup || lastQuotaCleanup;
+      // Kill-only progress frees no tunnel quota; only a deleted record can.
+      if (quotaCleanup?.deleteIds?.length) continue;
     }
     // Unreachable (000), migrated-gateway placeholder, or gateway-level tunnel errors
     // (404 "tunnel not found" / "port not configured"): one cleanup + rebuild retry.
@@ -2029,12 +2381,12 @@ export async function exposeTunnel(
     if (unreachable || migration || gatewayTunnelError || backendDown) {
       if (attempt === 1) {
         try {
-          await execOneShot(
-            workspaceId,
-            `pkill -f "devbridge host" 2>/dev/null || true; sleep 2; devbridge delete-all > /dev/null 2>&1 || true`,
+          // Only the same-port tunnel + orphans; other ports/sessions stay untouched.
+          await cleanupDevbridgeTunnels(workspaceId, {
+            mode: 'stale',
+            samePort: validatedPort,
             username,
-            20000,
-          );
+          });
         } catch {}
         continue;
       }
@@ -2055,8 +2407,20 @@ export async function exposeTunnel(
     }
 
     const warnings = [];
-    if (parsed.quotaError)
-      warnings.push('DevBridge tunnel quota (10006) hit — stale tunnels were cleaned up and the host was retried.');
+    if (parsed.quotaError && !parsed.tunnelUrl) {
+      return {
+        ok: false,
+        error:
+          'DevBridge tunnel quota exceeded (10006) after cleanup. Keepalive-protected tunnels are preserved; ' +
+          'remove unused tunnels or retry with cleanup_mode=all if a full reset is acceptable.',
+        error_code: 'devbridge_tunnel_quota_exceeded',
+        authMode: effectiveAuthMode,
+        attempts,
+        cleanup: lastQuotaCleanup || undefined,
+        warnings: 'tunnel quota (10006) still full after removing orphan/oldest non-protected tunnels',
+        hostLog: String(result.stdout || '').slice(0, 400),
+      };
+    }
 
     // #998: a host that never produced a Tunnel URL must NOT surface as ok:true
     // with an undefined publicUrl — that reads as success and sends the caller
