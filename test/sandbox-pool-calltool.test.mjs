@@ -159,6 +159,7 @@ test('callTool connect: first connect broadcasts server-configured lifecycle', a
     assert.equal(currentWs, 'dev-1');
     // 连接后执行选择性清理（不再使用全局 delete-all）
     assert.ok(execLog.some((c) => String(c).startsWith('cleanup:')));
+    assert.ok(execLog.includes('cleanup:{"mode":"stale"}'));
     assert.ok(!execLog.some((c) => String(c).includes('devbridge delete-all')));
     // 生命周期口径进入缓存（expose_tunnel 后续使用）
     assert.equal(poolContextFor('dev-1').poolLifecycle.idleShutdownMinutes, 45);

@@ -39,6 +39,9 @@ import {
   parseDevbridgeHostProcesses,
   planDevbridgeCleanup,
   buildDevbridgeCleanupApplyScript,
+  buildDevbridgeCleanupLockScript,
+  buildDevbridgeCleanupStateScript,
+  normalizeCleanupMode,
   classifyLocalUploadPath,
   buildUploadResetCommand,
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.mjs';
@@ -761,14 +764,17 @@ test('devbridge cleanup: parses tunnel list and host processes behind OSC/CRLF n
   const list =
     '\u001b]133;C\u0007Tunnel ID  Name              Description  Tunnel Expiration  Port Count\r\n' +
     '\u001b]133;C\u0007ncwa54gr   tunnel-18082-6097               30 days            1\r\n' +
+    'tun0l1s9   tunnel-18086-111                29 days            1\r\n' +
     'up5kfkbb   tunnel-18084-789                23 hours           1\r\n' +
     'No tunnels found.\r\n';
   const tunnels = parseDevbridgeTunnelList(list);
-  assert.equal(tunnels.length, 2);
+  assert.equal(tunnels.length, 3);
   assert.deepEqual(
     tunnels.map((t) => ({ id: t.id, port: t.port, expirySeconds: t.expirySeconds })),
     [
       { id: 'ncwa54gr', port: 18082, expirySeconds: 30 * 86400 },
+      // IDs may contain 0/1/8/9; parsing must not assume the base32 subset.
+      { id: 'tun0l1s9', port: 18086, expirySeconds: 29 * 86400 },
       { id: 'up5kfkbb', port: 18084, expirySeconds: 23 * 3600 },
     ],
   );
@@ -776,7 +782,9 @@ test('devbridge cleanup: parses tunnel list and host processes behind OSC/CRLF n
   const hosts =
     '\u001b]133;C\u00077962 devbridge host -p 18085 -e 1\r\n' +
     '\u001b]133;C\u00071234 devbridge host ncwa54gr\r\n' +
-    '5678 /usr/bin/devbridge host up5kfkbb -p 18084 -e 72\r\n';
+    '5678 /usr/bin/devbridge host up5kfkbb -p 18084 -e 72\r\n' +
+    '9999 /bin/bash -c "devbridge host -p 18085" \r\n' + // wrapper shell: must be ignored
+    '7777 devbridge host -e 72\r\n'; // no id/port: must be ignored
   assert.deepEqual(
     parseDevbridgeHostProcesses(hosts).map((h) => ({ pid: h.pid, id: h.id, port: h.port })),
     [
@@ -881,6 +889,39 @@ test('devbridge cleanup: apply script validates IDs/PIDs and emits kill/delete c
   assert.match(script, /DB_CLEANUP_DELETED=aaaa2345/);
   assert.throws(() => buildDevbridgeCleanupApplyScript({ deleteIds: ['bad;id'] }), /invalid tunnel id/);
   assert.throws(() => buildDevbridgeCleanupApplyScript({ killPids: ['1; rm -rf /'] }), /invalid pid/);
+});
+
+test('devbridge cleanup: unattributable hosts are never killed', () => {
+  const plan = planDevbridgeCleanup({
+    tunnels: [],
+    hosts: [{ pid: 500, id: null, port: null }],
+    keepalive: [],
+    mode: 'stale',
+  });
+  assert.deepEqual(plan, { deleteIds: [], killPids: [] });
+});
+
+test('devbridge cleanup: cleanup_mode is normalized and lock outlives the worst hold', () => {
+  assert.equal(normalizeCleanupMode('all'), 'all');
+  assert.equal(normalizeCleanupMode('none'), 'none');
+  assert.equal(normalizeCleanupMode('bogus'), 'stale');
+  assert.equal(normalizeCleanupMode(undefined), 'stale');
+
+  const lock = buildDevbridgeCleanupLockScript();
+  assert.match(lock, /-mmin \+10/); // worst-case hold ≈450s < 10min
+  assert.match(lock, /mkdir "\$LOCK"/);
+
+  const state = buildDevbridgeCleanupStateScript();
+  assert.match(state, /devbridge auth login --api-key "\$DB_KEY"/);
+  assert.match(state, /DB_CLEANUP_TUNNELS_BEGIN/);
+  assert.match(state, /DB_CLEANUP_HOSTS_BEGIN/);
+  assert.match(state, /pgrep -af "devbridge host"/);
+});
+
+test('devbridge cleanup: apply script re-checks the process identity before killing', () => {
+  const script = buildDevbridgeCleanupApplyScript({ killPids: [100] });
+  assert.match(script, /ps -p 100 -o args=/);
+  assert.match(script, /grep -q "devbridge host"/);
 });
 
 test('exposeTunnel reports the post-auto-create auth mode (API_KEY_AUTO, not the first-probe NO_CREDENTIAL)', () => {
