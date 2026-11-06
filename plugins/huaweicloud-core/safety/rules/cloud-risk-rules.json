@@ -206,11 +206,11 @@
           },
           {
             "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
+            "regex": "(\"Action\"\\s*:\\s*(\"(\\*|\\*:\\*)\"|\\[\\s*\"(\\*|\\*:\\*)\"\\s*\\])|Actions?\\s*[=:]\\s*(\"(\\*|\\*:\\*)\"|\\[\\s*\"(\\*|\\*:\\*)\"\\s*\\]|(\\*|\\*:\\*))|AdministratorAccess|FullAccess)"
           },
           {
             "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
+            "regex": "(\"Effect\"\\s*:\\s*\"Allow\"|Effects?\\s*[=:]\\s*\"?Allow\"?)"
           }
         ]
       },
