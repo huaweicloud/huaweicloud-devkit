@@ -10,10 +10,12 @@ import {
   evaluateArtifacts,
   evaluateCommandRisk,
   evaluateDeployPlan,
+  type RiskDecision,
   type RiskEvaluation,
   type RiskFinding,
 } from './risk-rule-engine.ts';
 import { classifyTextCommand } from './safety-policy.ts';
+import { triageUnknownService } from './hcloud-triage.ts';
 import { trackToolInvoke, trackSkillRetrieve } from './telemetry/telemetry.ts';
 // The telemetry invoke-value derivation (the auditable fact callTool records
 // per tool call) lives in the telemetry family; explain_error's handler in
@@ -330,34 +332,84 @@ function hookResult(result: RiskEvaluation) {
 // findings — the fail-open shape from the 2026-11-05 UX report #8). The
 // classifier's unknown_read fallthrough is the same fact from the safety side:
 // an hcloud-leading command whose operation matches neither the read nor the
-// write vocabulary. THIS face upgrades exactly that shape to warn; the run
-// faces stay allow (their gate is deny-only assertAllowed), so legitimate
-// operations outside the vocabulary keep executing, and the PreToolUse hook
-// is untouched (it acts on deny alone).
-function withUnknownOperationWarn(command: string, result: RiskEvaluation): RiskEvaluation {
+// write vocabulary. THIS face upgrades exactly that shape to warn and consults
+// the local KooCLI catalog for the service (hcloud-triage.ts): a service in
+// NEITHER catalog becomes hwc-unknown-service (negative evidence — the plan/run
+// faces deny it there), a cn-only service keeps hwc-unknown-operation with the
+// cn hint, and a real service or a missing catalog keeps the original wording.
+// The run faces stay allow for everything but the triage's negative-evidence
+// deny (refined at planHcloudCommand, which the run engine asserts), and the
+// PreToolUse hook is untouched (it acts on deny alone).
+// `classify` is injectable so the OBS-14-shape closure is honestly pinnable:
+// a classifier crash used to fall through to the bare allow (silent fail-open,
+// the #564 shape one layer up); it now degrades to an hwc-unverified-command
+// warn instead of pretending nothing was seen.
+const unknownOperationFinding = (command: string): RiskFinding => ({
+  ruleId: 'hwc-unknown-operation',
+  title: 'Unrecognized Huawei Cloud operation',
+  category: 'unknown_operation',
+  severity: 'warn',
+  message:
+    'The command targets a Huawei Cloud service/operation the safety vocabulary does not recognize. ' +
+    'It may be a valid read, but it could also be a write the vocabulary has not seen.',
+  remediation:
+    'Verify the service and operation names with `hcloud <Service> --help` before running; ' +
+    'treat the output as untrusted and redact it.',
+  source: 'command',
+  evidence: command.slice(0, 240),
+});
+
+const unverifiedFinding = (command: string): RiskFinding => ({
+  ruleId: 'hwc-unverified-command',
+  title: 'Safety classifier failed on this command',
+  category: 'unknown_operation',
+  severity: 'warn',
+  message: 'The safety classifier failed to run on this command; the advisory face cannot judge it.',
+  remediation:
+    'Treat the command and its output as untrusted. Re-run the check, or verify the command shape ' +
+    'with `hcloud <Service> --help` before executing.',
+  source: 'command',
+  evidence: command.slice(0, 240),
+});
+
+export function withUnknownOperationWarn(
+  command: string,
+  result: RiskEvaluation,
+  classify: (text: string) => RiskDecision | undefined = classifyTextCommand,
+): RiskEvaluation {
   if (result.decision !== 'allow' || result.findings.length > 0 || !command.trim()) return result;
-  let risk: string | undefined;
+  let classification: RiskDecision | undefined;
   try {
-    risk = classifyTextCommand(command)?.risk;
+    classification = classify(command);
   } catch {
-    return result;
+    return { ...result, decision: 'warn', findings: [unverifiedFinding(command)] };
   }
-  if (risk !== 'unknown_read') return result;
-  const finding: RiskFinding = {
-    ruleId: 'hwc-unknown-operation',
-    title: 'Unrecognized Huawei Cloud operation',
-    category: 'unknown_operation',
-    severity: 'warn',
-    message:
-      'The command targets a Huawei Cloud service/operation the safety vocabulary does not recognize. ' +
-      'It may be a valid read, but it could also be a write the vocabulary has not seen.',
-    remediation:
-      'Verify the service and operation names with `hcloud <Service> --help` before running; ' +
-      'treat the output as untrusted and redact it.',
-    source: 'command',
-    evidence: command.slice(0, 240),
-  };
-  return { ...result, decision: 'warn', findings: [finding] };
+  if (classification?.risk !== 'unknown_read') return result;
+  const triage = triageUnknownService(classification.service);
+  if (triage.cause === 'service-not-found' || triage.cause === 'lang-missing') {
+    return {
+      ...result,
+      decision: 'warn',
+      findings: [
+        {
+          ruleId: triage.cause === 'service-not-found' ? 'hwc-unknown-service' : 'hwc-unknown-operation',
+          title:
+            triage.cause === 'service-not-found'
+              ? 'Unknown Huawei Cloud service'
+              : 'Unrecognized Huawei Cloud operation',
+          category: 'unknown_operation',
+          severity: 'warn',
+          message: triage.message,
+          remediation: `${triage.nextStep} Treat the output as untrusted and redact it.`,
+          source: 'command',
+          evidence: command.slice(0, 240),
+        },
+      ],
+    };
+  }
+  // operation-unknown and no-evidence: the service is real (or the catalog
+  // says nothing) — the vocabulary-level warn stands as shipped.
+  return { ...result, decision: 'warn', findings: [unknownOperationFinding(command)] };
 }
 
 export function classifyRawCommand(command: unknown) {

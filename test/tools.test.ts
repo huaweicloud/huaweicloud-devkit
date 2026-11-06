@@ -3,7 +3,12 @@ import { mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { callTool, listSkillDirs, type ToolArgs } from '../plugins/huaweicloud-core/src/tools.ts';
+import {
+  callTool,
+  listSkillDirs,
+  withUnknownOperationWarn,
+  type ToolArgs,
+} from '../plugins/huaweicloud-core/src/tools.ts';
 import type { RiskFinding } from '../plugins/huaweicloud-core/src/risk-rule-engine.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
@@ -452,18 +457,108 @@ async function withFakeHcloudForList(fn: () => Promise<void>): Promise<void> {
 
 // ── Advisory-face warn for unrecognized hcloud operations (2026-11-05 UX report #8) ──
 
+// A deterministic local KooCLI catalog: every fixture dir is a distinct
+// readServiceCatalogs cache key, so branches pin without cross-test
+// pollution. An EMPTY dir models the no-evidence branch (the catalogs the
+// machine may or may not carry must never decide a pinned verdict).
+function withFakeMetaRepo(
+  entries: Record<string, Array<{ Service: { Text: string } }>>,
+  fn: () => Promise<void>,
+): Promise<void> {
+  const dir = fixtureDir('tools-meta-');
+  for (const [name, items] of Object.entries(entries)) {
+    writeFileSync(join(dir, name), JSON.stringify({ items }));
+  }
+  const prev = process.env.HCLOUD_META_DIR;
+  process.env.HCLOUD_META_DIR = dir;
+  return (async () => {
+    try {
+      await fn();
+    } finally {
+      if (prev === undefined) delete process.env.HCLOUD_META_DIR;
+      else process.env.HCLOUD_META_DIR = prev;
+    }
+  })();
+}
+
 test('huaweicloud_hook_check_command upgrades an unrecognized hcloud operation to warn', async () => {
-  const result = (await callTool('huaweicloud_hook_check_command', {
-    command: 'hcloud FooBar BazQux --nonsense=1',
-  })) as HookCheckResult;
+  await withFakeMetaRepo({}, async () => {
+    const result = (await callTool('huaweicloud_hook_check_command', {
+      command: 'hcloud FooBar BazQux --nonsense=1',
+    })) as HookCheckResult;
+    assert.equal(result.decision, 'warn');
+    assert.equal(result.ok, true, 'warn stays advisory — the face never blocks');
+    assert.equal(result.findings[0]?.ruleId, 'hwc-unknown-operation');
+    assert.match(result.findings[0]?.message ?? '', /does not recognize/);
+    // Known reads keep the bare allow (no findings, no warn).
+    const known = (await callTool('huaweicloud_hook_check_command', { command: 'hcloud obs ls' })) as HookCheckResult;
+    assert.equal(known.decision, 'allow');
+    assert.equal(known.findings.length, 0);
+  });
+});
+
+// One probe shape for the catalog-aware advisory tests — the withFakeMetaRepo
+// + callTool scaffolding repeated verbatim read as a jscpd clone, so the
+// harness owns it once.
+async function checkUnderCatalog(
+  files: Record<string, Array<{ Service: { Text: string } }>>,
+  command: string,
+): Promise<HookCheckResult> {
+  let result!: HookCheckResult;
+  await withFakeMetaRepo(files, async () => {
+    result = (await callTool('huaweicloud_hook_check_command', { command })) as HookCheckResult;
+  });
+  return result;
+}
+
+const ecsBothCatalogs: Record<string, Array<{ Service: { Text: string } }>> = {
+  'services_cn.json': [{ Service: { Text: 'ECS' } }],
+  'services_en.json': [{ Service: { Text: 'ECS' } }],
+};
+
+const fooBarCnOnly: Record<string, Array<{ Service: { Text: string } }>> = {
+  'services_cn.json': [{ Service: { Text: 'FooBar' } }],
+  'services_en.json': [{ Service: { Text: 'ECS' } }],
+};
+
+test('huaweicloud_hook_check_command names a catalog-absent service (negative evidence)', async () => {
+  const result = await checkUnderCatalog(ecsBothCatalogs, 'hcloud FooBar BazQux --nonsense=1');
   assert.equal(result.decision, 'warn');
-  assert.equal(result.ok, true, 'warn stays advisory — the face never blocks');
+  assert.equal(result.findings[0]?.ruleId, 'hwc-unknown-service');
+  assert.match(result.findings[0]?.message ?? '', /FooBar/);
+  assert.match(result.findings[0]?.remediation ?? '', /--help/);
+});
+
+test('huaweicloud_hook_check_command keeps the operation warn for a cn-only service with the cn hint', async () => {
+  const result = await checkUnderCatalog(fooBarCnOnly, 'hcloud FooBar BazQux --nonsense=1');
+  assert.equal(result.decision, 'warn');
   assert.equal(result.findings[0]?.ruleId, 'hwc-unknown-operation');
-  assert.match(result.findings[0]?.message ?? '', /does not recognize/);
-  // Known reads keep the bare allow (no findings, no warn).
-  const known = (await callTool('huaweicloud_hook_check_command', { command: 'hcloud obs ls' })) as HookCheckResult;
-  assert.equal(known.decision, 'allow');
-  assert.equal(known.findings.length, 0);
+  assert.match(result.findings[0]?.remediation ?? '', /--cli-lang=cn/);
+});
+
+test('a compound allow never buries a trailing fabricated segment (segment order is not a verdict)', async () => {
+  // Interrogate round 1, seat-1 K1: the segment merge used to hand back the
+  // FIRST allow, so `hcloud obs ls && hcloud FooBar BazQux` read as read_only
+  // and the triage never saw the fabricated service. The uncertain allow now
+  // outranks the confident one — both orders warn identically.
+  const forward = await checkUnderCatalog(ecsBothCatalogs, 'hcloud obs ls && hcloud FooBar BazQux');
+  assert.equal(forward.decision, 'warn');
+  assert.equal(forward.findings[0]?.ruleId, 'hwc-unknown-service');
+  const reversed = await checkUnderCatalog(ecsBothCatalogs, 'hcloud FooBar BazQux && hcloud obs ls');
+  assert.equal(reversed.decision, 'warn');
+  assert.equal(reversed.findings[0]?.ruleId, 'hwc-unknown-service');
+});
+
+test('the advisory face degrades to warn when the classifier throws (the OBS-14 #564 shape)', () => {
+  // Direct seam call: no known input makes classifyTextCommand throw, so the
+  // closure is pinned through the injectable classifier instead of a
+  // contrived payload. The old shape returned the bare allow unchanged.
+  const boom = (): never => {
+    throw new Error('classifier exploded');
+  };
+  const result = withUnknownOperationWarn('hcloud FooBar BazQux', { decision: 'allow', findings: [] }, boom);
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.findings[0]?.ruleId, 'hwc-unverified-command');
 });
 
 // ── Deployment-intent fallback (2026-11-05 UX report #1) ────────────────────
