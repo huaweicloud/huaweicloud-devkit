@@ -226,6 +226,144 @@ test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
   }
 });
 
+test('evaluateCommandRisk decodes ANSI-C quoting before rule matching (#866 D4-15)', () => {
+  // `$'...'` ANSI-C strings decode \xNN/\uNNNN/octal escapes at execution time;
+  // the engine must decode them before matching or the inner command escapes
+  // every rule (#866 D4-15).
+  const payloads = [
+    // \x72='r', \x2d='-' → decoded: rm -rf /
+    `bash -c $'\\x72m -\\x72f /'`,
+    // octal \162='r' → decoded: rm -rf /
+    `bash -c $'\\162m -rf /'`,
+    // multiple ANSI-C segments concatenate in the shell
+    `bash -c $'mkfs '\\'' /dev/sda1'`,
+  ];
+  for (const cmd of payloads) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny after ANSI-C decode`);
+    assert.equal(result.findings[0].ruleId, 'hwc-sandbox-destructive-command', cmd);
+  }
+
+  // Decoded hcloud destructive writes still hit the destructive-operation rule.
+  const del = evaluateCommandRisk(`bash -c $'\\u0068cloud ECS DeleteServers --cli-region=cn-north-4'`);
+  assert.equal(del.decision, 'warn');
+  assert.ok(
+    del.findings.some((f) => f.ruleId === 'hwc-destructive-delete-operation'),
+    'decoded hcloud Delete should match destructive rule',
+  );
+
+  // Benign ANSI-C strings must not trigger findings (no false positives).
+  for (const cmd of [`echo $'hello world'`, `bash -c $'ls -la /workspace'`, `echo $'\\x41\\x42\\x43'`]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'allow', `${cmd} should stay allowed`);
+    assert.equal(result.findings.length, 0, `${cmd} should have no findings`);
+  }
+});
+
+test('evaluateCommandRisk decodes $(…) command substitution before rule matching (#866 D4-15 step 2)', () => {
+  // `$(printf '\xNN')` and `$(echo '…' | base64 -d)` produce command text at
+  // execution time. The engine must decode the inner command and match rules
+  // against the decoded payload, or encoded destructive commands slip past
+  // every rule (#866 D4-15 command substitution bypass).
+  const printfPayloads = [
+    // \x72='r', \x66='f' → decoded: rm -rf /
+    `$(printf '\\x72\\x6d -\\x72\\x66 /')`,
+    // \x6d='m', \x6b='k', \x66='f', \x73='s' → decoded: mkfs
+    `$(printf '\\x6d\\x6b\\x66\\x73') /dev/sda1`,
+    // \x65='e', \x6e='n', \x76='v' → decoded: env | grep HUAWEICLOUD
+    `eval $(printf '\\x65\\x6e\\x76 | grep HUAWEICLOUD')`,
+  ];
+  for (const cmd of printfPayloads) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny after printf decode`);
+    assert.ok(result.findings.length > 0, `${cmd} should have findings`);
+  }
+
+  // base64-encoded payload: "cm0gLXJmIC8=" decodes to "rm -rf /"
+  const b64Result = evaluateCommandRisk(`$(echo 'cm0gLXJmIC8=' | base64 -d)`);
+  assert.equal(b64Result.decision, 'deny', 'base64-decoded rm -rf / should deny');
+  assert.equal(b64Result.findings[0].ruleId, 'hwc-sandbox-destructive-command');
+
+  // Decoded hcloud destructive write inside $(…) hits the destructive rule.
+  const delCmd = `$(printf '\\x68cloud ECS DeleteServers --x=1')`;
+  const del = evaluateCommandRisk(delCmd);
+  assert.equal(del.decision, 'warn', `${delCmd} should warn after decode`);
+  assert.ok(
+    del.findings.some((f) => f.ruleId === 'hwc-destructive-delete-operation'),
+    'decoded hcloud Delete should match destructive rule',
+  );
+
+  // Plain $(…) without encoded payloads: inner command is still a candidate.
+  // `$(hcloud ECS DeleteServers --x=1)` → inner = `hcloud ECS DeleteServers …`
+  const plainSubst = evaluateCommandRisk('$(hcloud ECS DeleteServers --x=1)');
+  assert.equal(plainSubst.decision, 'warn');
+  assert.ok(
+    plainSubst.findings.some((f) => f.ruleId === 'hwc-destructive-delete-operation'),
+    'plain $(hcloud …) inner command should be matched',
+  );
+
+  // Benign $(…) must not trigger false positives.
+  for (const cmd of [`$(echo hello)`, `$(date +%Y)`, `$(printf 'hello')`]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'allow', `${cmd} should stay allowed`);
+    assert.equal(result.findings.length, 0, `${cmd} should have no findings`);
+  }
+});
+
+test('evaluateCommandRisk fails closed on unparsable $(…) inner commands (#866 D4-17)', () => {
+  // A detected $(…) whose inner command cannot be fully parsed statically
+  // (nested substitution, backticks, variable expansion, eval, xargs) leaves
+  // the executed payload unknown — absence of findings must NOT report allow.
+  const unresolvedPayloads = [
+    // Variable expansion: runtime value unknown.
+    `rm -rf $(echo $TARGET_DIR)`,
+    `cat $(eval $FILE_EXPR)`,
+    // Nested substitution: single-level extractor cannot consume it.
+    `echo $(printf $(echo nested))`,
+    // Backticks inside the inner command.
+    `chmod 777 $(echo \`whoami\`)`,
+    // xargs builds the command at runtime.
+    `echo 'rm -rf /' | $(echo xargs rm)`,
+    // Unbalanced $( : extractor cannot close it.
+    `hcloud ECS DeleteServers --servers.01.id=$(`,
+  ];
+  for (const cmd of unresolvedPayloads) {
+    const result = evaluateCommandRisk(cmd);
+    assert.notEqual(result.decision, 'allow', `${cmd} must not be allowed`);
+    assert.ok(
+      result.findings.some((f) => f.ruleId === 'hwc-command-subst-unresolved'),
+      `${cmd} should carry the unresolved-substitution finding`,
+    );
+  }
+
+  // Fully visible inner commands stay clean (no false positives).
+  for (const cmd of [`$(echo hello)`, `$(date +%Y)`, `$(hcloud ECS ListServers --x=1)`]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.ok(
+      !result.findings.some((f) => f.ruleId === 'hwc-command-subst-unresolved'),
+      `${cmd} should not carry the unresolved-substitution finding`,
+    );
+  }
+
+  // A deny from a real rule outranks the synthetic warn finding.
+  const denyCmd = `rm -rf / && echo $(eval $X)`;
+  const deny = evaluateCommandRisk(denyCmd);
+  assert.equal(deny.decision, 'deny', `${denyCmd} should stay deny`);
+  assert.equal(deny.findings[0].severity, 'deny');
+  assert.ok(
+    deny.findings.some((f) => f.ruleId === 'hwc-command-subst-unresolved'),
+    'unresolved-substitution finding should coexist with the deny rule',
+  );
+});
+
+test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
+  for (const cmd of ['env | grep HW_', 'printenv | grep HW_ACCESS', 'env | grep HUAWEICLOUD']) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-env-dump');
+  }
+});
+
 test('evaluateCommandRisk warns on plaintext secret in CLI args (#561 D4-3)', () => {
   const cases = [
     'hcloud ECS CreateServers --adminPass=SuperSecret123!',
