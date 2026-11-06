@@ -233,14 +233,27 @@ function debugLog(message) {
   }
 }
 
-export function queryDistTagsFetch({ timeoutMs = 15000 } = {}) {
+// Safe stringification for debug logs: avoid `[object Object]` when a
+// rejected value has no `message` property (e.g. plain objects, #911).
+function errorText(error) {
+  if (error?.message) return error.message;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
+}
+
+export function queryDistTagsFetch({ timeoutMs = 5000 } = {}) {
   let registry = 'https://registry.npmjs.org';
   if (process.env.HUAWEICLOUD_NPM_REGISTRY) {
     registry = process.env.HUAWEICLOUD_NPM_REGISTRY.replace(/\/+$/, '');
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`)
+  return fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`, {
+    signal: controller.signal,
+  })
     .then((resp) => {
       clearTimeout(timer);
       if (!resp || !resp.ok) return null;
@@ -248,7 +261,7 @@ export function queryDistTagsFetch({ timeoutMs = 15000 } = {}) {
     })
     .catch((error) => {
       clearTimeout(timer);
-      debugLog(`queryDistTagsFetch: ${error?.message || error}`);
+      debugLog(`queryDistTagsFetch: ${errorText(error)}`);
       return null;
     });
 }
