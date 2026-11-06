@@ -83,13 +83,21 @@ export function classifyUnsupported(service: unknown, metaDir?: string): Unsuppo
 // trigger the language annotation below.
 export const UNSUPPORTED_SERVICE_RE = /Unsupported service:\s*([A-Za-z0-9_-]+)/i;
 
+// Shared remediation wording: the run annotation (appendLangHint) and the
+// unknown-service triage (hcloud-triage.ts) must hand the agent the SAME cn
+// instruction — two copies would drift the way the tool/hook message pairs
+// did before the parity harnesses.
+export const CN_LANG_SWITCH_HINT =
+  'KooCLI switches language only via global config: hcloud configure set --cli-lang=cn (changes CLI output language; BSS requires Chinese mode).';
+
+export const CATALOG_REFRESH_HINT = 'Check the service name, or refresh KooCLI metadata (hcloud upgrade / configure).';
+
 // Consumed by the run engine (hcloud-run.ts); not part of the face's
 // public surface.
 export function appendLangHint(result: HcloudRunResult, service: string, metaDir?: string): HcloudRunResult {
   const cause = classifyUnsupported(service, metaDir);
   if (cause === 'lang-missing' || cause === 'unknown') {
-    const nextStep =
-      'KooCLI switches language only via global config: hcloud configure set --cli-lang=cn (changes CLI output language; BSS requires Chinese mode).';
+    const nextStep = CN_LANG_SWITCH_HINT;
     return {
       ...result,
       langCause: cause,
@@ -97,7 +105,7 @@ export function appendLangHint(result: HcloudRunResult, service: string, metaDir
       langNextStep: nextStep,
     };
   }
-  const nextStep = 'Check the service name, or refresh KooCLI metadata (hcloud upgrade / configure).';
+  const nextStep = CATALOG_REFRESH_HINT;
   return {
     ...result,
     langCause: cause,

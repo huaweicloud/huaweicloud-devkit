@@ -24,9 +24,18 @@ export function classifyHcloudArgs(args: unknown, options: ClassifyOptions = {})
     if (hcloudSegments.length > 0) {
       const results = hcloudSegments.map((segment) => classifyHcloudArgs(segment, { ...options, _segmentDepth: 1 }));
       // results mirrors hcloudSegments, checked non-empty above; index 0 is defined.
+      // With no severe verdict anywhere, the UNCERTAIN allow outranks a
+      // confident one: the faces' unknown-service triage reads risk
+      // 'unknown_read' off this verdict, so `hcloud obs ls && hcloud FooBar
+      // BazQux` must not inherit the first segment's read_only and bury the
+      // fabricated service behind segment order (interrogate round 1,
+      // seat-1 K1). The decision stays allow either way — the PreToolUse
+      // hook acts on deny alone, so the hook face is unchanged; this orders
+      // the risk metadata the plan/advisory enrichment consumes.
       return (
         results.find((result) => result.decision === 'deny') ||
         results.find((result) => ['write', 'execution', 'secret', 'credential'].includes(result.risk ?? '')) ||
+        results.find((result) => result.risk === 'unknown_read') ||
         results[0]!
       );
     }

@@ -11,6 +11,7 @@ import { createApprovalToken } from './lib/approval-tokens.ts';
 import type { RiskDecision } from './risk-rule-engine.ts';
 import { obsWriteHint } from './hcloud-obs-redact.ts';
 import { applyPreflightFindings, preflightSecurityGroupCheck, type SgFinding } from './hcloud-sg-preflight.ts';
+import { triageUnknownService } from './hcloud-triage.ts';
 
 // Approval tokens must survive a process boundary: plan and run land in
 // different MCP sessions/processes (and headless subprocesses), so the old
@@ -32,6 +33,14 @@ export interface HcloudPlan {
 
 export interface HcloudPlanWithArgs extends HcloudPlan {
   rawArgs: string[];
+}
+
+export interface HcloudPlanOptions extends ClassifyOptions {
+  // Catalog override for the unknown-service triage (tests); production
+  // resolves through HCLOUD_META_DIR / the homedir default. Deliberately
+  // operator-side only — never a tool argument an agent could aim at a fake
+  // catalog to downgrade its own verdict.
+  metaDir?: string;
 }
 
 function quoteShellArg(value: unknown): string {
@@ -270,7 +279,7 @@ function validateRequiredParams(args: string[]): { valid: boolean; missing: stri
   return { valid: missing.length === 0, missing, hints };
 }
 
-export function planHcloudCommand(args: unknown, options: ClassifyOptions = {}): HcloudPlan {
+export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}): HcloudPlan {
   const inputArgs = Array.isArray(args) ? args.map(String) : [];
   const { args: normalizedArgs, stripped } = stripLeadingHcloudBinArgs(inputArgs);
   const classification = classifyHcloudArgs(normalizedArgs, options);
@@ -290,6 +299,30 @@ export function planHcloudCommand(args: unknown, options: ClassifyOptions = {}):
       warnings.push('Find valid values: ' + paramValidation.hints.join('; '));
     }
   }
+  // Unknown-service triage (2026-11-06, UX report #8/D6): ONE seam refines
+  // the unknown_read fallthrough with catalog evidence. A service present
+  // in NEITHER local catalog denies right here — the run face inherits the
+  // deny through assertAllowed(plan.classification), so plan and run can
+  // never disagree about the same command (the #6 lesson: one seam per
+  // fact). lang-missing only annotates — the service is real, and the cn
+  // hint matches what the run engine attaches post-execution.
+  // operation-unknown and no-evidence keep the P0-B semantics: allow, no
+  // triage noise (the advisory face owns the warn there).
+  let effectiveClassification = classification;
+  if (classification.decision === 'allow' && classification.risk === 'unknown_read') {
+    const triage = triageUnknownService(classification.service, options.metaDir);
+    if (triage.cause === 'service-not-found') {
+      effectiveClassification = {
+        ...classification,
+        decision: 'deny',
+        risk: 'invalid',
+        reason: `${triage.message} ${triage.nextStep}`,
+      };
+      warnings.push(triage.message);
+    } else if (triage.cause === 'lang-missing') {
+      warnings.push(`${triage.message} ${triage.nextStep}`);
+    }
+  }
   return {
     executable: 'hcloud',
     args: normalizedArgs.map((arg) => redactSecrets(arg)),
@@ -300,12 +333,12 @@ export function planHcloudCommand(args: unknown, options: ClassifyOptions = {}):
     command: redactSecrets(command),
     executableBlock: redactSecrets(command),
     warnings,
-    classification: applyPreflightFindings(classification, sgFindings),
+    classification: applyPreflightFindings(effectiveClassification, sgFindings),
     sgFindings,
     approvalToken: createApprovalToken(normalizedArgs, {
       secretsSubstitutable: secretsSubstitutable(normalizedArgs),
       argsPinView: pinViewArgs(normalizedArgs),
     }),
-    safeToRun: classification.decision === 'allow',
+    safeToRun: effectiveClassification.decision === 'allow',
   };
 }

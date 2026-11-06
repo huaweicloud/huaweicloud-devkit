@@ -80,6 +80,10 @@ console.log(content);
     executable: process.execPath,
     executableArgs: [script],
     cwd: cwdDir,
+    // The single-token fake service must not trip the catalog triage on a
+    // machine that carries real metaRepo catalogs — this test pins cwd
+    // plumbing, not catalog evidence (2026-11-06 unknown-service triage).
+    metaDir: fixtureDir('run-no-meta-'),
   });
   assert.equal(result.ok, true);
   assert.match(result.stdout!, /works/);
@@ -94,6 +98,7 @@ process.exit(1);
     executable: process.execPath,
     executableArgs: [script],
     maxRetries: 0,
+    metaDir: fixtureDir('run-no-meta-'),
   });
   assert.equal(result.ok, false);
   assert.match(result.stderr!, /something went wrong/);
@@ -106,6 +111,7 @@ console.log('adminPass=MySecret123!');
   const result = await runHcloud(['test'], {
     executable: process.execPath,
     executableArgs: [script],
+    metaDir: fixtureDir('run-no-meta-'),
   });
   assert.doesNotMatch(result.stdout!, /MySecret123!/);
 });
