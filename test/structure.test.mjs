@@ -115,6 +115,27 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   assert.match(billingSkill, /ListQuotaCoupons/);
   assert.match(billingSkill, /identity, not domain-id/);
 
+  // #985: billing skill must document the BSS inquiry capability boundary
+  // (which products ListOnDemandResourceRatings covers vs which must degrade
+  // to official website price estimates), aligned with huawei-iac/references/resource-catalog.md.
+  assert.match(billingSkill, /BSS Inquiry Capability Boundary/);
+  assert.match(billingSkill, /CBC\.6074/);
+  assert.match(billingSkill, /CBC\.6006/);
+  assert.match(billingSkill, /估算/);
+
+  // #985: gaussdb skill must document EIP recovery (rebind after auto-release),
+  // BSS inquiry boundary for GaussDB, and upstream tracking for data-plane defects.
+  const gaussdbSkill = readFileSync(
+    join(pluginRoot, 'skills', 'huawei-cloud-gaussdb-instance-management', 'SKILL.md'),
+    'utf8',
+  );
+  assert.match(gaussdbSkill, /EIP Recovery and Rebind/);
+  assert.match(gaussdbSkill, /EIP may be auto-released/);
+  assert.match(gaussdbSkill, /BSS Inquiry Boundary/);
+  assert.match(gaussdbSkill, /Upstream Tracking/);
+  assert.match(gaussdbSkill, /plafaithing\/huawei-gaussdb-data-mcp#1/);
+  assert.match(gaussdbSkill, /verify-ca/);
+
   // I: cli-and-auth documents the 4-step <Operation> --help discovery chain.
   assert.match(cliSkill, /hcloud <Service> <Operation> --help/);
   assert.match(cliSkill, /step 3 \(`<Operation> --help`\) is never skippable/);

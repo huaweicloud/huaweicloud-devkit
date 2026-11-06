@@ -49,6 +49,25 @@ Discover exact parameters with `--help` before executing any command. All BSS op
 | No data returned                | Check time range (bills have ~24h delay). Verify project_id |
 | Enterprise account restrictions | Some APIs require enterprise real-name authentication       |
 
+## BSS Inquiry Capability Boundary
+
+`hcloud BSS ListOnDemandResourceRatings` is the on-demand price inquiry API, but it does NOT cover every product. Wrong product codes fail with `CBC.6074` / `CBC.6006`; the metadata discovery path (`ListServiceTypes` / `ListResourceTypes` / `ListUsageTypes`) is unusable for filtering — `ListServiceTypes` returns 895 entries with no filter param, `ListResourceTypes` has no service filter. Degrade to official website prices as static estimates and label them **估算**.
+
+| Product family                      | BSS inquiry usable?                                                                     | Error if not | Fallback                      |
+| ----------------------------------- | --------------------------------------------------------------------------------------- | ------------ | ----------------------------- |
+| ECS (compute)                       | ✅ Yes — `hws.service.type.ec2` + `hws.resource.type.vm` + spec `<flavor>.linux`/`.win` | —            | —                             |
+| EIP (bandwidth)                     | ❌ No — `hws.service.type.vpc` + `19_bgp`                                               | `CBC.6074`   | Official website price (估算) |
+| RDS (MySQL/PG/SQLServer)            | ❌ No (verified 2026-09-08)                                                             | `CBC.6074`   | Official website price (估算) |
+| DCS (Redis/Memcached)               | ❌ No (verified 2026-09-08)                                                             | `CBC.6006`   | Official website price (估算) |
+| GaussDB (for MySQL / for openGauss) | ❌ No — not in BSS metadata catalog                                                     | `CBC.6074`   | Official website price (估算) |
+| Other services                      | Per-service — MUST look up via BSS metadata APIs or docs                                | `CBC.6074`   | Official website price (估算) |
+
+> **Single source of truth**: `huawei-iac/references/resource-catalog.md` "Pricing and Balance" section. Keep this table in sync with it; never guess product codes — a wrong combination fails with `CBC.6074`.
+>
+> **Balance query may be permission-blocked**: `CBC.0151` = IAM user lacks `billing:balance:view` → degrade to "user self-checks balance" and continue (do not block; `Ecs.7000` at order time is recoverable). `domain_id` can be extracted from the error message `iam::<domain_id>:user:<name>`.
+
 ## Cross-Skill References
 
 - **Resource lifecycle**: See `huawei-ecs`, `huawei-obs` for creating billable resources
+- **Pricing fallback details**: See `huawei-iac/references/resource-catalog.md` "Pricing and Balance" section for verified product codes and the `ListOnDemandResourceRatings` template
+- **GaussDB pricing**: See `huawei-cloud-gaussdb-instance-management` SKILL.md "BSS Inquiry Boundary" — GaussDB is NOT in the BSS inquiry catalog, always degrade to official website estimate
