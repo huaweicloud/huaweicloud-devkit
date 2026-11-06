@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -445,4 +445,47 @@ test('the proxy scrub fixture never spells a contiguous secret literal', () => {
   const fixture = readFileSync(join(root, 'test', 'e2e-gateway-proxy.test.ts'), 'utf8');
   assert.doesNotMatch(fixture, /const SECRET = '[^']{10,}'/, 'a contiguous literal re-trips the secret scanner');
   assert.match(fixture, /const SECRET = '[^']{1,9}' \+/, 'the scrub target stays assembled from short halves');
+});
+
+test('the src/safety family never imports the hcloud-* KooCLI modules (hook-graph purity)', () => {
+  // The Node hook loads dist/safety-policy.js — the compiled safety face and
+  // its family — directly, and its py twin mirrors that same vocabulary-only
+  // surface. The KooCLI knowledge modules (hcloud-catalog, hcloud-triage,
+  // hcloud-plan, hcloud-run, …) live OUTSIDE the family for exactly this
+  // reason: the unknown-service triage (2026-11-06) enriches the plan and
+  // advisory faces, never the hook graph, and one import across that line
+  // would silently drag the catalog reader (and its homedir/TTL-cache state)
+  // into every agent's PreToolUse path. This assertion pins the boundary as
+  // a named failure. The scan covers the hook graph's real apex
+  // (src/safety-policy.ts, the file dist/safety-policy.js compiles from —
+  // interrogate round 1, seat-2: a family-only scan never sees the root
+  // face) and every import SHAPE the boundary forbids: single- and
+  // double-quoted static imports and dynamic import() calls (seat-2
+  // mutation probes slipped the first regex through both) and the repeated
+  // parent climbs (`../../src/hcloud-…` resolves into the family from below
+  // — round 2: the runtime import resolved while the guard stayed green, and
+  // the single-hop repair still missed the two-hop spelling, so the hop
+  // class is `(?:\.\.?\/)+` and every vector is mutation-verified).
+  const sources: Array<[string, string]> = [
+    ['src/safety-policy.ts', readSource(join('src', 'safety-policy.ts'))],
+    ...readdirSync(join(pluginRoot, 'src', 'safety'))
+      .filter((name) => name.endsWith('.ts'))
+      .map((name) => [`src/safety/${name}`, readSource(join('src', 'safety', name))] as [string, string]),
+  ];
+  assert.ok(
+    sources.length >= 6,
+    `expected the safety face plus its family, found: ${sources.map(([n]) => n).join(', ')}`,
+  );
+  for (const [name, source] of sources) {
+    assert.doesNotMatch(
+      source,
+      /from ['"](?:\.\.?\/)+(src\/)?hcloud-/,
+      `${name} must not statically import a KooCLI module into the hook graph (the triage lives beside the faces, not in the family)`,
+    );
+    assert.doesNotMatch(
+      source,
+      /import\(['"](?:\.\.?\/)+(src\/)?hcloud-/,
+      `${name} must not dynamically import a KooCLI module into the hook graph (the triage lives beside the faces, not in the family)`,
+    );
+  }
 });
