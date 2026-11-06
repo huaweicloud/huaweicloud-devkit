@@ -893,7 +893,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults.',
+      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/resolved template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -906,9 +906,8 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           enum: ['ephemeral', 'persistent'],
           description:
-            'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1). Explicit template_id overrides pool_type.',
+            'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1); same-type requests reuse the existing instance. Custom templates are no longer supported.',
         },
-        template_id: { type: 'string', description: 'Template ID; overrides server default (only for new sandbox)' },
         flavor_id: { type: 'string', description: 'Flavor ID; overrides server default (only for new sandbox)' },
         env: { type: 'object', description: 'Environment variables to set in the sandbox (only for new sandbox)' },
         git: {
@@ -1739,6 +1738,19 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_sandbox_connect': {
       // 两池：客户端校验 pool_type（非法值在本地即报错，不发无效请求）；未传交由服务端默认 ephemeral
       const connectArgs = { ...args };
+      // template_id 自定义模板已下线：老调用方传入时直接拒绝，避免静默降级成 ephemeral
+      if (
+        connectArgs.template_id !== undefined &&
+        connectArgs.template_id !== null &&
+        String(connectArgs.template_id).trim() !== ''
+      ) {
+        return {
+          ok: false,
+          code: 'HDKIT_INVALID_REQUEST',
+          message: 'template_id 已不再支持，请升级客户端并使用 pool_type（ephemeral/persistent）',
+        };
+      }
+      delete connectArgs.template_id;
       let poolType;
       try {
         poolType = connectArgs.pool_type !== undefined ? validatePoolType(connectArgs.pool_type) : null;

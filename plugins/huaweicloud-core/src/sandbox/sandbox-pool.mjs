@@ -1,6 +1,6 @@
 // 两池沙箱（pool_type）客户端支持。
 // 机制（定稿）：池 = 平台预置模板，客户端传 pool_type（ephemeral/persistent），
-// 服务端权威映射 template_id；显式 template_id 优先（运维钉扎场景）。
+// 服务端权威映射 template_id；不支持自定义模板/显式 template_id。
 // - 非持久池（默认）：闲置自动关机 + 自动删除（平台策略）
 // - 持久池：EVS 数据盘跨关机保留，闲置回收保留期上限 7 天
 // - 生命周期数值由 hdkitservice 配置回显（仅播报口径，实际策略由平台执行）
@@ -45,17 +45,6 @@ export function validatePoolType(raw) {
     );
   }
   return normalized;
-}
-
-/**
- * 运维钉扎（可选）：设置 HW_POOL_TEMPLATE_EPHEMERAL/PERSISTENT 后，客户端把映射出的
- * template_id 与 pool_type 一并上送——服务端（及未升级的老服务端）按显式模板处理。
- * 日常部署无需配置：模板 ID 由服务端 POOL_TEMPLATE_* 环境变量权威维护。
- */
-export function pinnedTemplateFor(poolType) {
-  if (poolType === 'ephemeral') return process.env.HW_POOL_TEMPLATE_EPHEMERAL || '';
-  if (poolType === 'persistent') return process.env.HW_POOL_TEMPLATE_PERSISTENT || '';
-  return '';
 }
 
 function positiveNumber(value) {

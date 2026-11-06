@@ -3,7 +3,6 @@ import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
 import { detectAgent } from '../telemetry/agent-detect.mjs';
 import { readInstalledVersion } from '../update-check.mjs';
-import { pinnedTemplateFor } from './sandbox-pool.mjs';
 
 function getHdkitBaseUrl() {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
@@ -153,14 +152,11 @@ export async function hdkitConnect(options = {}) {
   if (options.source) body.source = options.source;
   if (options.env) body.env = options.env;
   if (options.git) body.git = options.git;
-  if (options.template_id) body.template_id = options.template_id;
   if (options.flavor_id) body.flavor_id = options.flavor_id;
   if (options.pool_type) {
     // 两池：pool_type 由服务端权威映射（不传默认 ephemeral）。
-    // 可选运维钉扎：配置 HW_POOL_TEMPLATE_* 时附带映射模板（服务端与老服务端均按显式模板处理）
+    // 自定义模板/显式 template_id 已下线，客户端不再上送。
     body.pool_type = options.pool_type;
-    const pinned = pinnedTemplateFor(options.pool_type);
-    if (pinned && !body.template_id) body.template_id = pinned;
   }
 
   return await hdkitRequest('POST', 'connect', body);
