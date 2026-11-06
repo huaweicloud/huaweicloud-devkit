@@ -45,10 +45,10 @@
     },
     {
       "id": "hwc-command-secret-value-read",
-      "title": "Plaintext secret read",
+      "title": "Plaintext secret read or exposure",
       "category": "secret",
       "severity": "deny",
-      "stages": ["command"],
+      "stages": ["command", "artifact", "deploy_plan"],
       "match": {
         "any": [
           {
@@ -58,28 +58,19 @@
           {
             "field": "text",
             "regex": "(secret_string|secret_binary|secretString|secretBinary)"
-          }
-        ]
-      },
-      "message": "The command appears to retrieve plaintext secret values.",
-      "remediation": "Use runtime secret references, user-side inspection, or redacted metadata checks instead of returning secret values to the agent."
-    },
-    {
-      "id": "hwc-command-adminpass-exposure",
-      "title": "Plaintext adminPass exposure",
-      "category": "secret",
-      "severity": "warn",
-      "stages": ["artifact", "deploy_plan"],
-      "match": {
-        "any": [
+          },
           {
             "field": "text",
-            "regex": "(adminPass|admin_pass|admin-password)"
+            "regex": "^(?=[\\s\\S]*\\bhcloud\\b)(?=[\\s\\S]*(--adminPass|--password|--secret|--token)\\s*[=:]\\s*[^\\s<])"
+          },
+          {
+            "field": "text",
+            "regex": "(adminPass|admin_pass|admin-password)\\\"?\\s*[=:]\\s*[^\\s<]"
           }
         ]
       },
-      "message": "The artifact or plan contains a plaintext adminPass parameter. The password may be exposed in version control, logs, or agent context.",
-      "remediation": "Use userData cloud-init, KMS/CSMS secret references, or encrypted password injection instead of embedding adminPass as plaintext in deployment files."
+      "message": "The command or file retrieves or embeds plaintext secret values (secret reads, secret CLI arguments, or plaintext adminPass).",
+      "remediation": "Use runtime secret references, environment variables, DEW/CSMS secret references, or redacted metadata checks instead of exposing secret values to the agent context."
     },
     {
       "id": "hwc-command-sts-credential",
@@ -194,45 +185,24 @@
     },
     {
       "id": "hwc-iam-admin-policy",
-      "title": "Broad IAM administrator grant",
+      "title": "Broad IAM administrator grant or high-risk IAM write",
       "category": "iam",
       "severity": "deny",
       "stages": ["command", "artifact", "deploy_plan"],
       "match": {
-        "all": [
-          {
-            "field": "text",
-            "regex": "(IAM|policy|role|agency|Statement|Action)"
-          },
-          {
-            "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
-          },
-          {
-            "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
-          }
-        ]
-      },
-      "message": "The change appears to grant broad administrator permissions.",
-      "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials for generated application workflows."
-    },
-    {
-      "id": "hwc-iam-highrisk-write",
-      "title": "High-risk IAM write operation",
-      "category": "iam",
-      "severity": "warn",
-      "stages": ["command"],
-      "match": {
         "any": [
+          {
+            "field": "text",
+            "regex": "^(?=[\\s\\S]*(?:IAM|policy|role|agency|Statement|Action))(?=[\\s\\S]*(?:\\\"Action\\\"\\s*:\\s*(?:\\\"(?:\\*|\\*:\\*)\\\"|\\[\\s*\\\"(?:\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(?:\\*|\\*:\\*)|AdministratorAccess|FullAccess))(?=[\\s\\S]*(?:\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow))"
+          },
           {
             "field": "text",
             "regex": "hcloud\\s+IAM\\s+(CreateUser|CreatePolicy|CreateRole|CreateAgency)\\b"
           }
         ]
       },
-      "message": "This hcloud command creates or modifies IAM principals (users, policies, roles, or agencies). These operations can grant elevated privileges.",
-      "remediation": "Confirm the principal name, scope, and attached permissions with the user before creating IAM users, policies, roles, or agencies."
+      "message": "The change appears to grant broad administrator permissions, or the hcloud command creates/modifies IAM principals (users, policies, roles, agencies) which can grant elevated privileges.",
+      "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials. Confirm the principal name, scope, and attached permissions with the user before creating IAM users, policies, roles, or agencies."
     },
     {
       "id": "hwc-destructive-delete-force",
@@ -367,27 +337,6 @@
       },
       "message": "The generated plan may create high-cost or unbounded capacity.",
       "remediation": "Use small preview defaults, explicit quotas, budget labels, and user approval before creating high-cost resources."
-    },
-    {
-      "id": "hwc-command-secret-in-arg",
-      "title": "Plaintext secret in command argument",
-      "category": "secret",
-      "severity": "warn",
-      "stages": ["command"],
-      "match": {
-        "all": [
-          {
-            "field": "text",
-            "regex": "\\bhcloud\\b"
-          },
-          {
-            "field": "text",
-            "regex": "(--adminPass|--password|--secret|--token)\\s*[=:]\\s*[^\\s<]"
-          }
-        ]
-      },
-      "message": "The command passes a plaintext password or secret as a direct CLI argument, which may leak into shell history, logs, or process listings.",
-      "remediation": "Use environment variables, DEW secret references, or interactive prompts instead of passing secrets as command-line arguments."
     },
     {
       "id": "hwc-sandbox-destructive-command",

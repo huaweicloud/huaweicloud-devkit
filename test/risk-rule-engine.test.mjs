@@ -14,6 +14,17 @@ test('loadRiskRules loads the public catalog', () => {
   assert.ok(catalog.rules.some((rule) => rule.id === 'hwc-network-public-admin-port'));
 });
 
+test('cloud risk rule catalog matches the 16-rule design contract (#978 D10-4)', () => {
+  const catalog = loadRiskRules();
+  assert.equal(catalog.rules.length, 16, 'design contract: 16 rules total');
+  assert.equal(catalog.rules.filter((rule) => rule.severity === 'deny').length, 9, '9 deny rules');
+  assert.equal(catalog.rules.filter((rule) => rule.severity === 'warn').length, 7, '7 warn rules');
+  // The three merged rules must not exist as standalone entries anymore.
+  for (const mergedId of ['hwc-iam-highrisk-write', 'hwc-command-secret-in-arg', 'hwc-command-adminpass-exposure']) {
+    assert.ok(!catalog.rules.some((rule) => rule.id === mergedId), `${mergedId} must be merged, not standalone`);
+  }
+});
+
 test('evaluateCommandRisk blocks public SSH exposure', () => {
   const result = evaluateCommandRisk(
     'hcloud VPC CreateSecurityGroupRule --security_group_rule.protocol=tcp --security_group_rule.port_range_min=22 --security_group_rule.port_range_max=22 --security_group_rule.remote_ip_prefix=0.0.0.0/0',
@@ -189,25 +200,25 @@ test('evaluateCommandRisk does not flag delete-protection toggles as destructive
   }
 });
 
-test('evaluateCommandRisk warns on IAM high-risk write operations (#725)', () => {
+test('evaluateCommandRisk denies IAM high-risk write operations (#725, merged into hwc-iam-admin-policy #978)', () => {
   for (const op of ['CreateUser', 'CreatePolicy', 'CreateRole', 'CreateAgency']) {
     const result = evaluateCommandRisk(`hcloud IAM ${op} --name admin`);
-    assert.equal(result.decision, 'warn', `IAM ${op} should warn`);
-    assert.equal(result.findings[0].ruleId, 'hwc-iam-highrisk-write');
+    assert.equal(result.decision, 'deny', `IAM ${op} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
   }
 });
 
-test('evaluateCommandRisk warns on IAM CreateUser with name flag (#725)', () => {
+test('evaluateCommandRisk denies IAM CreateUser with name flag (#725, merged #978)', () => {
   const result = evaluateCommandRisk('hcloud IAM CreateUser --name admin');
-  assert.equal(result.decision, 'warn');
-  assert.equal(result.findings[0].ruleId, 'hwc-iam-highrisk-write');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
 });
 
-test('evaluateCommandRisk warns on IAM CreatePolicy with wildcard action (#725)', () => {
+test('evaluateCommandRisk denies IAM CreatePolicy with wildcard action (#725, merged #978)', () => {
   const result = evaluateCommandRisk('hcloud IAM CreatePolicy --name admin --action "*"');
-  assert.equal(result.decision, 'warn');
+  assert.equal(result.decision, 'deny');
   const ids = result.findings.map((f) => f.ruleId);
-  assert.ok(ids.includes('hwc-iam-highrisk-write'), 'should include hwc-iam-highrisk-write');
+  assert.ok(ids.includes('hwc-iam-admin-policy'), 'should include hwc-iam-admin-policy');
 });
 
 test('evaluateCommandRisk still allows IAM read-only operations (#725)', () => {
@@ -226,7 +237,7 @@ test('evaluateCommandRisk blocks env dumps with HW_ prefix (#561 D4-2)', () => {
   }
 });
 
-test('evaluateCommandRisk warns on plaintext secret in CLI args (#561 D4-3)', () => {
+test('evaluateCommandRisk denies plaintext secret in CLI args (#561 D4-3, merged into hwc-command-secret-value-read #978)', () => {
   const cases = [
     'hcloud ECS CreateServers --adminPass=SuperSecret123!',
     'hcloud RDS CreateInstance --password=DbPass456!',
@@ -235,8 +246,8 @@ test('evaluateCommandRisk warns on plaintext secret in CLI args (#561 D4-3)', ()
   ];
   for (const cmd of cases) {
     const result = evaluateCommandRisk(cmd);
-    assert.equal(result.decision, 'warn', `${cmd} should warn`);
-    assert.equal(result.findings[0].ruleId, 'hwc-command-secret-in-arg');
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
     assert.doesNotMatch(JSON.stringify(result), /SuperSecret123!|DbPass456!|mysecret|abc123/);
   }
   // Placeholder values (e.g. <password>) should not trigger the rule.
@@ -297,42 +308,44 @@ test('evaluateCommandRisk still denies ShowSecretVersion and DownloadSecret (#73
 });
 
 // ===== #733 D4-6: adminPass exposure in artifact/deploy_plan stages =====
-// Note: #773 hwc-command-secret-in-arg covers the command stage for
-// --adminPass/--password/--secret/--token (requires \bhcloud\b + value).
-// This rule covers artifact (Terraform admin_pass) and deploy_plan (JSON
-// adminPass) stages where hcloud does not appear in the text. The stages
-// are intentionally disjoint to avoid semantic overlap.
+// Note: #773 hwc-command-secret-in-arg and #733 hwc-command-adminpass-exposure
+// have been merged into hwc-command-secret-value-read (deny, all stages) as
+// part of the 16-rule design contract alignment (#978 D10-4). The command
+// stage still requires \bhcloud\b + a non-placeholder value for the
+// --adminPass/--password/--secret/--token flag branch; the adminPass key/value
+// branch covers artifact (Terraform admin_pass) and deploy_plan (JSON
+// adminPass) stages where hcloud does not appear in the text.
 
-test('evaluateArtifacts warns on admin_pass in Terraform files (#733 D4-6)', () => {
+test('evaluateArtifacts denies admin_pass in Terraform files (#733 D4-6, merged #978)', () => {
   const result = evaluateArtifacts([
     {
       path: 'terraform.tf',
       content: 'resource "huaweicloud_compute_instance" "web" {\n  admin_pass = "MyP@ssword1"\n}',
     },
   ]);
-  assert.equal(result.decision, 'warn');
-  assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
   assert.equal(result.findings[0].category, 'secret');
-  assert.equal(result.findings[0].severity, 'warn');
+  assert.equal(result.findings[0].severity, 'deny');
 });
 
-test('evaluateArtifacts warns on adminPass and admin-password variants (#733 D4-6)', () => {
+test('evaluateArtifacts denies adminPass and admin-password variants (#733 D4-6, merged #978)', () => {
   for (const [variant, content] of [
     ['adminPass', 'resource "x" "y" {\n  adminPass = "Secret1"\n}'],
     ['admin-password', 'resource "x" "y" {\n  admin-password = "Secret2"\n}'],
   ]) {
     const result = evaluateArtifacts([{ path: 'main.tf', content }]);
-    assert.equal(result.decision, 'warn', `${variant} should trigger adminpass rule`);
-    assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+    assert.equal(result.decision, 'deny', `${variant} should trigger the merged secret rule`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
   }
 });
 
-test('evaluateDeployPlan warns when plan contains adminPass field (#733 D4-6)', () => {
+test('evaluateDeployPlan denies when plan contains adminPass field (#733 D4-6, merged #978)', () => {
   const result = evaluateDeployPlan({
     service: 'ECS',
     action: 'CreateServers',
     params: { adminPass: 'P@ssw0rd123!' },
   });
-  assert.equal(result.decision, 'warn');
-  assert.equal(result.findings[0].ruleId, 'hwc-command-adminpass-exposure');
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-command-secret-value-read');
 });
