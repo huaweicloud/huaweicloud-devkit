@@ -33,7 +33,7 @@ function redactString(text: unknown): string {
         '$1<redacted>',
       )
       .replace(
-        /(["']?(?:access[_-]?key|secret[_-]?key|security[_-]?token|token|password|passwd|admin[_-]?pass|credential|input[_-]?value)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        /(["']?(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?key|secret[_-]?string|secret[_-]?binary|security[_-]?token|token|password|passwd|admin[_-]?pass|credential|input[_-]?value)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
         '$1<redacted>',
       )
       .replace(/\b(["']?(?:AK|SK)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>')

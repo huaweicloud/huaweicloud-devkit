@@ -449,3 +449,281 @@ async function withFakeHcloudForList(fn: () => Promise<void>): Promise<void> {
     else process.env.HCLOUD_BIN_ARGS_JSON = prevArgs;
   }
 }
+
+// ── Advisory-face warn for unrecognized hcloud operations (2026-11-05 UX report #8) ──
+
+test('huaweicloud_hook_check_command upgrades an unrecognized hcloud operation to warn', async () => {
+  const result = (await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud FooBar BazQux --nonsense=1',
+  })) as HookCheckResult;
+  assert.equal(result.decision, 'warn');
+  assert.equal(result.ok, true, 'warn stays advisory — the face never blocks');
+  assert.equal(result.findings[0]?.ruleId, 'hwc-unknown-operation');
+  assert.match(result.findings[0]?.message ?? '', /does not recognize/);
+  // Known reads keep the bare allow (no findings, no warn).
+  const known = (await callTool('huaweicloud_hook_check_command', { command: 'hcloud obs ls' })) as HookCheckResult;
+  assert.equal(known.decision, 'allow');
+  assert.equal(known.findings.length, 0);
+});
+
+// ── Deployment-intent fallback (2026-11-05 UX report #1) ────────────────────
+
+test('serviceCatalog deployment intents always carry a compute/hosting recommendation', async () => {
+  const vendor = 'test: vendor established by the harness';
+  const report = (await callTool('huaweicloud_service_catalog', {
+    intent: '部署一个带负载均衡和数据库的 Web 应用',
+    vendorConfirmed: vendor,
+  })) as ServiceCatalogResult & { recommendedServices?: string[] };
+  assert.equal(report.recommendedSkills?.[0], 'huawei-sandbox', 'the hosting option leads a deployment intent');
+  assert.ok(report.recommendedSkills?.includes('huawei-ecs'), 'the compute carrier is never missing');
+  assert.ok(report.recommendedServices?.includes('ECS'));
+
+  // Narrow phrasings used to fall to the empty fallback entirely.
+  const bare = (await callTool('huaweicloud_service_catalog', {
+    intent: '部署 web 应用',
+    vendorConfirmed: vendor,
+  })) as ServiceCatalogResult;
+  assert.ok((bare.recommendedSkills?.length ?? 0) > 0, 'a bare deployment phrasing must not recommend nothing');
+  assert.ok(bare.recommendedSkills?.includes('huawei-ecs'));
+
+  // Matched services keep their positions ahead of the fallback entries, so a
+  // user-named service never drops out of the capped list (loop round 2 R7:
+  // RDS used to be evicted by the prepended Sandbox/ECS).
+  const many = (await callTool('huaweicloud_service_catalog', {
+    intent: 'deploy an app with 数据库 网络 存储 监控 审计 账单',
+    vendorConfirmed: vendor,
+  })) as ServiceCatalogResult & { recommendedServices?: string[] };
+  assert.ok(many.recommendedServices?.includes('RDS'), 'the user-named database stays in the services list');
+  assert.ok(many.recommendedServices?.includes('ECS'), 'the fallback compute carrier survives the cap');
+  assert.ok((many.recommendedServices?.length ?? 0) <= 7, 'the exit cap is 7');
+
+  // Non-deployment intents are untouched.
+  const billing = (await callTool('huaweicloud_service_catalog', {
+    intent: '查询账单',
+    vendorConfirmed: vendor,
+  })) as ServiceCatalogResult;
+  assert.deepEqual(billing.recommendedSkills, ['huawei-billing']);
+});
+
+test('serviceCatalog deployment fallback fires only for deploy ACTIONS (loop round 2 R2)', async () => {
+  const vendor = 'test: vendor established by the harness';
+  // Non-action intents must not gain the COMPUTE fallback. (The sandbox and
+  // obs routes fire on their own keywords — 'hosting 是什么意思' carries the
+  // route word 'hosting', '写网站文案' the route word '网站'; that is
+  // pre-existing route behavior, not the fallback. Every other case below
+  // carries no route word at all.)
+  const assertNoComputeFallback = async (intent: string) => {
+    const result = (await callTool('huaweicloud_service_catalog', {
+      intent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(!result.recommendedSkills?.includes('huawei-ecs'), `"${intent}" must not be pointed at ECS provisioning`);
+    assert.ok(
+      !result.recommendedSkills?.includes('huawei-sandbox') || /hosting|网站|网页/.test(intent),
+      `"${intent}" must not be pointed at sandbox provisioning`,
+    );
+  };
+  // Deployment ARTIFACTS and troubleshooting are query intents, not actions.
+  // (Loop round 4: the artifact-noun adjacency window is gone — it read the
+  // deploy OBJECT of real sentences (发布状态页/搭建日志分析平台) as a query
+  // artifact and landed them on nothing. What remains: query verbs opening
+  // the sentence (now with 帮我/查 prefixes), how-to-troubleshoot shapes, and
+  // definitional questions. 梳理 mid-sentence no longer blocks anything.)
+  await assertNoComputeFallback('查询部署记录');
+  await assertNoComputeFallback('帮我查询部署记录');
+  await assertNoComputeFallback('查一下部署日志');
+  await assertNoComputeFallback('部署失败怎么排查');
+  await assertNoComputeFallback('部署组是什么');
+  await assertNoComputeFallback('上线历史在哪里看');
+  await assertNoComputeFallback('hosting 是什么意思');
+  // Noun usages: the unbounded 'host' substring inside localhost/ghost used
+  // to light the trigger.
+  await assertNoComputeFallback('localhost 开发环境调试');
+  await assertNoComputeFallback('ghost 博客迁移方案');
+  await assertNoComputeFallback('host 头攻击怎么防');
+  await assertNoComputeFallback('host-header 攻击怎么防');
+  await assertNoComputeFallback('部署白皮书怎么写');
+  await assertNoComputeFallback('host 机器在哪');
+  await assertNoComputeFallback('写网站文案');
+  await assertNoComputeFallback('写网页爬虫');
+  await assertNoComputeFallback('what is deployment');
+  // 'deployment pipeline' DELIBERATELY fires (loop round 3): the pipeline
+  // block killed real deploy sentences (用流水线部署我的应用), and a stray
+  // compute rec on a CI/CD phrasing is advisory noise, not a misroute that
+  // provisions — the accepted trade documented in the gate.
+
+  // The WAF adjacency must not gain a compute fallback under any phrasing.
+  for (const wafIntent of ['为 web 应用配置 WAF 规则', '给网站加 WAF 防护规则', 'configure WAF rules for my website']) {
+    const waf = (await callTool('huaweicloud_service_catalog', {
+      intent: wafIntent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(!waf.recommendedSkills?.includes('huawei-ecs'), `"${wafIntent}" must not inject ECS`);
+    assert.ok(
+      waf.recommendedSkills?.includes('huawei-cloud-waf-aad-rule-management'),
+      `"${wafIntent}" must keep the WAF route`,
+    );
+  }
+
+  // Genuine deploy sentences keep the fallback — including deploy-object
+  // nouns that look like artifact words (loop round 4 B1: 发布状态页/搭建日志
+  // 分析平台 landed on nothing), mixed action+query sentences (B2), and
+  // mid-sentence 梳理 (B3, the twin of the rescued 诊断).
+  for (const deployIntent of [
+    '部署新版本 失败自动回滚',
+    '搭建带自动回滚的发布流程',
+    '用流水线部署我的应用',
+    '部署前先诊断网络配置',
+    '部署前先梳理网络配置',
+    '怎么部署 web 应用',
+    '发布状态页',
+    '搭建日志分析平台',
+    '部署日志服务',
+    '上线通知列表功能',
+    '上线失败重试功能',
+    '部署服务状态监控',
+    '部署应用，然后查看部署日志',
+    '先部署网站，再看部署记录',
+  ]) {
+    const dep = (await callTool('huaweicloud_service_catalog', {
+      intent: deployIntent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(dep.recommendedSkills?.includes('huawei-ecs'), `"${deployIntent}" must keep the compute carrier`);
+  }
+  // Noun-first site phrasings (B6) and the bare site-build form.
+  for (const siteIntent of ['做个网页', '网站怎么做', '把网站做出来', '网站想建一个']) {
+    const site = (await callTool('huaweicloud_service_catalog', {
+      intent: siteIntent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(site.recommendedSkills?.includes('huawei-ecs'), `"${siteIntent}" must carry the compute rec`);
+  }
+  // A deployment with a security group in it is still a deployment (组 in
+  // 安全组 must not read as the deployment-group artifact noun).
+  const sg = (await callTool('huaweicloud_service_catalog', {
+    intent: '部署一个带安全组的网络',
+    vendorConfirmed: vendor,
+  })) as ServiceCatalogResult;
+  assert.ok(sg.recommendedSkills?.includes('huawei-ecs'), '安全组 must not block the deploy trigger');
+});
+
+test('serviceCatalog troubleshooting how-to phrasings stay blocked in all families (loop round 4 S3)', async () => {
+  const vendor = 'test: vendor established by the harness';
+  for (const intent of [
+    '部署失败怎么办',
+    '部署出错了怎么办',
+    '部署失败如何排查',
+    '部署出错如何解决',
+    '部署失败如何处理',
+    '部署后如何验证',
+    'my deployment failed, how do I fix it',
+    'how to fix a failed deployment',
+    'my deployment is stuck, what should I do',
+    '帮我看看部署记录',
+    '检索部署记录',
+    '搜一下部署方案',
+    '查一下部署日志，然后部署新版本'.replace('，然后部署新版本', ''), // pure query form
+  ]) {
+    const result = (await callTool('huaweicloud_service_catalog', {
+      intent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(
+      !result.recommendedSkills?.includes('huawei-ecs'),
+      `"${intent}" is a troubleshooting/query phrasing — must not gain the compute fallback`,
+    );
+  }
+  // The compound mirror: query opens, real deploy clause follows — the gate
+  // must NOT kill the deploy half (loop round 4 seat-3 H8).
+  const compound = (await callTool('huaweicloud_service_catalog', {
+    intent: '查一下部署日志，然后部署新版本',
+    vendorConfirmed: vendor,
+  })) as ServiceCatalogResult;
+  assert.ok(
+    compound.recommendedSkills?.includes('huawei-ecs'),
+    'a query-open + deploy-clause sentence keeps the carrier',
+  );
+});
+
+test('serviceCatalog query-verb family covers the colloquial forms (loop round 5 seat-3 B1)', async () => {
+  const vendor = 'test: vendor established by the harness';
+  for (const intent of [
+    '帮我看下部署日志',
+    '帮我看一下部署记录',
+    '麻烦看下部署日志',
+    '帮我瞧瞧部署记录',
+    '看下部署日志',
+  ]) {
+    const result = (await callTool('huaweicloud_service_catalog', {
+      intent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(
+      !result.recommendedSkills?.includes('huawei-ecs'),
+      `"${intent}" is a query — must not gain the compute fallback`,
+    );
+  }
+});
+
+test('serviceCatalog query family round-6/7 colloquial forms stay blocked (loop rounds 6-7 seat-3)', async () => {
+  const vendor = 'test: vendor established by the harness';
+  for (const intent of [
+    '帮我看下部署日志',
+    '帮我看一下部署记录',
+    '麻烦看下部署日志',
+    '帮我瞧瞧部署记录',
+    '看下部署日志',
+    // loop round 6: stacked prefixes, 您, 看一眼, bare 看, 瞅/瞄 families
+    '麻烦帮我看看部署日志',
+    '请帮我看下部署日志',
+    '麻烦您看一下部署日志',
+    '帮我看一眼部署记录',
+    '看一眼部署日志',
+    '帮我看部署记录',
+    '帮我瞅瞅部署记录',
+    '帮我瞅一眼部署日志',
+    '瞄一眼部署日志',
+    // loop round 7: star-joined stacks, 给我/劳驾/拜托, near-scan, bare-noun tail
+    '麻烦您请帮个忙瞅瞅部署记录',
+    '给我看下部署日志',
+    '劳驾检索部署记录',
+    '拜托瞄一眼部署日志',
+    '帮我看下部署日志，部署是谁做的',
+  ]) {
+    const result = (await callTool('huaweicloud_service_catalog', {
+      intent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(
+      !result.recommendedSkills?.includes('huawei-ecs'),
+      `"${intent}" is a query — must not gain the compute fallback`,
+    );
+  }
+  // The compound exemption requires a deploy OBJECT after the comma — the
+  // bare word asking who/what does not count (loop round 7 seat-3 B1).
+  const who = (await callTool('huaweicloud_service_catalog', {
+    intent: '帮我看下部署日志，部署是谁做的',
+    vendorConfirmed: vendor,
+  })) as ServiceCatalogResult;
+  assert.ok(!who.recommendedSkills?.includes('huawei-ecs'));
+});
+
+test('serviceCatalog double-clause tails mentioning the deploy word fire (loop round 12 documented residual)', async () => {
+  const vendor = 'test: vendor established by the harness';
+  for (const intent of [
+    '帮我看下部署日志，看看部署失败没有',
+    '帮我瞅瞅部署记录，部署流程对不对',
+    '帮我看下部署日志，部署记录很长',
+    '帮我看看部署日志，上线流程对不对',
+  ]) {
+    const result = (await callTool('huaweicloud_service_catalog', {
+      intent,
+      vendorConfirmed: vendor,
+    })) as ServiceCatalogResult;
+    assert.ok(
+      result.recommendedSkills?.includes('huawei-ecs'),
+      `"${intent}" is the documented noise direction (tail mentions the deploy word)`,
+    );
+  }
+});

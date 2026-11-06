@@ -158,8 +158,22 @@ test('the py hook degrades coherently: derived vocabularies, isolated fields, fa
   for (const assignment of readAssignments) {
     assert.match(assignment, /read_prefixes/, `policy-derived compile required: ${assignment}`);
   }
-  // Start-anchored read exemption (the drift let `Update-Show-x` allow).
-  assert.match(pyHook, /READ_OPERATION_RE is None or not READ_OPERATION_RE\.match\(operation\)/);
+  // Start-anchored read exemption plus the exact-name exception set (the
+  // drift let `Update-Show-x` allow; loop rounds 2-3 traded a Result(s)
+  // suffix regex — the corpus killed it with five real writes ending in
+  // Result(s) — for exact names, which also sidesteps the py
+  // `$`-before-trailing-newline divergence). Unavailable vocabularies never
+  // prove a read — both arms fail closed.
+  assert.match(
+    pyHook,
+    /read_exempt = \(READ_OPERATION_RE is not None and READ_OPERATION_RE\.match\(operation\)\) or \(/,
+  );
+  assert.match(pyHook, /operation\.lower\(\) in READ_OPERATION_EXCEPTIONS/);
+  assert.match(pyHook, /return bool\(WRITE_OPERATION_RE\.search\(operation\) and not read_exempt\)/);
+  // Item-level filtering on the read lists (loop round 3): a non-string item
+  // used to abort the whole policy load and leave the LATER vocabularies
+  // (secret/configure) at None — gates of the `if RE and ...` form skip.
+  assert.match(pyHook, /read_prefixes = \[p for p in read_prefixes if isinstance\(p, str\)\]/);
   // The write-gate fail-closed arm with its cause-named reason (the honest
   // widened text names the empty-vocabulary cause, not just load failure).
   assert.match(pyHook, /could not be loaded or carries no write vocabulary/);

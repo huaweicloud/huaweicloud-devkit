@@ -270,3 +270,98 @@ test('explain_error derives apic/apigw/obs prefixes and lowercase services to th
   });
   assert.match(JSON.stringify(obs), /OBS uses AK\/SK directly/, "service:'obs' must hit the OBS table");
 });
+
+// ── UX report #11/#12 (2026-11-05): the code alias and message extraction ───
+
+test('huaweicloud_explain_error accepts the code alias like the canonical errorCode', async () => {
+  const result = (await callTool('huaweicloud_explain_error', { code: 'APIGW.0301' })) as {
+    errorCode: string;
+    suggestions: string[];
+  };
+  assert.equal(result.errorCode, 'APIGW.0301');
+  assert.match(result.suggestions.join('\n'), /Incorrect IAM authentication information/);
+});
+
+test('huaweicloud_explain_error extracts the code embedded in the pasted message', async () => {
+  // A real service name (iam) whose own table is empty must not block the
+  // prefix-derived table (APIGW) from answering the extracted code.
+  const result = (await callTool('huaweicloud_explain_error', {
+    service: 'iam',
+    message: 'APIGW.0301 Unauthorized: Incorrect IAM authentication information',
+  })) as { errorCode: string; suggestions: string[] };
+  assert.equal(result.errorCode, 'APIGW.0301');
+  assert.match(result.suggestions.join('\n'), /API Gateway layer error/);
+  assert.match(result.suggestions.join('\n'), /Incorrect IAM authentication information/);
+});
+
+test('huaweicloud_explain_error does not promote timestamps or version strings to codes', async () => {
+  for (const noise of ['Request failed after 12.3456 ms', 'client v2.0115 rejected the request']) {
+    const result = (await callTool('huaweicloud_explain_error', { message: noise })) as { errorCode: string };
+    assert.equal(result.errorCode, '', `"${noise}" must not become a code`);
+  }
+});
+
+test('huaweicloud_explain_error does not promote glued prose to a code (loop round 2 R9)', async () => {
+  // `orderfailedEcs.0707` — the left boundary keeps glued Latin text from
+  // becoming the code the reply tells the user to search for.
+  const result = (await callTool('huaweicloud_explain_error', {
+    message: 'orderfailedEcs.0707 occurred',
+  })) as { errorCode: string; suggestions: string[] };
+  assert.equal(result.errorCode, '', 'glued prose must not become a code');
+});
+
+test('huaweicloud_explain_error extracts the code from the message past a placeholder errorCode (loop round 2 R9)', async () => {
+  // 'N/A' is a non-code placeholder: it must not suppress message extraction
+  // (the same silent drop the code alias targets, one level deeper).
+  const result = (await callTool('huaweicloud_explain_error', {
+    errorCode: 'N/A',
+    message: 'APIGW.0301 Unauthorized: Incorrect IAM authentication information',
+  })) as { errorCode: string; suggestions: string[] };
+  assert.equal(result.errorCode, 'APIGW.0301');
+  assert.match(result.suggestions.join('\n'), /Incorrect IAM authentication information/);
+});
+
+test('generic uppercase words before HTTP statuses do not become codes (loop round 3 S4-B2)', async () => {
+  for (const noise of ['FAILED.404 not found', 'ERROR.500 internal', 'Timeout.302 after retries']) {
+    const result = (await callTool('huaweicloud_explain_error', { message: noise })) as { errorCode: string };
+    assert.equal(result.errorCode, '', `"${noise}" must not become a code`);
+  }
+});
+
+test('symbol/short placeholder errorCodes fall through to message extraction (loop round 3 S4-B3)', async () => {
+  for (const placeholder of ['*', 'TODO', '?', '0']) {
+    const result = (await callTool('huaweicloud_explain_error', {
+      errorCode: placeholder,
+      message: 'APIGW.0301 Unauthorized: Incorrect IAM authentication information',
+    })) as { errorCode: string };
+    assert.equal(result.errorCode, 'APIGW.0301', `errorCode "${placeholder}" must not suppress extraction`);
+  }
+});
+
+test('non-dotted identifier errorCodes keep working (the OBS table keys)', async () => {
+  const result = (await callTool('huaweicloud_explain_error', {
+    service: 'obs',
+    errorCode: 'InvalidAccessKeyId',
+    message: 'invalid access key id',
+  })) as { errorCode: string; suggestions: string[] };
+  assert.equal(result.errorCode, 'InvalidAccessKeyId');
+  assert.match(result.suggestions.join('\n'), /OBS uses AK\/SK directly/);
+});
+
+test('the code alias wins when errorCode is placeholder-shaped (shape-gated order)', async () => {
+  const result = (await callTool('huaweicloud_explain_error', {
+    errorCode: 'N/A',
+    code: 'APIGW.0301',
+    message: 'unauthorized',
+  })) as { errorCode: string };
+  assert.equal(result.errorCode, 'APIGW.0301');
+});
+
+test('whitespace-padded errorCodes normalize after the shape gate (loop round 3 seat-4 O2)', async () => {
+  const result = (await callTool('huaweicloud_explain_error', {
+    errorCode: ' Ecs.0019 ',
+    message: 'flavor offline',
+  })) as { errorCode: string; suggestions: string[] };
+  assert.equal(result.errorCode, 'Ecs.0019');
+  assert.match(result.suggestions.join('\n'), /Ecs\.0019/);
+});

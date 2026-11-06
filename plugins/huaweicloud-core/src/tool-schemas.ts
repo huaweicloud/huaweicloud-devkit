@@ -56,6 +56,7 @@ const TOOL_SCHEMAS = {
   huaweicloud_explain_error: z.looseObject({
     service: z.string().optional(),
     errorCode: z.string().optional(),
+    code: z.string().optional().describe('Alias of errorCode, accepted for compatibility. Prefer errorCode.'),
     message: z.string().optional(),
     requestId: z.string().optional(),
   }),

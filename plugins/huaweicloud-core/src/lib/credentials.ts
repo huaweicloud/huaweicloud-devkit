@@ -61,8 +61,11 @@ export const pendingConfirms = new Map<string, PendingConfirm>();
 
 // Tombstones for confirm tokens already consumed (D4-24, #745): a repeat
 // huaweicloud_auth_confirm call classifies as already_processed instead of
-// not_found. Kept in-memory only: confirm tokens are session-scoped and never
-// persisted across processes.
+// not_found. Kept in-memory only: confirm tokens are process-scoped — they
+// never persist across processes (a new MCP server process knows no token),
+// while every MCP session inside the SAME process can consume a token another
+// session minted (the Map is not keyed by session; the seat-3 probe of the
+// 2026-11-05 UX report pinned that).
 export const consumedConfirms = new Map<string, { consumedAt: number }>();
 
 export function readImportFile() {

@@ -6,7 +6,13 @@
 // normalization, the trace seam, the ToolArgs/CallToolOptions contracts,
 // and every exported name its importers (mcp-protocol, tests, scripts)
 // already target — same names, same paths, same behavior.
-import { evaluateArtifacts, evaluateCommandRisk, evaluateDeployPlan, type RiskEvaluation } from './risk-rule-engine.ts';
+import {
+  evaluateArtifacts,
+  evaluateCommandRisk,
+  evaluateDeployPlan,
+  type RiskEvaluation,
+  type RiskFinding,
+} from './risk-rule-engine.ts';
 import { classifyTextCommand } from './safety-policy.ts';
 import { trackToolInvoke, trackSkillRetrieve } from './telemetry/telemetry.ts';
 // The telemetry invoke-value derivation (the auditable fact callTool records
@@ -92,6 +98,9 @@ export type ToolArgs = {
   plan?: unknown;
   intent?: string;
   errorCode?: string;
+  // Alias of errorCode on explain_error (the loose schema passes it through;
+  // the handler prefers errorCode when both are present).
+  code?: string;
   message?: string;
   requestId?: string;
   query?: string;
@@ -264,7 +273,7 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
 
   switch (name) {
     case 'huaweicloud_hook_check_command':
-      return hookResult(evaluateCommandRisk(args.command || ''));
+      return hookResult(withUnknownOperationWarn(String(args.command || ''), evaluateCommandRisk(args.command || '')));
     case 'huaweicloud_hook_check_artifacts':
       return hookResult(evaluateArtifacts(args.artifacts || []));
     case 'huaweicloud_hook_check_deploy_plan':
@@ -314,6 +323,41 @@ function hookResult(result: RiskEvaluation) {
           ? 'Review the warnings with the user before proceeding.'
           : 'No Huawei Cloud hook risk rule matched.',
   };
+}
+
+// The advisory command face used to answer a bare allow for an hcloud command
+// the rule catalog has no opinion on (`hcloud FooBar BazQux` → allow, zero
+// findings — the fail-open shape from the 2026-11-05 UX report #8). The
+// classifier's unknown_read fallthrough is the same fact from the safety side:
+// an hcloud-leading command whose operation matches neither the read nor the
+// write vocabulary. THIS face upgrades exactly that shape to warn; the run
+// faces stay allow (their gate is deny-only assertAllowed), so legitimate
+// operations outside the vocabulary keep executing, and the PreToolUse hook
+// is untouched (it acts on deny alone).
+function withUnknownOperationWarn(command: string, result: RiskEvaluation): RiskEvaluation {
+  if (result.decision !== 'allow' || result.findings.length > 0 || !command.trim()) return result;
+  let risk: string | undefined;
+  try {
+    risk = classifyTextCommand(command)?.risk;
+  } catch {
+    return result;
+  }
+  if (risk !== 'unknown_read') return result;
+  const finding: RiskFinding = {
+    ruleId: 'hwc-unknown-operation',
+    title: 'Unrecognized Huawei Cloud operation',
+    category: 'unknown_operation',
+    severity: 'warn',
+    message:
+      'The command targets a Huawei Cloud service/operation the safety vocabulary does not recognize. ' +
+      'It may be a valid read, but it could also be a write the vocabulary has not seen.',
+    remediation:
+      'Verify the service and operation names with `hcloud <Service> --help` before running; ' +
+      'treat the output as untrusted and redact it.',
+    source: 'command',
+    evidence: command.slice(0, 240),
+  };
+  return { ...result, decision: 'warn', findings: [finding] };
 }
 
 export function classifyRawCommand(command: unknown) {

@@ -211,3 +211,121 @@ test('classifyHcloudArgs allows version commands', () => {
   assert.equal(classifyHcloudArgs(['version']).risk, 'local_metadata');
   assert.equal(classifyHcloudArgs(['--version']).risk, 'local_metadata');
 });
+
+// ── Read-vocabulary completion (2026-11-06 loop round 2 R4) ──────────────────
+// The six write prefixes added for the UX #8 leak-nets (Register/Restore/
+// Migrate/Import/Uninstall/Assign) are substring-matched, so real READ
+// operations carrying those words mid-name flipped to deny. The corpus scan
+// (148 services, 13,737 operations) pinned 8 false positives; the read
+// vocabulary answers with new prefixes (Download/Recognize/Collect/Check/
+// Glance) and a Result(s) suffix arm.
+
+test('query-result operations stay reads despite write-prefixed names (loop round 2 R4, exact list round 4)', () => {
+  // The corpus scan is the authority: shape-based generalizations (a
+  // Result(s) suffix in round 3, Download/Recognize/Collect/Check prefixes in
+  // round 2) each freed real writes (112 POST + 4 PUT for the prefixes), so
+  // the exemption is an EXACT list of the eight pinned reads.
+  const reads: Array<[string, string]> = [
+    ['DDM', 'MigrateResults'], // Query Shard Change Task Details
+    ['DATAARTSSTUDIO', 'ImportResult'], // Querying the Import Result
+    ['CFW', 'DownloadImportResult'], // Downloading the Imported Rules
+    ['CFW', 'DownloadImportTemplate'],
+    ['GAUSSDB', 'DownloadImportExcelTemplate'],
+    ['OCR', 'RecognizeHouseholdRegister'], // OCR inference, non-mutating
+    ['CONFIG', 'CollectPolicyAssignmentsStatesSummary'], // compliance summary query
+    ['DDM', 'CheckMigrateLogicDb'], // shard-change pre-check
+  ];
+  for (const [service, operation] of reads) {
+    const result = classifyHcloudArgs([service, operation]);
+    assert.equal(result.decision, 'allow', `${service} ${operation} is a read`);
+    assert.equal(result.risk, 'read_only', `${service} ${operation} must classify read_only`);
+  }
+  // Corpus writes the round-2 prefixes would have freed stay out of the
+  // blessed-read set (SMS CollectLog=POST, DRS CollectDbObjectsAsync=POST,
+  // HSS DownloadAssetFile=POST, RDS CheckInstanceForUpgrade=PUT) — they fall
+  // to unknown_read (advisory warn, the #8 mitigation), never read_only.
+  for (const [service, operation] of [
+    ['SMS', 'CollectLog'],
+    ['DRS', 'CollectDbObjectsAsync'],
+    ['HSS', 'DownloadAssetFile'],
+    ['RDS', 'CheckInstanceForUpgrade'],
+  ] as const) {
+    const result = classifyHcloudArgs([service, operation]);
+    assert.notEqual(result.risk, 'read_only', `${service} ${operation} must NOT be a blessed read`);
+  }
+});
+
+test('the write leak-nets stay closed (loop round 2 R4)', () => {
+  for (const [service, operation] of [
+    ['IMS', 'RegisterImage'],
+    ['RDS', 'RestoreToNewInstance'],
+    ['IMS', 'ImportImage'],
+    ['ECS', 'MigrateServer'],
+    ['CES', 'UninstallAgent'],
+    ['VPC', 'AssignIpv6Addresses'],
+    ['ECS', 'BatchStopServers'],
+  ] as const) {
+    const result = classifyHcloudArgs([service, operation]);
+    assert.equal(result.decision, 'deny', `${service} ${operation} is a write`);
+    assert.equal(result.risk, 'write');
+  }
+});
+
+test('Glance-prefixed IMS operations classify as reads (the tools own show example)', () => {
+  // SERVICE_EXAMPLES teaches `IMS GlanceShowImage`; the advisory face used
+  // to warn "unrecognized operation" on the devkit's own example.
+  const result = classifyHcloudArgs(['IMS', 'GlanceShowImage']);
+  assert.equal(result.risk, 'read_only');
+});
+
+// ── Loop round 3: the Glance prefix narrows and the suffix arm becomes exact ──
+
+test('glance-prefixed WRITES stay denied — only GlanceShow/GlanceList read (loop round 3 S2-B1)', async () => {
+  for (const operation of [
+    'glancedeleteimage', // DELETE
+    'glanceupdateimage', // PATCH
+    'glancecreateimage',
+    'glanceaddmember',
+  ]) {
+    const result = classifyHcloudArgs(['IMS', operation]);
+    assert.equal(result.decision, 'deny', `IMS ${operation} is a write`);
+    assert.equal(result.risk, 'write');
+  }
+  for (const operation of ['glanceshowimage', 'glancelistimages']) {
+    const result = classifyHcloudArgs(['IMS', operation]);
+    assert.equal(result.risk, 'read_only', `IMS ${operation} is a read`);
+  }
+});
+
+test('real writes ending in Result(s) stay denied — the exception list is exact (loop round 3 S2-B2)', async () => {
+  // Corpus-verified writes: CloudTest settaskresult (POST), SMS
+  // updatecommandresult (POST), SMS updateconsistencyresult (POST), CloudTest
+  // createtaskdefaultresult (POST), MANAGEONESCHCS reportexecutedsubscriptionsresult
+  // (PUT). The round-2 Result(s)-suffix regex freed all five.
+  for (const [service, operation] of [
+    ['CloudTest', 'settaskresult'],
+    ['SMS', 'updatecommandresult'],
+    ['SMS', 'updateconsistencyresult'],
+    ['CloudTest', 'createtaskdefaultresult'],
+    ['MANAGEONESCHCS', 'reportexecutedsubscriptionsresult'],
+  ] as const) {
+    const result = classifyHcloudArgs([service, operation]);
+    assert.equal(result.decision, 'deny', `${service} ${operation} is a write`);
+    assert.equal(result.risk, 'write');
+  }
+  // The two corpus reads the exact list exists for keep their exemption.
+  for (const [service, operation] of [
+    ['DDM', 'MigrateResults'],
+    ['DATAARTSSTUDIO', 'ImportResult'],
+  ] as const) {
+    const result = classifyHcloudArgs([service, operation]);
+    assert.equal(result.risk, 'read_only', `${service} ${operation} stays a read`);
+  }
+});
+
+test('case-variant exception names match exactly, trailing garbage does not (loop round 3 S2-B3)', () => {
+  assert.equal(classifyHcloudArgs(['DDM', 'migrateresults']).risk, 'read_only');
+  // A trailing newline inside the quoted operation must not ride a loose
+  // suffix anchor into a read — the exact match rejects it on both layers.
+  assert.equal(classifyHcloudArgs(['DDM', 'MigrateResult\n']).decision, 'deny');
+});

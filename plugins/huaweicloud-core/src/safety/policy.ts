@@ -12,6 +12,7 @@ export interface Policy {
   blockedSecretCliPatterns: string[];
   writeOperationPrefixes: string[];
   readOperationPrefixes: string[];
+  readOperationExceptions: string[];
 }
 
 export interface ClassifyOptions {
@@ -63,6 +64,7 @@ export function loadPolicy(path: string): Policy {
     blockedSecretCliPatterns: toStringArray(raw.blockedSecretCliPatterns, 'blockedSecretCliPatterns'),
     writeOperationPrefixes,
     readOperationPrefixes: toStringArray(raw.readOperationPrefixes, 'readOperationPrefixes'),
+    readOperationExceptions: toStringArray(raw.readOperationExceptions, 'readOperationExceptions'),
   };
 }
 
@@ -89,7 +91,19 @@ export function hasWritePrefix(operation: string, policy: Policy): boolean {
 
 export function hasReadPrefix(operation: string, policy: Policy): boolean {
   const candidates = [String(operation), stripShellQuotes(String(operation))];
-  return candidates.some((normalized) =>
-    policy.readOperationPrefixes.some((prefix) => new RegExp(`^${prefix}`, 'i').test(normalized)),
+  // The exact-name exception arm (readOperationExceptions): the substring
+  // write vocabulary misreads query-result operations whose names lead with
+  // a write word (DDM MigrateResults, DATAARTSSTUDIO ImportResult — both
+  // "Query the results of X" in their API docs, 2026-11-06 loop round 2
+  // corpus scan). Round 3 generalized the arm to a Result(s)-suffix regex;
+  // the corpus killed it with five real writes ending in Result(s). Round 4
+  // generalization killed AGAIN: Download/Recognize/Collect/Check prefixes
+  // freed 112 POST + 4 PUT operations (SMS CollectLog, DRS
+  // CollectDbObjectsAsync, RDS CheckInstanceForUpgrade=PUT, ...). The corpus
+  // scan is the authority — the arm is an EXACT list, nothing shape-based.
+  return candidates.some(
+    (normalized) =>
+      policy.readOperationPrefixes.some((prefix) => new RegExp(`^${prefix}`, 'i').test(normalized)) ||
+      policy.readOperationExceptions.some((exception) => exception.toLowerCase() === normalized.toLowerCase()),
   );
 }

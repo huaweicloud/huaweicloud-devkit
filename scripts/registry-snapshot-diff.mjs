@@ -106,6 +106,12 @@ const DELIBERATE_ADDITIONS = [
     reason:
       'dev 60743c2b 两池 pool_type 客户端适配：连接时选择 ephemeral/persistent 池（服务端权威映射模板，显式 template_id 优先）',
   },
+  {
+    tool: 'huaweicloud_explain_error',
+    property: 'code',
+    reason:
+      '2026-11-05 UX report #11: `code` was the silent-failure alias agents actually sent (the loose schema already passed it through to the handler); declaring it documents the accepted alias instead of leaving the drop implicit.',
+  },
 ];
 
 function normalize(node) {

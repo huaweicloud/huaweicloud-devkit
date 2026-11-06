@@ -166,8 +166,11 @@ async function handleAuthConfirm(args: ToolArgs = {}, _opts: CallToolOptions = {
   // D4-24 precise JSON contract (#745): a missing or already-consumed confirm
   // token returns a structured result instead of throwing a generic Error
   // string, mirroring runApprovedCommand's contract. Tombstones are kept
-  // in-memory only: confirm tokens are session-scoped and never persisted
-  // across processes.
+  // in-memory only: confirm tokens are process-scoped and never persisted —
+  // a NEW server process knows no token (CONFIRM_TOKEN_NOT_FOUND), while any
+  // MCP session inside the SAME process can consume a token another session
+  // minted (the Map is not keyed by session; the 2026-11-05 UX seat-3 probe
+  // pinned both directions).
   const token = String(args.token || '');
   const pending = pendingConfirms.get(token);
   if (!pending) {
@@ -284,7 +287,7 @@ export const AUTH_TOOLS = [
   {
     name: 'huaweicloud_auth_confirm',
     description:
-      'Confirm a pending credential reconciliation choice returned by auth_switch persist when S1 already holds a different account (R2). decision=s1 keeps S1 as source of truth and propagates it; decision=newImported propagates the newly imported account into S1 and mirrors.',
+      'Confirm a pending credential reconciliation choice returned by auth_switch persist when S1 already holds a different account (R2). decision=s1 keeps S1 as source of truth and propagates it; decision=newImported propagates the newly imported account into S1 and mirrors. Tokens are process-scoped: they live only in the MCP server process that minted them and die with it — confirm in the same session that ran auth_switch, or re-run auth_switch after a restart.',
     schema: authConfirmSchema,
     handler: handleAuthConfirm,
   },

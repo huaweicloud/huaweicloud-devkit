@@ -176,3 +176,205 @@ test('tombstones age out: an aged tombstone inspects as not_found, not already_c
 });
 
 // ── #921: CLI ok-judgment holes ─────────────────────────────────────────────
+
+// ── Leading-bin normalization seam (2026-11-05 UX report #6) ────────────────
+// The token binds the plan's EFFECTIVE args, so a run call that echoes the
+// plan verbatim and one that sends the cleaned args both verify, while any
+// real argument change still rejects. Before the seam, a prefixed plan
+// followed by a self-corrected run burned the single-use token on a mismatch.
+
+test('runApprovedCommand: a prefixed plan and a cleaned run verify against one approval', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = (await callTool('huaweicloud_plan_cli_command', {
+        args: ['hcloud', 'ECS', 'ListServersDetails'],
+        vendorConfirmed: 'test: vendor established by the harness',
+      })) as HcloudPlan;
+      assert.equal(plan.command, 'hcloud ECS ListServersDetails', 'the echoed command must be the effective one');
+      assert.ok(plan.warnings.some((w) => String(w).includes('Leading executable/wrapper token')));
+
+      const result = (await callTool('huaweicloud_run_approved_command', {
+        args: ['ECS', 'ListServersDetails'],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+        maxRetries: 0,
+        vendorConfirmed: 'test: vendor established by the harness',
+      })) as ApprovedRunResult;
+      assert.equal(result.approved, true, 'the cleaned run matches the prefixed plan after normalization');
+    });
+  });
+});
+
+test('runApprovedCommand: a cleaned plan and a prefixed run verify against one approval', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const token = await planApproval();
+      const result = (await callTool('huaweicloud_run_approved_command', {
+        args: ['hcloud', 'ECS', 'ListServersDetails'],
+        approvalToken: token,
+        approvedByUser: true,
+        maxRetries: 0,
+        vendorConfirmed: 'test: vendor established by the harness',
+      })) as ApprovedRunResult;
+      assert.equal(result.approved, true, 'the prefixed run normalizes to the approved effective args');
+    });
+  });
+});
+
+// ── Secret-value pinning (2026-11-06 loop round 2) ──────────────────────────
+// The redacted-equality branch cannot tell a changed real secret from the
+// documented placeholder→real substitution flow. The distinction lives at
+// plan time: placeholder-bearing plans keep the substitution flow; plans with
+// real secret values pin them.
+
+// Shared callTool wrappers for the pinning battery (write-plan + run): the
+// four cases differ only in the args arrays.
+async function planWrite(args: string[]): Promise<HcloudPlan> {
+  return (await callTool('huaweicloud_plan_cli_command', {
+    args,
+    allowWrites: true,
+    vendorConfirmed: 'test: vendor established by the harness',
+  })) as HcloudPlan;
+}
+
+function runWith(token: string, args: string[]): Promise<unknown> {
+  return callTool('huaweicloud_run_approved_command', {
+    args,
+    approvalToken: token,
+    approvedByUser: true,
+    maxRetries: 0,
+    vendorConfirmed: 'test: vendor established by the harness',
+  });
+}
+
+test('runApprovedCommand: a placeholder-bearing plan accepts the real secret at run time', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['RDS', 'CreateInstance', '--password=<password>', '--name=db1']);
+      const result = (await runWith(plan.approvalToken, [
+        'RDS',
+        'CreateInstance',
+        '--password=RealPass99Aa',
+        '--name=db1',
+      ])) as ApprovedRunResult;
+      assert.equal(result.approved, true, 'the documented placeholder→real substitution flow must execute');
+    });
+  });
+});
+
+test('runApprovedCommand: a plan with a real secret pins it — a different real secret rejects', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      await assert.rejects(
+        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password=DifferentSecret77Bb', '--name=db1']),
+        /Secret values are pinned/,
+      );
+    });
+  });
+});
+
+test('runApprovedCommand: the same real secret verifies through the exact hash', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      const result = (await runWith(plan.approvalToken, [
+        'RDS',
+        'CreateInstance',
+        '--password=FirstSecret99Aa',
+        '--name=db1',
+      ])) as ApprovedRunResult;
+      assert.equal(result.approved, true, 'an unchanged real secret matches the minted hash');
+    });
+  });
+});
+
+// ── Loop round 3: pinning vocabulary and placeholder forms ──────────────────
+
+test('runApprovedCommand: redactor-folded keys outside the middle arm pin too (loop round 3 S1-B1)', async () => {
+  // user_data/private_key/authorization/AK/SK live in redactString's arm 1/3;
+  // only the middle arm was mirrored in round 2, so real secrets under these
+  // keys stayed substitutable.
+  for (const key of ['private_key', 'user_data', 'authorization', 'AK', 'SK']) {
+    await withTempAuthHome(async () => {
+      await withFakeHcloudBin(async () => {
+        const plan = await planWrite(['ECS', 'CreateServers', `--server.${key}=RealKey123`, '--name=db1']);
+        await assert.rejects(
+          () => runWith(plan.approvalToken, ['ECS', 'CreateServers', `--server.${key}=Different456`, '--name=db1']),
+          /pinned|do not match/,
+          `${key}: a changed real secret must reject`,
+        );
+      });
+    });
+  }
+});
+
+test('runApprovedCommand: two-token and glued placeholder forms reject instead of executing (loop round 3 S1-B2)', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['RDS', 'CreateInstance', '--password', '<password>', '--name=db1']);
+      await assert.rejects(
+        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password', '<redacted>', '--name=db1']),
+        /placeholder secret value/,
+        'the two-token placeholder form must reject',
+      );
+      const glued = await planWrite(['RDS', 'CreateInstance', '--password <password>', '--name=db1']);
+      await assert.rejects(
+        () => runWith(glued.approvalToken, ['RDS', 'CreateInstance', '--password <redacted>', '--name=db1']),
+        /placeholder secret value/,
+        'the glued single-token placeholder form must reject',
+      );
+    });
+  });
+});
+
+test('runApprovedCommand: a placeholder rejection does not burn the token (loop round 3 S1-B3)', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['RDS', 'CreateInstance', '--password=<password>', '--name=db1']);
+      // First run still carries the placeholder → reject with guidance,
+      // WITHOUT consuming the token (the two-token form is covered by the
+      // dedicated placeholder-forms test above).
+      await assert.rejects(
+        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password=<redacted>', '--name=db1']),
+        /replace <redacted> with the actual value the user approved, then re-run with the same approval token/,
+      );
+      // Following the guidance on the SAME token must now execute.
+      const result = (await runWith(plan.approvalToken, [
+        'RDS',
+        'CreateInstance',
+        '--password=RealPass99Aa',
+        '--name=db1',
+      ])) as ApprovedRunResult;
+      assert.equal(result.approved, true, 'the guidance must be followable on the same approval token');
+    });
+  });
+});
+
+// ── Loop round 8-9: quote-adjacent and segment-model edges ──────────────────
+
+test('runApprovedCommand: a quote-glued real secret pins (loop round 8 S1-B3)', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['RDS', 'CreateInstance', '--password' + '"RealPw1"', '--name=db1']);
+      await assert.rejects(
+        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password' + '"EVILPw99"', '--name=db1']),
+        /pinned/,
+        'the quote-glued form must be visible to the pinning detector',
+      );
+    });
+  });
+});
+
+test('runApprovedCommand: a quote-glued placeholder at run time rejects (loop round 8 S1-B4)', async () => {
+  await withTempAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['RDS', 'CreateInstance', '--password <password>', '--name=db1']);
+      await assert.rejects(
+        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password' + '"<redacted>"', '--name=db1']),
+        /placeholder secret value/,
+        'the quote-glued placeholder form must not reach the child',
+      );
+    });
+  });
+});

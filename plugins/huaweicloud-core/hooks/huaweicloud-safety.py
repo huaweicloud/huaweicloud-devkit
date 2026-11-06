@@ -37,6 +37,7 @@ SECRET_CLI_RE = None
 WRITE_OPERATION_RE = None
 WRITE_VOCAB_RE = None
 READ_OPERATION_RE = None
+READ_OPERATION_EXCEPTIONS = set()
 BLOCKED_CONFIGURE_SUBCOMMANDS = set()
 
 # OBS util write-capable subcommands — the write-gate's OBS face and (via the
@@ -72,7 +73,7 @@ OBS_MARKER_RE = re.compile(r"\bOBS\b", re.I)
 
 
 def load_policy():
-    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE
+    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
     try:
         with POLICY_PATH.open("r", encoding="utf-8") as file_obj:
             policy = json.load(file_obj)
@@ -119,6 +120,13 @@ def load_policy():
         read_prefixes = policy.get("readOperationPrefixes", [])
         if not isinstance(read_prefixes, list):
             read_prefixes = []
+        else:
+            # Item-level filtering (TS toStringArray parity, loop round 3):
+            # a non-string item used to make "|".join throw, the outer
+            # except swallow the whole load, and every LATER field
+            # (secret/configure vocabularies) stay None — gates of the
+            # `if RE and ...` form skip → fail-open.
+            read_prefixes = [p for p in read_prefixes if isinstance(p, str)]
         if read_prefixes:
             # The read vocabulary, likewise derived (interrogate round 1 —
             # the hardcoded mirror was the last hand-maintained policy
@@ -128,7 +136,29 @@ def load_policy():
             # word), and the write gate's read exemption anchors it at the
             # operation token's start via re.match (TS hasReadPrefix's
             # ^prefix parity — \b at position 0 is equivalent).
-            READ_OPERATION_RE = re.compile(r"\b(" + "|".join(read_prefixes) + r")\w*", re.I)
+            try:
+                READ_OPERATION_RE = re.compile(r"\b(" + "|".join(read_prefixes) + r")\w*", re.I)
+            except re.error:
+                # A regex-metacharacter string in the list ("Get(") degrades
+                # ONLY the read vocabulary — fail-closed (no read can be
+                # proven, writes stay denied). Swallowing it into the outer
+                # handler left every LATER field unloaded and its gates
+                # skipping: fail-open (loop round 4, seat-2 B2).
+                READ_OPERATION_RE = None
+        read_exceptions_raw = policy.get("readOperationExceptions", [])
+        if not isinstance(read_exceptions_raw, list):
+            read_exceptions_raw = []
+        # Exact-name exception arm (TS hasReadPrefix's readOperationExceptions
+        # parity, loop round 3): query-result operations whose names lead with
+        # a write word (DDM MigrateResults, DATAARTSSTUDIO ImportResult). A
+        # general Result(s)-suffix regex was tried in round 2 and killed by the
+        # corpus (five real writes end in Result(s)) — exact names only.
+        # Exact matching also sidesteps the py `$`-before-trailing-newline vs
+        # JS `$` divergence a suffix regex carried (loop round 2, seat-2 B3).
+        # Item filtering: same fail-open shape as read_prefixes above.
+        READ_OPERATION_EXCEPTIONS = {
+            str(op).lower() for op in read_exceptions_raw if isinstance(op, str)
+        }
         cred_patterns = policy.get("credentialFilePatterns", [])
         if cred_patterns:
             CONFIG_FILE_RE = re.compile("|".join(cred_patterns), re.I)
@@ -1447,13 +1477,15 @@ def _stripped_write_deny(stripped, argv):
     # re.match (interrogate round 1 — TS hasReadPrefix's ^prefix parity;
     # \b at position 0 is equivalent): a write-prefixed operation with an
     # embedded read word (`Update-Show-x`) is the write it is on both
-    # layers. An unavailable read vocabulary cannot prove a read — the
-    # exemption does not apply (fail-closed, the empty-read-list parity:
-    # TS hasReadPrefix over [] is always false).
-    return bool(
-        WRITE_OPERATION_RE.search(operation)
-        and (READ_OPERATION_RE is None or not READ_OPERATION_RE.match(operation))
+    # layers. The exact-name arm (READ_OPERATION_EXCEPTIONS) additionally
+    # exempts query-result operations whose head word is a write prefix
+    # (MigrateResults/ImportResult). Unavailable vocabulary cannot prove a
+    # read — the exemption does not apply (fail-closed, the empty-list
+    # parity: TS hasReadPrefix over [] is always false).
+    read_exempt = (READ_OPERATION_RE is not None and READ_OPERATION_RE.match(operation)) or (
+        operation.lower() in READ_OPERATION_EXCEPTIONS
     )
+    return bool(WRITE_OPERATION_RE.search(operation) and not read_exempt)
 
 
 def _classify_leading(stripped, argv, routed):

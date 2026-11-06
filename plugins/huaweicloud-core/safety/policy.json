@@ -82,9 +82,25 @@
     "Rotate",
     "Cancel",
     "Confirm",
-    "Subscribe"
+    "Subscribe",
+    "Register",
+    "Restore",
+    "Migrate",
+    "Import",
+    "Uninstall",
+    "Assign"
   ],
-  "readOperationPrefixes": ["List", "Show", "Get", "Describe", "NovaList", "NovaShow"],
+  "readOperationPrefixes": ["List", "Show", "Get", "Describe", "NovaList", "NovaShow", "GlanceShow", "GlanceList"],
+  "readOperationExceptions": [
+    "MigrateResults",
+    "ImportResult",
+    "DownloadImportResult",
+    "DownloadImportTemplate",
+    "DownloadImportExcelTemplate",
+    "RecognizeHouseholdRegister",
+    "CollectPolicyAssignmentsStatesSummary",
+    "CheckMigrateLogicDb"
+  ],
   "safeTextReadCommands": ["rg", "grep", "findstr", "git", "ls", "dir", "Get-ChildItem"],
   "blockedSandboxCommands": [
     "rm\\s+-rf\\s+/",

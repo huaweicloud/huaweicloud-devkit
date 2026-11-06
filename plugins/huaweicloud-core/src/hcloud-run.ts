@@ -9,7 +9,7 @@
 import { assertAllowed, type ClassifyOptions } from './safety-policy.ts';
 import { appendLangHint, UNSUPPORTED_SERVICE_RE, type UnsupportedCause } from './hcloud-catalog.ts';
 import { isTemporaryStsExpired, resolveStsInjectArgs } from './hcloud-sts.ts';
-import { planHcloudCommand, type HcloudPlanWithArgs } from './hcloud-plan.ts';
+import { planHcloudCommand, stripLeadingHcloudBinArgs, type HcloudPlanWithArgs } from './hcloud-plan.ts';
 import { runHcloudOnce } from './hcloud-run-once.ts';
 
 const DEFAULT_MAX_RETRIES = 1;
@@ -48,7 +48,12 @@ export interface HcloudRunOptions extends ClassifyOptions {
 }
 
 export async function runHcloud(args: unknown, options: HcloudRunOptions = {}): Promise<HcloudRunResult> {
-  const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
+  const inputArgs = Array.isArray(args) ? args.map(String) : [];
+  // Same seam as the plan face: rawArgs (what the child actually receives)
+  // must be the effective args, so a leading bin token in the input can no
+  // longer reach the spawn as a doubled `hcloud hcloud ...` prefix. The
+  // warning for the stripped token comes from the plan this call builds.
+  const { args: normalizedArgs } = stripLeadingHcloudBinArgs(inputArgs);
   const plan: HcloudPlanWithArgs = {
     ...planHcloudCommand(normalizedArgs, options),
     rawArgs: normalizedArgs,

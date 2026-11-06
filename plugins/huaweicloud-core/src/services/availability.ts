@@ -20,6 +20,11 @@ export async function getRegionalAvailability(service: string, region: string) {
       ok: false,
       service: svc,
       region: reg,
+      // "Not in the cache" is a knowledge gap, not a verdict: `available:false`
+      // alone read as "KMS is unavailable in this region" (2026-11-05 UX
+      // report #2). `known:false` is the explicit unknown marker; consumers
+      // must treat available as meaningless when known is false.
+      known: false,
       available: false,
       note:
         'Service ' +
@@ -33,6 +38,7 @@ export async function getRegionalAvailability(service: string, region: string) {
     ok: true,
     service: svc,
     region: reg,
+    known: true,
     available,
     note: available
       ? svc + ' is available in ' + reg + '.'

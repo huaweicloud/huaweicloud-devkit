@@ -45,6 +45,20 @@ interface ApprovalEntry {
   argsHash: string;
   argsRedacted: unknown;
   createdAt: number;
+  // True when every secret-shaped value in the minted args was a placeholder
+  // (`<redacted>`, `<password>`, …) — the plan carried NO real secret, so
+  // run-time substitution of real values is the documented flow. False or
+  // absent (pre-schema entries) pins secret values: any change rejects
+  // (2026-11-06 loop round 2 — the redacted-equality branch alone let a
+  // changed real secret execute).
+  secretsSubstitutable?: boolean;
+  // Canonical pin view (loop round 4): the minted args with every detected
+  // secret value folded to `<redacted>` (inline, glued, and two-token forms
+  // — the redactor never folds the latter two). The verify side compares
+  // against this instead of argsRedacted, so the placeholder→real
+  // substitution flow works for every form the detector sees. Absent on
+  // pre-schema entries, which fall back to the argsRedacted comparison.
+  argsPinView?: unknown;
 }
 
 // Tombstone for a consumed token (D4-24, #745): consumption writes
@@ -153,7 +167,13 @@ function readApprovals(): ApprovalMap {
         continue;
       }
       if (typeof entry.argsHash !== 'string' || typeof entry.createdAt !== 'number') continue;
-      result[key] = { argsHash: entry.argsHash, argsRedacted: entry.argsRedacted, createdAt: entry.createdAt };
+      result[key] = {
+        argsHash: entry.argsHash,
+        argsRedacted: entry.argsRedacted,
+        createdAt: entry.createdAt,
+        ...(entry.secretsSubstitutable === true ? { secretsSubstitutable: true } : {}),
+        ...(entry.argsPinView !== undefined ? { argsPinView: entry.argsPinView } : {}),
+      };
     }
     return result;
   } catch {
@@ -223,13 +243,18 @@ function pruneConsumedMarkers(now = Date.now()): void {
   }
 }
 
-export function createApprovalToken(rawArgs: unknown): string {
+export function createApprovalToken(
+  rawArgs: unknown,
+  opts: { secretsSubstitutable?: boolean; argsPinView?: unknown } = {},
+): string {
   const token = randomUUID();
   const map = readApprovals();
   map[token] = {
     argsHash: hashArgs(rawArgs),
     argsRedacted: redactSecrets(rawArgs),
     createdAt: Date.now(),
+    ...(opts.secretsSubstitutable === true ? { secretsSubstitutable: true } : {}),
+    ...(opts.argsPinView !== undefined ? { argsPinView: opts.argsPinView } : {}),
   };
   pruneStale(map);
   pruneConsumedMarkers();

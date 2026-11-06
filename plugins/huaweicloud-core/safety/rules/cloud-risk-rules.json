@@ -95,8 +95,8 @@
           }
         ]
       },
-      "message": "\u6b64\u64cd\u4f5c\u5c06\u8fd4\u56de\u4e34\u65f6 AK/SK \u548c SecurityToken\u3002\u6ce8\u610f\u654f\u611f\u6570\u636e\u4fdd\u5bc6\uff0c\u4e0d\u8981\u5c06\u51ed\u8bc1\u8f93\u51fa\u5230\u65e5\u5fd7\u6216\u5206\u4eab\u7ed9\u7b2c\u4e09\u65b9\u3002",
-      "remediation": "\u4e34\u65f6\u51ed\u8bc1\u4ec5\u7528\u4e8e\u5f53\u524d\u4f1a\u8bdd\uff0c\u4f7f\u7528\u5b8c\u6bd5\u540e\u53ca\u65f6\u9500\u6bc1\uff0c\u4e0d\u8981\u6301\u4e45\u5316\u5b58\u50a8\u3002"
+      "message": "此操作将返回临时 AK/SK 和 SecurityToken。注意敏感数据保密，不要将凭证输出到日志或分享给第三方。",
+      "remediation": "临时凭证仅用于当前会话，使用完毕后及时销毁，不要持久化存储。"
     },
     {
       "id": "hwc-command-encoded-shell-exec",
@@ -133,7 +133,7 @@
         "all": [
           {
             "field": "text",
-            "regex": "(0\\.0\\.0\\.0\\s*/\\s*0|::\\s*/\\s*0|remote_ip_prefix\\s*[=:]\\s*0\\.0\\.0\\.0\\s*/\\s*0|cidr\\s*[=:]\\s*0\\.0\\.0\\.0\\s*/\\s*0)"
+            "regex": "((?<!\\d)0\\.0\\.0\\.0\\s*/\\s*0|::\\s*/\\s*0|remote_ip_prefix\\s*[=:]\\s*(?<!\\d)0\\.0\\.0\\.0\\s*/\\s*0|cidr\\s*[=:]\\s*(?<!\\d)0\\.0\\.0\\.0\\s*/\\s*0)"
           },
           {
             "field": "text",
@@ -143,6 +143,44 @@
       },
       "message": "The change appears to expose an administrative or database port to the public internet. Web ports (80/443) are allowed - this rule only covers admin/database ports.",
       "remediation": "Restrict the source CIDR to a trusted range, use a bastion or VPN, and keep public preview endpoints behind authenticated HTTP services. For SSH troubleshooting, do NOT widen to 0.0.0.0/0: open a /32 rule for your real direct egress IP instead (detect it with Invoke-RestMethod -Uri https://api.ipify.org -NoProxy on Windows pwsh 7+ / curl --noproxy '*' on Linux — a proxy egress is NOT the direct egress; see huawei-ecs references/windows-ssh.md §0.1), or skip SSH entirely via cloud-init user_data deployment (references/create-instance.md §Bootstrap). Full SSH failure diagnosis chain: huawei-ecs references/troubleshooting.md."
+    },
+    {
+      "id": "hwc-network-public-cidr-variable-port",
+      "title": "Public exposure with variable-referenced port",
+      "category": "public_exposure",
+      "severity": "warn",
+      "stages": ["artifact", "deploy_plan"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "((?<!\\d)0\\.0\\.0\\.0\\s*/\\s*0|::\\s*/\\s*0|remote_ip_prefix\\s*[=:]\\s*(?<!\\d)0\\.0\\.0\\.0\\s*/\\s*0|cidr\\s*[=:]\\s*(?<!\\d)0\\.0\\.0\\.0\\s*/\\s*0)"
+          },
+          {
+            "field": "text",
+            "regex": "((?:\\b(?:port|listen_port|port_range_min|port_range_max|from_port|to_port|multiport)\\b)[\"'\\\\]*\\s*[:=]\\s*)(?!\\s*[\"'\\\\]*\\s*(?:\\d+|0[xX][0-9a-fA-F]+)\\s*[\"']?\\s*(?:\\n|,|\\}|\\]|;|#|$))[^\\n}]{0,80}?(?:\\b(?:var|local|module|each|data|count)\\.|\\$\\{|\\$[A-Za-z0-9_]|\\b[a-z][a-z0-9_]*\\s*\\(|toset\\(|lookup\\(|try\\(|element\\(|coalesce\\(|tonumber\\(|nonsensitive\\(|\\b[a-z][a-z0-9_]*\\.[a-z0-9_]+\\.[a-z0-9_]+\\b)"
+          }
+        ]
+      },
+      "message": "The change exposes a port to the public internet (0.0.0.0/0) with the port number behind a non-literal expression (variable, function, or interpolation), so the rule engine cannot confirm whether it is an administrative port.",
+      "remediation": "Resolve the variable and verify the port before merging: if it is an admin/database port (22/3389/3306/5432/6379/...), restrict the source CIDR to a trusted range, a bastion, or a VPN instead of 0.0.0.0/0."
+    },
+    {
+      "id": "hwc-artifact-hardcoded-credential",
+      "title": "Hardcoded cloud credential in artifact",
+      "category": "secret",
+      "severity": "deny",
+      "stages": ["artifact", "deploy_plan"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "((?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?key|secret[_-]?token|security[_-]?token)[\\\"'\\\\]*\\s*[:=]\\s*[\\\"'\\\\]*\\s*(?=[A-Za-z+/=_-]*\\d)[A-Za-z0-9+/=_-]{10,}(?!\\s*:))"
+          }
+        ]
+      },
+      "message": "The artifact contains a literal access key, secret key, or security token. Credentials committed to IaC, config, or code leak through git history, logs, and state files.",
+      "remediation": "Remove the literal credential: reference it from environment variables, a DEW CSMS secret reference, or the platform credential vault (huaweicloud_secret_set), and rotate the exposed key immediately."
     },
     {
       "id": "hwc-obs-anonymous-write",
@@ -185,7 +223,7 @@
           },
           {
             "field": "text",
-            "regex": "(public|PUBLIC|0\\.0\\.0\\.0\\s*/\\s*0|auth[\\\"']?\\s*[=:]\\s*[\\\"']?(NONE|none|false)|security_authentication[\\\"']?\\s*[=:]\\s*[\\\"']?(NONE|none))"
+            "regex": "(public|PUBLIC|(?<!\\d)0\\.0\\.0\\.0\\s*/\\s*0|auth[\\\"']?\\s*[=:]\\s*[\\\"']?(NONE|none|false)|security_authentication[\\\"']?\\s*[=:]\\s*[\\\"']?(NONE|none))"
           }
         ]
       },

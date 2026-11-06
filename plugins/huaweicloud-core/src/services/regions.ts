@@ -95,6 +95,11 @@ export const SERVICE_REGIONS = {
     'ap-southeast-1',
   ],
   dew: ['cn-south-1', 'cn-north-4', 'cn-east-3', 'ap-southeast-3'],
+  // KMS answers under the DEW umbrella (key management lives in DEW); the
+  // alias mirrors dew's region list so a `kms` lookup no longer reports a
+  // cache miss while the same-family `dew` entry answers available:true
+  // (2026-11-05 UX report #2 follow-up probe).
+  kms: ['cn-south-1', 'cn-north-4', 'cn-east-3', 'ap-southeast-3'],
   smn: ['cn-south-1', 'cn-north-4', 'cn-east-3', 'ap-southeast-3'],
   ces: ['cn-south-1', 'cn-north-4', 'cn-east-3', 'ap-southeast-3'],
   cts: ['cn-south-1', 'cn-north-4', 'cn-east-3', 'ap-southeast-3'],
