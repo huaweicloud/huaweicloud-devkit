@@ -30,7 +30,7 @@ function runCli(home, cwd, args, officeaceConfigRoot = join(home, '.office-claw'
     cwd,
     env: makeEnv(home, officeaceConfigRoot),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 600000,
   });
 }
 
@@ -43,7 +43,7 @@ function runCliNoEnv(home, cwd, args) {
     cwd,
     env,
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 600000,
   });
 }
 

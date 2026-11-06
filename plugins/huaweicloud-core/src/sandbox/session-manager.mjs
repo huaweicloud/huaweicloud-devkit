@@ -19,6 +19,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createConnection, resolveBackendCredentials } from './hwlink-api.mjs';
 import { getWebSocketImpl } from '../proxy/proxy-agent.mjs';
 import { trackSandboxConnect, trackSandboxDisconnect } from '../telemetry/telemetry.mjs';
+import { buildExposeLifetimeNotice } from './sandbox-pool.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -795,8 +796,13 @@ export function resolveNginxConfigPath(configName, project) {
 //   DB_NGINX_CONFIG_MISSING=1  — the target config file does not exist
 //   DB_NGINX_T=PASS|FAIL       — nginx -t verdict, with failure output echoed
 //                                as `DB_NGINX_T_OUTPUT: ...` lines
+// #946 (regression, 2026-11-03 E2E): strip OSC/CSI escapes + \r BEFORE the
+// anchored ^DB_NGINX_ lookups — integration-enabled shells wrap every line in
+// \x1b]133;C\x07, which used to blind the nginxTest match and turn a PASS into
+// "nginx -t did not pass" (deploy_nginx ok:false false negative; the config was
+// written and nginx -t actually passed — measured twice on real sandboxes).
 export function parseDeployNginxVerifyOutput(stdout) {
-  const text = String(stdout || '');
+  const text = stripTerminalEscapes(stdout);
   const configMissing = /DB_NGINX_CONFIG_MISSING=1/.test(text);
   const nginxTest = (text.match(/^DB_NGINX_T=(\w+)$/m) || [])[1] || '';
   const nginxTestOutput = (text.match(/^DB_NGINX_T_OUTPUT: .*$/gm) || [])
@@ -1287,24 +1293,44 @@ export async function closeSession(workspaceId, username) {
 
 // Build a shell snippet that authenticates devbridge via a verified waterfall:
 //   Tier 1  keyring API Key  — hwcloud keyring get HW_DEVBRIDGE_API_KEY (platform-injected
-//           on hd-space-ai-shell images; the value goes to STDERR so 2>&1 is mandatory and
-//           the devbridge_ prefix filters "(not found)" / error text). A light revive step
-//           (restart the D-Bus session bus + re-unlock the keyring daemon, no dnf) retries
-//           once when the first read fails. Preferred: devbridge is deprecating AK/SK auth.
-//   Tier 2  AK/SK            — image builds keep --access-key/--secret-key; STS credentials
-//           from /tmp/hw_creds.sh need --security-token or the gateway rejects with 401
-//           APIGW.0301; 0.1.x binaries additionally advertise --huaweicloud in help.
-//   Tier 3  /tmp/hw_api_key  — release builds accept only --api-key; the file is written by
-//           huaweicloud_sandbox_credentials from HW_API_KEY / the api_key param.
-// Every tier performs a real `devbridge auth login` and verifies with `auth status`
-// (must print "Logged in"); on failure the waterfall falls through to the next tier.
+//           on hd-space-ai-shell images, or self-injected by devbridge-key.mjs; the value
+//           goes to STDERR so 2>&1 is mandatory and the devbridge_ prefix filters
+//           "(not found)" / error text). A light revive step (restart the D-Bus session
+//           bus + re-unlock the keyring daemon, no dnf) retries once when the first read fails.
+//   Tier 2  /tmp/hw_api_key  — file channel: written by huaweicloud_sandbox_credentials
+//           from HW_API_KEY / the api_key param (user-provided), or by the auto-create
+//           fallback (devbridge-key.mjs) when keyring injection is unavailable.
+// AK/SK login (--access-key/--secret-key) was REMOVED: devbridge authentication is
+// now fixed to API Key only (定稿决策，2026-11-04).
+// Every tier performs a real `devbridge auth login --api-key` (exit code checked),
+// then verifies with `auth status` AND a real authenticated API call (`devbridge list`);
+// on failure the waterfall falls through. The list check is required because a stale
+// key can leave a "Logged in" local token while server-side calls return 40100.
 // DB_ATTEMPT_* lines are non-sensitive diagnostics for support escalation.
+// The HOST orchestrates an auto-create fallback between probe rounds: when the
+// first probe returns NO_CREDENTIAL, the host calls ensureDevbridgeKey() and
+// injects the key (keyring preferred, file fallback), then runs a second probe.
 export function buildDevbridgeAuthProbe() {
   return [
-    `export PATH="$HOME/.huawei/bin:$PATH"`,
+    // #999: /workspace/.local/bin FIRST — /workspace is the data disk and
+    // survives sandbox reboots; ~/.huawei/bin lives on the system disk and is
+    // wiped back to the image state on reboot. Prepended so a stale image
+    // binary in /usr/local/bin never wins.
+    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
     `export HOME="\${HOME:-/root}"`,
+    // #998: probe the version in the SAME exec as the auth waterfall (no extra
+    // round trip). 0.1.x binaries' AK/SK tier still logs in, so the auth probe
+    // alone would green-light an expose that can never work — the version is
+    // what names the real cause.
+    `DB_VERSION=$(devbridge version 2>/dev/null | head -1)`,
+    `echo "DB_VERSION=\${DB_VERSION}"`,
     `DB_OK=0`,
-    `db_login_ok() { devbridge auth status 2>/dev/null | grep -q "Logged in"; }`,
+    `db_login_ok() {`,
+    // 本地 token 可能仍显示 Logged in，但 API key 已在服务端失效（实测 list/renew 返回 40100）。
+    // 因此额外做一次真实鉴权 API 调用，确保探针结果可用（否则 auto-create 自愈不会触发）。
+    `  devbridge auth status 2>/dev/null | grep -q "Logged in" || return 1`,
+    `  devbridge list >/dev/null 2>&1`,
+    `}`,
     `db_diag() { echo "DB_ATTEMPT_$1=$2"; }`,
     ``,
     `# ---- Tier 1: API Key from the sandbox keyring (platform auto-injection) ----`,
@@ -1334,8 +1360,7 @@ export function buildDevbridgeAuthProbe() {
     `  db_diag KEYRING "hwcloud-not-installed"`,
     `fi`,
     `if [ -n "$HW_DB_KEY" ]; then`,
-    `  devbridge auth login --api-key "$HW_DB_KEY" >/tmp/db_auth.log 2>&1`,
-    `  if db_login_ok; then`,
+    `  if devbridge auth login --api-key "$HW_DB_KEY" >/tmp/db_auth.log 2>&1 && db_login_ok; then`,
     `    echo "DB_AUTH_MODE=API_KEY_KEYRING"`,
     `    DB_OK=1`,
     `  else`,
@@ -1345,34 +1370,11 @@ export function buildDevbridgeAuthProbe() {
     `  db_diag KEYRING "no-valid-key"`,
     `fi`,
     ``,
-    `# ---- Tier 2: AK/SK from /tmp/hw_creds.sh (image builds; STS needs --security-token) ----`,
-    `if [ "$DB_OK" -eq 0 ]; then`,
-    `  source /tmp/hw_creds.sh 2>/dev/null`,
-    `  if devbridge auth login --help 2>&1 | grep -q -- '--access-key' && [ -n "$HW_ACCESS_KEY" ]; then`,
-    `    DB_TOKEN_ARGS=""`,
-    `    [ -n "$HW_SECURITY_TOKEN" ] && DB_TOKEN_ARGS="--security-token \\"$HW_SECURITY_TOKEN\\""`,
-    `    if devbridge auth login --help 2>&1 | grep -q -- '--huaweicloud'; then`,
-    `      devbridge auth login --huaweicloud --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
-    `    else`,
-    `      devbridge auth login --access-key "$HW_ACCESS_KEY" --secret-key "$HW_SECRET_KEY" $DB_TOKEN_ARGS >/tmp/db_auth.log 2>&1`,
-    `    fi`,
-    `    if db_login_ok; then`,
-    `      echo "DB_AUTH_MODE=AKSK_SUPPORTED"`,
-    `      DB_OK=1`,
-    `    else`,
-    `      db_diag AKSK "login-failed"`,
-    `    fi`,
-    `  else`,
-    `    db_diag AKSK "binary-or-creds-unavailable"`,
-    `  fi`,
-    `fi`,
-    ``,
-    `# ---- Tier 3: API Key from /tmp/hw_api_key (release builds, user-provided) ----`,
+    `# ---- Tier 2: API Key from /tmp/hw_api_key (file channel; auto-injected or user-provided) ----`,
     `if [ "$DB_OK" -eq 0 ]; then`,
     `  source /tmp/hw_api_key 2>/dev/null`,
     `  if [ -n "$HW_API_KEY" ]; then`,
-    `    devbridge auth login --api-key "$HW_API_KEY" >/tmp/db_auth.log 2>&1`,
-    `    if db_login_ok; then`,
+    `    if devbridge auth login --api-key "$HW_API_KEY" >/tmp/db_auth.log 2>&1 && db_login_ok; then`,
     `      echo "DB_AUTH_MODE=API_KEY_FILE"`,
     `      DB_OK=1`,
     `    else`,
@@ -1391,9 +1393,10 @@ export function buildDevbridgeAuthProbe() {
   ].join('\n');
 }
 
-// Parse the raw stdout of buildDevbridgeAuthProbe into { authMode, attempts }.
+// Parse the raw stdout of buildDevbridgeAuthProbe into { authMode, attempts, version }.
 // authMode is the LAST DB_AUTH_MODE line; attempts collects the non-sensitive
-// DB_ATTEMPT_* diagnostics emitted by tiers that failed and fell through.
+// DB_ATTEMPT_* diagnostics emitted by tiers that failed and fell through;
+// version is the devbridge binary version probed in the same exec (#998).
 export function parseDevbridgeAuthOutput(stdout) {
   // #946: OSC 133 markers precede every line on integration-enabled shells; the
   // anchored ^DB_ATTEMPT_ regexes are blind to them without stripping first.
@@ -1404,7 +1407,35 @@ export function parseDevbridgeAuthOutput(stdout) {
   for (const m of text.matchAll(/^DB_ATTEMPT_([A-Z_]+)=(\S+)$/gm)) {
     attempts[m[1]] = m[2];
   }
-  return { authMode, attempts };
+  const versionMatch = text.match(/^DB_VERSION=(.*)$/m);
+  const version = versionMatch ? versionMatch[1].trim() : '';
+  return { authMode, attempts, version };
+}
+
+// #998: 0.1.x binaries cannot serve tunnels — their hardcoded pre-migration
+// gateway was retired (Sep 2026) and now serves a「服务已迁移」placeholder,
+// while their AK/SK auth tier still logs in successfully. Without a version check the auth green-light leads to an
+// expose that fails after retries with no version context, sending the caller
+// chasing credentials/network/port instead of the real cause. Block 0.1.x
+// BEFORE exposing and point at the Step 0 install path. An empty version
+// (binary absent) does not block — the auth waterfall handles that case.
+export function evaluateDevbridgeVersion(version) {
+  const v = String(version || '').trim();
+  if (!v) return { blocked: false };
+  if (/^0\.1($|[.-])/.test(v)) {
+    return {
+      blocked: true,
+      error:
+        `devbridge_too_old: ${v} cannot serve tunnels — its hardcoded gateway was migrated and now serves a 「服务已迁移」 placeholder. ` +
+        'An upgrade to 0.2.x is required before exposing; no credential change will fix this.',
+      remediation:
+        'Upgrade in place per the huawei-sandbox skill Step 0: install 0.2.x via the GitCode mirror with GitHub fallback ' +
+        '(`install.sh -s -u <gitcode URL> -v <target>`, `-s` is required in the sandbox), then re-run huaweicloud_sandbox_expose_tunnel. ' +
+        'Install to /workspace/.local/bin (survives sandbox reboots) — never ~/.huawei/bin (wiped on system-disk reset). ' +
+        'Old 0.1.x tunnels do not survive the upgrade: the expose flow pre-cleans them.',
+    };
+  }
+  return { blocked: false };
 }
 
 // Tunnel lifetime for expose-created hosts, in hours. The report that motivated
@@ -1424,9 +1455,8 @@ export const DEVBRIDGE_HOST_EXPIRY_HOURS = 72;
 export function buildDevbridgeExposeScript(port, expiryHours = DEVBRIDGE_HOST_EXPIRY_HOURS) {
   const hostLog = '/tmp/host.log';
   return [
-    `pkill -f "devbridge host" 2>/dev/null || true`,
-    `sleep 2`,
-    `devbridge delete-all > /dev/null 2>&1 || true`,
+    // Pre-clean is now selective (cleanupDevbridgeTunnels) and runs before this
+    // script, so other ports/sessions are preserved.
     // #922 (S8): setsid is unavailable on some sandbox images — fall back to a
     // bare nohup launch so the host still starts; persistence is then judged by
     // the independent re-verify below, which emits the 请勿分享 warning in the
@@ -1444,7 +1474,10 @@ export function buildDevbridgeExposeScript(port, expiryHours = DEVBRIDGE_HOST_EX
     `HTTP_CODE="000"`,
     `if [ -n "$TUNNEL_URL" ]; then`,
     `  for i in 1 2 3 4; do`,
-    `    HTTP_CODE=$(curl -s -o /tmp/.db_probe_body -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
+    // #1000: --noproxy — the sandbox injects an HTTP proxy that does NOT route
+    // the tunnel domain; without it the probe returns 502/404 fakes and a
+    // working tunnel is judged dead.
+    `    HTTP_CODE=$(curl -s --noproxy '*' -o /tmp/.db_probe_body -w "%{http_code}" --max-time 10 "$TUNNEL_URL" 2>/dev/null || echo "000")`,
     `    echo "DB_PROBE_$i=$HTTP_CODE"`,
     `    if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then break; fi`,
     `    if [ "$i" != "4" ]; then sleep 5; fi`,
@@ -1480,7 +1513,9 @@ export function buildDevbridgeVerifyScript(tunnelUrl) {
   }
   const bodyFile = '/tmp/devbridge_verify_body';
   return [
-    `VERIFY_CODE=$(curl -s -o ${bodyFile} -w "%{http_code}" --max-time 10 "${url}" 2>/dev/null || echo "000")`,
+    // #1000: --noproxy — the injected proxy does not route the tunnel domain;
+    // a proxied verify returns 502/404 fakes (working tunnel judged dead).
+    `VERIFY_CODE=$(curl -s --noproxy '*' -o ${bodyFile} -w "%{http_code}" --max-time 10 "${url}" 2>/dev/null || echo "000")`,
     `VERIFY_NOT_FOUND=$(grep -ci 'tunnel not found' ${bodyFile} 2>/dev/null || true)`,
     `if [ -z "$VERIFY_NOT_FOUND" ]; then VERIFY_NOT_FOUND=0; fi`,
     `rm -f ${bodyFile} 2>/dev/null || true`,
@@ -1493,8 +1528,11 @@ export function buildDevbridgeVerifyScript(tunnelUrl) {
 // Each probe echo is `DB_PROBE_<n>=<code>`; reachability is decided by the
 // LAST probe — intermediate 502/000 probes are gateway-not-ready noise, not
 // failures, so they must not leak into the tool's verdict.
+// #946 (regression): strip OSC/CSI escapes + \r first — integration-enabled
+// shells wrap every line in \x1b]133;C\x07 and blind the anchored
+// ^DB_PROBE_ match (probes came back empty, finalHttpCode always '').
 export function parseDevbridgeProbeSequence(stdout) {
-  const text = String(stdout || '');
+  const text = stripTerminalEscapes(stdout);
   const probes = [];
   for (const m of text.matchAll(/^DB_PROBE_(\d+)=(\S*)$/gm)) {
     probes.push({ attempt: Number(m[1]), httpCode: m[2] });
@@ -1572,6 +1610,606 @@ export function validateTunnelPort(port) {
   return n;
 }
 
+// Upper bound of devbridge's -e expiry, in hours (measured 2026-10: `-e 720` is
+// accepted and sets expiration = now + 2592001s; larger values are rejected).
+export const DEVBRIDGE_MAX_EXPIRY_HOURS = 720;
+
+// Default renewal horizon for renewTunnel / the keepalive watchdog: 720h gives a
+// 29-day window of tolerance if renewal ever stops firing.
+export const DEVBRIDGE_RENEW_HOURS = 720;
+
+// Validate and clamp a -e expiry value destined for shell interpolation in
+// `devbridge host -p <port> -e <hours>` / `devbridge update <id> -e <hours>`.
+// devbridge accepts 1..720 (30 days); anything else is rejected or clipped by
+// the gateway, so fail fast here instead of surfacing a misleading expiry.
+export function validateExpiryHours(hours) {
+  const n = Number(hours);
+  if (!Number.isSafeInteger(n) || n < 1 || n > DEVBRIDGE_MAX_EXPIRY_HOURS) {
+    throw new Error(
+      `sandbox tunnel expiry: invalid expiry_hours ${JSON.stringify(hours)}. Expected an integer between 1 and ${DEVBRIDGE_MAX_EXPIRY_HOURS} (720 = the devbridge 30-day maximum).`,
+    );
+  }
+  return n;
+}
+
+// Validate a DevBridge tunnel ID destined for shell interpolation in
+// `devbridge update <id>` / `devbridge host <id>` / pgrep patterns. IDs are
+// short lowercase base36 tokens (e.g. nv2dvv6w, kag7rozs); the strict charset
+// keeps shell metacharacters out of the splice.
+export function validateTunnelId(tunnelId) {
+  const id = String(tunnelId || '');
+  if (!/^[A-Za-z0-9_-]{4,32}$/.test(id)) {
+    throw new Error(
+      `sandbox tunnel: invalid tunnel_id ${JSON.stringify(id.slice(0, 40))}. Expected the short ID from huaweicloud_sandbox_expose_tunnel's "tunnelId" field (URL-safe characters only).`,
+    );
+  }
+  return id;
+}
+
+// Build the script that renews a tunnel's lifetime: `devbridge update <id> -e
+// <hours>`. The expiry is a ROLLING WINDOW (measured 2026-10: renewal sets
+// expiration = now + hours regardless of remaining time, so renewing before
+// expiry keeps the same URL alive indefinitely). The absolute expiration
+// (tunnelExpiration, Unix seconds) is surfaced via show -v so callers get a
+// verifiable timestamp instead of a bare exit code.
+export function buildDevbridgeRenewScript(tunnelId, expiryHours = DEVBRIDGE_RENEW_HOURS) {
+  const id = validateTunnelId(tunnelId);
+  const hours = validateExpiryHours(expiryHours);
+  return [
+    `export PATH="$HOME/.huawei/bin:$PATH"`,
+    `devbridge update ${id} -e ${hours} > /tmp/db-renew-update.log 2>&1`,
+    `DB_RENEW_EXIT=$?`,
+    `DB_RENEW_ERROR=$(head -1 /tmp/db-renew-update.log 2>/dev/null)`,
+    `rm -f /tmp/db-renew-update.log`,
+    `DB_EXPIRATION=$(devbridge show ${id} -v 2>&1 | grep -oE 'tunnelExpiration[^0-9]+[0-9]+' | grep -oE '[0-9]+' | head -1)`,
+    `echo "DB_RENEW_EXIT=$DB_RENEW_EXIT"`,
+    `echo "DB_RENEW_ID=${id}"`,
+    `echo "DB_RENEW_HOURS=${hours}"`,
+    `echo "DB_EXPIRATION=$DB_EXPIRATION"`,
+    `echo "DB_RENEW_ERROR=$DB_RENEW_ERROR"`,
+  ].join('\n');
+}
+
+// Parse the raw stdout of buildDevbridgeRenewScript into structured fields.
+// A renewal is ok only when the update exit code is 0 AND show -v reports the
+// absolute tunnelExpiration — the management plane can lose a tunnel's record
+// (10002 "tunnel not found") while the data plane keeps serving, which a bare
+// exit-code check would misread as success on the old process alone.
+export function parseDevbridgeRenewOutput(stdout) {
+  const text = stripTerminalEscapes(stdout);
+  const getField = (key) => {
+    const m = text.match(new RegExp(`^${key}=(.*)$`, 'm'));
+    return m ? m[1].trim() : '';
+  };
+  const renewExit = getField('DB_RENEW_EXIT');
+  const expirationUnix = Number(getField('DB_EXPIRATION')) || undefined;
+  const ok = renewExit === '0' && expirationUnix !== undefined;
+  const expiration = expirationUnix !== undefined ? new Date(expirationUnix * 1000).toISOString() : undefined;
+  return {
+    ok,
+    tunnelId: getField('DB_RENEW_ID'),
+    renewedForHours: Number(getField('DB_RENEW_HOURS')) || undefined,
+    expirationUnix,
+    expiresAt: expiration,
+    error: ok ? undefined : getField('DB_RENEW_ERROR') || `renewal failed (exit ${renewExit || 'unknown'})`,
+  };
+}
+
+// Renew a tunnel's lifetime via `devbridge update <id> -e <hours>`. Returns ok,
+// tunnelId, expiresAt (absolute ISO timestamp), renewedForHours. The URL does
+// not change — renewal only extends the lifetime of the existing tunnel ID.
+export async function renewTunnel(workspaceId, { tunnelId, expiryHours }, username = 'root', timeoutMs = 60000) {
+  if (!workspaceId) {
+    throw new Error('sandbox renew tunnel: workspace_id is required.');
+  }
+  const script = buildDevbridgeRenewScript(tunnelId, expiryHours);
+  const result = await execOneShot(workspaceId, script, username, timeoutMs);
+  const parsed = parseDevbridgeRenewOutput(result.stdout);
+  return parsed;
+}
+
+// Build the keepalive watchdog script for a set of known tunnels (the
+// three-layer pattern proven in the 2026-10 tunnel-persistence test):
+//   1. host watchdog — re-attach with `devbridge host <id>` when the host
+//      process dies; the URL is bound to the tunnel ID, so it never changes
+//   2. daily renewal — `devbridge update <id> -e 720` (29-day failure tolerance)
+//   3. health check — curl each URL every 5 minutes, log on non-200/304
+// URLs are HARDCODED per tunnel (tunnel IDs never change), NOT derived from
+// `devbridge port list` — that table's lines are wrapped in OSC escapes on
+// integration-enabled shells, so anchored greps silently fail and the
+// constructed health URL 404s (measured 2026-10).
+export function buildDevbridgeKeepaliveScript(tunnels) {
+  if (!Array.isArray(tunnels) || tunnels.length === 0) {
+    throw new Error('sandbox keepalive: tunnels must be a non-empty array of {tunnelId, url}.');
+  }
+  const entries = tunnels
+    .map((t) => `${validateTunnelId(t?.tunnelId)}:${String(t?.url || '')}`)
+    .map((entry) => {
+      const url = entry.slice(entry.indexOf(':') + 1);
+      if (!/^https:\/\/[A-Za-z0-9:._/-]+$/.test(url)) {
+        throw new Error(
+          `sandbox keepalive: invalid tunnel URL ${JSON.stringify(url.slice(0, 80))} for the keepalive health check. Expected an https:// URL with URL-safe characters (from huaweicloud_sandbox_expose_tunnel's publicUrl).`,
+        );
+      }
+      return entry;
+    })
+    .join(' ');
+  // Heredoc is single-quoted ('DB_KEEPALIVE_EOF') so the writer shell expands
+  // nothing; all ${...} expansion happens inside the watchdog at runtime.
+  const body = [
+    `#!/bin/bash`,
+    `export PATH="$HOME/.huawei/bin:$PATH"`,
+    `export DBUS_SESSION_BUS_ADDRESS="\${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus-session}"`,
+    `# entries: tunnelId:url (URLs are stable — tunnel IDs never change)`,
+    `TUNNELS="${entries}"`,
+    `declare -A LAST_RENEW`,
+    `while true; do`,
+    `  NOW=$(date -u +%s)`,
+    `  TS=$(date -u +%Y-%m-%dT%H:%M:%SZ)`,
+    `  for entry in $TUNNELS; do`,
+    `    ID="\${entry%%:*}"; URL="\${entry#*:}"`,
+    `    if ! pgrep -f "devbridge host $ID" > /dev/null 2>&1; then`,
+    `      if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host "$ID" > "/tmp/host-$ID.log" 2>&1 < /dev/null & else nohup devbridge host "$ID" > "/tmp/host-$ID.log" 2>&1 < /dev/null & fi`,
+    `      echo "$TS host $ID restarted (same tunnel, URL unchanged)" >> /tmp/tunnel-keepalive.log`,
+    `      sleep 8`,
+    `    fi`,
+    `    if [ $((\${LAST_RENEW[$ID]:-0})) -eq 0 ] || [ $((NOW - \${LAST_RENEW[$ID]})) -ge 86400 ]; then`,
+    `      if devbridge update "$ID" -e ${DEVBRIDGE_RENEW_HOURS} > /tmp/keepalive-last-update.log 2>&1; then`,
+    `        echo "$TS renew $ID ok (${DEVBRIDGE_RENEW_HOURS}h)" >> /tmp/tunnel-keepalive.log`,
+    `      else`,
+    `        echo "$TS renew $ID FAILED: $(head -1 /tmp/keepalive-last-update.log)" >> /tmp/tunnel-keepalive.log`,
+    `        # Self-heal: CLI token 过期但 key 仍有效时，重新登录后立即重试一次`,
+    `        DB_KEY=""`,
+    `        if command -v hwcloud >/dev/null 2>&1; then`,
+    `          DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `          case "$DB_KEY" in "devbridge_"*) : ;; *) DB_KEY="";; esac`,
+    `        fi`,
+    `        if [ -z "$DB_KEY" ] && [ -s /tmp/hw_api_key ]; then`,
+    `          source /tmp/hw_api_key 2>/dev/null || true`,
+    `          DB_KEY="\${HW_API_KEY:-}"`,
+    `        fi`,
+    `        if [ -n "$DB_KEY" ] && devbridge auth login --api-key "$DB_KEY" >/tmp/keepalive-auth.log 2>&1; then`,
+    `          if devbridge update "$ID" -e ${DEVBRIDGE_RENEW_HOURS} > /tmp/keepalive-last-update.log 2>&1; then`,
+    `            echo "$TS renew $ID ok after re-login (${DEVBRIDGE_RENEW_HOURS}h)" >> /tmp/tunnel-keepalive.log`,
+    `          else`,
+    `            echo "$TS renew $ID FAILED after re-login: $(head -1 /tmp/keepalive-last-update.log)" >> /tmp/tunnel-keepalive.log`,
+    `          fi`,
+    `        else`,
+    `          echo "$TS renew $ID AUTH_FAILED: no usable key; next expose_tunnel will auto-create" >> /tmp/tunnel-keepalive.log`,
+    `        fi`,
+    `        unset DB_KEY HW_API_KEY 2>/dev/null`,
+    `      fi`,
+    `      LAST_RENEW[$ID]=$NOW`,
+    `    fi`,
+    `    HC=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$URL/" 2>/dev/null || echo "000")`,
+    `    if [ "$HC" != "200" ] && [ "$HC" != "304" ]; then`,
+    `      echo "$TS health $ID WARN http=$HC" >> /tmp/tunnel-keepalive.log`,
+    `    fi`,
+    `  done`,
+    `  sleep 300`,
+    `done`,
+  ].join('\n');
+  return [
+    `export PATH="$HOME/.huawei/bin:$PATH"`,
+    `pkill -f "tunnel-keepalive.sh" 2>/dev/null || true`,
+    `sleep 1`,
+    `cat > /tmp/tunnel-keepalive.sh << 'DB_KEEPALIVE_EOF'`,
+    body,
+    `DB_KEEPALIVE_EOF`,
+    `chmod +x /tmp/tunnel-keepalive.sh`,
+    `bash -n /tmp/tunnel-keepalive.sh > /dev/null 2>&1`,
+    `echo "DB_KEEPALIVE_SYNTAX=$?"`,
+    `if command -v setsid > /dev/null 2>&1; then setsid nohup /tmp/tunnel-keepalive.sh > /dev/null 2>&1 < /dev/null & else nohup /tmp/tunnel-keepalive.sh > /dev/null 2>&1 < /dev/null & fi`,
+    `disown 2>/dev/null || true`,
+    `sleep 3`,
+    `echo "DB_KEEPALIVE_PID=$(pgrep -f 'tunnel-keepalive.sh' | head -1)"`,
+    `echo "DB_KEEPALIVE_LOG=/tmp/tunnel-keepalive.log"`,
+  ].join('\n');
+}
+
+// Read the tunnel list of the INSTALLED watchdog (if any). The TUNNELS line in
+// /tmp/tunnel-keepalive.sh is the single source of truth for what is currently
+// protected; expose_tunnel reads it before installing so the new tunnel is
+// MERGED into the existing protection instead of replacing it.
+export function buildKeepaliveTunnelsReadScript() {
+  return [
+    `LINE=$(grep -m1 '^TUNNELS=' /tmp/tunnel-keepalive.sh 2>/dev/null | sed 's/^TUNNELS=//; s/^"//; s/"$//')`,
+    `echo "DB_KEEPALIVE_TUNNELS=$LINE"`,
+  ].join('\n');
+}
+
+// Parse the raw stdout of buildKeepaliveTunnelsReadScript. Empty output (no
+// watchdog installed yet) yields [].
+export function parseKeepaliveTunnelsOutput(stdout) {
+  const text = stripTerminalEscapes(stdout);
+  const m = text.match(/^DB_KEEPALIVE_TUNNELS=(.*)$/m);
+  const line = m ? m[1].trim() : '';
+  if (!line) return [];
+  return line
+    .split(/\s+/)
+    .map((entry) => {
+      const i = entry.indexOf(':');
+      return i > 0 ? { tunnelId: entry.slice(0, i), url: entry.slice(i + 1) } : null;
+    })
+    .filter(Boolean);
+}
+
+// Merge the current watchdog tunnels with the incoming ones: dedupe by
+// tunnelId, incoming wins (same tunnel re-exposed refreshes its URL), existing
+// order preserved, new tunnels appended.
+export function mergeKeepaliveTunnels(existing, incoming) {
+  const byId = new Map();
+  for (const t of existing || []) {
+    if (t?.tunnelId && t?.url) byId.set(t.tunnelId, { tunnelId: t.tunnelId, url: t.url });
+  }
+  for (const t of incoming || []) {
+    if (t?.tunnelId && t?.url) byId.set(t.tunnelId, { tunnelId: t.tunnelId, url: t.url });
+  }
+  return [...byId.values()];
+}
+
+// Install the keepalive watchdog in the sandbox. Validates every tunnel ID and
+// URL before splicing, aborts on a bash syntax error (DB_KEEPALIVE_SYNTAX != 0),
+// and reports the watchdog PID. Replacing the watchdog (re-running the tool)
+// kills the old loop first so two loops never double-renew.
+export async function installKeepaliveWatchdog(workspaceId, { tunnels }, username = 'root', timeoutMs = 60000) {
+  if (!workspaceId) {
+    throw new Error('sandbox keepalive: workspace_id is required.');
+  }
+  const script = buildDevbridgeKeepaliveScript(tunnels);
+  const result = await execOneShot(workspaceId, script, username, timeoutMs);
+  const text = stripTerminalEscapes(result.stdout);
+  const getField = (key) => {
+    const m = text.match(new RegExp(`^${key}=(.*)$`, 'm'));
+    return m ? m[1].trim() : '';
+  };
+  const syntax = getField('DB_KEEPALIVE_SYNTAX');
+  if (syntax !== '0') {
+    return {
+      ok: false,
+      error: `keepalive watchdog script failed the bash -n syntax check (exit ${syntax || 'unknown'}).`,
+    };
+  }
+  return {
+    ok: true,
+    scriptPath: '/tmp/tunnel-keepalive.sh',
+    logPath: getField('DB_KEEPALIVE_LOG') || '/tmp/tunnel-keepalive.log',
+    watchdogPid: getField('DB_KEEPALIVE_PID') || undefined,
+    tunnels: (tunnels || []).map((t) => ({ tunnelId: t.tunnelId, url: t.url })),
+  };
+}
+
+// ── DevBridge selective cleanup ─────────────────────────────────────────────
+// delete-all is intentionally NOT used: it kills other sessions/ports on a shared
+// sandbox. Cleanup removes only orphan tunnels/hosts and (for expose) tunnels bound
+// to the same port, preserving keepalive-protected and live-unknown tunnels.
+// Same-port is the one documented exception: a keepalive-protected tunnel on the
+// target port is replaced (you cannot bind two tunnels to one port).
+
+// Same charset as validateTunnelId: real IDs may contain 0/1/8/9, so parsing must
+// not assume the base32 subset.
+const DEVBRIDGE_TUNNEL_ID_RE = /^[A-Za-z0-9_-]{4,32}$/;
+const DEVBRIDGE_PATH_EXPORT = 'export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"';
+const DEVBRIDGE_LOCK_PATH = '/tmp/devbridge-cleanup.lock';
+// Worst-case hold: state 60x2 + apply 60x2 + sync ~150 + release 60 ≈ 450s;
+// keep the stale threshold above the worst case so a second cleanup cannot
+// break a lock that is still legitimately held.
+const DEVBRIDGE_LOCK_STALE_MINUTES = 10;
+const DEVBRIDGE_CLEANUP_TIMEOUT_MS = 60000;
+
+export function normalizeCleanupMode(raw) {
+  return ['stale', 'all', 'none'].includes(raw) ? raw : 'stale';
+}
+
+export function parseDevbridgeTunnelList(stdout) {
+  const text = stripTerminalEscapes(String(stdout || ''));
+  const tunnels = [];
+  for (const line of text.split(/\r?\n/)) {
+    if (/^\s*Tunnel\s+ID\b/i.test(line)) continue;
+    const m = line.match(/^\s*([A-Za-z0-9_-]{4,32})\s+(.+)$/);
+    if (!m || !DEVBRIDGE_TUNNEL_ID_RE.test(m[1])) continue;
+    const id = m[1];
+    const rest = m[2];
+    const name = rest.trim().split(/\s{2,}|\t+/)[0] || '';
+    const portMatch = rest.match(/tunnel-(\d+)-/);
+    const expMatch = rest.match(/(\d+)\s*(day|days|hour|hours|minute|minutes)/i);
+    const unit = expMatch ? expMatch[2].toLowerCase() : '';
+    const multiplier = { day: 86400, days: 86400, hour: 3600, hours: 3600, minute: 60, minutes: 60 }[unit];
+    tunnels.push({
+      id,
+      name,
+      port: portMatch ? Number(portMatch[1]) : null,
+      expiryText: expMatch ? expMatch[0] : '',
+      expirySeconds: expMatch && multiplier ? Number(expMatch[1]) * multiplier : null,
+    });
+  }
+  return tunnels;
+}
+
+export function parseDevbridgeHostProcesses(stdout) {
+  const text = stripTerminalEscapes(String(stdout || ''));
+  const hosts = [];
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s*(\d+)\s+(.*)$/);
+    if (!m) continue;
+    // Anchor the executable so a shell wrapper (`bash -c "...devbridge host..."`)
+    // is never mistaken for a real host process.
+    const execMatch = m[2].match(/^(?:\S*\/)?devbridge\s+host\b(.*)$/);
+    if (!execMatch) continue;
+    const rest = execMatch[1].trim();
+    const tokens = rest ? rest.split(/\s+/) : [];
+    let id = null;
+    let port = null;
+    for (let i = 0; i < tokens.length; i += 1) {
+      const token = tokens[i];
+      if (token === '-p' && /^\d+$/.test(tokens[i + 1] || '')) {
+        port = Number(tokens[i + 1]);
+        i += 1;
+      } else if (token === '-e') {
+        i += 1;
+      } else if (token.startsWith('-')) {
+        // unknown flag: skip it
+      } else if (!id && DEVBRIDGE_TUNNEL_ID_RE.test(token) && !/^\d+$/.test(token)) {
+        id = token;
+      }
+    }
+    if (!id && port == null) continue; // unparseable host: ignore, never kill blindly
+    hosts.push({ pid: Number(m[1]), id, port });
+  }
+  return hosts;
+}
+
+/**
+ * Decide which tunnels/hosts to remove.
+ * - protected: keepalive TUNNELS entries (never removed unless mode=all or samePort)
+ * - orphan: tunnel record with no live host  -> removed in stale/quota
+ * - orphan host: host process with no matching tunnel record -> killed
+ * - quota: also removes the oldest non-protected live tunnels (maxExtra per call)
+ */
+export function planDevbridgeCleanup({
+  tunnels = [],
+  hosts = [],
+  keepalive = [],
+  mode = 'stale',
+  samePort = null,
+  maxExtra = 1,
+} = {}) {
+  if (mode === 'none') return { deleteIds: [], killPids: [] };
+
+  const tunnelIds = new Set(tunnels.map((t) => t.id));
+  const protectedIds = new Set(keepalive.map((k) => k.tunnelId).filter(Boolean));
+  const portById = new Map();
+  for (const t of tunnels) if (t.port != null) portById.set(t.id, t.port);
+  for (const k of keepalive) {
+    const m = String(k.url || '').match(/-(\d+)\.devbridge-s2\./);
+    if (m && tunnelIds.has(k.tunnelId)) portById.set(k.tunnelId, Number(m[1]));
+  }
+
+  if (mode === 'all') {
+    return { deleteIds: [...tunnelIds], killPids: hosts.map((h) => h.pid) };
+  }
+
+  const liveIds = new Set();
+  const mappedPids = new Set();
+  for (const h of hosts) {
+    if (!h.id && h.port == null) continue; // unattributable host: never kill blindly
+    if (h.id && tunnelIds.has(h.id)) {
+      liveIds.add(h.id);
+      mappedPids.add(h.pid);
+    } else if (h.port != null) {
+      for (const [id, port] of portById) {
+        if (port === h.port) {
+          liveIds.add(id);
+          mappedPids.add(h.pid);
+        }
+      }
+    }
+  }
+
+  const killPids = new Set(hosts.filter((h) => (h.id || h.port != null) && !mappedPids.has(h.pid)).map((h) => h.pid));
+  const samePortIds = samePort == null ? [] : tunnels.filter((t) => portById.get(t.id) === samePort).map((t) => t.id);
+  const orphanIds = tunnels.filter((t) => !protectedIds.has(t.id) && !liveIds.has(t.id)).map((t) => t.id);
+  const deleteSet = new Set([...orphanIds, ...samePortIds]);
+
+  if (mode === 'quota') {
+    const candidates = tunnels
+      .filter((t) => !protectedIds.has(t.id) && !deleteSet.has(t.id) && liveIds.has(t.id))
+      .sort((a, b) => (a.expirySeconds ?? Number.MAX_SAFE_INTEGER) - (b.expirySeconds ?? Number.MAX_SAFE_INTEGER));
+    for (let i = 0; i < Math.max(0, maxExtra) && i < candidates.length; i += 1) {
+      deleteSet.add(candidates[i].id);
+    }
+  }
+
+  for (const h of hosts) {
+    if (h.id && deleteSet.has(h.id)) killPids.add(h.pid);
+    else if (h.port != null && [...deleteSet].some((id) => portById.get(id) === h.port)) killPids.add(h.pid);
+  }
+
+  return { deleteIds: [...deleteSet], killPids: [...killPids] };
+}
+
+export function buildDevbridgeCleanupApplyScript({ deleteIds = [], killPids = [] } = {}) {
+  for (const id of deleteIds) {
+    if (!DEVBRIDGE_TUNNEL_ID_RE.test(String(id))) {
+      throw new Error(`devbridge cleanup: invalid tunnel id ${JSON.stringify(id)}`);
+    }
+  }
+  for (const pid of killPids) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) {
+      throw new Error(`devbridge cleanup: invalid pid ${JSON.stringify(pid)}`);
+    }
+  }
+  return [
+    DEVBRIDGE_PATH_EXPORT,
+    // Re-check the process identity before killing: state→apply can take minutes,
+    // so a recycled PID must not hit an unrelated process.
+    ...killPids.map(
+      (pid) =>
+        `if ps -p ${pid} -o args= 2>/dev/null | grep -q "devbridge host"; then kill ${pid} >/dev/null 2>&1 || true; fi`,
+    ),
+    `sleep 1`,
+    ...deleteIds.map((id) => `devbridge delete ${id} >/dev/null 2>&1 || true`),
+    `echo "DB_CLEANUP_DELETED=${deleteIds.join(',')}"`,
+    `echo "DB_CLEANUP_KILLED=${killPids.join(',')}"`,
+  ].join('\n');
+}
+
+export function buildDevbridgeCleanupStateScript() {
+  return [
+    DEVBRIDGE_PATH_EXPORT,
+    // Refresh the CLI token from an existing key. A valid API key can leave an
+    // expired CLI token; without this, devbridge list returns 40100 and cleanup
+    // is skipped even though the key is usable. Never creates a new key here.
+    `DB_KEY=""`,
+    `if command -v hwcloud >/dev/null 2>&1; then`,
+    `  DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `  case "$DB_KEY" in "devbridge_"*) : ;; *) DB_KEY="";; esac`,
+    `fi`,
+    `if [ -z "$DB_KEY" ] && [ -s /tmp/hw_api_key ]; then`,
+    `  source /tmp/hw_api_key 2>/dev/null || true`,
+    `  DB_KEY="\${HW_API_KEY:-}"`,
+    `fi`,
+    `if [ -n "$DB_KEY" ]; then devbridge auth login --api-key "$DB_KEY" >/dev/null 2>&1 || true; fi`,
+    `unset DB_KEY HW_API_KEY 2>/dev/null`,
+    `echo "DB_CLEANUP_TUNNELS_BEGIN"`,
+    `devbridge list 2>&1 || true`,
+    `echo "DB_CLEANUP_TUNNELS_END"`,
+    `echo "DB_CLEANUP_HOSTS_BEGIN"`,
+    `pgrep -af "devbridge host" 2>&1 || true`,
+    `echo "DB_CLEANUP_HOSTS_END"`,
+    buildKeepaliveTunnelsReadScript(),
+  ].join('\n');
+}
+
+export function buildDevbridgeCleanupLockScript() {
+  return [
+    `LOCK=${DEVBRIDGE_LOCK_PATH}`,
+    `if mkdir "$LOCK" 2>/dev/null; then echo LOCK_OK; else`,
+    `  if find "$LOCK" -maxdepth 0 -mmin +${DEVBRIDGE_LOCK_STALE_MINUTES} 2>/dev/null | grep -q .; then rmdir "$LOCK" 2>/dev/null || true; fi`,
+    `  if mkdir "$LOCK" 2>/dev/null; then echo LOCK_OK; else echo LOCK_BUSY; fi`,
+    `fi`,
+  ].join('\n');
+}
+
+function cleanupSection(text, name) {
+  const m = String(text || '').match(new RegExp(`DB_CLEANUP_${name}_BEGIN\\r?\\n([\\s\\S]*?)DB_CLEANUP_${name}_END`));
+  return m ? m[1] : '';
+}
+
+async function execCleanupWithRetry(workspaceId, script, username, timeoutMs = 60000) {
+  let lastError;
+  for (let i = 1; i <= 2; i += 1) {
+    try {
+      return await execOneShot(workspaceId, script, username, timeoutMs);
+    } catch (error) {
+      lastError = error;
+      if (i === 2 || !/timeout|websocket/i.test(String(error?.message || ''))) throw error;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+  }
+  throw lastError;
+}
+
+async function syncKeepaliveAfterCleanup(workspaceId, { deletedIds, liveTunnelIds, pruneMissing, username }) {
+  let current;
+  try {
+    const read = await execCleanupWithRetry(workspaceId, buildKeepaliveTunnelsReadScript(), username, 30000);
+    current = parseKeepaliveTunnelsOutput(read.stdout);
+  } catch {
+    return;
+  }
+  if (!current.length) return;
+  const deleted = new Set(deletedIds || []);
+  // Prune deleted IDs AND entries that no longer exist in the management plane
+  // (ghost tunnels from earlier delete-all calls would otherwise be re-hosted
+  // and renewed forever).
+  // Only prune "absent" entries when we have at least one confirmed live tunnel
+  // (or an explicit all-mode reset). A transient empty list must not wipe the
+  // watchdog and silently stop renewals.
+  const remaining = current.filter((t) => !deleted.has(t.tunnelId) && (!pruneMissing || liveTunnelIds.has(t.tunnelId)));
+  if (remaining.length === current.length) return;
+  if (remaining.length === 0) {
+    try {
+      await execCleanupWithRetry(
+        workspaceId,
+        `pkill -f "tunnel-keepalive.sh" 2>/dev/null || true; rm -f /tmp/tunnel-keepalive.sh`,
+        username,
+        30000,
+      );
+    } catch {}
+    return;
+  }
+  try {
+    await installKeepaliveWatchdog(workspaceId, { tunnels: remaining }, username, 30000);
+  } catch {}
+}
+
+export async function cleanupDevbridgeTunnels(
+  workspaceId,
+  { mode = 'stale', samePort = null, maxExtra = 1, username = 'root' } = {},
+) {
+  if (!workspaceId) throw new Error('devbridge cleanup: workspace_id is required.');
+  if (mode === 'none') return { ok: true, skipped: true, deleteIds: [], killPids: [] };
+
+  let lockResult;
+  try {
+    lockResult = await execOneShot(workspaceId, buildDevbridgeCleanupLockScript(), username, 30000);
+  } catch {
+    return { ok: false, locked: true, deleteIds: [], killPids: [] };
+  }
+  if (!stripTerminalEscapes(lockResult.stdout).includes('LOCK_OK')) {
+    return { ok: false, locked: true, deleteIds: [], killPids: [] };
+  }
+
+  try {
+    const stateResult = await execCleanupWithRetry(workspaceId, buildDevbridgeCleanupStateScript(), username, 60000);
+    const text = stripTerminalEscapes(stateResult.stdout);
+    const tunnelSection = cleanupSection(text, 'TUNNELS');
+    const listOk = /Tunnel ID|No tunnels found/i.test(tunnelSection);
+    if (!listOk) {
+      // list/auth/network failed — do not delete or kill anything on a guess.
+      return { ok: false, listFailed: true, deleteIds: [], killPids: [] };
+    }
+    const tunnels = parseDevbridgeTunnelList(tunnelSection);
+    const hosts = parseDevbridgeHostProcesses(cleanupSection(text, 'HOSTS'));
+    // Output-format drift guard: header matched but rows didn't parse, while host
+    // processes exist. Never mass-kill hosts on a parse we don't trust.
+    if (tunnels.length === 0 && hosts.length > 0 && !/No tunnels found/i.test(tunnelSection)) {
+      return { ok: false, listFailed: true, deleteIds: [], killPids: [] };
+    }
+    const keepalive = parseKeepaliveTunnelsOutput(text);
+    const liveTunnelIds = new Set(tunnels.map((t) => t.id));
+    const pruneMissing = mode === 'all' || liveTunnelIds.size > 0;
+    const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode, samePort, maxExtra });
+    if (plan.deleteIds.length === 0 && plan.killPids.length === 0) {
+      await syncKeepaliveAfterCleanup(workspaceId, {
+        deletedIds: [],
+        liveTunnelIds,
+        pruneMissing,
+        username,
+      });
+      return { ok: true, deleteIds: [], killPids: [], tunnelCount: tunnels.length };
+    }
+    await execCleanupWithRetry(
+      workspaceId,
+      buildDevbridgeCleanupApplyScript(plan),
+      username,
+      DEVBRIDGE_CLEANUP_TIMEOUT_MS,
+    );
+    await syncKeepaliveAfterCleanup(workspaceId, {
+      deletedIds: plan.deleteIds,
+      liveTunnelIds,
+      pruneMissing,
+      username,
+    });
+    return { ok: true, ...plan, tunnelCount: tunnels.length };
+  } finally {
+    try {
+      await execCleanupWithRetry(workspaceId, `rmdir ${DEVBRIDGE_LOCK_PATH} 2>/dev/null || true`, username, 30000);
+    } catch {}
+  }
+}
+
 // Expose a sandbox port to a public DevBridge tunnel URL. `port` MUST be the
 // ACTUAL port reported by deployNginx (deploy_nginx auto-increments on conflict),
 // otherwise the tunnel is bound to a dead port. Returns ok, publicUrl, port,
@@ -1579,17 +2217,109 @@ export function validateTunnelPort(port) {
 // tunnel is re-verified from a second independent exec session (#919) and the
 // result carries verifyHttpCode + persistent so callers can tell a
 // session-surviving URL from one that dies with the deploying session.
-export async function exposeTunnel(workspaceId, { port }, username = 'root', timeoutMs = 90000) {
+export async function exposeTunnel(
+  workspaceId,
+  {
+    port,
+    expiryHours,
+    keepalive,
+    poolType,
+    poolContext,
+    cleanupMode = 'stale',
+    ensureDevbridgeKey,
+    buildKeyringInjectScript,
+    listKeysForQuotaHint,
+  },
+  username = 'root',
+  timeoutMs = 90000,
+) {
   if (!workspaceId) {
     throw new Error('sandbox expose tunnel: workspace_id is required.');
   }
   const validatedPort = validateTunnelPort(port);
+  const validatedExpiryHours = validateExpiryHours(expiryHours ?? DEVBRIDGE_HOST_EXPIRY_HOURS);
 
   const authScript = buildDevbridgeAuthProbe();
   const authResult = await execOneShot(workspaceId, authScript, username, 30000);
-  const { authMode, attempts } = parseDevbridgeAuthOutput(authResult.stdout);
+  const { authMode, attempts, version: authVersion } = parseDevbridgeAuthOutput(authResult.stdout);
 
-  if (authMode !== 'API_KEY_KEYRING' && authMode !== 'AKSK_SUPPORTED' && authMode !== 'API_KEY_FILE') {
+  // #998: version gate BEFORE the expose loop. 0.1.x binaries' AK/SK tier still
+  // logs in, so authMode alone would green-light an expose that can never work.
+  // This must precede the authMode check — the structured too_old error names
+  // the real cause where the auth-failure path would point at credentials.
+  const versionCheck = evaluateDevbridgeVersion(authVersion);
+  if (versionCheck.blocked) {
+    return {
+      ok: false,
+      error: versionCheck.error,
+      error_code: 'devbridge_too_old',
+      version: authVersion,
+      authMode,
+      attempts,
+      remediation: versionCheck.remediation,
+    };
+  }
+
+  // Auth waterfall: probe → (auto-create fallback) → expose loop
+  // 失效自愈：probe 报 login-failed（key 被删/过期）→ 清缓存 → 重建 → 注入 → 重跑 probe
+  let effectiveAuthMode = authMode;
+  const isLoginFailed =
+    authMode !== 'API_KEY_KEYRING' && authMode !== 'API_KEY_FILE' && attempts.KEYRING === 'login-failed';
+
+  if (isLoginFailed && ensureDevbridgeKey) {
+    // key 失效（缓存里有 key 但 login 失败）→ 清缓存重建
+    try {
+      const { recreateDevbridgeKey } = await import('./devbridge-key.mjs');
+      const { apiKey } = await recreateDevbridgeKey(poolType || 'ephemeral');
+      const injectScript = buildKeyringInjectScript(apiKey);
+      await execOneShot(workspaceId, injectScript, username, 15000);
+      const healResult = await execOneShot(workspaceId, authScript, username, 30000);
+      const healParsed = parseDevbridgeAuthOutput(healResult.stdout);
+      if (healParsed.authMode === 'API_KEY_KEYRING' || healParsed.authMode === 'API_KEY_FILE') {
+        effectiveAuthMode = 'API_KEY_AUTO';
+      }
+    } catch {
+      // 自愈失败 → 走泛化降级
+    }
+  }
+
+  if (effectiveAuthMode !== 'API_KEY_KEYRING' && effectiveAuthMode !== 'API_KEY_FILE' && ensureDevbridgeKey) {
+    // keyring/文件均无 key → host 调 relay API 自动创建 → 注入沙箱 → 重跑 probe
+    try {
+      const { apiKey } = await ensureDevbridgeKey(poolType || 'ephemeral');
+      const injectScript = buildKeyringInjectScript(apiKey);
+      await execOneShot(workspaceId, injectScript, username, 15000);
+      const authResult2 = await execOneShot(workspaceId, authScript, username, 30000);
+      const parsed2 = parseDevbridgeAuthOutput(authResult2.stdout);
+      if (parsed2.authMode === 'API_KEY_KEYRING' || parsed2.authMode === 'API_KEY_FILE') {
+        effectiveAuthMode = 'API_KEY_AUTO';
+      }
+    } catch (error) {
+      // 自动创建失败（含配额满 13002）→ 结构化降级
+      if (error.code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
+        const keysHint = listKeysForQuotaHint ? await listKeysForQuotaHint() : [];
+        return {
+          ok: false,
+          error: error.message,
+          error_code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
+          authMode: authMode || 'UNKNOWN',
+          attempts,
+          currentKeys: keysHint,
+          hint:
+            'API Key 数量已达上限。请到控制台清理不再使用的 key：' +
+            'https://devstation.connect.huaweicloud.com/space/devbridge/apikey\n' +
+            'devkit-* 开头的是插件自动管理的 key（删除后会自动重建），可优先清理其他闲置 key。',
+        };
+      }
+      // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）
+    }
+  }
+
+  if (
+    effectiveAuthMode !== 'API_KEY_KEYRING' &&
+    effectiveAuthMode !== 'API_KEY_FILE' &&
+    effectiveAuthMode !== 'API_KEY_AUTO'
+  ) {
     const loginOutput = String(authResult.stdout || '') + String(authResult.stderr || '');
     return {
       ok: false,
@@ -1597,30 +2327,48 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
       authMode: authMode || 'UNKNOWN',
       attempts,
       hint:
-        'No DevBridge credential is available in this sandbox. Suggested next steps:\n' +
-        '1) Re-run huaweicloud_sandbox_credentials once, then retry huaweicloud_sandbox_expose_tunnel — ' +
-        'this refreshes the temporary AK/SK (most common quick fix when they simply expired) and rewrites /tmp/hw_creds.sh.\n' +
-        '2) If it still fails, this sandbox was created on an older image and cannot auto-acquire an API Key ' +
-        '(the image cannot be upgraded in place). One-time manual fallback: create an API Key at ' +
-        'https://devstation.connect.huaweicloud.com/space/devbridge/apikey, run `export HW_API_KEY=<key>` locally, ' +
-        're-run huaweicloud_sandbox_credentials, then retry.\n' +
-        '3) The "attempts" field shows which tiers were tried and why they failed — include it when escalating to the platform team.',
+        'No DevBridge API Key is available in this sandbox. Suggested next steps:\n' +
+        '1) Re-run huaweicloud_sandbox_credentials, then retry huaweicloud_sandbox_expose_tunnel.\n' +
+        '2) If auto-creation failed due to quota (20 key limit), clean up unused keys at ' +
+        'https://devstation.connect.huaweicloud.com/space/devbridge/apikey, then retry.\n' +
+        '3) The "attempts" field shows which tiers were tried and why they failed — include it when escalating.',
       loginOutput,
     };
   }
 
+  // Selective pre-clean: remove same-port tunnels + orphan records/hosts only.
+  // Other ports and keepalive-protected tunnels are preserved.
+  const validatedCleanupMode = normalizeCleanupMode(cleanupMode);
+  try {
+    await cleanupDevbridgeTunnels(workspaceId, {
+      mode: validatedCleanupMode,
+      samePort: validatedPort,
+      username,
+    });
+  } catch {}
+
   let result = null;
   let attempt = 0;
-  const maxAttempts = 2;
+  let lastQuotaCleanup = null;
+  const maxAttempts = 4;
   while (attempt < maxAttempts) {
     attempt += 1;
-    const exposeScript = buildDevbridgeExposeScript(validatedPort);
+    const exposeScript = buildDevbridgeExposeScript(validatedPort, validatedExpiryHours);
     result = await execOneShot(workspaceId, exposeScript, username, timeoutMs);
     const parsed = parseDevbridgeExposeOutput(result.stdout);
 
-    // 10006 quota exceeded: clean up stale tunnels and retry.
+    // 10006 quota exceeded: remove orphan tunnels first, then the oldest non-protected
+    // live tunnel (one per retry) until the new tunnel fits. Never touches keepalive keys.
     if (parsed.quotaError && attempt < maxAttempts) {
-      continue;
+      const quotaCleanup = await cleanupDevbridgeTunnels(workspaceId, {
+        mode: 'quota',
+        samePort: validatedPort,
+        maxExtra: 1,
+        username,
+      }).catch(() => null);
+      lastQuotaCleanup = quotaCleanup || lastQuotaCleanup;
+      // Kill-only progress frees no tunnel quota; only a deleted record can.
+      if (quotaCleanup?.deleteIds?.length) continue;
     }
     // Unreachable (000), migrated-gateway placeholder, or gateway-level tunnel errors
     // (404 "tunnel not found" / "port not configured"): one cleanup + rebuild retry.
@@ -1633,12 +2381,12 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
     if (unreachable || migration || gatewayTunnelError || backendDown) {
       if (attempt === 1) {
         try {
-          await execOneShot(
-            workspaceId,
-            `pkill -f "devbridge host" 2>/dev/null || true; sleep 2; devbridge delete-all > /dev/null 2>&1 || true`,
+          // Only the same-port tunnel + orphans; other ports/sessions stay untouched.
+          await cleanupDevbridgeTunnels(workspaceId, {
+            mode: 'stale',
+            samePort: validatedPort,
             username,
-            20000,
-          );
+          });
         } catch {}
         continue;
       }
@@ -1659,8 +2407,56 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
     }
 
     const warnings = [];
-    if (parsed.quotaError)
-      warnings.push('DevBridge tunnel quota (10006) hit — stale tunnels were cleaned up and the host was retried.');
+    if (parsed.quotaError && !parsed.tunnelUrl) {
+      return {
+        ok: false,
+        error:
+          'DevBridge tunnel quota exceeded (10006) after cleanup. Keepalive-protected tunnels are preserved; ' +
+          'remove unused tunnels or retry with cleanup_mode=all if a full reset is acceptable.',
+        error_code: 'devbridge_tunnel_quota_exceeded',
+        authMode: effectiveAuthMode,
+        attempts,
+        cleanup: lastQuotaCleanup || undefined,
+        warnings: 'tunnel quota (10006) still full after removing orphan/oldest non-protected tunnels',
+        hostLog: String(result.stdout || '').slice(0, 400),
+      };
+    }
+
+    // #998: a host that never produced a Tunnel URL must NOT surface as ok:true
+    // with an undefined publicUrl — that reads as success and sends the caller
+    // chasing credentials/network/port while the real cause is the host/版本.
+    // Read the version back into the return body: in this incident a single
+    // version field would have saved the whole diagnosis.
+    if (!parsed.tunnelUrl) {
+      let noUrlVersion = authVersion;
+      try {
+        const versionResult = await execOneShot(
+          workspaceId,
+          `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; devbridge version 2>/dev/null | head -1`,
+          username,
+          15000,
+        );
+        noUrlVersion = String(versionResult.stdout || '').trim() || authVersion;
+      } catch {}
+      const noUrlCheck = evaluateDevbridgeVersion(noUrlVersion);
+      if (noUrlCheck.blocked) {
+        warnings.push(
+          `devbridge version is ${noUrlVersion} — too old to serve tunnels; upgrade per Step 0 before retrying.`,
+        );
+      }
+      return {
+        ok: false,
+        error: noUrlCheck.blocked
+          ? noUrlCheck.error
+          : `Failed to expose a working DevBridge tunnel: the host log contains no Tunnel URL (HTTP probe code ${parsed.httpCode || '000'}) — the host did not start. Check the hostLog below for the real cause.`,
+        error_code: noUrlCheck.blocked ? 'devbridge_too_old' : 'no_tunnel_url',
+        version: noUrlVersion || undefined,
+        httpCode: parsed.httpCode,
+        authMode,
+        ...(noUrlCheck.blocked ? { remediation: noUrlCheck.remediation } : {}),
+        hostLog: String(result.stdout || '').slice(0, 400),
+      };
+    }
 
     // #919: re-verify with a real GET from a SECOND, independent exec session.
     // The in-session health check above cannot prove the host survived session
@@ -1717,18 +2513,62 @@ export async function exposeTunnel(workspaceId, { port }, username = 'root', tim
       parsed.expiryHours !== undefined
         ? new Date(Date.now() + parsed.expiryHours * 3_600_000).toISOString()
         : undefined;
+
+    // AUTO-ENROLL: every tunnel exposed through this tool is enrolled into the
+    // keepalive watchdog by default (user requirement: all devbridge tunnels
+    // deployed to the sandbox must be keepalive-protected — unattended renewal
+    // + host re-attach + health check). The new tunnel is MERGED into the
+    // existing watchdog tunnel list, never replacing other tunnels' coverage.
+    // keepalive:false opts out. Non-fatal: an enrollment failure is surfaced
+    // as a warning, not a failed expose — the tunnel itself is working.
+    let keepaliveEnrollment = undefined;
+    if (keepalive !== false && parsed.tunnelUrl && parsed.tunnelId) {
+      try {
+        const readResult = await execOneShot(workspaceId, buildKeepaliveTunnelsReadScript(), username, 20000);
+        const existing = parseKeepaliveTunnelsOutput(readResult.stdout);
+        const merged = mergeKeepaliveTunnels(existing, [{ tunnelId: parsed.tunnelId, url: parsed.tunnelUrl }]);
+        keepaliveEnrollment = await installKeepaliveWatchdog(workspaceId, { tunnels: merged }, username, 30000);
+        if (!keepaliveEnrollment.ok) {
+          warnings.push(
+            `Keepalive watchdog enrollment failed: ${keepaliveEnrollment.error || 'unknown error'} — the tunnel works but will NOT be auto-renewed. Retry with huaweicloud_sandbox_keepalive_watchdog.`,
+          );
+        }
+      } catch (error) {
+        warnings.push(
+          `Keepalive watchdog enrollment failed (${error?.message || 'unknown error'}) — the tunnel works but will NOT be auto-renewed. Retry with huaweicloud_sandbox_keepalive_watchdog.`,
+        );
+      }
+    }
+
+    // 交付地址时必须播报沙箱存活期（隧道有效期 ≠ 沙箱存活期；keepalive 只保隧道不保沙箱）
+    const lifetimeNotice = buildExposeLifetimeNotice(poolContext, parsed.expiryHours);
+    if (lifetimeNotice) warnings.push(lifetimeNotice.warning);
+
     return {
       ok: true,
       publicUrl: parsed.tunnelUrl || undefined,
       port: validatedPort,
+      ...(lifetimeNotice
+        ? { sandboxLifetime: lifetimeNotice.sandboxLifetime, urlLifetimeHint: lifetimeNotice.urlLifetimeHint }
+        : {}),
       tunnelId: parsed.tunnelId || undefined,
-      authMode,
+      // 报告最终生效的认证方式：自动创建兜底成功后应为 API_KEY_AUTO（而非首轮 probe 的 NO_CREDENTIAL）
+      authMode: effectiveAuthMode,
       httpCode: parsed.httpCode,
       verifyHttpCode: verifyHttpCode || undefined,
       verifyNotFound: verifyNotFound || undefined,
       persistent,
       expiresAt,
       expiresInHours: parsed.expiryHours,
+      keepalive: keepaliveEnrollment
+        ? {
+            enrolled: keepaliveEnrollment.ok === true,
+            tunnelCount: keepaliveEnrollment.ok ? (keepaliveEnrollment.tunnels || []).length : undefined,
+            watchdogPid: keepaliveEnrollment.watchdogPid,
+            logPath: keepaliveEnrollment.logPath,
+            error: keepaliveEnrollment.ok ? undefined : keepaliveEnrollment.error,
+          }
+        : undefined,
       warnings: warnings.length > 0 ? warnings.join(' ') : undefined,
       hostLog: String(result.stdout || '').slice(0, 400),
     };

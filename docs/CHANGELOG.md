@@ -26,9 +26,98 @@
 - 合入 dev 全部修复(沙箱/安全/IAM/文档)到 codearts_web_test,并保留 OpenCode native plugin 与 X-Auth-Token 认证。
 - feat(auth): X-Auth-Token 认证(无 AK/SK 时用注入 token 换临时 AK/SK,`HW_X_AUTH_TOKEN_EXPIRES_AT` 可选,缺省从 token 自解析过期时间)。
 
+## 1.1.13-next.8 (2026-11-05)
+
+- feat(sandbox): auto-retry connect on gateway 502/504
+
+## 1.1.13-next.7 (2026-11-05)
+
+- feat(sandbox): structured guidance for the forced version gate
+
+## 1.1.13-next.6 (2026-11-05)
+
+- fix(sandbox): address devbridge cleanup review findings
+- test(sandbox): mock selective cleanup in the connect call-tool test
+- fix(sandbox): refresh the devbridge CLI token before cleanup listing
+- fix(sandbox): give devbridge cleanup execs enough time and retry transient terminal timeouts
+- fix(sandbox): prune ghost keepalive entries and skip cleanup on list failure
+- feat(sandbox): selective devbridge tunnel cleanup
+- fix(sandbox): validate devbridge keys with a real API call and heal renew failures
+- fix(sandbox): report the effective devbridge auth mode after auto-create
+
+## 1.1.13-next.5 (2026-11-04)
+
+- refactor(sandbox): use reclaimMinutes for consistent units
+- style(sandbox): apply prettier formatting
+- feat(sandbox): server-driven pool lifecycle hints on connect/expose
+
+## 1.1.13-next.4 (2026-11-04)
+
+- refactor(sandbox): 去掉孤儿清理的 last_used_at 检查（1+1 配额下过度设计）
+- fix(sandbox): QA 审查返修——AK/SK 残留清理 + 失效自愈接线 + 孤儿活跃检查
+- feat(sandbox): devbridge 认证固定 API Key——AK/SK 移除 + 自动创建 + 两池分流
+- fix(sandbox): deploy_nginx/probe 标记解析补齐 OSC 转义剥离（#946 漏网）
+
+## 1.1.13-next.3 (2026-11-03)
+
+- Release
+
+## 1.1.13-next.2 (2026-11-03)
+
+- fix(sandbox): 回显字段双读兜底——pool_type/poolType 命名漂移防御
+- fix(sandbox): QA 审查返修——remediation 穿透 MCP 边界 + 判断项五连
+- feat(sandbox): 两池 pool_type 客户端适配——透传/429 双码/TTL 播报/模式提示/烧核播报
+- style: fix prettier formatting (plugin manifests capabilities collapse, plan.md table align) #1071
+- docs(sandbox): #1071 spec/plan/task for resource pool finalized semantics
+- chore(release): #1071 bump 1.1.13-next.1
+- test(sandbox): #1071 acceptance guards for resource pool finalized semantics
+- feat(sandbox): #1071 quota/429+Retry-After semantics in sandbox tool descriptions
+- feat(sandbox): #1071 resource pool routing + lifecycle finalized semantics in skill
+
+## 1.1.13-next.0 (2026-10-29)
+
+- chore: set version-override to 1.1.13 (#1050)
+- style: prettier format issue-1040 test file
+- feat: #1040 agent 识别兜底收敛 unknown + 对外请求统一携带 X-HW-Agent 头
+- fix: 升级 undici 至 ^8.12.3 修复 npm audit 高危漏洞
+- feat(sandbox): Stack-Selection Gate - 工作台/CRUD 请求强制走 PostgREST 全栈路径（#1021） (#1022)
+- test: #1014 遥测分级上报单测 + 文档
+- feat: #1014 领券类工具 P0 同步 flush + cacheUserHash
+- feat: #1014 telemetry flush 可 await + 身份字段兜底 + 退出兜底 flush
+- feat: #1019 PG data 目录迁 /workspace 数据盘 + 补充沙箱重启恢复清单 (#1020)
+- docs(sandbox): backfill 2026-10 fullstack deployment field notes into fullstack-postgrest.md (#1016) (#1017)
+- fix: #1014 setup-cli telemetry 目录尊重 HUAWEICLOUD_DEVKIT_HOME
+- fix: #1014 telemetry flush 前重新解析并回填 userHash
+- docs: #1014 遥测 user_hash 遗漏修复 spec/plan/task
+
 ## Unreleased
 
+- feat(sandbox): Stack-Selection Gate in huawei-sandbox — 工作台/workbench/全栈/CRUD requests are classified as full-stack workbench deployments (PostgreSQL + PostgREST default) with a pre-code checkpoint that redirects SPA-only starts; frontmatter trigger words widened (#1021)
+
+## 1.1.12-next.0 (2026-10-22)
+
+- chore: set version override to 1.1.12 for next preview release
+- docs(voucher): claimed-prefix match widened to cover legacy 已领取 message
+- docs(voucher): already-claimed UX explains real-name-level dedup
+- docs(voucher): UX row for HDKIT_NOT_CODEARTS_OFFICEACE_USER (CodeArts OR OfficeAce)
+- docs(voucher): ops copy for HDKIT_NOT_CODEARTS_USER UX row
+- docs(voucher): UX row for HDKIT_NOT_CODEARTS_USER (copy placeholder, ops TBD)
+
+## 1.1.11 (2026-10-22)
+
+- fix(sandbox): createConnection() classifies transient/restriction errors (HDKIT_SUB_ACCOUNT_RESTRICTED / HD.83700029 drift) and retries with backoff — retry-exhausted errors carry a non-misleading hint instead of the server's "switch to the main account" advice (#997)
+- fix(sandbox): exposeTunnel() probes devbridge version inside the auth waterfall — 0.1.x returns structured devbridge_too_old + remediation before exposing; no-Tunnel-URL failures return ok:false with the version read back (#998)
+- fix(sandbox): devbridge installs to /workspace/.local/bin (survives reboots) + persistence table for data-disk vs system-disk paths (#999)
+- fix(sandbox): tunnel probe/verify curls pass --noproxy '*' — injected proxy returned 502/404 fakes for working tunnels (#1000)
+- fix(safety): obsutilWrites no longer grades nonexistent cors/website subcommands (#1001)
+- feat(obs): huaweicloud_obs_set_cors tool — AWS4-signed PUT/GET/DELETE /?cors via the shared obsSignedRequest; rejects HEAD-less rules at the input boundary (p01) and returns an OPTIONS preflight verify hint (#1003)
+- fix(huawei-ecs): Ecs.0044 volume-type sellout mapping + RHEL-family firewalld coverage with no-SSH recovery path (#971)
+- fix(safety): admin-port deny remediation now points at /32 egress-IP rules and the cloud-init no-SSH path (#971)
 - docs(huawei-ecs): large-user_data JSON-file path (--skeleton / --cli-jsonInput / --dryrun) + anti-pattern warning against abandoning the MCP approval channel (#964)
+
+## 1.1.10-next.2 (2026-10-20)
+
+- docs(huawei-ecs): large-user_data JSON-file path — keep the MCP approval channel
 
 ## 1.1.10-next.0 (2026-10-20)
 
