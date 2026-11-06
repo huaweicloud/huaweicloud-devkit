@@ -51,7 +51,7 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 
 > 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状；数值为服务端配置下发的默认口径，平台调参以服务端回显为准）。
 
-`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
+`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**；客户端不再支持传 template_id/自定义模板）：
 
 | pool_type           | 语义               | 生命周期（平台策略）                                         | 适用                        |
 | ------------------- | ------------------ | ------------------------------------------------------------ | --------------------------- |
@@ -74,7 +74,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 - **TTL 播报**：仅 connect（会话首次连接 / 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须转述 `urlLifetimeHint` / `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底
 - **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
 - **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
-- 显式 `template_id` 优先于 `pool_type`（自定义模板场景）
+- 不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`
 - 完整口径、容量规划与 G 清单：[references/resource-pool.md](references/resource-pool.md)
 
 ## Activation
