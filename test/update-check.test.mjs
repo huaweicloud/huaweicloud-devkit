@@ -117,6 +117,17 @@ test('parseDistTagsOutput 解析 npm view --json 输出', () => {
   assert.equal(parseDistTagsOutput(''), null);
 });
 
+test('parseDistTagsOutput 兼容 Windows 数组形态 (D1-39)', () => {
+  assert.deepEqual(parseDistTagsOutput('[{"latest":"1.1.12","next":"1.1.13-next.0"}]'), {
+    latest: '1.1.12',
+    next: '1.1.13-next.0',
+  });
+  assert.deepEqual(parseDistTagsOutput('[{"latest":"1.1.0"}]'), { latest: '1.1.0', next: null });
+  assert.equal(parseDistTagsOutput('[]'), null);
+  assert.equal(parseDistTagsOutput('[42]'), null);
+  assert.equal(parseDistTagsOutput('["str"]'), null);
+});
+
 function tmpDir() {
   const dir = mkdtempSync(join(tmpdir(), 'upd-'));
   return dir;
