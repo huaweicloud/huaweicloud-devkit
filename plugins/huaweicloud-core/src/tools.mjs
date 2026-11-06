@@ -23,13 +23,25 @@ import {
   deployNginx,
   deployCheck,
   exposeTunnel,
+  renewTunnel,
+  installKeepaliveWatchdog,
+  cleanupDevbridgeTunnels,
   getCurrentWorkspaceId,
   setWorkspaceId,
 } from './sandbox/session-manager.mjs';
 import {
+  validatePoolType,
+  rememberWorkspacePool,
+  enrichConnectResult,
+  poolContextFor,
+  shouldAnnounceConnect,
+  forgetWorkspacePool,
+} from './sandbox/sandbox-pool.mjs';
+import { ensureDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint } from './sandbox/devbridge-key.mjs';
+import {
   hdkitCheckUser,
   hdkitSignAgreement,
-  hdkitConnect,
+  hdkitConnectWithRetry,
   hdkitCredentials,
   hdkitVoucherStatus,
   hdkitVoucherClaim,
@@ -53,7 +65,7 @@ import {
   parseStsExpiry,
   resolveCredentialsWithRuntime,
 } from './auth/credentials.mjs';
-import { trackToolInvoke, trackSkillRetrieve, clearUserHash } from './telemetry/telemetry.mjs';
+import { trackToolInvoke, trackSkillRetrieve, clearUserHash, cacheUserHash } from './telemetry/telemetry.mjs';
 import { fetchWithProxy } from './proxy/proxy-agent.mjs';
 import { fingerprint, runHcloudConfigure, runHcloudProfileDelete, resolveManagedProfile } from './auth/reconcile.mjs';
 import {
@@ -631,7 +643,8 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_sandbox_close_session',
-    description: 'Close the persistent terminal session for a workspace.',
+    description:
+      'Close the persistent terminal session for a workspace. This closes the agent-side terminal session only — it does NOT delete the sandbox instance. Resource-pool sandbox deletion is developer-initiated (always ask for a second confirmation before guiding a delete) or handled by the platform resource-group idle-reclaim policy within the 7-day cap (v3 caliber); devkit never defers or performs deletion on the user behalf.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -774,7 +787,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_expose_tunnel',
     description:
-      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (probing AK/SK vs API-Key builds, using /tmp/hw_creds.sh and /tmp/hw_api_key as injected by huaweicloud_sandbox_credentials), pre-cleans stale tunnels to avoid quota errors, starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. This automates the manual "Expose via DevBridge" 5-step flow. Returns ok, publicUrl, port, tunnelId, and warnings. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
+      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (keyring → auto-create → /tmp/hw_api_key), selectively cleans only same-port/orphan tunnels (cleanup_mode=stale, default — other ports, other sessions and keepalive-protected tunnels are preserved, except a tunnel bound to THIS port which is replaced), starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. On 10006 quota it removes orphans first, then the oldest non-keepalive tunnel one at a time. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, warnings, sandboxLifetime and urlLifetimeHint. The urlLifetimeHint MUST be relayed to the developer together with the URL: the tunnel expiry is NOT the sandbox lifetime — an idle sandbox shuts down (ephemeral also auto-deletes), which kills the URL. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
     inputSchema: {
       type: 'object',
       required: ['port'],
@@ -784,6 +797,22 @@ export const TOOL_DEFINITIONS = [
           description:
             'Actual port nginx is listening on — use the "port" value returned by huaweicloud_sandbox_deploy_nginx, not the originally requested port.',
         },
+        expiry_hours: {
+          type: 'number',
+          description:
+            'Tunnel lifetime in hours via devbridge -e (1-720; 720 = the 30-day maximum, default 72). The expiry is a rolling window — the keepalive watchdog renews daily to keep the URL alive indefinitely.',
+        },
+        keepalive: {
+          type: 'boolean',
+          description:
+            'Auto-enroll the tunnel into the keepalive watchdog (default true — every tunnel deployed to the sandbox must be keepalive-protected). Pass false only when the caller explicitly manages keepalive itself.',
+        },
+        cleanup_mode: {
+          type: 'string',
+          enum: ['stale', 'all', 'none'],
+          description:
+            'Tunnel cleanup before exposing. stale (default): delete same-port tunnels + orphan records/hosts; preserve other ports, other sessions and keepalive-protected tunnels — except a tunnel bound to THIS port, which is always replaced. all: wipe every tunnel/host (manual reset only). none: no cleanup (a stale same-port host can then conflict).',
+        },
         workspace_id: {
           type: 'string',
           description:
@@ -791,6 +820,65 @@ export const TOOL_DEFINITIONS = [
         },
         username: { type: 'string', description: 'Login username (default: root)' },
         timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 90000)' },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_sandbox_renew_tunnel',
+    description:
+      'Renew a DevBridge tunnel lifetime via devbridge update <tunnelId> -e <hours> (1-720; 720 = the 30-day maximum). The expiry is a rolling window: renewal sets expiration = now + hours regardless of remaining time, so renewing before expiry keeps the SAME tunnel URL alive indefinitely. A renewal counts as ok only when the update succeeds AND show -v reports the absolute tunnelExpiration — the management plane can lose a tunnel record (10002 "tunnel not found") while the data plane keeps serving. Returns ok, tunnelId, expiresAt (ISO), renewedForHours. Pair with huaweicloud_sandbox_keepalive_watchdog for unattended daily renewal.',
+    inputSchema: {
+      type: 'object',
+      required: ['tunnel_id'],
+      properties: {
+        tunnel_id: {
+          type: 'string',
+          description:
+            'Short tunnel ID from huaweicloud_sandbox_expose_tunnel (e.g. nv2dvv6w) — extractable from the public URL as https://<tunnel_id>-<port>.devbridge-s2.hwtunnel.com.',
+        },
+        expiry_hours: {
+          type: 'number',
+          description:
+            'Renewal horizon in hours (1-720, default 720). The expiration becomes now + expiry_hours (rolling window).',
+        },
+        workspace_id: {
+          type: 'string',
+          description:
+            'Workspace ID from huaweicloud_sandbox_connect return value. Required - must be passed explicitly when HW_WORKSPACE_ID is not set.',
+        },
+        username: { type: 'string', description: 'Login username (default: root)' },
+        timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 60000)' },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_sandbox_keepalive_watchdog',
+    description:
+      'Install a keepalive watchdog in the sandbox that keeps DevBridge tunnel URLs alive indefinitely (three-layer pattern, proven in the 2026-10 tunnel-persistence test): (1) re-attaches the host with devbridge host <tunnelId> if the process dies — the URL is bound to the tunnel ID so it never changes; (2) renews every tunnel daily with devbridge update <tunnelId> -e 720 (29-day failure tolerance); (3) health-checks each URL every 5 minutes, logging warnings to /tmp/tunnel-keepalive.log. Installs as a setsid-detached loop at /tmp/tunnel-keepalive.sh; re-running replaces the old loop. URLs are hardcoded per tunnel because devbridge port list output is wrapped in OSC escapes that break anchored greps. Call AFTER huaweicloud_sandbox_expose_tunnel; requires DevBridge credentials (auth) in the sandbox.',
+    inputSchema: {
+      type: 'object',
+      required: ['tunnels'],
+      properties: {
+        tunnels: {
+          type: 'array',
+          description:
+            'Tunnels to watch. Get tunnelId + url from huaweicloud_sandbox_expose_tunnel (publicUrl contains the tunnelId as https://<tunnel_id>-<port>.devbridge-s2.hwtunnel.com).',
+          items: {
+            type: 'object',
+            required: ['tunnel_id', 'url'],
+            properties: {
+              tunnel_id: { type: 'string', description: 'Short tunnel ID (e.g. kag7rozs).' },
+              url: { type: 'string', description: 'Full public https URL of the tunnel (used for the health check).' },
+            },
+          },
+        },
+        workspace_id: {
+          type: 'string',
+          description:
+            'Workspace ID from huaweicloud_sandbox_connect return value. Required - must be passed explicitly when HW_WORKSPACE_ID is not set.',
+        },
+        username: { type: 'string', description: 'Login username (default: root)' },
+        timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 60000)' },
       },
     },
   },
@@ -815,7 +903,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One user one instance - reuses existing sandbox if available, otherwise creates a new one. Returns session_id, dev_stage_id, connection_id, connection_address, and expiresAt (STS credential expiry).',
+      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -823,6 +911,12 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           description:
             'Source identifier (default: WEB). Options: VSCODE, CLI, WEB, WEBVNC, WEBPTY, WEBIDE, CURSOR, etc.',
+        },
+        pool_type: {
+          type: 'string',
+          enum: ['ephemeral', 'persistent'],
+          description:
+            'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1). Explicit template_id overrides pool_type.',
         },
         template_id: { type: 'string', description: 'Template ID; overrides server default (only for new sandbox)' },
         flavor_id: { type: 'string', description: 'Flavor ID; overrides server default (only for new sandbox)' },
@@ -956,6 +1050,47 @@ export const TOOL_DEFINITIONS = [
         errorDocument: {
           type: 'string',
           description: '错误页面文件名（action=set 时可选），如 404.html 或 error.html',
+        },
+      },
+      required: ['action', 'bucket', 'region'],
+    },
+  },
+  {
+    name: 'huaweicloud_obs_set_cors',
+    description:
+      '配置 OBS 桶的 CORS 规则（浏览器直传前置条件）。KooCLI OBS 不支持 cors 子命令，此工具内部实现 AWS4 签名调用 OBS REST API（PUT/GET/DELETE /?cors），屏蔽签名细节。支持 set（配置）、get（查询）、delete（删除）三种操作。allowedMethod 必须含 HEAD（BrowserJS SDK 每次操作前发 HEAD ?apiversion 探测，缺 HEAD 时浏览器吞掉探测请求）。配置成功后用返回体中的 verify 命令做 OPTIONS 预检验证（200 + Access-Control-Allow-Origin 才算成功）。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['set', 'get', 'delete'],
+          description: '操作类型：set=配置 CORS 规则，get=查询当前规则，delete=删除规则',
+        },
+        bucket: { type: 'string', description: 'OBS 桶名称' },
+        region: { type: 'string', description: 'OBS 桶所在区域，如 cn-north-4' },
+        rules: {
+          type: 'array',
+          description:
+            'CORS 规则数组（action=set 时必填）。每条规则：allowedOrigin（如 https://your-app）、allowedMethod 数组（GET/PUT/POST/DELETE/HEAD，必须含 HEAD）、allowedHeader 数组（默认 ["*"]）、maxAgeSeconds（默认 3000）',
+          items: {
+            type: 'object',
+            properties: {
+              allowedOrigin: { type: 'string', description: '允许的来源，如 https://your-app.example.com 或 *' },
+              allowedMethod: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '允许的 HTTP 方法，必须包含 HEAD',
+              },
+              allowedHeader: {
+                type: 'array',
+                items: { type: 'string' },
+                description: '允许的请求头，默认 ["*"]',
+              },
+              maxAgeSeconds: { type: 'number', description: '预检结果缓存秒数，默认 3000' },
+            },
+            required: ['allowedOrigin', 'allowedMethod'],
+          },
         },
       },
       required: ['action', 'bucket', 'region'],
@@ -1390,7 +1525,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       const sandboxUser2 = args.username || 'root';
       const sandboxTimeout2 = args.timeout_ms || 120000;
       const sandboxResult2 = await execWithSession(sandboxWsId2, args.command, sandboxUser2, sandboxTimeout2);
-      return { stdout: sandboxResult2.stdout, exitCode: sandboxResult2.exitCode };
+      return {
+        stdout: sandboxResult2.stdout,
+        exitCode: sandboxResult2.exitCode,
+      };
     }
     case 'huaweicloud_sandbox_exec_one_shot': {
       const sandboxWsId3 = args.workspace_id || getCurrentWorkspaceId();
@@ -1403,7 +1541,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       const sandboxUser3 = args.username || 'root';
       const sandboxTimeout3 = args.timeout_ms || 120000;
       const sandboxResult3 = await execOneShot(sandboxWsId3, args.command, sandboxUser3, sandboxTimeout3);
-      return { stdout: sandboxResult3.stdout, exitCode: sandboxResult3.exitCode };
+      return {
+        stdout: sandboxResult3.stdout,
+        exitCode: sandboxResult3.exitCode,
+      };
     }
     case 'huaweicloud_sandbox_close_session': {
       const sandboxWsId4 = args.workspace_id || getCurrentWorkspaceId();
@@ -1415,6 +1556,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser4 = args.username || 'root';
       const closed = await closeSession(sandboxWsId4, sandboxUser4);
+      if (closed) {
+        // 池归属缓存随会话关闭清理：长驻进程防只增不减/陈旧池归属
+        forgetWorkspacePool(sandboxWsId4);
+      }
       return closed ? 'ok' : 'not_connected';
     }
     case 'huaweicloud_sandbox_upload_file': {
@@ -1531,26 +1676,147 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser9 = args.username || 'root';
       const sandboxTimeout9 = args.timeout_ms || 90000;
-      return await exposeTunnel(sandboxWsId9, { port: args.port }, sandboxUser9, sandboxTimeout9);
+      const exposePoolContext = poolContextFor(sandboxWsId9);
+      return await exposeTunnel(
+        sandboxWsId9,
+        {
+          port: args.port,
+          expiryHours: args.expiry_hours,
+          keepalive: args.keepalive,
+          cleanupMode: args.cleanup_mode,
+          // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
+          poolType: exposePoolContext?.poolMode || 'ephemeral',
+          poolContext: exposePoolContext,
+          ensureDevbridgeKey,
+          buildKeyringInjectScript,
+          listKeysForQuotaHint,
+        },
+        sandboxUser9,
+        sandboxTimeout9,
+      );
     }
-    case 'huaweicloud_sandbox_check_user':
-      return await hdkitCheckUser();
+    case 'huaweicloud_sandbox_renew_tunnel': {
+      if (!args.tunnel_id) {
+        throw new Error(
+          'tunnel_id is required. Get it from huaweicloud_sandbox_expose_tunnel or extract it from the public URL (https://<tunnel_id>-<port>.devbridge-s2.hwtunnel.com).',
+        );
+      }
+      const sandboxWsId10 = args.workspace_id || getCurrentWorkspaceId();
+      if (!sandboxWsId10) {
+        throw new Error(
+          'workspace_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, ' +
+            'or set HW_WORKSPACE_ID environment variable before starting the agent.',
+        );
+      }
+      return await renewTunnel(
+        sandboxWsId10,
+        { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
+        args.username || 'root',
+        args.timeout_ms || 60000,
+      );
+    }
+    case 'huaweicloud_sandbox_keepalive_watchdog': {
+      if (!Array.isArray(args.tunnels) || args.tunnels.length === 0) {
+        throw new Error(
+          'tunnels is required — a non-empty array of {tunnel_id, url} from huaweicloud_sandbox_expose_tunnel results.',
+        );
+      }
+      const sandboxWsId11 = args.workspace_id || getCurrentWorkspaceId();
+      if (!sandboxWsId11) {
+        throw new Error(
+          'workspace_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, ' +
+            'or set HW_WORKSPACE_ID environment variable before starting the agent.',
+        );
+      }
+      const tunnels11 = args.tunnels.map((t) => ({ tunnelId: t.tunnel_id || t.tunnelId, url: t.url }));
+      return await installKeepaliveWatchdog(
+        sandboxWsId11,
+        { tunnels: tunnels11 },
+        args.username || 'root',
+        args.timeout_ms || 60000,
+      );
+    }
+    case 'huaweicloud_sandbox_check_user': {
+      try {
+        return await hdkitCheckUser();
+      } catch (error) {
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') {
+          return {
+            ok: false,
+            code: error.code,
+            message: error.message,
+            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
+            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
+            ...(error.remediation ? { remediation: error.remediation } : {}),
+          };
+        }
+        throw error;
+      }
+    }
     case 'huaweicloud_sandbox_sign_agreement':
       return await hdkitSignAgreement();
     case 'huaweicloud_sandbox_connect': {
-      const connectResult = await hdkitConnect(args);
+      // 两池：客户端校验 pool_type（非法值在本地即报错，不发无效请求）；未传交由服务端默认 ephemeral
+      const connectArgs = { ...args };
+      let poolType;
+      try {
+        poolType = connectArgs.pool_type !== undefined ? validatePoolType(connectArgs.pool_type) : null;
+        if (poolType) connectArgs.pool_type = poolType;
+      } catch (error) {
+        // 非法 pool_type 结构化返回：MCP 错误信封只携带 code+message，指引字段在 throw 路径会丢失（参照 voucher 模式）
+        return { ok: false, code: 'HDKIT_INVALID_POOL_TYPE', message: error.message };
+      }
+      let connectResult;
+      try {
+        connectResult = await hdkitConnectWithRetry(connectArgs);
+      } catch (error) {
+        // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
+        // 其余错误维持抛出（MCP 层透传 code+message）
+        if (
+          error?.code === 'HDKIT_QUOTA_EXCEEDED' ||
+          error?.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
+          error?.code === 'HDKIT_CRED_INVALID' ||
+          error?.code === 'HDKIT_VERSION_TOO_OLD' ||
+          error?.coreHoursExhausted
+        ) {
+          return {
+            ok: false,
+            code: error.code,
+            message: error.message,
+            ...(error.retryAfter !== undefined ? { retryAfter: error.retryAfter } : {}),
+            ...(error.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
+            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
+            ...(error.remediation ? { remediation: error.remediation } : {}),
+          };
+        }
+        throw error;
+      }
       const devStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
+      let announceConnect = true;
       if (devStageId) {
         setWorkspaceId(devStageId);
+        // 播报判定：会话首次 connect 或复用实例被唤醒（started=true）才提示，其余复用静默
+        announceConnect = shouldAnnounceConnect(devStageId, connectResult || {});
+        // 池归属 + 生命周期口径缓存（服务端回显优先，缺失时客户端默认兜底）。
+        // 双读兜底与 devStageId 同型（防服务端 wire 命名漂移，QA #1082 配对复审教训）
+        rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType, connectResult || {});
+        // 只清理孤儿隧道/宿主；保留其他端口、其他会话与 keepalive 名单内的隧道
         try {
-          await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
+          await cleanupDevbridgeTunnels(devStageId, { mode: 'stale' });
         } catch {}
         try {
-          await execWithSession(devStageId, 'export PATH=$HOME/.huawei/bin${PATH:+:$PATH}', 'root', 10000);
+          await execWithSession(
+            devStageId,
+            'export PATH=/workspace/.local/bin:$HOME/.huawei/bin${PATH:+:$PATH}',
+            'root',
+            10000,
+          );
         } catch {}
         await transferGitRepo(args, devStageId, connectResult);
       }
-      return connectResult;
+      // 生命周期提示：仅首次连接 / 关机唤醒时播报（服务端回显 pool_type 才生成）
+      return enrichConnectResult(connectResult, { announce: announceConnect });
     }
     case 'huaweicloud_sandbox_credentials': {
       const devStageId = args.dev_stage_id || getCurrentWorkspaceId();
@@ -1641,16 +1907,25 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     }
     case 'huaweicloud_voucher_status':
       return await hdkitVoucherStatus(args.domain_id);
-    case 'huaweicloud_voucher_claim':
-      return await hdkitVoucherClaim(args.domain_id);
-    case 'huaweicloud_competition_voucher_claim':
-      return await hdkitCompetitionVoucherClaim(args.domain_id);
+    case 'huaweicloud_voucher_claim': {
+      const result = await hdkitVoucherClaim(args.domain_id);
+      // #1014 P0: 领券成功后补缓存 userHash（响应携带时），flush 前兜底补齐队列缺失字段。
+      if (result?.userHash) cacheUserHash(result.userHash);
+      return result;
+    }
+    case 'huaweicloud_competition_voucher_claim': {
+      const result = await hdkitCompetitionVoucherClaim(args.domain_id);
+      if (result?.userHash) cacheUserHash(result.userHash);
+      return result;
+    }
     case 'huaweicloud_check_update':
       return await handleCheckUpdate(args, { sessionId: opts?.sessionId, doQuery: opts?.doQuery });
     case 'huaweicloud_upgrade':
       return await handleUpgrade(args, { sessionId: opts?.sessionId });
     case 'huaweicloud_obs_set_website_config':
       return await handleObsWebsiteConfig(args);
+    case 'huaweicloud_obs_set_cors':
+      return await handleObsCorsConfig(args);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
@@ -2390,6 +2665,8 @@ function explainError({ service = 'unknown', errorCode = '', message = '', reque
         'The flavor has been taken offline (Ecs.0019). Run `hcloud ECS ListFlavors --cli-region=<region>` to query currently on-sale flavors and switch to a replacement flavor (see the huawei-ecs skill references/flavors.md for the cond:operation:status field rules — a flavor marked 卖光/下线 keeps failing until you pick an on-sale one), then recreate.',
       'Ecs.0319':
         'The requested flavor has insufficient capacity in the selected availability zone (Ecs.0319). Fix: retry in a different availability zone, or switch to a replacement flavor (list on-sale flavors with `hcloud ECS ListFlavors --cli-region=<region>`), then recreate.',
+      'Ecs.0044':
+        'The requested volume type is sold out in the selected availability zone (Ecs.0044, e.g. "the volumeType [SATA] is sellout in az[cn-north-4a]"). This is the ROOT VOLUME/DISK type being unavailable — a different failure from Ecs.0319 (flavor capacity). Fix: switch `--server.root_volume.volumetype` to an available type (SAS/SSD/GPSSD — query availability first) or retry in a different availability zone (`hcloud ECS NovaListAvailabilityZones --cli-region=<region>`). ListFlavors does NOT pre-warn about volume-type sellouts — you only find out at order time.',
       'Ecs.0067':
         'Order submission rejected for balance reasons (Ecs.0067). Check the cash balance with `hcloud BSS ShowCustomerAccountBalances --cli-region=cn-north-1` and top up if needed — pay-per-use order risk control checks the CASH balance only (代金券/vouchers do NOT participate in order risk control; they only offset the bill at settlement). Also settle any historical arrears, however small, before retrying.',
     },
@@ -2805,7 +3082,95 @@ async function handleObsWebsiteConfig(args) {
   throw new Error(`Unknown action: ${action}. Use set, get, or delete.`);
 }
 
-async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, region) {
+// #1003: same-structure extension of handleObsWebsiteConfig — KooCLI OBS does
+// not expose a cors subcommand and there is no SetBucketCors MCP path, so
+// agents fell back to installing a Python SDK in the sandbox just to configure
+// CORS. This reuses obsSignedRequest (AWS4, s3 service) against /?cors.
+async function handleObsCorsConfig(args = {}) {
+  const { action, bucket, region, rules } = args;
+  if (!bucket || !region) {
+    throw new Error('bucket and region are required');
+  }
+  const creds = resolveCredentialsWithRuntime({});
+  if (!creds?.ak || !creds?.sk) {
+    throw new Error('OBS CORS config requires AK/SK credentials. Run huaweicloud_auth_init first.');
+  }
+
+  const host = `${bucket}.obs.${region}.myhuaweicloud.com`;
+  const endpoint = `https://${host}`;
+  const preflightHint =
+    'Verify with an OPTIONS preflight before declaring success: ' +
+    `curl -i -X OPTIONS --noproxy '*' 'https://${host}/<object-key>' -H 'Origin: <your-app-origin>' -H 'Access-Control-Request-Method: HEAD' ` +
+    'must return HTTP 200 with an Access-Control-Allow-Origin header (200 without CORS headers = config not effective; ' +
+    '403 = rule missing the requested method). See the huawei-obs skill common-pitfalls.md p05.';
+
+  if (action === 'get') {
+    const res = await obsSignedRequest('GET', endpoint, '/?cors', '', creds, region, 'cors');
+    return { ok: res.status === 200, status: res.status, rules: res.body, verify: preflightHint };
+  }
+
+  if (action === 'delete') {
+    const res = await obsSignedRequest('DELETE', endpoint, '/?cors', '', creds, region, 'cors');
+    return { ok: res.status === 204, status: res.status };
+  }
+
+  if (action === 'set') {
+    if (!Array.isArray(rules) || rules.length === 0) {
+      throw new Error('rules array is required for action=set (allowedOrigin + allowedMethod, HEAD included)');
+    }
+    for (const rule of rules) {
+      if (!rule?.allowedOrigin || !Array.isArray(rule?.allowedMethod) || rule.allowedMethod.length === 0) {
+        throw new Error('each CORS rule needs allowedOrigin and a non-empty allowedMethod array');
+      }
+      if (!rule.allowedMethod.includes('HEAD')) {
+        // p01: the BrowserJS SDK's HEAD ?apiversion probe gets swallowed by the
+        // browser when HEAD is missing — the exact failure this tool exists to
+        // prevent, so reject it at the input boundary instead of at runtime.
+        throw new Error(
+          "allowedMethod must include 'HEAD' — the BrowserJS SDK sends a HEAD ?apiversion probe before every " +
+            'operation, and a CORS rule without HEAD makes the browser swallow it as Network Error (p01).',
+        );
+      }
+    }
+    const escapeXml = (s) =>
+      String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    const xmlParts = ['<CORSConfiguration>'];
+    for (const rule of rules) {
+      xmlParts.push('  <CORSRule>');
+      xmlParts.push(`    <AllowedOrigin>${escapeXml(rule.allowedOrigin)}</AllowedOrigin>`);
+      for (const method of rule.allowedMethod) {
+        xmlParts.push(`    <AllowedMethod>${escapeXml(method)}</AllowedMethod>`);
+      }
+      for (const header of rule.allowedHeader || ['*']) {
+        xmlParts.push(`    <AllowedHeader>${escapeXml(header)}</AllowedHeader>`);
+      }
+      if (rule.maxAgeSeconds != null) {
+        xmlParts.push(`    <MaxAgeSeconds>${Number(rule.maxAgeSeconds)}</MaxAgeSeconds>`);
+      }
+      xmlParts.push('  </CORSRule>');
+    }
+    xmlParts.push('</CORSConfiguration>');
+    const body = xmlParts.join('\n');
+    const res = await obsSignedRequest('PUT', endpoint, '/?cors', body, creds, region, 'cors');
+    return {
+      ok: res.status === 200,
+      status: res.status,
+      message:
+        res.status === 200
+          ? `CORS configured for ${bucket} (${rules.length} rule(s)).`
+          : `Failed to configure CORS: HTTP ${res.status}`,
+      verify: preflightHint,
+    };
+  }
+
+  throw new Error(`Unknown action: ${action}. Use set, get, or delete.`);
+}
+
+// Single AWS4-signed OBS REST API caller shared by the website/CORS tools
+// (#1003): subresource is the bucket subresource being addressed — 'website'
+// for PUT/GET/DELETE /?website, 'cors' for /?cors. Credential scope uses the
+// s3 service name (OBS is S3-compatible).
+async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, region, subresource = 'website') {
   const now = new Date();
   const dateStamp = now.toISOString().slice(0, 10).replace(/-/g, '');
   const amzDate = dateStamp + 'T' + now.toISOString().slice(11, 19).replace(/:/g, '') + 'Z';
@@ -2813,7 +3178,7 @@ async function obsSignedRequest(method, endpoint, pathAndQuery, body, creds, reg
 
   const url = new URL(endpoint + pathAndQuery);
   const canonicalUri = '/';
-  const canonicalQueryString = 'website=';
+  const canonicalQueryString = `${subresource}=`;
   const canonicalHeaders = `host:${url.host}\n` + `x-amz-content-sha256:${payloadHash}\n` + `x-amz-date:${amzDate}\n`;
   const signedHeaders = 'host;x-amz-content-sha256;x-amz-date';
   const canonicalRequest = [

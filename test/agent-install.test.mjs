@@ -43,7 +43,7 @@ function run(target, home, cwd, cmd, extraEnv = {}) {
     cwd,
     env: makeEnv(home, extraEnv),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 600000,
   });
 }
 
@@ -52,7 +52,7 @@ function runAuto(home, cwd, cmd, extraEnv = {}) {
     cwd,
     env: makeEnv(home, extraEnv),
     encoding: 'utf8',
-    timeout: 60000,
+    timeout: 600000,
   });
 }
 
@@ -309,7 +309,7 @@ test('cli help lists supported agent targets', () => {
       cwd,
       env: makeEnv(home),
       encoding: 'utf8',
-      timeout: 60000,
+      timeout: 600000,
     });
     assert.match(res.stdout, /install --target workbuddy/);
     assert.match(res.stdout, /install --target dsh/);

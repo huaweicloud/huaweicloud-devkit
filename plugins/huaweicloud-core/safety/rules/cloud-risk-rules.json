@@ -142,7 +142,7 @@
         ]
       },
       "message": "The change appears to expose an administrative or database port to the public internet. Web ports (80/443) are allowed - this rule only covers admin/database ports.",
-      "remediation": "Restrict the source CIDR to a trusted range, use a bastion or VPN, and keep public preview endpoints behind authenticated HTTP services."
+      "remediation": "Restrict the source CIDR to a trusted range, use a bastion or VPN, and keep public preview endpoints behind authenticated HTTP services. For SSH troubleshooting, do NOT widen to 0.0.0.0/0: open a /32 rule for your real direct egress IP instead (detect it with Invoke-RestMethod -Uri https://api.ipify.org -NoProxy on Windows / curl --noproxy '*' on Linux — a proxy egress is NOT the direct egress; see huawei-ecs references/windows-ssh.md §0.1), or skip SSH entirely via cloud-init user_data deployment (references/create-instance.md §Bootstrap). Full SSH failure diagnosis chain: huawei-ecs references/troubleshooting.md."
     },
     {
       "id": "hwc-obs-anonymous-write",
