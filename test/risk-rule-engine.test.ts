@@ -435,28 +435,32 @@ test('evaluateArtifacts denies a hardcoded cloud credential in an artifact', () 
   const result = evaluateArtifacts([
     {
       path: 'main.tf',
-      content: 'resource "huaweicloud_compute_instance" "x" {\n  access_key = "XATION4LKEXAMPL39XY"\n}\n',
+      content: 'resource "huaweicloud_compute_instance" "x" {\n  access_key = "leaked-example-key-42"\n}\n',
     },
   ]);
   assert.equal(result.decision, 'deny');
   const cred = result.findings.find((f) => f.ruleId === 'hwc-artifact-hardcoded-credential');
   assert.ok(cred, 'the hardcoded-credential rule must fire');
-  assert.ok(!cred.evidence.includes('XATION4LKEXAMPL39XY'), 'the evidence must not echo the literal key');
+  assert.ok(!cred.evidence.includes('leaked-example-key-42'), 'the evidence must not echo the literal key');
 });
 
 test('evaluateArtifacts denies hardcoded credentials in JSON, unquoted, YAML, and escaped shapes (loop round 2 R3)', () => {
   // JSON is hook_check_artifacts' natural input shape: the key's closing
   // quote used to sit between the key and the colon and break the match,
   // while the same diff's redactEvidence tolerated it.
+  // The literal is deliberately LOW-entropy (below the gitleaks
+  // generic-api-key threshold) — the devkit rule fires on credential SHAPE,
+  // not entropy, so a realistic-looking high-entropy fake here only gets
+  // the file itself flagged by CI's secret scan (2026-11-09, 4 findings).
   const shapes: Array<[string, string]> = [
-    ['config.json', '{"secret_key":"AK1234567890123456"}'],
-    ['config-escaped.json', '{\\"secret_key\\":\\"AK1234567890123456\\"}'],
+    ['config.json', '{"secret_key":"leaked-example-key-42"}'],
+    ['config-escaped.json', '{\\"secret_key\\":\\"leaked-example-key-42\\"}'],
     // Shell profile: an unquoted export is a real leak shape.
-    ['bashrc', 'export HW_ACCESS_KEY=AK1234567890123456'],
+    ['bashrc', 'export HW_ACCESS_KEY=leaked-example-key-42'],
     // YAML multiline: the value sits on the following line, unquoted.
-    ['s.yaml', 'access_key:\n  AK12345678901234567890'],
+    ['s.yaml', 'access_key:\n  leaked-example-key-42'],
     // deploy_plan's object form (the engine JSON.stringifies it).
-    ['plan.json', '{\n  "access_key": "AK1234567890123456"\n}'],
+    ['plan.json', '{\n  "access_key": "leaked-example-key-42"\n}'],
   ];
   for (const [path, content] of shapes) {
     const result = evaluateArtifacts([{ path, content }]);
@@ -466,7 +470,7 @@ test('evaluateArtifacts denies hardcoded credentials in JSON, unquoted, YAML, an
     );
     assert.equal(result.decision, 'deny', `${path} must deny`);
     assert.ok(
-      !result.findings.some((f) => f.evidence.includes('AK1234567890123456')),
+      !result.findings.some((f) => f.evidence.includes('leaked-example-key-42')),
       `${path}: the evidence must not echo the literal key`,
     );
   }
