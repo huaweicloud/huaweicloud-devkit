@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 
 import { hdkitCreateApiKey, hdkitListApiKeys, hdkitDeleteApiKey } from './hdkitservice-api.mjs';
 import { getCredentials } from './hwlink-api.mjs';
+import { warmTokenCredentials } from '../auth/credentials.mjs';
 
 const POOL_KEY_NAMES = {
   ephemeral: 'devkit-ephemeral',
@@ -97,6 +98,10 @@ export function clearCachedKey(ak, poolType) {
  * @throws Error 配额满（code=HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED）或上游错误
  */
 export async function ensureDevbridgeKey(poolType) {
+  // Token-only users: exchange X-Auth-Token → runtime STS first, so the sync
+  // getCredentials() below succeeds (it throws HDKIT_CRED_MISSING otherwise,
+  // which blocked the whole auto-create fallback for token-auth users).
+  await warmTokenCredentials();
   const { ak } = getCredentials();
   const pool = POOL_KEY_NAMES[poolType] ? poolType : DEFAULT_POOL;
   const name = keyNameForPool(pool);
@@ -132,6 +137,7 @@ export async function ensureDevbridgeKey(poolType) {
  * 由沙箱内 devbridge auth login 失败触发。
  */
 export async function recreateDevbridgeKey(poolType) {
+  await warmTokenCredentials();
   const { ak } = getCredentials();
   clearCachedKey(ak, poolType);
   return ensureDevbridgeKey(poolType);

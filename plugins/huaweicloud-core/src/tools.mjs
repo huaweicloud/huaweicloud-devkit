@@ -64,6 +64,7 @@ import {
   globalCredentialsPath,
   parseStsExpiry,
   resolveCredentialsWithRuntime,
+  warmTokenCredentials,
 } from './auth/credentials.mjs';
 import { trackToolInvoke, trackSkillRetrieve, clearUserHash, cacheUserHash } from './telemetry/telemetry.mjs';
 import { fetchWithProxy } from './proxy/proxy-agent.mjs';
@@ -1319,10 +1320,24 @@ function normalizeNumericArgs(args) {
   return out;
 }
 
+// Auth-state tools report user intent; warming would mask the real credential
+// state (runtime would show the exchanged STS instead of token-auth).
+const NO_WARM_TOOLS = new Set([
+  'huaweicloud_auth_status',
+  'huaweicloud_auth_init',
+  'huaweicloud_auth_switch',
+  'huaweicloud_auth_sync',
+  'huaweicloud_show_profile_redacted',
+  'huaweicloud_explain_error',
+]);
+
 export async function callTool(name, rawArgs = {}, opts = {}) {
   const args = normalizeNumericArgs(rawArgs);
   const toolValue = toolInvokeValue(name, args);
   trackToolInvoke(name, toolValue);
+  if (!NO_WARM_TOOLS.has(name)) {
+    await warmTokenCredentials(); // no-op with AK/SK; token→STS for token-only users
+  }
 
   switch (name) {
     case 'huaweicloud_check_cli':
