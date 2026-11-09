@@ -168,7 +168,14 @@ jobs:
         run: npm audit --audit-level=high
         continue-on-error: true
       - name: gitleaks secret scan
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o gitleaks.tgz
+          # gh's api.github.com asset path stays reachable when the
+          # github.com releases CDN 504s — it carried the 2026-10-22 round
+          # and again on 2026-11-09, when a sustained CDN outage left the
+          # direct download dead (5 consecutive 504s through --retry) while
+          # every API call in the same window succeeded.
+          gh release download v8.24.0 --repo gitleaks/gitleaks --pattern 'gitleaks_8.24.0_linux_x64.tar.gz' --output gitleaks.tgz --clobber
           tar -xzf gitleaks.tgz gitleaks
           ./gitleaks detect --source . --verbose
