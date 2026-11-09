@@ -266,54 +266,6 @@ are the version of record.
 - Remove `scripts/sync-version.mjs` from the release path (keep only if
   needed for local dev).
 
-### Phase 4 — The `v2` prerelease line (2.0.0-next.N)
-
-The `v2` branch carries the 2.0.0 major line. Its prereleases flow through a
-dedicated, dispatch-only workflow — `release-v2.yml`, which exists only on
-the `v2` branch; the main/dev `release.yml` is untouched.
-
-- **Triggers:** `workflow_dispatch` only, on the `v2` branch. No push or cron.
-  The first job step rejects any other ref — a dispatch on `main` (possible
-  only after a future v2→main merge carries the file over) fails before
-  checkout, so it can never tag or open release PRs there.
-- **Tag step:** tags `package.json`'s version **only when it is a prerelease
-  (`X.Y.Z-next.N`)**. The stable-looking `2.0.0` parked on the branch can
-  never be tagged by the pipeline during the prerelease phase — which also
-  keeps the dev arm's latest-stable-tag scan unpolluted.
-- **Compute step:** `node ./scripts/bump-version.mjs v2`. The v2 arm shares
-  the dev arm's counter logic; the base resolves from the committed
-  `.version-override` (`2.0.0`, the dev branch's committed `1.1.13`
-  precedent), else from the branch name (`v<N>` → `N.0.0`). The counter
-  increments the `v2.0.0-next.*` tag series.
-- **Release PR:** `create-release-pr.mjs <version> v2` → branch
-  `release-v2-<version>`, PR against `v2`. The first cut (2.0.0-next.0)
-  lists the full `v1.1.7..v2` delta in the changelog by design; later cuts
-  range from the previous `v2.0.0-next.*` tag.
-
-The human rhythm per release:
-
-1. Dispatch `Release v2` on `v2` (the tag step skips the stable `2.0.0`;
-   compute opens the release PR).
-2. A maintainer reviews and merges the PR (the merge is the version-edit
-   override window; `.version-override` may also be changed before the
-   dispatch).
-3. Dispatch `Release v2` again — it tags the merged `v2.0.0-next.N`; the
-   compute step no-ops at tag == tip. Dispatch promptly: commits landing on
-   `v2` between merge and tagging make compute propose `next.N+1`.
-4. Dispatch `Publish npm` from the tag → `--tag next`. The publish gate
-   (must run from a tag) makes a forgotten step 3 physically unpublishable.
-5. Verify `npm view huaweicloud-devkit dist-tags` (`next` moved, `latest`
-   untouched).
-
-Constraints and residuals:
-
-- `.release-please-manifest.json` on `v2` must always name a **tagged**
-  version — the bump script exits silently when the manifest version has no
-  tag. It stays `1.1.7` until the first release PR advances it to
-  `2.0.0-next.0`.
-- When stable `2.0.0` ships (the v2→main merge or a dedicated stable flow),
-  the prerelease-only tag guard is removed deliberately in the same change.
-
 ## 7. Rules (non-negotiable)
 
 1. Nobody edits `package.json#version` by hand. The version number comes from
