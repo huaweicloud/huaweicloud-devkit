@@ -12,6 +12,7 @@ import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 import { buildOnboardingSteps, makeError } from './guidance.mjs';
+import { getTokenCredentials } from './token-exchange.mjs';
 
 // Verify a credential file ended up with 0600. On Windows-mounted drives inside WSL
 // (drvfs/9p) chmod is silently ignored, so the file can be world-readable (0777).
@@ -398,6 +399,31 @@ export function resolveCredentialsWithRuntime(options = {}) {
   }
 
   return resolveCredentials(options);
+}
+
+// Token warm-up (#token-fullchain): when NO AK/SK is resolvable but an
+// X-Auth-Token exists (env / mcp_settings), exchange it for temporary AK/SK
+// via IAM securitytokens and cache the result as runtime credentials
+// (priority 1). This makes every SYNC consumer downstream (hcloud STS
+// injection, devbridge-key getCredentials, OBS signing) work for token-only
+// users without any per-callsite async migration. Never throws; failures are
+// swallowed so downstream error handling reports the real cause.
+export async function warmTokenCredentials() {
+  try {
+    const creds = resolveCredentialsWithRuntime({ allowMissing: true });
+    if (creds && creds.ak && creds.sk) return false; // AK/SK already available — no-op
+    const token = resolveXAuthToken();
+    if (!token) return false; // nothing to warm from
+    const sts = await getTokenCredentials(token);
+    if (sts && sts.ak && sts.sk) {
+      setRuntimeCredentials(sts.ak, sts.sk, sts.securityToken || '', sts.region || '');
+      return true;
+    }
+  } catch {
+    // exchange failure (invalid/expired token, network) — leave state as-is;
+    // downstream HDKIT_CRED_MISSING / TOKEN_EXCHANGE_FAILED carries the detail.
+  }
+  return false;
 }
 
 export function resolveXAuthToken() {

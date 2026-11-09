@@ -10,6 +10,7 @@ import { resolveHcloudCommand } from './hcloud-probe.mjs';
 import {
   parseStsExpiry,
   resolveCredentialsWithRuntime,
+  warmTokenCredentials,
   resolveXAuthToken,
   resolveXAuthTokenExpiry,
 } from './auth/credentials.mjs';
@@ -471,6 +472,11 @@ export async function runHcloud(args, options = {}) {
     rawArgs: normalizedArgs,
   };
   assertAllowed(plan.classification);
+
+  // Token-only users: warm X-Auth-Token → runtime STS BEFORE any sync
+  // credential reads (isTemporaryStsExpired / resolveStsInjectArgs) so the
+  // hcloud path works without permanent AK/SK. No-op when AK/SK present.
+  await warmTokenCredentials();
 
   // A: fail fast when the platform-injected temporary STS is already expired —
   // otherwise hcloud would make a doomed IAM round trip and surface a misleading
