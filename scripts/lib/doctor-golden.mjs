@@ -174,18 +174,21 @@ export function stageHermesOfficeaceMarkers(home) {
 // The documented normalization list — the only golden diffs that are not
 // defects. (1) ANSI color escapes (the fromCharCode idiom; eslint's
 // no-control-regex rightly flags the literal). (2) The banner version line:
-// pkgVersion changes width-dependent padding with it, so the whole line is
-// canonicalized. (3) The hcloud `Version:` line: the shim mirrors
-// kooCliVersion, which bumps independently of doctor behavior.
+// pkgVersion changes width-dependent padding with it, so the version token
+// AND the run of padding before the closing rule are collapsed — a
+// width-preserving replacement kept each side's own padding and diverged on
+// every version-width change (2.0.0 → 2.0.0-next.0; the first release that
+// hit it). (3) The hcloud `Version:` line: the shim mirrors kooCliVersion,
+// which bumps independently of doctor behavior.
 const ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
-const BANNER_VERSION_RE = /^(\u2563\s+HuaweiCloud DevKit )v\S+(\s*\u2563)$/;
+const BANNER_VERSION_RE = /^(\u2563\s+HuaweiCloud DevKit )v\S+\s*(\u2563)$/;
 const Hcloud_VERSION_RE = /^(\s*Version: )\S+.*$/;
 
 export function normalizeGoldenOutput(text) {
   return text
     .replace(ANSI_RE, '')
     .split('\n')
-    .map((line) => line.replace(BANNER_VERSION_RE, '$1<version>$2').replace(Hcloud_VERSION_RE, '$1<hcloud-version>'))
+    .map((line) => line.replace(BANNER_VERSION_RE, '$1<version> $2').replace(Hcloud_VERSION_RE, '$1<hcloud-version>'))
     .join('\n');
 }
 
