@@ -273,6 +273,9 @@ dedicated, dispatch-only workflow — `release-v2.yml`, which exists only on
 the `v2` branch; the main/dev `release.yml` is untouched.
 
 - **Triggers:** `workflow_dispatch` only, on the `v2` branch. No push or cron.
+  The first job step rejects any other ref — a dispatch on `main` (possible
+  only after a future v2→main merge carries the file over) fails before
+  checkout, so it can never tag or open release PRs there.
 - **Tag step:** tags `package.json`'s version **only when it is a prerelease
   (`X.Y.Z-next.N`)**. The stable-looking `2.0.0` parked on the branch can
   never be tagged by the pipeline during the prerelease phase — which also

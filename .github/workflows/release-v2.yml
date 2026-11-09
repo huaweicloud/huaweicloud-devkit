@@ -24,6 +24,15 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      # workflow_dispatch can be launched from any ref carrying this file —
+      # guard first so a dispatch on main (e.g. after the v2→main merge
+      # carries the file over) can never tag or open release PRs there.
+      - name: Guard — dispatch from v2 only
+        if: ${{ github.ref_name != 'v2' }}
+        run: |
+          echo "::error::Release v2 runs on the v2 branch only (dispatched from '${{ github.ref_name }}')."
+          exit 1
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
