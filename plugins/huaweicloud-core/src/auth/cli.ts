@@ -5,7 +5,6 @@
 // auth/hcloud-profile.ts.
 
 import { getAuthStatus, syncAuth } from './service.ts';
-import { readGlobalCredentials } from './credentials.ts';
 import { readLineQuestion } from '../lib/cli-io.ts';
 import { BANNER } from '../lib/banner.ts';
 import { parseTarget } from '../install-plan.ts';
@@ -96,21 +95,25 @@ export async function cmdAuthSync(): Promise<void> {
   console.log(BANNER);
   console.log('Synchronizing Huawei Cloud authentication...\n');
 
-  const credentials = asStoredCredentials(readGlobalCredentials());
-  if (!credentials?.ak || !credentials?.sk) {
-    console.error('No global credentials found. Run "npx huaweicloud-devkit auth init" first.');
-    process.exitCode = 1;
-    return;
-  }
-
+  // Defer to syncAuth's structured result instead of a local pre-check: the
+  // pre-check read only the S1 file, so the CLI never reached the
+  // HDKIT_SYNC_S1_MISSING_SESSION_ACTIVE outcome (S1 empty + session-scoped
+  // runtime/env credentials active) and kept telling an authenticated session
+  // "No global credentials found" (loop round 2, seat-4 probe).
   const result = syncAuth(target);
   if (result.ok) {
     // Print the honest sync message, not an unconditional success line: the
     // #920 purge outcomes (profile reset failed / project-id not restored)
     // ride in hcloud.message and must reach the CLI user.
     console.log(result.hcloud.message);
+  } else if (result.code) {
+    // Structured #900 shape (incl. HDKIT_SYNC_S1_MISSING_SESSION_ACTIVE):
+    // the human verdict plus the executable action beats a generic string.
+    console.error(`${result.messageZh ?? result.error}\nNext: ${result.action ?? result.nextStep ?? ''}`);
+    process.exitCode = 1;
   } else {
-    console.error(result.error);
+    console.error(result.error + (result.nextStep ? `\nNext: ${result.nextStep}` : ''));
+    process.exitCode = 1;
   }
 }
 

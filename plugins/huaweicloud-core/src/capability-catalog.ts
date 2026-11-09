@@ -287,22 +287,123 @@ export function serviceCatalog(intent: string = '') {
     const owner = SKILL_OWNER.get(skill);
     return !owner || enabled.has(owner);
   });
-  const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
+  let recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
 
-  // Deployment intent (deploy/host/publish a web app or static website) must never
-  // default to a storage/other service — recommend the sandbox first.
-  const deploymentIntent = /deploy|host|hosting|publish|website|web app|preview|部署|托管|发布|网站|网页/.test(it);
-  if (deploymentIntent && gated.includes('huawei-sandbox')) {
-    const idx = gated.indexOf('huawei-sandbox');
-    gated.splice(idx, 1);
-    gated.unshift('huawei-sandbox');
+  // Deployment intent must land on a compute/hosting recommendation, never a
+  // bare data-service list or nothing at all (2026-11-05 UX report #1: the
+  // intent 部署一个带负载均衡和数据库的 web 应用 recommended ELB+RDS with no
+  // compute carrier, and narrower phrasings like 部署 web 应用 matched nothing).
+  // The keyword routes stay deliberately narrow — broad 'web 应用'/'webapp'
+  // keywords misroute WAF phrasings onto ECS and double-route the sandbox
+  // (probe-proven) — so the fallback adds the two hosting targets when the
+  // intent is a deploy ACTION.
+  //
+  // Loop round 5 (seat-3 round-4): the negative classes are an OPEN set, so
+  // the gate states its final contract here instead of chasing words: the
+  // how-to-TROUBLESHOOT arm covers 怎么/如何 + fix verbs plus 怎么办 (the
+  // highest-frequency Chinese ops question) and the English how-to-fix
+  // shapes; the query-prefix arm covers the 帮我/请/查 families plus
+  // 看看/检索/搜/显示. A compound sentence that QUERY-opens but then carries
+  // a real deploy clause (查一下部署日志，然后部署新版本) is exempted from the
+  // query block — blocking it landed the round-4 B5 mirror (mixed sentences
+  // landing on nothing). Residual approximations, accepted and documented:
+  // post-positioned query nouns (部署记录查询), bare ambiguous queries
+  // without a deploy verb, and occasional non-action phrasings (发布订阅模式,
+  // deployment pipeline, publish the npm package) fire — advisory noise,
+  // never the original failure (a deploy sentence without a compute carrier).
+  const definitional =
+    /是什么|什么意思|区别|概念|怎么写|在哪|在哪里|多少钱|价格|是多少|\bwhat is\b|\bwhat are\b|\bwhat should i do\b/i;
+  const troubleshootHowTo =
+    /怎么办|(?:怎么|如何).{0,6}(?:排查|处理|解决|修复|定位|看|查|验证|检查)|\bhow\s+(?:do\s+i|to|can\s+i|should\s+i)\b[^。;；]{0,24}\b(?:fix|solve|resolve|troubleshoot|debug)\b/i;
+  const queryVerbs =
+    /(?:查询|查看|看看|看下|看一下|看一眼|看|瞧瞧|瞧一下|瞧一眼|瞧|瞅瞅|瞅一眼|瞅|瞄一眼|瞄|检索|搜|显示|找|查)/;
+  // The politeness-prefix stack is star-joined: prefix chains stack freely
+  // in Chinese (麻烦您请帮个忙看下…) and a single-slot alternation let any
+  // novel politeness word through (loop rounds 6-7, seat-3 B2).
+  const queryPrefix = new RegExp('^(?:请|帮我|帮忙|帮个忙|麻烦|劳驾|拜托|你好|您好|在吗)*' + queryVerbs.source);
+  const hostNoun = /\bhost\s*[-\s]*(?:头|header)/i;
+  // Loop round 10 (seat-3, structural): the query/deploy judgment is
+  // POSITIONAL — a query verb occurring BEFORE the sentence's first
+  // deploy-family verb (within 14 chars) reads as a query ABOUT deployment
+  // artifacts (帮我看下部署日志/顺便看下部署日志/麻烦了，帮我瞅瞅部署记录);
+  // a deploy verb FIRST with a query trailing (先部署网站，再看部署记录/
+  // 部署应用，然后查看部署日志) is a deploy action with a query afterthought.
+  // The compound exemption only rescues the query-open form whose tail
+  // carries a real deploy clause (查一下部署日志，然后部署新版本). The
+  // irreducible residual, documented and one-directional: post-positioned
+  // query nouns (部署记录查询/托管服务查询/帮我查询部署情况) fire — advisory
+  // noise, never the original failure (a deploy sentence landing on nothing).
+  const queryVerbRe = new RegExp(queryVerbs.source, 'g');
+  const deployVerbRe = /部署|上线|发布|搭建|托管/;
+  const firstQuery = it.search(queryVerbRe);
+  const firstDeploy = it.search(deployVerbRe);
+  const queryBeforeDeploy =
+    firstQuery >= 0 && firstDeploy >= 0 && firstQuery < firstDeploy && firstDeploy - firstQuery <= 14;
+  // A query OPEN followed by a comma-separated deploy CLAUSE is an action
+  // sentence (查一下部署日志，然后部署新版本). Loop round 12 (FINAL): the
+  // negative look-ahead is pinned to the five interrogative words and WILL
+  // NOT grow. Rounds 8-11 proved this arm has no fixed point: widening the
+  // connector set or the noun-exclusion list flips direction every round
+  // (round-8 noun list swallowed the round-4 deploy-object sentence
+  // 发布状态页 mirror; round-11 list swallowed it again via 状态/失败). The
+  // residual is the documented contract, BOTH directions:
+  //  - miss (deploy sentence landing on nothing): non-comma connectors
+  //    (查完部署文档就上线新版本), gaps > 16 chars, tails whose first word
+  //    is a listed noun — the skills layer's deployment-target doctrine
+  //    re-catches these;
+  //  - noise (pure query gaining the compute rec): tails MENTIONING the
+  //    deploy word (帮我看下部署日志，看看部署失败没有) — advisory noise,
+  //    never a misroute that provisions.
+  const compoundDeployTail = /[,，;；][^，。;；]{0,16}?(?:部署|搭建|上线|发布|托管)(?!\s*(?:是|谁|什么|如何|怎么))/;
+  const blocked =
+    definitional.test(it) ||
+    troubleshootHowTo.test(it) ||
+    ((queryPrefix.test(it) || queryBeforeDeploy) && !compoundDeployTail.test(it)) ||
+    hostNoun.test(it);
+  // Site-artifact build phrasings: create-verb + 网站/网页 ending the
+  // sentence ('做个网页'), noun-first how-to ('网站怎么做', '网站想建一个'), and
+  // the 把/将 construction ('把网站做出来'). A trailing object after the site
+  // noun ('写网站文案') is writing ABOUT a site, not building one. (A regex
+  // literal chain `a || b` would collapse to the first always-truthy regex
+  // object at declaration — the shapes must be tested, not OR'd as values.)
+  const siteBuildZh = (intent: string) =>
+    /(?:做|建|搭|写|开发|制作)[^，。,.]{0,8}(?:网站|网页)[^，。,.]?$/.test(intent) ||
+    /(?:网站|网页)[^，。,.]{0,6}怎么(?:做|搭|建|写)/.test(intent) ||
+    /(?:网站|网页)[^，。,.]{0,4}(?:建|做|搭)(?:一|一个|出来)?[^，。,.]{0,2}$/.test(intent) ||
+    /(?:把|将)(?:网站|网页)[^，。,.]{0,4}(?:做|建|搭)出来/.test(intent);
+  const deploymentIntent =
+    !blocked &&
+    (/部署|上线|发布|搭建|托管/.test(it) ||
+      siteBuildZh(it) ||
+      /\b(?:deploy|deployment|deploying|host|hosting|hosted|publish|publishing|preview)\b/i.test(it));
+  if (deploymentIntent) {
+    const enabledOwner = (skill: string) => {
+      const owner = SKILL_OWNER.get(skill);
+      return !owner || enabled.has(owner);
+    };
+    const fallbacks = ['huawei-sandbox', 'huawei-ecs'].filter((skill) => !gated.includes(skill) && enabledOwner(skill));
+    gated.unshift(...fallbacks);
+    // The sandbox leads a deployment intent (the pre-existing doctrine the
+    // reorder block carried): whatever order the unshift produced, hoist it.
+    if (gated.includes('huawei-sandbox')) {
+      gated.splice(gated.indexOf('huawei-sandbox'), 1);
+      gated.unshift('huawei-sandbox');
+    }
+    // Matched services keep their positions ahead of the fallback entries —
+    // a user-named service never drops out (loop round 2 R7: RDS was evicted
+    // when the fallbacks were prepended into a flat 5-slot list). The matched
+    // half was already capped at 5 above (the pre-fallback contract for
+    // non-deployment intents is unchanged); the two fallback entries ride
+    // AFTER it, so both halves survive.
+    const serviceFallbacks = fallbacks.map((skill) => (skill === 'huawei-sandbox' ? 'Sandbox' : 'ECS'));
+    recommendedServices = [...new Set([...recommendedServices, ...serviceFallbacks])];
   }
 
   return {
     intent,
     recommendedSkills: gated.length ? gated : ['Use huaweicloud-core to route intent.'],
     recommendedServices: recommendedServices.length
-      ? recommendedServices
+      ? recommendedServices.slice(0, 7)
       : ['Run hcloud --help to list available services.'],
     capabilityOrder: [
       'Huawei Cloud Skills for task-specific workflows and examples',

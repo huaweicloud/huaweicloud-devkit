@@ -27,6 +27,15 @@ export {
 export { resolveStsInjectArgs } from './hcloud-sts.ts';
 export type { SgFinding } from './hcloud-sg-preflight.ts';
 
-// The plan and run engine.
-export { planHcloudCommand, type HcloudPlan, type HcloudPlanWithArgs } from './hcloud-plan.ts';
+// The plan and run engine. stripLeadingHcloudBinArgs rides the face so the
+// approval handler hashes the same effective args the plan minted its token
+// over (the 2026-11-05 UX report #6 seam).
+export {
+  planHcloudCommand,
+  stripLeadingHcloudBinArgs,
+  firstPlaceholderSecretArg,
+  pinViewArgs,
+  type HcloudPlan,
+  type HcloudPlanWithArgs,
+} from './hcloud-plan.ts';
 export { runHcloud, type HcloudRunResult, type HcloudRunOptions } from './hcloud-run.ts';

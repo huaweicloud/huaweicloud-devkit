@@ -5,8 +5,51 @@
 import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.ts';
 import type { ToolArgs } from './tools.ts';
 
-export function explainError({ service = 'unknown', errorCode = '', message = '', requestId = '' }: ToolArgs = {}) {
-  const combined = `${errorCode} ${message}`.toLowerCase();
+// Huawei error codes are either a letter prefix + exactly four digits
+// (APIGW.0301, Ecs.0019, KPS.9004, FSS.1078) or a non-dotted identifier key
+// the per-service tables carry (OBS InvalidAccessKeyId, UserRestricted).
+// The shape gate does double duty: placeholder errorCode values ('N/A', '*',
+// 'TODO') must not suppress message extraction, and generic uppercase words
+// before HTTP statuses ('FAILED.404', 'ERROR.500') must not become codes
+// (loop round 3, seat-4).
+const CODE_SHAPE_RE = /^[A-Za-z][A-Za-z0-9]{1,9}\.\d{4}$/;
+const CODE_IDENT_RE = /^[A-Za-z][A-Za-z0-9_-]{4,}$/;
+const PLACEHOLDER_CODE_RE =
+  /^(?:n\/a|na|none|null|unknown|todo|-|\*|\?|0|error|err|failed|failure|timeout|exception|invalid|unauthorized)$/i;
+const CODE_EXTRACT_RE = /(?<![A-Za-z0-9])[A-Z][A-Za-z]{1,9}\.\d{4}\b/;
+
+function codeShaped(value: string): boolean {
+  const trimmed = value.trim();
+  if (PLACEHOLDER_CODE_RE.test(trimmed)) return false;
+  return CODE_SHAPE_RE.test(trimmed) || CODE_IDENT_RE.test(trimmed);
+}
+
+export function explainError({
+  service = 'unknown',
+  errorCode = '',
+  code = '',
+  message = '',
+  requestId = '',
+}: ToolArgs = {}) {
+  // `code` alias (UX report #11): the loose schema passes a `code` argument
+  // straight through, but only `errorCode` was read — the caller's code was
+  // silently dropped and the reply looked like "no pattern matched". The
+  // resolution order is shape-gated (loop round 3): a code-shaped errorCode
+  // wins; otherwise a code-shaped `code` alias; otherwise extract from the
+  // message. Non-code garbage in either field falls through to extraction
+  // instead of suppressing it.
+  let resolvedCode = String(errorCode || '');
+  if (!codeShaped(resolvedCode)) {
+    const alias = String(code || '');
+    const extracted = String(message || '').match(CODE_EXTRACT_RE)?.[0] ?? '';
+    resolvedCode = codeShaped(alias) ? alias : extracted;
+  }
+  // The gate trims but the pipeline did not: ' Ecs.0019 ' passed the shape
+  // gate then missed every table (loop round 3, seat-4 O2 — normalize once
+  // after resolution).
+  resolvedCode = resolvedCode.trim();
+  const msg = String(message || '');
+  const combined = `${resolvedCode} ${msg}`.toLowerCase();
   const suggestions: string[] = [];
   const svc = String(service).toLowerCase();
 
@@ -26,9 +69,9 @@ export function explainError({ service = 'unknown', errorCode = '', message = ''
   // service-keyed mapping table is hit. Behavior for an explicit real service
   // name is unchanged; absent/empty/'unknown' service derives from the prefix.
   let resolvedService = service;
-  if ((!service || svc === 'unknown') && /^[A-Za-z]+\.\w+/.test(errorCode)) {
-    const prefix = errorCode.split('.')[0]!.toLowerCase();
-    resolvedService = SERVICE_ALIASES[prefix] ?? errorCode.split('.')[0]!.toUpperCase();
+  if ((!service || svc === 'unknown') && /^[A-Za-z]+\.\w+/.test(resolvedCode)) {
+    const prefix = resolvedCode.split('.')[0]!.toLowerCase();
+    resolvedService = SERVICE_ALIASES[prefix] ?? resolvedCode.split('.')[0]!.toUpperCase();
   }
   const patternKey = SERVICE_ALIASES[svc] || resolvedService;
 
@@ -83,9 +126,18 @@ export function explainError({ service = 'unknown', errorCode = '', message = ''
         'The current IAM user has no permissions in the requested region. Go to IAM console → Users → Permissions → add the target region, or switch to a different region.',
     },
   };
-  const patternTable = hwErrorPatterns[patternKey];
+  // A pasted message usually arrives with a real service name (iam) whose own
+  // table is empty, while the code's dotted prefix (APIGW) carries the entry —
+  // fall back to the prefix-derived key whenever the service key has no table,
+  // so extracted codes reach their answers (UX report #12 probe).
+  let effectiveKey = patternKey;
+  if (!hwErrorPatterns[effectiveKey] && /^[A-Za-z]+\.\w+/.test(resolvedCode)) {
+    const prefix = resolvedCode.split('.')[0]!.toLowerCase();
+    effectiveKey = SERVICE_ALIASES[prefix] ?? resolvedCode.split('.')[0]!.toUpperCase();
+  }
+  const patternTable = hwErrorPatterns[effectiveKey];
   if (patternTable) {
-    const exact: string | undefined = patternTable[errorCode];
+    const exact: string | undefined = patternTable[resolvedCode];
     if (exact) {
       suggestions.push(exact);
     } else {
@@ -94,7 +146,7 @@ export function explainError({ service = 'unknown', errorCode = '', message = ''
       // the exact-hit scan is case-insensitive on the code. Deliberate divergence
       // from main: without it the prefix-derivation feature no-ops on any
       // non-canonical casing.
-      const lowerCode = errorCode.toLowerCase();
+      const lowerCode = resolvedCode.toLowerCase();
       for (const [code, tip] of Object.entries(patternTable)) {
         if (code.toLowerCase() === lowerCode) {
           suggestions.push(tip);
@@ -104,9 +156,9 @@ export function explainError({ service = 'unknown', errorCode = '', message = ''
     }
   }
   const svcPatterns: Record<string, string> = patternTable || {};
-  const lowerErrorCode = errorCode.toLowerCase();
+  const lowerErrorCode = resolvedCode.toLowerCase();
   for (const [code, tip] of Object.entries(svcPatterns)) {
-    if (errorCode && code.toLowerCase().includes(lowerErrorCode)) {
+    if (resolvedCode && code.toLowerCase().includes(lowerErrorCode)) {
       if (!suggestions.includes(tip)) suggestions.push(tip);
     }
   }
@@ -137,14 +189,14 @@ export function explainError({ service = 'unknown', errorCode = '', message = ''
       suggestions.push('Check KooCLI profile, region, project_id, and IAM permissions without printing secrets.');
     }
   }
-  if (/APIGW\.(\d+)/i.test(errorCode)) {
+  if (/APIGW\.(\d+)/i.test(resolvedCode)) {
     suggestions.push(
       'APIGW.' +
-        (errorCode.match(/APIGW\.(\d+)/i) || [])[1] +
+        (resolvedCode.match(/APIGW\.(\d+)/i) || [])[1] +
         ': API Gateway layer error. ' +
-        (errorCode === 'APIGW.0802'
+        (resolvedCode === 'APIGW.0802'
           ? 'IAM user has no region permissions — check IAM console → User → Permissions → add target region.'
-          : errorCode === 'APIGW.0301'
+          : resolvedCode === 'APIGW.0301'
             ? 'Incorrect IAM authentication information — verify AK/SK (SK typos are the usual cause), security token expiry, and that project_id is configured (auth init auto-sets it).'
             : 'Verify the API request, region endpoint, and IAM permissions.'),
     );
@@ -170,9 +222,9 @@ export function explainError({ service = 'unknown', errorCode = '', message = ''
         'X-Request-Id from the response headers, then re-call explain_error with service, operation, ' +
         'region, the full redacted message, and requestId.',
     );
-    if (errorCode) {
+    if (resolvedCode) {
       suggestions.push(
-        `Search the error code "${errorCode}" in the Huawei Cloud error center (support.huaweicloud.com) for the authoritative cause.`,
+        `Search the error code "${resolvedCode}" in the Huawei Cloud error center (support.huaweicloud.com) for the authoritative cause.`,
       );
     }
   }
@@ -187,7 +239,7 @@ export function explainError({ service = 'unknown', errorCode = '', message = ''
 
   return {
     service,
-    errorCode,
+    errorCode: resolvedCode,
     requestId,
     suggestions: uniqueSuggestions,
   };

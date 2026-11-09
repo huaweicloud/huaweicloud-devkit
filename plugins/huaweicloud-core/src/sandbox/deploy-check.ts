@@ -45,7 +45,7 @@ interface DeployCheckResult {
 export const TUNNEL_URL_PATTERN = /TUNNEL_URL:(https:\/\/[A-Za-z0-9_-]+-\d+\.devbridge-s2\.hwtunnel\.com)/;
 
 export function buildExposeRemediation(port: number): string {
-  return `In the sandbox: source /tmp/hw_creds.sh; source /tmp/hw_api_key 2>/dev/null; devbridge delete-all; devbridge create <name>; devbridge port create <tunnelId> -p ${port} --protocol http -a; if command -v setsid >/dev/null 2>&1; then setsid nohup devbridge host <tunnelId> -p ${port} -e 72 > /tmp/host.log 2>&1 < /dev/null & else nohup devbridge host <tunnelId> -p ${port} -e 72 > /tmp/host.log 2>&1 < /dev/null & fi; disown 2>/dev/null || true; If deploy_nginx reported a different (auto-incremented) port in its "port" field, use THAT port instead of the one shown here. Full procedure in huawei-sandbox skill, Step 7 (Expose via DevBridge).`;
+  return `In the sandbox: source /tmp/hw_api_key 2>/dev/null; devbridge delete-all; devbridge create <name>; devbridge port create <tunnelId> -p ${port} --protocol http -a; if command -v setsid >/dev/null 2>&1; then setsid nohup devbridge host <tunnelId> -p ${port} -e 72 > /tmp/host.log 2>&1 < /dev/null & else nohup devbridge host <tunnelId> -p ${port} -e 72 > /tmp/host.log 2>&1 < /dev/null & fi; disown 2>/dev/null || true; If deploy_nginx reported a different (auto-incremented) port in its "port" field, use THAT port instead of the one shown here. Full procedure in huawei-sandbox skill, Step 7 (Expose via DevBridge).`;
 }
 
 // The deploy-check stdout contract as one exported pure function — the

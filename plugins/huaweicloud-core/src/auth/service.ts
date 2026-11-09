@@ -332,8 +332,22 @@ export function syncAuth(target = 'all'): SyncAuthResult {
   }
   const credentials = asCredentialRecord(strict.credentials);
   if (!credentials?.ak || !credentials?.sk) {
+    // UX report #3 (2026-11-05): with session-scoped credentials active
+    // (runtime tier or env injection) but nothing persisted in S1, the
+    // generic HDKIT_CRED_MISSING read as "nothing configured" while
+    // auth_status's reconciled panel showed the same process as configured.
+    // auth_sync only ever propagates S1, so the honest answer names the tier
+    // it can see and the persist path. The strict read stays FIRST — an
+    // unresolvable S1 ref keeps its loud failure even with runtime active.
+    let sessionCreds: ReturnType<typeof resolveCredentialsWithRuntime>;
+    try {
+      sessionCreds = resolveCredentialsWithRuntime({ allowMissing: true });
+    } catch {
+      sessionCreds = null;
+    }
+    const code = sessionCreds?.ak && sessionCreds?.sk ? 'HDKIT_SYNC_S1_MISSING_SESSION_ACTIVE' : 'HDKIT_CRED_MISSING';
     // #900: unified error shape from the shared ERROR_TABLE.
-    const e = errorFromTable('HDKIT_CRED_MISSING');
+    const e = errorFromTable(code);
     return {
       ok: false,
       error: e.messageZh,

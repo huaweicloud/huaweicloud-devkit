@@ -7,6 +7,7 @@ import { syncAuth } from '../plugins/huaweicloud-core/src/auth/service.ts';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { fingerprint, runHcloudConfigure, scanState } from '../plugins/huaweicloud-core/src/auth/reconcile.ts';
 import {
+  clearRuntimeCredentials,
   globalCredentialsPath,
   hasRuntimeCredentials,
   lastSyncPath,
@@ -318,5 +319,51 @@ test('11 auth_switch clear empties runtime and lets syncAuth run again', async (
     assert.equal((res as { error?: string }).error, undefined);
     assert.doesNotMatch(JSON.stringify(res), /R10/);
     assert.match(readFileSync(log, 'utf8'), /--cli-access-key=E2E11_AK/);
+  });
+});
+
+// ── UX report #3 (2026-11-05): S1 empty + session-scoped credentials ────────
+
+test('04b syncAuth with empty S1 but active runtime credentials names the session tier', () => {
+  withTempHome(() => {
+    setRuntimeCredentials('E2E4B_RT_AK', 'E2E4B_RT_SK');
+    try {
+      const res = syncAuth('all');
+      assert.equal(res.ok, false);
+      // The generic missing-credential error read as "nothing configured"
+      // while auth_status showed the same process as configured; the dedicated
+      // code names the state and the persist path.
+      assert.equal(res.code, 'HDKIT_SYNC_S1_MISSING_SESSION_ACTIVE');
+      assert.match(res.messageZh ?? '', /落盘凭证未配置/);
+      assert.match(res.messageZh ?? '', /临时凭证/);
+      assert.equal(res.action, 'huaweicloud_auth_switch action=persist');
+      assert.equal(res.nextStep, res.action);
+    } finally {
+      clearRuntimeCredentials();
+    }
+  });
+});
+
+test('04c syncAuth with empty S1 but env credentials reports the same session-tier outcome', () => {
+  withTempHome(() => {
+    process.env.HW_ACCESS_KEY = 'E2E4C_ENV_AK';
+    process.env.HW_SECRET_KEY = 'E2E4C_ENV_SK';
+    try {
+      const res = syncAuth('all');
+      assert.equal(res.ok, false);
+      assert.equal(res.code, 'HDKIT_SYNC_S1_MISSING_SESSION_ACTIVE');
+    } finally {
+      delete process.env.HW_ACCESS_KEY;
+      delete process.env.HW_SECRET_KEY;
+    }
+  });
+});
+
+test('04d syncAuth with nothing configured anywhere keeps the generic missing-credential error', () => {
+  withTempHome(() => {
+    const res = syncAuth('all');
+    assert.equal(res.ok, false);
+    assert.equal(res.code, 'HDKIT_CRED_MISSING');
+    assert.equal(res.action, 'npx huaweicloud-devkit auth init');
   });
 });

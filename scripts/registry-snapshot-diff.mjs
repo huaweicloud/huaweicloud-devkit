@@ -95,6 +95,25 @@ const INTENTIONAL_DRIFTS = [
   },
 ];
 
+// Deliberate additive properties. The legacy snapshot is the pre-migration
+// contract, so features ported after it add properties the fixture can never
+// carry (same reasoning as EXEMPT_TOOLS: the fixture is history, not a live
+// render). Each entry names the source of the addition.
+const DELIBERATE_ADDITIONS = [
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'pool_type',
+    reason:
+      'dev 60743c2b 两池 pool_type 客户端适配：连接时选择 ephemeral/persistent 池（服务端权威映射模板，显式 template_id 优先）',
+  },
+  {
+    tool: 'huaweicloud_explain_error',
+    property: 'code',
+    reason:
+      '2026-11-05 UX report #11: `code` was the silent-failure alias agents actually sent (the loose schema already passed it through to the handler); declaring it documents the accepted alias instead of leaving the drop implicit.',
+  },
+];
+
 function normalize(node) {
   if (Array.isArray(node)) return node.map((item) => normalize(item));
   if (node !== null && typeof node === 'object') {
@@ -160,7 +179,11 @@ for (const tool of TOOL_DEFINITIONS) {
   if (missingProps.length) {
     failures.push(`${tool.name}: properties missing in zod render: ${missingProps.join(', ')}`);
   }
-  const extraProps = [...renderedProps].filter((k) => !legacyProps.has(k));
+  const extraProps = [...renderedProps].filter(
+    (k) =>
+      !legacyProps.has(k) &&
+      !DELIBERATE_ADDITIONS.some((addition) => addition.tool === tool.name && addition.property === k),
+  );
   if (extraProps.length) {
     failures.push(`${tool.name}: properties added by zod render (legacy contract had none): ${extraProps.join(', ')}`);
   }

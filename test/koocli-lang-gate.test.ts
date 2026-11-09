@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
+import { appendLangHint } from '../plugins/huaweicloud-core/src/hcloud-catalog.ts';
 import {
   classifyUnsupported,
   readServiceCatalogs,
@@ -164,30 +165,50 @@ process.exit(1);
   }
 });
 
-test('runHcloud: Unsupported service (not-found, both catalogs) → metadata hint, no lang hint', async () => {
+test('runHcloud: Unsupported service (not-found, both catalogs) → the triage denies before spawn', async () => {
+  // 2026-11-06 contract change: a service absent from BOTH local catalogs is
+  // negative evidence — the plan-face triage denies it and the run engine
+  // inherits through assertAllowed, so the "Unsupported service" output this
+  // test used to annotate can no longer happen with catalogs present. The
+  // annotation branch itself stays covered directly below (defense in depth).
   const dir = withCatalog({
     'services_cn.json': [{ Service: { Text: 'BSS' } }],
     'services_en.json': [{ Service: { Text: 'BSS' } }],
   });
+  const stateFile = join(fixtureDir('koocli-diag-state-'), 'count.txt');
   const script = fakeHcloudScript(`
+import { writeFileSync } from 'node:fs';
+writeFileSync(${JSON.stringify(stateFile)}, 'ran');
 console.error('Unsupported service: MadeUpService');
 process.exit(1);
 `);
   try {
-    const result = await runHcloud(['MadeUpService', 'x'], {
-      executable: process.execPath,
-      executableArgs: [script],
-      maxRetries: 0,
-      retryBaseDelayMs: 1,
-      metaDir: dir,
-    });
-    assert.equal(result.langCause, 'not-found');
-    assert.match(result.langNextStep!, /Check the service name/);
-    assert.doesNotMatch(result.langNextStep!, /configure set --cli-lang=cn/);
+    await assert.rejects(
+      runHcloud(['MadeUpService', 'x'], {
+        executable: process.execPath,
+        executableArgs: [script],
+        maxRetries: 0,
+        retryBaseDelayMs: 1,
+        metaDir: dir,
+      }),
+      /not in the local KooCLI service catalog/,
+    );
+    assert.equal(existsSync(stateFile), false, 'the triage deny must preempt the spawn');
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmSync(stateFile, { recursive: true, force: true });
     rmSync(join(script, '..'), { recursive: true, force: true });
   }
+});
+
+test('appendLangHint: not-found cause carries the metadata hint, no lang hint (defense in depth)', () => {
+  const dir = withCatalog({
+    'services_cn.json': [{ Service: { Text: 'BSS' } }],
+    'services_en.json': [{ Service: { Text: 'BSS' } }],
+  });
+  const result = appendLangHint({ ok: false } as HcloudRunResult, 'MadeUpService', dir);
+  assert.equal(result.langCause, 'not-found');
+  assert.match(result.langNextStep!, /Check the service name/);
+  assert.doesNotMatch(result.langNextStep!, /configure set --cli-lang=cn/);
 });
 
 test('runHcloud: successful command is untouched (no diagnostic artifacts)', async () => {

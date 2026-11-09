@@ -95,6 +95,15 @@ export const ERROR_TABLE = {
     messageZh: '运行时凭证生效,自动同步已跳过。',
     action: 'huaweicloud_auth_switch action=clear',
   },
+  // auth_sync propagates the persisted S1 store only. When S1 is empty but the
+  // session carries runtime or env credentials, the generic missing-credential
+  // error read as "nothing configured" while auth_status's reconciled panel
+  // showed the same process as configured (2026-11-05 UX report #3); this code
+  // names the actual state and the persist path.
+  HDKIT_SYNC_S1_MISSING_SESSION_ACTIVE: {
+    messageZh: '落盘凭证未配置;当前会话存在临时凭证(运行时或环境变量,仅本会话有效),同步只传播落盘凭证。',
+    action: 'huaweicloud_auth_switch action=persist',
+  },
   // IAM returned something other than 200/401/403 (or the request itself
   // failed). The canonical debug hint lives in the cli-and-auth skill.
   HDKIT_CRED_UNEXPECTED: {

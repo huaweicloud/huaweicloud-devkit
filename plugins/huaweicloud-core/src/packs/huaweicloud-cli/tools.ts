@@ -1,6 +1,13 @@
 import { z } from 'zod';
 
-import { runHcloud, planHcloudCommand, type HcloudRunResult } from '../../hcloud-cli.ts';
+import {
+  runHcloud,
+  planHcloudCommand,
+  stripLeadingHcloudBinArgs,
+  firstPlaceholderSecretArg,
+  pinViewArgs,
+  type HcloudRunResult,
+} from '../../hcloud-cli.ts';
 import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud, type ProbeHcloudOptions } from '../../hcloud-probe.ts';
 import { redactSecrets } from '../../safety-policy.ts';
 import { asText } from '../../lib/as-text.ts';
@@ -217,6 +224,28 @@ async function runApprovedCommand(args: ToolArgs = {}) {
     return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
   }
 
+  const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+  // The token binds the plan's EFFECTIVE args (the plan strips a leading bin
+  // token before minting), so the verify side normalizes the same way: a run
+  // call that echoes the plan verbatim and one that sends the cleaned args
+  // both hash to the stored value, while any real argument change still
+  // rejects. Without this, a prefixed plan followed by a self-corrected run
+  // burned the single-use token on a mismatch (2026-11-05 UX report #6, the
+  // approval-trap probe).
+  const { args: effectiveArgs } = stripLeadingHcloudBinArgs(providedArgs);
+  // A placeholder-shaped secret VALUE at run time is never a real secret:
+  // executing a literal `<redacted>`/`<password>` as the password is always
+  // wrong. This guard runs BEFORE the token is consumed, so its own guidance
+  // (replace the value, then re-run) stays followable on the same approval
+  // (loop round 3, seat-1 B3: the guidance used to be a dead end — the
+  // rejection burned the only token).
+  const placeholderArg = firstPlaceholderSecretArg(effectiveArgs);
+  if (placeholderArg) {
+    throw new Error(
+      `The argument "${placeholderArg}" still carries a placeholder secret value: replace <redacted> with the actual value the user approved, then re-run with the same approval token.`,
+    );
+  }
+
   const stored = consumeApprovalToken(token);
   if (!stored) {
     // Defensive: inspectApprovalToken said 'valid' but consume returned null.
@@ -227,19 +256,37 @@ async function runApprovedCommand(args: ToolArgs = {}) {
     if (recheck.state === 'expired') return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
     return { status: 'ok', outcome: 'already_processed' };
   }
-  const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
-  if (hashArgs(providedArgs) !== stored.argsHash) {
-    const redactedStored = JSON.stringify(stored.argsRedacted);
-    const redactedProvided = JSON.stringify(redactSecrets(providedArgs));
-    if (redactedStored !== redactedProvided) {
+  if (hashArgs(effectiveArgs) !== stored.argsHash) {
+    // The pin view is the canonical fold for the substitution comparison
+    // (loop round 4, seat-1 B2): it folds the two-token/glued secret forms
+    // the redactor never did, so following the placeholder guidance on a
+    // two-token plan no longer dead-ends in a mismatch. Pre-schema entries
+    // (no argsPinView) fall back to the redactor comparison.
+    const storedView = JSON.stringify(stored.argsPinView ?? stored.argsRedacted);
+    const providedView = JSON.stringify(pinViewArgs(effectiveArgs));
+    if (storedView !== providedView) {
       throw new Error(
         'Provided args do not match the approved plan. Use the exact args from the plan. ' +
-          'If the plan shows <redacted> for passwords or secrets, replace <redacted> with the actual values in approvedCommand.',
+          'If the plan shows <redacted> for passwords or secrets, replace <redacted> with the actual values.',
+      );
+    }
+    // Views equal means ONLY secret values differ. The plan carried real
+    // (non-placeholder) secrets → they are pinned: a different real secret
+    // rejects (loop round 2, the seat-2 A3 probe — a changed password used
+    // to execute). A placeholder-bearing plan (secretsSubstitutable) keeps
+    // the documented substitution flow.
+    if (stored.secretsSubstitutable !== true) {
+      // The message deliberately does not assert WHY the plan pinned: the
+      // detector is key-shape heuristic, so the plan may have carried real
+      // secrets, placeholder-adjacent values, or JSON-body forms where the
+      // substitution contract is not reliable (loop round 9, seat-1 B1/B2).
+      throw new Error(
+        'Secret values are pinned to the approved plan: re-run huaweicloud_plan_cli_command with the final values and re-approve.',
       );
     }
   }
-  const strictPlan = planHcloudCommand(providedArgs, { allowWrites: false });
-  const result = await runHcloud(providedArgs, {
+  const strictPlan = planHcloudCommand(effectiveArgs, { allowWrites: false });
+  const result = await runHcloud(effectiveArgs, {
     allowWrites: true,
     timeoutMs: args.timeoutMs,
     maxRetries: args.maxRetries,

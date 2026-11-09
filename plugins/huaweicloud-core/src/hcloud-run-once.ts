@@ -77,6 +77,12 @@ export function runHcloudOnce(plan: HcloudPlanWithArgs, options: HcloudRunOption
       if (typeof stdin === 'function') {
         stdin(child.stdin);
       } else {
+        // A child that exits without reading stdin (obsutil early-exit paths,
+        // test binaries) makes this write fail with EPIPE; an unhandled
+        // 'error' event on the pipe used to crash the whole MCP process
+        // (2026-11-05 UX probe). The command result still resolves through
+        // the child's close/error handlers — only the dead pipe is ignored.
+        child.stdin.on('error', () => {});
         child.stdin.write(String(stdin));
         child.stdin.end();
       }
@@ -192,9 +198,26 @@ export function runHcloudOnce(plan: HcloudPlanWithArgs, options: HcloudRunOption
       //      non-zero exit codes on success, #57) AND require the output to
       //      carry no error indicators.
       const combined = `${stdout}${stderr}`;
-      const paramError = combined.match(
-        /\[?(?:ERROR|USE_ERROR)\]?[: ]*(?:unknown parameter|unknown option|incorrect (?:option|switch|parameter)|invalid (?:parameter|argument)|参数不存在|参数错误|无效的参数)[^\n]*/i,
+      // #921 (loop rounds 2-11): KooCLI's parameter-complaint shapes exit 0
+      // (`[USE_ERROR]参数ls的格式错误,正确格式为:--param=value`, the
+      // doubled-hcloud input from UX report #6; the English marker family
+      // `[ERROR]: unknown option …`). BOTH families anchor the marker at
+      // the FIRST line of the meaningful output (post-banner stdout;
+      // stderr only when stdout is empty).
+      // DOCUMENTED TRADE-OFF (loop round 12, seat-1 B1 / seat-2): a
+      // successful payload whose FIRST LINE opens with a historical
+      // USE_ERROR line (an OBS cat of a one-line error log) is
+      // indistinguishable from the real failure by shape alone and IS
+      // reported as PARAM_ERROR; multi-line payloads (first line anything
+      // else) keep ok:true. The alternative — requiring the whole output to
+      // be one line — misses real errors that print usage/help after the
+      // marker, the worse direction. Comment promised fixed; anchor kept.
+      const useErrorSource = stripKooCliUpdateBanner(stdout).trim() || stderr.trim();
+      const useErrorFormatError = useErrorSource.match(/^\[?USE_ERROR\]?\s*参数\S*的格式错误[^\n]*$/i);
+      const useErrorMarked = useErrorSource.match(
+        /^\[?(?:ERROR|USE_ERROR)\]?[: ]*(?:unknown parameter|unknown option|incorrect (?:option|switch|parameter)|invalid (?:parameter|argument)|参数不存在|参数错误|无效的参数|缺少必填参数|不正确的参数|不支持的服务名称|Unsupported service|The following parameters are required|[^\n]{0,40}?parameter format must be|format must be)[^\n]*/i,
       );
+      const paramError = useErrorMarked ?? useErrorFormatError;
       if (paramError) {
         finish({
           ok: false,

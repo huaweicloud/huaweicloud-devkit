@@ -13,3 +13,4 @@ export { splitShellSegments } from './safety/shell-text.ts';
 export { isCredentialFilePath } from './safety/credential-path.ts';
 export { classifyHcloudArgs, assertAllowed } from './safety/classify-hcloud.ts';
 export { classifyTextCommand } from './safety/classify-text.ts';
+export { stripExecutable } from './safety/unwrap.ts';
