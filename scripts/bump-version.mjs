@@ -39,7 +39,8 @@ if (hasTags) {
 }
 
 let nextVersion;
-if (branch === 'dev') {
+const vLineBranch = branch.match(/^v(\d+)$/);
+if (branch === 'dev' || vLineBranch) {
   const allTags = execSync('git tag -l --sort=-version:refname', { encoding: 'utf8' })
     .trim()
     .split('\n')
@@ -64,6 +65,8 @@ if (branch === 'dev') {
   let nextStable;
   if (overrideBase) {
     nextStable = overrideBase;
+  } else if (vLineBranch) {
+    nextStable = `${vLineBranch[1]}.0.0`;
   } else {
     const parts = latestStable.split('.').map(Number);
     parts[2] += 1;
