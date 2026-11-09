@@ -169,6 +169,9 @@ jobs:
         continue-on-error: true
       - name: gitleaks secret scan
         run: |
-          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o gitleaks.tgz
+          # --retry-all-errors: a 504 from the releases CDN failed the whole
+          # security job on 2026-11-09 with zero findings — a scan must not
+          # go red because its scanner download hiccuped.
+          curl -sSfL --retry 5 --retry-delay 5 --retry-all-errors https://github.com/gitleaks/gitleaks/releases/download/v8.24.0/gitleaks_8.24.0_linux_x64.tar.gz -o gitleaks.tgz
           tar -xzf gitleaks.tgz gitleaks
           ./gitleaks detect --source . --verbose
