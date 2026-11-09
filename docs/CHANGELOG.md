@@ -1,5 +1,504 @@
 # Changelog
 
+## 2.0.0-next.0 (2026-11-09)
+
+- test(structure): pin the hook-graph purity boundary
+- feat(safety): the advisory face names the unknown service; classifier crash degrades to warn
+- feat(safety): unknown-service triage over the local KooCLI catalog
+- fix(ux-report): 12-round interrogate wave — pinning, catalog, rules, explain, auth, availability
+- docs(changelog): ledger the two-pool pool_type client wave — the port, its interrogate history to zero verified findings, and the residuals it records
+- docs(test): interrogate round 4 — the last two stale comment claims in the devbridge guard align with the tree
+- docs(test): interrogate round 3 — the guard's own commentary learns the real ladder order, the pin records its measured limit
+- fix(sandbox): interrogate round 2 — the waterfall teaches the real ladder order, the STS file leaves the devbridge chain, and every round-1 claim is now test-backed
+- fix(sandbox): interrogate round 1 — list payloads survive asRecord, the removed AK/SK tier leaves no agent-facing residue, guards seal their blind spots
+- feat(sandbox): port dev's server-driven pool lifecycle hints (dev 5c09d225 + ef9e977b) — announce once, follow the server echo, kill the per-call pool context
+- feat(sandbox): port dev's devbridge API-Key doctrine reversal (dev b145aba9 + 14e03eba + aa743295) — auth is fixed to API Key, AK/SK tier deleted
+- fix(sandbox): port dev 805f24ba — remediation crosses the MCP boundary, structured connect failures, pool cache hygiene
+- feat(sandbox): port dev's 两池 pool_type client adaptation (dev 60743c2b + a528fbcb) — the sandbox client learns the two-pool contract
+- test(hermes): the quote-in-hcloud-path arm splits by platform — the file is load-bearing
+- test(hermes): Windows-honest path embedding in the config-merge battery
+- fix(hermes): merge the devkit MCP entry into a user's mcp_servers mapping — one structural scanner (scanManagedChildren) now backs the writer, the surgical remover, and the #615 args delta, so install no longer appends a duplicate top-level key (the reported bug: the merge branch gated on a devkit mention and fell through to a fresh-key append whose last-wins resolution silently dropped the user's servers) and uninstall no longer orphans user servers under the preceding key (the remover dropped the mcp_servers key line unconditionally). Non-mergeable shapes (value-form keys, sequence forms, user-made duplicate keys, non-mapping roots) refuse byte-untouched before any mutation; duplicate-key heals consolidate content exactly once at the sibling indent; the packs slot reads child-scoped DEVKIT_PACKS and cmdPacksWrite exits 1 on refusals; args parsing is bracket- and escape-aware with the full YAML double-quote alphabet round-tripping. Verified by 68 unit tests (5 failing-first on the old writer), a lifecycle install-update-uninstall-reinstall spawn test, the full suite 1552/0, and an 8-round three-adversary interrogate campaign with pyyaml ground truth; residuals (block-sequence args, mixed-EOL dominance, flow-mapping lookalike lines) and the hooks-family follow-up (its own merge defect plus whole-file \n CRLF flattening) are recorded in the CHANGELOG entry
+- fix(cli): the CLI execution family joins the model-wire leniency doctrine — stringArrayArg/booleanArg
+- fix(sandbox): the port/expiry arg family joins the numericArg doctrine — glm-3's string-number wire form
+- docs(e2e): prettier-format the filed agent reports (format:check gate)
+- docs(e2e): file the opencode-leg report under docs/e2e-reports for the three-way integration
+- docs(e2e): file the core-tools report under docs/e2e-reports for the three-way integration
+- fix(e2e): restore the MCP namespace on the codex leg's regenerated tool calls — the four-case non-sandbox codex failure family (run 41636889890; core-approval-positive, core-service-catalog-routes-ecs, auth-switch-persist-writes-stores, voucher-claim-posts, both attempts each, same signature in the 55f53ad0 baseline) traced to one harness wire defect: the gateway proxy strips the namespace field from function_call items in codex-to-gateway requests (gateway compat, the field 400s) but nothing restored it on the way back, so the stripped history taught the model the wrong call shape — every regenerated call (vendor-gate challenge and gate refusal both say retry) arrived namespace-less and codex 0.162.1 answered 'unsupported call: <tool>' without dispatching (dump: 165/226 distinct huaweicloud calls namespace-less; the four failed sessions' 19 calls = 8 dispatched with ns + 11 wall hits; opencode leg all green on the same server). The fix is the response-side mirror: clientToolNamespaces derives name-namespace from each request's namespace tools (ambiguous names never re-routed), restoreNamespaces re-tags function_call items (missing, null, and empty namespaces alike) per complete SSE frame line, a byte-level line-buffered relay forwards untouched lines as raw bytes with one res.write per upstream chunk (the per-frame writev EINVAL cliff, mutation-pinned at 200k frames), and any parse or walk failure relays the original line. Verified against real codex 0.162.1 + the real dist MCP server: direct leg reproduces the bug, proxy leg completes challenge, retry dispatch, POST /voucher/claim, exit 0 — all four tools, plus a full-dump simulation with zero misses and zero false re-routes. Recorded residuals: plan_cli_command's double-encoded retry args now meet the instructive -32602 (model recovery is the last hop, run-e2e verifies), multi-line data framing and \u-escaped type spellings degrade to passthrough, restored-line numeric re-encoding. Also: hook-parity ReDoS probe TS bound 1000ms to 5000ms (loaded-host headroom, blade margin re-measured), a five-round interrogate campaign closed at zero findings (7/8/4/1/0), every hardening mutation-pinned, REPORT.md carries the evidence chain
+- fix(e2e): re-attach MCP namespaces on the codex model wire so tool retries dispatch
+- fix(e2e): the opencode leg's two nightly reds — upload-md5 rides anchored pins, the openmcp consent scenario states its consent state
+- docs(changelog): the #1071 port ledger entry — dev 87591b95 + 02b7a373 + 6d765cc5, the thirteen-round interrogate campaign, the recorded residual
+- test(sandbox): close interrogate round 13 on the #1071 port — terminators implemented, gaps merged, the shield countermeasure applied to the routing table
+- test(sandbox): close interrogate round 12 on the #1071 port — the burn-duty lead and the G-posture sentences
+- test(sandbox): close interrogate round 11 on the #1071 port — seam-free sentence pins and full paired-token cells
+- test(sandbox): close interrogate round 10 on the #1071 port — every pin to its boundary
+- test(sandbox): close interrogate round 9 on the #1071 port — merged sentence pins and cell-end terminators
+- test(sandbox): close interrogate round 8 on the #1071 port — the last wildcard-negation corners
+- test(sandbox): close interrogate round 7 on the #1071 port — contiguous cell leads and the close_session scope clause
+- test(sandbox): close interrogate round 6 on the #1071 port — the contract's last overclaims
+- test(sandbox): close interrogate round 5 on the #1071 port — sentence-level pins, mirrored across surfaces
+- test(sandbox): close interrogate round 4 on the #1071 port — paired-cell vacuity, the cross-surface discriminator, and secondary attributions
+- test(sandbox): close interrogate round 3 on the #1071 port — full-surface guard coverage and the reference over-pin
+- fix(sandbox): close interrogate round 2 on the #1071 port — one content defect, one stale in-file row, and the guard's remaining blind spots
+- test(sandbox): close interrogate round 1 on the #1071 port — the guard's vacuity gaps, all three adversaries converged
+- feat(sandbox): port dev's #1071 resource-pool routing + lifecycle finalized semantics (dev 87591b95 + 02b7a373)
+- fix(test): the proxy scrub fixture assembles its key — the scanner shape, dodged
+- chore(jscpd): regenerate baseline for the evaluator-matcher and proxy-tee additions
+- fix(e2e): the codex leg's model-wire dump, scrubbed end to end
+- fix(e2e): gateway args fold case for the named keys — product and api ids
+- fix(e2e): the trimmed-availability discovery pin accepts any of the three blessed surfaces
+- fix(test): the shared hook spool flood — gate the real-hook spawns, restore the honest flush pin
+- fix(e2e): the tunnel-persistence port's fake rows — keepalive one-shots and the #999 probe anchors
+- docs(changelog): the #1040 interrogate round-1 disclosure — corrected baseline provenance, the unreachable ''-segment class, the load-only suite flakes
+- chore(dup): regen the jscpd baseline for the #1040 port — 3 new clones, all deliberate test repetition from the ported battery
+- docs(changelog): the #1040 port ledger entry — port dev's e1ac2aa2 + eff624d1, the v2 seam decisions recorded
+- feat(telemetry,hdkit): port dev's #1040 X-HW-Agent on every outbound request (dev e1ac2aa2)
+- feat(telemetry): port dev's #1040 installSegment as its own event field (dev e1ac2aa2)
+- feat(telemetry): port dev's #1040 agent-identity fallback convergence — detectAgent/detectAgentHarness collapse to 'unknown' (dev e1ac2aa2)
+- test(telemetry): port dev's #1040 battery — the unknown-fallback and X-HW-Agent pins land RED (dev e1ac2aa2 + eff624d1)
+- fix(ci,e2e): close interrogate round 3 — the workflow-load death and the Windows facts rewrite
+- fix(ci): the v2 matrix green again without losing agent coverage — hermes-test venue fix, PYTHONUTF8 stopgap, real-agents lane move
+- feat(e2e): the hermes driver — the third agent leg (E2E_AGENT=hermes), spike-validated on Hermes Agent v0.22.5 (bf0203a794a0)
+- fix(safety): close interrogate round 19 — the mangled-prefix and value-flag comparison family closed at every probe site; the probe grammar's comparisons are uniformly normalized, both twins
+- fix(safety): close interrogate round 18 — the walk-back head comparisons use the recognition grammar; the (a)-class gaps fixed, the (b)-class compositional edges recorded as the documented boundary
+- fix(safety): close interrogate round 17 — seven one-site-over completions; the mangled shell flags, mangled xargs/watch heads, and the pipe-feeder's walk-back/per-word/interpreter/glued-arm completions
+- fix(safety): close interrogate round 16 — four one-token-over completions of the pivot's own recognition sites; mangled shell heads, mangled code flags, the py glued slot, pipe-fed shell stdin
+- fix(safety): close interrogate round 15 — the clean-round fixes; the expansion slot rule, the probe-grammar heredoc heads, and the mangled interpreter heads
+- fix(safety): close interrogate round 14 — the exit round on the pivot; four bypass classes inside the design's own signal definitions, all fixed
+- fix(safety): interrogate round 13 + the DESIGN PIVOT — the vision tail closes by DENIAL, not enumeration; the opaque-carrier gate replaces carrier-grammar vision
+- fix(safety): close interrogate round 12 on the port-v2defects trio — 10 critical, 1 warning, 6 nits (union of two reviewers); heredoc details, flags-before--c, find -exec, interpreter system() carriers, the deep-nest idiom's executable zone
+- fix(safety): close interrogate round 11 on the port-v2defects trio — 9 critical (union of two reviewers), 2 warnings, 6 nits; the script-carrier completion — TS's glued walk is now RECURSIVE, mirroring py's doctrine
+- fix(safety): close interrogate round 10 on the port-v2defects trio — 3 critical, 1 warning, 3 nits; the glued gate's full-grammar completion
+- fix(safety): close interrogate round 9 on the port-v2defects trio — 2 critical, 5 warnings, 6 nits; the glued-bin family, the input-redirect family, and the whitespace mirror's completion
+- fix(safety): close interrogate round 8 on the port-v2defects trio — 0 critical, 2 warnings, 4 nits; whitespace verdict parity and the over-cap latency guard
+- fix(safety): close interrogate round 7 on the port-v2defects trio — 1 critical, 1 warning, 5 nits; the surrogate byte-count parity
+- fix(safety): close interrogate round 6 on the port-v2defects trio — 2 critical, 2 warnings, 5 nits; the composition channel and the surrogate crash
+- fix(safety): close interrogate round 5 on the port-v2defects trio — 1 critical, 2 warnings, 5 nits; the over-cap slice
+- fix(safety): close interrogate round 4 on the port-v2defects trio — 2 critical, 2 warnings, 9 nits; the phantom-quote defeat of the decode and the line-continuation channel
+- fix(safety): close interrogate round 3 on the port-v2defects trio — 2 critical, 4 warnings, 9 nits; the root-cause fix is ANSI-C span decoding in both hook twins
+- fix(review): close interrogate round 2 on the port-v2defects trio — 0 critical, 13 warnings, 14 nits; verdict integrity, marker-gated OBS arm, presence-inverted nginx config marker
+- fix(review): close interrogate round 1 on the port-v2defects trio — 1 critical, 6 warnings, 10 nits; the OBS mangled-write hole, the read-vocab mirror, and degraded-mode coherence
+- docs(changelog): the port-v2defects ledger — three v2-internal defects the interrogate review dug out (py vocab drift, OSC-blind nginx verify, workbuddy telemetry home override)
+- fix(install): workbuddy's global telemetry dir rides the telemetry face's HUAWEICLOUD_DEVKIT_HOME derivation
+- fix(sandbox): deploy_nginx verification reads OSC-integration shells — stripTerminalEscapes folds into the nginx-verify parser
+- fix(safety): the py hook's obfuscation-gate write vocabulary derives from policy.json — the 17-word drift that let mangled InvokeFunction/Execute/Trigger/Deploy writes through
+- fix(review): close interrogate round 3 on the #1014 telemetry wave — wait-bound honesty, forward-looking smoke guard
+- fix(review): close interrogate round 2 on the #1014 telemetry wave — disclosure accuracy, shared cap constant, smoke telemetry-off
+- fix(review): close the interrogate round on the #1014 telemetry wave — 1 critical, 13 warnings, all fixed or disclosed
+- chore(dup): regen the jscpd baseline for the #1014 telemetry-wave tests — 9 new clones, all deliberate test repetition
+- docs(telemetry): E4d ledger — the #1014 wave entry: E4a/E4b/E4c recorded, userHash backfill recorded-NOT-done with the initialize-prewarm rationale, 3deb4567 not-applicable (#1014)
+- feat(voucher): E4c P0 sync flush — the claim handlers await the telemetry flush before the tool result returns (#1014)
+- feat(telemetry): E4b exit-time synchronous disk spool — the stdio close paths hand the unflushed queue to exit-events.jsonl, the next boot ingests it (#1014)
+- feat(telemetry): E4a awaitable flush — flushEvents returns a Promise with chained in-flight semantics, face export flushTelemetryEvents (#1014)
+- feat(sandbox): port the dev Stack-Selection Gate — workbench/CRUD requests force the PostgREST full-stack path, pre-code checkpoint + widened triggers (#1021)
+- docs(sandbox): port the dev fullstack PostgREST knowledge wave — PGDATA to /workspace, Aliyun mirrors, sha256-verified PostgREST (#1016/#1017 + #1019/#1020)
+- fix(deps): undici ^8.12.3 and the 22.19 engines floor — port dev's fcfacd0c audit fix
+- docs(skills): port the dev find-skills install wave — HTTP download default, deprecated npx GitCode path (745f48c0 + 04dae37f residue)
+- fix(telemetry): the src/safety split poisoned the plugin-dir marker — stamps wrote into src/
+- fix(safety): the CodeQL round — ReDoS, YAML escaping, domain regex, scanner-shaped vectors
+- fix(deps): clear the dev-dependency audit set — zod 4.6.7, markdownlint-cli2 0.24.0, smol-toml 1.9.1
+- fix(ci): force LF checkouts — the seven Windows line-ending failures
+- style: prettier the devbridge family and the wave reports
+- docs(hwlink): the wave report + the AGENTS.md ws-exec family bullet
+- refactor(ws-exec): extract the hwlink exec-client family; the face becomes the pure re-export
+- docs(proxy): AGENTS.md family-map entry and the wave report
+- refactor(proxy): split proxy-config into the io/cidr/bypass family; proxy-config.ts becomes the re-export face
+- docs(detfw): record the terminating interrogate round in the wave report
+- docs(detfw): AGENTS.md family-map entry and the wave report
+- refactor(detfw): extract the spec matcher and scan orchestration; the face becomes the pure re-export
+- refactor(detfw): extract the frameworks table and pkg readers from detect-framework
+- docs(sandbox): AGENTS.md family module map, cx table, and the wave report
+- refactor(sandbox): extract the handler family; tools.ts becomes the re-export face
+- refactor(sandbox): extract the pack's zod schemas and timeout table into schemas.ts
+- docs(tmtr): prettier-align the gate table after the flake-triage row
+- docs(tmtr): record the round-3 finding and the flake triage honestly
+- docs(tmtr): family module map, cx table, and the wave report
+- test(structure): pin the telemetry face ownership and the re-export surfaces
+- refactor(telemetry): extract the agent version detectors; agent-registry keeps the data face
+- refactor(telemetry): extract the stateless family; telemetry.ts becomes the state-holding face
+- docs(payload): AGENTS.md family module map, cx table, and the wave report
+- chore(payload): prettier the retargeted structure pin
+- refactor(payload): extract the runtime-deps and status families; the face becomes the pure re-export
+- refactor(payload): extract the native-disclosure cleanup family
+- refactor(payload): extract the native-disclosure placement family; retarget the sync and dir-derivation pins
+- refactor(payload): extract the skills-roster reader family; retarget the tryCoreSkillNames pin
+- refactor(payload): extract the server-payload placement family; retarget the #758 and marker pins
+- refactor(payload): extract the shared-utils and verified-file families
+- docs(e2erun): family module map, cx table, and the wave report
+- chore(e2e): tighten family module surfaces after interrogate
+- refactor(e2e): extract the runner family; runner.ts becomes the main-holding entry
+- refactor(e2e): split the hwlink fake by session kind
+- refactor(e2e): extract the evaluator matcher and kind families
+- docs: devbridge-split module map, cx table, and the wave report
+- test(sandbox): refresh stale devbridge-tunnel comments after the modularization
+- test(sandbox): pin the devbridge-tunnel face re-exports after the flow decomposition
+- refactor(sandbox): decompose exposeTunnel into devbridge-expose-flow.ts; face becomes the pure re-export seam
+- test(sandbox): retarget the disown pin and widen the -e 8 sweep after the keepalive extraction
+- refactor(sandbox): extract the keepalive watchdog family into devbridge-keepalive.ts
+- refactor(sandbox): extract the renew family into devbridge-renew.ts
+- refactor(sandbox): extract the fresh-session re-verify family into devbridge-verify.ts
+- refactor(sandbox): extract the expose attempt contract into devbridge-expose.ts
+- refactor(sandbox): extract the DevBridge auth waterfall into devbridge-auth.ts
+- refactor(sandbox): extract the one-shot exec seam into devbridge-exec.ts
+- refactor(sandbox): extract the tunnel parameter policy into devbridge-validation.ts
+- docs(upchk): family module map and the wave report
+- refactor(update-check): extract the upgrade act; the face becomes the pure re-export
+- refactor(update-check): extract the registry IO and single-flight cache families
+- refactor(update-check): extract the skip-state and verdict families
+- refactor(update-check): extract the semver channel and installed-version families
+- docs(auth-split): family module map, seam retargets, and the wave report
+- refactor(auth): extract the resolver family; credentials.ts becomes the pure re-export face
+- refactor(auth): extract the CodeArts context, STS expiry, and OBS config families
+- refactor(auth): extract the S1 store and placeholder policy; credentials.ts keeps the rest
+- docs: session-split module map, cx table, and the wave report
+- refactor(sandbox): rebalance deploy-nginx under the cx bar
+- refactor(sandbox): rebalance the upload transport under the cx bar
+- refactor(sandbox): extract the deploy-check family into deploy-check.ts; face becomes the pure re-export seam
+- refactor(sandbox): extract the nginx deploy family into deploy-nginx.ts
+- refactor(sandbox): extract the project upload orchestration into upload-project.ts
+- refactor(sandbox): extract the file-server/tunnel upload transport into upload-transport.ts
+- refactor(sandbox): extract the base64 upload family into upload-file.ts
+- refactor(sandbox): extract the hwlink connection layer into hwlink-connection.ts
+- refactor(sandbox): extract the ws-exec loader into ws-exec-loader.ts
+- refactor(sandbox): extract the escape-stripping seam into sandbox-output.ts
+- refactor(sandbox): extract the DevBridge s2 gateway contract into devbridge-gateway.ts
+- docs(hcloud-split): family module map, gotcha retarget, and the wave report
+- refactor(hcloud-cli): extract the plan and run family; the face becomes the pure re-export seam
+- refactor(hcloud-cli): extract the service-catalog, STS-injection, and SG-preflight family
+- refactor(hcloud-cli): extract the api-error and OBS-redaction family, hoist asString to lib/as-text
+- docs: prettier-format REPORT.md (format:check gate)
+- docs(tools-split): final interrogate sweep — stale location comments and the tools.ts header
+- docs: tools-split module map, stale comment fixes, and the wave report
+- refactor(tools): extract explain-error, the telemetry invoke value, regional availability, and the tree boot guard
+- refactor(tools): extract the skills-serving family into skill-disclosure.ts and search-docs.ts
+- refactor(tools): extract the capability catalog and session pack configuration
+- refactor(tools): extract the vendorConfirmed gate into vendor-gate.ts
+- refactor(tools): extract the tool registry literals into tool-definitions.ts
+- docs: wave-4 report — table-driven cmdDoctor refactor results
+- docs(AGENTS): describe the table-driven doctor and the extracted command families
+- refactor(proxy): extract the proxy CLI family into proxy/cli.ts
+- refactor(auth): extract the auth CLI family (dispatch, init flow, profile helpers)
+- refactor(install): extract the install-planning family (detect, prompts, generic MCP config)
+- refactor(packs): extract the packs-cli family (slots, writers, union, doctor face, commands)
+- refactor(doctor): move the MCP-configured candidates, seam, and hermes SDK sections to their agent modules
+- refactor(doctor): bind the payload triple and native freshness to PAYLOAD_TARGETS rows
+- refactor(opencode): split the config writers and seam machinery into agents/opencode-config.ts
+- refactor(codex): split the Codex Desktop family into agents/codex-desktop.ts
+- refactor(officeace): split the sqlite and registry families out of agents/officeace.ts
+- refactor(dsh): split the cordis.patch.yml managed-block family into agents/dsh-patch.ts
+- test(doctor): pin doctor output byte-for-byte; split agents/hermes under the cx bar
+- refactor(safety): un-export isFlagOrDuration — skipPrefixArguments is its only caller
+- refactor(safety): split classification out of safety-policy; face becomes the pure re-export seam
+- refactor(safety): split the unwrap engine into tokens/windows/wrapper modules
+- refactor(safety): split policy/redact/shell-text knowledge out of safety-policy into src/safety
+- test: split agent-install, dep-provision, devbridge, cred-reconcile, and safety suites by domain
+- test: prune unused imports left by the suite splits
+- test: split structure.test.ts into twelve domain guard suites
+- test: split tools, hcloud-cli, auth-credentials, and plugins-e2e suites by domain
+- test: split dep-receipts, update-check, and secret-vault suites by domain
+- test: split mcp-server and doctor wire tests by domain
+- refactor(setup-cli): extract the per-agent installers to src/agents; cli-io and mcp-config-io seams
+- fix: reconcile the port stack with origin/v2's vendor-boundary and refactor waves
+- docs(sandbox): port the terminal review's one completeness find — the full-stack PostgREST knowledge
+- docs: the U18 closeout — changelog entries, the create-instance fence fix, the NUL note
+- fix(safety): close the ANSI-C keyword-mangling bypass — the #927 audit's one real find (U17)
+- fix(sandbox): harden the tunnel-persistence port — dual-form probe, merge proof, PID gate, honest teaching
+- feat(sandbox): port the tunnel-persistence subsystem — renewal, watchdog, AUTO-ENROLL (54→56 tools)
+- fix(auth): complete the #954 port — dropped skill rows, teaching alignment, STS pins
+- feat(auth): port the #954 check_account_type tool — primary vs sub-account judgment (53→54 tools)
+- fix(obs): complete the #1003 port — count twins, STS signing, contract honesty
+- feat(obs): port the #1003 obs_set_cors tool and the #992 browser-direct-upload knowledge (52→53 tools)
+- fix(sandbox): harden the #998 port — noise-safe read-back, taxonomy, coverage
+- feat(sandbox): port the #998 devbridge version gate — 0.1.x blocks before exposing
+- fix(sandbox): complete the #999 port — -p prefix on Layer 2, PATH on the expose one-shots
+- fix(sandbox): port the #999 data-disk install doctrine — what survives a reboot
+- test(sandbox): pin the #1000 expose curl and the SKILL proxy doctrine
+- fix(sandbox): port the #1000 --noproxy fix — tunnel curls bypass the injected proxy
+- fix(sandbox): complete the #997 port — non-JSON 5xx retry, named error shape, backoff pins
+- fix(sandbox): asText for the #997 error-code stringification
+- feat(sandbox): port the #997 connection classification and backoff retry from main 1.1.12
+- fix(cli): anchor the A4 banner strip to its shape; wire the seams main left raw
+- feat(cli): port the #935 A4 KooCLI update-banner strip from main 1.1.10
+- fix(sandbox): complete the #953 port — e2e fake recognition, lint, dropped pins
+- fix(sandbox): port the #953 upload fixes — local-path classification and remote parent mkdir
+- fix(sandbox): harden the A2 port — budget-fold envelope, bounded URL extraction, dropped pins restored
+- fix(sandbox): port the #935 A2 expose probe retry loop — the last probe decides
+- fix(tools): complete the explain_error port — dropped tests, case-insensitive hits, apic/apigw/obs aliases
+- feat(tools): port the #935/#971 explain_error mappings and prefix routing from main 1.1.10
+- fix(sandbox): port the #935 A1 deploy_nginx write verification — the doc's claim is now true
+- docs(sandbox): port the #935 sandbox traps from main 1.1.10
+- test(voucher): pin the ported UX rows; qualify the credential-keyword branch
+- docs(voucher): port the 1.1.11/1.1.12-next UX rows from main — real-name dedup, config-error codes, OFFICEACE gate
+- test(skills): pin the #935/#971 corrected command forms; tighten two iac rows
+- docs(skills): port the #935 iac stage-5 semantics and trap rows from main 1.1.10
+- fix(safety): surface risk-rule remediation on every deny face; mark retrieve_skill truncation
+- feat(safety): port the #971 admin-port remediation guidance from main 1.1.10
+- fix(skills): correct the ported ECS commands against the pinned 7.3.12 binary
+- docs(skills): port the 1.1.10/1.1.12 ECS reference wave from main — #935/#964/#971 knowledge
+- test(safety): pin OBS cors/website write-deny with live 7.3.12 evidence — #1001 not ported
+- chore(jscpd): regenerate baseline after the v2 rebase
+- docs(skills,changelog): close the final cross-unit interrogate — sync the #920 teaching, ELB anchor, and per-unit changelog entries
+- feat(koocli): pin KooCLI 7.3.12 and align skills, safety vocabularies, and declarations
+- feat(tools): port the 1.1.9 toolchain wave — aggregate services, CJK routing, CIDR no_proxy, framework detection, #921 ok-judgment
+- feat(skills): port the 1.1.9 skill-knowledge wave — #918 question gate, #899 OBS trap, ECS windows-ssh, #922 iac interception
+- feat(install): ship the agent rules payload and the skill-tracker V1/V2 dual export
+- feat(auth): port the D4-24 token contract, CREDENTIAL_EXPIRED UX, and #920 profile purge from main 1.1.9
+- feat(auth): port the #900 ERROR_TABLE skeleton from main 1.1.9
+- fix(sandbox): port the #919/#922/#946 expose-verify semantics from main 1.1.9
+- fix(safety): deny Windows-script-wrapped hcloud writes across all three layers
+- chore: regenerate jscpd baseline after the v2 rebase (14 new clones from the three vendor-boundary knives over the refactored tree)
+- feat(skills): quote-form vendorConfirmed + first-assertion challenge — close the fabrication residual
+- fix(skills): root disambiguation — the two skill roots and skillRoot-before-first-read
+- feat(skills): vendorConfirmed gate — enforce the vendor boundary at the tool face
+- fix: restore SpawnSyncReturns import after v2 rebase; regenerate jscpd baseline
+- fix: round-3 convergence nits
+- fix(setup-cli): marker tracks payload placement; round-2 review fixes
+- style: prettier
+- refactor(install-payload): parameterize the marketplace native dir
+- fix(packs): warn once on a kept user value; one env derivation
+- fix(setup-cli): codex-desktop install no longer destroys a live openclaw install
+- test(signing): pin exact SDK-HMAC-SHA256 vectors for the unified signer
+- test(integrations): lockstep guard pins family structure, not direction
+- refactor(setup-cli): one marker writer, owned by the command layer
+- refactor(lib): complete the asRecord consolidation; honest module scope
+- refactor(setup-cli): extract the --packs policy family; add lib/as-record
+- refactor(setup-cli): extract the payload machinery to src/install-payload.ts
+- test(integrations): pin the telemetry hooks' classification surface in lockstep
+- test: extract shared helpers in dsh-adaptation, plugins-e2e, target-lifecycle
+- refactor(sandbox,dep): extract shared hwlink prologue, upload settlement, unix CLI spec
+- refactor(hdkit): one SDK-HMAC-SHA256 signer, one proxy fetch bridge
+- refactor(setup-cli): extract the per-target path family to src/targets.ts
+- refactor(setup-cli): parameterize the per-target install/update lifecycle
+- test(targets): pin workbuddy/openclaw/atomcode lifecycles and hermes update
+- fix(review): close the interrogate round on the codex telemetry fix — sweep convergence and the wiring pin
+- feat(e2e): vendor boundary — disclosure liveness and the ambiguity guard pair
+- fix(codex): resolve the plugin dir by marker — the telemetry sibling that killed MCP loading
+- fix(e2e): scope openmcp consent ban to the manage_policy add action
+- ci(e2e): restore report artifact upload with include-hidden-files
+- test(e2e): scope core-approval-negative's write ban to the pinned command signature
+- fix(deps): bump @modelcontextprotocol/sdk to 1.32.1 for the bundled advisory set
+- test(e2e): drop the scrub fixture key below the gitleaks entropy threshold
+- feat(e2e): incident hardening — model-wire pre-flight and the report that always ships
+- test(e2e): match the codex pin test against TOML-escaped paths on win32
+- test(e2e): pin the final-review invariants and complete the scrub
+- chore(e2e): run the nightly matrix on both agents
+- fix(e2e): disable the plugin server registration so the codex leg records every call
+- feat(e2e): add the codex driver and wire the runner matrix
+- refactor(e2e): extract the shared driver spawn and env helpers
+- test(e2e): strip ambient agent-home overrides in the case env policy
+- feat(e2e): relocate CODEX_HOME into the case env policy
+- fix(dep): close the lock's claim-window and live-takeover races (round-9)
+- test(open-mcp): compare the where.exe hit by resolved file, not string form
+- test(open-mcp): give the where.exe lookup child a spawn-healthy PATH on win32
+- fix(mcp): teach that a trimmed pack's unavailability covers the raw-shell path
+- test: fix the fourth win32 batch — URL specifiers, platform fixture shapes, custody mock protocol
+- fix(open-mcp): spawn JS gateway entries under the running Node
+- chore(jscpd): regenerate baseline for the env-aware win32 home resolution
+- test(e2e): keep the trimmed-availability case off the voucher hook
+- fix(dep,tests): make win32 home resolution env-aware and 0600 asserts POSIX-only
+- test(auth): scrub XDG_CONFIG_HOME in withAgentHome
+- ci: fix v2-bloodline gates on artifact-free checkouts
+- ci(e2e): make the drift guard bootstrap-aware
+- ci: make the CI gates effective for v2 and add E2E lanes
+- docs: sync tool/pack/skill counts with the S-series reality (F13)
+- feat(skills): port SX — billing identity split + cli-and-auth discovery chain
+- feat(sandbox): port the #738 proxy auto-increment behavior with its teaching
+- feat(skills): adopt huawei-cloud-waf-aad-rule-management (S8, normalized)
+- feat(skills): adopt huawei-cloud-smn-dms-message (S7, normalized)
+- feat(skills): adopt huawei-cloud-gaussdb-instance-management (S6, normalized)
+- feat(skills): adopt huawei-cloud-dew-key-management (S5, normalized + F1 closure)
+- feat(skills): adopt huawei-cloud-deployment-task-management (S4, normalized)
+- feat(skills): adopt huawei-cloud-dds-dcs-instance-management (S3, normalized)
+- feat(skills): adopt huawei-cloud-cts-trace-management (S2, normalized)
+- feat(skills): adopt huawei-cloud-apig-instance-management (S1, normalized)
+- feat(cli): background KooCLI preinstall for the stdio first-use path
+- fix(sandbox): reword the expose_tunnel port description off the stdout-purity sentinel
+- feat(sandbox): expose_tunnel tool wiring, waterfall teaching, ws-fake rows
+- feat(sandbox): devbridge expose-tunnel module with hardened result contract
+- feat(voucher): competition voucher claim tool (xiaohongshu skill competition)
+- feat(discovery): git-free HTTP skill install command
+- feat(ci,telemetry): audit tiering + honest telemetry disclosure with hook-layer gating
+- feat(safety): skill-quality-cli wrapper-unwrap seam (deny-bypass closure)
+- feat(safety): port the 1.1.8 secret/env deny vocabulary and risk rules
+- fix(skills): the load-path teaching becomes action-first
+- fix(review): close the final interrogate round on the seam + teaching pair
+- fix(skills): replace the falsified directory-ask teaching with the reactive fallback sentence
+- feat(installer): persistent OpenCode skills-tree permission seam
+- feat(skills): teach the one-time directory-level permission ask for pack-skill reads
+- feat(skills): the load path gains a zero-call home — initialize instructions state skillRoot
+- fix(skills): four copy nits from the flip review — comma, homograph, retired term, guard title
+- feat(skills): flip the load-path teaching — skillRoot direct reads become the taught default
+- feat(secrets): encrypted local secret vault with secret:// ref plumbing
+- fix(review): close the rebase-review findings — doctor name derivation + XDG pin
+- chore(rebase): regenerate jscpd baseline onto v2
+- fix(review): close the round-7 findings — install-axis family + claude/officeace
+- fix(review): close the round-6 finding — plugins-e2e HUAWEICLOUD_HOME
+- fix(review): close the round-5 hazard-family findings
+- fix(review): close the round-4 finding — cross-platform clear list
+- fix(review): close the round-3 adversarial findings
+- fix(review): close the round-2 adversarial findings
+- fix(review): close the round-1 adversarial findings on the real-agent arc
+- docs(test): align release docs with the live automation; Linux-run PTY guard
+- feat(status,smoke): codex-desktop status section; smoke hygiene and honest officeace contract
+- fix(test,telemetry): XDG-agnostic harness detection; honest install timeouts
+- fix(installer): XDG-aware opencode root; codex marketplace cache cleanup
+- feat(ci): real-agent lifecycle lane
+- feat(test): real opencode/codex lifecycle layer
+- fix(e2e): post-rebase residue from the conflict review
+- feat(e2e): deploy_nginx and deploy_check — the ws fake's final vocabulary
+- refactor(sandbox): extract parseDeployCheckOutput as an exported pure function
+- feat(e2e): tunnel relay and in-fake file server — upload_project end to end
+- feat(e2e): fake-shell in-memory filesystem — upload_file end to end
+- feat(e2e): hwlink ws-exec fake — protocol, session pair, and golden pins
+- feat(e2e): coverage extension — voucher claim, offline icons, core thin cases
+- feat(e2e): update-pack case via the registry seam
+- chore(e2e): register test:e2e in AGENTS.md and prune report retention
+- fix(e2e): nightly no-ops green on refs without the suite
+- fix(e2e): nightly needs only the API-key secret — bake model defaults
+- fix(e2e): nightly workflow hardening — pinned opencode, preflight, 120m
+- fix(e2e): PATH shim gains its win32 sibling
+- fix(e2e): selfcheck covers the HTTP-boundary leg end to end
+- fix(e2e): ordered-sequence expectations for mechanism-guaranteed orderings
+- feat(e2e): runner wiring, obs/discovery cases, nightly, and design docs
+- feat(e2e): gateway sidecar recording and open-mcp consent cases
+- feat(e2e): case contract, evaluator, HTTP fake, and five packs of cases
+- feat(trace): env-gated tool-call trace seam with redaction contract
+- feat(e2e): hermetic env policy, opencode driver, and scripted hcloud fake
+- feat(skills): list_skills discloses skillRoot — direct file reads beside retrieve_skill
+- feat(skills): huaweicloud_list_skills, one-call metadata catalog of enabled pack skills
+- fix(review): dir-gated attribution, the discriminating hint cell pinned
+- fix(review): age-gated sweeps, single-sourced probes, honest hint gating
+- fix(review): liveness-gated attribution, resolvability-keyed hedges
+- fix(review): close the fourth-round gaps — layout attribution everywhere
+- fix(review): one receipt module, real marketplace detection, honest doctor
+- fix(review): harden the native core-skill surface after adversarial review
+- feat(doctor): native core-skill freshness checks; sync disclosure copy
+- feat(skills): native disclosure for the six core meta-skills
+- fix(review): sync the floor contract's mirrors and mechanize probe liveness
+- fix(review): honest gates, live pins, and the real Node floor
+- fix(review): one listing, hermetic tests, and a Windows-clean suite
+- fix(review): close the gaps the second adversarial review found
+- fix(review): close the guard-story gaps the adversarial review found
+- chore(skills): drop dead local-install script; stop double-shipping skill sources in the tarball
+- feat(skills): retire the committed copies — the tree ships only as a build artifact
+- feat(build): the skills tree is a build artifact — staged, manifest-bearing regeneration
+- fix(safety): fail loud on a missing or partial skills tree
+- refactor(skills): unify authorship — the six meta-skills move to src/packs/core/skills/
+- fix(lint): formats allowlist wording; complete the ignore-glob enumeration
+- test(structure): guard package-lock.json fetch origins against mirror capture
+- fix(lint): honest exclusion mechanics; format-first baseline regeneration
+- fix(lint): point jscpd lockfile entries at registry.npmjs.org
+- docs(contributing): list lint:dup in local checks and CI requirements
+- feat(ci): gate new duplication in the lint job against the committed baseline
+- feat(lint): jscpd duplication gate with committed fingerprint baseline
+- chore(test): drop 0807test manual-test records; findings long absorbed
+- fix(review): restore byte-identical stringification; canonical asText; name-selected lint gate
+- chore(lint): no-empty enforces documented catches; 106 swallows justified
+- feat(tsconfig): noUncheckedIndexedAccess on src; justified assertions only
+- feat(lint): type-aware ESLint on src; fix the fallout at its roots
+- chore(typecheck): enforce the strict test project in the type gate
+- test(types): strict-type all test files; zero errors under test/tsconfig.json
+- fix(lint): green the lint and format gates; single unused-vars reporter for TS
+- refactor(deps): organize src/dep/ by abstraction level; per-iteration installer seam defaults
+- refactor(deps): per-dependency installer modules behind the DEP_INSTALLERS composition table
+- fix(setup): derive the marker dir from the payload-target table; pin the drift shut
+- refactor(setup): one loop over the payload-target table for the update dispatch
+- refactor(setup): one skeleton for the three mcpServers-style config writers
+- refactor(setup): one payload-target table drives every doctor payload check
+- refactor(packs): derive pack tool descriptions from the owning X_TOOLS arrays
+- refactor(sandbox): delete the dead runNodeExec/resolveEnv exports
+- refactor(ws-exec): delete the dead plain-WebSocket session adapter
+- fix(cli): one guarded hcloud resolution chain across prober, executor, and project-id
+- fix(sandbox): evict dead cached sessions instead of failing every exec
+- fix(sandbox): single-source timeout defaults; schema text stops lying
+- fix(setup): doctor undici check covers the atomcode payload dir
+- fix(auth): scope HUAWEICLOUD_HOME to devkit-owned state, not agent configs
+- fix(auth): align codex-desktop and hermes detection with the installer layouts
+- fix(auth): route codex CLI detection through the shared JSON probe
+- test(hygiene): fixtureDir registry with deny-by-default guard; sidecar scratch cleanup
+- fix(packs): forwarded flag, include_sops pins, complete the de-numbering sweep
+- fix(packs): review corrections for the face consolidation and proxy hermeticity
+- test(proxy): make network tests hermetic against ambient proxy env
+- refactor(packs): collapse the six open-mcp discovery faces into gateway_call
+- docs(packs): the two pack management surfaces and the 52-tool census
+- fix(packs): effective-level toggle math, surface-true meta tools, consent posture
+- feat(packs): post-install pack enable/disable command
+- feat(packs): in-session pack enable and disable over MCP
+- test(packs): pin the in-session pack configure contract
+- test(packs): pin the packs command family contract
+- docs(packs): cite the repo probe script and true up stale comments
+- test(packs): pin consent tail, layer order, and middle-of-three burn
+- docs(packs): re-ground the F1 spelling floor in the re-probed gateway semantics
+- docs(packs): propagate the remove+ttl floor and de-slop the residue surfaces
+- test(packs): fix fixture residue (matched once-burn, remove ttl guard, overlay-first list)
+- docs(packs): correct delegation residue in docs, comments, and meta-skills
+- fix(packs): close the delegated-face review residue (remove ttl floor, live guards, fixture sweep)
+- docs(packs): align safety model and repo docs with the delegated gateway face
+- docs(spec): prettier-format the delegation design tables
+- docs(packs): teach the delegated consent flow on every open-mcp surface
+- test(packs): rewrite the open-mcp pack suite for the delegated face
+- refactor(lib): delete policy-grammar and its lockstep corpus test
+- refactor(packs): delete the sidecar surface cache cluster
+- refactor(packs): drop the retired approvalToken and approvedByUser schema fields
+- refactor(packs): collapse gateway_call approval to the delegated floor table
+- docs(spec): record the open-mcp approval delegation redesign decision
+- fix(deps,packs): close round-11 review gaps in the lock arbitration and lockstep contract
+- refactor(packs): extract the gateway policy grammar to lib with a lockstep contract on the fixture mirror
+- fix(deps): make lock takeover an atomic rename race, not an rmSync race
+- fix(packs): close round-10 review gaps in guards, harness accounting, and the format loop
+- docs(changelog): record round-9 review fixes
+- fix(packs): close round-9 review gaps in the teaching layer and eval harness
+- feat(packs): open-mcp teaching layer, vocabulary table, and generic-face eval harness
+- fix(packs): close round-8 review gaps in gateway grammar mirroring
+- feat(packs): open-mcp generic call face with token-gated approval machinery
+- feat(lib): pack state space and hardened approval tokens
+- feat(deps): --clean-gateway removes the devkit-installed open-mcp-gateway
+- fix(deps): close round-3 acceptance gaps, rebuild the lock on a sound premise
+- fix(deps): close round-2 review gaps in receipt, lock, codex, and sudo paths
+- fix(deps): seven adversarial-review fixes across provision and uninstall
+- feat(open-mcp): in-session gateway restart tool, pack-owned
+- feat(deps): receipt-gated uninstall, doctor projection, absorb PACK_BINARIES
+- feat(deps): provision pack binaries at install time, unify resolution
+- feat(deps): first-class dependency model, declaration half
+- refactor(packs): sink the seven KooCLI execution tools to huaweicloud-cli
+- refactor(consent): extract face-neutral approval tokens to src/lib
+- feat(packs): run the open-mcp gateway via pip or uvx installs
+- fix(packs): harden the open-mcp sidecar lifecycle and contract
+- refactor(packs): rename openapi pack id to huaweicloud-open-mcp
+- feat(packs): add the openapi pack — API catalog discovery via the local gateway
+- docs(sandbox): annotate cross-pack tool dependencies in huawei-sandbox
+- refactor(packs): rename services pack id to huaweicloud-cli
+- fix(skills): post-review hardening of the MCP-only disclosure surface
+- feat(skills): consolidate service skills into the services pack and make MCP the sole skill disclosure surface
+- feat(services): service region descriptor for regional availability (legacy L2)
+- feat(setup): install-time pack selection via MCP config env (legacy L1)
+- feat(packs): central handler completeness and table-driven callTool; document the pack model (P4)
+- feat(packs): DEVKIT_PACKS enablement with tool and skill gating (P3)
+- feat(packs): materialize all packs with skills and import boundary guard (P2)
+- feat(packs): materialize the update pack (P1)
+- feat(packs): pack registry skeleton and list_packs/pack_info disclosure tools
+- feat(scripts): add mcp-probe stdio lane driver for pack program live lanes
+- chore: ignore local MCP server runtime logs
+- chore(release): 2.0.0
+- fix(mcp): close out interrogate follow-ups on the SDK migration
+- refactor(mcp): migrate server to @modelcontextprotocol/sdk 1.30.0
+- fix(smoke): installs run in a throwaway cwd; untrack legacy .codeartsdoer copy
+- test(smoke): full per-agent smoke from the packed tarball
+- fix(ts-migration): close review findings on distribution and upgrade paths
+- refactor(ts-migration): finish migration — credentials, test suite and docs
+- refactor(ts-migration): convert setup-cli to TypeScript
+- refactor(ts-migration): convert tools registry to TypeScript
+- refactor(ts-migration): convert ws-exec group to TypeScript
+- refactor(ts-migration): convert sandbox/session-manager to TypeScript
+- refactor(ts-migration): convert update-check, detect-framework and hcloud-cli to TypeScript
+- refactor(ts-migration): convert telemetry and auth modules to TypeScript
+- refactor(ts-migration): convert safety, risk, search and sandbox API modules to TypeScript
+- refactor(ts-migration): convert proxy, protocol, merge, probe and icon modules to TypeScript
+- refactor(ts-migration): convert six leaf modules to TypeScript
+- refactor(ts-migration): runtime entry points read from dist
+- refactor(ts-migration): harden build gate and guards
+- refactor(ts-migration): add TypeScript build pipeline
+- chore: set version-override to 2.0.0
+
 ## Unreleased
 
 - feat(sandbox): port dev's two-pool pool_type client wave (dev 60743c2b + a528fbcb + 805f24ba + b145aba9 + 14e03eba + aa743295 + 5c09d225 + ef9e977b; the delta after the #1071 knowledge port — 57003cf1 verified already absorbed by v2's stripTerminalEscapes single-seam and dropped). Four units, each gated and committed separately, then five interrogate rounds to zero verified findings. (1) src/lib/hdkit/sandbox-pool.ts (lib, because hdkitservice-api needs pinnedTemplateFor and the lib→packs value edge is forbidden): PoolType union + per-type lifecycle table, validatePoolType (invalid values throw locally so no request leaves the client), the workspacePool cache persisted to a 0600 atomic JSON file (HW_SANDBOX_POOL_CACHE_PATH override, 7-day TTL, corrupt reads empty) carrying the server-driven lifecycle echo (snake/camel double-read over pool_idle_shutdown_minutes/pool_idle_delete_minutes/pool_reclaim_minutes; persistent reclaim 10080 = 7 days, ef9e977b's minute-unified caliber), announce-once semantics (first connect of a session or started=true re-broadcast; enrichConnectResult deletes result.pool when the server echoes nothing — custom templates fabricate nothing), and buildExposeLifetimeNotice for the URL-dies-with-the-sandbox warning. (2) hdkitservice-api: pool_type body wiring with optional HW_POOL_TEMPLATE_* pinning (explicit template_id wins), the 429 dual-code remediation (HDKIT_QUOTA_EXCEEDED user-side guidance vs HDKIT_CAPACITY_INSUFFICIENT where the server's final copy passes through as err.message with Retry-After kept), the HD.97520422 core-hours block behind !err.remediation, and the DevStation relay trio — with the round-1 fix that array payloads survive the parse (asRecord collapsed GET api-keys to {} and silently killed the orphan-key delete and the quota hint under the real transport; the module mocks had hidden it). (3) The devbridge API-Key doctrine reversal in one wave: the AK/SK probe tier deleted (--access-key/--secret-key/AKSK_SUPPORTED gone; every tier logs in with --api-key), src/sandbox/devbridge-key.ts brings the per-account × per-pool fixed-name keys (devkit-ephemeral/devkit-persistent), the 0600 AK-fingerprint cache, ensureDevbridgeKey (list-orphan-then-create, empty api_key not cached — dev's JSON-drop self-heal semantics), recreateDevbridgeKey, and the keyring-first/file-fallback injection script; gateExposeAuth runs the ladder between probe rounds (KEYRING=login-failed self-heal → generic auto-create → structured HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED degrade with currentKeys and dev's console-cleanup hint), the #998 version gate stays ahead of it, and the with-key/no-key credentials hints, the Step 7 waterfall, the gotchas line and the manual script's Tier numbering all teach the real order (keyring → file → auto-create). (4) withPoolContext existed for exactly one unit and died in the same stack (migrate-then-delete): exec/upload/deploy/renew/watchdog return clean payloads; only connect and expose carry pool surfaces (expose adds sandboxLifetime/urlLifetimeHint with the MUST-relay description sentence). Structure guards rewritten per unit to pin the merged skill text (two-pool table, 429 double-code, minute caliber, burn notice, announce timing, MUST-relay, API-Key-only thesis, waterfall order, tier numbering) with absence pins on every replaced doctrine; the round-2/3/4 closing rounds also aligned the guards' own commentary (the inverted-waterfall transcription, the stale release-build locator) and recorded the pinning limit measured on the hint literals (end-append/removal red; mid-span/prepend insertion green — the substring-pinning residual this repo's guard convention shares). CHANGELOG #1071/#998 entries got supersession notes where the wave falsified their present-tense claims. Recorded residuals inherited from dev verbatim: buildKeyringInjectScript interpolates the server-controlled devbridge_ alphabet unescaped, and the self-heal trigger is KEYRING login-failed only. Interrogate history: plan round (4 seats, 6 root causes incl. the 57003cf1 pseudo-missing), R1 3 root causes, R2 5 (incl. the vanished test from my own append/edit tool race — re-added sequentially), R3 2, R4 2 (comment-claim class), R5 no verified findings. Tests 1566→1615 (1613 pass, 2 skipped); gates on HEAD: build/typecheck/test/lint/format:check/lint:dup(baseline)/validate/registry:diff/pack:verify all exit 0.
