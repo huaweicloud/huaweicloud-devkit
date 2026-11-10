@@ -15,6 +15,7 @@ import {
   writeSync,
 } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +27,7 @@ import {
   queryDistTagsFetch,
   readInstalledVersion,
   semverCompare,
+  VERSION_MANIFEST_RELS,
 } from './update-check.mjs';
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
@@ -386,36 +388,104 @@ function pruneBackups(backupRoot, keepDir) {
   } catch {}
 }
 
+// Version-bearing files the snapshot must cover beyond src/: `update` writes
+// package.json (installRuntimeDeps) and rewrites the plugin manifests
+// (.codex-plugin etc.), and readInstalledVersion falls back to those manifests.
+// A rollback that restores src/ but leaves a new-version manifest behind would
+// make the next process advertise the new version while running old code —
+// exactly the reverse of what the runtime-version snapshot protects against.
+const BACKUP_FILE_RELS = ['package.json', ...VERSION_MANIFEST_RELS];
+
+function hashFile(filePath) {
+  try {
+    return createHash('sha256').update(readFileSync(filePath)).digest('hex');
+  } catch {
+    return 'unreadable';
+  }
+}
+
+function hashTree(rootDir) {
+  if (!existsSync(rootDir)) return 'missing';
+  const lines = [];
+  const walk = (dir, prefix) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      lines.push(`${prefix}/!unreadable`);
+      return;
+    }
+    for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(join(dir, entry.name), rel);
+      else if (entry.isFile()) lines.push(`${rel}:${hashFile(join(dir, entry.name))}`);
+    }
+  };
+  walk(rootDir, '');
+  return createHash('sha256').update(lines.join('\n')).digest('hex');
+}
+
+// Fingerprint of everything the snapshot covers: used both to verify the update
+// actually rewrote the running dir (not just bumped a version number) and to
+// decide whether a rollback really changed anything.
+function fingerprintTracked(pluginRoot) {
+  const parts = [`src=${hashTree(join(pluginRoot, 'src'))}`];
+  for (const rel of BACKUP_FILE_RELS) {
+    parts.push(`${rel}=${existsSync(join(pluginRoot, rel)) ? hashFile(join(pluginRoot, rel)) : 'missing'}`);
+  }
+  return parts.join('|');
+}
+
 function backupRunningTarget(pluginRoot, backupRoot, now) {
   const backupDir = join(backupRoot, `${now}-${process.pid}`);
   const src = join(pluginRoot, 'src');
   if (!existsSync(src)) return null;
   mkdirSync(backupDir, { recursive: true, mode: 0o700 });
   cpSync(src, join(backupDir, 'src'), { recursive: true });
-  const pkg = join(pluginRoot, 'package.json');
-  if (existsSync(pkg)) copyFileSync(pkg, join(backupDir, 'package.json'));
+  for (const rel of BACKUP_FILE_RELS) {
+    const from = join(pluginRoot, rel);
+    if (!existsSync(from)) continue;
+    mkdirSync(dirname(join(backupDir, rel)), { recursive: true });
+    copyFileSync(from, join(backupDir, rel));
+  }
   pruneBackups(backupRoot, backupDir);
   return backupDir;
 }
 
+// Diff-first rollback: report whether anything was actually restored, and copy
+// back (or remove) the version files so a failed update can never leave
+// "new version in manifests + old src" behind (#1117).
 function restoreRunningTarget(pluginRoot, backupDir) {
   if (!backupDir || !existsSync(backupDir)) return false;
   try {
+    if (fingerprintTracked(pluginRoot) === fingerprintTracked(backupDir)) return false;
     rmSync(join(pluginRoot, 'src'), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     cpSync(join(backupDir, 'src'), join(pluginRoot, 'src'), { recursive: true });
-    const backupPkg = join(backupDir, 'package.json');
-    if (existsSync(backupPkg)) copyFileSync(backupPkg, join(pluginRoot, 'package.json'));
+    for (const rel of BACKUP_FILE_RELS) {
+      const backupFile = join(backupDir, rel);
+      const liveFile = join(pluginRoot, rel);
+      if (existsSync(backupFile)) {
+        mkdirSync(dirname(liveFile), { recursive: true });
+        copyFileSync(backupFile, liveFile);
+      } else if (existsSync(liveFile)) {
+        rmSync(liveFile, { force: true, maxRetries: 3, retryDelay: 100 });
+      }
+    }
     return true;
   } catch {
     return false;
   }
 }
 
-function verifyInstalled(pluginRoot, target, readInstalled, requireMarker) {
+function verifyInstalled(pluginRoot, target, readInstalled, backupDir) {
   const installed = readInstalled() || '';
   if (!installed || semverCompare(installed, target) < 0) return { ok: false, installed };
   if (!existsSync(join(pluginRoot, 'src', 'mcp-server.mjs'))) return { ok: false, installed };
-  if (requireMarker && !existsSync(join(pluginRoot, '.installed'))) return { ok: false, installed };
+  // The version number alone can lie (manifest written, src not): require that
+  // the update actually rewrote at least one tracked location of THIS dir.
+  if (backupDir && existsSync(backupDir) && fingerprintTracked(pluginRoot) === fingerprintTracked(backupDir)) {
+    return { ok: false, installed, reason: 'unchanged' };
+  }
   return { ok: true, installed };
 }
 
@@ -522,7 +592,6 @@ export async function runAutoUpgrade({
       { statePath: paths.state },
     );
     const backupDir = backupRunningTarget(pluginRoot, paths.backupRoot, now());
-    const hadMarker = existsSync(join(pluginRoot, '.installed'));
     logLine(paths.log, `upgrade ${currentVersion} -> ${target} tag=${tag} target=all backup=${backupDir || '-'}`);
 
     let result;
@@ -542,7 +611,7 @@ export async function runAutoUpgrade({
     }
     const verified =
       result?.status === 0
-        ? verifyInstalled(pluginRoot, target, readInstalled, hadMarker)
+        ? verifyInstalled(pluginRoot, target, readInstalled, backupDir)
         : { ok: false, installed: '' };
     if (verified.ok) {
       const succeeded = writeAutoUpgradeState(

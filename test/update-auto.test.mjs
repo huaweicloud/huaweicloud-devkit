@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -537,6 +537,175 @@ test('runAutoUpgrade: unsupported install skips without spawning or writing stat
     assert.equal(readAutoUpgradeState(paths.state), null, 'unsupported skips must not clobber state');
     assert.equal(isAutoUpgradeLockActive(paths.lock, NOW), false);
   } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── R3: 备份/回滚必须覆盖版本 manifest；校验必须证明目录真的被重写 ──
+
+function setupManifestPlugin(home) {
+  // codex-desktop / openclaw 形态：无 package.json，版本在 .codex-plugin/plugin.json
+  const root = join(home, WRITE_SET_PLUGIN);
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'mcp-server.mjs'), 'v1-code');
+  mkdirSync(join(root, '.codex-plugin'), { recursive: true });
+  writeFileSync(join(root, '.codex-plugin', 'plugin.json'), JSON.stringify({ version: '1.1.13' }));
+  return root;
+}
+
+function manifestReader(root) {
+  return () => {
+    try {
+      return JSON.parse(readFileSync(join(root, '.codex-plugin', 'plugin.json'), 'utf8')).version;
+    } catch {
+      return null;
+    }
+  };
+}
+
+test('runAutoUpgrade: mid-state failure rolls manifests back and removes created files', async () => {
+  const { home, env } = tempEnv();
+  const root = setupManifestPlugin(home);
+  const paths = autoUpgradePaths(env);
+  const readInstalled = manifestReader(root);
+  try {
+    const state = await runAutoUpgrade({
+      trigger: 'version_gate',
+      minVersion: '1.1.14',
+      currentVersion: '1.1.13',
+      pluginRoot: root,
+      env,
+      paths,
+      now: () => NOW,
+      gitCheckout: false,
+      readInstalled,
+      doQuery: async () => ({ latest: '1.1.14', next: null }),
+      spawnFn: () => {
+        // 模拟“manifest 已落盘、src/package.json 未完成”的中间态失败：
+        // update 已写新 manifest 与新 package.json，随后失败退出。
+        writeFileSync(join(root, '.codex-plugin', 'plugin.json'), JSON.stringify({ version: '1.1.14' }));
+        writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.1.14' }));
+        return { status: 1, stdout: '', stderr: 'installRuntimeDeps failed' };
+      },
+    });
+    assert.equal(state.lastResult, 'failed');
+    assert.equal(state.restored, true, 'manifest drift must trigger a real rollback');
+    assert.equal(readInstalled(), '1.1.13', 'version manifest must be rolled back');
+    assert.equal(existsSync(join(root, 'package.json')), false, 'files created by the failed update are removed');
+    assert.equal(readFileSync(join(root, 'src', 'mcp-server.mjs'), 'utf8'), 'v1-code');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('runAutoUpgrade: status 0 but untouched dir fails verification and records restored:false', async () => {
+  const { home, env } = tempEnv();
+  const root = setupManifestPlugin(home);
+  const paths = autoUpgradePaths(env);
+  let reportedVersion = '1.1.13';
+  try {
+    const state = await runAutoUpgrade({
+      trigger: 'version_gate',
+      minVersion: '1.1.14',
+      currentVersion: '1.1.13',
+      pluginRoot: root,
+      env,
+      paths,
+      now: () => NOW,
+      gitCheckout: false,
+      // update 后版本号谎报 target（如父目录 package.json），但本目录未被重写：
+      // 校验必须抓住“版本号变了、目录没变”的不一致。
+      readInstalled: () => reportedVersion,
+      doQuery: async () => ({ latest: '1.1.14', next: null }),
+      spawnFn: () => {
+        reportedVersion = '1.1.14';
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    });
+    assert.equal(state.lastResult, 'failed');
+    assert.equal(state.restored, false, 'nothing changed, so nothing was restored');
+    assert.equal(readFileSync(join(root, 'src', 'mcp-server.mjs'), 'utf8'), 'v1-code');
+    assert.equal(manifestReader(root)(), '1.1.13');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('runAutoUpgrade: success path rewrites both package.json and manifests consistently', async () => {
+  const { home, env } = tempEnv();
+  const root = setupManifestPlugin(home);
+  const paths = autoUpgradePaths(env);
+  const readInstalled = manifestReader(root);
+  try {
+    const state = await runAutoUpgrade({
+      trigger: 'startup_forced',
+      minVersion: '1.1.14',
+      currentVersion: '1.1.13',
+      pluginRoot: root,
+      env,
+      paths,
+      now: () => NOW,
+      gitCheckout: false,
+      readInstalled,
+      doQuery: async () => ({ latest: '1.1.14', next: null }),
+      spawnFn: () => {
+        writeFileSync(join(root, 'src', 'mcp-server.mjs'), 'v2-code');
+        writeFileSync(join(root, '.codex-plugin', 'plugin.json'), JSON.stringify({ version: '1.1.14' }));
+        writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.1.14' }));
+        return { status: 0, stdout: '', stderr: '' };
+      },
+    });
+    assert.equal(state.lastResult, 'succeeded');
+    assert.equal(readInstalled(), '1.1.14');
+    assert.equal(readFileSync(join(root, 'src', 'mcp-server.mjs'), 'utf8'), 'v2-code');
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('lock: two real processes racing acquire produce exactly one winner', async () => {
+  const { home, env } = tempEnv();
+  const paths = autoUpgradePaths(env);
+  mkdirSync(paths.dir, { recursive: true });
+  const moduleUrl = new URL('../plugins/huaweicloud-core/src/update-auto.mjs', import.meta.url).href;
+  // The winner must stay alive while the loser checks, otherwise the loser's
+  // dead-pid takeover heals the stale lock and both report WIN.
+  const script = `
+    const { acquireAutoUpgradeLock, releaseAutoUpgradeLock, isAutoUpgradeLockActive } =
+      await import(${JSON.stringify(moduleUrl)});
+    const won = acquireAutoUpgradeLock({ lockPath: process.argv[1], now: Date.now() });
+    process.stdout.write(won ? 'WIN' : 'LOSE');
+    if (won) {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      releaseAutoUpgradeLock({ lockPath: process.argv[1] });
+    }
+  `;
+  const { spawn } = await import('node:child_process');
+  const runChild = () =>
+    new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, ['--input-type=module', '-e', script, paths.lock], {
+        stdio: ['ignore', 'pipe', 'inherit'],
+      });
+      let out = '';
+      child.stdout.on('data', (d) => {
+        out += String(d);
+      });
+      child.on('error', reject);
+      child.on('close', () => resolve(out.trim()));
+    });
+  try {
+    const children = [runChild(), runChild()];
+    await new Promise((resolve) => setTimeout(resolve, 800)); // 让胜者持锁、败者完成判定
+    const [a, b] = await Promise.all(children);
+    assert.ok(['WIN', 'LOSE'].includes(a), `child A said: ${a}`);
+    assert.ok(['WIN', 'LOSE'].includes(b), `child B said: ${b}`);
+    const wins = [a, b].filter((r) => r === 'WIN').length;
+    assert.equal(wins, 1, `exactly one process must hold the exclusive lock (got ${a}/${b})`);
+    // 胜者主动释放 → 锁文件被清理，后续进程可重新获取
+    assert.equal(existsSync(paths.lock), false);
+    assert.equal(acquireAutoUpgradeLock({ lockPath: paths.lock, now: Date.now() }), true);
+  } finally {
+    releaseAutoUpgradeLock({ lockPath: paths.lock });
     rmSync(home, { recursive: true, force: true });
   }
 });

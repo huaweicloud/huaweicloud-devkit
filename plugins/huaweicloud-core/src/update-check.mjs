@@ -140,7 +140,9 @@ function selfDir() {
 // by `npm run validate`. Codex marketplace installs (`.codex/plugins/cache/...`)
 // contain only the plugin directory — no package.json — so fall back to these
 // manifests when neither candidate package.json exists (#576).
-const VERSION_MANIFEST_RELS = [
+// The auto-upgrade snapshot backs these up and restores them on rollback so a
+// failed update can never leave "new version in manifests + old src" behind (#1117).
+export const VERSION_MANIFEST_RELS = [
   '.codex-plugin/plugin.json',
   '.claude-plugin/plugin.json',
   '.cursor-plugin/plugin.json',
