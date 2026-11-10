@@ -30,7 +30,14 @@ function defaultSpawn(
   args: readonly string[],
   options: SpawnSyncOptionsWithStringEncoding,
 ): SpawnResultLike {
-  return spawnSync(command, args, options);
+  // The args join into the command string before the spawn: options carries
+  // shell:true (the #643 npm.cmd routing; the target interpolation stays
+  // guarded by the SUPPORTED_AGENT_TARGETS allowlist, review #717), and an
+  // args array under shell is DEP0190 on Node 24. shell:true already
+  // concatenates args unescaped, so the join is behavior-identical minus
+  // the warning; the seam's (command, args) contract is unchanged for the
+  // injected test doubles.
+  return spawnSync([command, ...args].join(' '), options);
 }
 
 function restartMessage(target: string): string {

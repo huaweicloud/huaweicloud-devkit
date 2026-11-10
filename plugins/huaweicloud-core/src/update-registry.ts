@@ -70,7 +70,11 @@ export function queryDistTagsSync({
   cwd,
 }: { timeoutMs?: number; cwd?: string } = {}): DistTags | null {
   try {
-    const result = spawnSync(NPM_BIN, ['view', 'huaweicloud-devkit', 'dist-tags', '--json'], {
+    // String command, never an args array: args + shell:true is DEP0190 on
+    // Node 24, and the words are static so the shell concatenation is
+    // injection-safe. shell:true stays load-bearing: it routes npm.cmd on
+    // Windows (the #643 EINVAL doctrine below).
+    const result = spawnSync(`${NPM_BIN} view huaweicloud-devkit dist-tags --json`, {
       encoding: 'utf8',
       timeout: timeoutMs,
       windowsHide: true,
@@ -105,7 +109,9 @@ export function queryDistTags({
   return new Promise<DistTags | null>((resolve) => {
     let child: ChildProcessWithoutNullStreams;
     try {
-      child = spawn(NPM_BIN, ['view', 'huaweicloud-devkit', 'dist-tags', '--json'], {
+      // Same string-command doctrine as queryDistTagsSync: no args array
+      // under shell (DEP0190 on Node 24), static words only.
+      child = spawn(`${NPM_BIN} view huaweicloud-devkit dist-tags --json`, {
         windowsHide: true,
         cwd,
         shell: true,
