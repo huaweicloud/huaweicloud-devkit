@@ -14,7 +14,7 @@ Huawei Cloud comprises 200+ services. This skill is the entry point for ANY acti
 
 首次操作前先调用 `huaweicloud_check_update` 检查插件版本；若未先行检查，插件会在使用中收到服务端升级提示。
 
-插件默认在后台自动安装升级：会话启动时拉取服务端升级策略，若当前版本低于最低版本则立即升级；普通新版本需在 npm 发布满 24h 后升级；服务端 409 `HDKIT_VERSION_TOO_OLD` 会触发同一自动升级。升级完成后必须重启会话（当前会话仍运行旧代码）。
+插件默认在后台自动安装升级：会话启动时拉取服务端升级策略，若当前版本低于最低版本则立即升级；普通新版本需在 npm 发布满 24h 后升级；服务端 409 `HDKIT_VERSION_TOO_OLD` 会触发同一自动升级。升级完成后必须重启会话（当前会话仍运行旧代码）。插件市场/缓存类安装（Claude Code、Codex CLI）不在自动升级范围内：409 响应会带 `autoUpgrade.status=unsupported_install` 与手动升级指引（如 Claude Code 走 `/plugin`），按指引手动升级后重启即可。
 
 1. 如果 `updateAvailable == true` 且 `dismissed == false`，先询问用户是否升级
 2. 用户同意 → 调用 `huaweicloud_upgrade`，完成后提示重启会话

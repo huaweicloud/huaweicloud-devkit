@@ -333,8 +333,9 @@ npx --yes huaweicloud-devkit@latest update --target all
 - 会话启动时拉取 `HDKITSERVICE_ENDPOINT/upgrade/policy`；若服务端启用最低版本且当前版本低于该值，立即升级（跳过冷却）。
 - 普通新版本需在 npm 发布满 24 小时，才会在之后的会话启动时自动安装。
 - 任意 hdkitservice 接口返回 `409 HDKIT_VERSION_TOO_OLD` 时立即触发升级。
+- 自动升级只作用于 `update` 命令会重写的目录（各 Agent 插件目录，如 `~/.config/opencode/huaweicloud-plugins`）。插件市场/缓存类安装（Claude Code、Codex CLI 插件缓存）与解包目录不在范围内，409 响应会直接给出对应的手动升级指引。
 - 安装完成后必须重启会话；当前会话仍运行旧代码，并继续被版本门禁拦截。
-- 升级前只备份运行中 Agent 的 `src/` 与 `package.json`；校验失败自动恢复。
+- 升级前备份运行目录的 `src/`、`package.json` 与全部版本 manifest；校验失败自动整体恢复。
 - 内部保护：`HUAWEICLOUD_DEVKIT_SKIP_UPDATE=1`、CI 环境、git 仓库开发态会自动跳过。
 
 ### 配置代理
