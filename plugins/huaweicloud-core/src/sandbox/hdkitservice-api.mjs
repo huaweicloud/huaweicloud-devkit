@@ -253,17 +253,24 @@ export async function hdkitDeleteApiKey(keyId) {
   return await hdkitRequest('DELETE', `api-keys/${encodeURIComponent(keyId)}`, undefined, 30000);
 }
 
+function voucherErrorResult(error, fallbackMessage) {
+  return {
+    claimed: false,
+    message: error?.message || fallbackMessage,
+    code: error?.code,
+    ...(error?.clientVersion ? { clientVersion: error.clientVersion } : {}),
+    ...(error?.minVersion ? { minVersion: error.minVersion } : {}),
+    ...(error?.remediation ? { remediation: error.remediation } : {}),
+    ...(error?.autoUpgrade ? { autoUpgrade: error.autoUpgrade } : {}),
+  };
+}
+
 export async function hdkitVoucherStatus(domainId) {
   try {
     const path = domainId ? `voucher/status?domain_id=${encodeURIComponent(domainId)}` : 'voucher/status';
     return await hdkitRequest('GET', path, undefined, 30000);
   } catch (error) {
-    return {
-      claimed: false,
-      message: error?.message || 'Incentive service unavailable, please try again later',
-      code: error?.code,
-      ...(error?.remediation ? { remediation: error.remediation } : {}),
-    };
+    return voucherErrorResult(error, 'Incentive service unavailable, please try again later');
   }
 }
 
@@ -272,12 +279,7 @@ export async function hdkitVoucherClaim(domainId) {
     const body = domainId ? { domain_id: domainId } : {};
     return await hdkitRequest('POST', 'voucher/claim', body);
   } catch (error) {
-    return {
-      claimed: false,
-      message: error?.message || 'Incentive service unavailable, please try again later',
-      code: error?.code,
-      ...(error?.remediation ? { remediation: error.remediation } : {}),
-    };
+    return voucherErrorResult(error, 'Incentive service unavailable, please try again later');
   }
 }
 
@@ -286,11 +288,6 @@ export async function hdkitCompetitionVoucherClaim(domainId) {
     const body = domainId ? { domain_id: domainId } : {};
     return await hdkitRequest('POST', 'competition/voucher/claim', body);
   } catch (error) {
-    return {
-      claimed: false,
-      message: error?.message || 'Competition voucher service unavailable, please try again later',
-      code: error?.code,
-      ...(error?.remediation ? { remediation: error.remediation } : {}),
-    };
+    return voucherErrorResult(error, 'Competition voucher service unavailable, please try again later');
   }
 }

@@ -927,13 +927,17 @@ test('auto-upgrade runner is shipped and updates every installed target', () => 
 test('tests touching hdkitservice mask the background auto-upgrade', () => {
   const testDir = join(root, 'test');
   for (const name of readdirSync(testDir)) {
-    if (!name.endsWith('.test.mjs')) continue;
+    if (!name.endsWith('.test.mjs') || name === 'structure.test.mjs') continue;
     const content = readFileSync(join(testDir, name), 'utf8');
-    if (!content.includes('hdkitservice-api.mjs')) continue;
+    // Either importing hdkitservice-api or faking a 409 version-gate response
+    // reaches maybeAutoUpgrade; without the mask a non-CI machine spawns a REAL
+    // detached runner executing `npx update --target all`.
+    const touchesVersionGate = content.includes('hdkitservice-api.mjs') || content.includes('HDKIT_VERSION_TOO_OLD');
+    if (!touchesVersionGate) continue;
     assert.match(
       content,
       /process\.env\.HUAWEICLOUD_DEVKIT_SKIP_UPDATE\s*=\s*'1'/,
-      `${name} references hdkitservice-api.mjs and must set process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1' at file level (a 409 HDKIT_VERSION_TOO_OLD otherwise spawns a REAL detached auto-upgrade runner on non-CI machines)`,
+      `${name} references hdkitservice-api.mjs / HDKIT_VERSION_TOO_OLD and must set process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1' at file level (a 409 otherwise spawns a REAL detached auto-upgrade runner on non-CI machines)`,
     );
   }
 });
