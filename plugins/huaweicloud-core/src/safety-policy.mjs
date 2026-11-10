@@ -521,6 +521,30 @@ function extractHcloudSubcommand(text) {
   return stripped.slice(hcloudIndex);
 }
 
+// Credential variable names — cloud-vendor prefixed (HW_/HWC_/HUAWEICLOUD_/
+// OS_: the plugin's documented credential prefix plus cloud-environment
+// AWS-style names) AND the bare names (access_key / secret_key /
+// security_token / secret_access_key with no prefix at all). The bare forms
+// previously fell through both the env-dump gate and every reference check
+// (#866 D4-2 v1.1.10), so both shapes are matched in parallel below.
+const CRED_VAR_NAMES = 'SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN';
+const CRED_VAR_REF = `(?:HUAWEICLOUD|HWC|HW|OS)_(?:${CRED_VAR_NAMES})|(?:${CRED_VAR_NAMES})`;
+const CRED_ENV_DUMP_MARKER = new RegExp(`HUAWEICLOUD|HWC_|HW_|HCLOUD|OS_|${CRED_VAR_NAMES}`, 'i');
+const CRED_VAR_REF_PATTERNS = [
+  // Unix `$VAR` / `${VAR}`. The negative lookbehind exempts literal-NAME
+  // references — backslash-escaped (`\$VAR`) or single-quoted (`'$VAR'`,
+  // which the shell never expands) — while unescaped `$VAR` is a potential
+  // expansion/dump regardless of the command. No command-name whitelist, so
+  // no false negative (#650 review).
+  new RegExp(`(?<!['\\\\])\\$\\{?(?:${CRED_VAR_REF})`, 'i'),
+  // Windows cmd has no `$VAR` expansion: it uses `%VAR%` (and `!VAR!` under
+  // delayed expansion) to print a variable's value (#866 D4-2).
+  new RegExp(`%(?:${CRED_VAR_REF})%`, 'i'),
+  // `printenv VAR` (Unix) / `set VAR` (Windows) single-variable prints. The
+  // negative lookahead exempts `set VAR=value` assignments (no read happens).
+  new RegExp(`(?:^|\\s)(?:printenv|set)\\s+(?:${CRED_VAR_REF})(?![\\w=])`, 'i'),
+];
+
 export function classifyTextCommand(command, options = {}) {
   const policy = options.policy || DEFAULT_POLICY;
   const text = String(command || '');
@@ -544,10 +568,13 @@ export function classifyTextCommand(command, options = {}) {
   }
 
   // Env var dumps — check all candidates (covers bash -c "env | grep HUAWEICLOUD", #682).
+  // Bare credential names (access_key / secret_key / security_token without
+  // any cloud-vendor prefix) are matched in parallel with the prefixes:
+  // `env | grep access_key` previously fell through (#866 D4-2 v1.1.10).
   for (const candidate of candidates) {
     if (
       /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(candidate) &&
-      /HUAWEICLOUD|HWC_|HW_|HCLOUD|OS_/i.test(candidate)
+      CRED_ENV_DUMP_MARKER.test(candidate)
     ) {
       return {
         decision: 'deny',
@@ -562,21 +589,11 @@ export function classifyTextCommand(command, options = {}) {
   // HW_SECURITY_TOKEN), cloud environments also expose the AWS-style
   // HUAWEICLOUD_SECRET_ACCESS_KEY name, and `echo $HW_SECRET_KEY` /
   // `printenv HW_ACCESS_KEY` / `echo $HUAWEICLOUD_SECRET_ACCESS_KEY` previously
-  // fell through to allow (#650 D4-2, #770 D4-2).
-  //
-  // The negative lookbehind exempts literal-NAME references — backslash-escaped
-  // (`\$HW_*`) or single-quoted (`'$HW_*'`, which the shell never expands) —
-  // while unescaped `$HW_*` is a potential expansion/dump regardless of the
-  // command. No command-name whitelist, so no false negative (#650 review).
+  // fell through to allow (#650 D4-2, #770 D4-2). Bare names such as
+  // `echo $ACCESS_KEY` / `printenv secret_key` / `echo %security_token%` are
+  // covered in parallel by the shared patterns above (#866 D4-2 v1.1.10).
   for (const candidate of candidates) {
-    if (
-      /(?<!['\\])\$\{?(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(
-        candidate,
-      ) ||
-      /(?:^|\s)printenv\s+(?:HUAWEICLOUD|HWC|HW|OS)_(?:SECRET_ACCESS_KEY|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN)/i.test(
-        candidate,
-      )
-    ) {
+    if (CRED_VAR_REF_PATTERNS.some((pattern) => pattern.test(candidate))) {
       return {
         decision: 'deny',
         risk: 'credential',
