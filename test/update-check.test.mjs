@@ -25,6 +25,7 @@ import {
   invalidateUpdateCache,
   applyUpdateHint,
   upgradePackage,
+  extractNpmFailureReason,
 } from '../plugins/huaweicloud-core/src/update-check.mjs';
 
 function tempConfigHome() {
@@ -475,6 +476,24 @@ test('upgradePackage 失败: 返回手动命令', async () => {
   assert.equal(r.success, false);
   assert.match(r.manual, /npx --yes huaweicloud-devkit@latest update --target opencode/);
   assert.match(r.error, /EPERM/);
+});
+
+test('extractNpmFailureReason: 优先 npm error 行，剔除 npm warn 噪声 (#1117)', async () => {
+  const stderr = [
+    'npm warn EBADENGINE Unsupported engine',
+    'npm warn EBADENGINE current: {"node":"v22.14.0"}',
+    'npm error code ELIFECYCLE',
+    'npm error Command failed with exit code 1',
+  ].join('\n');
+  const reason = extractNpmFailureReason({ status: 1, stdout: '', stderr });
+  assert.match(reason, /ELIFECYCLE/);
+  assert.match(reason, /exit code 1/);
+  assert.doesNotMatch(reason, /EBADENGINE/);
+  // 只有 warn 时：宁可报 status，也不能把 warning 当失败原因
+  const warnOnly = extractNpmFailureReason({ status: 1, stdout: '', stderr: 'npm warn deprecated foo' });
+  assert.equal(warnOnly, 'exit 1');
+  assert.equal(extractNpmFailureReason({ status: 0, stdout: '', stderr: '' }), 'exit 0');
+  assert.equal(extractNpmFailureReason({ status: null, error: new Error('spawn ENOENT') }), 'spawn ENOENT');
 });
 
 test('upgradePackage 失败: spawn 不存在时报可读错误而非 exit null', async () => {

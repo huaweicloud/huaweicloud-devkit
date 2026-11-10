@@ -22,6 +22,7 @@ import { fileURLToPath } from 'node:url';
 
 import {
   determineTarget,
+  extractNpmFailureReason,
   getRuntimeVersion,
   getVersionPublishTime,
   queryDistTagsFetch,
@@ -631,12 +632,7 @@ export async function runAutoUpgrade({
       return succeeded;
     }
 
-    const stderr = String(result?.stderr || '').trim();
-    const reason = result?.error?.message
-      ? result.error.message
-      : stderr
-        ? stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
-        : `exit ${result?.status}`;
+    const reason = extractNpmFailureReason(result);
     const restored = restoreRunningTarget(pluginRoot, backupDir);
     const failed = writeAutoUpgradeState(
       {

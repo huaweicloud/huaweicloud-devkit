@@ -509,6 +509,22 @@ function defaultSpawn(command, args, options) {
   return spawnSync(command, args, options);
 }
 
+// npm writes diagnostics as `npm error ...` lines; engine/platform noise as
+// `npm warn ...`. Taking the raw last lines reports the warnings as the
+// failure reason (observed: "npm warn EBADENGINE ..." twice) and truncates the
+// real error, so prefer npm-error lines and drop the noise (#1117).
+export function extractNpmFailureReason(execResult) {
+  if (execResult?.error?.message) return execResult.error.message;
+  const lines = String(execResult?.stderr || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const errorLines = lines.filter((line) => /^npm error/i.test(line));
+  const meaningful = errorLines.length ? errorLines : lines.filter((line) => !/^npm warn/i.test(line));
+  if (meaningful.length) return meaningful.slice(-2).join(' ');
+  return `exit ${execResult?.status}`;
+}
+
 function restartMessage(target) {
   if (target === 'officeace') {
     return '升级完成，请打开连接器 → 我的连接器 → huaweicloud-devkit → 重新连接后使用新版本。';
@@ -575,13 +591,7 @@ export async function upgradePackage({ target = 'all', version = 'latest' } = {}
       message: restartMessage(target),
     };
   }
-  const errObj = execResult.error;
-  const stderr = String(execResult.stderr || '').trim();
-  const reason = errObj?.message
-    ? errObj.message
-    : stderr
-      ? stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
-      : `exit ${execResult.status}`;
+  const reason = extractNpmFailureReason(execResult);
   return {
     success: false,
     error: reason,
