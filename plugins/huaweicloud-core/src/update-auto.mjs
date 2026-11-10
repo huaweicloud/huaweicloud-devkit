@@ -115,11 +115,7 @@ function unsupportedInstallManual(pluginRoot, home) {
 // (Claude Code marketplace, Codex CLI cache, unpacked tarballs, global npm
 // dirs), the upgrade can only end in verify-fail → rollback → throttle while
 // the user is told "upgrade started in the background". Fail fast instead.
-export function checkUpgradableInstall({
-  pluginRoot = PLUGIN_ROOT,
-  env = process.env,
-  home = envHome(env),
-} = {}) {
+export function checkUpgradableInstall({ pluginRoot = PLUGIN_ROOT, env = process.env, home = envHome(env) } = {}) {
   const roots = resolveUpgradeWriteRoots({ env, home });
   if (roots.some((root) => samePath(pluginRoot, root))) return null;
   return { reason: 'unsupported_install', manual: unsupportedInstallManual(pluginRoot, home) };

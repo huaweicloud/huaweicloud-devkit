@@ -454,10 +454,7 @@ test('checkUpgradableInstall: write-set dirs pass, others fail with a manual hin
   const { home, env } = tempEnv();
   try {
     assert.equal(checkUpgradableInstall({ pluginRoot: join(home, WRITE_SET_PLUGIN), env, home }), null);
-    assert.equal(
-      checkUpgradableInstall({ pluginRoot: join(home, 'plugins', 'huaweicloud-devkit'), env, home }),
-      null,
-    );
+    assert.equal(checkUpgradableInstall({ pluginRoot: join(home, 'plugins', 'huaweicloud-devkit'), env, home }), null);
 
     const claude = checkUpgradableInstall({
       pluginRoot: join(home, '.claude', 'plugins', 'marketplaces', 'huawei', 'plugins', 'huaweicloud-core'),
@@ -475,7 +472,11 @@ test('checkUpgradableInstall: write-set dirs pass, others fail with a manual hin
     assert.equal(codex.reason, 'unsupported_install');
     assert.match(codex.manual, /update --target codex/);
 
-    const generic = checkUpgradableInstall({ pluginRoot: join(home, 'tarball', 'plugins', 'huaweicloud-core'), env, home });
+    const generic = checkUpgradableInstall({
+      pluginRoot: join(home, 'tarball', 'plugins', 'huaweicloud-core'),
+      env,
+      home,
+    });
     assert.equal(generic.reason, 'unsupported_install');
     assert.match(generic.manual, /update --target <agent>/);
   } finally {
