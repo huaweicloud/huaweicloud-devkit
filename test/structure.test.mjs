@@ -898,19 +898,30 @@ test('tools.mjs registers version-update tools', () => {
 
 test('stdio server warms update cache; shared protocol decorates first tool call', () => {
   const server = readFileSync(join(pluginRoot, 'src', 'mcp-server.mjs'), 'utf8');
-  assert.match(server, /getCachedUpdateInfo\(readInstalledVersion\(\)/);
+  assert.match(server, /getRuntimeVersion\(\)/);
+  assert.match(server, /getCachedUpdateInfo\(current\)/);
+  assert.match(server, /getUpgradePolicy\(\)/);
   const protocol = readFileSync(join(pluginRoot, 'src', 'mcp-protocol.mjs'), 'utf8');
   assert.match(protocol, /applyUpdateHint\(/);
   assert.match(protocol, /peekCachedUpdateInfo\(\)/);
+  assert.match(protocol, /getAutoUpgradeNotice\(/);
 });
 
 test('hdkitservice-api sends X-HW-Client-Version; SKILL session-start wording', () => {
   const api = readFileSync(join(pluginRoot, 'src', 'sandbox', 'hdkitservice-api.mjs'), 'utf8');
   assert.match(api, /X-HW-Client-Version/);
-  assert.match(api, /readInstalledVersion\(\)/);
+  assert.match(api, /getRuntimeVersion\(\)/);
   const skill = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
   assert.match(skill, /先调用 `huaweicloud_check_update` 检查插件版本/);
   assert.match(skill, /若未先行检查，插件会在使用中收到服务端升级提示/);
+});
+
+test('auto-upgrade runner is shipped and updates every installed target', () => {
+  const runner = readFileSync(join(pluginRoot, 'src', 'auto-upgrade-runner.mjs'), 'utf8');
+  const auto = readFileSync(join(pluginRoot, 'src', 'update-auto.mjs'), 'utf8');
+  assert.match(runner, /runAutoUpgrade/);
+  assert.match(auto, /auto-upgrade-runner\.mjs/);
+  assert.match(auto, /'update', '--target', 'all'/);
 });
 
 test('READMEs recommend @latest for updates', () => {

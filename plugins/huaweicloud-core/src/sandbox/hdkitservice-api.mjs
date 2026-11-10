@@ -2,7 +2,8 @@ import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
 import { detectAgent } from '../telemetry/agent-detect.mjs';
-import { readInstalledVersion } from '../update-check.mjs';
+import { getRuntimeVersion } from '../update-check.mjs';
+import { maybeAutoUpgrade } from '../update-auto.mjs';
 
 function getHdkitBaseUrl() {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
@@ -21,7 +22,7 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     'Content-Type': 'application/json',
     'X-HW-AK': ak,
     'X-HW-SK': sk,
-    'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
+    'X-HW-Client-Version': getRuntimeVersion(),
     // #1040: 对外请求统一携带 X-HW-Agent（值=detectAgent 结果 harness）
     'X-HW-Agent': detectAgent().harness,
   };
@@ -102,13 +103,31 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
       err.clientVersion = data.clientVersion || undefined;
       err.minVersion = data.minVersion || undefined;
       err.message = data.message || err.message;
+      const autoUpgrade = maybeAutoUpgrade({
+        trigger: data.minVersion ? 'version_gate' : 'startup_normal',
+        minVersion: data.minVersion || '',
+      });
+      err.autoUpgrade = autoUpgrade;
+      const autoStarted = autoUpgrade.status === 'started' || autoUpgrade.status === 'already_running';
+      const autoReady = autoUpgrade.status === 'already_upgraded';
       err.remediation = {
         hint: `插件版本过旧（当前 ${data.clientVersion || '未知'}，需升级至正式版 ${data.minVersion || '最新版'} 及以上）：`,
-        steps: [
-          '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
-          '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
-          '也可直接调用 huaweicloud_upgrade 工具完成升级',
-        ],
+        steps: autoReady
+          ? [
+              `新版本 ${autoUpgrade.installedVersion || ''} 已安装，重启当前 Agent 会话即可`.trim(),
+              '若重启后仍被拦截，可在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+            ]
+          : autoStarted
+            ? [
+                '升级已在后台开始，完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+                '若长时间未完成，可在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+                '也可直接调用 huaweicloud_upgrade 工具完成升级',
+              ]
+            : [
+                '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+                '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+                '也可直接调用 huaweicloud_upgrade 工具完成升级',
+              ],
       };
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经

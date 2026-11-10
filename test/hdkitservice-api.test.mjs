@@ -256,6 +256,8 @@ test('HDKIT_VERSION_TOO_OLD carries client/min version and upgrade remediation',
     assert.match(err.remediation.hint, /1\.1\.13/);
     assert.match(err.remediation.steps.join(' '), /npx --yes huaweicloud-devkit@latest update/);
     assert.match(err.remediation.steps.join(' '), /重启/);
+    assert.ok(err.autoUpgrade, 'expected autoUpgrade status');
+    assert.equal(err.autoUpgrade.status, 'disabled');
   } finally {
     global.fetch = originalFetch;
   }

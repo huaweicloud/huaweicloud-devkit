@@ -6,6 +6,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+// Spawned installed servers must not reach the network for upgrade checks.
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
+
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
 

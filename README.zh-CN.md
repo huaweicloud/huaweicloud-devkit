@@ -326,6 +326,17 @@ npx --yes huaweicloud-devkit@latest update --target all
 
 `update` 是增量更新——只刷新已安装的文件，不动配置文件。请务必保留 `@latest`，确保 npm 获取最新版本而非本地缓存的旧版本。
 
+### 自动升级
+
+插件默认在后台自动安装升级，不弹确认框：
+
+- 会话启动时拉取 `HDKITSERVICE_ENDPOINT/upgrade/policy`；若服务端启用最低版本且当前版本低于该值，立即升级（跳过冷却）。
+- 普通新版本需在 npm 发布满 24 小时，才会在之后的会话启动时自动安装。
+- 任意 hdkitservice 接口返回 `409 HDKIT_VERSION_TOO_OLD` 时立即触发升级。
+- 安装完成后必须重启会话；当前会话仍运行旧代码，并继续被版本门禁拦截。
+- 升级前只备份运行中 Agent 的 `src/` 与 `package.json`；校验失败自动恢复。
+- 内部保护：`HUAWEICLOUD_DEVKIT_SKIP_UPDATE=1`、CI 环境、git 仓库开发态会自动跳过。
+
 ### 配置代理
 
 ```bash

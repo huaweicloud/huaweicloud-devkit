@@ -1728,6 +1728,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
             ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
             ...(error.minVersion ? { minVersion: error.minVersion } : {}),
             ...(error.remediation ? { remediation: error.remediation } : {}),
+            ...(error.autoUpgrade ? { autoUpgrade: error.autoUpgrade } : {}),
           };
         }
         throw error;
@@ -1781,6 +1782,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
             ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
             ...(error.minVersion ? { minVersion: error.minVersion } : {}),
             ...(error.remediation ? { remediation: error.remediation } : {}),
+            ...(error.autoUpgrade ? { autoUpgrade: error.autoUpgrade } : {}),
           };
         }
         throw error;

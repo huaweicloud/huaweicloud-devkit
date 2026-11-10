@@ -167,6 +167,15 @@ export function readInstalledVersion() {
   return null;
 }
 
+// The version this MCP process started with. Frozen on first use so an
+// auto-upgrade that replaces package.json on disk cannot make the running
+// (old-code) process advertise the new version and slip past the server gate.
+let runtimeVersion = null;
+export function getRuntimeVersion() {
+  if (runtimeVersion === null) runtimeVersion = readInstalledVersion() || '0.0.0';
+  return runtimeVersion;
+}
+
 export function skipFilePath() {
   return join(resolve(selfDir(), '..'), '.update-skip.json');
 }
@@ -233,14 +242,18 @@ function debugLog(message) {
   }
 }
 
-export function queryDistTagsFetch({ timeoutMs = 15000 } = {}) {
+function registryBase() {
   let registry = 'https://registry.npmjs.org';
   if (process.env.HUAWEICLOUD_NPM_REGISTRY) {
     registry = process.env.HUAWEICLOUD_NPM_REGISTRY.replace(/\/+$/, '');
   }
+  return registry;
+}
+
+export function queryDistTagsFetch({ timeoutMs = 15000 } = {}) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`)
+  return fetchWithProxy(`${registryBase()}/-/package/huaweicloud-devkit/dist-tags`)
     .then((resp) => {
       clearTimeout(timer);
       if (!resp || !resp.ok) return null;
@@ -251,6 +264,105 @@ export function queryDistTagsFetch({ timeoutMs = 15000 } = {}) {
       debugLog(`queryDistTagsFetch: ${error?.message || error}`);
       return null;
     });
+}
+
+const PUBLISH_TTL_MS = 6 * 60 * 60 * 1000;
+const PUBLISH_FAIL_THROTTLE_MS = 5 * 60 * 1000;
+let cachedPublishTimes = null;
+let cachedPublishAt = 0;
+let publishFailedAt = 0;
+
+function publishCachePath(env = process.env) {
+  const base = env.HUAWEICLOUD_HOME || homedir();
+  return join(base, '.config', 'huaweicloud', 'devkit-registry-meta.json');
+}
+
+function readPublishDisk(now, env) {
+  try {
+    const parsed = JSON.parse(readFileSync(publishCachePath(env), 'utf8'));
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    if (!parsed.time || typeof parsed.time !== 'object' || Array.isArray(parsed.time)) return null;
+    if (!Number.isFinite(parsed.fetchedAt) || now - parsed.fetchedAt > PUBLISH_TTL_MS) return null;
+    return parsed.time;
+  } catch {
+    return null;
+  }
+}
+
+function writePublishDisk(times, now, env) {
+  try {
+    const target = publishCachePath(env);
+    mkdirSync(dirname(target), { recursive: true, mode: 0o700 });
+    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmp, JSON.stringify({ fetchedAt: now, time: times }), { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, target);
+  } catch {}
+}
+
+export function invalidatePublishTimeCache({ env = process.env } = {}) {
+  cachedPublishTimes = null;
+  cachedPublishAt = 0;
+  publishFailedAt = 0;
+  try {
+    rmSync(publishCachePath(env), { force: true });
+  } catch {}
+}
+
+// The registry packument carries the per-version publish timestamps used by
+// the 24h auto-upgrade cooldown. The dist-tags endpoint does not, so this is a
+// separate (cached) fetch. A missing timestamp is a fail-closed skip for the
+// ordinary path; the forced path does not need it.
+export async function queryPublishTimes({ timeoutMs = 15000, doFetch = fetchWithProxy } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await doFetch(`${registryBase()}/huaweicloud-devkit`, {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!resp || !resp.ok) return null;
+    const data = await resp.json().catch(() => null);
+    if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+    return data.time && typeof data.time === 'object' && !Array.isArray(data.time) ? data.time : null;
+  } catch (error) {
+    debugLog(`queryPublishTimes: ${error?.message || error}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+export async function getVersionPublishTime(
+  version,
+  { now = Date.now(), timeoutMs = 15000, doFetch = fetchWithProxy, env = process.env } = {},
+) {
+  if (cachedPublishTimes && now - cachedPublishAt <= PUBLISH_TTL_MS) {
+    return parsePublishTime(cachedPublishTimes[version]);
+  }
+  if (!cachedPublishTimes) {
+    const disk = readPublishDisk(now, env);
+    if (disk) {
+      cachedPublishTimes = disk;
+      cachedPublishAt = now;
+      return parsePublishTime(disk[version]);
+    }
+  }
+  if (!cachedPublishTimes && now - publishFailedAt < PUBLISH_FAIL_THROTTLE_MS) return null;
+  const times = await queryPublishTimes({ timeoutMs, doFetch });
+  if (!times) {
+    publishFailedAt = now;
+    return null;
+  }
+  cachedPublishTimes = times;
+  cachedPublishAt = now;
+  writePublishDisk(times, now, env);
+  return parsePublishTime(times[version]);
+}
+
+function parsePublishTime(value) {
+  if (typeof value !== 'string' || !value) return null;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 export function queryDistTagsSync({ timeoutMs = 15000, cwd } = {}) {
