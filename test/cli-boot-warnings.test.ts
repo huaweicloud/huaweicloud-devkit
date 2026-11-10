@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
 
-import { makeEnv, setupCli } from './agent-install-harness.ts';
+import { makeEnv, run, setupCli } from './agent-install-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
 test('CLI boot prints no Node warnings (experimental builtins stay lazy)', () => {
@@ -27,4 +27,24 @@ test('CLI boot prints no Node warnings (experimental builtins stay lazy)', () =>
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /Usage: npx huaweicloud-devkit/);
   assert.doesNotMatch(res.stderr, /\(node:\d+\)/, `CLI boot must not print Node warning lines: ${res.stderr}`);
+});
+
+test('install prints no Node warnings (spawn args arrays never combine with shell)', () => {
+  // 2026-11-10 report #2: the gateway-prompt line carried "(node:xxxx)
+  // [DEP0190] DeprecationWarning: Passing args to a child process with
+  // shell option true..." — installRuntimeDeps spawned npm with an args
+  // array plus shell:true, and emitWarning defers the stderr write, so
+  // the warning surfaced glued to the provisioning prompt one step later
+  // (trace-deprecation named the frame). This is the install-bearing
+  // half of the warning guard: a real payload placement plus the
+  // runtime-deps npm spawn, the same network class every agent-install
+  // test already runs (undici fetches into the fake HOME's cold cache).
+  // Red before the string-command fix on Node 24, where DEP0190 fires;
+  // the structural half (an args-array + shell scan) lives in
+  // structure.test.ts.
+  const home = fixtureDir('cli-install-warnings');
+  const cwd = fixtureDir('cli-install-warnings-cwd');
+  const res = run('opencode', home, cwd, 'install');
+  assert.equal(res.status, 0, res.stderr);
+  assert.doesNotMatch(res.stderr, /\(node:\d+\)/, `install must not print Node warning lines: ${res.stderr}`);
 });

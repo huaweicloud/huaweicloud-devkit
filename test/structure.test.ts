@@ -68,6 +68,66 @@ test('node:sqlite is required inside functions, never at module scope', () => {
   assert.deepEqual(offenders, [], 'node:sqlite requires must sit inside functions (lazy), never at module scope');
 });
 
+test('spawn call sites never combine a non-empty args array with shell', () => {
+  // 2026-11-10 report #2: the install's gateway-prompt line carried
+  // "(node:xxxx) [DEP0190] DeprecationWarning: Passing args to a child
+  // process with shell option true..." — installRuntimeDeps spawned npm
+  // with an args array plus shell:true (Node 24 deprecates the shape:
+  // shell concatenates the args unescaped). emitWarning defers the
+  // stderr write, so the warning surfaced one step later, glued to the
+  // provisioning prompt. The fixed shape spawns a string command under
+  // shell — identical concatenation semantics minus the warning, and
+  // shell stays load-bearing for Windows .cmd routing (#643). Args
+  // arrays remain correct for shell-less spawns (gateway/dep-resolve
+  // pass argv directly). The scan flags a spawn call whose arguments
+  // start with a non-empty array literal while shell:true sits in the
+  // call's own options, inline or through the options binding's const
+  // initializer. Honest limit: an array passed via an identifier (the
+  // update-upgrade seam's args) escapes a textual scan; that line is
+  // held by the seam's injected test doubles plus the join inside
+  // defaultSpawn. The behavioral half is cli-boot-warnings.test.ts's
+  // install spawn, which failed red on Node 24 before the fix.
+  const srcDir = join(root, 'plugins', 'huaweicloud-core', 'src');
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.name.endsWith('.ts')) {
+        const rel = relative(srcDir, entryPath);
+        const text = readFileSync(entryPath, 'utf8');
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          // Call-start lines only (every args-array spawn in the tree
+          // starts its call on one line); the empty-array shell sites
+          // (codex family, doctor's hcloud auth check) are excluded by
+          // the lookahead.
+          if (!/\bspawn(?:Sync)?\([^\n,]*,\s*\[\s*(?!\s*\])/.test(lines[i]!)) continue;
+          const window = lines.slice(i, i + 10).join('\n');
+          if (/shell:\s*true/.test(window)) {
+            offenders.push(`${rel}:${i + 1}`);
+            continue;
+          }
+          const optionsBinding = lines
+            .slice(i, i + 7)
+            .join('\n')
+            .match(/,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/)?.[1];
+          if (optionsBinding && new RegExp(`const ${optionsBinding}\\b[\\s\\S]{0,600}?shell:\\s*true`).test(text)) {
+            offenders.push(`${rel}:${i + 1}`);
+          }
+        }
+      }
+    }
+  };
+  walk(srcDir);
+  assert.deepEqual(
+    offenders,
+    [],
+    'spawn with a non-empty args array must not set shell (DEP0190 on Node 24); pass a string command instead',
+  );
+});
+
 test('test fixtures: raw mkdtempSync is denied by default across the suite', () => {
   // 2026-10-09: TMPDIR=$HOME verification runs leaked 614 unremoved
   // mkdtemp fixture dirs into $HOME (plus a stray node-compile-cache) —
