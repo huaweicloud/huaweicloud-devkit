@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.1.14-next.2 (2026-11-10)
+
+- chore: set version override to 1.1.14 for next preview release
+- fix(update): keep upgrade backups and strip credentials from npx
+- style(update): prettier
+- docs(update): describe the write-set gate and full snapshot coverage (#1117)
+- fix(sandbox): pass the 409 version gate through every hdkit tool exit (#1117 optional #5)
+- fix(update): extract the real npm failure reason, not npm warn noise (#1117 optional #1)
+- fix(update): cover version manifests in the upgrade snapshot and verify real rewrites (#1117 R3)
+- fix(update): gate auto-upgrade on the update write set (#1117 R2)
+- fix(update): mask auto-upgrade in hdkitservice tests (#1117 R1)
+- feat(update): add silent auto-upgrade
+- feat(sandbox): only support pool_type in connect
+
 ## 1.1.13-next.8 (2026-11-05)
 
 - feat(sandbox): auto-retry connect on gateway 502/504
