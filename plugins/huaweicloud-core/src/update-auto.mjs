@@ -59,6 +59,69 @@ export function isGitCheckout() {
   }
 }
 
+function envHome(env = process.env) {
+  return env.HUAWEICLOUD_HOME || homedir();
+}
+
+function samePath(a, b) {
+  const na = resolve(String(a));
+  const nb = resolve(String(b));
+  return process.platform === 'win32' ? na.toLowerCase() === nb.toLowerCase() : na === nb;
+}
+
+function isUnder(dir, root) {
+  const nd = resolve(String(dir));
+  const nr = resolve(String(root));
+  const prefix = process.platform === 'win32' ? nr.toLowerCase() : nr;
+  const target = process.platform === 'win32' ? nd.toLowerCase() : nd;
+  return target === prefix || target.startsWith(`${prefix}${process.platform === 'win32' ? '\\' : '/'}`);
+}
+
+// Mirrors the per-agent plugin dirs that `npx huaweicloud-devkit update --target
+// all` rewrites (see setup-cli.mjs installMarkerDirForTarget + the update
+// targets). `codex` is intentionally absent: the Codex CLI manages its own
+// marketplace cache, which this package never rewrites directly. Claude Code
+// marketplace installs are likewise outside the write set (no claude target).
+export function resolveUpgradeWriteRoots({ env = process.env, home = envHome(env) } = {}) {
+  return [
+    join(home, '.config', 'opencode', 'huaweicloud-plugins'),
+    join(home, 'plugins', 'huaweicloud-devkit'),
+    join(home, '.codeartsdoer', 'huaweicloud-plugins'),
+    join(home, '.codeartswork', 'huaweicloud-plugins'),
+    join(home, '.workbuddy', 'huaweicloud-plugins'),
+    join(env.DSH_HOME || join(home, '.dsh'), 'huaweicloud-plugins'),
+    join(env.HERMES_HOME || join(home, '.hermes'), 'huaweicloud-plugins'),
+    join(home, '.agents', 'huaweicloud-plugins'),
+    join(env.ATOMCODE_HOME || join(home, '.atomcode'), 'huaweicloud-plugins'),
+    join(env.OFFICE_CLAW_CONFIG_ROOT || join(home, '.office-claw'), 'huaweicloud-plugins'),
+  ];
+}
+
+function unsupportedInstallManual(pluginRoot, home) {
+  if (isUnder(pluginRoot, join(home, '.claude'))) {
+    return '当前插件由 Claude Code 插件市场安装，暂不支持自动升级：在 Claude Code 会话中执行 /plugin 更新 huaweicloud-devkit（或更新对应 marketplace）后重启会话';
+  }
+  if (isUnder(pluginRoot, join(home, '.codex'))) {
+    return '当前运行目录来自 Codex 插件缓存，暂不支持自动升级：在终端执行 npx --yes huaweicloud-devkit@latest update --target codex 并重启 Codex 会话';
+  }
+  return '当前运行目录不在自动升级写入范围：在终端执行 npx --yes huaweicloud-devkit@latest update --target <agent> 后重启会话';
+}
+
+// The runner verifies the RUNNING plugin root after `npx update --target all`.
+// When the running dir is not one of the directories that update rewrites
+// (Claude Code marketplace, Codex CLI cache, unpacked tarballs, global npm
+// dirs), the upgrade can only end in verify-fail → rollback → throttle while
+// the user is told "upgrade started in the background". Fail fast instead.
+export function checkUpgradableInstall({
+  pluginRoot = PLUGIN_ROOT,
+  env = process.env,
+  home = envHome(env),
+} = {}) {
+  const roots = resolveUpgradeWriteRoots({ env, home });
+  if (roots.some((root) => samePath(pluginRoot, root))) return null;
+  return { reason: 'unsupported_install', manual: unsupportedInstallManual(pluginRoot, home) };
+}
+
 export function autoUpgradeSuppressionReason({ env = process.env, gitCheckout = isGitCheckout() } = {}) {
   if (env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE === '1') return 'skip_update';
   const ci = String(env.CI || '').toLowerCase();
@@ -253,6 +316,7 @@ export function maybeAutoUpgrade({
   paths = autoUpgradePaths(env),
   state,
   readInstalled = readInstalledVersion,
+  pluginRoot = PLUGIN_ROOT,
 } = {}) {
   const suppression = autoUpgradeSuppressionReason({ env, gitCheckout });
   if (suppression) return { status: 'disabled', reason: suppression };
@@ -268,6 +332,10 @@ export function maybeAutoUpgrade({
     semverCompare(diskVersion, currentState.installedVersion) >= 0
   ) {
     return { status: 'already_upgraded', installedVersion: currentState.installedVersion };
+  }
+  const unsupported = checkUpgradableInstall({ pluginRoot, env });
+  if (unsupported) {
+    return { status: 'unsupported_install', trigger, manual: unsupported.manual };
   }
   if (isAutoUpgradeLockActive(paths.lock, now)) return { status: 'already_running' };
   const runnerPath = join(SRC_DIR, 'auto-upgrade-runner.mjs');
@@ -369,6 +437,13 @@ export async function runAutoUpgrade({
   if (suppression) return { lastResult: 'skipped', reason: 'disabled', detail: suppression };
   if (!currentVersion || currentVersion === '0.0.0') {
     return { lastResult: 'skipped', reason: 'unknown_version' };
+  }
+  // Defense in depth: maybeAutoUpgrade already gates on the write set before
+  // spawning this runner; re-check so a stale runner can never run a doomed
+  // upgrade → verify-fail → rollback → throttle cycle either.
+  const unsupported = checkUpgradableInstall({ pluginRoot, env });
+  if (unsupported) {
+    return { lastResult: 'skipped', reason: unsupported.reason, manual: unsupported.manual };
   }
   if (!acquireAutoUpgradeLock({ lockPath: paths.lock, now: now() })) {
     return { lastResult: 'skipped', reason: 'locked' };

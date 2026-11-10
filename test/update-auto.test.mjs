@@ -9,12 +9,14 @@ import {
   acquireAutoUpgradeLock,
   autoUpgradePaths,
   autoUpgradeSuppressionReason,
+  checkUpgradableInstall,
   decideAutoUpgrade,
   getAutoUpgradeNotice,
   isAutoUpgradeLockActive,
   maybeAutoUpgrade,
   readAutoUpgradeState,
   releaseAutoUpgradeLock,
+  resolveUpgradeWriteRoots,
   runAutoUpgrade,
   writeAutoUpgradeState,
 } from '../plugins/huaweicloud-core/src/update-auto.mjs';
@@ -26,8 +28,12 @@ function tempEnv() {
   return { home, env: { HUAWEICLOUD_HOME: home } };
 }
 
+// The runner only upgrades installs inside the `update --target all` write
+// set (R2), so fixtures must live in a write-set dir.
+const WRITE_SET_PLUGIN = join('.config', 'opencode', 'huaweicloud-plugins');
+
 function setupPlugin(home) {
-  const root = join(home, 'plugin');
+  const root = join(home, WRITE_SET_PLUGIN);
   mkdirSync(join(root, 'src'), { recursive: true });
   writeFileSync(join(root, 'src', 'mcp-server.mjs'), '');
   writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.1.13' }));
@@ -171,6 +177,7 @@ test('maybeAutoUpgrade: spawns a detached runner when eligible', () => {
       paths,
       state: null,
       readInstalled: () => '1.1.13',
+      pluginRoot: join(home, WRITE_SET_PLUGIN),
       spawnFn: (command, args, options) => {
         spawned = { command, args, options };
         return { pid: 1234, unref() {} };
@@ -222,6 +229,7 @@ test('maybeAutoUpgrade: already upgraded / locked / disabled', () => {
         runtimeVersion: '1.1.13',
         readInstalled: () => '1.1.13',
         state: null,
+        pluginRoot: join(home, WRITE_SET_PLUGIN),
         spawnFn: () => {
           throw new Error('must not spawn');
         },
@@ -411,6 +419,123 @@ test('getAutoUpgradeNotice: succeeded only until the process restarts', () => {
     const notice = getAutoUpgradeNotice({ statePath: paths.state, runtimeVersion: '1.1.13', now: NOW });
     assert.deepEqual(notice, { status: 'succeeded', installedVersion: '1.1.14', requiresRestart: true });
     assert.equal(getAutoUpgradeNotice({ statePath: paths.state, runtimeVersion: '1.1.14', now: NOW }), null);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── R2: 安装位置必须属于 update --target all 的写入集合 ──
+
+test('resolveUpgradeWriteRoots: mirrors the per-agent plugin dirs and env overrides', () => {
+  const { home, env } = tempEnv();
+  try {
+    const roots = resolveUpgradeWriteRoots({ env, home });
+    assert.ok(roots.includes(join(home, '.config', 'opencode', 'huaweicloud-plugins')));
+    assert.ok(roots.includes(join(home, 'plugins', 'huaweicloud-devkit')));
+    assert.ok(roots.includes(join(home, '.codeartsdoer', 'huaweicloud-plugins')));
+    assert.ok(roots.includes(join(home, '.codeartswork', 'huaweicloud-plugins')));
+    assert.ok(roots.includes(join(home, '.workbuddy', 'huaweicloud-plugins')));
+    assert.ok(roots.includes(join(home, '.agents', 'huaweicloud-plugins')));
+    const withOverrides = resolveUpgradeWriteRoots({
+      env: { ...env, DSH_HOME: join(home, 'dsh-custom'), HERMES_HOME: join(home, 'hermes-custom') },
+      home,
+    });
+    assert.ok(withOverrides.includes(join(home, 'dsh-custom', 'huaweicloud-plugins')));
+    assert.ok(withOverrides.includes(join(home, 'hermes-custom', 'huaweicloud-plugins')));
+    // Codex CLI marketplace cache and Claude Code installs are NOT in the write set.
+    assert.ok(!withOverrides.some((root) => root.includes(join(home, '.codex'))));
+    assert.ok(!withOverrides.some((root) => root.includes(join(home, '.claude'))));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('checkUpgradableInstall: write-set dirs pass, others fail with a manual hint', () => {
+  const { home, env } = tempEnv();
+  try {
+    assert.equal(checkUpgradableInstall({ pluginRoot: join(home, WRITE_SET_PLUGIN), env, home }), null);
+    assert.equal(
+      checkUpgradableInstall({ pluginRoot: join(home, 'plugins', 'huaweicloud-devkit'), env, home }),
+      null,
+    );
+
+    const claude = checkUpgradableInstall({
+      pluginRoot: join(home, '.claude', 'plugins', 'marketplaces', 'huawei', 'plugins', 'huaweicloud-core'),
+      env,
+      home,
+    });
+    assert.equal(claude.reason, 'unsupported_install');
+    assert.match(claude.manual, /\/plugin/);
+
+    const codex = checkUpgradableInstall({
+      pluginRoot: join(home, '.codex', 'plugins', 'cache', 'huaweicloud-devkit', 'plugins', 'huaweicloud-core'),
+      env,
+      home,
+    });
+    assert.equal(codex.reason, 'unsupported_install');
+    assert.match(codex.manual, /update --target codex/);
+
+    const generic = checkUpgradableInstall({ pluginRoot: join(home, 'tarball', 'plugins', 'huaweicloud-core'), env, home });
+    assert.equal(generic.reason, 'unsupported_install');
+    assert.match(generic.manual, /update --target <agent>/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('maybeAutoUpgrade: unsupported install never spawns a runner', () => {
+  const { home, env } = tempEnv();
+  const paths = autoUpgradePaths(env);
+  try {
+    const result = maybeAutoUpgrade({
+      trigger: 'version_gate',
+      minVersion: '1.1.14',
+      env,
+      now: NOW,
+      runtimeVersion: '1.1.13',
+      gitCheckout: false,
+      paths,
+      state: null,
+      readInstalled: () => '1.1.13',
+      pluginRoot: join(home, '.claude', 'plugins', 'marketplaces', 'x', 'plugins', 'huaweicloud-core'),
+      spawnFn: () => {
+        throw new Error('must not spawn for unsupported installs');
+      },
+    });
+    assert.equal(result.status, 'unsupported_install');
+    assert.match(result.manual, /\/plugin/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('runAutoUpgrade: unsupported install skips without spawning or writing state', async () => {
+  const { home, env } = tempEnv();
+  const root = join(home, 'tarball', 'plugins', 'huaweicloud-core');
+  mkdirSync(join(root, 'src'), { recursive: true });
+  writeFileSync(join(root, 'src', 'mcp-server.mjs'), '');
+  const paths = autoUpgradePaths(env);
+  try {
+    const state = await runAutoUpgrade({
+      trigger: 'version_gate',
+      minVersion: '1.1.14',
+      currentVersion: '1.1.13',
+      pluginRoot: root,
+      env,
+      paths,
+      now: () => NOW,
+      gitCheckout: false,
+      readInstalled: () => '1.1.13',
+      doQuery: async () => ({ latest: '1.1.14', next: null }),
+      spawnFn: () => {
+        throw new Error('must not spawn for unsupported installs');
+      },
+    });
+    assert.equal(state.lastResult, 'skipped');
+    assert.equal(state.reason, 'unsupported_install');
+    assert.match(state.manual, /update --target <agent>/);
+    assert.equal(readAutoUpgradeState(paths.state), null, 'unsupported skips must not clobber state');
+    assert.equal(isAutoUpgradeLockActive(paths.lock, NOW), false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

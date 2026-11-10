@@ -110,6 +110,7 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
       err.autoUpgrade = autoUpgrade;
       const autoStarted = autoUpgrade.status === 'started' || autoUpgrade.status === 'already_running';
       const autoReady = autoUpgrade.status === 'already_upgraded';
+      const autoUnsupported = autoUpgrade.status === 'unsupported_install';
       err.remediation = {
         hint: `插件版本过旧（当前 ${data.clientVersion || '未知'}，需升级至正式版 ${data.minVersion || '最新版'} 及以上）：`,
         steps: autoReady
@@ -123,11 +124,17 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
                 '若长时间未完成，可在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
                 '也可直接调用 huaweicloud_upgrade 工具完成升级',
               ]
-            : [
-                '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
-                '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
-                '也可直接调用 huaweicloud_upgrade 工具完成升级',
-              ],
+            : autoUnsupported
+              ? [
+                  autoUpgrade.manual ||
+                    '当前安装方式暂不支持自动升级，请在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+                  '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+                ]
+              : [
+                  '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+                  '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+                  '也可直接调用 huaweicloud_upgrade 工具完成升级',
+                ],
       };
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
