@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
@@ -32,6 +32,44 @@ test('agent-registration reports openclaw registration status', () => {
   assert.match(registration, /function openclawRegistered\(\)/);
   assert.match(registration, /agent === 'openclaw'/);
   assert.match(registration, /'\.agents', 'huaweicloud-plugins', '\.mcp\.json'/);
+});
+
+test('node:sqlite is required inside functions, never at module scope', () => {
+  // 2026-11-10: the 2.0.0 tarball install printed "(node:xxxx)
+  // ExperimentalWarning: SQLite is an experimental feature" on Node 22.x
+  // (the CLI's declared floor) because the OfficeAce connector family
+  // required node:sqlite at module scope — every CLI boot, install
+  // included, paid the warning (and a hard error below Node 22.5) though
+  // only the officeace packs/doctor paths ever open the connector db.
+  // agent-registration.ts kept the correct shape all along: its require
+  // sits inside officeaceRegistered(). This scan pins that shape for every
+  // src module — a require of node:sqlite must never start a line at
+  // column 0, the textual signature of a module-scope load. The behavioral
+  // half of the guard is test/cli-boot-warnings.test.ts spawning the real
+  // CLI and asserting its stderr carries no Node warning lines (that half
+  // only has teeth on Node 22.x, where the builtin still warns).
+  const srcDir = join(root, 'plugins', 'huaweicloud-core', 'src');
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.name.endsWith('.ts')) {
+        for (const [idx, line] of readFileSync(entryPath, 'utf8').split('\n').entries()) {
+          if (/^(const|let|var)\b.*\(\s*['"]node:sqlite['"]\s*\)/.test(line)) {
+            offenders.push(`${relative(srcDir, entryPath)}:${idx + 1}`);
+          }
+        }
+      }
+    }
+  };
+  walk(srcDir);
+  assert.deepEqual(
+    offenders,
+    [],
+    'node:sqlite requires must sit inside functions (lazy), never at module scope',
+  );
 });
 
 test('test fixtures: raw mkdtempSync is denied by default across the suite', () => {
