@@ -9,8 +9,6 @@ import { tmpdir } from 'node:os';
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HW_SANDBOX_POOL_CACHE_PATH = join(tmpdir(), `hw-sandbox-calltool-test-${process.pid}.json`);
-delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 
 let currentWs = null;
 const execLog = [];
@@ -66,6 +64,28 @@ test('callTool connect: invalid pool_type returns structured guidance instead of
   assert.equal(result.ok, false);
   assert.equal(result.code, 'HDKIT_INVALID_POOL_TYPE');
   assert.match(result.message, /invalid pool_type/);
+});
+
+test('callTool connect: legacy template_id is rejected and never sent', async () => {
+  forgetWorkspacePool();
+  const originalFetch = global.fetch;
+  let fetchCalled = false;
+  global.fetch = async () => {
+    fetchCalled = true;
+    return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const result = await callTool('huaweicloud_sandbox_connect', {
+      pool_type: 'ephemeral',
+      template_id: 'legacy-tpl',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_INVALID_REQUEST');
+    assert.match(result.message, /template_id 已不再支持/);
+    assert.equal(fetchCalled, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('callTool connect: 429 quota-exceeded remediation survives the MCP boundary', async () => {

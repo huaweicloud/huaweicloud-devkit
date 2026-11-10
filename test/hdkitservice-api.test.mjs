@@ -149,14 +149,9 @@ test('voucher status does NOT include remediation for non-CRED_INVALID errors', 
   }
 });
 
-// ── 两池：pool_type 透传与钉扎 ──
+// ── 两池：pool_type 透传（不再支持 template_id/钉扎）──
 
-test('hdkitConnect passes pool_type through without template pinning by default', async () => {
-  // T5 环境隔离：预删钉扎变量并保存宿主原值，结束恢复（宿主设了 HW_POOL_TEMPLATE_* 时本用例仍须成立）
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  const savedPer = process.env.HW_POOL_TEMPLATE_PERSISTENT;
-  delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
+test('hdkitConnect passes pool_type through and never sends template_id', async () => {
   const originalFetch = global.fetch;
   let capturedBody = null;
   global.fetch = async (_url, opts) => {
@@ -167,68 +162,13 @@ test('hdkitConnect passes pool_type through without template pinning by default'
     );
   };
   try {
-    const result = await hdkitConnect({ pool_type: 'persistent' });
+    const result = await hdkitConnect({ pool_type: 'persistent', template_id: 'legacy-tpl' });
     const body = JSON.parse(capturedBody);
     assert.equal(body.pool_type, 'persistent');
-    assert.equal(body.template_id, undefined); // 未钉扎：模板由服务端权威映射
+    assert.equal(body.template_id, undefined); // 自定义模板已下线：即使调用方传入也不上送
     assert.equal(result.pool_type, 'persistent');
   } finally {
     global.fetch = originalFetch;
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
-    if (savedPer === undefined) delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
-    else process.env.HW_POOL_TEMPLATE_PERSISTENT = savedPer;
-  }
-});
-
-test('hdkitConnect attaches pinned template when HW_POOL_TEMPLATE_* is configured', async () => {
-  // T5 环境隔离：保存宿主原值，结束恢复（而非无条件删除）
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  const originalFetch = global.fetch;
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
-  let capturedBody = null;
-  global.fetch = async (_url, opts) => {
-    capturedBody = opts.body;
-    return new Response(JSON.stringify({ session_id: 's1', dev_stage_id: 'd1' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  };
-  try {
-    await hdkitConnect({ pool_type: 'ephemeral' });
-    const body = JSON.parse(capturedBody);
-    assert.equal(body.pool_type, 'ephemeral');
-    assert.equal(body.template_id, 'pinned-eph-tpl'); // 钉扎：附带映射模板（老服务端兼容）
-  } finally {
-    global.fetch = originalFetch;
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
-  }
-});
-
-// ── T6 显式 template_id 优先于钉扎 ──
-
-test('hdkitConnect keeps explicit template_id over pinned template', async () => {
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
-  const originalFetch = global.fetch;
-  let capturedBody = null;
-  global.fetch = async (_url, opts) => {
-    capturedBody = opts.body;
-    return new Response(JSON.stringify({ session_id: 's1', dev_stage_id: 'd1' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  };
-  try {
-    await hdkitConnect({ pool_type: 'ephemeral', template_id: 'explicit-tpl' });
-    const body = JSON.parse(capturedBody);
-    assert.equal(body.template_id, 'explicit-tpl'); // 显式模板优先，钉扎不覆盖
-    assert.equal(body.pool_type, 'ephemeral');
-  } finally {
-    global.fetch = originalFetch;
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
   }
 });
 

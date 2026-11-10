@@ -8,7 +8,6 @@ process.env.HW_SANDBOX_POOL_CACHE_PATH = join(tmpdir(), `hw-sandbox-pool-test-${
 
 const {
   validatePoolType,
-  pinnedTemplateFor,
   rememberWorkspacePool,
   forgetWorkspacePool,
   poolContextFor,
@@ -34,21 +33,6 @@ test('validatePoolType normalizes case and whitespace', () => {
 test('validatePoolType rejects invalid values with guidance', () => {
   assert.throws(() => validatePoolType('weird'), /invalid pool_type/);
   assert.throws(() => validatePoolType('persist_mode'), /invalid pool_type/);
-});
-
-// ── pinnedTemplateFor（运维钉扎，环境变量）──
-
-test('pinnedTemplateFor reads env and is empty by default', () => {
-  delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
-  assert.equal(pinnedTemplateFor('ephemeral'), '');
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'tpl-e';
-  process.env.HW_POOL_TEMPLATE_PERSISTENT = 'tpl-p';
-  assert.equal(pinnedTemplateFor('ephemeral'), 'tpl-e');
-  assert.equal(pinnedTemplateFor('persistent'), 'tpl-p');
-  assert.equal(pinnedTemplateFor(null), '');
-  delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 });
 
 // ── workspace 池缓存与上下文 ──
@@ -164,9 +148,9 @@ test('enrichConnectResult suppresses the hint when announce=false (reuse)', () =
   assert.equal(result.pool, undefined);
 });
 
-test('enrichConnectResult adds nothing without server pool echo (custom template / old server)', () => {
-  const custom = enrichConnectResult({ session_id: 's1', template_id: 'custom' });
-  assert.equal(custom.pool, undefined);
+test('enrichConnectResult adds nothing without server pool echo (old server)', () => {
+  const oldServerNoEcho = enrichConnectResult({ session_id: 's1', template_id: 'custom' });
+  assert.equal(oldServerNoEcho.pool, undefined);
 
   const oldServer = enrichConnectResult({ session_id: 's1' });
   assert.equal(oldServer.pool, undefined);
