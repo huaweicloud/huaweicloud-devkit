@@ -492,6 +492,13 @@ test('extractNpmFailureReason: 优先 npm error 行，剔除 npm warn 噪声 (#1
   // 只有 warn 时：宁可报 status，也不能把 warning 当失败原因
   const warnOnly = extractNpmFailureReason({ status: 1, stdout: '', stderr: 'npm warn deprecated foo' });
   assert.equal(warnOnly, 'exit 1');
+  const nodeOnly = extractNpmFailureReason({
+    status: 1,
+    stdout: '',
+    stderr:
+      '(node:123) DeprecationWarning: something\nUse `node --trace-deprecation ...` to show where the warning was created',
+  });
+  assert.equal(nodeOnly, 'exit 1');
   assert.equal(extractNpmFailureReason({ status: 0, stdout: '', stderr: '' }), 'exit 0');
   assert.equal(extractNpmFailureReason({ status: null, error: new Error('spawn ENOENT') }), 'spawn ENOENT');
 });

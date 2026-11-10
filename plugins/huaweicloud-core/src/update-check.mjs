@@ -520,7 +520,14 @@ export function extractNpmFailureReason(execResult) {
     .map((line) => line.trim())
     .filter(Boolean);
   const errorLines = lines.filter((line) => /^npm error/i.test(line));
-  const meaningful = errorLines.length ? errorLines : lines.filter((line) => !/^npm warn/i.test(line));
+  const isNoise = (line) =>
+    /^npm warn/i.test(line) ||
+    /^\(node:\d+\)/i.test(line) ||
+    /DeprecationWarning/i.test(line) ||
+    /trace-deprecation/i.test(line);
+  const meaningful = errorLines.length
+    ? errorLines.filter((line) => !isNoise(line))
+    : lines.filter((line) => !isNoise(line));
   if (meaningful.length) return meaningful.slice(-2).join(' ');
   return `exit ${execResult?.status}`;
 }

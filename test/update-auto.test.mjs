@@ -261,20 +261,22 @@ test('runAutoUpgrade: normal success writes succeeded and installs the new paylo
   const root = setupPlugin(home);
   const paths = autoUpgradePaths(env);
   const readInstalled = installedReader(root);
+  let spawnedOptions = null;
   try {
     const state = await runAutoUpgrade({
       trigger: 'startup_normal',
       currentVersion: '1.1.13',
       pluginRoot: root,
-      env,
+      env: { ...env, HW_ACCESS_KEY: 'secret-ak', HW_SECRET_KEY: 'secret-sk' },
       paths,
       now: () => NOW,
       gitCheckout: false,
       readInstalled,
       doQuery: async () => ({ latest: '1.1.14', next: null }),
       doPublishTime: async () => NOW - AUTO_UPGRADE_COOLDOWN_MS - 60_000,
-      spawnFn: (_command, args) => {
+      spawnFn: (_command, args, options) => {
         assert.deepEqual(args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'all']);
+        spawnedOptions = options;
         writeFileSync(join(root, 'package.json'), JSON.stringify({ version: '1.1.14' }));
         writeFileSync(join(root, '.installed'), new Date(NOW).toISOString());
         return { status: 0, stdout: '', stderr: '' };
@@ -284,6 +286,9 @@ test('runAutoUpgrade: normal success writes succeeded and installs the new paylo
     assert.equal(state.installedVersion, '1.1.14');
     assert.equal(readInstalled(), '1.1.14');
     assert.equal(isAutoUpgradeLockActive(paths.lock, NOW), false);
+    assert.equal(spawnedOptions.env.HW_ACCESS_KEY, undefined);
+    assert.equal(spawnedOptions.env.HW_SECRET_KEY, undefined);
+    assert.equal(spawnedOptions.env.npm_config_registry, 'https://registry.npmjs.org');
     const persisted = readAutoUpgradeState(paths.state);
     assert.equal(persisted.lastResult, 'succeeded');
   } finally {

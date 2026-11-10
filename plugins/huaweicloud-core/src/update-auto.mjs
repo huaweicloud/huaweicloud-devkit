@@ -129,6 +129,25 @@ export function autoUpgradeSuppressionReason({ env = process.env, gitCheckout = 
   return null;
 }
 
+const UPGRADE_CREDENTIAL_ENV_KEYS = new Set([
+  'HW_ACCESS_KEY',
+  'HW_SECRET_KEY',
+  'HW_SECURITY_TOKEN',
+  'HUAWEICLOUD_ACCESS_KEY',
+  'HUAWEICLOUD_SECRET_KEY',
+  'HUAWEICLOUD_SECURITY_TOKEN',
+  'HUAWEICLOUD_SECRET_ACCESS_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+]);
+
+export function upgradeEnv(env = process.env) {
+  const next = { ...env, npm_config_registry: env.HUAWEICLOUD_NPM_REGISTRY || 'https://registry.npmjs.org' };
+  for (const key of UPGRADE_CREDENTIAL_ENV_KEYS) delete next[key];
+  return next;
+}
+
 function isPidAlive(pid) {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
@@ -378,8 +397,10 @@ function pruneBackups(backupRoot, keepDir) {
       .filter((entry) => entry.isDirectory())
       .map((entry) => entry.name)
       .sort((a, b) => a.localeCompare(b));
+    const keep = new Set(entries.slice(-2));
+    keep.add(keepDir.split(/[\\/]/).pop());
     for (const name of entries) {
-      if (join(backupRoot, name) === keepDir) continue;
+      if (keep.has(name)) continue;
       rmSync(join(backupRoot, name), { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     }
   } catch {}
@@ -598,10 +619,7 @@ export async function runAutoUpgrade({
         timeout: 300000,
         windowsHide: true,
         shell: true,
-        env: {
-          ...env,
-          npm_config_registry: env.HUAWEICLOUD_NPM_REGISTRY || 'https://registry.npmjs.org',
-        },
+        env: upgradeEnv(env),
       });
     } catch (error) {
       result = { status: null, error, stdout: '', stderr: '' };
