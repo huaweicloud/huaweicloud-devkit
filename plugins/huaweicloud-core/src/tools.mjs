@@ -1306,6 +1306,22 @@ function normalizeNumericArgs(args) {
   return out;
 }
 
+// hdkitservice 业务预期失败（409 版本门禁 / 429 双码 / 烧核 / 凭证失效）的统一结构化出口：
+// MCP 错误信封只携带 code+message，autoUpgrade/remediation 等指引字段必须在此展开才能穿透 MCP 边界 (#1117)。
+function toVersionGateResult(error) {
+  return {
+    ok: false,
+    code: error.code,
+    message: error.message,
+    ...(error.retryAfter !== undefined ? { retryAfter: error.retryAfter } : {}),
+    ...(error.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+    ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
+    ...(error.minVersion ? { minVersion: error.minVersion } : {}),
+    ...(error.remediation ? { remediation: error.remediation } : {}),
+    ...(error.autoUpgrade ? { autoUpgrade: error.autoUpgrade } : {}),
+  };
+}
+
 export async function callTool(name, rawArgs = {}, opts = {}) {
   const args = normalizeNumericArgs(rawArgs);
   const toolValue = toolInvokeValue(name, args);
@@ -1716,25 +1732,20 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         args.timeout_ms || 60000,
       );
     }
-    case 'huaweicloud_sandbox_check_user': {
+    case 'huaweicloud_sandbox_check_user':
       try {
         return await hdkitCheckUser();
       } catch (error) {
-        if (error?.code === 'HDKIT_VERSION_TOO_OLD') {
-          return {
-            ok: false,
-            code: error.code,
-            message: error.message,
-            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
-            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
-            ...(error.remediation ? { remediation: error.remediation } : {}),
-          };
-        }
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') return toVersionGateResult(error);
         throw error;
       }
-    }
     case 'huaweicloud_sandbox_sign_agreement':
-      return await hdkitSignAgreement();
+      try {
+        return await hdkitSignAgreement();
+      } catch (error) {
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') return toVersionGateResult(error);
+        throw error;
+      }
     case 'huaweicloud_sandbox_connect': {
       // 两池：客户端校验 pool_type（非法值在本地即报错，不发无效请求）；未传交由服务端默认 ephemeral
       const connectArgs = { ...args };
@@ -1772,16 +1783,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
           error?.code === 'HDKIT_VERSION_TOO_OLD' ||
           error?.coreHoursExhausted
         ) {
-          return {
-            ok: false,
-            code: error.code,
-            message: error.message,
-            ...(error.retryAfter !== undefined ? { retryAfter: error.retryAfter } : {}),
-            ...(error.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
-            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
-            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
-            ...(error.remediation ? { remediation: error.remediation } : {}),
-          };
+          return toVersionGateResult(error);
         }
         throw error;
       }
@@ -1839,7 +1841,14 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
           hint: 'Credentials were NOT injected into the sandbox. Fix AK/SK first: run "npx huaweicloud-devkit auth init" or correct HW_ACCESS_KEY/HW_SECRET_KEY, then retry.',
         };
       }
-      const credResult = await hdkitCredentials(args.session_id, devStageId, args.enable_sts !== false);
+      let credResult;
+      try {
+        credResult = await hdkitCredentials(args.session_id, devStageId, args.enable_sts !== false);
+      } catch (error) {
+        // 版本门禁同样会拦截 credentials 出口：结构化返回，autoUpgrade/remediation 才能穿透 MCP 边界
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') return toVersionGateResult(error);
+        throw error;
+      }
       const sandboxWsIdCred = args.dev_stage_id || getCurrentWorkspaceId();
       // The DevBridge API Key is a LONG-LIVED account-level credential (no expiry, manual
       // revocation only) — unlike the temporary STS AK/SK. It is stored in its own file

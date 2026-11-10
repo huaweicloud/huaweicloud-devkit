@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 
 import { dispatch } from './mcp-protocol.mjs';
 import { DEFAULT_PORT, DEFAULT_HOST } from './mcp-server-remote.mjs';
-import { getCachedUpdateInfo, readInstalledVersion } from './update-check.mjs';
+import { getCachedUpdateInfo, getRuntimeVersion, semverCompare } from './update-check.mjs';
+import { getUpgradePolicy } from './update-policy.mjs';
+import { maybeAutoUpgrade } from './update-auto.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
 import { maybePreinstallKooCli } from './preflight.mjs';
 
@@ -62,6 +64,23 @@ try {
   maybePreinstallKooCli();
 } catch {}
 
+const updatePrewarm = async () => {
+  const current = getRuntimeVersion();
+  const hintPromise = getCachedUpdateInfo(current).catch(() => null);
+  const policy = await getUpgradePolicy().catch(() => null);
+  if (policy?.active && policy.minVersion && semverCompare(current, policy.minVersion) < 0) {
+    maybeAutoUpgrade({ trigger: 'startup_forced', minVersion: policy.minVersion });
+    return;
+  }
+  const hint = await hintPromise;
+  if (hint?.updateAvailable) maybeAutoUpgrade({ trigger: 'startup_normal' });
+};
+
+// 版本升级检测预热：异步、非阻塞；失败静默（离线/超时不影响会话）。
+process.nextTick(() => {
+  updatePrewarm().catch(() => {});
+});
+
 if (transport === 'remote') {
   const { startRemoteServer } = await import('./mcp-server-remote.mjs');
   startRemoteServer({ port: remotePort, host: remoteHost }).catch((error) => {
@@ -74,10 +93,6 @@ if (transport === 'remote') {
 }
 
 function runStdioServer() {
-  const updatePrewarm = () => {
-    getCachedUpdateInfo(readInstalledVersion() || '0.0.0').catch(() => {});
-  };
-
   let buffer = Buffer.alloc(0);
   let useContentLengthFraming = true;
 
@@ -92,9 +107,6 @@ function runStdioServer() {
   // shutdown signal — exit cleanly so the host does not see CLOSE_TIMEOUT.
   const { harness } = detectAgent();
   const NEEDS_KEEPALIVE = harness === 'hermes' && platform() === 'win32';
-
-  // 版本升级检测预热：异步、非阻塞；失败静默（离线/超时不影响会话）。
-  process.nextTick(updatePrewarm);
 
   let keepAlive = null;
   function onStdinClose() {

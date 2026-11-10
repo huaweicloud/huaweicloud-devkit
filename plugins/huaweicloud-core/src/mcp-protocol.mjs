@@ -1,5 +1,6 @@
 import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
-import { peekCachedUpdateInfo, applyUpdateHint, readInstalledVersion } from './update-check.mjs';
+import { peekCachedUpdateInfo, applyUpdateHint, getRuntimeVersion } from './update-check.mjs';
+import { getAutoUpgradeNotice } from './update-auto.mjs';
 import { initTelemetry, flushEvents } from './telemetry/telemetry.mjs';
 import { detectAgent } from './telemetry/agent-detect.mjs';
 
@@ -7,7 +8,7 @@ import { detectAgent } from './telemetry/agent-detect.mjs';
 // 防止进程提前退出导致领券遥测丢失。
 const P0_SYNC_FLUSH_TOOLS = new Set(['huaweicloud_voucher_claim', 'huaweicloud_competition_voucher_claim']);
 
-const pkgVersion = readInstalledVersion() || '0.0.0';
+const pkgVersion = getRuntimeVersion();
 
 // 会话内首个非 check/upgrade 工具调用附加 _updateInfo，只消费一次。
 // 按会话隔离：同进程内不同会话(A/B)各自首次提示；stdio 用固定 'stdin'。
@@ -16,8 +17,16 @@ export function _decorateResult(sessionId, name, result) {
   if (consumedBySession.get(sessionId)) return result;
   try {
     const hint = peekCachedUpdateInfo();
-    if (!hint) return result;
-    const decorated = applyUpdateHint(result, name, hint);
+    const notice =
+      name === 'huaweicloud_check_update' || name === 'huaweicloud_upgrade' ? null : getAutoUpgradeNotice();
+    if (!hint && !notice) return result;
+    let decorated = hint ? applyUpdateHint(result, name, hint) : result;
+    if (notice && decorated && typeof decorated === 'object' && !Array.isArray(decorated)) {
+      decorated = {
+        ...decorated,
+        _updateInfo: { ...(decorated._updateInfo || {}), autoUpgrade: notice },
+      };
+    }
     if (decorated !== result) consumedBySession.set(sessionId, true);
     return decorated;
   } catch {

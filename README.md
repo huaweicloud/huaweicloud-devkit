@@ -332,6 +332,18 @@ npx --yes huaweicloud-devkit@latest update --target all
 config. Always keep `@latest` so npm fetches the newest version instead of a
 locally cached older one.
 
+### Automatic upgrades
+
+The plugin upgrades itself in the background; there is no confirmation prompt:
+
+- At session start it fetches `HDKITSERVICE_ENDPOINT/upgrade/policy`; when the server enforces a minimum version and the client is below it, the upgrade runs immediately (bypassing the cooldown).
+- An ordinary new version is installed at a later session start only after it has been on npm for 24 hours.
+- Any `409 HDKIT_VERSION_TOO_OLD` from a hdkitservice endpoint triggers the same immediate upgrade.
+- Auto-upgrade only applies when the plugin runs from a directory the `update` command rewrites (per-agent plugin dirs such as `~/.config/opencode/huaweicloud-plugins`). Marketplace/cache installs (Claude Code, Codex CLI plugin cache) and unpacked tarballs get a manual-upgrade hint instead — the 409 response carries it.
+- Restart the session after installation; the current session keeps running the old code and remains blocked by the version gate.
+- Before an upgrade the running dir's `src/`, `package.json`, and the plugin version manifests are backed up; if verification against the backup fails, everything is restored.
+- Internal guards: `HUAWEICLOUD_DEVKIT_SKIP_UPDATE=1`, CI environments, and git checkouts skip automatic upgrades.
+
 ### Configure Proxy
 
 ```bash

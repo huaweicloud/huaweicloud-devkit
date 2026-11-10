@@ -148,22 +148,26 @@ test('P1: preinstall yields to an in-flight install from another process', async
   });
 });
 
-test('P2: install log is created 0600 (owner-only) and path resolves', async () => {
-  await withPreinstallEnv(async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'preflight-log-'));
-    const logPath = join(dir, 'koocli-install.log');
-    try {
-      const a = openKooCliInstallLog(logPath);
-      const done = new Promise((resolve) => a.on('finish', resolve));
-      a.write('x');
-      a.end();
-      await done;
-      const mode = statSync(logPath).mode & 0o777;
-      assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
-      // Rotation (reset past 1MB cap) is exercised by the module logic; asserting
-      // it here would require writing >1MB. The 0600 pin is the security intent.
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
-});
+test(
+  'P2: install log is created 0600 (owner-only) and path resolves',
+  { skip: process.platform === 'win32' ? 'chmod is not enforced on Windows' : false },
+  async () => {
+    await withPreinstallEnv(async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'preflight-log-'));
+      const logPath = join(dir, 'koocli-install.log');
+      try {
+        const a = openKooCliInstallLog(logPath);
+        const done = new Promise((resolve) => a.on('finish', resolve));
+        a.write('x');
+        a.end();
+        await done;
+        const mode = statSync(logPath).mode & 0o777;
+        assert.equal(mode, 0o600, `expected 0600, got ${mode.toString(8)}`);
+        // Rotation (reset past 1MB cap) is exercised by the module logic; asserting
+        // it here would require writing >1MB. The 0600 pin is the security intent.
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  },
+);

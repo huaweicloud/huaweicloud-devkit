@@ -11,6 +11,7 @@ import {
   _resetHintConsumption,
 } from '../plugins/huaweicloud-core/src/mcp-protocol.mjs';
 import * as updateCheck from '../plugins/huaweicloud-core/src/update-check.mjs';
+import { autoUpgradePaths, writeAutoUpgradeState } from '../plugins/huaweicloud-core/src/update-auto.mjs';
 
 // ============================================================================
 // 第一部分：mcp-protocol — hintConsumed 会话隔离
@@ -68,6 +69,31 @@ test('hint-consumption: 缺省 session 兜底为 default（行为同现版）', 
   assert.ok(!r2._updateInfo, 'default 二次不附加');
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
+});
+
+test('auto-upgrade notice: 每个会话首次工具调用附加一次', () => {
+  const dir = tmpEnv();
+  try {
+    const paths = autoUpgradePaths();
+    writeAutoUpgradeState(
+      { lastResult: 'succeeded', installedVersion: '9.9.9', finishedAt: new Date().toISOString() },
+      { statePath: paths.state },
+    );
+    _resetHintConsumption();
+    updateCheck.invalidateUpdateCache();
+    const base = { ok: 1 };
+    const r1 = _decorateResult('auto-notice-A', 'huaweicloud_check_cli', { ...base });
+    assert.equal(r1._updateInfo.autoUpgrade.status, 'succeeded');
+    const r2 = _decorateResult('auto-notice-A', 'huaweicloud_check_cli', { ...base });
+    assert.ok(!r2._updateInfo, 'A 会话二次不附加');
+    const r3 = _decorateResult('auto-notice-B', 'huaweicloud_check_cli', { ...base });
+    assert.equal(r3._updateInfo.autoUpgrade.status, 'succeeded', 'B 会话独立提示');
+  } finally {
+    delete process.env.HUAWEICLOUD_HOME;
+    rmSync(dir, { recursive: true, force: true });
+    _resetHintConsumption();
+    updateCheck.invalidateUpdateCache();
+  }
 });
 
 // ============================================================================

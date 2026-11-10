@@ -9,6 +9,8 @@ import { tmpdir } from 'node:os';
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HW_SANDBOX_POOL_CACHE_PATH = join(tmpdir(), `hw-sandbox-calltool-test-${process.pid}.json`);
+// 下方用例伪造 409 HDKIT_VERSION_TOO_OLD：必须屏蔽后台自动升级（R1，同 hdkitservice-api.test.mjs）。
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
 let currentWs = null;
 const execLog = [];
@@ -172,6 +174,54 @@ test('callTool check_user: version-too-old returns structured guidance', async (
     assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
     assert.equal(result.minVersion, '1.1.13');
     assert.ok(result.remediation);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool sign_agreement: version gate is structured, autoUpgrade survives (#1117)', async () => {
+  const restore = withFetchResponse(
+    {
+      code: 'HDKIT_VERSION_TOO_OLD',
+      message: '插件版本过旧，请升级至正式版 1.1.13 及以上。',
+      clientVersion: '1.1.12',
+      minVersion: '1.1.13',
+    },
+    { status: 409, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_sign_agreement', {});
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(result.clientVersion, '1.1.12');
+    assert.equal(result.minVersion, '1.1.13');
+    assert.ok(result.remediation, 'remediation must reach the tool result');
+    assert.ok(result.autoUpgrade, 'autoUpgrade must reach the tool result');
+    assert.match(result.remediation.steps.join(' '), /update --target <agent>/);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool voucher_status: version gate passes autoUpgrade through (#1117)', async () => {
+  const restore = withFetchResponse(
+    {
+      code: 'HDKIT_VERSION_TOO_OLD',
+      message: '插件版本过旧，请升级至正式版 1.1.13 及以上。',
+      clientVersion: '1.1.12',
+      minVersion: '1.1.13',
+    },
+    { status: 409, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_voucher_status', {});
+    assert.equal(result.claimed, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(result.clientVersion, '1.1.12');
+    assert.equal(result.minVersion, '1.1.13');
+    assert.ok(result.remediation);
+    assert.ok(result.autoUpgrade, 'autoUpgrade must reach the tool result');
+    assert.equal(result.autoUpgrade.status, 'disabled');
   } finally {
     restore();
   }
