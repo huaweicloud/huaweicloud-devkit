@@ -65,11 +65,7 @@ test('node:sqlite is required inside functions, never at module scope', () => {
     }
   };
   walk(srcDir);
-  assert.deepEqual(
-    offenders,
-    [],
-    'node:sqlite requires must sit inside functions (lazy), never at module scope',
-  );
+  assert.deepEqual(offenders, [], 'node:sqlite requires must sit inside functions (lazy), never at module scope');
 });
 
 test('test fixtures: raw mkdtempSync is denied by default across the suite', () => {

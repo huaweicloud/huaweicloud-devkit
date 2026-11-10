@@ -44,11 +44,20 @@ function toSqliteModule(value: unknown): SqliteModule | null {
   return typeof ctor === 'function' ? (value as SqliteModule) : null;
 }
 
-const sqliteModule = toSqliteModule(createRequire(import.meta.url)('node:sqlite'));
-if (!sqliteModule) {
-  throw new Error('node:sqlite is unavailable; the OfficeAce integration requires Node.js >= 22');
+// The builtin is required inside a function, never at module scope: loading
+// the setup-cli graph is the CLI's boot, and node:sqlite is experimental
+// through Node 22.x (the declared floor) — at module scope it printed
+// "(node:xxxx) ExperimentalWarning: SQLite is an experimental feature" on
+// every CLI run, install included, and throws outright below Node 22.5,
+// though only the officeace packs/doctor paths ever open the connector db.
+// agent-registration.ts keeps the same doctrine for the MCP graph's probe.
+function loadDatabaseSync(): new (_path: string) => SqliteDatabase {
+  const sqliteModule = toSqliteModule(createRequire(import.meta.url)('node:sqlite'));
+  if (!sqliteModule) {
+    throw new Error('node:sqlite is unavailable; the OfficeAce integration requires Node.js >= 22');
+  }
+  return sqliteModule.DatabaseSync;
 }
-const { DatabaseSync } = sqliteModule;
 
 export function officeaceSqlitePath(): string {
   const capDir = officeaceCapabilitiesDirSafe();
@@ -56,6 +65,7 @@ export function officeaceSqlitePath(): string {
 }
 
 export function openOfficeaceDb(): SqliteDatabase {
+  const DatabaseSync = loadDatabaseSync();
   return new DatabaseSync(officeaceSqlitePath());
 }
 

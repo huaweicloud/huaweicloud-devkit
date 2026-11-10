@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- fix(officeace): node:sqlite joins the lazy-load doctrine — the 2.0.0 tarball's npx install printed the Node 22.x "(node:xxxx) ExperimentalWarning: SQLite is an experimental feature" because the connector family required the builtin at module scope, so every CLI boot paid it; the require now sits inside the loader (openOfficeaceDb's single construction site), pinned by a structure scan (module-scope node:sqlite fails on any Node) and a floor-runtime boot test (spawn the real CLI, assert no (node:) warning lines — red under node@22.19.0 before the fix, green after)
+
 ## 2.0.0-next.0 (2026-11-09)
 
 - test(structure): pin the hook-graph purity boundary

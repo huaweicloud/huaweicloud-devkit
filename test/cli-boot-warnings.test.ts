@@ -26,9 +26,5 @@ test('CLI boot prints no Node warnings (experimental builtins stay lazy)', () =>
   });
   assert.equal(res.status, 0, res.stderr);
   assert.match(res.stdout, /Usage: npx huaweicloud-devkit/);
-  assert.doesNotMatch(
-    res.stderr,
-    /\(node:\d+\)/,
-    `CLI boot must not print Node warning lines: ${res.stderr}`,
-  );
+  assert.doesNotMatch(res.stderr, /\(node:\d+\)/, `CLI boot must not print Node warning lines: ${res.stderr}`);
 });
