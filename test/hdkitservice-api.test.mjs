@@ -7,6 +7,11 @@ import fs from 'node:fs';
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
+// A 409 HDKIT_VERSION_TOO_OLD response triggers maybeAutoUpgrade inside
+// hdkitRequest. Without this flag a non-CI dev machine would spawn a REAL
+// detached runner executing `npx update --target all` (same masking as
+// mcp-server.test.mjs / plugins-e2e.test.mjs).
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
 const { hdkitConnect, hdkitConnectWithRetry, hdkitVoucherStatus, hdkitVoucherClaim } =
   await import('../plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs');
@@ -258,6 +263,7 @@ test('HDKIT_VERSION_TOO_OLD carries client/min version and upgrade remediation',
     assert.match(err.remediation.steps.join(' '), /重启/);
     assert.ok(err.autoUpgrade, 'expected autoUpgrade status');
     assert.equal(err.autoUpgrade.status, 'disabled');
+    assert.equal(err.autoUpgrade.reason, 'skip_update');
   } finally {
     global.fetch = originalFetch;
   }

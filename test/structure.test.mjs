@@ -924,6 +924,20 @@ test('auto-upgrade runner is shipped and updates every installed target', () => 
   assert.match(auto, /'update', '--target', 'all'/);
 });
 
+test('tests touching hdkitservice mask the background auto-upgrade', () => {
+  const testDir = join(root, 'test');
+  for (const name of readdirSync(testDir)) {
+    if (!name.endsWith('.test.mjs')) continue;
+    const content = readFileSync(join(testDir, name), 'utf8');
+    if (!content.includes('hdkitservice-api.mjs')) continue;
+    assert.match(
+      content,
+      /process\.env\.HUAWEICLOUD_DEVKIT_SKIP_UPDATE\s*=\s*'1'/,
+      `${name} references hdkitservice-api.mjs and must set process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1' at file level (a 409 HDKIT_VERSION_TOO_OLD otherwise spawns a REAL detached auto-upgrade runner on non-CI machines)`,
+    );
+  }
+});
+
 test('READMEs recommend @latest for updates', () => {
   const en = readFileSync(join(root, 'README.md'), 'utf8');
   assert.match(en, /huaweicloud-devkit@latest update --target all/);
