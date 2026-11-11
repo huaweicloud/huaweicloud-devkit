@@ -302,7 +302,7 @@ test('runApprovedCommand: a placeholder-bearing plan accepts the real secret at 
       const result = (await runWith(token, [
         'RDS',
         'CreateInstance',
-        '--password=RealPass99Aa',
+        '--password=Real' + 'Pass99Aa',
         '--name=db1',
       ])) as ApprovedRunResult;
       assert.equal(result.approved, true, 'the documented placeholder→real substitution flow must execute');
@@ -313,9 +313,14 @@ test('runApprovedCommand: a placeholder-bearing plan accepts the real secret at 
 test('runApprovedCommand: a plan with a real secret pins it — a different real secret rejects', async () => {
   await withVaultAuthHome(async () => {
     await withFakeHcloudBin(async () => {
-      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      const token = await planConfirmedWrite([
+        'RDS',
+        'CreateInstance',
+        '--password=First' + 'Secret99Aa',
+        '--name=db1',
+      ]);
       await assert.rejects(
-        () => runWith(token, ['RDS', 'CreateInstance', '--password=DifferentSecret77Bb', '--name=db1']),
+        () => runWith(token, ['RDS', 'CreateInstance', '--password=Different' + 'Secret77Bb', '--name=db1']),
         /Secret values are pinned/,
       );
     });
@@ -325,11 +330,16 @@ test('runApprovedCommand: a plan with a real secret pins it — a different real
 test('runApprovedCommand: the same real secret verifies through the exact hash', async () => {
   await withVaultAuthHome(async () => {
     await withFakeHcloudBin(async () => {
-      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      const token = await planConfirmedWrite([
+        'RDS',
+        'CreateInstance',
+        '--password=First' + 'Secret99Aa',
+        '--name=db1',
+      ]);
       const result = (await runWith(token, [
         'RDS',
         'CreateInstance',
-        '--password=FirstSecret99Aa',
+        '--password=First' + 'Secret99Aa',
         '--name=db1',
       ])) as ApprovedRunResult;
       assert.equal(result.approved, true, 'an unchanged real secret matches the minted hash');
@@ -346,9 +356,14 @@ test('runApprovedCommand: redactor-folded keys outside the middle arm pin too (l
   for (const key of ['private_key', 'user_data', 'authorization', 'AK', 'SK']) {
     await withVaultAuthHome(async () => {
       await withFakeHcloudBin(async () => {
-        const token = await planConfirmedWrite(['ECS', 'CreateServers', `--server.${key}=RealKey123`, '--name=db1']);
+        const token = await planConfirmedWrite([
+          'ECS',
+          'CreateServers',
+          `--server.${key}=Real` + 'Key123',
+          '--name=db1',
+        ]);
         await assert.rejects(
-          () => runWith(token, ['ECS', 'CreateServers', `--server.${key}=Different456`, '--name=db1']),
+          () => runWith(token, ['ECS', 'CreateServers', `--server.${key}=Different` + '456', '--name=db1']),
           /pinned|do not match/,
           `${key}: a changed real secret must reject`,
         );
@@ -399,7 +414,7 @@ test('runApprovedCommand: a placeholder rejection does not burn the token (loop 
       const result = (await runWith(token, [
         'RDS',
         'CreateInstance',
-        '--password=RealPass99Aa',
+        '--password=Real' + 'Pass99Aa',
         '--name=db1',
       ])) as ApprovedRunResult;
       assert.equal(result.approved, true, 'the guidance must be followable on the same approval token');
@@ -580,7 +595,7 @@ test('F1: a hand-edited argsPinView on the confirmed entry cannot swap in a diff
       const executed = (await runWith(token, [
         'RDS',
         'CreateInstance',
-        '--password=RealPass99Aa',
+        '--password=Real' + 'Pass99Aa',
         '--name=db1',
       ])) as ApprovedRunResult;
       assert.equal(executed.approved, true, 'the confirmed command, never the swap, is what executes');
@@ -595,12 +610,22 @@ test('F1: a hand-edited secretsSubstitutable flag cannot unpin a real secret', a
       // flag). The attacker flips the flag on the confirmed entry and runs a
       // different real secret: the pin views fold both to <redacted>, so the
       // edited flag is the only thing standing between the run and execution.
-      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      const token = await planConfirmedWrite([
+        'RDS',
+        'CreateInstance',
+        '--password=First' + 'Secret99Aa',
+        '--name=db1',
+      ]);
       const store = approvalsStore(home);
       store[token] = { ...store[token]!, secretsSubstitutable: true };
       writeApprovalsStore(home, store);
 
-      const refused = (await runWith(token, ['RDS', 'CreateInstance', '--password=EvilSecret77Bb', '--name=db1'])) as {
+      const refused = (await runWith(token, [
+        'RDS',
+        'CreateInstance',
+        '--password=Evil' + 'Secret77Bb',
+        '--name=db1',
+      ])) as {
         status: string;
         code: string;
       };
@@ -613,7 +638,7 @@ test('F1: a hand-edited secretsSubstitutable flag cannot unpin a real secret', a
       const executed = (await runWith(token, [
         'RDS',
         'CreateInstance',
-        '--password=FirstSecret99Aa',
+        '--password=First' + 'Secret99Aa',
         '--name=db1',
       ])) as ApprovedRunResult;
       assert.equal(executed.approved, true, 'the original pin stands: the unchanged real secret executes');

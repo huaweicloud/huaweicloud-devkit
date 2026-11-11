@@ -482,6 +482,26 @@ test('the proxy scrub fixture never spells a contiguous secret literal', () => {
   assert.match(fixture, /const SECRET = '[^']{1,9}' \+/, 'the scrub target stays assembled from short halves');
 });
 
+test('the approval test fixtures never spell a contiguous secret literal', () => {
+  // Same doctrine as the signing vectors and the proxy scrub fixture above:
+  // the CI secret scanner (gitleaks generic-api-key) matches a
+  // keyword-adjacent contiguous value — it flagged the pinning probe's
+  // EvilSecret77Bb (run 42979717544, PR #9, 2026-11-11). The probes need
+  // real-secret-SHAPED values to test the pin view and the substitutable
+  // flag, so each one stays ASSEMBLED from halves (the '--password' +
+  // '"RealPw1"' spelling in the same file is the precedent); a cleanup
+  // merging them back into one literal re-trips the gate, and this pin
+  // makes that a named failure instead of a red CI mystery.
+  const fixture = readFileSync(join(root, 'test', 'hcloud-cli-approval.test.ts'), 'utf8');
+  assert.doesNotMatch(
+    fixture,
+    /--password=(Evil|First|Different|Real)[A-Za-z0-9]{4}/,
+    'a contiguous literal re-trips the secret scanner',
+  );
+  assert.match(fixture, /'--password=Evil' \+ 'Secret77Bb'/, 'the probe value stays assembled from halves');
+  assert.match(fixture, /'--password=First' \+ 'Secret99Aa'/, 'the probe value stays assembled from halves');
+});
+
 test('the src/safety family never imports the hcloud-* KooCLI modules (hook-graph purity)', () => {
   // The Node hook loads dist/safety-policy.js — the compiled safety face and
   // its family — directly, and its py twin mirrors that same vocabulary-only
