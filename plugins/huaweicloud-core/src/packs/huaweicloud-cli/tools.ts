@@ -11,7 +11,12 @@ import {
 import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud, type ProbeHcloudOptions } from '../../hcloud-probe.ts';
 import { redactSecrets } from '../../safety-policy.ts';
 import { asText } from '../../lib/as-text.ts';
-import { consumeApprovalToken, hashArgs, inspectApprovalToken } from '../../lib/approval-tokens.ts';
+import {
+  consumeApprovalToken,
+  hashArgs,
+  inspectApprovalToken,
+  verifyConfirmationGrant,
+} from '../../lib/approval-tokens.ts';
 import { booleanArg, numericArg, stringArrayArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
@@ -246,6 +251,22 @@ async function runApprovedCommand(args: ToolArgs = {}) {
     );
   }
 
+  // The strict plan is pure, so it is computed before the token is consumed:
+  // the confirmation gate below reads it, and the result still embeds it.
+  const strictPlan = planHcloudCommand(effectiveArgs, { allowWrites: false, mintApprovalToken: false });
+  // Terminal-confirmation gate: a non-read command executes only against a
+  // grant the user's own terminal confirm recorded on the token's entry. The
+  // refusal sits before consumeApprovalToken so it never burns the token —
+  // its guidance stays followable on the same approval.
+  if (strictPlan.userConfirmation.needed && !verifyConfirmationGrant(inspection.entry!, token).ok) {
+    return {
+      status: 'rejected',
+      code: 'USER_CONFIRMATION_REQUIRED',
+      nextStep:
+        'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.',
+    };
+  }
+
   const stored = consumeApprovalToken(token);
   if (!stored) {
     // Defensive: inspectApprovalToken said 'valid' but consume returned null.
@@ -285,7 +306,6 @@ async function runApprovedCommand(args: ToolArgs = {}) {
       );
     }
   }
-  const strictPlan = planHcloudCommand(effectiveArgs, { allowWrites: false });
   const result = await runHcloud(effectiveArgs, {
     allowWrites: true,
     timeoutMs: args.timeoutMs,
@@ -422,7 +442,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_plan_cli_command',
     description:
-      'Classify and plan a Huawei Cloud hcloud command without executing it. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      "Classify and plan a Huawei Cloud hcloud command without executing it. When the result's userConfirmation.needed is true, the USER must confirm in their own terminal by running the userConfirmation.command line (npx huaweicloud-devkit approve <approvalToken>) before huaweicloud_run_approved_command will accept the command. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
     schema: planCliCommandSchema,
     handler: handlePlanCliCommand,
   },
@@ -443,7 +463,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_run_approved_command',
     description:
-      'Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user, and after the user confirmed the plan token in their own terminal (npx huaweicloud-devkit approve <token>). A non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: runApprovedCommandSchema,
     handler: handleRunApprovedCommand,
   },

@@ -8,8 +8,12 @@ import {
   createApprovalToken,
   hashArgs,
   inspectApprovalToken,
+  runHcloud,
   type HcloudPlan,
+  type HcloudRunResult,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
+import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
+import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
 import { callTool, type ToolArgs } from '../plugins/huaweicloud-core/src/tools.ts';
 
@@ -104,6 +108,25 @@ async function withFakeHcloudBin<T>(fn: () => Promise<T>): Promise<T> {
   } finally {
     if (prevBin === undefined) delete process.env.HCLOUD_BIN;
     else process.env.HCLOUD_BIN = prevBin;
+  }
+}
+
+// The confirmation battery needs a deterministic custody tier: the fixed env
+// master key the sibling approval tests use, layered over the fresh per-test
+// home. The custody cache is cleared on both ends so a key swap inside one
+// test can never observe a stale tier.
+const TEST_MASTER_KEY = Buffer.alloc(32, 0x33).toString('base64');
+
+async function withVaultAuthHome(fn: (home: string) => Promise<void> | void): Promise<void> {
+  const previousKey = process.env.HW_VAULT_MASTER_KEY;
+  process.env.HW_VAULT_MASTER_KEY = TEST_MASTER_KEY;
+  clearCustodyCache();
+  try {
+    await withTempAuthHome(fn);
+  } finally {
+    clearCustodyCache();
+    if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
+    else process.env.HW_VAULT_MASTER_KEY = previousKey;
   }
 }
 
@@ -252,6 +275,17 @@ async function planWrite(args: string[]): Promise<HcloudPlan> {
   })) as HcloudPlan;
 }
 
+// The user's terminal confirm, driven programmatically: plan a write, then
+// record the confirmation the run gate requires. Write tests read as
+// plan → confirm → run through this one seam.
+async function planConfirmedWrite(args: string[]): Promise<string> {
+  const plan = await planWrite(args);
+  const token = plan.approvalToken;
+  assert.ok(token);
+  assert.equal(confirmApprovalToken(token).status, 'confirmed');
+  return token;
+}
+
 function runWith(token: string, args: string[]): Promise<unknown> {
   return callTool('huaweicloud_run_approved_command', {
     args,
@@ -263,10 +297,10 @@ function runWith(token: string, args: string[]): Promise<unknown> {
 }
 
 test('runApprovedCommand: a placeholder-bearing plan accepts the real secret at run time', async () => {
-  await withTempAuthHome(async () => {
+  await withVaultAuthHome(async () => {
     await withFakeHcloudBin(async () => {
-      const plan = await planWrite(['RDS', 'CreateInstance', '--password=<password>', '--name=db1']);
-      const result = (await runWith(plan.approvalToken, [
+      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=<password>', '--name=db1']);
+      const result = (await runWith(token, [
         'RDS',
         'CreateInstance',
         '--password=RealPass99Aa',
@@ -278,11 +312,11 @@ test('runApprovedCommand: a placeholder-bearing plan accepts the real secret at 
 });
 
 test('runApprovedCommand: a plan with a real secret pins it — a different real secret rejects', async () => {
-  await withTempAuthHome(async () => {
+  await withVaultAuthHome(async () => {
     await withFakeHcloudBin(async () => {
-      const plan = await planWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
       await assert.rejects(
-        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password=DifferentSecret77Bb', '--name=db1']),
+        () => runWith(token, ['RDS', 'CreateInstance', '--password=DifferentSecret77Bb', '--name=db1']),
         /Secret values are pinned/,
       );
     });
@@ -290,10 +324,10 @@ test('runApprovedCommand: a plan with a real secret pins it — a different real
 });
 
 test('runApprovedCommand: the same real secret verifies through the exact hash', async () => {
-  await withTempAuthHome(async () => {
+  await withVaultAuthHome(async () => {
     await withFakeHcloudBin(async () => {
-      const plan = await planWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
-      const result = (await runWith(plan.approvalToken, [
+      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      const result = (await runWith(token, [
         'RDS',
         'CreateInstance',
         '--password=FirstSecret99Aa',
@@ -311,11 +345,11 @@ test('runApprovedCommand: redactor-folded keys outside the middle arm pin too (l
   // only the middle arm was mirrored in round 2, so real secrets under these
   // keys stayed substitutable.
   for (const key of ['private_key', 'user_data', 'authorization', 'AK', 'SK']) {
-    await withTempAuthHome(async () => {
+    await withVaultAuthHome(async () => {
       await withFakeHcloudBin(async () => {
-        const plan = await planWrite(['ECS', 'CreateServers', `--server.${key}=RealKey123`, '--name=db1']);
+        const token = await planConfirmedWrite(['ECS', 'CreateServers', `--server.${key}=RealKey123`, '--name=db1']);
         await assert.rejects(
-          () => runWith(plan.approvalToken, ['ECS', 'CreateServers', `--server.${key}=Different456`, '--name=db1']),
+          () => runWith(token, ['ECS', 'CreateServers', `--server.${key}=Different456`, '--name=db1']),
           /pinned|do not match/,
           `${key}: a changed real secret must reject`,
         );
@@ -328,14 +362,18 @@ test('runApprovedCommand: two-token and glued placeholder forms reject instead o
   await withTempAuthHome(async () => {
     await withFakeHcloudBin(async () => {
       const plan = await planWrite(['RDS', 'CreateInstance', '--password', '<password>', '--name=db1']);
+      const token = plan.approvalToken;
+      assert.ok(token);
       await assert.rejects(
-        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password', '<redacted>', '--name=db1']),
+        () => runWith(token, ['RDS', 'CreateInstance', '--password', '<redacted>', '--name=db1']),
         /placeholder secret value/,
         'the two-token placeholder form must reject',
       );
       const glued = await planWrite(['RDS', 'CreateInstance', '--password <password>', '--name=db1']);
+      const gluedToken = glued.approvalToken;
+      assert.ok(gluedToken);
       await assert.rejects(
-        () => runWith(glued.approvalToken, ['RDS', 'CreateInstance', '--password <redacted>', '--name=db1']),
+        () => runWith(gluedToken, ['RDS', 'CreateInstance', '--password <redacted>', '--name=db1']),
         /placeholder secret value/,
         'the glued single-token placeholder form must reject',
       );
@@ -344,18 +382,22 @@ test('runApprovedCommand: two-token and glued placeholder forms reject instead o
 });
 
 test('runApprovedCommand: a placeholder rejection does not burn the token (loop round 3 S1-B3)', async () => {
-  await withTempAuthHome(async () => {
+  await withVaultAuthHome(async () => {
     await withFakeHcloudBin(async () => {
       const plan = await planWrite(['RDS', 'CreateInstance', '--password=<password>', '--name=db1']);
+      const token = plan.approvalToken;
+      assert.ok(token);
       // First run still carries the placeholder → reject with guidance,
       // WITHOUT consuming the token (the two-token form is covered by the
       // dedicated placeholder-forms test above).
       await assert.rejects(
-        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password=<redacted>', '--name=db1']),
+        () => runWith(token, ['RDS', 'CreateInstance', '--password=<redacted>', '--name=db1']),
         /replace <redacted> with the actual value the user approved, then re-run with the same approval token/,
       );
-      // Following the guidance on the SAME token must now execute.
-      const result = (await runWith(plan.approvalToken, [
+      // The still-live token accepts the user's terminal confirmation, and
+      // following the guidance on the SAME token must now execute.
+      assert.equal(confirmApprovalToken(token).status, 'confirmed');
+      const result = (await runWith(token, [
         'RDS',
         'CreateInstance',
         '--password=RealPass99Aa',
@@ -369,11 +411,11 @@ test('runApprovedCommand: a placeholder rejection does not burn the token (loop 
 // ── Loop round 8-9: quote-adjacent and segment-model edges ──────────────────
 
 test('runApprovedCommand: a quote-glued real secret pins (loop round 8 S1-B3)', async () => {
-  await withTempAuthHome(async () => {
+  await withVaultAuthHome(async () => {
     await withFakeHcloudBin(async () => {
-      const plan = await planWrite(['RDS', 'CreateInstance', '--password' + '"RealPw1"', '--name=db1']);
+      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password' + '"RealPw1"', '--name=db1']);
       await assert.rejects(
-        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password' + '"EVILPw99"', '--name=db1']),
+        () => runWith(token, ['RDS', 'CreateInstance', '--password' + '"EVILPw99"', '--name=db1']),
         /pinned/,
         'the quote-glued form must be visible to the pinning detector',
       );
@@ -385,11 +427,111 @@ test('runApprovedCommand: a quote-glued placeholder at run time rejects (loop ro
   await withTempAuthHome(async () => {
     await withFakeHcloudBin(async () => {
       const plan = await planWrite(['RDS', 'CreateInstance', '--password <password>', '--name=db1']);
+      const token = plan.approvalToken;
+      assert.ok(token);
       await assert.rejects(
-        () => runWith(plan.approvalToken, ['RDS', 'CreateInstance', '--password' + '"<redacted>"', '--name=db1']),
+        () => runWith(token, ['RDS', 'CreateInstance', '--password' + '"<redacted>"', '--name=db1']),
         /placeholder secret value/,
         'the quote-glued placeholder form must not reach the child',
       );
+    });
+  });
+});
+
+// ── Terminal confirmation gate: the run-side check (Unit BC) ───────────────
+// The user authorizes a pending approval in their own terminal; the run tool
+// verifies that grant server-side before consuming the token.
+
+test('plan: userConfirmation names the approve line for writes, stays quiet for reads', async () => {
+  await withVaultAuthHome(async () => {
+    // Planned with the agent-supplied allowWrites attestation: the verdict
+    // must come from the strict view, not weaken with the option.
+    const writePlan = await planWrite(['ECS', 'DeleteServer', '--server_id=i-123']);
+    assert.ok(writePlan.approvalToken, 'the approve line names a token the plan minted');
+    assert.equal(writePlan.userConfirmation.needed, true, 'a write waits on the terminal confirmation');
+    assert.equal(
+      writePlan.userConfirmation.command,
+      `npx huaweicloud-devkit approve ${writePlan.approvalToken}`,
+      'command is the exact line the user runs in their own terminal',
+    );
+
+    const readPlan = (await callTool('huaweicloud_plan_cli_command', {
+      args: ['ECS', 'ListServersDetails'],
+      vendorConfirmed: 'test: vendor established by the harness',
+    })) as HcloudPlan;
+    assert.equal(readPlan.userConfirmation.needed, false, 'a read never waits on a confirmation');
+    assert.equal(readPlan.userConfirmation.command, undefined);
+  });
+});
+
+test('runApprovedCommand: an unconfirmed write rejects USER_CONFIRMATION_REQUIRED without burning the token', async () => {
+  await withVaultAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const plan = await planWrite(['ECS', 'DeleteServer', '--server_id=i-123']);
+      const token = plan.approvalToken;
+      assert.ok(token);
+      assert.equal(inspectApprovalToken(token).entry?.state, 'awaiting_user', 'the plan mints unconfirmed');
+
+      const refused = (await runWith(token, ['ECS', 'DeleteServer', '--server_id=i-123'])) as {
+        status: string;
+        code: string;
+        nextStep?: string;
+      };
+      assert.equal(refused.status, 'rejected');
+      assert.equal(refused.code, 'USER_CONFIRMATION_REQUIRED');
+      assert.match(refused.nextStep ?? '', /npx huaweicloud-devkit approve/, 'the rejection teaches the terminal step');
+
+      // The refusal must not burn the token: the same token still accepts
+      // the user's confirmation and executes afterwards.
+      assert.equal(confirmApprovalToken(token).status, 'confirmed', 'the refusal left the token confirmable');
+      const executed = (await runWith(token, ['ECS', 'DeleteServer', '--server_id=i-123'])) as ApprovedRunResult;
+      assert.equal(executed.approved, true, 'the same token executes after the user confirms');
+    });
+  });
+});
+
+test('runApprovedCommand: a confirmed write executes and its result plan mints no fresh token', async () => {
+  await withVaultAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const token = await planConfirmedWrite(['ECS', 'DeleteServer', '--server_id=i-123']);
+
+      const result = (await runWith(token, ['ECS', 'DeleteServer', '--server_id=i-123'])) as ApprovedRunResult;
+      assert.equal(result.approved, true);
+      assert.ok(result.plan, 'the approved result embeds the strict plan');
+      assert.equal('approvalToken' in result.plan, false, 'the embedded plan carries no fresh approvalToken');
+      assert.equal(result.plan.userConfirmation.command, undefined, 'a run-path plan names no approve line');
+    });
+  });
+});
+
+test('runApprovedCommand: a read-classified command executes on an unconfirmed token', async () => {
+  await withVaultAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const token = await planApproval();
+      assert.equal(inspectApprovalToken(token).entry?.state, 'awaiting_user', 'the read runs without any confirmation');
+      const result = (await runApproved(token)) as ApprovedRunResult;
+      assert.equal(result.approved, true, 'the gate scopes to non-read commands only');
+    });
+  });
+});
+
+test('run paths never mint: engine results and the readonly tool carry no approvalToken', async () => {
+  await withVaultAuthHome(async () => {
+    await withFakeHcloudBin(async () => {
+      const engine = await runHcloud(['ECS', 'DeleteServer', '--server_id=i-123'], {
+        allowWrites: true,
+        maxRetries: 0,
+      });
+      assert.ok(engine.plan, 'the engine result embeds its live plan');
+      assert.equal('approvalToken' in engine.plan, false, 'the write engine path mints nothing');
+
+      const readonly = (await callTool('huaweicloud_run_readonly_command', {
+        args: ['ECS', 'ListServersDetails'],
+        maxRetries: 0,
+        vendorConfirmed: 'test: vendor established by the harness',
+      })) as HcloudRunResult;
+      assert.ok(readonly.plan, 'the readonly tool embeds its live plan');
+      assert.equal('approvalToken' in readonly.plan, false, 'the readonly path mints nothing');
     });
   });
 });
