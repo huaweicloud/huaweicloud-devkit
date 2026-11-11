@@ -526,3 +526,85 @@ test('web/static-site deployment intent offers target options with sandbox first
   assert.match(discovery, /Deployment Target Options \(MANDATORY — use the `question` tool\)/);
   assert.match(discovery, /NEVER infer or default the target/);
 });
+
+test('the safety skill teaches the plan, terminal confirm, run contract', () => {
+  // A non-read command executes only against a grant the USER records in
+  // their own terminal (npx huaweicloud-devkit approve <token>, TTY- and
+  // PIN-checked). The teaching layer is the agent's only map of that gate:
+  // a stale sentence that treats the run tool's flag as sufficient consent
+  // sends the agent to skip the human step the run tool enforces.
+  const surfaces = [
+    ['source', readSource(join('src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'SKILL.md'))],
+    ['generated', readFileSync(join(pluginRoot, 'skills', 'huaweicloud-safety', 'SKILL.md'), 'utf8')],
+  ] as const;
+  for (const [label, text] of surfaces) {
+    assert.match(text, /userConfirmation/, `${label}: the plan's confirmation block is named`);
+    assert.match(text, /npx huaweicloud-devkit approve/, `${label}: the user's terminal confirm line is taught`);
+    assert.match(text, /USER_CONFIRMATION_REQUIRED/, `${label}: the run-side refusal code is taught`);
+    assert.match(text, /references\/approvals\.md/, `${label}: the skill routes to the approvals reference`);
+    // The corrective sentence itself, not just the field name: the argument
+    // is the agent's statement, never the user's terminal confirmation.
+    assert.match(
+      text,
+      /approvedByUser[^.\n]*is not the terminal confirmation/,
+      `${label}: approvedByUser is taught as insufficient consent`,
+    );
+    // Anti-teaching (the retired-field assertion pattern): a sentence that
+    // teaches the flag as authorizing the write must fail here.
+    assert.doesNotMatch(
+      text,
+      /approvedByUser[^.\n]*(?<!not )\bauthoriz(?:e|es)\b/i,
+      `${label}: approvedByUser must never be taught as write authorization`,
+    );
+  }
+});
+
+test('the safety approvals reference exists and states its honest boundaries', () => {
+  // Cross-skill references must not dead-end: the routing line in SKILL.md
+  // names the full contract, so this reference must actually carry it. The
+  // honest-boundaries marker mirrors the secrets.md pin: residuals are
+  // teaching content, not an optional disclaimer.
+  const surfaces = [
+    ['source', join('src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'references', 'approvals.md')],
+    ['generated', join('skills', 'huaweicloud-safety', 'references', 'approvals.md')],
+  ] as const;
+  for (const [label, relativePath] of surfaces) {
+    const path = join(pluginRoot, relativePath);
+    assert.ok(existsSync(path), `${label}: the approvals reference must exist`);
+    const text = readFileSync(path, 'utf8');
+    assert.match(text, /npx huaweicloud-devkit approve/, `${label}: the terminal confirm line is taught`);
+    assert.match(text, /USER_CONFIRMATION_REQUIRED/, `${label}: the rejection code is taught`);
+    assert.match(text, /one execution of one command/, `${label}: single-use authorization is taught`);
+    assert.match(text, /first confirmation enrolls an approvals PIN/, `${label}: first-use PIN enrollment is taught`);
+    assert.match(text, /TTY/, `${label}: the terminal check is taught`);
+    assert.match(text, /fresh terminal confirmation/, `${label}: re-running needs a fresh confirm`);
+    assert.match(
+      text,
+      /does NOT defend against: a socially engineered user who approves a command they did not read/,
+      `${label}: the honest assistant boundary is stated`,
+    );
+    assert.match(
+      text,
+      /holds BOTH the custody master key and write access to `~\/\.config\/huaweicloud\/`/,
+      `${label}: the forged-grant residual is stated`,
+    );
+    assert.match(
+      text,
+      /an agent driving a pseudo-terminal looks like a terminal/,
+      `${label}: the PTY-driving residual is stated`,
+    );
+  }
+});
+
+test('the cli-and-auth skill names the terminal confirm step in the approval chain', () => {
+  const surfaces = [
+    ['source', readSource(join('src', 'packs', 'core', 'skills', 'huaweicloud-cli-and-auth', 'SKILL.md'))],
+    ['generated', readFileSync(join(pluginRoot, 'skills', 'huaweicloud-cli-and-auth', 'SKILL.md'), 'utf8')],
+  ] as const;
+  for (const [label, text] of surfaces) {
+    assert.match(text, /terminal confirmation contract/, `${label}: the contract is named in the safe flow`);
+    assert.match(text, /userConfirmation/, `${label}: the plan result field is named`);
+    assert.match(text, /npx huaweicloud-devkit approve/, `${label}: the user's terminal confirm line is taught`);
+    assert.match(text, /USER_CONFIRMATION_REQUIRED/, `${label}: the run-side refusal code is taught`);
+  }
+});
