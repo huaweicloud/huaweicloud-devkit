@@ -463,17 +463,16 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (bare?.rank === 2 && /^(?:Terminated|Killed)\b/i.test(bare.line) && hasFailingPair) {
     bare = { line: failingEcho!.line, rank: 3, index: failingEcho!.index };
   }
-  // At the default loglevel npm hides the echo and prints no error block, so no
-  // bare line can be attributed to the failing script: the exit floor wins.
-  if (
-    !block &&
-    !codeLine &&
-    !hasFailingPair &&
-    bare &&
-    !/^(?:Terminated|Killed)\b/i.test(bare.line) &&
-    typeof execResult.status === 'number' &&
-    execResult.status !== 0
-  ) {
+  // One non-empty line has no ambiguity to resolve: it is the child's dying
+  // words, so it survives the floor regardless of rank.
+  if (lines.length === 1) return lines[0]!;
+  // A spawn kill (timeout, buffer ceiling) or a plain nonzero status with no
+  // failing pair and no error block leaves no line attributable to the failing
+  // script: the spawn artifact or the exit status is the honest reason.
+  const killed =
+    (typeof execResult.status === 'number' && execResult.status !== 0) ||
+    (execResult.status === null && Boolean(execResult.signal || execResult.error));
+  if (!block && !codeLine && !hasFailingPair && bare && !/^(?:Terminated|Killed)\b/i.test(bare.line) && killed) {
     bare = undefined;
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and

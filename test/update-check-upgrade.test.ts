@@ -1290,9 +1290,9 @@ test('upgradePackage 失败原因: 已恢复的 gyp 错误不顶替失败 postin
   assert.doesNotMatch(reason, /gyp ERR|EACCES/);
 });
 
-test('upgradePackage 失败原因: 默认 loglevel 的成功脚本噪声退到退出码', async () => {
+test('upgradePackage 失败原因: 单行捕获是该行本身，不再走地板', async () => {
   const reason = await reasonFor(failureStderr('nc-silent-preinstall.err'));
-  assert.equal(reason, 'exit 1');
+  assert.match(reason, /preinstall: preparing workspace/);
 });
 
 test('upgradePackage 失败原因: 斜杠与短横的 ASCII spinner 帧也被剥掉', async () => {
@@ -1315,9 +1315,9 @@ test('upgradePackage 失败原因: npm 9 的 sill 频道行不冒充原因', asy
   assert.doesNotMatch(reason, /npm sill|<html>|audit bulk/);
 });
 
-test('upgradePackage 失败原因: 默认 loglevel 的聊天成功脚本退到退出码', async () => {
+test('upgradePackage 失败原因: 单行聊天捕获也保留唯一一行', async () => {
   const reason = await reasonFor(failureStderr('default-chatty-preinstall.err'), 7);
-  assert.equal(reason, 'exit 7');
+  assert.match(reason, /preinstall stage completed/);
 });
 
 test('upgradePackage 失败原因: pty 字形粘连的子进程行被剥帧', async () => {
@@ -1389,6 +1389,46 @@ test('upgradePackage 失败原因: ASCII 帧加转义后的子进程行被剥帧
 test('upgradePackage 失败原因: 单个前导短横的合法诊断行保留首字符', async () => {
   const reason = await reasonFor(['npm error code 7', '- build failed: missing libfoo'].join('\n'));
   assert.match(reason, /- build failed: missing libfoo/);
+});
+
+test('upgradePackage 失败原因: 超时 kill 报 spawn 工件而不是中途进度', async () => {
+  const r = await upgradePackage(
+    { target: 'opencode' },
+    {
+      doQuery: stubQuery,
+      spawnFn: () => ({
+        status: null,
+        signal: 'SIGTERM',
+        stdout: '',
+        stderr: ['reify: copying payload files', 'reify: copying payload files', 'progress 2/10'].join('\n'),
+        error: new Error('spawnSync /bin/sh ETIMEDOUT'),
+      }),
+    },
+  );
+  assert.equal(r.error, 'spawnSync /bin/sh ETIMEDOUT');
+});
+
+test('upgradePackage 失败原因: 超限 kill 报 ENOBUFS 工件而不是填充文本', async () => {
+  const filler = Array.from({ length: 40 }, () => 'truncated filler line from a talkative child').join('\n');
+  const r = await upgradePackage(
+    { target: 'opencode' },
+    {
+      doQuery: stubQuery,
+      spawnFn: () => ({
+        status: null,
+        signal: null,
+        stdout: '',
+        stderr: filler,
+        error: new Error('spawnSync /bin/sh ENOBUFS'),
+      }),
+    },
+  );
+  assert.equal(r.error, 'spawnSync /bin/sh ENOBUFS');
+});
+
+test('upgradePackage 失败原因: 只有一行真实原因时保留它', async () => {
+  const reason = await reasonFor('native build failed: missing libfoo. rebuild aborted.', 7);
+  assert.match(reason, /native build failed: missing libfoo/);
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
