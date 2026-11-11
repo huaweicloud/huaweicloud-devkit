@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
+import { fixtureDir } from './fixture-dir.ts';
+
 import {
   _setOneShotForTests,
   gateExposeAuth,
@@ -411,4 +414,55 @@ test('exposeTunnel short-circuits on the structured quota failure — the expose
       assert.equal(exposeRan, false, 'a failed auth gate must never start a host');
     },
   );
+});
+
+// ── 真实 relay 链路（round 8）：请求层码清洗直达 relay 折叠 ──
+// 驱动真实 devbridge-key + 真实 hdkitRequest（fetch 打桩）——DI 空白码与
+// 星面区垫码在请求层清洗后，relay 折叠为门禁而非凭证误诊。
+
+test('the real relay path under a VS17-only or astral-padded gate code folds as the gate', async () => {
+  const tmpHome = fixtureDir('relay-astral-home-');
+  const realHome = process.env.HOME;
+  process.env.HOME = tmpHome;
+  process.env.HW_ACCESS_KEY = 'TESTAK';
+  process.env.HW_SECRET_KEY = 'TESTSK';
+  process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
+  const restoreEnv = isolateDirectFetchEnv();
+  const keyMod = await import('../plugins/huaweicloud-core/src/sandbox/devbridge-key.ts');
+  const originalFetch = global.fetch;
+  try {
+    for (const code of ['HDKIT_VERSION_TOO_OLD󠄀', '󠄀'] as const) {
+      global.fetch = async () =>
+        new Response(JSON.stringify({ code, message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      await withSeam(
+        async () => ({ stdout: NO_KEY, exitCode: 0 }),
+        async () => {
+          const gate = await gateExposeAuth('ws-1', 'root', 8080, {
+            poolType: 'ephemeral',
+            keyUpgrade: {
+              ensureDevbridgeKey: keyMod.ensureDevbridgeKey,
+              recreateDevbridgeKey: keyMod.recreateDevbridgeKey,
+              buildKeyringInjectScript: keyMod.buildKeyringInjectScript,
+              listKeysForQuotaHint: keyMod.listKeysForQuotaHint,
+            },
+          });
+          assert.equal(gate.ok, false);
+          if (gate.ok) return;
+          const f = gate.failure;
+          assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+          assert.match(f.error ?? '', /插件版本过旧/, 'the server copy surfaces through the real chain');
+          assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the gate remediation mints');
+          assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
+        },
+      );
+    }
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv();
+    if (realHome === undefined) delete process.env.HOME;
+    else process.env.HOME = realHome;
+  }
 });

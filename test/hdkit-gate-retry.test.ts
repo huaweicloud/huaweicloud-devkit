@@ -31,7 +31,7 @@ after(() => {
 });
 
 const { hdkitConnectWithRetry } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts');
-const { connectRetryDelaysMs, rendersBlank, cleanMessage } =
+const { connectRetryDelaysMs, decorateExhaustedConnect, rendersBlank, cleanMessage } =
   await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
 const { callTool } = await import('../plugins/huaweicloud-core/src/tools.ts');
 
@@ -143,6 +143,21 @@ async function voucherStatusUnder(respond: () => Response): Promise<GateResult &
   }
 }
 
+// connect 出口调用共用（round 8 去重）：重试表针脚 + 桩 + 调用 + 还原
+async function connectUnder(respond: () => Response, seam: string): Promise<ExhaustedResult> {
+  const restoreSeam = withRetrySeam(seam);
+  const stub = stubConnectSequence([respond]);
+  try {
+    return (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ExhaustedResult;
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+}
+
 interface GateResult {
   ok?: boolean;
   code?: string;
@@ -155,6 +170,7 @@ interface GateResult {
 interface ExhaustedResult extends GateResult {
   connectRetries?: number;
   status?: number;
+  retryAfter?: string;
 }
 
 function assertGatePayload(result: GateResult): void {
@@ -380,24 +396,13 @@ test('callTool voucher_status: 409 version gate passes clientVersion/minVersion 
 // ── callTool 层：瞬时耗尽的结构化折叠（v2 扩展；dev 在此路径裸抛）──
 
 test('callTool connect: gateway 502 exhaustion returns ok:false with the attempt count and transient remediation', async () => {
-  const restoreSeam = withRetrySeam('5');
-  const stub = stubConnectSequence([() => htmlPage(502, '<html>502 Bad Gateway</html>')]);
-  try {
-    const result = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as ExhaustedResult;
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'HDKIT_GATEWAY_TIMEOUT');
-    assert.equal(result.connectRetries, 1);
-    assert.ok(result.remediation);
-    assert.match(result.remediation!.hint, /网关/);
-    assert.match(result.remediation!.hint, /重试 1 次/);
-    assert.equal(stub.calls(), 2);
-  } finally {
-    stub.restore();
-    restoreSeam();
-  }
+  const result = await connectUnder(() => htmlPage(502, '<html>502 Bad Gateway</html>'), '5');
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.equal(result.connectRetries, 1);
+  assert.ok(result.remediation);
+  assert.match(result.remediation!.hint, /网关/);
+  assert.match(result.remediation!.hint, /重试 1 次/);
 });
 
 // ── 非 JSON 路径与状态改写网关（round 3）──
@@ -623,25 +628,18 @@ test('gate exit: a whitespace-only 409 message renders the designed fallback, ne
 });
 
 test('capacity exit: a whitespace-only 429 message keeps the code-prefixed fallback, never blank', async () => {
-  const stub = stubConnectSequence([
+  const result = await connectUnder(
     () =>
       jsonEnvelope(
         { code: 'HDKIT_CAPACITY_INSUFFICIENT', message: '   ' },
         { status: 429, headers: { 'Retry-After': '60' } },
       ),
-  ]);
-  try {
-    const result = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as ExhaustedResult;
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'HDKIT_CAPACITY_INSUFFICIENT');
-    assert.match(result.message ?? '', /HDKIT_CAPACITY_INSUFFICIENT/, 'the code-prefixed build must survive');
-    assert.doesNotMatch(result.message ?? '', /^\s+|\s+$/, 'no pure-blank message field');
-  } finally {
-    stub.restore();
-  }
+    '5,5',
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HDKIT_CAPACITY_INSUFFICIENT');
+  assert.match(result.message ?? '', /HDKIT_CAPACITY_INSUFFICIENT/, 'the code-prefixed build must survive');
+  assert.doesNotMatch(result.message ?? '', /^\s+|\s+$/, 'no pure-blank message field');
 });
 
 test('voucher exit: a whitespace-only gate message never renders blank', async () => {
@@ -940,7 +938,7 @@ test('rendersBlank matches the Cf class: every declared and newly-covered codepo
 });
 
 test('Cf-class gate messages render the designed copy, never an invisible payload', async () => {
-  for (const ch of ['\u200c', '\u200d', '\u200e', '\u200f', '\u00ad', '\u061c', '\u180e', '\u202e']) {
+  for (const ch of ['\u200c', '\u200d', '\u200e', '\u200f', '\u00ad', '\u061c', '\u180e', '\u202e', '󠄀', '᠋', '឴']) {
     const stub = stubConnectSequence([() => gateJson({ message: ch })]);
     try {
       const result = (await callTool('huaweicloud_sandbox_sign_agreement', {})) as GateResult;
@@ -1090,7 +1088,7 @@ test('an aborted codeless 409 on a voucher exit folds as the gate envelope, neve
 // 边缘空白/不可见字符存活到 MCP 边界。
 
 test('a blank or pure-invisible code field is absent: the codeless 409 fold fires on every exit', async () => {
-  for (const blankCode of ['   ', '​'] as const) {
+  for (const blankCode of ['   ', '​', '󠄀'] as const) {
     const stub = stubConnectSequence([
       () => jsonEnvelope({ code: blankCode, message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' }, { status: 409 }),
     ]);
@@ -1182,4 +1180,150 @@ test('a code-bearing abort reason on a 502 exhaustion surfaces the designed gate
     fetch.restore();
     restoreSeam();
   }
+});
+
+// ── Default_Ignorable 权威 + 码点级边缘剥离 + fetch 层中断（round 8）──
+// 权威换成 Unicode 属性类本身（\p{Default_Ignorable_Code_Point}）：同一
+// "下一个 Unicode 边界"缺陷类连续复发七轮后，枚举收口为属性类。边缘剥离
+// 按码点迭代（UTF-16 单元会漏掉星面区 Cf）。fetch 自身的拒绝（30s 定时器的
+// AbortError 携 code 20）在 fetch 同缝守卫，不透传原对象。
+
+test('rendersBlank follows the Default_Ignorable authority: every DI code point classifies blank', () => {
+  const DI = /\p{Default_Ignorable_Code_Point}/u;
+  let diCount = 0;
+  for (let cp = 0; cp <= 0x10ffff; cp++) {
+    if (cp >= 0xd800 && cp <= 0xdfff) continue;
+    const ch = String.fromCodePoint(cp);
+    if (DI.test(ch)) {
+      diCount += 1;
+      assert.equal(rendersBlank(ch), true, `U+${cp.toString(16).toUpperCase()} is DI and must render blank`);
+    }
+  }
+  assert.ok(diCount >= 1000, `the authority is the property class, not an enumeration (matched ${diCount})`);
+  assert.equal(rendersBlank('插件'), false, 'real text stays visible');
+});
+
+test('cleanMessage strips astral blank edges by code point, not UTF-16 units', () => {
+  assert.equal(cleanMessage('󠄀插件版本'), '插件版本', 'a leading astral DI char is an edge');
+  assert.equal(cleanMessage('插件版本󠄀'), '插件版本', 'a trailing astral DI char is an edge');
+  assert.equal(cleanMessage('󠄀插件󠄀版本󠄀'), '插件󠄀版本', 'interior astral DI chars are real text');
+});
+
+test('an astral-padded gate code folds as the coded gate on every exit', async () => {
+  const stub = stubConnectSequence([
+    () =>
+      jsonEnvelope(
+        {
+          code: 'HDKIT_VERSION_TOO_OLD󠄀',
+          message: '插件版本过旧。',
+          clientVersion: '2.0.0-next.0',
+          minVersion: '2.0.0',
+        },
+        { status: 409 },
+      ),
+  ]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD', 'the astral-padded code cleans to the gate code');
+    assert.equal(result.clientVersion, '2.0.0-next.0', 'the coded-gate payload rides the fold');
+    assert.equal(result.minVersion, '2.0.0');
+    assert.match(result.remediation!.hint, /当前 2\.0\.0-next.0/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('an astral-padded quota code reaches the quota envelope', async () => {
+  const result = await connectUnder(
+    () =>
+      jsonEnvelope(
+        { code: 'HDKIT_QUOTA_EXCEEDED󠄀', message: '沙箱并发配额已满（每账号最多 5 台实例）' },
+        { status: 429, headers: { 'Retry-After': '60' } },
+      ),
+    '5,5',
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HDKIT_QUOTA_EXCEEDED', 'the astral-padded code cleans to the quota code');
+  assert.equal(result.retryAfter, '60');
+  assert.match(result.remediation?.hint ?? '', /配额已满/);
+});
+
+test('a fetch-level abort surfaces the designed copy, never the transport numeric code', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = async () => {
+      throw new DOMException('This operation was aborted', 'AbortError');
+    };
+    await assert.rejects(callTool('huaweicloud_sandbox_check_user', {}), (error: ExhaustedResult & Error) => {
+      assert.match(error.message, /aborted/i, 'the real abort reason surfaces as real text');
+      assert.notEqual((error as { code?: unknown }).code, 20, 'the transport numeric code never reaches the boundary');
+      assert.equal((error as { code?: unknown }).code, undefined, 'the wrap carries no code property at all');
+      assert.equal(error.status, undefined);
+      return true;
+    });
+    global.fetch = async () => {
+      throw new Error('   ');
+    };
+    await assert.rejects(callTool('huaweicloud_sandbox_check_user', {}), (error: ExhaustedResult & Error) => {
+      assert.match(error.message, /hdkitservice request failed/, 'a blank reason falls to the designed wrap copy');
+      assert.ok(!rendersBlank(error.message));
+      return true;
+    });
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+});
+
+test('a fetch-level abort on connect is a single attempt with the wrap copy, no numeric code', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    throw new DOMException('This operation was aborted', 'AbortError');
+  };
+  try {
+    const err = await captureConnectRejection({ pool_type: 'ephemeral' });
+    assert.equal(calls, 1, 'a statusless transport abort carries no gateway signal and is not retried');
+    assert.equal(err.status, undefined);
+    assert.equal((err as { code?: unknown }).code, undefined, 'never the transport numeric 20');
+    assert.match(err.message, /aborted/i);
+    assert.equal(err.connectRetries, 0);
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+});
+
+test('a readable codeless JSON 502 exhaustion surfaces the designed gateway code, not the manufacture', async () => {
+  const restoreSeam = withRetrySeam('1');
+  const stub = stubConnectSequence([() => jsonEnvelope({ message: 'gateway busy' }, { status: 502 })]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ExhaustedResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_GATEWAY_TIMEOUT', 'the designed gateway code wins over the manufactured HTTP_502');
+    assert.notEqual(result.code, 'HTTP_502');
+    assert.equal(result.connectRetries, 1);
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+});
+
+test('decorateExhaustedConnect tolerates getter-only carriers (the exported seam is safe)', () => {
+  const carrier = new DOMException('This operation was aborted', 'AbortError');
+  assert.doesNotThrow(() => decorateExhaustedConnect(carrier, 1));
+  assert.equal(
+    (carrier as { code?: unknown }).code,
+    'HDKIT_GATEWAY_TIMEOUT',
+    'the designed code lands despite the getter',
+  );
+  assert.equal((carrier as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, true);
+  assert.ok((carrier as { remediation?: { hint: string } }).remediation, 'the minted remediation lands');
 });

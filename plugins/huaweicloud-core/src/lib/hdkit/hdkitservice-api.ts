@@ -42,6 +42,16 @@ function getHdkitBaseUrl(): string {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
 }
 
+// 传输层拒绝的统一包装（round 7 响应体 + round 8 fetch 层）：从清洗值构建
+// 抛出错误——空白/纯不可见原因落设计文案，真文本原样透传；原对象（含传输
+// 层自带的 code 属性，如 AbortError DOMException 的数值 20）不透传；
+// bodyUnreadable 标记供门禁折叠区分传输形态与服务端话术。
+function transportReason(error: unknown, fallback: string): Error {
+  const cleaned =
+    error instanceof Error ? cleanMessage(error.message) : typeof error === 'string' ? cleanMessage(error) : '';
+  return Object.assign(new Error(cleaned || fallback), { bodyUnreadable: true });
+}
+
 async function hdkitRequest(
   method: string,
   path: string,
@@ -73,6 +83,10 @@ async function hdkitRequest(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+  // fetch 层中断（round 8，v2 标注分歧——dev 裸抛）：30s/300s 定时器的
+  // AbortError DOMException 携传输层 code 20，此前无响应可包——原对象从每个
+  // hdkit 出口裸抛。与响应体中断同缝守卫：从清洗值构建抛出错误，标记
+  // bodyUnreadable、不带 status（无响应即无网关信号，不重试、不门禁）。
   let resp: HttpResponseLike;
   try {
     resp = await fetchWithProxy(url, {
@@ -81,23 +95,25 @@ async function hdkitRequest(
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
+  } catch (error) {
+    throw transportReason(error, 'hdkitservice request failed (no response)');
   } finally {
     clearTimeout(timer);
   }
 
   // 响应体读取中断同样携带 resp.status（round 4，v2 标注分歧——dev 裸抛）：
-  // 已收到 502/504 status 时重试契约照常适用。两分支统一从清洗值构建抛出错误
-  // （round 7）：字符串与 Error 原因的清洗输出即为最终消息——边缘空白/不可见
-  // 字符不存活到 MCP 边界，原对象（含传输层自带的 code 属性，如 DOMException
-  // 的 20）不透传；bodyUnreadable 标记供门禁折叠区分传输噪声与服务端话术。
+  // 已收到 502/504 status 时重试契约照常适用。两分支统一从清洗值构建抛出
+  // 错误（round 7）：字符串与 Error 原因的清洗输出即为最终消息——边缘空白/
+  // 不可见字符不存活到 MCP 边界，原对象（含传输层自带的 code 属性，如
+  // DOMException 的 20）不透传；bodyUnreadable 标记供门禁折叠区分传输噪声
+  // 与服务端话术。
   let text: string;
   try {
     text = await resp.text();
   } catch (error) {
-    const cleaned =
-      error instanceof Error ? cleanMessage(error.message) : typeof error === 'string' ? cleanMessage(error) : '';
-    const reason = new Error(cleaned || 'hdkitservice response body read aborted');
-    throw Object.assign(reason, { status: resp.status, bodyUnreadable: true });
+    throw Object.assign(transportReason(error, 'hdkitservice response body read aborted'), {
+      status: resp.status,
+    });
   }
   let data: Record<string, unknown> | unknown[];
   try {

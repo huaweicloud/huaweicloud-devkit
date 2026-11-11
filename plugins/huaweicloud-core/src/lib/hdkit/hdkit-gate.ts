@@ -33,53 +33,43 @@ export function connectRetryDelaysMs(): number[] {
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
-// 渲染为空白的不可见字符（round 5–7）：trim 只清 \s，零宽/格式字符会穿透
-// trim 渲染成"看起来空白"的消息。按 Unicode 类别整体判定——\p{Cf}（U+200B–
-// U+200F、U+00AD、U+061C、U+180E、U+202A–U+202E、U+2060–U+2064、U+FEFF、
-// U+E0061 等）与 \p{Cc} 控制符（BEL/NUL 等，round 7）——外加渲染为空白的
-// 非 Cf 填充符与零宽 Mn 成员（U+FE00–U+FE0F 变体选择子、U+034F 连字结合符，
-// round 7）。Mn 收口决策（台账）：附着可见基底的组合附标（重音符等）独立
-// 渲染出符号，是真文本，不入空白集。
-const BLANK_RENDERING_FILLERS: ReadonlySet<number> = new Set([
-  0x3164, // U+3164 HANGUL FILLER
-  0xffa0, // U+FFA0 HALFWIDTH HANGUL FILLER（U+3164 的半宽孪生，round 7）
-  0x2800, // U+2800 BRAILLE PATTERN BLANK
-  0x115f, // U+115F HANGUL CHOSEONG FILLER
-  0x1160, // U+1160 HANGUL JUNGSEONG FILLER
-  0x034f, // U+034F COMBINING GRAPHEME JOINER（零宽 Mn）
-  ...Array.from({ length: 16 }, (_, i) => 0xfe00 + i), // U+FE00–U+FE0F 变体选择子
-]);
-
-/**
- * 消息可见性判定（round 6 收口）：纯不可见才判空白——只要有任何一个字符
- * 渲染可见（非 \s、非 Cf、非 Cc、非零宽成员），消息就是真文本；真文本包着
- * 一个不可见字符是可见消息，走 trim 而非缺失。
- */
+// 渲染为空白的不可见字符（round 5–8）：权威是 Unicode 的
+// Default_Ignorable_Code_Point 属性类（\p{DI}——Cf 默认可忽略集、变体选择子
+// 全集 FE00–FE0F 与星面区补集 E0100–E01EF、蒙古自由变体选择子 180B–180D/
+// 180F、高棉固有元音 17B4–17B5、谚文填充符 115F/1160/3164/FFA0、标签区、
+// 软连字符 00AD 等，含保留区，共 4174 个码点，Node 26 Unicode 实测）。同一
+// "下一个 Unicode 边界"缺陷类连续复发七轮后，round 8 以属性类收口——未来
+// 新增的默认可忽略码点自动覆盖，不再枚举。DI 之外的三类空白判定：\s（空白
+// 不在 DI）、\p{Cc} 控制符（NUL/BEL 无渲染，DI 不含 Cc）、盲文空白 U+2800
+// （So 类，渲染为空点阵）。附着可见基底的组合附标（重音符等）渲染出符号，
+// 是真文本，不入空白集。
 export function rendersBlank(text: string): boolean {
   const hasVisible = [...text].some(
     (ch) =>
       !/\s/u.test(ch) &&
-      !/\p{Cf}/u.test(ch) &&
+      !/\p{Default_Ignorable_Code_Point}/u.test(ch) &&
       !/\p{Cc}/u.test(ch) &&
-      !BLANK_RENDERING_FILLERS.has(ch.codePointAt(0) ?? 0),
+      (ch.codePointAt(0) ?? 0) !== 0x2800,
   );
   return !hasVisible;
 }
 
 /**
- * 消息清洗（round 5 + round 7）：纯空白/纯不可见视为缺失；真文本去掉两端的
- * 空白与不可见字符（trim 只清 \s——零宽字符在边缘同样要剥掉，round 7 实测），
- * 内部不可见字符保留（真文本语义）。两个构建口共用——请求层消息构建与
- * versionGateMessage/耗尽消息——任何出口都不渲染空白文案。
+ * 消息清洗（round 5 + round 7 + round 8）：纯空白/纯不可见视为缺失；真文本
+ * 去掉两端的空白与不可见字符（round 8 起按码点迭代——UTF-16 单元读法会让
+ * 星面区空白字符存活在边缘），内部不可见字符保留（真文本语义）。请求层
+ * 消息构建与 versionGateMessage/耗尽消息/码字段读共用——任何出口都不渲染
+ * 空白文案或带不可见边缘的码。
  */
 export function cleanMessage(text: string | undefined): string {
   if (!text) return '';
   if (rendersBlank(text)) return '';
-  let start = 0;
-  let end = text.length;
-  while (start < end && rendersBlank(text[start]!)) start += 1;
-  while (end > start && rendersBlank(text[end - 1]!)) end -= 1;
-  return text.slice(start, end);
+  const chars = [...text];
+  let lo = 0;
+  let hi = chars.length;
+  while (lo < hi && rendersBlank(chars[lo]!)) lo += 1;
+  while (hi > lo && rendersBlank(chars[hi - 1]!)) hi -= 1;
+  return chars.slice(lo, hi).join('');
 }
 
 /**
@@ -259,35 +249,49 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
   };
 }
 
+// 传输错误对象（如 DOMException）的 code 是 getter-only 原型访问器——直接
+// 赋值抛 TypeError。请求层已把传输错误换为普通 Error（round 8 的 fetch 层
+// 守卫 + 响应体守卫），此路径对请求层不可达；耗尽装填是导出面，赋值用
+// defineProperty 兜底保证导出安全。
+function setDecoration(target: object, key: string, value: unknown): void {
+  try {
+    (target as Record<string, unknown>)[key] = value;
+  } catch {
+    Object.defineProperty(target, key, { value, writable: true, configurable: true });
+  }
+}
+
 /**
  * 连接重试耗尽装填（v2 扩展）：gatewayRetryExhausted 标记供 connect 出口折叠
  * 识别；业务码已存在的 502（如烧核 HDKIT_UPSTREAM_ERROR）保留其 code 与
- * remediation，不覆盖。
+ * remediation，不覆盖。设计网关码对传输/伪造码无条件胜出（round 8）：数值
+ * code（AbortError DOMException 的 20）与请求层伪造的 HTTP_x 码（可读无码
+ * JSON 502 制造的 HTTP_502）替换为 HDKIT_GATEWAY_TIMEOUT，服务端业务码保留。
  */
 export function decorateExhaustedConnect(error: unknown, retries: number): void {
   const err = error as {
-    code?: string;
+    code?: unknown;
     message?: unknown;
     remediation?: { hint: string; steps: string[] };
     gatewayRetryExhausted?: boolean;
   };
-  err.gatewayRetryExhausted = true;
-  // 传输层错误可能自带数值 code（AbortController 的 DOMException 是 20）——
-  // 耗尽折叠一律用设计网关码，传输层的数值码不穿透（round 7）
-  if (!err.code || typeof err.code === 'number') err.code = 'HDKIT_GATEWAY_TIMEOUT';
+  setDecoration(err, 'gatewayRetryExhausted', true);
+  if (typeof err.code !== 'string' || err.code === '' || /^HTTP_\d+$/.test(err.code)) {
+    setDecoration(err, 'code', 'HDKIT_GATEWAY_TIMEOUT');
+  }
   // 耗尽消息同样过清洗口（round 5）：零宽字符/空白不渲染成不可见文案
   if (err.code === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(typeof err.message === 'string' ? err.message : '')) {
-    err.message = `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`;
+    setDecoration(err, 'message', `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`);
   }
   if (!err.remediation) {
-    err.remediation = {
+    setDecoration(err, 'remediation', {
       hint: `连接已自动重试 ${retries} 次仍失败，连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,
       steps: [
         '服务端可能已创建/启动沙箱实例——再次 connect 同池实例会自动复用，通常直接成功',
         '稍后重试 connect；网关超时通常在数分钟内自愈',
         '多次重试仍失败时，检查本地网络或代理配置后再试',
       ],
-    };
+    });
   }
 }
 
