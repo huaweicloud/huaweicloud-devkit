@@ -35,7 +35,7 @@ import { cmdProxy } from './proxy/cli.ts';
 import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.ts';
 import { readReceipt, removeReceipt } from './dep/receipts.ts';
 import { runSecretCommand } from './lib/secret-vault/cli.ts';
-import { createProcessApproveIo, runApproveCommand } from './approvals-cli.ts';
+import { createProcessApproveIo, runApproveCommand, runPinCommand } from './approvals-cli.ts';
 import { custodyReport } from './lib/secret-vault/custody.ts';
 import { vaultList } from './lib/secret-vault/store.ts';
 import { detectCodeartsSandbox } from './codearts-sandbox.ts';
@@ -1485,6 +1485,9 @@ async function main(): Promise<void> {
       break;
     case 'approve':
       process.exitCode = await runApproveCommand(process.argv.slice(3), createProcessApproveIo());
+      break;
+    case 'pin':
+      process.exitCode = await runPinCommand(process.argv.slice(3), createProcessApproveIo());
       break;
     case 'proxy':
       await cmdProxy();

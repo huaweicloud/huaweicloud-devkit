@@ -99,7 +99,7 @@ curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/lat
    - Secret: any operation returning secret string, binary secret, token, or password.
 9. For write operations, follow the terminal confirmation contract:
    - Call `huaweicloud_plan_cli_command` and read `userConfirmation`. When `needed` is true, show the user the command echo and the `userConfirmation.command` line.
-   - The user runs `npx huaweicloud-devkit approve <approvalToken>` in their own terminal. Never run it yourself.
+   - The user runs `npx huaweicloud-devkit approve <approvalToken>` in their own terminal. Never run it yourself. First use: the user runs `npx huaweicloud-devkit pin` once in their own terminal to enroll the approvals PIN.
    - Then call `huaweicloud_run_approved_command` with that token. An unconfirmed non-read command is rejected with `USER_CONFIRMATION_REQUIRED`; the token stays usable, so retry the same call after the user confirms.
 
 ## KooCLI Syntax Notes

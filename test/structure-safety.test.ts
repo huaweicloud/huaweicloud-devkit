@@ -145,8 +145,8 @@ test('the py hook derives the obfuscation gate write vocabulary from policy.json
 });
 
 test('the py hook derives the approval-CLI deny regex from policy.json (no hand-copied list)', () => {
-  // The approve verb's deny ships in all three hook layers through one
-  // vocabulary. The py compile must read the policy field, never a local
+  // The approve and pin verbs' deny ships in all three hook layers through
+  // one vocabulary. The py compile must read the policy field, never a local
   // alternation: a hand-copied list drifts from policy.json exactly like
   // the retired WRITE_VOCAB_RE hardcode did.
   const pyHook = readSource(join('hooks', 'huaweicloud-safety.py'));
@@ -155,6 +155,15 @@ test('the py hook derives the approval-CLI deny regex from policy.json (no hand-
     Array.isArray(policy.blockedApprovalCliPatterns) && policy.blockedApprovalCliPatterns.length >= 1,
     'policy.json must carry blockedApprovalCliPatterns',
   );
+  const approvalPatterns = (policy.blockedApprovalCliPatterns as unknown[]).filter(
+    (pattern): pattern is string => typeof pattern === 'string',
+  );
+  for (const verb of ['approve', 'pin']) {
+    assert.ok(
+      approvalPatterns.some((pattern) => pattern.includes(`\\s+${verb}\\b`)),
+      `policy.json must deny the ${verb} verb on the devkit binary spellings`,
+    );
+  }
   assert.match(pyHook, /APPROVAL_CLI_RE = None/);
   assert.match(pyHook, /blocked_approval_cli = policy\.get\("blockedApprovalCliPatterns", \[\]\)/);
   const approvalAssignments = pyHook.match(/APPROVAL_CLI_RE = re\.compile\([^\n]*\)/g) ?? [];

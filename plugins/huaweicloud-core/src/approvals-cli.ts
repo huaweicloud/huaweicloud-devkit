@@ -9,12 +9,17 @@ import { readSecret } from './lib/cli-io.ts';
 // the confirmation without the PIN. The door has no flags, because a flag
 // would be an escape hatch for the caller the gate is built to stop.
 //
+// PIN enrollment is its own verb (`pin`): approve refuses outright on a
+// machine with no enrolled PIN instead of enrolling inline — an inline
+// first-use enroll would let any pseudo-terminal caller choose the PIN.
+//
 // The token lifecycle and the PIN record are pure state/crypto modules
 // (lib/approval-tokens.ts, lib/approvals-pin.ts); this file owns prompts and
 // exit codes, and takes its terminal as an injected ApproveIo so tests can
 // drive both the refusal and the interactive paths without a real TTY.
 
 const USAGE = 'Usage: npx huaweicloud-devkit approve <token>';
+const PIN_USAGE = 'Usage: npx huaweicloud-devkit pin';
 
 const PIN_ATTEMPTS = 3;
 const ENROLL_ATTEMPTS = 2;
@@ -59,7 +64,7 @@ function printRefusal(io: ApproveIo, inspectionState: string): number {
 }
 
 async function enrollPin(io: ApproveIo): Promise<boolean> {
-  io.write('No approvals PIN is enrolled yet. Choose a PIN of at least 6 characters.\n');
+  io.write('Choose a PIN of at least 6 characters.\n');
   for (let attempt = 1; attempt <= ENROLL_ATTEMPTS; attempt++) {
     io.write('Choose a PIN: ');
     const first = await io.readLine();
@@ -147,12 +152,36 @@ export async function runApproveCommand(argv: string[], io: ApproveIo): Promise<
     return 1;
   }
 
+  // Enrollment is a deliberate separate step, never an inline fallback: a
+  // first confirm that mints its own PIN would enroll whatever the current
+  // caller typed, and a pseudo-terminal makes even an agent "interactive".
   if (!isApprovalsPinEnrolled()) {
-    if (!(await enrollPin(io))) return 1;
-  } else if (!(await verifyPin(io))) {
+    io.write(
+      'No approvals PIN is enrolled yet. Run "npx huaweicloud-devkit pin" in your own terminal once, then confirm plans with "approve".\n',
+    );
+    return 1;
+  }
+  if (!(await verifyPin(io))) {
     return 1;
   }
 
   const result = confirmApprovalToken(token);
   return printConfirmResult(io, result.status, result.reason);
+}
+
+// `npx huaweicloud-devkit pin`: the deliberate enrollment step the approve
+// command refuses to perform inline. Same door shape as approve — no flags,
+// TTY-gated, injected io — because it writes the credential the confirmation
+// gate trusts.
+export async function runPinCommand(argv: string[], io: ApproveIo): Promise<number> {
+  // No flags: any extra argv is a caller trying to steer the enrollment.
+  if (argv.length > 0) {
+    io.write(`${PIN_USAGE}\n`);
+    return 1;
+  }
+  if (!io.isTTY) {
+    io.write('The approvals PIN must be enrolled in your own interactive terminal.\n');
+    return 1;
+  }
+  return (await enrollPin(io)) ? 0 : 1;
 }

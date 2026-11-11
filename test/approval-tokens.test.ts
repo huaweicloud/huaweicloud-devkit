@@ -120,13 +120,13 @@ test(
     const cleanToken = createApprovalToken(clean);
 
     const fromSmuggled = consumeApprovalToken(smuggledToken);
-    assert.ok(fromSmuggled, 'the smuggled entry is consumable');
-    assert.equal(fromSmuggled.argsHash, hashArgs(smuggled));
-    assert.notEqual(fromSmuggled.argsHash, hashArgs(clean), 'the stored hash keeps the smuggled form distinct');
+    if (fromSmuggled.status !== 'consumed') assert.fail('the smuggled entry must be consumable');
+    assert.equal(fromSmuggled.entry.argsHash, hashArgs(smuggled));
+    assert.notEqual(fromSmuggled.entry.argsHash, hashArgs(clean), 'the stored hash keeps the smuggled form distinct');
 
     const wrongShape = consumeApprovalToken(cleanToken);
-    assert.ok(wrongShape);
-    assert.notEqual(wrongShape.argsHash, fromSmuggled.argsHash);
+    if (wrongShape.status !== 'consumed') assert.fail('the clean entry must be consumable');
+    assert.notEqual(wrongShape.entry.argsHash, fromSmuggled.entry.argsHash);
   }),
 );
 
@@ -157,14 +157,14 @@ test(
   withAuthHome(() => {
     const token = createApprovalToken({ tool: 'execute_api', toolArgs: { product: 'ECS', api: 'ListServers' } });
     const first = consumeApprovalToken(token);
-    assert.ok(first, 'the first consume wins');
+    if (first.status !== 'consumed') assert.fail('the first consume must win');
     assert.equal(
-      first.argsHash,
+      first.entry.argsHash,
       hashArgs({ tool: 'execute_api', toolArgs: { api: 'ListServers', product: 'ECS' } }),
       'the stored hash is order-insensitive to how the mint payload was written',
     );
 
-    assert.equal(consumeApprovalToken(token), null, 'replay is rejected by the marker, not just the file');
+    assert.equal(consumeApprovalToken(token).status, 'gone', 'replay is rejected by the marker, not just the file');
     const markerDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approvals-consumed');
     assert.ok(existsSync(join(markerDir, `${token}.claimed`)), 'the claim marker is on disk');
   }),
@@ -195,7 +195,7 @@ test(
   withAuthHome(() => {
     const token = createApprovalToken({ tool: 't', toolArgs: { a: 1 } });
     const first = consumeApprovalToken(token);
-    assert.ok(first, 'the first consume wins and tombstones the entry');
+    if (first.status !== 'consumed') assert.fail('the first consume must win and tombstone the entry');
 
     // Simulate the racing reader: it read the store BEFORE the winner's
     // tombstone landed, so the entry is back while the marker exists. Only
@@ -203,10 +203,10 @@ test(
     // gate regresses, this consume would succeed and the test fails.
     const file = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approvals.json');
     const map = JSON.parse(readFileSync(file, 'utf8'));
-    map[token] = { argsHash: first.argsHash, argsRedacted: first.argsRedacted, createdAt: Date.now() };
+    map[token] = { argsHash: first.entry.argsHash, argsRedacted: first.entry.argsRedacted, createdAt: Date.now() };
     writeFileSync(file, JSON.stringify(map));
-    assert.equal(consumeApprovalToken(token), null, 'the replayed token must be rejected by the marker');
-    assert.equal(consumeApprovalToken(token), null, 'and stays rejected');
+    assert.equal(consumeApprovalToken(token).status, 'gone', 'the replayed token must be rejected by the marker');
+    assert.equal(consumeApprovalToken(token).status, 'gone', 'and stays rejected');
   }),
 );
 
@@ -215,7 +215,7 @@ test(
   withAuthHome(() => {
     const probe = `trav-probe-${process.pid}`;
     for (const bogus of ['not-a-uuid', `../../../../${probe}`, '', 'UPPERCASE-NOT-A-TOKEN', `${probe}`]) {
-      assert.equal(consumeApprovalToken(bogus), null);
+      assert.equal(consumeApprovalToken(bogus).status, 'gone');
     }
     const markerDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approvals-consumed');
     assert.ok(
@@ -263,7 +263,11 @@ test(
     assert.match(inspection.entry.confirmGrant.mac, /^[0-9a-f]{64}$/, 'the grant mac is a sha256 hex digest');
 
     assert.ok(verifyConfirmationGrant(inspection.entry, token).ok, 'the confirmed token verifies');
-    assert.ok(consumeApprovalToken(token), 'a confirmed token remains consumable by the run side');
+    assert.equal(
+      consumeApprovalToken(token).status,
+      'consumed',
+      'a confirmed token remains consumable by the run side',
+    );
   }),
 );
 
@@ -295,7 +299,7 @@ test(
     assert.equal(stored.confirmGrant, undefined, 'and never mints a grant');
 
     const consumed = createApprovalToken(['ECS', 'DeleteServer']);
-    assert.ok(consumeApprovalToken(consumed));
+    assert.equal(consumeApprovalToken(consumed).status, 'consumed');
     assert.equal(confirmApprovalToken(consumed).status, 'already_consumed');
   }),
 );
@@ -465,5 +469,100 @@ test(
       else process.env.HW_VAULT_MASTER_KEY = previousKey;
       clearCustodyCache();
     }
+  }),
+);
+
+// ── Adversarial-review regressions (F1/F2) ──────────────────────────────────
+// The review reproduced two real bypasses against the same-user file-write
+// adversary this gate claims to stop. F1: the grant mac covered only the
+// args hash, so a hand edit of argsPinView / secretsSubstitutable / createdAt
+// on a CONFIRMED entry still verified while the run-side fallbacks trusted
+// those same fields. F2: the confirmation gate verified the grant on the
+// inspect read while execution consumed a second, unverified read.
+
+test(
+  'F1: the grant mac covers every field the execution gate trusts — a hand edit of any one breaks verification',
+  withVaultHome(() => {
+    const token = createApprovalToken(['RDS', 'CreateInstance', '--password=<password>'], {
+      secretsSubstitutable: true,
+      argsPinView: ['RDS', 'CreateInstance', '--password=<redacted>'],
+    });
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+    const genuine = readStore()[token]!;
+
+    // One edit at a time, exactly as the reviewer's repro script drove the
+    // store: argsPinView swaps in another command's pin view (the run-side
+    // fallback compares against it), secretsSubstitutable unpins a real
+    // secret, argsRedacted replays the comparison fallback, and createdAt
+    // lengthens the 5-minute window — none may keep the grant verifying.
+    const edits: Record<string, unknown> = {
+      argsPinView: ['ECS', 'DeleteServer', '--server_id=<redacted>'],
+      secretsSubstitutable: false,
+      argsRedacted: ['ECS', 'DeleteServer', '--server_id=victim-1'],
+      createdAt: (genuine.createdAt as number) + 60_000,
+    };
+    for (const [field, value] of Object.entries(edits)) {
+      const edited = readStore();
+      edited[token] = { ...genuine, [field]: value };
+      writeStore(edited);
+      const entry = inspectApprovalToken(token).entry!;
+      assert.equal(
+        verifyConfirmationGrant(entry, token).ok,
+        false,
+        `${field}: an attacker edit of this field must break the grant`,
+      );
+    }
+
+    const restored = readStore();
+    restored[token] = genuine;
+    writeStore(restored);
+    assert.equal(
+      verifyConfirmationGrant(inspectApprovalToken(token).entry!, token).ok,
+      true,
+      'the untouched entry still verifies after the battery',
+    );
+  }),
+);
+
+test(
+  'F2: consumeApprovalToken with requireGrant verifies the grant on the entry it consumes — a grantless snapshot is refused and claims nothing',
+  withVaultHome(() => {
+    const token = createApprovalToken(['ECS', 'DeleteServer', '--server_id=x']);
+
+    // The reviewer's read-#2 shape: an entry that is fresh and hashable but
+    // carries no confirmation at all. The gate must refuse it on the consume
+    // cycle's OWN snapshot, before any marker claim.
+    const refused = consumeApprovalToken(token, { requireGrant: true });
+    assert.equal(refused.status, 'grant_required', 'an awaiting_user snapshot cannot consume under the gate');
+    assert.equal(inspectApprovalToken(token).state, 'valid', 'the refusal burns nothing: the entry stands');
+    const markerDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approvals-consumed');
+    assert.ok(
+      !existsSync(markerDir) || readdirSync(markerDir).length === 0,
+      'a refused gate claims no single-use marker',
+    );
+
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+    const confirmedEntry = readStore()[token]!;
+    const stripped = readStore();
+    delete stripped[token]!.confirmGrant;
+    writeStore(stripped);
+    assert.equal(
+      consumeApprovalToken(token, { requireGrant: true }).status,
+      'grant_required',
+      'a user_confirmed state string without its grant is not the authorization',
+    );
+    assert.equal(inspectApprovalToken(token).state, 'valid', 'that refusal also burns nothing');
+
+    const restored = readStore();
+    restored[token] = confirmedEntry;
+    writeStore(restored);
+    const consumed = consumeApprovalToken(token, { requireGrant: true });
+    if (consumed.status !== 'consumed') assert.fail('a grant-bearing snapshot must consume');
+    assert.equal(consumed.entry.state, 'user_confirmed');
+    assert.equal(
+      consumeApprovalToken(token, { requireGrant: true }).status,
+      'gone',
+      'the marker rejects the replay of the consumed token',
+    );
   }),
 );

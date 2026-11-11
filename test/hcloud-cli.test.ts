@@ -59,13 +59,13 @@ test('createApprovalToken persists hashed/redacted args and never raw secrets', 
     assert.ok(!raw.includes('Secret123'), 'plaintext secret must never be written to disk');
 
     const stored = consumeApprovalToken(token);
-    assert.ok(stored);
-    assert.equal(stored.argsHash, hashArgs(['ECS', 'CreateServers', '--server.adminPass=Secret123!']));
-    assert.ok(Array.isArray(stored.argsRedacted));
-    assert.ok(!JSON.stringify(stored).includes('Secret123'));
+    if (stored.status !== 'consumed') assert.fail('the minted token must consume');
+    assert.equal(stored.entry.argsHash, hashArgs(['ECS', 'CreateServers', '--server.adminPass=Secret123!']));
+    assert.ok(Array.isArray(stored.entry.argsRedacted));
+    assert.ok(!JSON.stringify(stored.entry).includes('Secret123'));
 
     // single-use
-    assert.equal(consumeApprovalToken(token), null);
+    assert.equal(consumeApprovalToken(token).status, 'gone');
   });
 });
 
@@ -74,15 +74,16 @@ test('approval token survives a fresh file read (cross-process) and expires by T
     const token = createApprovalToken(['OBS', 'mb', 'obs://bucket']);
     // consume reads from the file (single source of truth), not from a memory map
     const stored = consumeApprovalToken(token);
-    assert.equal(stored!.argsHash, hashArgs(['OBS', 'mb', 'obs://bucket']));
+    if (stored.status !== 'consumed') assert.fail('the fresh read must consume');
+    assert.equal(stored.entry.argsHash, hashArgs(['OBS', 'mb', 'obs://bucket']));
 
-    // TTL: backdate an entry to before the window and expect null
+    // TTL: backdate an entry to before the window and expect a refusal
     const ttlToken = createApprovalToken(['OBS', 'rm', 'obs://bucket']);
     const file = join(home, '.config', 'huaweicloud', 'approvals.json');
     const map = JSON.parse(readFileSync(file, 'utf8'));
     map[ttlToken].createdAt = Date.now() - 6 * 60_000;
     writeFileSync(file, JSON.stringify(map), 'utf8');
-    assert.equal(consumeApprovalToken(ttlToken), null);
+    assert.equal(consumeApprovalToken(ttlToken).status, 'gone');
   });
 });
 

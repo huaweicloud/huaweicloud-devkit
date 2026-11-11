@@ -11,12 +11,7 @@ import {
 import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud, type ProbeHcloudOptions } from '../../hcloud-probe.ts';
 import { redactSecrets } from '../../safety-policy.ts';
 import { asText } from '../../lib/as-text.ts';
-import {
-  consumeApprovalToken,
-  hashArgs,
-  inspectApprovalToken,
-  verifyConfirmationGrant,
-} from '../../lib/approval-tokens.ts';
+import { consumeApprovalToken, hashArgs, inspectApprovalToken } from '../../lib/approval-tokens.ts';
 import { booleanArg, numericArg, stringArrayArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
@@ -252,13 +247,18 @@ async function runApprovedCommand(args: ToolArgs = {}) {
   }
 
   // The strict plan is pure, so it is computed before the token is consumed:
-  // the confirmation gate below reads it, and the result still embeds it.
+  // its userConfirmation.needed decides whether the consume requires a grant,
+  // and the result still embeds it.
   const strictPlan = planHcloudCommand(effectiveArgs, { allowWrites: false, mintApprovalToken: false });
-  // Terminal-confirmation gate: a non-read command executes only against a
-  // grant the user's own terminal confirm recorded on the token's entry. The
-  // refusal sits before consumeApprovalToken so it never burns the token —
-  // its guidance stays followable on the same approval.
-  if (strictPlan.userConfirmation.needed && !verifyConfirmationGrant(inspection.entry!, token).ok) {
+
+  // One snapshot: the confirmation gate, the args-hash binding, the pinView
+  // fallback, and the single-use claim all read the SAME entry — the one
+  // consumeApprovalToken returns. The pre-consume inspect-gate this replaces
+  // verified the grant on one read while execution consumed another, which
+  // a same-user store swap between the two reads laundered (the review's
+  // TOCTOU repro).
+  const consumed = consumeApprovalToken(token, { requireGrant: strictPlan.userConfirmation.needed });
+  if (consumed.status === 'grant_required') {
     return {
       status: 'rejected',
       code: 'USER_CONFIRMATION_REQUIRED',
@@ -266,17 +266,17 @@ async function runApprovedCommand(args: ToolArgs = {}) {
         'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.',
     };
   }
-
-  const stored = consumeApprovalToken(token);
-  if (!stored) {
-    // Defensive: inspectApprovalToken said 'valid' but consume returned null.
-    // The only path is the O_EXCL claim losing a race — another consumer is
-    // spending this exact token right now — so classify as already_consumed
-    // (never a misleading success, never a false not_found).
+  if (consumed.status === 'gone') {
+    // Defensive: inspectApprovalToken said 'valid' but consume returned gone.
+    // The paths are the O_EXCL claim losing a race (another consumer is
+    // spending this exact token right now) or a store swap removing the
+    // entry between the two reads — classify via re-inspect, never a
+    // misleading success and never a false not_found.
     const recheck = inspectApprovalToken(token);
     if (recheck.state === 'expired') return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
     return { status: 'ok', outcome: 'already_processed' };
   }
+  const stored = consumed.entry;
   if (hashArgs(effectiveArgs) !== stored.argsHash) {
     // The pin view is the canonical fold for the substitution comparison
     // (loop round 4, seat-1 B2): it folds the two-token/glued secret forms

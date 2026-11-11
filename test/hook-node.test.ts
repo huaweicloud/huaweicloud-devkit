@@ -191,6 +191,29 @@ test('node hook denies the approval CLI on the agent Bash face (the terminal con
   assert.equal(allowed.stdout.trim(), '', 'an hcloud operation named Approve must stay allowed');
 });
 
+test('node hook denies the pin enrollment verb on the agent Bash face (first use is the human channel too)', () => {
+  // The pin command enrolls the credential the confirm flow checks. An agent
+  // that enrolls its own PIN on a never-enrolled machine (a PTY makes the
+  // TTY check pass) owns the confirmation channel afterwards, so the verb
+  // denies exactly like approve.
+  const denied = [
+    'npx huaweicloud-devkit pin',
+    'node dist/setup-cli.js pin',
+    'node bin/setup.cjs pin',
+    'npx huaweicloud-devkit@2.0.0 pin',
+  ];
+  for (const command of denied) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /terminal/i, command);
+  }
+  const allowed = runHook({ tool_name: 'Bash', tool_input: { command: 'hcloud Workspace Pin --x=1' } });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout.trim(), '', 'an hcloud operation named Pin must stay allowed');
+});
+
 test('node hook denies Windows-script-wrapped hcloud writes (#731/#760)', () => {
   // Whichever module the wrapper loads (compiled dist/ when present —
   // stale dist fails this test on purpose — or the src/ fallback in a raw

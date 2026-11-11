@@ -2619,7 +2619,7 @@ def evaluate(tool_name, tool_input):
     if SECRET_CLI_RE and any(SECRET_CLI_RE.search(candidate) for candidate in candidates):
         return "printing vault secrets into the agent context is blocked. Use secret exec so the value reaches only the child process environment."
     if APPROVAL_CLI_RE and any(APPROVAL_CLI_RE.search(candidate) for candidate in candidates):
-        return "running the approval CLI from the agent Bash face is blocked: the confirmation must come from the user's own interactive terminal, where the PIN is checked. Ask the user to run the printed npx huaweicloud-devkit approve <token> line themselves, then retry the same call."
+        return "running the approval CLI from the agent Bash face is blocked: the confirmation must come from the user's own interactive terminal, where the PIN is checked. Ask the user to run the printed npx huaweicloud-devkit approve <token> line themselves (first use: npx huaweicloud-devkit pin, once), then retry the same call."
     # Order-independent reveal pair: xargs reorders the argv while every word
     # stays literal — a devkit bin plus a `secret get` pair anywhere is a
     # reveal regardless of order (both shadow candidates — the decoded one

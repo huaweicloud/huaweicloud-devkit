@@ -42,6 +42,14 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['node bin/setup.cjs approve some-token', 'deny'],
   ['npx huaweicloud-devkit@2.0.0 approve x', 'deny'],
   ['hcloud Workspace Approve --x=1', 'allow'],
+  // The pin enrollment verb denies the same way: the credential the confirm
+  // flow checks must come from the user's own terminal, and an hcloud
+  // operation merely carrying the word Pin stays allowed.
+  ['npx huaweicloud-devkit pin', 'deny'],
+  ['node dist/setup-cli.js pin', 'deny'],
+  ['node bin/setup.cjs pin', 'deny'],
+  ['npx huaweicloud-devkit@2.0.0 pin', 'deny'],
+  ['hcloud Workspace Pin --x=1', 'allow'],
   // Write gate: separators, command positions, obfuscation.
   ['hcloud ECS CreateServers --server.name=x', 'deny'],
   ['hcloud ECS ListServers\nhcloud ECS CreateServers --server.name=x', 'deny'],

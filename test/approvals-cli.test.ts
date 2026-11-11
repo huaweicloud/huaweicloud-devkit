@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import test from 'node:test';
 
-import { runApproveCommand, type ApproveIo } from '../plugins/huaweicloud-core/src/approvals-cli.ts';
+import { runApproveCommand, runPinCommand, type ApproveIo } from '../plugins/huaweicloud-core/src/approvals-cli.ts';
 import {
   confirmApprovalToken,
   consumeApprovalToken,
@@ -130,7 +130,7 @@ test(
   'approve treats an already-consumed token as a non-error for the human',
   withVaultHome(async () => {
     const token = createApprovalToken(['ECS', 'DeleteServer']);
-    assert.ok(consumeApprovalToken(token));
+    assert.equal(consumeApprovalToken(token).status, 'consumed');
 
     const terminal = scriptedIo([]);
     assert.equal(await runApproveCommand([token], terminal.io), 0);
@@ -167,31 +167,72 @@ test(
 );
 
 test(
-  'first approval enrolls a PIN after a mismatched re-type, then confirms',
+  'F3: approve refuses when no PIN is enrolled, teaches the pin command, and records nothing',
   withVaultHome(async () => {
     const token = createApprovalToken(['ECS', 'DeleteServer', '--server_id=x']);
-    // Choose, re-type wrong (retry), choose, re-type right.
-    const terminal = scriptedIo(['first-choice', 'typo-re-type', ENROLLED_PIN, ENROLLED_PIN]);
+    // No flags, no prompts: the refusal must point the human at the separate
+    // enrollment step before anything is asked or written.
+    const terminal = scriptedIo([]);
+    assert.equal(await runApproveCommand([token], terminal.io), 1);
+    assert.match(terminal.output(), /npx huaweicloud-devkit pin/, 'the refusal names the enrollment command');
+    assert.doesNotMatch(terminal.output(), /Choose a PIN/, 'the refusal never prompts');
+    assert.equal(isApprovalsPinEnrolled(), false, 'the refusal enrolls nothing');
+    assert.equal(entryState(token), 'awaiting_user', 'the entry is not confirmed');
 
-    assert.equal(await runApproveCommand([token], terminal.io), 0);
-    assert.match(terminal.output(), /PINs did not match, try again/);
-    assert.ok(isApprovalsPinEnrolled(), 'the second pair enrolls the PIN');
-    assert.equal(verifyApprovalsPin(ENROLLED_PIN).ok, true);
+    // After the user enrolls via the pin command, the same approval confirms.
+    const enroll = scriptedIo([ENROLLED_PIN, ENROLLED_PIN]);
+    assert.equal(await runPinCommand([], enroll.io), 0);
+    const confirm = scriptedIo([ENROLLED_PIN]);
+    assert.equal(await runApproveCommand([token], confirm.io), 0);
     assert.equal(entryState(token), 'user_confirmed');
-    assert.ok(inspectApprovalToken(token).entry?.confirmGrant, 'the confirmation carries a grant');
-    assert.match(terminal.output(), /The agent may now run this command once/);
   }),
 );
 
 test(
-  'two mismatched re-types abort the enrollment without confirming',
+  'the pin command enrolls through the injected io: a mismatched re-type retries, then enrolls',
   withVaultHome(async () => {
-    const token = createApprovalToken(['ECS', 'DeleteServer']);
-    const terminal = scriptedIo(['first-choice', 'typo-one', 'second-choice', 'typo-two']);
+    const terminal = scriptedIo(['first-choice', 'typo-re-type', ENROLLED_PIN, ENROLLED_PIN]);
+    assert.equal(await runPinCommand([], terminal.io), 0);
+    assert.match(terminal.output(), /PINs did not match, try again/);
+    assert.ok(isApprovalsPinEnrolled(), 'the second pair enrolls the PIN');
+    assert.equal(verifyApprovalsPin(ENROLLED_PIN).ok, true);
+    assert.match(terminal.output(), /Approvals PIN enrolled/);
+  }),
+);
 
-    assert.equal(await runApproveCommand([token], terminal.io), 1);
-    assert.equal(isApprovalsPinEnrolled(), false);
-    assert.equal(entryState(token), 'awaiting_user');
+test(
+  'the pin command refuses a non-TTY without prompting',
+  withVaultHome(async () => {
+    const terminal = scriptedIo([ENROLLED_PIN], { isTTY: false });
+    assert.equal(await runPinCommand([], terminal.io), 1);
+    assert.match(terminal.output(), /own interactive terminal/);
+    assert.doesNotMatch(terminal.output(), /Choose a PIN/, 'no prompt may reach a non-TTY caller');
+    assert.equal(isApprovalsPinEnrolled(), false, 'a refused enrollment persists nothing');
+  }),
+);
+
+test(
+  'the pin command refuses flags and extra argv, then two mismatched re-types abort without persisting',
+  withVaultHome(async () => {
+    const flagged = scriptedIo([]);
+    assert.equal(await runPinCommand(['--pin', '123456'], flagged.io), 1);
+    assert.match(flagged.output(), /Usage: npx huaweicloud-devkit pin/);
+
+    const terminal = scriptedIo(['first-choice', 'typo-one', 'second-choice', 'typo-two']);
+    assert.equal(await runPinCommand([], terminal.io), 1);
+    assert.equal(isApprovalsPinEnrolled(), false, 'the aborted enrollment persists nothing');
+  }),
+);
+
+test(
+  'the pin command re-enrolls: the old pin stops verifying, the new one starts',
+  withVaultHome(async () => {
+    const first = scriptedIo(['first-pin-99', 'first-pin-99']);
+    assert.equal(await runPinCommand([], first.io), 0);
+    const second = scriptedIo(['second-pin-77', 'second-pin-77']);
+    assert.equal(await runPinCommand([], second.io), 0);
+    assert.equal(verifyApprovalsPin('first-pin-99').ok, false, 're-enroll overwrites (the recovery path)');
+    assert.equal(verifyApprovalsPin('second-pin-77').ok, true);
   }),
 );
 

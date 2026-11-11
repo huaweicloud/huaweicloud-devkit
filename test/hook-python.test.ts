@@ -235,6 +235,29 @@ test('python hook blocks the approval CLI, including the Hermes output shape', (
   assert.equal(allowed.stdout.trim(), '');
 });
 
+test('python hook blocks the pin enrollment verb on the agent Bash face', () => {
+  const denied = [
+    'npx huaweicloud-devkit pin',
+    'node dist/setup-cli.js pin',
+    'node bin/setup.cjs pin',
+    'npx huaweicloud-devkit@2.0.0 pin',
+  ];
+  for (const command of denied) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0, command);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /terminal/i, command);
+  }
+  // An hcloud operation whose name merely carries the word Pin stays
+  // allowed: the patterns anchor on the devkit binary spelling.
+  const allowed = runHook({ tool_name: 'Bash', tool_input: { command: 'hcloud Workspace Pin --x=1' } });
+  if (pythonUnavailable(allowed)) return;
+  assert.equal(allowed.status, 0);
+  assert.equal(allowed.stdout.trim(), '');
+});
+
 test('python hook write-gate sees quote-adjacent hcloud inside secret exec', () => {
   const result = runHook({
     tool_name: 'Bash',

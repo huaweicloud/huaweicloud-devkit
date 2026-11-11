@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import {
@@ -8,6 +8,7 @@ import {
   createApprovalToken,
   hashArgs,
   inspectApprovalToken,
+  pinViewArgs,
   runHcloud,
   type HcloudPlan,
   type HcloudRunResult,
@@ -55,8 +56,7 @@ test('inspectApprovalToken classifies an expired token as expired', async () => 
 test('inspectApprovalToken classifies an already-consumed token as already_consumed', async () => {
   await withTempAuthHome(() => {
     const token = createApprovalToken(['ECS', 'ListServersDetails']);
-    const first = consumeApprovalToken(token);
-    assert.ok(first, 'first consume returns the stored entry');
+    assert.equal(consumeApprovalToken(token).status, 'consumed', 'first consume returns the stored entry');
 
     const inspection = inspectApprovalToken(token);
     assert.equal(inspection.state, 'already_consumed');
@@ -88,11 +88,10 @@ test('the plan tool path mints awaiting_user entries with no grant', async () =>
 test('consumeApprovalToken keeps a tombstone so the second call is distinguishable from not_found', async () => {
   await withTempAuthHome(() => {
     const token = createApprovalToken(['ECS', 'ListServersDetails']);
-    const first = consumeApprovalToken(token);
-    assert.ok(first);
-    // Second consume still returns null (backward compatible), but
-    // inspectApprovalToken must report already_consumed, not not_found.
-    assert.equal(consumeApprovalToken(token), null);
+    assert.equal(consumeApprovalToken(token).status, 'consumed');
+    // A second consume is refused ('gone'), but inspectApprovalToken must
+    // report already_consumed, not not_found.
+    assert.equal(consumeApprovalToken(token).status, 'gone');
     assert.equal(inspectApprovalToken(token).state, 'already_consumed');
   });
 });
@@ -194,7 +193,7 @@ test('runApprovedCommand: unknown token returns {status:rejected, code:CONFIRM_T
 test('tombstones age out: an aged tombstone inspects as not_found, not already_consumed', async () => {
   await withTempAuthHome(async (home) => {
     const token = createApprovalToken(['ECS', 'ListServersDetails']);
-    assert.ok(consumeApprovalToken(token), 'first consume wins');
+    assert.equal(consumeApprovalToken(token).status, 'consumed', 'first consume wins');
 
     // Age the TOMBSTONE past the TTL (createdAt is the original mint time).
     backdateToken(home, token);
@@ -532,6 +531,162 @@ test('run paths never mint: engine results and the readonly tool carry no approv
       })) as HcloudRunResult;
       assert.ok(readonly.plan, 'the readonly tool embeds its live plan');
       assert.equal('approvalToken' in readonly.plan, false, 'the readonly path mints nothing');
+    });
+  });
+});
+
+// ── Adversarial-review regressions (F1/F2), tool level ──────────────────────
+// approvals.json is same-user editable: every test below stands in for the
+// attacker and mutates the confirmed entry by hand, exactly as the review's
+// repro did (the store helpers are the attacker's write primitive).
+
+function approvalsStore(home: string): Record<string, Record<string, unknown>> {
+  return JSON.parse(readFileSync(join(home, '.config', 'huaweicloud', 'approvals.json'), 'utf8'));
+}
+
+function writeApprovalsStore(home: string, map: Record<string, unknown>): void {
+  writeFileSync(join(home, '.config', 'huaweicloud', 'approvals.json'), JSON.stringify(map));
+}
+
+test('F1: a hand-edited argsPinView on the confirmed entry cannot swap in a different command', async () => {
+  await withVaultAuthHome(async (home) => {
+    await withFakeHcloudBin(async () => {
+      const victimArgs = ['ECS', 'DeleteServer', '--server_id=victim-1'];
+      // The user confirmed an RDS create whose plan carried a placeholder
+      // secret (the documented substitution flow — secretsSubstitutable).
+      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=<password>', '--name=db1']);
+
+      // The attacker edits ONLY argsPinView to the victim command's pin view,
+      // leaving argsHash, state, and grant untouched. On the mismatch path
+      // the run gate compares this attacker-supplied pin view against the
+      // run's own — equal — and the victim command used to execute.
+      const store = approvalsStore(home);
+      store[token] = { ...store[token]!, argsPinView: pinViewArgs(victimArgs) };
+      writeApprovalsStore(home, store);
+
+      const refused = (await runWith(token, victimArgs)) as { status: string; code: string };
+      assert.equal(refused.status, 'rejected', 'the swapped pin view must not execute');
+      assert.equal(refused.code, 'USER_CONFIRMATION_REQUIRED', 'the edited entry no longer carries a verifying grant');
+
+      // The refusal burned nothing: restoring the genuine pin view lets the
+      // confirmed command execute — impossible if the swap had spent the
+      // token on the victim command.
+      const restored = approvalsStore(home);
+      restored[token] = {
+        ...restored[token]!,
+        argsPinView: pinViewArgs(['RDS', 'CreateInstance', '--password=<password>', '--name=db1']),
+      };
+      writeApprovalsStore(home, restored);
+      const executed = (await runWith(token, [
+        'RDS',
+        'CreateInstance',
+        '--password=RealPass99Aa',
+        '--name=db1',
+      ])) as ApprovedRunResult;
+      assert.equal(executed.approved, true, 'the confirmed command, never the swap, is what executes');
+    });
+  });
+});
+
+test('F1: a hand-edited secretsSubstitutable flag cannot unpin a real secret', async () => {
+  await withVaultAuthHome(async (home) => {
+    await withFakeHcloudBin(async () => {
+      // The plan carried a REAL secret, so the mint pins it (no substitutable
+      // flag). The attacker flips the flag on the confirmed entry and runs a
+      // different real secret: the pin views fold both to <redacted>, so the
+      // edited flag is the only thing standing between the run and execution.
+      const token = await planConfirmedWrite(['RDS', 'CreateInstance', '--password=FirstSecret99Aa', '--name=db1']);
+      const store = approvalsStore(home);
+      store[token] = { ...store[token]!, secretsSubstitutable: true };
+      writeApprovalsStore(home, store);
+
+      const refused = (await runWith(token, ['RDS', 'CreateInstance', '--password=EvilSecret77Bb', '--name=db1'])) as {
+        status: string;
+        code: string;
+      };
+      assert.equal(refused.status, 'rejected', 'a flipped substitutable flag must not unpin the secret');
+      assert.equal(refused.code, 'USER_CONFIRMATION_REQUIRED');
+
+      const restored = approvalsStore(home);
+      delete restored[token]!.secretsSubstitutable;
+      writeApprovalsStore(home, restored);
+      const executed = (await runWith(token, [
+        'RDS',
+        'CreateInstance',
+        '--password=FirstSecret99Aa',
+        '--name=db1',
+      ])) as ApprovedRunResult;
+      assert.equal(executed.approved, true, 'the original pin stands: the unchanged real secret executes');
+    });
+  });
+});
+
+test('F1: a hand-edited createdAt breaks the grant — the TTL window cannot be lengthened', async () => {
+  await withVaultAuthHome(async (home) => {
+    await withFakeHcloudBin(async () => {
+      const confirmedArgs = ['ECS', 'DeleteServer', '--server_id=i-123'];
+      const token = await planConfirmedWrite(confirmedArgs);
+      const genuine = approvalsStore(home)[token]!;
+
+      // The attacker rewrites createdAt one second into the future —
+      // strictly different from the mint time, still inside the TTL, and the
+      // window-lengthening direction. The run args are the exact confirmed
+      // ones: only the edited field differs.
+      const store = approvalsStore(home);
+      store[token] = { ...store[token]!, createdAt: Date.now() + 1000 };
+      writeApprovalsStore(home, store);
+
+      const refused = (await runWith(token, confirmedArgs)) as { status: string; code: string };
+      assert.equal(refused.status, 'rejected', 'an edited createdAt must refuse even the confirmed command');
+      assert.equal(refused.code, 'USER_CONFIRMATION_REQUIRED');
+      assert.equal(inspectApprovalToken(token).state, 'valid', 'the refusal burns nothing');
+
+      const restored = approvalsStore(home);
+      restored[token] = { ...restored[token]!, createdAt: genuine.createdAt as number };
+      writeApprovalsStore(home, restored);
+      const executed = (await runWith(token, confirmedArgs)) as ApprovedRunResult;
+      assert.equal(executed.approved, true, 'the untouched createdAt still executes');
+    });
+  });
+});
+
+test('F2: a store entry swapped after confirm (victim hash, no grant) never executes', async () => {
+  await withVaultAuthHome(async (home) => {
+    await withFakeHcloudBin(async () => {
+      const token = await planConfirmedWrite(['ECS', 'DeleteServer', '--server_id=i-123']);
+      const genuine = approvalsStore(home)[token]!;
+      const victimArgs = ['ECS', 'DeleteServer', '--server_id=victim-unapproved-2'];
+
+      // The reviewer's TOCTOU payload: the entry the consume reads carries
+      // the victim command's hash and a user_confirmed state string, but NO
+      // grant — the hash comparison would pass outright.
+      writeApprovalsStore(home, {
+        [token]: {
+          argsHash: hashArgs(victimArgs),
+          argsRedacted: victimArgs,
+          argsPinView: pinViewArgs(victimArgs),
+          secretsSubstitutable: true,
+          createdAt: Date.now(),
+          state: 'user_confirmed',
+        },
+      });
+
+      const refused = (await runWith(token, victimArgs)) as { status: string; code: string };
+      assert.equal(refused.status, 'rejected', 'the swapped entry must not execute');
+      assert.equal(refused.code, 'USER_CONFIRMATION_REQUIRED', 'no grant on the consumed snapshot means no run');
+      assert.equal(inspectApprovalToken(token).state, 'valid', 'the refusal burns nothing: no tombstone landed');
+      assert.ok(
+        !existsSync(join(home, '.config', 'huaweicloud', 'approvals-consumed', `${token}.claimed`)),
+        'a refused gate claims no single-use marker',
+      );
+
+      // The genuine confirmed entry still spends the token: the swap neither
+      // burned it nor laundered the victim command.
+      const restored = approvalsStore(home);
+      restored[token] = genuine;
+      writeApprovalsStore(home, restored);
+      const executed = (await runWith(token, ['ECS', 'DeleteServer', '--server_id=i-123'])) as ApprovedRunResult;
+      assert.equal(executed.approved, true, 'the genuine grant still executes after the refused swap');
     });
   });
 });

@@ -70,8 +70,10 @@ test('enroll persists only a mac: round-trip verify passes, the wrong pin fails'
   assert.equal(isApprovalsPinEnrolled(), true);
 
   const raw = readFileSync(approvalsPinPath(), 'utf8');
-  const record = JSON.parse(raw) as { pinMac?: string };
+  const record = JSON.parse(raw) as { pinMac?: string; fails?: number; lockedUntil?: number };
   assert.match(record.pinMac ?? '', /^[0-9a-f]{64}$/, 'the record is a sha256-hex mac');
+  assert.equal(record.fails, 0, 'a fresh enrollment starts the failure counter at zero');
+  assert.equal(record.lockedUntil, 0, 'and unlocked');
   assert.ok(!raw.includes(PIN), 'the plaintext pin is never persisted');
   if (process.platform !== 'win32') {
     assert.equal(statSync(approvalsPinPath()).mode & 0o777, 0o600, 'the pin record is owner-only');
@@ -149,4 +151,85 @@ test('an unpersistable pin path fails the enrollment closed', () => {
   assert.equal(result.ok, false);
   assert.match(result.reason ?? '', /failed to persist/);
   assert.equal(isApprovalsPinEnrolled(), false, 'a failed enroll reports unenrolled');
+});
+
+// ── Failure lockout (F3) ─────────────────────────────────────────────────────
+// Online guessing is slowed by a persistent counter: every 6th cumulative
+// failure locks verification, the cooldown doubles per lockout episode, and
+// a correct pin clears the state. The tests hand-edit the record to expire a
+// lockout because a same-user process can do exactly that — the counter is
+// guidance, not a boundary.
+
+function readRecord(): { pinMac: string; fails: number; lockedUntil: number } {
+  return JSON.parse(readFileSync(approvalsPinPath(), 'utf8')) as {
+    pinMac: string;
+    fails: number;
+    lockedUntil: number;
+  };
+}
+
+function writeRecord(record: { pinMac: string; fails: number; lockedUntil: number }): void {
+  writeFileSync(approvalsPinPath(), JSON.stringify(record), 'utf8');
+}
+
+test('the sixth cumulative wrong pin locks verification; even the correct pin refuses during the cooldown', () => {
+  resetEnrollment();
+  assert.equal(enrollApprovalsPin(PIN).ok, true);
+
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    const result = verifyApprovalsPin(`wrong-pin-${attempt}`);
+    assert.equal(result.ok, false);
+    assert.match(result.reason ?? '', /does not match/, `attempt ${attempt}: unlocked failures say so`);
+  }
+  assert.equal(verifyApprovalsPin('wrong-pin-6').ok, false, 'the sixth failure also refuses');
+
+  const record = readRecord();
+  assert.equal(record.fails, 6, 'the counter is cumulative across invocations');
+  assert.ok(record.lockedUntil > Date.now(), 'the sixth failure engaged the lockout');
+
+  const during = verifyApprovalsPin(PIN);
+  assert.equal(during.ok, false, 'even the correct pin refuses while locked');
+  assert.match(during.reason ?? '', /locked|cooldown|retry/i, 'the refusal names the cooldown');
+});
+
+test('a correct pin below the threshold clears the counter; lockout episodes double up to the 24-hour cap', () => {
+  resetEnrollment();
+  assert.equal(enrollApprovalsPin(PIN).ok, true);
+
+  for (let attempt = 0; attempt < 3; attempt++) verifyApprovalsPin('early-wrong');
+  assert.equal(verifyApprovalsPin(PIN).ok, true, 'a correct pin below the threshold still verifies');
+  assert.equal(readRecord().fails, 0, 'the correct pin reset the counter');
+  assert.equal(readRecord().lockedUntil, 0, 'and the lockout state');
+
+  // Episode 1: six cumulative failures lock for 5 minutes.
+  for (let attempt = 0; attempt < 6; attempt++) verifyApprovalsPin('ep1-wrong');
+  const firstLock = readRecord();
+  const firstCooldown = firstLock.lockedUntil - Date.now();
+  assert.ok(firstCooldown > 4 * 60_000 && firstCooldown <= 5 * 60_000, 'the first episode locks for 5 minutes');
+
+  // Hand-expire the lockout (the record is same-user editable), then episode 2
+  // doubles the cooldown.
+  writeRecord({ ...firstLock, lockedUntil: Date.now() - 1 });
+  for (let attempt = 0; attempt < 6; attempt++) verifyApprovalsPin('ep2-wrong');
+  const secondLock = readRecord();
+  const secondCooldown = secondLock.lockedUntil - Date.now();
+  assert.ok(
+    secondCooldown > 8 * 60_000 && secondCooldown <= 10 * 60_000,
+    'the second episode doubles the cooldown to 10 minutes',
+  );
+
+  // The cap: a counter near a high multiple (hand-written by the same-user
+  // editor) locks for at most 24 hours.
+  writeRecord({ pinMac: secondLock.pinMac, fails: 6 * 20 - 1, lockedUntil: 0 });
+  verifyApprovalsPin('cap-probe');
+  const capped = readRecord();
+  const cappedCooldown = capped.lockedUntil - Date.now();
+  assert.ok(cappedCooldown <= 24 * 60 * 60_000, 'the cooldown caps at 24 hours');
+  assert.ok(cappedCooldown > 23 * 60 * 60_000, 'and reaches the cap from below');
+
+  // After expiry a correct pin clears everything again.
+  writeRecord({ ...capped, lockedUntil: Date.now() - 1 });
+  assert.equal(verifyApprovalsPin(PIN).ok, true, 'the correct pin verifies after the cooldown');
+  assert.equal(readRecord().fails, 0, 'and clears the counter');
+  assert.equal(readRecord().lockedUntil, 0);
 });

@@ -329,28 +329,48 @@ export function inspectApprovalToken(token: string): ApprovalInspection {
 }
 
 // Mint→approve→run across processes: consume claims the entry and replaces it
-// with a tombstone. Returns the claimed entry on success, null otherwise
-// (unknown, already-consumed, or expired — classify via inspectApprovalToken).
-export function consumeApprovalToken(token: string): ApprovalEntry | null {
-  if (!TOKEN_SHAPE.test(token)) return null;
+// with a tombstone. The result is distinguishable so the run tool can map
+// each refusal to its precise contract code:
+//   'consumed'       — this caller won the claim; entry is the claimed snapshot
+//   'grant_required' — the freshly read entry failed the terminal-
+//                      confirmation gate (state or grant); NOTHING was
+//                      claimed or written (refusal never burns)
+//   'gone'           — unknown, already-consumed, expired, or race-lost;
+//                      classify via inspectApprovalToken
+export type ConsumeApprovalResult =
+  { status: 'consumed'; entry: ApprovalEntry } | { status: 'grant_required'; reason?: string } | { status: 'gone' };
+
+export function consumeApprovalToken(token: string, opts: { requireGrant?: boolean } = {}): ConsumeApprovalResult {
+  if (!TOKEN_SHAPE.test(token)) return { status: 'gone' };
   const map = readApprovals();
   const entry = map[token];
-  if (!entry || isTombstone(entry)) return null;
+  if (!entry || isTombstone(entry)) return { status: 'gone' };
   if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) {
     delete map[token];
     writeApprovals(map);
-    return null;
+    return { status: 'gone' };
+  }
+  // The confirmation gate rides INSIDE the consume cycle, on THIS freshly
+  // read snapshot: state and grant are verified on the same entry the
+  // execution will consume, before any marker claim and before any
+  // tombstone write — the ApprovalSafety Run step is one atomic read over
+  // the entry, by construction. A gate that read a different snapshot than
+  // the one execution consumed was the TOCTOU the adversarial review
+  // reproduced.
+  if (opts.requireGrant) {
+    const grant = verifyConfirmationGrant(entry, token);
+    if (!grant.ok) return { status: 'grant_required', reason: grant.reason };
   }
   // Claim after validation: the marker exists only for tokens that were
-  // real and unexpired at read time. A crash between claim and the
-  // tombstone-write below can burn a valid token without spending it —
-  // fail-closed, rare, accepted.
-  if (!claimSingleUse(token)) return null;
+  // real, unexpired, and (when required) grant-verified at read time. A
+  // crash between claim and the tombstone-write below can burn a valid
+  // token without spending it — fail-closed, rare, accepted.
+  if (!claimSingleUse(token)) return { status: 'gone' };
   // Tombstone instead of deleting outright (D4-24): a repeat call is
   // already_processed, not not_found.
   map[token] = { consumedAt: Date.now(), createdAt: entry.createdAt };
   writeApprovals(map);
-  return entry;
+  return { status: 'consumed', entry };
 }
 
 // ── Terminal confirmation ──────────────────────────────────────────────────
@@ -377,13 +397,32 @@ export interface GrantVerification {
 
 // The grant mac's domain separator: custody-keyed material from one HMAC use
 // never verifies in another (the approval PIN has its own domain), and the
-// mac binds token, command hash, and confirmation time — a valid grant is
-// unforgeable for another token, another command, or a re-flip.
+// mac binds the token, the confirmation time, and the FULL execution-gating
+// shape of the entry — a same-user edit of any field the run gate trusts
+// (argsHash, argsPinView, argsRedacted, secretsSubstitutable, createdAt)
+// breaks verification, not just an argsHash swap.
 const GRANT_MAC_DOMAIN = 'huaweicloud-approval-grant';
 
-function grantMac(masterKey: Buffer, token: string, argsHash: string, confirmedAt: number): string {
+// The shape digests through hashArgs (the module's canonical-JSON machinery),
+// so the confirm side and the verify side agree no matter how the store was
+// re-serialized between them. undefined-valued keys drop on both sides.
+// createdAt is covered so an attacker extending it cannot lengthen the
+// 5-minute window on an old confirmation.
+function grantMac(
+  masterKey: Buffer,
+  token: string,
+  entry: Pick<ApprovalEntry, 'argsHash' | 'argsPinView' | 'argsRedacted' | 'secretsSubstitutable' | 'createdAt'>,
+  confirmedAt: number,
+): string {
+  const shapeDigest = hashArgs({
+    argsHash: entry.argsHash,
+    argsPinView: entry.argsPinView,
+    argsRedacted: entry.argsRedacted,
+    secretsSubstitutable: entry.secretsSubstitutable,
+    createdAt: entry.createdAt,
+  });
   return createHmac('sha256', masterKey)
-    .update(`${GRANT_MAC_DOMAIN}\x00${token}\x00${argsHash}\x00${String(confirmedAt)}`)
+    .update(`${GRANT_MAC_DOMAIN}\x00${token}\x00${shapeDigest}\x00${String(confirmedAt)}`)
     .digest('hex');
 }
 
@@ -412,7 +451,7 @@ export function confirmApprovalToken(token: string): ConfirmApprovalResult {
   const confirmedAt = Date.now();
   const grant: ConfirmGrant = {
     confirmedAt,
-    mac: grantMac(master.key, token, entry.argsHash, confirmedAt),
+    mac: grantMac(master.key, token, entry, confirmedAt),
   };
   // The spread is safe because readApprovals rebuilds entries through the
   // whitelist: unknown fields planted in the file never reach this object.
@@ -451,7 +490,7 @@ export function verifyConfirmationGrant(entry: ApprovalEntry, token: string): Gr
   if (!/^[0-9a-f]{64}$/.test(grant.mac)) {
     return { ok: false, reason: 'confirmation grant mac is malformed' };
   }
-  const expected = grantMac(master.key, token, entry.argsHash, grant.confirmedAt);
+  const expected = grantMac(master.key, token, entry, grant.confirmedAt);
   const matches = timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(grant.mac, 'hex'));
   return matches ? { ok: true } : { ok: false, reason: 'confirmation grant does not verify' };
 }

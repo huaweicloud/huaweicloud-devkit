@@ -27,19 +27,19 @@ Use this skill before any Huawei Cloud action that may expose secrets, change re
 
 ## Enforcement Layers
 
-- Hooks: `hooks/huaweicloud-safety.mjs` blocks risky Codex native hook calls without requiring Python; `hooks/huaweicloud-safety.py` remains for Hermes/Python hook compatibility. The hook also denies the `approve` verb on the agent Bash face.
+- Hooks: `hooks/huaweicloud-safety.mjs` blocks risky Codex native hook calls without requiring Python; `hooks/huaweicloud-safety.py` remains for Hermes/Python hook compatibility. The hook also denies the `approve` and `pin` verbs on the agent Bash face.
 - MCP wrapper: the Node MCP server applies the same safety policy for Codex/OpenCode paths that do not enforce hooks, and the run tool refuses a non-read command without the user's terminal confirmation.
 - Skills: this document teaches agents the rule before they act.
 
 ## Write Execution Boundary
 
 1. Plan: call `huaweicloud_plan_cli_command`. The result echoes the exact command and carries `userConfirmation: { needed, command }`.
-2. Confirm: when `needed` is true, show the user the plan echo and the `userConfirmation.command` line (`npx huaweicloud-devkit approve <approvalToken>`), then wait. The USER runs that line in their own terminal, where a TTY check and a PIN gate the confirmation.
+2. Confirm: when `needed` is true, show the user the plan echo and the `userConfirmation.command` line (`npx huaweicloud-devkit approve <approvalToken>`), then wait. The USER runs that line in their own terminal, where a TTY check and a PIN gate the confirmation. First use: the user runs `npx huaweicloud-devkit pin` once in their own terminal to enroll the PIN.
 3. Run: call `huaweicloud_run_approved_command` with the same `approvalToken` and `approvedByUser: true`.
 
 A non-read command without that terminal confirmation is rejected with `USER_CONFIRMATION_REQUIRED`. The refusal does not consume the token, so retry the same call after the user confirms. Re-running a write needs a fresh plan and a fresh confirmation.
 
-Never run the approve command yourself; the hook denies it on the agent's Bash face. The `approvedByUser: true` argument is not the terminal confirmation and never replaces it.
+Never run the approve or pin commands yourself; the hook denies both verbs on the agent's Bash face. The `approvedByUser: true` argument is not the terminal confirmation and never replaces it.
 
 Without the devkit tools, show the reviewed command and let the user execute it in their own terminal. After a write, verify with `huaweicloud_run_readonly_command` or another read-only check.
 
