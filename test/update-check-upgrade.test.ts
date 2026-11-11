@@ -1210,6 +1210,66 @@ test('upgradePackage 失败原因: EMAXREDIRECT 也在封闭词表内', async ()
   assert.match(reason, /EMAXREDIRECT/);
 });
 
+test('upgradePackage 升级命令: spawn 选项给出 16 MiB 的缓冲上限', async () => {
+  let opts: SpawnSyncOptions | null = null;
+  const spawnFn: UpgradeSpawnFn = (_cmd, _args, options) => {
+    opts = options;
+    return { status: 0 };
+  };
+  await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn });
+  assert.equal(opts!.maxBuffer, 16 * 1024 * 1024);
+});
+
+test('upgradePackage 失败原因: 有 stderr 时 spawn 的 ENOBUFS 不冒充原因', async () => {
+  const stderr = ['npm error code 7', 'npm error fatal: native build failed: missing libfoo'].join('\n');
+  const r = await upgradePackage(
+    { target: 'opencode' },
+    {
+      doQuery: stubQuery,
+      spawnFn: () => ({ status: null, stdout: '', stderr, error: new Error('spawnSync /bin/sh ENOBUFS') }),
+    },
+  );
+  assert.equal(r.success, false);
+  assert.match(r.error ?? '', /missing libfoo/);
+  assert.doesNotMatch(r.error ?? '', /ENOBUFS/);
+});
+
+test('upgradePackage 失败原因: 子进程以 npm 开头的诊断行不被频道规则吞掉', async () => {
+  const reason = await reasonFor(['npm install failed: could not reach registry', 'progress 1/2'].join('\n'));
+  assert.match(reason, /npm install failed: could not reach registry/);
+});
+
+test('upgradePackage 失败原因: 成功 preinstall 的输出不顶替失败 postinstall 的 echo', async () => {
+  const reason = await reasonFor(failureStderr('twoscript-preinstall.err'));
+  assert.match(reason, /postinstall/);
+  assert.match(reason, /post\.js/);
+  assert.doesNotMatch(reason, /preparing workspace|preinstall node_modules/);
+});
+
+test('upgradePackage 失败原因: 已恢复的 gyp 错误不顶替失败 postinstall 的 echo', async () => {
+  const reason = await reasonFor(failureStderr('twoscript-recovered-gyp.err'));
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /gyp ERR|EACCES/);
+});
+
+test('upgradePackage 失败原因: 没有 echo 对时保留裸行行为', async () => {
+  const reason = await reasonFor(failureStderr('nc-silent-preinstall.err'));
+  assert.match(reason, /preinstall: preparing workspace/);
+});
+
+test('upgradePackage 失败原因: 斜杠与短横的 ASCII spinner 帧也被剥掉', async () => {
+  for (const frame of ['/', '-']) {
+    const stderr = [
+      `${frame} npm verbose code 7`,
+      'npm error code E404',
+      'npm error 404 Not Found - GET https://registry.example/x',
+    ].join('\n');
+    const reason = await reasonFor(stderr);
+    assert.match(reason, /code E404/, `${frame} frame strips`);
+    assert.doesNotMatch(reason, /npm verbose/);
+  }
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });

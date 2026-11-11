@@ -340,7 +340,12 @@ function isNpmNoiseLine(line: string): boolean {
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
   // npm's log channels are not diagnostics: every `npm <channel>` prefix is
   // noise except the error channel and the `info run` echo of a script.
-  if (/^npm\s+(?!error\b|info run\b)[a-z]+\b/i.test(line)) return true;
+  if (
+    /^npm\s+(?:notice|warn|info|verbose|verb(?:ose)?|http|silly|timing)\b/i.test(line) &&
+    !/^npm info run\b/i.test(line)
+  ) {
+    return true;
+  }
   if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
   const payload = npmPayload(line);
   return (
@@ -387,32 +392,43 @@ function lineRank(line: string): number {
   return 2;
 }
 
+function lastFailingResult(lines: string[]): { line: string; index: number } | undefined {
+  return lines
+    .map((line, index) => ({ line, index }))
+    .filter((entry) => isNpmScriptResult(entry.line) && isFailingScriptResult(entry.line))
+    .at(-1);
+}
+
+function lastEchoBefore(lines: string[], index: number): { line: string; index: number } | undefined {
+  return lines
+    .map((line, entryIndex) => ({ line, index: entryIndex }))
+    .filter((entry) => entry.index < index && lineRank(entry.line) === 3)
+    .at(-1);
+}
+
 function selectFailureLine(
   lines: string[],
   { positionLast }: { positionLast: boolean },
-): { line: string; rank: number } | undefined {
+): { line: string; rank: number; index: number } | undefined {
   for (const rank of [0, 1, 2, 3, 4]) {
-    const hits = lines.filter((line) => lineRank(line) === rank);
+    const hits = lines.map((line, index) => ({ line, index })).filter((entry) => lineRank(entry.line) === rank);
     if (!hits.length) continue;
     if (rank === 3) {
       // The echo tier names the failing script: the last echo before the last
       // failing "{ code: N, signal: ... }" result line wins, else the last echo.
-      const echoes = lines.map((line, index) => ({ line, index })).filter((entry) => lineRank(entry.line) === 3);
-      const failing = lines
-        .map((line, index) => ({ line, index }))
-        .filter((entry) => isNpmScriptResult(entry.line) && isFailingScriptResult(entry.line))
-        .at(-1);
-      const before = failing ? echoes.filter((entry) => entry.index < failing.index) : [];
-      return { line: (before.at(-1) ?? echoes.at(-1))!.line, rank };
+      const failing = lastFailingResult(lines);
+      const paired = failing ? lastEchoBefore(lines, failing.index) : undefined;
+      const chosen = paired ?? hits.at(-1)!;
+      return { line: chosen.line, rank, index: chosen.index };
     }
     const later = rank === 0 || (rank === 2 && positionLast);
-    return { line: (later ? hits.at(-1) : hits[0])!, rank };
+    const chosen = later ? hits.at(-1)! : hits[0]!;
+    return { line: chosen.line, rank, index: chosen.index };
   }
   return undefined;
 }
 
 function extractNpmFailureReason(execResult: SpawnResultLike): string {
-  if (execResult.error?.message) return execResult.error.message;
   const lines = String(execResult.stderr || '')
     .split(/\r?\n/)
     .map((line) => normalizeNpmLine(line))
@@ -421,7 +437,18 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   const others = lines.filter((line) => isNpmErrorLine(line) && line !== codeLine);
   const codeless = lines.filter((line) => !isNpmErrorLine(line));
   const block = selectFailureLine(others, { positionLast: false });
-  const bare = selectFailureLine(codeless, { positionLast: true });
+  let bare = selectFailureLine(codeless, { positionLast: true });
+  // A loud successful script (or a gyp error it survived) is not the cause when
+  // npm emitted a failing echo pair later: the echo names the failing script.
+  const failing = lastFailingResult(codeless);
+  const lastSuccess = codeless
+    .map((line, index) => ({ line, index }))
+    .filter((entry) => isNpmScriptResult(entry.line) && !isFailingScriptResult(entry.line))
+    .at(-1);
+  if (bare && failing && lastSuccess && lastSuccess.index < failing.index && bare.index < lastSuccess.index) {
+    const echo = lastEchoBefore(codeless, failing.index);
+    if (echo) bare = { line: echo.line, rank: 3, index: echo.index };
+  }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
   // the block keeps its code prefix when the block wins or when only a weak
   // code-less line survives, because the code still identifies the failure.
@@ -431,6 +458,9 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (block) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
   if (codeLine) return codeLine;
   if (bare) return bare.line;
+  // A spawn artifact (timeout, ENOBUFS) is a cause only when the child said
+  // nothing on stderr.
+  if (execResult.error?.message) return execResult.error.message;
   if (execResult.signal) return `signal ${execResult.signal}`;
   if (typeof execResult.status === 'number') return `exit ${execResult.status}`;
   return 'unknown failure';
@@ -499,6 +529,7 @@ export async function upgradePackage(
       windowsHide: true,
       shell: true,
       env: upgradeEnv(),
+      maxBuffer: 16 * 1024 * 1024,
     });
   } catch (error) {
     return {
