@@ -33,10 +33,13 @@ before(() => {
 
 after(() => {
   clearCustodyCache();
-  if (previousHome === undefined) delete process.env.HUAWEICLOUD_HOME;
-  else process.env.HUAWEICLOUD_HOME = previousHome;
-  if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
-  else process.env.HW_VAULT_MASTER_KEY = previousKey;
+  for (const [name, saved] of Object.entries({
+    HUAWEICLOUD_HOME: previousHome,
+    HW_VAULT_MASTER_KEY: previousKey,
+  })) {
+    if (saved === undefined) delete process.env[name];
+    else process.env[name] = saved;
+  }
 });
 
 function resetEnrollment(): void {
