@@ -1,0 +1,2 @@
+EXEC: copying payload to opencode plugin dir (step 2/4)
+Error: npm install failed in /home/op/x: 404 tarball, folder, http url, or git url.

@@ -1,0 +1,2 @@
+Error: native build failed: missing libfoo (exit 7)
+ESBUILD_BINARY_PATH=/opt/x/esbuild resolved, spawning rebuild

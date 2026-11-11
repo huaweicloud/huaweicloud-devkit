@@ -5,4 +5,4 @@ npm error 404  The requested resource 'huaweicloud-devkit-no-such-package-xyz@*'
 npm error 404
 npm error 404 Note that you can also install from a
 npm error 404 tarball, folder, http url, or git url.
-npm error A complete log of this run can be found in: /home/yanchengyu/.npm/_logs/2026-11-11T05_25_21_992Z-debug-0.log
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T05_25_21_992Z-debug-0.log

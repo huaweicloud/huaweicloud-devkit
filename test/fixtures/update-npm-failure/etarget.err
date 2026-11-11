@@ -1,4 +1,4 @@
 npm error code ETARGET
 npm error notarget No matching version found for huaweicloud-devkit@999.999.999.
 npm error notarget In most cases you or one of your dependencies are requesting a package version that doesn't exist.
-npm error A complete log of this run can be found in: /home/yanchengyu/.npm/_logs/2026-11-11T05_28_51_955Z-debug-0.log
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T05_28_51_955Z-debug-0.log

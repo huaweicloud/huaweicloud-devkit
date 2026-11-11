@@ -457,6 +457,123 @@ test('upgradePackage 失败原因: Node loader 崩溃取 Error 行, 不取帧头
   assert.doesNotMatch(reason, /^node:internal/);
 });
 
+test('upgradePackage 失败原因: npm error 块内 Error 行压过进度行', async () => {
+  const reason = await reasonFor(failureStderr('npm-info-before-error.err'));
+  assert.match(reason, /prebuilt binary download failed/);
+  assert.doesNotMatch(reason, /Downloading|verifying/);
+});
+
+test('upgradePackage 失败原因: 数字 E-code 也是强标记', async () => {
+  const reason = await reasonFor(failureStderr('p1-e404-behind-audit.err'));
+  assert.match(reason, /E404: package huaweicloud-devkit not present/);
+  assert.doesNotMatch(reason, /^AUDIT/);
+});
+
+test('upgradePackage 失败原因: 下划线 E-code 也是强标记', async () => {
+  const reason = await reasonFor(failureStderr('p2-eai-again-vs-audit.err'));
+  assert.match(reason, /EAI_AGAIN: Temporary failure/);
+  assert.doesNotMatch(reason, /^AUDIT/);
+});
+
+test('upgradePackage 失败原因: 尾部 EXIT 大写词不是强标记', async () => {
+  const reason = await reasonFor(failureStderr('q1-trailing-exit-status.err'));
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /EXIT code/);
+});
+
+test('upgradePackage 失败原因: 尾部 EXTRACT 大写词不是强标记', async () => {
+  const reason = await reasonFor(failureStderr('q2-trailing-extract-progress.err'));
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /EXTRACT cleanup/);
+});
+
+test('upgradePackage 失败原因: ENABLED 赋值行不是强标记', async () => {
+  const reason = await reasonFor(failureStderr('q3-enabled-audit.err'));
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /ENABLED/);
+});
+
+test('upgradePackage 失败原因: EXPORTED 行不压过其前的 Error 行', async () => {
+  const reason = await reasonFor(failureStderr('d2-exported-last.err'));
+  assert.match(reason, /Error: npm install failed in/);
+  assert.doesNotMatch(reason, /EXPORTED/);
+});
+
+test('upgradePackage 失败原因: ESBUILD_ 行不压过其前的 Error 行', async () => {
+  const reason = await reasonFor(failureStderr('d3-esbuild-last.err'));
+  assert.match(reason, /native build failed/);
+  assert.doesNotMatch(reason, /ESBUILD/);
+});
+
+test('upgradePackage 失败原因: EXEC 行不压过其后的 Error 行', async () => {
+  const reason = await reasonFor(failureStderr('d4-exec-first.err'));
+  assert.match(reason, /npm install failed in/);
+  assert.doesNotMatch(reason, /^EXEC/);
+});
+
+test('upgradePackage 失败原因: E404 行压过其后带提示词的 warning 行', async () => {
+  const reason = await reasonFor(failureStderr('e404-vs-hint.err'));
+  assert.match(reason, /E404 fetching tarball/);
+  assert.doesNotMatch(reason, /warning: retry/);
+});
+
+test('upgradePackage 失败原因: 位置层取最后一条无标记行', async () => {
+  const reason = await reasonFor(failureStderr('f-position-cp.err'));
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /step 1\/4/);
+});
+
+test('upgradePackage 失败原因: TypeError 也是错误名起始', async () => {
+  const reason = await reasonFor(failureStderr('crash-typeerror.err'));
+  assert.match(reason, /TypeError: Cannot read properties/);
+});
+
+test('upgradePackage 失败原因: 方括号 dump 头取 TypeError 行, 不取 code 片段', async () => {
+  const reason = await reasonFor(failureStderr('crash-fetch-dump.err'));
+  assert.match(reason, /\[TypeError: fetch failed\]/);
+  assert.doesNotMatch(reason, /^code:/);
+});
+
+test('upgradePackage 失败原因: 以 at least 开头的人读行不被栈帧规则吃掉', async () => {
+  const reason = await reasonFor(failureStderr('info-at-least-one.err'));
+  assert.match(reason, /at least one dependency failed to install/);
+});
+
+test('upgradePackage 失败原因: 以 debug 日志结尾的人读行保留内容', async () => {
+  const reason = await reasonFor(failureStderr('info-ends-with-log.err'));
+  assert.match(reason, /install failed: see .*debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: 无 code 的 debug 日志结尾人读行同样保留', async () => {
+  const reason = await reasonFor(failureStderr('info-codeless-ends-with-log.err'));
+  assert.match(reason, /Error: package install failed/);
+});
+
+test('upgradePackage 失败原因: 无 code 的 at least 行不被栈帧规则吃掉', async () => {
+  const reason = await reasonFor(failureStderr('info-codeless-at-least-one.err'));
+  assert.match(reason, /at least one runtime dependency failed/);
+});
+
+test('upgradePackage 失败原因: 只含路径的行才算指针行', async () => {
+  const stderr = ['npm error code EACCES', 'npm error cannot write /home/op/x-debug.log'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code EACCES/);
+  assert.match(reason, /cannot write/);
+});
+
+test('upgradePackage 失败原因: 无 code 的诊断行带日志路径时仍被选中', async () => {
+  const stderr = ['EACCES: permission denied, open /home/op/x-debug.log', 'progress 1/3'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /progress 1\/3/);
+});
+
+test('upgradePackage 失败原因: npm 9 pty 行里的 ERR! token 可移位', async () => {
+  const reason = await reasonFor(failureStderr('legacy-pty-npm9.err'));
+  assert.match(reason, /code ETARGET/);
+  assert.match(reason, /No matching version found/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
@@ -585,6 +702,29 @@ test('upgradePackage 升级子进程: devkit 镜像设了时两种拼写都收�
   );
 });
 
+test('upgradePackage 升级子进程: devkit 镜像的大小写拼写收敛到一个通道', async () => {
+  const upper = 'http://upper-mirror.corp.local:4873';
+  const lower = 'http://lower-mirror.corp.local:4873';
+  await withEnv(
+    {
+      HUAWEICLOUD_NPM_REGISTRY: upper,
+      huaweicloud_npm_registry: lower,
+      npm_config_registry: undefined,
+      NPM_CONFIG_REGISTRY: undefined,
+    },
+    async () => {
+      const env = await childEnv();
+      assert.deepEqual(
+        Object.keys(env).filter((key) => key.toUpperCase() === 'HUAWEICLOUD_NPM_REGISTRY'),
+        ['HUAWEICLOUD_NPM_REGISTRY'],
+        'one canonical devkit spelling reaches the child',
+      );
+      assert.equal(env.HUAWEICLOUD_NPM_REGISTRY, upper, 'the exact-case spelling wins');
+      assert.equal(env.npm_config_registry, env.HUAWEICLOUD_NPM_REGISTRY, 'both channels agree');
+    },
+  );
+});
+
 test('upgradePackage 升级子进程: 全空时由 npm 自己的公共默认决定', async () => {
   await withEnv(NO_REGISTRY, async () => {
     const env = await childEnv();
@@ -593,10 +733,13 @@ test('upgradePackage 升级子进程: 全空时由 npm 自己的公共默认决�
   });
 });
 
-test('fixtures: no update failure capture embeds a /tmp scratch path', () => {
+test('fixtures: no update failure capture embeds a scratch or operator path', () => {
   const dir = fileURLToPath(FAILURE_FIXTURES);
   const offenders = readdirSync(dir)
     .filter((name) => name.endsWith('.err'))
-    .filter((name) => readFileSync(join(dir, name), 'utf8').includes('/tmp'));
+    .filter((name) => {
+      const text = readFileSync(join(dir, name), 'utf8');
+      return text.includes('/tmp') || text.includes('/home/yanchengyu');
+    });
   assert.deepEqual(offenders, []);
 });

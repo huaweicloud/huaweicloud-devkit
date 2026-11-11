@@ -62,10 +62,13 @@ const UPGRADE_PRESERVE_ENV_KEYS = new Set([
 function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {};
   const registrySpellings: string[] = [];
-  let registry: string | undefined;
+  const devkitSpellings: Array<[string, string | undefined]> = [];
   for (const [key, value] of Object.entries(env)) {
     const upper = key.toUpperCase();
-    if (upper === 'HUAWEICLOUD_NPM_REGISTRY') registry = value;
+    if (upper === 'HUAWEICLOUD_NPM_REGISTRY') {
+      devkitSpellings.push([key, value]);
+      continue;
+    }
     if (upper === 'NPM_CONFIG_REGISTRY') registrySpellings.push(key);
     if (UPGRADE_PRESERVE_ENV_KEYS.has(upper)) {
       next[key] = value;
@@ -74,12 +77,17 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(upper)) continue;
     next[key] = value;
   }
-  // Dev 4890d78c's pin, scoped to the operator's devkit mirror: when it is set,
-  // every npm registry spelling collapses to it; when it is unset, npm's own env
-  // and .npmrc channels reach the child untouched.
+  // Pathological case spellings: the exact-case devkit key wins, else the first
+  // spelling in environment order. One canonical channel, so the child's own
+  // devkit lookup and npm's pin cannot disagree.
+  const [canonical, registry] =
+    devkitSpellings.find(([key]) => key === 'HUAWEICLOUD_NPM_REGISTRY') ?? devkitSpellings[0] ?? [];
   if (registry?.trim()) {
+    next.HUAWEICLOUD_NPM_REGISTRY = registry;
     for (const key of registrySpellings) delete next[key];
     next.npm_config_registry = registry;
+  } else if (canonical) {
+    next[canonical] = registry ?? '';
   }
   return next;
 }
@@ -116,34 +124,48 @@ function defaultSpawn(
 // npm reports failures as `npm error ...` lines (npm 7+) or `npm ERR! ...`
 // (legacy), with ANSI color, pty spinners, warnings, notices, and log pointers
 // around them. The tail is boilerplate, so the reason keeps the identifying
-// code line plus the first human diagnostic (#1117).
+// code line plus the human diagnostic (#1117).
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
 const LOG_POINTER_SUFFIX =
   /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:).*$/;
-const DIAGNOSTIC_HINT = /\b(?:error|failed|failure|fatal|unknown|unsupported)\b|错误|失败|不支持|未知/i;
-// Strong failure markers: an errno-style code token (ENOTFOUND, EACCES, E404) or
-// a line that opens with Error/fatal. The CLI convention puts the cause last,
-// so ties inside a tier take the later line.
-const STRONG_MARKER = /\bE[A-Z][A-Z0-9]{2,}\b|^(?:Error|error|fatal|FATAL)\b/;
+const DIAGNOSTIC_HINT = /\b(?:failed|failure|fatal|unknown|unsupported)\b|^error\b|错误|失败|不支持|未知/i;
+// Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
+// and the bracketed dump header `[TypeError: ...] {`.
+const ERROR_NAME = /^(?:\[?[A-Za-z]*Error\b|fatal\b|FATAL\b)/;
+// Progress vocabulary that looks like an errno token (E + word) but is not one.
+const NON_ERRNO_E_WORDS = new Set([
+  'ENABLED',
+  'ENFORCED',
+  'ESBUILD',
+  'EVENTS',
+  'EXEC',
+  'EXIT',
+  'EXPORTED',
+  'EXTRACT',
+  'EMAIL',
+  'END',
+  'EVS',
+  'E2E',
+]);
+const ERRNO_SHAPE = /^E[A-Z0-9][A-Z0-9_]+$/;
 
 function stripLogPointerSuffix(line: string): string {
   return line.replace(LOG_POINTER_SUFFIX, '').trim();
 }
 
 function shiftNpmErrorToken(line: string): string {
-  const at = line.search(/npm error\b/);
-  if (at <= 0) return line;
-  // pty spinners write glyph runs, spaces, or cursor escapes before the line;
-  // anything printable before the token is the child's own message and stays.
-  return /^[^\x21-\x7e]*$/.test(line.slice(0, at)) ? line.slice(at) : line;
+  const errorAt = line.search(/npm error\b/);
+  if (errorAt === 0) return line;
+  if (errorAt > 0 && /^[^\x21-\x7e]*$/.test(line.slice(0, errorAt))) return line.slice(errorAt);
+  // npm 9 under a pty glues progress text before the legacy token; nothing
+  // printable there is a diagnostic of its own, so the token still moves.
+  const legacyAt = line.search(/npm ERR!/);
+  return legacyAt > 0 ? line.slice(legacyAt) : line;
 }
 
 function normalizeNpmLine(line: string): string {
-  const normalized = line
-    .replace(ANSI_ESCAPE, '')
-    .trim()
-    .replace(/^npm ERR!\s?/, 'npm error ');
-  return stripLogPointerSuffix(shiftNpmErrorToken(normalized));
+  const shifted = shiftNpmErrorToken(line.replace(ANSI_ESCAPE, '').trim());
+  return stripLogPointerSuffix(shifted.replace(/^npm ERR!\s?/, 'npm error '));
 }
 
 function npmPayload(line: string): string {
@@ -154,6 +176,16 @@ function isNpmErrorLine(line: string): boolean {
   return /^npm error\b/.test(line);
 }
 
+// A pointer line carries nothing but the npm log path; a sentence that mentions
+// the path keeps its content.
+function isPointerOnlyLine(line: string): boolean {
+  const payload = npmPayload(line).trim();
+  if (!/(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload)) return false;
+  return /^(?:[A-Za-z]:[\\/]|~[\\/]|[\\/])/.test(payload);
+}
+
+const STACK_FRAME = /^\s*at\s+(?:async\s+)?[\w.$<>"'#]+(?:\s+\[as [^\]]+\])?\s*\(/;
+
 function isNpmNoiseLine(line: string): boolean {
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
   if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
@@ -161,19 +193,31 @@ function isNpmNoiseLine(line: string): boolean {
   return (
     /^A complete log of this run can be found in:/.test(payload) ||
     /^For a full report see:/.test(payload) ||
-    /^\s*.*(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload) ||
-    /^\s*at\s/.test(payload)
+    isPointerOnlyLine(line) ||
+    STACK_FRAME.test(payload)
   );
 }
 
-// npm's error block leads with metadata fields before the sentence that
-// explains the failure. `command sh -c ...` is a last-resort diagnostic: the
-// command that failed is better than nothing when the block has no sentence.
-function npmDiagnosticRank(line: string): number {
+// Tiers: a strong failure marker, then failure words, then the plain position
+// tier, and metadata last. Ties take the later line: CLI causes land late.
+function lineRank(line: string): number {
   const payload = npmPayload(line);
-  if (payload === '' || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 2;
-  if (/^command\b/.test(payload)) return 1;
-  return 0;
+  if (ERROR_NAME.test(payload)) return 0;
+  const token = /^([A-Z0-9_]+)(?=:|\s)/.exec(payload)?.[1];
+  if (token && ERRNO_SHAPE.test(token) && !NON_ERRNO_E_WORDS.has(token)) return 0;
+  if (/(?<=:\s)E[A-Z0-9][A-Z0-9_]{2,}\b/.test(payload)) return 0;
+  if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 3;
+  if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+)\s*,?\s*$/.test(payload)) return 3;
+  if (DIAGNOSTIC_HINT.test(payload)) return 1;
+  return 2;
+}
+
+function selectFailureLine(lines: string[], preferLast: boolean): string | undefined {
+  for (const rank of [0, 1, 2, 3]) {
+    const hits = lines.filter((line) => lineRank(line) === rank);
+    if (hits.length) return preferLast ? hits.at(-1) : hits[0];
+  }
+  return undefined;
 }
 
 function extractNpmFailureReason(execResult: SpawnResultLike): string {
@@ -184,15 +228,12 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     .filter((line) => line && !isNpmNoiseLine(line));
   const codeLine = lines.find((line) => isNpmErrorLine(line) && /^code \S+/.test(npmPayload(line)));
   const others = lines.filter((line) => isNpmErrorLine(line) && line !== codeLine);
-  const diagnostic =
-    others.find((line) => npmDiagnosticRank(line) === 0) ?? others.find((line) => npmDiagnosticRank(line) === 1);
+  const diagnostic = selectFailureLine(others, false);
   const kept = [codeLine, diagnostic].filter((line): line is string => Boolean(line));
   if (kept.length) return kept.join(' ');
   const codeless = lines.filter((line) => !isNpmErrorLine(line));
-  const strong = codeless.filter((line) => STRONG_MARKER.test(line));
-  const hinted = codeless.filter((line) => DIAGNOSTIC_HINT.test(line));
-  const first = strong.at(-1) ?? hinted.at(-1) ?? codeless[0];
-  if (first) return first;
+  const selected = selectFailureLine(codeless, true);
+  if (selected) return selected;
   if (execResult.signal) return `signal ${execResult.signal}`;
   if (typeof execResult.status === 'number') return `exit ${execResult.status}`;
   return 'unknown failure';

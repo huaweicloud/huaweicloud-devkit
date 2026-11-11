@@ -1,0 +1,2 @@
+AUDIT ENABLED=proxy
+EACCES: permission denied, open '/root/.npm/_cacache/temp/build'
