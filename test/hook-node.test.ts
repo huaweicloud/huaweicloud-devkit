@@ -167,6 +167,30 @@ test('node hook allows safe commands with empty stdout', () => {
   assert.equal(result.stdout.trim(), '');
 });
 
+test('node hook denies the approval CLI on the agent Bash face (the terminal confirm is the human channel)', () => {
+  // The approve verb consumes the plan token the user is meant to confirm in
+  // their own TTY (PIN-checked). An agent running it would drive the human's
+  // channel itself. An hcloud operation merely carrying the word Approve
+  // stays allowed: the patterns anchor on the devkit binary spelling.
+  const token = '550e8400-e29b-41d4-a716-446655440000';
+  const denied = [
+    `npx huaweicloud-devkit approve ${token}`,
+    `node dist/setup-cli.js approve ${token}`,
+    'node bin/setup.cjs approve some-token',
+    'npx huaweicloud-devkit@2.0.0 approve x',
+  ];
+  for (const command of denied) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /terminal/i, command);
+  }
+  const allowed = runHook({ tool_name: 'Bash', tool_input: { command: 'hcloud Workspace Approve --x=1' } });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(allowed.stdout.trim(), '', 'an hcloud operation named Approve must stay allowed');
+});
+
 test('node hook denies Windows-script-wrapped hcloud writes (#731/#760)', () => {
   // Whichever module the wrapper loads (compiled dist/ when present —
   // stale dist fails this test on purpose — or the src/ fallback in a raw

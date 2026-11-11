@@ -33,6 +33,15 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['echo secret get secret://user/hw-sk --stdout | xargs npx huaweicloud-devkit', 'deny'],
   ['npx huaweicloud-devkit secret list', 'allow'],
   ['npx huaweicloud-devkit secret exec --env K=secret://user/ak -- node script.js', 'allow'],
+  // Approval CLI face: the terminal confirm (PIN-checked) is the human's
+  // channel, so the agent Bash face denies the verb in every devkit binary
+  // spelling. An hcloud operation merely carrying the word Approve stays
+  // allowed — the patterns anchor on the binary, never on the verb alone.
+  ['npx huaweicloud-devkit approve 550e8400-e29b-41d4-a716-446655440000', 'deny'],
+  ['node dist/setup-cli.js approve 550e8400-e29b-41d4-a716-446655440000', 'deny'],
+  ['node bin/setup.cjs approve some-token', 'deny'],
+  ['npx huaweicloud-devkit@2.0.0 approve x', 'deny'],
+  ['hcloud Workspace Approve --x=1', 'allow'],
   // Write gate: separators, command positions, obfuscation.
   ['hcloud ECS CreateServers --server.name=x', 'deny'],
   ['hcloud ECS ListServers\nhcloud ECS CreateServers --server.name=x', 'deny'],

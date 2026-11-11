@@ -34,6 +34,7 @@ HOOK_EVENTS_PATH = TELEMETRY_DIR / "hook-events.jsonl"
 CONFIG_FILE_RE = None
 SECRET_READ_RE = None
 SECRET_CLI_RE = None
+APPROVAL_CLI_RE = None
 WRITE_OPERATION_RE = None
 WRITE_VOCAB_RE = None
 READ_OPERATION_RE = None
@@ -73,7 +74,7 @@ OBS_MARKER_RE = re.compile(r"\bOBS\b", re.I)
 
 
 def load_policy():
-    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
+    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, APPROVAL_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
     try:
         with POLICY_PATH.open("r", encoding="utf-8") as file_obj:
             policy = json.load(file_obj)
@@ -188,6 +189,22 @@ def load_policy():
         blocked_secret_cli = policy.get("blockedSecretCliPatterns", [])
         if blocked_secret_cli:
             SECRET_CLI_RE = re.compile("|".join(blocked_secret_cli), re.I)
+        # The approval CLI's terminal-confirm verb. No order-independent
+        # bin+verb pair guard here, unlike the reveal pair below: `approve`
+        # is a common word, so a Huawei Cloud operation named e.g.
+        # ApproveThing must never trip this gate. These anchored patterns
+        # fire only when a devkit binary spelling is present too.
+        blocked_approval_cli = policy.get("blockedApprovalCliPatterns", [])
+        if isinstance(blocked_approval_cli, list):
+            blocked_approval_cli = [p for p in blocked_approval_cli if isinstance(p, str)]
+            if blocked_approval_cli:
+                try:
+                    APPROVAL_CLI_RE = re.compile("|".join(blocked_approval_cli), re.I)
+                except re.error:
+                    # Isolate this gate's degradation: a malformed pattern
+                    # leaves APPROVAL_CLI_RE None instead of aborting the
+                    # whole policy load.
+                    APPROVAL_CLI_RE = None
     except Exception:
         pass
 
@@ -2601,6 +2618,8 @@ def evaluate(tool_name, tool_input):
         return "reading Huawei Cloud credential/profile files can expose AK/SK or tokens. Use redacted toolkit tools."
     if SECRET_CLI_RE and any(SECRET_CLI_RE.search(candidate) for candidate in candidates):
         return "printing vault secrets into the agent context is blocked. Use secret exec so the value reaches only the child process environment."
+    if APPROVAL_CLI_RE and any(APPROVAL_CLI_RE.search(candidate) for candidate in candidates):
+        return "running the approval CLI from the agent Bash face is blocked: the confirmation must come from the user's own interactive terminal, where the PIN is checked. Ask the user to run the printed npx huaweicloud-devkit approve <token> line themselves, then retry the same call."
     # Order-independent reveal pair: xargs reorders the argv while every word
     # stays literal — a devkit bin plus a `secret get` pair anywhere is a
     # reveal regardless of order (both shadow candidates — the decoded one

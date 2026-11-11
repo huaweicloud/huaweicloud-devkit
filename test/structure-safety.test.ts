@@ -144,6 +144,32 @@ test('the py hook derives the obfuscation gate write vocabulary from policy.json
   );
 });
 
+test('the py hook derives the approval-CLI deny regex from policy.json (no hand-copied list)', () => {
+  // The approve verb's deny ships in all three hook layers through one
+  // vocabulary. The py compile must read the policy field, never a local
+  // alternation: a hand-copied list drifts from policy.json exactly like
+  // the retired WRITE_VOCAB_RE hardcode did.
+  const pyHook = readSource(join('hooks', 'huaweicloud-safety.py'));
+  const policy = readJson(join(pluginRoot, 'safety', 'policy.json')) as Record<string, unknown>;
+  assert.ok(
+    Array.isArray(policy.blockedApprovalCliPatterns) && policy.blockedApprovalCliPatterns.length >= 1,
+    'policy.json must carry blockedApprovalCliPatterns',
+  );
+  assert.match(pyHook, /APPROVAL_CLI_RE = None/);
+  assert.match(pyHook, /blocked_approval_cli = policy\.get\("blockedApprovalCliPatterns", \[\]\)/);
+  const approvalAssignments = pyHook.match(/APPROVAL_CLI_RE = re\.compile\([^\n]*\)/g) ?? [];
+  assert.ok(approvalAssignments.length >= 1, 'the approval deny must be compiled inside load_policy');
+  for (const assignment of approvalAssignments) {
+    assert.match(assignment, /blocked_approval_cli/, `policy-derived compile required: ${assignment}`);
+  }
+  // A compile with no applied gate is a no-op: the deny must search both
+  // shadow candidates, like the reveal gate beside it.
+  assert.match(
+    pyHook,
+    /if APPROVAL_CLI_RE and any\(APPROVAL_CLI_RE\.search\(candidate\) for candidate in candidates\)/,
+  );
+});
+
 test('the py hook degrades coherently: derived vocabularies, isolated fields, fail-closed gates (interrogate round 1)', () => {
   // The read vocabulary is ALSO policy-derived (the last hand-maintained
   // policy mirror), the write gate's read exemption is start-anchored

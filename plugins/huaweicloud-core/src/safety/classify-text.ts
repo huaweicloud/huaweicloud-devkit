@@ -843,6 +843,20 @@ export function classifyTextCommand(command: unknown, options: ClassifyOptions =
     };
   }
 
+  // The approval CLI's terminal-confirm verb: `approve` consumes the plan
+  // token the user is meant to confirm in their own TTY (PIN-checked). An
+  // agent that runs it from Bash drives the human's channel itself, so the
+  // approval never proves a person consented. Matched against the same two
+  // shadows as the reveal gate.
+  if (shadowCandidates.some((candidate) => matchesAny(candidate, policy.blockedApprovalCliPatterns))) {
+    return {
+      decision: 'deny',
+      risk: 'approval',
+      reason:
+        "Running the approval CLI from the agent Bash face is blocked: the confirmation must come from the user's own interactive terminal, where the PIN is checked. Ask the user to run the printed npx huaweicloud-devkit approve <token> line themselves, then retry the same call.",
+    };
+  }
+
   // Order-independent reveal pair: `echo secret get <ref> --stdout | xargs
   // npx huaweicloud-devkit` reorders the argv through xargs while every word
   // is literal in the text — the patterns above assume bin-before-

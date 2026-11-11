@@ -45,6 +45,11 @@
     "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+secret\\s+get\\b",
     "setup\\.cjs(\\s+--)?\\s+secret\\s+get\\b"
   ],
+  "blockedApprovalCliPatterns": [
+    "huaweicloud-devkit(@[\\w.+-]+)?(\\.(js|cjs|mjs|exe|ts))?(\\s+--)?\\s+approve\\b",
+    "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+approve\\b",
+    "setup\\.cjs(\\s+--)?\\s+approve\\b"
+  ],
   "writeOperationPrefixes": [
     "Create",
     "BatchCreate",
