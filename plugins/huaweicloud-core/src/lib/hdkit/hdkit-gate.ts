@@ -256,17 +256,53 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
   };
 }
 
-// 装填辅助（round 9 收口）：普通赋值失败（getter-only 原型访问器，如
-// DOMException.code）用 defineProperty 落 own 属性；载体整体拒绝装饰（冻结
-// 对象、不可配置的 own getter）时返回 false——由调用方走克隆分支。
+// 安全消息读取（round 10）：抛出型 getter 不引爆——按缺失处理，装饰分支
+// 的设计文案兜底。
+function safeMessageText(err: object): string {
+  try {
+    const raw = (err as { message?: unknown }).message;
+    return typeof raw === 'string' ? raw : '';
+  } catch {
+    return '';
+  }
+}
+
+// 装填辅助（round 9 收口、round 10 回滚）：普通赋值失败（getter-only 原型
+// 访问器，如 DOMException.code）用 defineProperty 落 own 属性；载体整体拒绝
+// 装饰（冻结对象、不可配置的 own getter）时回滚已写字段后返回 false——由
+// 调用方走克隆分支，丢弃的原对象不得带半截装饰（gatewayRetryExhausted 已
+// 落而 code 未换，会把传输码 20 折叠出去）。
 function decorateInPlace(target: Record<string, unknown>, fields: Array<[string, unknown]>): boolean {
+  const applied: Array<string> = [];
+  const snapshots = new Map<string, { had: boolean; value: unknown }>();
   for (const [key, value] of fields) {
+    // 快照读取带防护：抛出型 getter 不引爆回滚路径（按缺失快照）
+    let prior: unknown;
+    let had = false;
+    try {
+      had = key in target;
+      prior = had ? target[key] : undefined;
+    } catch {
+      prior = undefined;
+    }
+    snapshots.set(key, { had, value: prior });
     try {
       target[key] = value;
+      applied.push(key);
     } catch {
       try {
         Object.defineProperty(target, key, { value, writable: true, configurable: true });
+        applied.push(key);
       } catch {
+        for (const done of applied) {
+          const snap = snapshots.get(done)!;
+          try {
+            if (snap.had) target[done] = snap.value;
+            else delete target[done];
+          } catch {
+            // 还原亦被拒（被丢弃的原对象，尽力而为）
+          }
+        }
         return false;
       }
     }
@@ -293,10 +329,24 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
   };
   const replaceCode = typeof err.code !== 'string' || err.code === '' || /^HTTP_\d+$/.test(err.code);
   const effectiveCode = replaceCode ? 'HDKIT_GATEWAY_TIMEOUT' : err.code;
-  const fields: Array<[string, unknown]> = [['gatewayRetryExhausted', true]];
-  if (replaceCode) fields.push(['code', 'HDKIT_GATEWAY_TIMEOUT']);
-  if (effectiveCode === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(typeof err.message === 'string' ? err.message : '')) {
-    fields.push(['message', `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`]);
+  const designedCopy = `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`;
+  const fields: Array<[string, unknown]> = [
+    ['gatewayRetryExhausted', true],
+    ['connectRetries', retries],
+  ];
+  if (replaceCode) {
+    fields.push(['code', 'HDKIT_GATEWAY_TIMEOUT']);
+    // 伪造码的最后表面（round 10）：消息里与被替换码同名的前缀 "HTTP_x: "
+    // 一并剥除——一个信封只能有一个码语义；剥后按清洗口判空，空则用设计文案
+    const rawMessage = safeMessageText(err);
+    const manufacturedPrefix = typeof err.code === 'string' && err.code !== '' ? `${err.code}: ` : '';
+    const stripped =
+      manufacturedPrefix && rawMessage.startsWith(manufacturedPrefix)
+        ? rawMessage.slice(manufacturedPrefix.length)
+        : rawMessage;
+    fields.push(['message', cleanMessage(stripped) || designedCopy]);
+  } else if (effectiveCode === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(safeMessageText(err))) {
+    fields.push(['message', designedCopy]);
   }
   if (!err.remediation) {
     fields.push([
@@ -313,8 +363,21 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
   }
   const decorateTarget = err as unknown as Record<string, unknown>;
   if (decorateInPlace(decorateTarget, fields)) return error;
-  const clone = Object.assign(new Error(String((err as Error).message ?? '')), decorateTarget);
-  decorateInPlace(clone, fields);
+  return cloneCarrier(err, fields);
+}
+
+// 拒绝装饰载体的克隆（round 10）：own 字段按属性描述符复制（Object.assign
+// 会丢不可枚举业务字段，[[Get]] 读法会引爆抛出型 getter），message/stack 与
+// 被装饰键除外——装饰键由 fields 落值；message 安全读取，读失败按缺失处理。
+function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
+  const clone = new Error(safeMessageText(err));
+  const decoratedKeys = new Set(fields.map(([key]) => key));
+  for (const key of Reflect.ownKeys(err)) {
+    if (typeof key !== 'string' || key === 'message' || key === 'stack' || decoratedKeys.has(key)) continue;
+    const desc = Object.getOwnPropertyDescriptor(err, key);
+    if (desc) Object.defineProperty(clone, key, desc);
+  }
+  decorateInPlace(clone as unknown as Record<string, unknown>, fields);
   return clone;
 }
 

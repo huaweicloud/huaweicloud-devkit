@@ -1366,7 +1366,7 @@ test('the 19 non-DI invisible Cf code points render blank: interlinear anchors a
   assert.equal(count, 19, 'exactly the two UAX-44-removed invisible ranges');
   // 其余 Cf-非-DI 码点渲染可见符号（0600 数字号、06DD 行间句读等）——真文本
   assert.equal(rendersBlank('؀'), false, 'Arabic number sign renders a mark: real text');
-  assert.equal(rendersBlank('؇'), false, 'Syriac abbreviation mark renders: real text');
+  assert.equal(rendersBlank('\u070F'), false, 'Syriac abbreviation mark renders: real text');
 });
 
 test('a U+FFF9 message on a codeless 409 folds as the gate on the voucher exit', async () => {
@@ -1410,4 +1410,85 @@ test('decorateExhaustedConnect clones frozen and non-configurable carriers inste
   assert.equal((out2 as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the transport numeric 20 never survives');
   assert.equal((out2 as { message?: string }).message, 'own non-configurable getter', 'the real message carries');
   assert.ok((out2 as { remediation?: { hint: string } }).remediation);
+});
+
+// ── 伪造码的最后表面 + 非码点切片 + 拒绝载体收口（round 10）──
+// 耗尽折叠换码后，消息里伪造的 "HTTP_x: " 前缀仍残留——一个信封两个码语义。
+// 非 JSON 切片按 UTF-16 单元截断会造出孤立代理对，阻断所有清洗。拒绝载体的
+// 就地装填必须可回滚，克隆必须携带不可枚举业务字段且不引爆抛出型 getter。
+
+test('readable codeless JSON 502 and 504 exhaustions surface one code semantics, never the manufactured prefix', async () => {
+  const r502 = await connectUnder(() => jsonEnvelope({ message: 'gateway busy' }, { status: 502 }), '1');
+  assert.equal(r502.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.doesNotMatch(String(r502.message ?? ''), /HTTP_50/, 'the manufactured prefix never survives');
+  assert.match(String(r502.message ?? ''), /gateway busy/, 'the server copy carries');
+  const r504 = await connectUnder(() => jsonEnvelope({ message: 'upstream timed out' }, { status: 504 }), '1');
+  assert.equal(r504.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.doesNotMatch(String(r504.message ?? ''), /HTTP_50/);
+  assert.match(String(r504.message ?? ''), /upstream timed out/);
+  // 控制行：服务端亲署的网关码（非伪造）保留现行行为——信封码与消息前缀一致
+  const authored = await connectUnder(
+    () => jsonEnvelope({ code: 'HDKIT_GATEWAY_TIMEOUT', message: 'gateway busy' }, { status: 502 }),
+    '1',
+  );
+  assert.equal(authored.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.match(String(authored.message ?? ''), /HDKIT_GATEWAY_TIMEOUT: gateway busy/, 'authored code keeps its prefix');
+});
+
+test('a blank remainder after prefix stripping falls to the designed transient copy', () => {
+  // 请求层的构建口保证消息非空（hdkitservice error 兜底），剥后为空只在
+  // 导出面构造：手构载体直测装饰分支
+  const carrier = Object.assign(new Error('HTTP_502: \u200b'), { code: 'HTTP_502' });
+  const out = decorateExhaustedConnect(carrier, 1) as { code?: string; message?: string };
+  assert.equal(out.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.match(String(out.message ?? ''), /网关 502\/504 超时/, 'the designed copy fires for a blank remainder');
+  assert.ok(!rendersBlank(String(out.message ?? '')));
+});
+
+test('a non-JSON body cut at the code-point boundary leaves no lone surrogate and no invisible run', async () => {
+  // 199 个零宽空格 + 可见星面区字符：按 UTF-16 单元截断会把星面区对截成孤立
+  // 高代理，阻断清洗——99 个 ZWSP 随之骑进折叠消息
+  const straddling = '\u200b'.repeat(199) + '𓀀';
+  const result = await connectUnder(() => htmlPage(502, straddling), '1');
+  assert.equal(result.ok, false);
+  const message = String(result.message ?? '');
+  assert.ok(!message.includes('\u200b'), 'no invisible Cf rides the folded message');
+  assert.ok(!/\uD800-\uDBFF(?![\uDC00-\uDFFF])/.test(message), 'no unpaired surrogate');
+});
+
+test('decorateExhaustedConnect rolls back the original when the carrier refuses mid-decoration', () => {
+  const carrier = new Error('refuses code only');
+  Object.defineProperty(carrier, 'code', { get: () => 20, configurable: false });
+  const out = decorateExhaustedConnect(carrier, 1);
+  assert.notEqual(out, carrier, 'a refusing carrier gets the clone');
+  assert.equal(
+    'gatewayRetryExhausted' in carrier,
+    false,
+    'the half-applied decoration is rolled back — the original cannot fold with the transport code',
+  );
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.equal((out as { connectRetries?: number }).connectRetries, 1, 'the clone carries the attempt count');
+});
+
+test('the clone carries non-enumerable business fields and survives throwing getters', () => {
+  const carrier = new Error('throwing getter');
+  Object.defineProperty(carrier, 'coreHoursExhausted', { value: true, enumerable: false });
+  Object.defineProperty(carrier, 'message', {
+    get() {
+      throw new TypeError('getter detonates');
+    },
+    configurable: true,
+  });
+  Object.defineProperty(carrier, 'code', { get: () => 20, configurable: false });
+  let out: unknown;
+  assert.doesNotThrow(() => {
+    out = decorateExhaustedConnect(carrier, 2);
+  }, 'a throwing message getter never detonates the clone read');
+  assert.equal((out as { coreHoursExhausted?: boolean }).coreHoursExhausted, true, 'non-enumerable fields carry');
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.ok((out as { remediation?: { hint: string } }).remediation, 'the minted remediation lands');
+  assert.ok(
+    !rendersBlank(String((out as { message?: string }).message ?? '')),
+    'the clone message is real text or the designed copy, never blank',
+  );
 });

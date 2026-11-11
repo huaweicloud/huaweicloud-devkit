@@ -123,11 +123,14 @@ async function hdkitRequest(
     data = Array.isArray(parsed) ? parsed : asRecord(parsed);
   } catch {
     // 非 JSON 页必须携带 resp.status：瞬时判定按 status 裁决，不带 status 的
-    // 抛错会被消息兜底误判（round 3）。bodyUnreadable 同标记（round 6）
-    throw Object.assign(new Error(`hdkitservice returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`), {
-      status: resp.status,
-      bodyUnreadable: true,
-    });
+    // 抛错会被消息兜底误判（round 3）。bodyUnreadable 同标记（round 6）。
+    // 片段按码点截断并过清洗口（round 10）：UTF-16 单元截断会把星面区对截成
+    // 孤立代理对，阻断所有清洗——不可见字符随片段骑进折叠消息
+    const snippet = cleanMessage([...text].slice(0, 200).join(''));
+    throw Object.assign(
+      new Error(`hdkitservice returned non-JSON (status ${resp.status})${snippet ? `: ${snippet}` : ''}`),
+      { status: resp.status, bodyUnreadable: true },
+    );
   }
 
   if (!resp.ok) {
@@ -262,7 +265,13 @@ export async function hdkitConnectWithRetry(options: Record<string, unknown> = {
     } catch (error) {
       const transient = isGatewayTransient(error) && !isNonRetryableBusinessError(error);
       if (!transient || retries >= delays.length) {
-        (error as { connectRetries?: number }).connectRetries = retries;
+        // 写入带防护（round 10）：拒绝装饰的载体（冻结等）不在此抛 TypeError——
+        // 耗尽路径的克隆分支补 connectRetries，非耗尽路径原样抛出
+        try {
+          (error as { connectRetries?: number }).connectRetries = retries;
+        } catch {
+          // 请求层不会产生拒绝载体；此防御仅守导出面
+        }
         // 耗尽装填返回待抛对象：常规载体即原错误，拒绝装饰的载体为克隆（round 9）
         if (transient) throw decorateExhaustedConnect(error, retries);
         throw error;
