@@ -1146,6 +1146,70 @@ test('upgradePackage 升级命令: 手动兜底命令同样带 --foreground-scri
   assert.match(r.manual ?? '', /npx --yes --foreground-scripts huaweicloud-devkit@latest update --target opencode/);
 });
 
+test('upgradePackage 失败原因: http 频道行不压过静默子进程的 echo', async () => {
+  const reason = await reasonFor(failureStderr('npm-http-silent.err'));
+  assert.match(reason, /postinstall/);
+  assert.match(reason, /node .\/build\.js/);
+  assert.doesNotMatch(reason, /npm http|fetch/);
+});
+
+test('upgradePackage 失败原因: silly 频道里的 error 词不压过子进程自己的行', async () => {
+  const reason = await reasonFor(failureStderr('npm-silly-loud.err'));
+  assert.match(reason, /native build failed: missing libfoo/);
+  assert.doesNotMatch(reason, /npm silly|audit error/);
+});
+
+test('upgradePackage 失败原因: 只有 timing 页脚时不留频道行', async () => {
+  const reason = await reasonFor(failureStderr('npm-timing-only.err'));
+  assert.doesNotMatch(reason, /npm timing|Completed in/);
+});
+
+test('upgradePackage 失败原因: 真实 registry 静默捕获也落在 echo 上', async () => {
+  const reason = await reasonFor(failureStderr('npm-http-registry-silent.err'));
+  assert.match(reason, /postinstall/);
+  assert.match(reason, /node .\/build\.js/);
+  assert.doesNotMatch(reason, /npm http/);
+});
+
+test('upgradePackage 失败原因: ASCII spinner 帧前缀被剥掉', async () => {
+  const stderr = [
+    '| npm verbose code 7',
+    '\\ npm error code E404',
+    'npm error 404 Not Found - GET https://registry.example/x',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code E404/);
+  assert.match(reason, /404 Not Found/);
+  assert.doesNotMatch(reason, /npm verbose/);
+});
+
+test('upgradePackage 失败原因: 无数字结果行的 echo 仍指向失败脚本', async () => {
+  const stderr = [
+    'npm info run pkg@1.0.0 postinstall node ./build.js',
+    "npm info run pkg@1.0.0 postinstall { code: null, signal: 'SIGKILL' }",
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /postinstall/);
+  assert.match(reason, /node .\/build\.js/);
+});
+
+test('upgradePackage 失败原因: 信号失败的结果行把 echo 对到后一个脚本', async () => {
+  const stderr = [
+    'npm info run pkg@1.0.0 preinstall node ./pre.js',
+    'npm info run pkg@1.0.0 preinstall { code: 0, signal: null }',
+    'npm info run pkg@1.0.0 postinstall node ./build.js',
+    "npm info run pkg@1.0.0 postinstall { code: null, signal: 'SIGKILL' }",
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /preinstall/);
+});
+
+test('upgradePackage 失败原因: EMAXREDIRECT 也在封闭词表内', async () => {
+  const reason = await reasonFor(['EMAXREDIRECT: too many redirects', 'progress 1/2'].join('\n'));
+  assert.match(reason, /EMAXREDIRECT/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });

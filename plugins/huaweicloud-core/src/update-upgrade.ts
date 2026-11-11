@@ -286,7 +286,7 @@ function normalizeNpmLine(line: string): string {
   const withoutSpinner = line
     .replace(ANSI_ESCAPE, '')
     .trim()
-    .replace(/^[\u2800-\u28ff\s]+/, '');
+    .replace(/^(?:[\u2800-\u28ff\s|\\/-]+)(?=npm\b)/, '');
   const shifted = shiftNpmErrorToken(withoutSpinner);
   return stripLogPointerSuffix(shifted.replace(/^npm ERR!\s?/, 'npm error '));
 }
@@ -337,9 +337,10 @@ function isStackFrame(payload: string): boolean {
 
 function isNpmNoiseLine(line: string): boolean {
   if (!/[\p{L}\p{N}]/u.test(line)) return true;
-  if (/^(?:npm warn\b|npm notice\b|npm verb(?:ose)?\b|\(node:\d+\))/i.test(line)) return true;
-  // npm's info channel is logging, except the `info run` echo of a script.
-  if (/^npm info\b/i.test(line) && !/^npm info run\b/i.test(line)) return true;
+  if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
+  // npm's log channels are not diagnostics: every `npm <channel>` prefix is
+  // noise except the error channel and the `info run` echo of a script.
+  if (/^npm\s+(?!error\b|info run\b)[a-z]+\b/i.test(line)) return true;
   if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
   const payload = npmPayload(line);
   return (
@@ -357,6 +358,16 @@ function isNpmNoiseLine(line: string): boolean {
 // line lands after a retry marker), the hint tier its earlier one (the real
 // failure precedes cleanup chatter), and the position tier the later line in
 // the codeless branch.
+function isNpmScriptResult(line: string): boolean {
+  return /\{\s*code:\s*(?:-?\d+|null)\s*,?\s*signal:/.test(line);
+}
+
+function isFailingScriptResult(line: string): boolean {
+  const match = /\{\s*code:\s*(-?\d+|null)\s*,?\s*signal:\s*(null|'[^']*'|"[^"]*")/.exec(line);
+  if (!match) return false;
+  return !(match[1] === '0' && match[2] === 'null');
+}
+
 function lineRank(line: string): number {
   const payload = npmPayload(line);
   if (ERROR_NAME.test(payload)) return 0;
@@ -367,6 +378,7 @@ function lineRank(line: string): number {
   }
   if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 4;
   if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+|\[[^\]]*\])\s*,?\s*$/.test(payload)) return 4;
+  if (isNpmScriptResult(payload)) return 4;
   // npm's echo of the failing script carries the child's words in quotes, so it
   // must not tie with the child's own line; it is the honest fallback only when
   // the child printed nothing.
@@ -383,12 +395,15 @@ function selectFailureLine(
     const hits = lines.filter((line) => lineRank(line) === rank);
     if (!hits.length) continue;
     if (rank === 3) {
-      // The echo tier names the failing script: the echo next to its
-      // "{ code: N" result line wins, else the last echo in the branch.
-      const paired = lines.filter(
-        (line, index) => lineRank(line) === 3 && /\{\s*code:\s*-?\d+/.test(lines[index + 1] ?? ''),
-      );
-      return { line: (paired.at(-1) ?? hits.at(-1))!, rank };
+      // The echo tier names the failing script: the last echo before the last
+      // failing "{ code: N, signal: ... }" result line wins, else the last echo.
+      const echoes = lines.map((line, index) => ({ line, index })).filter((entry) => lineRank(entry.line) === 3);
+      const failing = lines
+        .map((line, index) => ({ line, index }))
+        .filter((entry) => isNpmScriptResult(entry.line) && isFailingScriptResult(entry.line))
+        .at(-1);
+      const before = failing ? echoes.filter((entry) => entry.index < failing.index) : [];
+      return { line: (before.at(-1) ?? echoes.at(-1))!.line, rank };
     }
     const later = rank === 0 || (rank === 2 && positionLast);
     return { line: (later ? hits.at(-1) : hits[0])!, rank };

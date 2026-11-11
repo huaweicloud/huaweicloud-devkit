@@ -1,0 +1,10 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:8123/npm 30ms
+npm http fetch GET 404 http://127.0.0.1:8123/npm 9ms
+npm http fetch GET 200 http://127.0.0.1:8123/pr3-r11-regfail 19ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:8123/pr3-r11-regfail 10ms (cache miss)
+npm http fetch POST 501 http://127.0.0.1:8123/-/npm/v1/security/advisories/bulk 11ms
+npm http fetch GET 200 http://127.0.0.1:8123/pr3-r11-regfail-1.0.0.tgz 22ms (cache miss)
+npm info run pr3-r11-regfail@1.0.0 postinstall node_modules/pr3-r11-regfail node ./build.js
+npm info run pr3-r11-regfail@1.0.0 postinstall { code: 7, signal: null }
