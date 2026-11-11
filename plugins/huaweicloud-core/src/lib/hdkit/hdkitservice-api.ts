@@ -263,7 +263,8 @@ export async function hdkitConnectWithRetry(options: Record<string, unknown> = {
       const transient = isGatewayTransient(error) && !isNonRetryableBusinessError(error);
       if (!transient || retries >= delays.length) {
         (error as { connectRetries?: number }).connectRetries = retries;
-        if (transient) decorateExhaustedConnect(error, retries);
+        // 耗尽装填返回待抛对象：常规载体即原错误，拒绝装饰的载体为克隆（round 9）
+        if (transient) throw decorateExhaustedConnect(error, retries);
         throw error;
       }
       await new Promise((resolve) => setTimeout(resolve, delays[retries]));

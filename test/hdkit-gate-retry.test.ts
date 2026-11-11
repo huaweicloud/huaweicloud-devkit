@@ -938,7 +938,21 @@ test('rendersBlank matches the Cf class: every declared and newly-covered codepo
 });
 
 test('Cf-class gate messages render the designed copy, never an invisible payload', async () => {
-  for (const ch of ['\u200c', '\u200d', '\u200e', '\u200f', '\u00ad', '\u061c', '\u180e', '\u202e', '󠄀', '᠋', '឴']) {
+  for (const ch of [
+    '\u200c',
+    '\u200d',
+    '\u200e',
+    '\u200f',
+    '\u00ad',
+    '\u061c',
+    '\u180e',
+    '\u202e',
+    '󠄀',
+    '᠋',
+    '឴',
+    '\uFFF9',
+    '\u{13430}',
+  ]) {
     const stub = stubConnectSequence([() => gateJson({ message: ch })]);
     try {
       const result = (await callTool('huaweicloud_sandbox_sign_agreement', {})) as GateResult;
@@ -1209,30 +1223,36 @@ test('cleanMessage strips astral blank edges by code point, not UTF-16 units', (
   assert.equal(cleanMessage('󠄀插件󠄀版本󠄀'), '插件󠄀版本', 'interior astral DI chars are real text');
 });
 
-test('an astral-padded gate code folds as the coded gate on every exit', async () => {
-  const stub = stubConnectSequence([
-    () =>
-      jsonEnvelope(
-        {
-          code: 'HDKIT_VERSION_TOO_OLD󠄀',
-          message: '插件版本过旧。',
-          clientVersion: '2.0.0-next.0',
-          minVersion: '2.0.0',
-        },
-        { status: 409 },
-      ),
-  ]);
-  try {
-    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD', 'the astral-padded code cleans to the gate code');
-    assert.equal(result.clientVersion, '2.0.0-next.0', 'the coded-gate payload rides the fold');
-    assert.equal(result.minVersion, '2.0.0');
-    assert.match(result.remediation!.hint, /当前 2\.0\.0-next.0/);
-  } finally {
-    stub.restore();
-  }
-});
+// 垫码参数化（round 8 星面区 + round 9 非 DI Cf）：同一清洗口，同一折叠
+for (const [label, padding] of [
+  ['an astral-padded', '󠄀'],
+  ['a non-DI-Cf-padded', '\uFFF9'],
+] as const) {
+  test(`${label} gate code folds as the coded gate on every exit`, async () => {
+    const stub = stubConnectSequence([
+      () =>
+        jsonEnvelope(
+          {
+            code: `HDKIT_VERSION_TOO_OLD${padding}`,
+            message: '插件版本过旧。',
+            clientVersion: '2.0.0-next.0',
+            minVersion: '2.0.0',
+          },
+          { status: 409 },
+        ),
+    ]);
+    try {
+      const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+      assert.equal(result.ok, false);
+      assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD', 'the padded code cleans to the gate code');
+      assert.equal(result.clientVersion, '2.0.0-next.0', 'the coded-gate payload rides the fold');
+      assert.equal(result.minVersion, '2.0.0');
+      assert.match(result.remediation!.hint, /当前 2\.0\.0-next\.0/);
+    } finally {
+      stub.restore();
+    }
+  });
+}
 
 test('an astral-padded quota code reaches the quota envelope', async () => {
   const result = await connectUnder(
@@ -1326,4 +1346,68 @@ test('decorateExhaustedConnect tolerates getter-only carriers (the exported seam
   );
   assert.equal((carrier as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, true);
   assert.ok((carrier as { remediation?: { hint: string } }).remediation, 'the minted remediation lands');
+});
+
+// ── 非 DI 不可见 Cf（round 9）：19 个 UAX 44 从 DI 永久除名的码点 ──
+// U+FFF9–U+FFFB 行间注释锚点与 U+13430–U+1343F 圣书体连字符——round 7 的
+// \p{Cf} 类曾覆盖，round 8 的 DI 权威收口时遗漏。其余 12 个 Cf-非-DI 码点
+// 渲染可见符号，保持真文本（台账记录边界）。
+
+test('the 19 non-DI invisible Cf code points render blank: interlinear anchors and hieroglyph joiners', () => {
+  let count = 0;
+  for (let cp = 0xfff9; cp <= 0xfffb; cp++) {
+    assertBlankCodepoint(String.fromCodePoint(cp));
+    count += 1;
+  }
+  for (let cp = 0x13430; cp <= 0x1343f; cp++) {
+    assertBlankCodepoint(String.fromCodePoint(cp));
+    count += 1;
+  }
+  assert.equal(count, 19, 'exactly the two UAX-44-removed invisible ranges');
+  // 其余 Cf-非-DI 码点渲染可见符号（0600 数字号、06DD 行间句读等）——真文本
+  assert.equal(rendersBlank('؀'), false, 'Arabic number sign renders a mark: real text');
+  assert.equal(rendersBlank('؇'), false, 'Syriac abbreviation mark renders: real text');
+});
+
+test('a U+FFF9 message on a codeless 409 folds as the gate on the voucher exit', async () => {
+  const result = await voucherStatusUnder(() => jsonEnvelope({ message: '\uFFF9' }, { status: 409 }));
+  assert.equal(result.claimed, false);
+  assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+  assert.match(
+    String(result.message ?? ''),
+    /hdkitservice error|插件版本过旧/,
+    'the build-seam fallback fires for a pure-FFF9 message',
+  );
+  assert.ok(!rendersBlank(String(result.message ?? '')), 'never a visually blank message');
+  assert.ok(result.remediation, 'the unknown-version remediation mints');
+});
+
+test('a U+13430-padded or FFF9 code on a 502/504 exhaustion mints the designed gateway code', async () => {
+  const fff9Result = await connectUnder(
+    () => jsonEnvelope({ code: '\uFFF9', message: 'gateway busy' }, { status: 502 }),
+    '1',
+  );
+  assert.equal(fff9Result.ok, false);
+  assert.equal(fff9Result.code, 'HDKIT_GATEWAY_TIMEOUT', 'a blank code leaves no server code to keep');
+  assert.equal(fff9Result.connectRetries, 1);
+  const paddedResult = await connectUnder(() => jsonEnvelope({ code: 'HTTP_504\u{13430}' }, { status: 504 }), '1');
+  assert.equal(paddedResult.ok, false);
+  assert.equal(paddedResult.code, 'HDKIT_GATEWAY_TIMEOUT', 'an FFF9 edge stripped, HTTP_504 replaced on exhaustion');
+});
+
+test('decorateExhaustedConnect clones frozen and non-configurable carriers instead of throwing', () => {
+  const frozen = Object.freeze(new Error('frozen carrier'));
+  const out1 = decorateExhaustedConnect(frozen, 2);
+  assert.notEqual(out1, frozen, 'a refusing carrier is replaced, not mutated');
+  assert.equal((out1 as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.equal((out1 as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, true);
+  assert.ok((out1 as { remediation?: { hint: string } }).remediation, 'the minted remediation lands on the clone');
+
+  const nonConfig = new Error('own non-configurable getter');
+  Object.defineProperty(nonConfig, 'code', { get: () => 20, configurable: false });
+  const out2 = decorateExhaustedConnect(nonConfig, 1);
+  assert.notEqual(out2, nonConfig);
+  assert.equal((out2 as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the transport numeric 20 never survives');
+  assert.equal((out2 as { message?: string }).message, 'own non-configurable getter', 'the real message carries');
+  assert.ok((out2 as { remediation?: { hint: string } }).remediation);
 });

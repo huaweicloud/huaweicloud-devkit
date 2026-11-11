@@ -33,22 +33,29 @@ export function connectRetryDelaysMs(): number[] {
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
-// 渲染为空白的不可见字符（round 5–8）：权威是 Unicode 的
-// Default_Ignorable_Code_Point 属性类（\p{DI}——Cf 默认可忽略集、变体选择子
-// 全集 FE00–FE0F 与星面区补集 E0100–E01EF、蒙古自由变体选择子 180B–180D/
-// 180F、高棉固有元音 17B4–17B5、谚文填充符 115F/1160/3164/FFA0、标签区、
-// 软连字符 00AD 等，含保留区，共 4174 个码点，Node 26 Unicode 实测）。同一
-// "下一个 Unicode 边界"缺陷类连续复发七轮后，round 8 以属性类收口——未来
-// 新增的默认可忽略码点自动覆盖，不再枚举。DI 之外的三类空白判定：\s（空白
-// 不在 DI）、\p{Cc} 控制符（NUL/BEL 无渲染，DI 不含 Cc）、盲文空白 U+2800
-// （So 类，渲染为空点阵）。附着可见基底的组合附标（重音符等）渲染出符号，
-// 是真文本，不入空白集。
+// 非 DI 空白判定（round 8–9）：\s（空白不在 DI）、\p{Cc} 控制符（NUL/BEL
+// 无渲染，DI 不含 Cc）、盲文空白 U+2800（So 类，空点阵），以及 19 个 UAX 44
+// 从 DI 永久除名的不可见 Cf（round 9：U+FFF9–U+FFFB 行间注释锚点、
+// U+13430–U+1343F 圣书体连字符——round 7 的 \p{Cf} 类曾覆盖它们，round 8 的
+// DI 权威收口时遗漏）。其余 12 个 Cf-非-DI 码点（U+0600–U+0605、U+06DD、
+// U+070F、U+0890/U+0891、U+110BD/U+110CD 等阿拉伯/叙利亚数字与句读号，
+// 以及 U+08E2）渲染可见符号，是真文本——08E2（阿拉伯任选连字符）与软连字符
+// U+00AD 同语义但按根裁定不在 19 码之列，边界记录在台账。
+const NON_DI_INVISIBLE_CF = /[\u{FFF9}-\u{FFFB}\u{13430}-\u{1343F}]/u;
+
+/**
+ * 消息可见性判定（round 6 收口、round 8 权威、round 9 补 19 Cf）：权威是
+ * Unicode 的 Default_Ignorable_Code_Point 属性类；纯不可见才判空白——只要有
+ * 任何一个字符渲染可见，消息就是真文本；真文本包着一个不可见字符是可见
+ * 消息，走边缘剥离而非缺失。
+ */
 export function rendersBlank(text: string): boolean {
   const hasVisible = [...text].some(
     (ch) =>
       !/\s/u.test(ch) &&
       !/\p{Default_Ignorable_Code_Point}/u.test(ch) &&
       !/\p{Cc}/u.test(ch) &&
+      !NON_DI_INVISIBLE_CF.test(ch) &&
       (ch.codePointAt(0) ?? 0) !== 0x2800,
   );
   return !hasVisible;
@@ -249,16 +256,22 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
   };
 }
 
-// 传输错误对象（如 DOMException）的 code 是 getter-only 原型访问器——直接
-// 赋值抛 TypeError。请求层已把传输错误换为普通 Error（round 8 的 fetch 层
-// 守卫 + 响应体守卫），此路径对请求层不可达；耗尽装填是导出面，赋值用
-// defineProperty 兜底保证导出安全。
-function setDecoration(target: object, key: string, value: unknown): void {
-  try {
-    (target as Record<string, unknown>)[key] = value;
-  } catch {
-    Object.defineProperty(target, key, { value, writable: true, configurable: true });
+// 装填辅助（round 9 收口）：普通赋值失败（getter-only 原型访问器，如
+// DOMException.code）用 defineProperty 落 own 属性；载体整体拒绝装饰（冻结
+// 对象、不可配置的 own getter）时返回 false——由调用方走克隆分支。
+function decorateInPlace(target: Record<string, unknown>, fields: Array<[string, unknown]>): boolean {
+  for (const [key, value] of fields) {
+    try {
+      target[key] = value;
+    } catch {
+      try {
+        Object.defineProperty(target, key, { value, writable: true, configurable: true });
+      } catch {
+        return false;
+      }
+    }
   }
+  return true;
 }
 
 /**
@@ -267,32 +280,42 @@ function setDecoration(target: object, key: string, value: unknown): void {
  * remediation，不覆盖。设计网关码对传输/伪造码无条件胜出（round 8）：数值
  * code（AbortError DOMException 的 20）与请求层伪造的 HTTP_x 码（可读无码
  * JSON 502 制造的 HTTP_502）替换为 HDKIT_GATEWAY_TIMEOUT，服务端业务码保留。
+ * 返回值（round 9）：常规载体就地装填并返回原对象；拒绝装饰的载体（冻结/
+ * 不可配置 getter——请求层不会产生，仅导出面可达）克隆后装填并返回克隆，
+ * 调用方须抛出返回值。DOMException 等可扩展原型访问器载体仍就地装填。
  */
-export function decorateExhaustedConnect(error: unknown, retries: number): void {
+export function decorateExhaustedConnect(error: unknown, retries: number): unknown {
   const err = error as {
     code?: unknown;
     message?: unknown;
     remediation?: { hint: string; steps: string[] };
     gatewayRetryExhausted?: boolean;
   };
-  setDecoration(err, 'gatewayRetryExhausted', true);
-  if (typeof err.code !== 'string' || err.code === '' || /^HTTP_\d+$/.test(err.code)) {
-    setDecoration(err, 'code', 'HDKIT_GATEWAY_TIMEOUT');
-  }
-  // 耗尽消息同样过清洗口（round 5）：零宽字符/空白不渲染成不可见文案
-  if (err.code === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(typeof err.message === 'string' ? err.message : '')) {
-    setDecoration(err, 'message', `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`);
+  const replaceCode = typeof err.code !== 'string' || err.code === '' || /^HTTP_\d+$/.test(err.code);
+  const effectiveCode = replaceCode ? 'HDKIT_GATEWAY_TIMEOUT' : err.code;
+  const fields: Array<[string, unknown]> = [['gatewayRetryExhausted', true]];
+  if (replaceCode) fields.push(['code', 'HDKIT_GATEWAY_TIMEOUT']);
+  if (effectiveCode === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(typeof err.message === 'string' ? err.message : '')) {
+    fields.push(['message', `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`]);
   }
   if (!err.remediation) {
-    setDecoration(err, 'remediation', {
-      hint: `连接已自动重试 ${retries} 次仍失败，连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,
-      steps: [
-        '服务端可能已创建/启动沙箱实例——再次 connect 同池实例会自动复用，通常直接成功',
-        '稍后重试 connect；网关超时通常在数分钟内自愈',
-        '多次重试仍失败时，检查本地网络或代理配置后再试',
-      ],
-    });
+    fields.push([
+      'remediation',
+      {
+        hint: `连接已自动重试 ${retries} 次仍失败，连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,
+        steps: [
+          '服务端可能已创建/启动沙箱实例——再次 connect 同池实例会自动复用，通常直接成功',
+          '稍后重试 connect；网关超时通常在数分钟内自愈',
+          '多次重试仍失败时，检查本地网络或代理配置后再试',
+        ],
+      },
+    ]);
   }
+  const decorateTarget = err as unknown as Record<string, unknown>;
+  if (decorateInPlace(decorateTarget, fields)) return error;
+  const clone = Object.assign(new Error(String((err as Error).message ?? '')), decorateTarget);
+  decorateInPlace(clone, fields);
+  return clone;
 }
 
 /**
