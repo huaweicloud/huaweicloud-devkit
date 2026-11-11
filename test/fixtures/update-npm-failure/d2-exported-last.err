@@ -1,2 +1,5 @@
 Error: npm install failed in /home/op/y/.config/opencode/huaweicloud-plugins: 404 tarball, folder, http url, or git url.
 EXPORTED 30 skills to /home/op/y/.config/opencode/huaweicloud-plugins/skills
+
+npm error code 1
+npm error command sh -c npx --yes huaweicloud-devkit@latest update --target opencode

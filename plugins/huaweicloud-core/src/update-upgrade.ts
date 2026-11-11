@@ -125,7 +125,9 @@ function defaultSpawn(
 // around them. The tail is boilerplate, so the reason keeps the identifying
 // code line plus the human diagnostic when the npm block wins; a strong
 // code-less line wins alone, and a weak one inherits the code line (#1117).
-const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
+const ESCAPE = String.fromCharCode(27);
+const ANSI_ESCAPE = new RegExp(`${ESCAPE}\\[[0-9;?]*[A-Za-z]`, 'g');
+const SINGLE_FRAME_BEFORE_ESCAPE = new RegExp(`^[|\\\\/-](?=${ESCAPE})`);
 const LOG_POINTER_SUFFIX =
   /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|Please include the following file with any support request:).*$/;
 const DIAGNOSTIC_HINT =
@@ -284,10 +286,11 @@ function shiftNpmErrorToken(line: string): string {
 
 function normalizeNpmLine(line: string): string {
   const withoutSpinner = line
-    .replace(ANSI_ESCAPE, '')
     .trim()
+    .replace(SINGLE_FRAME_BEFORE_ESCAPE, '')
+    .replace(ANSI_ESCAPE, '')
     .replace(/^[\u2800-\u28ff\s]+/, '')
-    .replace(/^[|\\/-]+(?=\s|npm\b)/, '');
+    .replace(/^[|\\/-]{2,}/, '');
   const shifted = shiftNpmErrorToken(withoutSpinner);
   return stripLogPointerSuffix(shifted.replace(/^npm ERR!\s?/, 'npm error '));
 }
@@ -450,21 +453,24 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     const echo = lastEchoBefore(codeless, failing.index);
     if (echo) bare = { line: echo.line, rank: 3, index: echo.index };
   }
-  const hasEcho = codeless.some((line) => lineRank(line) === 3);
+  // The gate is a failing pair: a failure result line with its own echo. A
+  // successful script's echo pair, or a lone echo, proves nothing about the
+  // failing step.
+  const failingEcho = failing ? lastEchoBefore(codeless, failing.index) : undefined;
+  const hasFailingPair = Boolean(failing && failingEcho);
   // The outer shell names a signal death "Terminated" or "Killed"; when npm
-  // also emitted the failing echo pair, the named script is the better reason.
-  if (bare?.rank === 2 && /^(?:Terminated|Killed)\b/i.test(bare.line) && hasEcho) {
-    const echo = lastEchoBefore(codeless, Number.POSITIVE_INFINITY);
-    if (echo) bare = { line: echo.line, rank: 3, index: echo.index };
+  // emitted the failing echo pair, the named script is the better reason.
+  if (bare?.rank === 2 && /^(?:Terminated|Killed)\b/i.test(bare.line) && hasFailingPair) {
+    bare = { line: failingEcho!.line, rank: 3, index: failingEcho!.index };
   }
-  // At the default loglevel npm hides the echo and prints no error block, so a
-  // plain line cannot be attributed to the failing script: the exit floor wins.
+  // At the default loglevel npm hides the echo and prints no error block, so no
+  // bare line can be attributed to the failing script: the exit floor wins.
   if (
     !block &&
     !codeLine &&
-    !hasEcho &&
-    bare?.rank === 2 &&
-    !/^(?:Terminated|Killed)\b/i.test(bare.line || '') &&
+    !hasFailingPair &&
+    bare &&
+    !/^(?:Terminated|Killed)\b/i.test(bare.line) &&
     typeof execResult.status === 'number' &&
     execResult.status !== 0
   ) {

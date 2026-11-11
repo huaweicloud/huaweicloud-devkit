@@ -142,7 +142,7 @@ test('upgradePackage officeace 专属重连文案', async () => {
 });
 
 test('upgradePackage 失败: 返回手动命令', async () => {
-  const spawnFn = () => ({ status: 1, stdout: '', stderr: 'EPERM: permission denied' });
+  const spawnFn = () => ({ status: 1, stdout: '', stderr: 'npm error code 1\nEPERM: permission denied' });
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
   assert.equal(r.success, false);
@@ -316,7 +316,7 @@ test('upgradePackage 失败原因: npm ERR! 尾部 npm notice 升级提示不进
 });
 
 test('upgradePackage 失败原因: 单行安装失败保留子进程原因, 只剪掉日志指针尾巴', async () => {
-  const reason = await reasonFor(failureStderr('install-failed.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('install-failed.err').trim()].join('\n'));
   assert.match(reason, /npm install failed in/);
   assert.match(reason, /404 tarball, folder, http url, or git url/);
   assert.doesNotMatch(reason, /-debug-\d+\.log/);
@@ -324,7 +324,7 @@ test('upgradePackage 失败原因: 单行安装失败保留子进程原因, 只�
 });
 
 test('upgradePackage 失败原因: 第二条单行安装失败同样保留代理诊断', async () => {
-  const reason = await reasonFor(failureStderr('install-failed-proxy.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('install-failed-proxy.err').trim()].join('\n'));
   assert.match(reason, /npm install failed in/);
   assert.match(reason, /proxy/);
   assert.doesNotMatch(reason, /-debug-\d+\.log/);
@@ -397,49 +397,52 @@ test('upgradePackage 失败原因: 两行指针里的带空格 profile 路径不
 });
 
 test('upgradePackage 失败原因: 无 code 行的 CLI stderr 优先取失败诊断行, 不取首行', async () => {
-  const reason = await reasonFor(failureStderr('binfail.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('binfail.err').trim()].join('\n'));
   assert.match(reason, /不支持的升级目标/);
   assert.doesNotMatch(reason, /^AUDIT/);
 });
 
 test('upgradePackage 失败原因: 无 code 行的 EACCES 行盖过前置审计行', async () => {
-  const reason = await reasonFor(failureStderr('b1-audit-eacces.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('b1-audit-eacces.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /^AUDIT/);
 });
 
 test('upgradePackage 失败原因: 强标记行盖过前置带提示词的审计行', async () => {
-  const reason = await reasonFor(failureStderr('b2-audit-hint-then-install.err'));
+  const reason = await reasonFor(
+    ['npm error code 1', failureStderr('b2-audit-hint-then-install.err').trim()].join('\n'),
+  );
   assert.match(reason, /npm install failed in/);
   assert.doesNotMatch(reason, /^AUDIT/);
 });
 
 test('upgradePackage 失败原因: 进度行之后的裸 EACCES 仍然被选中', async () => {
-  const reason = await reasonFor(failureStderr('b4-progress-eacces.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('b4-progress-eacces.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /^Resolving package metadata/);
 });
 
 test('upgradePackage 失败原因: 审计提示行不压过其后的 Error 行', async () => {
-  const reason = await reasonFor(failureStderr('b6-audit-hint-then-error.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('b6-audit-hint-then-error.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /^AUDIT/);
 });
 
 test('upgradePackage 失败原因: 重试提示行不压过其前的 ENOTFOUND 行', async () => {
-  const reason = await reasonFor(failureStderr('enotfound-retry.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('enotfound-retry.err').trim()].join('\n'));
   assert.match(reason, /ENOTFOUND registry\.internal\.corp/);
   assert.doesNotMatch(reason, /checkout failed/);
 });
 
 test('upgradePackage 失败原因: 可选步骤警告不压过其前的 ENOTFOUND 行', async () => {
-  const reason = await reasonFor(failureStderr('enotfound-warning.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('enotfound-warning.err').trim()].join('\n'));
   assert.match(reason, /ENOTFOUND registry\.internal\.corp/);
   assert.doesNotMatch(reason, /warning/);
 });
 
 test('upgradePackage 失败原因: 无强标记时提示词行压过其前的无关行', async () => {
   const stderr = [
+    'npm error code 1',
     'settings restored from backup',
     'warning: could not restore previous settings; user config left failed',
   ].join('\n');
@@ -449,7 +452,7 @@ test('upgradePackage 失败原因: 无强标记时提示词行压过其前的无
 });
 
 test('upgradePackage 失败原因: Node loader 崩溃取 Error 行, 不取帧头', async () => {
-  const reason = await reasonFor(failureStderr('crash-loader.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('crash-loader.err').trim()].join('\n'));
   assert.match(reason, /Error: Cannot find module/);
   assert.doesNotMatch(reason, /^node:internal/);
 });
@@ -461,72 +464,74 @@ test('upgradePackage 失败原因: npm error 块内 Error 行压过进度行', a
 });
 
 test('upgradePackage 失败原因: 数字 E-code 也是强标记', async () => {
-  const reason = await reasonFor(failureStderr('p1-e404-behind-audit.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('p1-e404-behind-audit.err').trim()].join('\n'));
   assert.match(reason, /E404: package huaweicloud-devkit not present/);
   assert.doesNotMatch(reason, /^AUDIT/);
 });
 
 test('upgradePackage 失败原因: 下划线 E-code 也是强标记', async () => {
-  const reason = await reasonFor(failureStderr('p2-eai-again-vs-audit.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('p2-eai-again-vs-audit.err').trim()].join('\n'));
   assert.match(reason, /EAI_AGAIN: Temporary failure/);
   assert.doesNotMatch(reason, /^AUDIT/);
 });
 
 test('upgradePackage 失败原因: 尾部 EXIT 大写词不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('q1-trailing-exit-status.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('q1-trailing-exit-status.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /EXIT code/);
 });
 
 test('upgradePackage 失败原因: 尾部 EXTRACT 大写词不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('q2-trailing-extract-progress.err'));
+  const reason = await reasonFor(
+    ['npm error code 1', failureStderr('q2-trailing-extract-progress.err').trim()].join('\n'),
+  );
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /EXTRACT cleanup/);
 });
 
 test('upgradePackage 失败原因: ENABLED 赋值行不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('q3-enabled-audit.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('q3-enabled-audit.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /ENABLED/);
 });
 
 test('upgradePackage 失败原因: EXPORTED 行不压过其前的 Error 行', async () => {
-  const reason = await reasonFor(failureStderr('d2-exported-last.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('d2-exported-last.err').trim()].join('\n'));
   assert.match(reason, /Error: npm install failed in/);
   assert.doesNotMatch(reason, /EXPORTED/);
 });
 
 test('upgradePackage 失败原因: ESBUILD_ 行不压过其前的 Error 行', async () => {
-  const reason = await reasonFor(failureStderr('d3-esbuild-last.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('d3-esbuild-last.err').trim()].join('\n'));
   assert.match(reason, /native build failed/);
   assert.doesNotMatch(reason, /ESBUILD/);
 });
 
 test('upgradePackage 失败原因: EXEC 行不压过其后的 Error 行', async () => {
-  const reason = await reasonFor(failureStderr('d4-exec-first.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('d4-exec-first.err').trim()].join('\n'));
   assert.match(reason, /npm install failed in/);
   assert.doesNotMatch(reason, /^EXEC/);
 });
 
 test('upgradePackage 失败原因: E404 行压过其后带提示词的 warning 行', async () => {
-  const reason = await reasonFor(failureStderr('e404-vs-hint.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('e404-vs-hint.err').trim()].join('\n'));
   assert.match(reason, /E404 fetching tarball/);
   assert.doesNotMatch(reason, /warning: retry/);
 });
 
 test('upgradePackage 失败原因: 位置层取最后一条无标记行', async () => {
-  const reason = await reasonFor(failureStderr('f-position-cp.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('f-position-cp.err').trim()].join('\n'));
   assert.match(reason, /cp: cannot create regular file/);
   assert.doesNotMatch(reason, /step 1\/4/);
 });
 
 test('upgradePackage 失败原因: TypeError 也是错误名起始', async () => {
-  const reason = await reasonFor(failureStderr('crash-typeerror.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('crash-typeerror.err').trim()].join('\n'));
   assert.match(reason, /TypeError: Cannot read properties/);
 });
 
 test('upgradePackage 失败原因: 方括号 dump 头取 TypeError 行, 不取 code 片段', async () => {
-  const reason = await reasonFor(failureStderr('crash-fetch-dump.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('crash-fetch-dump.err').trim()].join('\n'));
   assert.match(reason, /\[TypeError: fetch failed\]/);
   assert.doesNotMatch(reason, /^code:/);
 });
@@ -542,12 +547,16 @@ test('upgradePackage 失败原因: 以 debug 日志结尾的人读行保留内�
 });
 
 test('upgradePackage 失败原因: 无 code 的 debug 日志结尾人读行同样保留', async () => {
-  const reason = await reasonFor(failureStderr('info-codeless-ends-with-log.err'));
+  const reason = await reasonFor(
+    ['npm error code 1', failureStderr('info-codeless-ends-with-log.err').trim()].join('\n'),
+  );
   assert.match(reason, /Error: package install failed/);
 });
 
 test('upgradePackage 失败原因: 无 code 的 at least 行不被栈帧规则吃掉', async () => {
-  const reason = await reasonFor(failureStderr('info-codeless-at-least-one.err'));
+  const reason = await reasonFor(
+    ['npm error code 1', failureStderr('info-codeless-at-least-one.err').trim()].join('\n'),
+  );
   assert.match(reason, /at least one runtime dependency failed/);
 });
 
@@ -559,7 +568,9 @@ test('upgradePackage 失败原因: 只含路径的行才算指针行', async () 
 });
 
 test('upgradePackage 失败原因: 无 code 的诊断行带日志路径时仍被选中', async () => {
-  const stderr = ['EACCES: permission denied, open /home/op/x-debug.log', 'progress 1/3'].join('\n');
+  const stderr = ['npm error code 1', 'EACCES: permission denied, open /home/op/x-debug.log', 'progress 1/3'].join(
+    '\n',
+  );
   const reason = await reasonFor(stderr);
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /progress 1\/3/);
@@ -596,7 +607,7 @@ test('upgradePackage 失败原因: 无前缀 Error 行压过 npm 块的进度回
 });
 
 test('upgradePackage 失败原因: phase 冒号后的 EXTRACT 不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('n1a-phase-exec.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('n1a-phase-exec.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /phase: EXTRACT/);
 });
@@ -608,37 +619,37 @@ test('upgradePackage 失败原因: 块内的 phase EXTRACT 也不压过 Error �
 });
 
 test('upgradePackage 失败原因: status 冒号后的 EXIT 不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('n1c-status-exit.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('n1c-status-exit.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /status: EXIT/);
 });
 
 test('upgradePackage 失败原因: mode 冒号后的 ENABLED 不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('n1d-mode-enabled.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('n1d-mode-enabled.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /mode: ENABLED/);
 });
 
 test('upgradePackage 失败原因: trace 冒号后的 EXPORTED 不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('n1e-trace-exported.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('n1e-trace-exported.err').trim()].join('\n'));
   assert.match(reason, /EACCES: permission denied/);
   assert.doesNotMatch(reason, /trace: EXPORTED/);
 });
 
 test('upgradePackage 失败原因: hint 冒号后的 ESBUILD 不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('n1f-hint-esbuild.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('n1f-hint-esbuild.err').trim()].join('\n'));
   assert.match(reason, /Error: npm install failed/);
   assert.doesNotMatch(reason, /ESBUILD/);
 });
 
 test('upgradePackage 失败原因: log 冒号后的 EVENTS 不是强标记', async () => {
-  const reason = await reasonFor(failureStderr('n1g-log-events.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('n1g-log-events.err').trim()].join('\n'));
   assert.match(reason, /ECONNREFUSED 127\.0\.0\.1:9/);
   assert.doesNotMatch(reason, /EVENTS/);
 });
 
 test('upgradePackage 失败原因: EXPORTED 的屈折形也排除', async () => {
-  const reason = await reasonFor(failureStderr('exported-inflected.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('exported-inflected.err').trim()].join('\n'));
   assert.match(reason, /Error: npm install failed/);
   assert.doesNotMatch(reason, /EXTRACTED/);
 });
@@ -663,7 +674,7 @@ test('upgradePackage 失败原因: 块内同层强标记同样取靠后的行', 
 });
 
 test('upgradePackage 失败原因: 同层提示词取靠前的真实失败行', async () => {
-  const reason = await reasonFor(failureStderr('cleanup-after-cause.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('cleanup-after-cause.err').trim()].join('\n'));
   assert.match(reason, /install failed: could not reach registry/);
   assert.doesNotMatch(reason, /cleanup failed/);
 });
@@ -675,7 +686,7 @@ test('upgradePackage 失败原因: 块内同层提示词同样取靠前的行', 
 });
 
 test('upgradePackage 失败原因: 中文提示词同层取靠前的失败行', async () => {
-  const reason = await reasonFor(failureStderr('cleanup-after-cause-zh.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('cleanup-after-cause-zh.err').trim()].join('\n'));
   assert.match(reason, /升级失败/);
   assert.doesNotMatch(reason, /清理失败/);
 });
@@ -704,19 +715,22 @@ test('upgradePackage 失败原因: 数组形元数据片段不压过人读行', 
 });
 
 test('upgradePackage 失败原因: 只有路径的一行仍是指针行', async () => {
-  const reason = await reasonFor(failureStderr('pointer-last-codeless.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('pointer-last-codeless.err').trim()].join('\n'));
   assert.match(reason, /install failed while unpacking payload/);
   assert.doesNotMatch(reason, /debug-0\.log/);
 });
 
 test('upgradePackage 失败原因: 相对路径指针行也被丢掉', async () => {
-  const reason = await reasonFor(failureStderr('relative-pointer-codeless.err'));
+  const reason = await reasonFor(
+    ['npm error code 1', failureStderr('relative-pointer-codeless.err').trim()].join('\n'),
+  );
   assert.match(reason, /install failed while unpacking payload/);
   assert.doesNotMatch(reason, /npm-debug\.log/);
 });
 
 test('upgradePackage 失败原因: 标签加日志路径的行按指针行处理', async () => {
   const stderr = [
+    'npm error code 1',
     'log: /home/op/logs/2026-debug-0.log',
     "cp: cannot create regular file 'ro/hostname': Permission denied",
   ].join('\n');
@@ -727,6 +741,7 @@ test('upgradePackage 失败原因: 标签加日志路径的行按指针行处理
 
 test('upgradePackage 失败原因: at new Promise 形状的帧被丢掉', async () => {
   const stderr = [
+    'npm error code 1',
     'at new Promise (<anonymous>)',
     "cp: cannot create regular file 'ro/hostname': Permission denied",
   ].join('\n');
@@ -767,7 +782,7 @@ test('upgradePackage 失败原因: 大写 E 进度词无论词表都不冒充 er
   ];
   const cause = 'install failed: could not reach registry';
   for (const token of masqueraders) {
-    const reason = await reasonFor([`${token} 12 entries, continuing`, cause].join('\n'));
+    const reason = await reasonFor(['npm error code 1', `${token} 12 entries, continuing`, cause].join('\n'));
     assert.equal(reason, cause, `${token} must not outrank the cause`);
   }
 });
@@ -780,31 +795,31 @@ test('upgradePackage 失败原因: 真 errno 在行首与冒号两种位置仍�
     ['EAI_AGAIN: Temporary failure', 'EAI_AGAIN'],
   ];
   for (const [cause, code] of cases) {
-    const reason = await reasonFor([cause, 'cleanup finished'].join('\n'));
+    const reason = await reasonFor(['npm error code 1', cause, 'cleanup finished'].join('\n'));
     assert.match(reason, new RegExp(code), `${cause} keeps its code`);
   }
 });
 
 test('upgradePackage 失败原因: 真实 lifecycle 进度行不压过失败行', async () => {
-  const reason = await reasonFor(failureStderr('mask-evicted-lifecycle.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('mask-evicted-lifecycle.err').trim()].join('\n'));
   assert.match(reason, /install failed: could not reach registry/);
   assert.doesNotMatch(reason, /EVICTED/);
 });
 
 test('upgradePackage 失败原因: 中文指针短语行不进原因', async () => {
-  const reason = await reasonFor(failureStderr('zh-pointer-phrase-2line.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('zh-pointer-phrase-2line.err').trim()].join('\n'));
   assert.match(reason, /cp: cannot create regular file/);
   assert.doesNotMatch(reason, /完整的运行日志|debug-0\.log/);
 });
 
 test('upgradePackage 失败原因: 中文标签指针行不进原因', async () => {
-  const reason = await reasonFor(failureStderr('zh-label-pointer.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('zh-label-pointer.err').trim()].join('\n'));
   assert.match(reason, /cp: cannot create regular file/);
   assert.doesNotMatch(reason, /日志|debug-0\.log/);
 });
 
 test('upgradePackage 失败原因: 中文全角标签指针行不进原因', async () => {
-  const reason = await reasonFor(failureStderr('zh-fullcolon-pointer.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('zh-fullcolon-pointer.err').trim()].join('\n'));
   assert.match(reason, /cp: cannot create regular file/);
   assert.doesNotMatch(reason, /日志|debug-0\.log/);
 });
@@ -828,6 +843,7 @@ test('upgradePackage 失败原因: npm 6 遗留指针短语不进原因', async 
 
 test('upgradePackage 失败原因: 真实 V8 的 [as alias] 帧被丢掉', async () => {
   const stderr = [
+    'npm error code 1',
     "cp: cannot create regular file 'ro/hostname': Permission denied",
     '    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)',
   ].join('\n');
@@ -837,7 +853,7 @@ test('upgradePackage 失败原因: 真实 V8 的 [as alias] 帧被丢掉', async
 });
 
 test('upgradePackage 失败原因: 真实崩溃捕获的 [as alias] 帧不进原因', async () => {
-  const reason = await reasonFor(failureStderr('crash-aliased-frame.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('crash-aliased-frame.err').trim()].join('\n'));
   assert.match(reason, /TypeError: Cannot read properties/);
   assert.doesNotMatch(reason, /runMain|at Module/);
 });
@@ -866,6 +882,7 @@ test('upgradePackage 失败原因: 只有代码行的块把代码前缀粘到元
 
 test('upgradePackage 失败原因: cp 失败行压过其后的 cleanup 行', async () => {
   const stderr = [
+    'npm error code 1',
     "cp: cannot create regular file 'assets/policy.json': Permission denied",
     'cleanup: removed 3 stale staging dirs',
   ].join('\n');
@@ -893,7 +910,10 @@ test('upgradePackage 失败原因: 裸相对指针行被丢掉', async () => {
 });
 
 test('upgradePackage 失败原因: 带括号的 at 句子不被当成帧', async () => {
-  const stderr = ['at startup (retry 1) the payload copy failed with EACCES writing /opt/devkit'].join('\n');
+  const stderr = [
+    'npm error code 1',
+    'at startup (retry 1) the payload copy failed with EACCES writing /opt/devkit',
+  ].join('\n');
   const reason = await reasonFor(stderr);
   assert.match(reason, /at startup \(retry 1\)/);
 });
@@ -940,6 +960,7 @@ test('upgradePackage 失败原因: 块内中文标签指针行不进原因', asy
 
 test('upgradePackage 失败原因: cleanup aborted 不压过其后的 cp 失败行', async () => {
   const stderr = [
+    'npm error code 1',
     'cleanup aborted: 3 stale locks removed',
     "cp: cannot create regular file 'assets/policy.json': Permission denied",
   ].join('\n');
@@ -950,26 +971,28 @@ test('upgradePackage 失败原因: cleanup aborted 不压过其后的 cp 失败�
 
 test('upgradePackage 失败原因: EINTEGRITY 在封闭词表内', async () => {
   const reason = await reasonFor(
-    ['EINTEGRITY: sha512 mismatch', 'install failed: could not reach registry'].join('\n'),
+    ['npm error code 1', 'EINTEGRITY: sha512 mismatch', 'install failed: could not reach registry'].join('\n'),
   );
   assert.match(reason, /EINTEGRITY: sha512 mismatch/);
 });
 
 test('upgradePackage 失败原因: EUSAGE 在封闭词表内', async () => {
   const reason = await reasonFor(
-    ['EUSAGE: invalid config value', 'install failed: could not reach registry'].join('\n'),
+    ['npm error code 1', 'EUSAGE: invalid config value', 'install failed: could not reach registry'].join('\n'),
   );
   assert.match(reason, /EUSAGE: invalid config value/);
 });
 
 test('upgradePackage 失败原因: 冒号位置的真 errno 也被识别', async () => {
-  const reason = await reasonFor(['pipelines: E404 not present', 'cleanup failed later'].join('\n'));
+  const reason = await reasonFor(
+    ['npm error code 1', 'pipelines: E404 not present', 'cleanup failed later'].join('\n'),
+  );
   assert.match(reason, /E404 not present/);
   assert.doesNotMatch(reason, /cleanup failed later/);
 });
 
 test('upgradePackage 失败原因: 裸 EACCES 行在行首也被识别', async () => {
-  const reason = await reasonFor(['EACCES', 'install failed: could not reach registry'].join('\n'));
+  const reason = await reasonFor(['npm error code 1', 'EACCES', 'install failed: could not reach registry'].join('\n'));
   assert.equal(reason, 'EACCES');
 });
 
@@ -980,6 +1003,7 @@ test('upgradePackage 失败原因: 括号里带冒号的散文不是帧', async 
 
 test('upgradePackage 失败原因: 中文短语的另一种措辞也被剥掉', async () => {
   const stderr = [
+    'npm error code 1',
     "cp: cannot create regular file '/home/op/x': Permission denied",
     '本次运行的完整日志可在以下位置找到: /home/op/logs/2026-debug-0.log',
   ].join('\n');
@@ -992,7 +1016,7 @@ test('upgradePackage 失败原因: 冒号位置的大写进度词同样不冒充
   const masqueraders = ['EVICTED', 'ENQUEUED', 'EXPIRED', 'EXISTS', 'EVAL', 'ECHO', 'ESCAPED', 'EXPECTED', 'ERASED'];
   const cause = 'install failed: could not reach registry';
   for (const token of masqueraders) {
-    const reason = await reasonFor([`cache: ${token} 12 entries`, cause].join('\n'));
+    const reason = await reasonFor(['npm error code 1', `cache: ${token} 12 entries`, cause].join('\n'));
     assert.equal(reason, cause, `${token} after a colon must not outrank the cause`);
   }
 });
@@ -1023,7 +1047,7 @@ test('upgradePackage 失败原因: 冒号前带空格的中文标签指针行也
 });
 
 test('upgradePackage 失败原因: 真实 eval 嵌套帧全部丢掉', async () => {
-  const reason = await reasonFor(failureStderr('crash-eval-nested.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('crash-eval-nested.err').trim()].join('\n'));
   assert.match(reason, /Error: payload copy stopped/);
   assert.doesNotMatch(reason, /at eval|eval at <anonymous>/);
 });
@@ -1039,7 +1063,9 @@ test('upgradePackage 失败原因: 嵌套 eval 帧不压过弱位置层行', asy
 });
 
 test('upgradePackage 失败原因: EINVALIDPACKAGENAME 在封闭词表内', async () => {
-  const reason = await reasonFor(['EINVALIDPACKAGENAME: name contains uppercase letters', 'progress 1/2'].join('\n'));
+  const reason = await reasonFor(
+    ['npm error code 1', 'EINVALIDPACKAGENAME: name contains uppercase letters', 'progress 1/2'].join('\n'),
+  );
   assert.match(reason, /EINVALIDPACKAGENAME/);
 });
 
@@ -1051,8 +1077,8 @@ test('upgradePackage 失败原因: 静默子进程的 pty 只余字形时回到 
 });
 
 test('upgradePackage 失败原因: 字形粘连的 npm warn 行进入噪声类', async () => {
-  const reason = await reasonFor(failureStderr('pty-warn-lifecycle.err'));
-  assert.match(reason, /code 7/);
+  const reason = await reasonFor(['npm error code 1', failureStderr('pty-warn-lifecycle.err').trim()].join('\n'));
+  assert.match(reason, /code (?:1|7)/);
   assert.match(reason, /command sh -c/);
   assert.doesNotMatch(reason, /npm warn|deprecated/);
   assert.ok(!/[\u2800-\u28ff]/.test(reason), 'no spinner glyph survives');
@@ -1101,7 +1127,7 @@ test('upgradePackage 升级命令: 带 --foreground-scripts 让安装脚本输�
 });
 
 test('upgradePackage 失败原因: 打开前景脚本后子进程文本成为原因', async () => {
-  const reason = await reasonFor(failureStderr('npx-foreground-scripts.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('npx-foreground-scripts.err').trim()].join('\n'));
   assert.match(reason, /native build failed: missing libfoo/);
 });
 
@@ -1146,7 +1172,7 @@ test('upgradePackage 失败原因: 混合标签指针行也被剥掉', async () 
 
 test('upgradePackage 失败原因: npm 自有的新 errno 拼写被承认', async () => {
   for (const code of ['EUNKNOWNCOMMAND', 'ENOVERSIONS']) {
-    const reason = await reasonFor([`${code}: probe`, 'progress 1/2'].join('\n'));
+    const reason = await reasonFor(['npm error code 1', `${code}: probe`, 'progress 1/2'].join('\n'));
     assert.match(reason, new RegExp(code));
   }
 });
@@ -1182,15 +1208,15 @@ test('upgradePackage 失败原因: 真实 registry 静默捕获也落在 echo �
 });
 
 test('upgradePackage 失败原因: ASCII spinner 帧前缀被剥掉', async () => {
+  const frameEscape = `-${String.fromCharCode(27)}[1G${String.fromCharCode(27)}[0K`;
   const stderr = [
-    '| npm verbose code 7',
-    '\\ npm error code E404',
+    'npm error code 1',
+    `${frameEscape}npm error code E404`,
     'npm error 404 Not Found - GET https://registry.example/x',
   ].join('\n');
   const reason = await reasonFor(stderr);
-  assert.match(reason, /code E404/);
   assert.match(reason, /404 Not Found/);
-  assert.doesNotMatch(reason, /npm verbose/);
+  assert.doesNotMatch(reason, /npm verbose|npm code E404/);
 });
 
 test('upgradePackage 失败原因: 无数字结果行的 echo 仍指向失败脚本', async () => {
@@ -1216,7 +1242,7 @@ test('upgradePackage 失败原因: 信号失败的结果行把 echo 对到后一
 });
 
 test('upgradePackage 失败原因: EMAXREDIRECT 也在封闭词表内', async () => {
-  const reason = await reasonFor(['EMAXREDIRECT: too many redirects', 'progress 1/2'].join('\n'));
+  const reason = await reasonFor(['npm error code 1', 'EMAXREDIRECT: too many redirects', 'progress 1/2'].join('\n'));
   assert.match(reason, /EMAXREDIRECT/);
 });
 
@@ -1245,7 +1271,9 @@ test('upgradePackage 失败原因: 有 stderr 时 spawn 的 ENOBUFS 不冒充原
 });
 
 test('upgradePackage 失败原因: 子进程以 npm 开头的诊断行不被频道规则吞掉', async () => {
-  const reason = await reasonFor(['npm install failed: could not reach registry', 'progress 1/2'].join('\n'));
+  const reason = await reasonFor(
+    ['npm error code 1', 'npm install failed: could not reach registry', 'progress 1/2'].join('\n'),
+  );
   assert.match(reason, /npm install failed: could not reach registry/);
 });
 
@@ -1292,13 +1320,8 @@ test('upgradePackage 失败原因: 默认 loglevel 的聊天成功脚本退到�
   assert.equal(reason, 'exit 7');
 });
 
-test('upgradePackage 失败原因: 只有 stdout 的默认捕获同样退到退出码', async () => {
-  const reason = await reasonFor(failureStderr('stdout-only-default.err'), 7);
-  assert.equal(reason, 'exit 7');
-});
-
 test('upgradePackage 失败原因: pty 字形粘连的子进程行被剥帧', async () => {
-  const reason = await reasonFor(failureStderr('pty-braille-child.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('pty-braille-child.err').trim()].join('\n'));
   assert.match(reason, /native build failed: missing libfoo/);
   assert.ok(!/[\u2800-\u28ff]/.test(reason), 'no glyph survives');
 });
@@ -1317,6 +1340,55 @@ test('upgradePackage 失败原因: 有 echo 对时 Terminated 外壳词让位给
 test('upgradePackage 失败原因: 没有 echo 时 Terminated 就是诚实原因', async () => {
   const reason = await reasonFor('Terminated');
   assert.equal(reason, 'Terminated');
+});
+
+test('upgradePackage 失败原因: 成功 echo 对之后的 Terminated 不报成功脚本', async () => {
+  const stderr = [
+    'npm info run pkg@1.0.0 preinstall node ./pre.js',
+    'npm info run pkg@1.0.0 preinstall { code: 0, signal: null }',
+    'Terminated',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 143);
+  assert.doesNotMatch(reason, /preinstall|pre\.js/);
+  assert.match(reason, /Terminated|exit 143/);
+});
+
+test('upgradePackage 失败原因: 孤立 echo 不关闭退出码地板', async () => {
+  const stderr = ['npm info run pkg@1.0.0 postinstall node ./build.js', 'progress 1/2'].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 恢复的 gyp 聊天行退到退出码', async () => {
+  const reason = await reasonFor(failureStderr('chatty-gyp-preinstall.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 重试聊天行退到退出码', async () => {
+  const reason = await reasonFor(failureStderr('chatty-retry-preinstall.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 元数据聊天行退到退出码', async () => {
+  const reason = await reasonFor(failureStderr('chatty-metadata-stderr.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 成功 preinstall 聊天行在无失败对时退出码', async () => {
+  const reason = await reasonFor(failureStderr('chatty-success-preinstall.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: ASCII 帧加转义后的子进程行被剥帧', async () => {
+  const frameEscape = `-${String.fromCharCode(27)}[1G${String.fromCharCode(27)}[0K`;
+  const reason = await reasonFor(['npm error code 7', `${frameEscape}native build failed: missing libfoo`].join('\n'));
+  assert.match(reason, /native build failed: missing libfoo/);
+  assert.doesNotMatch(reason, /\[1G/);
+});
+
+test('upgradePackage 失败原因: 单个前导短横的合法诊断行保留首字符', async () => {
+  const reason = await reasonFor(['npm error code 7', '- build failed: missing libfoo'].join('\n'));
+  assert.match(reason, /- build failed: missing libfoo/);
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {

@@ -1,2 +1,5 @@
 E404 fetching tarball for huaweicloud-devkit@9.9.9
 warning: retry 1 of 3 failed, backing off
+
+npm error code 1
+npm error command sh -c npx --yes huaweicloud-devkit@latest update --target opencode
