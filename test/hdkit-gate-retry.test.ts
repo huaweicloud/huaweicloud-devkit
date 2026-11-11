@@ -1,11 +1,16 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
-import { pluginRoot } from './structure-helpers.ts';
+
+// 源树派生路径（round 5）：structure-helpers 的 pluginRoot 在模块加载时断言
+// 生成 skills 树，单文件 node --test 在未构建检出上会死于该断言；这里只读
+// src 下的模块文本，无需生成树。
+const pluginSourceRoot = fileURLToPath(new URL('../plugins/huaweicloud-core', import.meta.url));
 
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
@@ -467,6 +472,111 @@ test('quota-class client-verdict payloads under a 502 status are never retried',
   restoreSeam();
 });
 
+// ── 中断原因字面量与不可见字符（round 5）──
+// fetch 的 text() 可能以 undefined / null / 字符串 / Error 拒绝：非 Error 原因
+// 不得落 String(error) 字面量（asText 同款陷阱）；零宽空格等 Cf 类字符
+// trim 不清除，渲染为"看起来空白"的消息必须走设计好的兜底。
+
+function abortingBodyWith(status: number, reason: unknown): Response {
+  return {
+    ok: false,
+    status,
+    headers: { get: () => null },
+    text: async () => {
+      throw reason;
+    },
+  } as unknown as Response;
+}
+
+test('abort reasons never surface as literals: undefined, null, string, Error each render real text', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const originalFetch = global.fetch;
+  try {
+    for (const [reason, expectFragment] of [
+      [undefined, /body read aborted/],
+      [null, /body read aborted/],
+      ['raw string reason', /raw string reason/],
+      [new TypeError('terminated'), /terminated/],
+    ] as const) {
+      let calls = 0;
+      global.fetch = async () => {
+        calls += 1;
+        return abortingBodyWith(500, reason);
+      };
+      const err = await captureConnectRejection({});
+      assert.equal(calls, 1, 'a 500 answer, aborted or not, is not transient');
+      assert.equal(err.status, 500);
+      assert.match(err.message, expectFragment, `the ${String(reason)} reason must surface real text`);
+      assert.doesNotMatch(err.message, /^undefined$|^null$/);
+    }
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+});
+
+test('an aborted 502 body rejected with undefined still retries and surfaces a real exhaustion message', async () => {
+  const restoreSeam = withRetrySeam('5');
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return abortingBodyWith(502, undefined);
+  };
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(calls, 2, 'the aborted 502 body is transient regardless of the reason');
+    assert.equal(err.status, 502);
+    assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, true);
+    assert.equal(err.code, 'HDKIT_GATEWAY_TIMEOUT');
+    assert.match(err.message, /body read aborted/, 'the wrap builds a real message for a falsy reason');
+    assert.doesNotMatch(err.message, /^undefined$|^null$/);
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+});
+
+test('a zero-width-space gate message renders the designed fallback on the connect exit', async () => {
+  const stub = stubConnectSequence([() => gateJson({ message: '​' })]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_sign_agreement', {})) as GateResult;
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    // 构建口把 U+200B 视同缺失 → 请求层兜底；门禁折叠的消息读 error.message，
+    // 兜底文案生效，绝不渲染视觉空白
+    assert.match(result.message ?? '', /插件版本过旧/, 'the designed gate copy fires for U+200B');
+    assert.ok((result.message ?? '').trim().length > 0, 'no visually blank message');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('an aborted codeless 409 body folds as the gate with the unknown-version fallbacks', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return abortingBodyWith(409, new TypeError('terminated'));
+  };
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(calls, 1, 'the gate is never retried, codeless or not');
+    assert.equal(err.status, 409);
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.match(result.message ?? '', /插件版本过旧/);
+    assert.match(result.remediation!.hint, /当前 未知/);
+    assert.match(result.remediation!.hint, /最新版/);
+    assert.equal('clientVersion' in (result as Record<string, unknown>), false);
+    assertNoLeakyLiterals(result);
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+});
+
 // ── 空白消息在构建口收窄（round 4）：出口逐个钉 ──
 // 构建口只有两处读 rec.message：请求层消息构建与容量分支。空白即缺失，
 // 设计好的兜底（'hdkitservice error' / 代码前缀构建 / 门禁文案）在各出口生效。
@@ -519,7 +629,7 @@ test('voucher exit: a whitespace-only gate message never renders blank', async (
 });
 
 test('the deleted message-form fallback stays deleted (structure pin on the gate module)', () => {
-  const source = readFileSync(join(pluginRoot, 'src', 'lib', 'hdkit', 'hdkit-gate.ts'), 'utf8');
+  const source = readFileSync(join(pluginSourceRoot, 'src', 'lib', 'hdkit', 'hdkit-gate.ts'), 'utf8');
   assert.doesNotMatch(source, /Gateway Time-out|Bad Gateway/, 'the message-form fallback must not return');
   assert.doesNotMatch(source, /non-JSON \\\(status/, 'the non-JSON message sniff must not return');
   assert.match(source, /TRANSIENT_STATUSES\.has\(err\.status\)/, 'the verdict stays keyed on the returned status');

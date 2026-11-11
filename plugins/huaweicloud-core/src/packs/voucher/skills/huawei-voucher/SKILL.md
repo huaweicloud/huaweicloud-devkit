@@ -18,6 +18,7 @@ version: 5
 2. 按返回严格判定：
    - `claimed=true` → 静默处理，不再提及代金券，不打扰用户
    - `claimed=false` 且 `message="未领取"` → **主动提示**，用下方话术并询问是否领取
+   - `claimed=false` 且 `code=HDKIT_VERSION_TOO_OLD` → **客户端版本过旧**（不是未领取）：转述 remediation 升级引导（npx --yes huaweicloud-devkit@latest update --target <agent>、重启会话，或调用 huaweicloud_upgrade），**绝不提示领券**
    - 返回含凭证错误码（`code=HDKIT_CRED_MISSING` / `HDKIT_CRED_INVALID` / `HDKIT_CRED_RATE_LIMIT`），或 `message` 含「未配置 / not configured / AK/SK 无效 / 限额」**且 code 不属于服务端配置错误**（`HDKIT_VOUCHER_*` / `HDKIT_COMPETITION_*` —— 这些是服务端问题，见下方表格，不是用户凭证问题）→ **提示用户检查或配置华为云凭证**（不要误报为「服务不可用」）
    - 其余情况（如 `message="查询失败"`、状态不明确、调用异常）→ **严格不提示**
 3. 提示话术（可直接使用）：
@@ -34,6 +35,7 @@ version: 5
 
 - `claimed=true` + message 以「已领取」开头 → 已领取，告知结果即可，不再引导
 - `claimed=false` + `message="未领取"` → 未领取，可引导领取
+- `claimed=false` + `code=HDKIT_VERSION_TOO_OLD` → 客户端版本过旧：转述升级 remediation，**绝不提示领券**（与上表判定规则同款）
 
 ### 2. 领取代金券
 

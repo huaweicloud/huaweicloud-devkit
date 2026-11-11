@@ -257,6 +257,26 @@ test('the quota flow folds the gate when the key-list read is itself gated', asy
   assert.doesNotMatch(f.hint ?? '', /quota/);
 });
 
+test('the relay fold never renders a blank error field for a zero-width gate message', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      return Promise.reject(
+        Object.assign(new Error('​'), {
+          code: 'HDKIT_VERSION_TOO_OLD',
+          remediation: {
+            hint: '插件版本过旧（当前 2.0.0-next.0，需升级至正式版 2.0.0 及以上）：',
+            steps: ['也可直接调用 huaweicloud_upgrade 工具完成升级'],
+          },
+        }),
+      );
+    },
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+  assert.ok((f.error ?? '').trim() !== '', 'the error field must not render visually blank');
+  assert.match(f.error ?? '', /版本过旧/, 'the designed gate copy fires for U+200B');
+});
+
 test('the relay fold never renders a blank error field for a whitespace gate message', async () => {
   const lifecycle = fakeKeyLifecycle({
     ensure: async () => {
@@ -275,6 +295,22 @@ test('the relay fold never renders a blank error field for a whitespace gate mes
   assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
   assert.ok((f.error ?? '').trim() !== '', 'the error field must not render blank');
   assert.match(f.error ?? '', /版本过旧/, 'the designed gate copy fires');
+});
+
+test('an aborted codeless 409 on the relay folds as the gate, not the no-credential misdiagnosis', async () => {
+  const gateError = Object.assign(new TypeError('terminated'), { status: 409 });
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw gateError;
+    },
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'a codeless 409 is the gate by the module contract');
+  assert.ok((f.error ?? '').trim() !== '', 'the error field must render real text');
+  const remediation = (f as { gateRemediation?: { hint: string; steps: string[] } }).gateRemediation;
+  assert.ok(remediation, 'the unknown-version fallback remediation must reach the expose result');
+  assert.match(remediation!.hint, /当前 未知/);
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
 });
 
 test('the self-heal catch folds the gate on the first gated relay call', async () => {

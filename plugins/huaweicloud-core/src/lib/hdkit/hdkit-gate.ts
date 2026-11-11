@@ -35,6 +35,41 @@ export function connectRetryDelaysMs(): number[] {
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
+// 渲染为空白的不可见字符（round 5）：trim 只清空白，零宽空格等 Cf 类字符
+// 会穿透 trim 渲染成"看起来空白"的消息——视同缺失。
+const INVISIBLE_CODE_POINTS: ReadonlySet<number> = new Set([
+  0x200b,
+  0x200c,
+  0x200d,
+  0x200e,
+  0x200f, // U+200B–U+200F
+  0x2060, // U+2060 word joiner
+  0x3164, // U+3164 hangul filler
+  0x2800, // U+2800 braille blank
+]);
+
+/**
+ * 消息可见性判定：trim 后仍需不含纯不可见字符。零宽空格不属于 \s，
+ * trim 不清除（round 5 实测），渲染为空白的消息必须走设计好的兜底。
+ */
+export function rendersBlank(text: string): boolean {
+  const visible = [...text].every((ch) => {
+    const cp = ch.codePointAt(0) ?? 0;
+    return cp !== 0x200b && cp !== 0x2060 && cp !== 0x3164 && cp !== 0x2800;
+  });
+  return text.trim() === '' || !visible;
+}
+
+/**
+ * 消息清洗（round 5）：trim + 不可见字符判定，空白/纯不可见视为缺失。
+ * 两个构建口共用——请求层消息构建与 versionGateMessage/耗尽消息——
+ * 任何出口都不渲染空白文案。
+ */
+export function cleanMessage(text: string | undefined): string {
+  if (!text) return '';
+  return rendersBlank(text) ? '' : text.trim();
+}
+
 /**
  * 网关 502/504 瞬时判定（dev e0c8700b + v2 分歧，两轮收口）：编排期响应超时，
  * 非创建失败——服务端可能已在编排实例，重试通常复用同一实例。
@@ -76,11 +111,13 @@ export interface VersionGatePayload {
 }
 
 /**
- * relay 侧（devbridge-key/auth 折叠链）识别 409 门禁错误的唯一判定。与
- * versionGateResult 共用同一规则源：只认 VERSION_GATE_CODE。
+ * relay 侧（devbridge-key/auth 折叠链）识别 409 门禁错误的判定。与
+ * versionGateResult 共用同一规则源：认 VERSION_GATE_CODE，或无码 409
+ * （body 读取中断——模块头注释定义 409 即门禁，round 5 v2 扩展）。
  */
 export function isVersionGateError(error: unknown): boolean {
-  return (error as { code?: unknown }).code === VERSION_GATE_CODE;
+  const err = error as { code?: unknown; status?: unknown };
+  return err.code === VERSION_GATE_CODE || (err.code === undefined && err.status === 409);
 }
 
 const UPGRADE_STEPS = [
@@ -122,8 +159,7 @@ export const VERSION_GATE_FALLBACK_MESSAGE = '插件版本过旧，请升级插�
 
 export function versionGateMessage(error: unknown): string {
   const raw = (error as { message?: unknown }).message;
-  const text = typeof raw === 'string' ? raw.trim() : '';
-  return text || VERSION_GATE_FALLBACK_MESSAGE;
+  return cleanMessage(typeof raw === 'string' ? raw : '') || VERSION_GATE_FALLBACK_MESSAGE;
 }
 
 /**
@@ -144,8 +180,33 @@ export function gatePayloadFields(err: {
 }
 
 /**
+ * 无码 409 折叠（round 5，v2 扩展）：body 读取中断的 409 只有 status 没有
+ * code——模块自己的头注释定义 409 即门禁。带 status 409 且无 code 的错误
+ * 视同门禁，字段走设计好的未知版本兜底。
+ */
+export function codelessGateFields(): { remediation: { hint: string; steps: string[] } } {
+  return {
+    remediation: {
+      hint: '插件版本过旧（当前 未知，需升级至正式版 最新版 及以上）：',
+      steps: [...UPGRADE_STEPS],
+    },
+  };
+}
+
+function codelessGateResult(error: unknown): Record<string, unknown> | undefined {
+  const err = error as { status?: unknown; code?: unknown };
+  if (err.code !== undefined || err.status !== 409) return undefined;
+  return {
+    ok: false,
+    code: VERSION_GATE_CODE,
+    message: VERSION_GATE_FALLBACK_MESSAGE,
+    ...codelessGateFields(),
+  };
+}
+
+/**
  * 各出口的 409 门禁折叠（dev e1255a4b 的 toVersionGateResult）：非门禁错误返回
- * undefined，调用方继续原有抛出/业务折叠。
+ * undefined，调用方继续原有抛出/业务折叠。无码 409（body 读取中断）同折（v2 扩展）。
  */
 export function versionGateResult(error: unknown): Record<string, unknown> | undefined {
   const err = error as {
@@ -157,15 +218,17 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
     minVersion?: unknown;
     remediation?: unknown;
   };
-  if (err.code !== VERSION_GATE_CODE) return undefined;
-  return {
-    ok: false,
-    code: VERSION_GATE_CODE,
-    message: versionGateMessage(err),
-    ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
-    ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
-    ...gatePayloadFields(err),
-  };
+  if (err.code === VERSION_GATE_CODE) {
+    return {
+      ok: false,
+      code: VERSION_GATE_CODE,
+      message: versionGateMessage(err),
+      ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
+      ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+      ...gatePayloadFields(err),
+    };
+  }
+  return codelessGateResult(error);
 }
 
 /**
@@ -176,11 +239,16 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
 export function decorateExhaustedConnect(error: unknown, retries: number): void {
   const err = error as {
     code?: string;
+    message?: unknown;
     remediation?: { hint: string; steps: string[] };
     gatewayRetryExhausted?: boolean;
   };
   err.gatewayRetryExhausted = true;
   if (!err.code) err.code = 'HDKIT_GATEWAY_TIMEOUT';
+  // 耗尽消息同样过清洗口（round 5）：零宽字符/空白不渲染成不可见文案
+  if (err.code === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(typeof err.message === 'string' ? err.message : '')) {
+    err.message = `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`;
+  }
   if (!err.remediation) {
     err.remediation = {
       hint: `连接已自动重试 ${retries} 次仍失败，连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,

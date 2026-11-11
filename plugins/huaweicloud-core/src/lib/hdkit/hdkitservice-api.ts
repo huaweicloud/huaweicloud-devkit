@@ -7,6 +7,7 @@ import { pinnedTemplateFor } from './sandbox-pool.ts';
 import {
   VERSION_GATE_CODE,
   applyVersionGate,
+  cleanMessage,
   connectRetryDelaysMs,
   decorateExhaustedConnect,
   gatePayloadFields,
@@ -84,12 +85,20 @@ async function hdkitRequest(
   }
 
   // 响应体读取中断同样携带 resp.status（round 4，v2 标注分歧——dev 裸抛）：
-  // 已收到 502/504 status 时重试契约照常适用
+  // 已收到 502/504 status 时重试契约照常适用。非 Error 拒绝原因（undefined/null/
+  // 字符串等）不落字面量——String(error) 对 undefined 是真值 "undefined"，与
+  // asText 同款陷阱（round 5）
   let text: string;
   try {
     text = await resp.text();
   } catch (error) {
-    throw Object.assign(error instanceof Error ? error : new Error(String(error)), { status: resp.status });
+    const reason =
+      error instanceof Error
+        ? error
+        : typeof error === 'string' && error.trim() !== ''
+          ? new Error(error)
+          : new Error('hdkitservice response body read aborted');
+    throw Object.assign(reason, { status: resp.status });
   }
   let data: Record<string, unknown> | unknown[];
   try {
@@ -110,9 +119,10 @@ async function hdkitRequest(
     const rawCode = rec.code;
     const code = typeof rawCode === 'string' && rawCode ? rawCode : `HTTP_${resp.status}`;
     const trace = rec.traceId ? ` [trace: ${asText(rec.traceId)}]` : '';
-    // 消息构建口（round 4）：空白即缺失——asString 窄化 + trim，设计好的
-    // 'hdkitservice error' 兜底在所有出口生效，空白消息不再透传成空白文案
-    const message = asString(rec.message)?.trim() || 'hdkitservice error';
+    // 消息构建口（round 4 + round 5）：空白与纯不可见字符（零宽空格等
+    // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'
+    // 兜底在所有出口生效
+    const message = cleanMessage(asString(rec.message)) || 'hdkitservice error';
     const err = new Error(`${code}: ${message}${trace}`) as HdkitError;
     err.code = code;
     err.status = resp.status;
@@ -144,9 +154,9 @@ async function hdkitRequest(
     if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）。
-      // asString 窄化：asText(undefined) 是真值 "undefined"，会把兜底覆盖成字面量；
-      // 空白同样即缺失（round 4）——保留构建口的代码前缀兜底，不被空白覆盖
-      err.message = asString(rec.message)?.trim() || err.message;
+      // cleanMessage 窄化（round 5）：undefined/空白/纯不可见字符均不覆盖——
+      // 保留构建口的代码前缀兜底
+      err.message = cleanMessage(asString(rec.message)) || err.message;
     }
     // 版本硬门禁（409 HDKIT_VERSION_TOO_OLD）：结构化升级引导，remediation 才能
     // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性。
