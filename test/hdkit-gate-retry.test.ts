@@ -2267,3 +2267,217 @@ test('a non-object remediation through the gate fold falls to the minted copy; t
   }, 'the envelope JSON-serializes — no BigInt rides it');
   assert.ok(serialized.includes('HDKIT_VERSION_TOO_OLD'));
 });
+
+// ── 耗尽折叠的窄化与回滚的描述符快照（round 16）──
+// 耗尽折叠四字段 presence-gated 但未窄化——BigInt 骑上任意字段直达 MCP
+// 序列化边界（round-15 的 remediation 窄化漏了这最后一个折叠口）。
+// applied 键的恢复仍信快照视图——has/get 都过代理陷阱，撒谎的 has 让"恢复"
+// 变成重新种标记。浅对象门之下，嵌套 BigInt/循环引用照样炸序列化。
+// 吞写陷阱下被拒键的删除会摧毁原值——不变量不破（折叠以标记为触发），
+// 该交换如实钉住。
+
+test('the exhaustion fold narrows every field: a BigInt on remediation, code, connectRetries, or retryAfter never rides the envelope', () => {
+  for (const [label, field] of [
+    ['remediation', 'remediation'],
+    ['code', 'code'],
+    ['connectRetries', 'connectRetries'],
+    ['retryAfter', 'retryAfter'],
+  ] as const) {
+    const carrier = Object.assign(new Error('exhausted'), {
+      gatewayRetryExhausted: true,
+      [field]: 1n,
+    });
+    let fold: Record<string, unknown> | undefined;
+    assert.doesNotThrow(() => {
+      fold = transientExhaustionResult(carrier);
+    }, `${label}: a BigInt field never detonates the fold`);
+    assert.equal(fold?.ok, false);
+    assert.equal(fold?.[field], undefined, `${label}: the hostile field is absent`);
+    let serialized = '';
+    assert.doesNotThrow(() => {
+      serialized = JSON.stringify(fold);
+    }, `${label}: the envelope JSON-serializes`);
+    assert.ok(serialized.includes('"ok":false'));
+  }
+  // 干净控制：真值照常随信封
+  const clean = Object.assign(new Error('exhausted'), {
+    gatewayRetryExhausted: true,
+    code: 'HDKIT_GATEWAY_TIMEOUT',
+    connectRetries: 2,
+    retryAfter: '60',
+    remediation: { hint: '网关超时', steps: ['稍后重试'] },
+  });
+  const fold = transientExhaustionResult(clean)!;
+  assert.equal(fold.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.equal(fold.connectRetries, 2);
+  assert.equal(fold.retryAfter, '60');
+  assert.equal((fold.remediation as { hint: string }).hint, '网关超时');
+  assert.doesNotThrow(() => {
+    JSON.stringify(fold);
+  }, 'the clean envelope serializes');
+});
+
+test('the gate fold narrows retryAfter: a BigInt never rides the gate envelope', () => {
+  const carrier = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    retryAfter: 1n,
+  });
+  let out: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    out = versionGateResult(carrier);
+  }, 'a BigInt retryAfter never detonates the gate fold');
+  assert.equal(out?.code, 'HDKIT_VERSION_TOO_OLD');
+  assert.equal(out?.retryAfter, undefined, 'the hostile retryAfter is absent');
+  assert.doesNotThrow(() => {
+    JSON.stringify(out);
+  }, 'the gate envelope JSON-serializes');
+  // 干净控制：字符串 retryAfter 照常随信封
+  const clean = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    retryAfter: '30',
+  });
+  assert.equal(versionGateResult(clean)?.retryAfter, '30');
+});
+
+// 撒谎 get（可选 has 谎）+ 拒写键 的代理工厂（round 16 去重）：两形态共用
+// ——拒绝键的写/定义全抛，其余转发；标记键 get 恒读 true（读读一致），has
+// 谎报可选（缺省诚实——控制组）
+function markerLieProxy(original: HostileTarget, opts: { refuseKey: string; lieHas?: boolean }): HostileTarget {
+  return new Proxy(original, {
+    has(t: HostileTarget, k: string | symbol): boolean {
+      if (opts.lieHas && k === 'gatewayRetryExhausted') return true;
+      return Reflect.has(t, k);
+    },
+    get(t: HostileTarget, k: string | symbol): unknown {
+      if (k === 'gatewayRetryExhausted') return true;
+      return Reflect.get(t, k);
+    },
+    set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
+      if (k === opts.refuseKey) throw new TypeError(`refuse the ${String(k)} write`);
+      return Reflect.set(t, k, v);
+    },
+    defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
+      if (k === opts.refuseKey) throw new TypeError(`refuse the ${String(k)} defineProperty`);
+      return Reflect.defineProperty(t, k, d);
+    },
+  });
+}
+
+test('the applied-key restore never trusts the lying view: the marker stays deleted, the fold never fires', () => {
+  // 撒谎 has+get 对 APPLIED 键：快照的 had=true（谎）让恢复重新种标记
+  {
+    const original = hostileCarrier();
+    const proxy = markerLieProxy(original, { refuseKey: 'code', lieHas: true });
+    const out = decorateExhaustedConnect(proxy, 2);
+    assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
+    assert.equal(
+      (original as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
+      undefined,
+      'the lying snapshot never re-plants the applied marker through the restore',
+    );
+    assert.equal(transientExhaustionResult(original), undefined, 'the fold never fires on the discarded original');
+  }
+  // 干净控制：同一陷阱形态但 has 诚实——标记同样删除（谎言是判别器）
+  {
+    const original = hostileCarrier();
+    const proxy = markerLieProxy(original, { refuseKey: 'code' });
+    const out = decorateExhaustedConnect(proxy, 2);
+    assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
+    assert.equal((original as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted, undefined);
+  }
+});
+
+test('applyVersionGate never leaves its applied decoration on a discarded original under a lying view', () => {
+  const original = Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD' }) as unknown as HostileTarget;
+  const proxy = new Proxy(original, {
+    has(t: HostileTarget, k: string | symbol): boolean {
+      if (k === 'clientVersion') return true;
+      return Reflect.has(t, k);
+    },
+    get(t: HostileTarget, k: string | symbol): unknown {
+      if (k === 'clientVersion') return '2.0.0-next.0';
+      return Reflect.get(t, k);
+    },
+    set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
+      if (k === 'minVersion') throw new TypeError('refuse the minVersion write');
+      return Reflect.set(t, k, v);
+    },
+    defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
+      if (k === 'minVersion') throw new TypeError('refuse the minVersion defineProperty');
+      return Reflect.defineProperty(t, k, d);
+    },
+  });
+  const out = applyVersionGate(proxy, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.notEqual(out, proxy, 'the refusing carrier falls to the clone');
+  assert.equal(
+    (original as { clientVersion?: unknown }).clientVersion,
+    undefined,
+    'the discarded original carries no half decoration',
+  );
+  assert.equal((original as { remediation?: unknown }).remediation, undefined);
+  assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0', 'the clone carries the payload');
+});
+
+test('a nested-hostile remediation falls to the minted copy: serializability is verified deeply', () => {
+  const nested = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    remediation: { hint: 'real hint', steps: [1n] },
+  });
+  let out: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    out = versionGateResult(nested);
+  }, 'a nested BigInt never detonates the gate fold');
+  const remediation = (out?.remediation ?? {}) as { hint?: string };
+  assert.match(
+    String(remediation.hint ?? ''),
+    /当前 未知.*最新版/,
+    'the minted remediation replaces the non-serializable one',
+  );
+  assert.doesNotThrow(() => {
+    JSON.stringify(out);
+  }, 'the envelope JSON-serializes');
+  // 循环引用：同样深验兜底
+  const circular: { hint: string; steps: string[]; self?: unknown } = {
+    hint: 'h',
+    steps: ['s'],
+  };
+  circular.self = circular;
+  const looped = Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD', remediation: circular });
+  let out2: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    out2 = versionGateResult(looped);
+  }, 'a circular remediation never detonates the gate fold');
+  assert.match(
+    String(((out2?.remediation ?? {}) as { hint?: string }).hint ?? ''),
+    /当前 未知.*最新版/,
+    'a circular remediation falls to the minted copy',
+  );
+});
+
+test('a swallowing-set trap with a pre-existing key: the delete trades the intact value, the fold never fires either way', () => {
+  const original = hostileCarrier(20);
+  const proxy = new Proxy(original, {
+    set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
+      if (k === 'code') return true; // 吞下写入——不落地
+      t[k] = v;
+      return true;
+    },
+    get(t: HostileTarget, k: string | symbol): unknown {
+      return Reflect.get(t, k);
+    },
+  });
+  const out = decorateExhaustedConnect(proxy, 2);
+  assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
+  assert.equal(
+    (original as { code?: unknown }).code,
+    undefined,
+    'the refused-key delete destroys the intact pre-existing value — the recorded trade',
+  );
+  assert.equal(
+    (original as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
+    undefined,
+    'the applied marker rolls back',
+  );
+  assert.equal(transientExhaustionResult(original), undefined, 'the fold never fires either way');
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone carries the decoration');
+});

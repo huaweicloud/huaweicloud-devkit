@@ -238,14 +238,9 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const clientVersion =
       typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
     const minVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
-    // remediation 窄化（round 15）：安全读只防抛出，原断言是编译期的——
-    // BigInt 等非对象值骑上信封即炸 JSON 序列化。窄到对象（null 除外），
-    // 其余回设计引导
-    const rawRemediation = safeReadField(error, 'remediation');
-    const remediation =
-      rawRemediation !== null && typeof rawRemediation === 'object'
-        ? (rawRemediation as { hint: string; steps: string[] })
-        : undefined;
+    // remediation 窄化升级深验（round 16）：嵌套 BigInt/循环引用同样兜底，
+    // 共用 serializableRemediation（安全读防抛出 + 深序列化验证）
+    const remediation = serializableRemediation(safeReadField(error, 'remediation'));
     return {
       code: VERSION_GATE_CODE,
       message: versionGateMessage(error),
@@ -268,8 +263,10 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
  */
 export function versionGateResult(error: unknown): Record<string, unknown> | undefined {
   if (!isVersionGateError(error)) return undefined;
-  // round 12：字段读安全化（抛出型 getter 按缺失）
-  const retryAfter = safeReadField(error, 'retryAfter');
+  // round 12：字段读安全化（抛出型 getter 按缺失）；retryAfter 窄化到字符串
+  // （round 16）——BigInt 等非字符串值不骑信封（MCP 序列化边界）
+  const rawRetryAfter = safeReadField(error, 'retryAfter');
+  const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
   const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
   return {
     ok: false,
@@ -313,6 +310,20 @@ export function canonCode(code: unknown): string {
   return typeof code === 'string' ? blankCharsRemoved(code) : '';
 }
 
+// remediation 的深序列化验证（round 16）：窄化只看第一层——嵌套 BigInt 或
+// 循环引用在 MCP 序列化边界照样炸。装填口统一深验：对象且 JSON.stringify
+// 成功才随信封，其余（非对象、序列化炸）按缺失——各出口的设计引导兜底。
+// 折叠是错误路径上的一次调用，深验的 stringify 成本可忽略
+export function serializableRemediation(raw: unknown): { hint: string; steps: string[] } | undefined {
+  if (raw === null || typeof raw !== 'object') return undefined;
+  try {
+    JSON.stringify(raw);
+  } catch {
+    return undefined;
+  }
+  return raw as { hint: string; steps: string[] };
+}
+
 // 伪造码家族判定（round 12）：规范拼写为 HTTP 加可选下划线加数字——下划线
 // 被空白渲染字符替换（HTTP\u00a0502 / HTTP 502 / HTTP_5\u206002）同样是伪造拼写，
 // 按模块自身教义，含空白渲染字符的码绝非服务端亲署。
@@ -342,18 +353,21 @@ const SEP_STAR = `[\\s\\p{Default_Ignorable_Code_Point}\\p{Cc}\u{FFF9}-\u{FFFB}\
 // 落而 code 未换，会把传输码 20 折叠出去）。
 function decorateInPlace(target: Record<string, unknown>, fields: Array<[string, unknown]>): boolean {
   const applied: Array<string> = [];
-  const snapshots = new Map<string, { had: boolean; value: unknown }>();
+  // 快照改走 own 描述符（round 16）：has/get 都过代理陷阱——撒谎的 has+get
+  // 视图让"恢复"变成重新种标记或用谎言覆盖原码（round-15 只关了被拒键，
+  // applied 键的快照读仍信敌意视图）。getOwnPropertyDescriptor 的默认陷阱
+  // 透出目标的真实自有属性状态，撒谎 has+get 家族污染不了快照；描述符读
+  // 抛出按无描述符处理（删除兜底）。残留边界：连 gOPD 陷阱一并撒谎的代理
+  // 能骗过任何客户端方案——导出面防御的记录边界
+  const snapshots = new Map<string, PropertyDescriptor | undefined>();
   for (const [key, value] of fields) {
-    // 快照读取带防护：抛出型 getter 不引爆回滚路径（按缺失快照）
-    let prior: unknown;
-    let had = false;
+    let prior: PropertyDescriptor | undefined;
     try {
-      had = key in target;
-      prior = had ? target[key] : undefined;
+      prior = Object.getOwnPropertyDescriptor(target, key);
     } catch {
       prior = undefined;
     }
-    snapshots.set(key, { had, value: prior });
+    snapshots.set(key, prior);
     let wrote = false;
     try {
       target[key] = value;
@@ -366,6 +380,10 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
         // 两条写入路径都抛出——写入可能已物理落地（先转发后抛的陷阱，
         // round 15），拒绝由回滚的尽力删除兜底，走克隆分支
       }
+      // 吞写陷阱（round 16 注释如实化）：写入被吞时回读读到目标真值，同样
+      // 落到这里——被拒键的删除会摧毁目标的完好原值（如预存 code 20）。
+      // 该交换成立：折叠以标记为触发，标记不落地即不折叠，删除后标记更不
+      // 存在——原值风险换残留风险，载体本被丢弃
     }
     // 写后回读（round 13）：陷阱代理的 [[Set]] 可既不抛也不落——回读不等
     // 即视为拒绝，走克隆分支；回读本身抛出同样视为未落。回读也探测先转发
@@ -381,19 +399,23 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
     if (!landed) {
       // 被拒键的回滚绝不信敌意视图（round 15）：`wrote` 布尔不可信——陷阱可
       // 先转发后抛（写入物理落地而 wrote=false，round-14 的 wrote 门把被拒键
-      // 漏出清单）；快照读同样不可信——撒谎的 has+get 让"恢复"变成种回谎言
-      // 或用谎言覆盖原码。被拒键一律尽力删除（写未落时空操作，删除被拒亦尽
-      // 力而为——载体本就被丢弃；冻结/不可配置键的删除抛出即被吞，原值不
-      // 动）。快照恢复只用于装饰自身装填并经回读验证过的 applied 键
+      // 漏出清单）。被拒键一律尽力删除（round 16 注释如实化：写入未落地时
+      // 删除并非空操作——吞写陷阱下它会摧毁目标的完好原值，原值风险换残留
+      // 风险，折叠以标记为触发、两端都不折叠；删除被拒亦尽力而为——载体
+      // 本就被丢弃；冻结/不可配置键的删除抛出即被吞）
       try {
         delete target[key];
       } catch {
         // 尽力而为
       }
+      // applied 键的恢复同样不信视图（round 16）：按描述符快照恢复——有
+      // 描述符走 defineProperty（恢复访问器/不可枚举形态），无描述符删除。
+      // 描述符快照经 gOPD 陷阱读，撒谎的 has+get 不再污染恢复；恢复被拒亦
+      // 尽力而为
       for (const done of applied) {
-        const snap = snapshots.get(done)!;
+        const snap = snapshots.get(done);
         try {
-          if (snap.had) target[done] = snap.value;
+          if (snap) Object.defineProperty(target, done, snap);
           else delete target[done];
         } catch {
           // 还原亦被拒（被丢弃的原对象，尽力而为）
@@ -537,18 +559,26 @@ function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
  * 标记的错误转 ok:false 结构化返回，remediation 与尝试次数穿透 MCP 边界。
  */
 export function transientExhaustionResult(error: unknown): Record<string, unknown> | undefined {
-  // round 12：全部字段过安全读——抛出型 getter 按缺失，标记缺失即不折叠
+  // round 12：全部字段过安全读——抛出型 getter 按缺失，标记缺失即不折叠。
+  // round 16：presence-gate 之上再窄化——code 窄到字符串、connectRetries 窄到
+  // 数字、retryAfter 窄到字符串、remediation 深验（serializableRemediation），
+  // BigInt 等敌意值不骑信封（MCP 序列化边界，round-15 窄化漏了的最后一个折叠口）
   const gatewayRetryExhausted = safeReadField(error, 'gatewayRetryExhausted');
   if (gatewayRetryExhausted !== true) return undefined;
   const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
-  const retryAfter = safeReadField(error, 'retryAfter');
-  const remediation = safeReadField(error, 'remediation');
+  const rawRetryAfter = safeReadField(error, 'retryAfter');
+  const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
+  const remediation = serializableRemediation(safeReadField(error, 'remediation'));
+  const rawCode = safeReadField(error, 'code');
+  const code = typeof rawCode === 'string' ? rawCode : undefined;
+  const rawRetries = safeReadField(error, 'connectRetries');
+  const connectRetries = typeof rawRetries === 'number' ? rawRetries : undefined;
   return {
     ok: false,
-    code: safeReadField(error, 'code'),
+    ...(code !== undefined ? { code } : {}),
     // round 6：耗尽出口的消息读同样过清洗口——纯不可见原因不渲染成不可见文案
     message: cleanMessage(safeMessageText(error)) || 'connect 持续遭遇网关 502/504 超时',
-    connectRetries: safeReadField(error, 'connectRetries'),
+    ...(connectRetries !== undefined ? { connectRetries } : {}),
     ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
     ...(retryAfter ? { retryAfter } : {}),
     ...(remediation ? { remediation } : {}),

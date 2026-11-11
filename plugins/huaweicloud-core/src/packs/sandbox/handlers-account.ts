@@ -5,6 +5,7 @@ import {
   cleanMessage,
   safeMessageText,
   safeReadField,
+  serializableRemediation,
   transientExhaustionResult,
   versionGateResult,
 } from '../../lib/hdkit/hdkit-gate.ts';
@@ -80,14 +81,16 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
       businessCode === 'HDKIT_CRED_INVALID' ||
       coreHoursExhausted
     ) {
-      const retryAfter = safeReadField(error, 'retryAfter');
-      const rawRemediation = safeReadField(error, 'remediation');
-      const remediation = rawRemediation !== null && typeof rawRemediation === 'object' ? rawRemediation : undefined;
+      // retryAfter 窄到字符串、remediation 深验（round 16）：BigInt 等敌意值
+      // 不骑信封（MCP 序列化边界，与门禁/耗尽折叠同口径）
+      const rawRetryAfter = safeReadField(error, 'retryAfter');
+      const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
+      const remediation = serializableRemediation(safeReadField(error, 'remediation'));
       return {
         ok: false,
         code: businessCode,
         message: cleanMessage(safeMessageText(error)),
-        ...(retryAfter !== undefined ? { retryAfter } : {}),
+        ...(retryAfter ? { retryAfter } : {}),
         ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
         ...(remediation ? { remediation } : {}),
       };

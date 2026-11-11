@@ -125,6 +125,22 @@ mock.module(API_SPEC, {
 } as unknown as Parameters<typeof mock.module>[1]);
 const { handleConnect } = await import(HANDLERS_SPEC);
 
+// mock 路由共用跑法（round 16 去重）：设载体 → 跑真实 handleConnect → 复原，
+// 返回折叠信封（拒绝与爆炸都是测试自身的失败）
+async function foldViaHandler(carrier: unknown): Promise<Record<string, unknown>> {
+  handlerCarrier = carrier;
+  try {
+    const out = (await handleConnect({ pool_type: 'ephemeral' }).then(
+      (result: unknown) => result,
+      () => null,
+    )) as Record<string, unknown> | null;
+    assert.ok(out, 'the fold envelope must fold — a rejection or null here fails the pin');
+    return out;
+  } finally {
+    handlerCarrier = undefined;
+  }
+}
+
 test('a throwing code getter through the handler fold rethrows the original, never a TypeError', async () => {
   handlerCarrier = fieldThrower('code');
   try {
@@ -141,17 +157,76 @@ test('a throwing code getter through the handler fold rethrows the original, nev
 });
 
 test('a quota code with a throwing message getter folds the business envelope with the message absent', async () => {
-  handlerCarrier = fieldThrower('message', Object.assign(new Error('x'), { code: 'HDKIT_QUOTA_EXCEEDED' }));
+  const out = await foldViaHandler(
+    fieldThrower('message', Object.assign(new Error('x'), { code: 'HDKIT_QUOTA_EXCEEDED' })),
+  );
+  assert.equal(out.ok, false);
+  assert.equal(out.code, 'HDKIT_QUOTA_EXCEEDED');
+  assert.equal(out.message, '', 'a refusing message read is absent on the envelope');
+});
+
+// ── 信封窄化与 body-read 包装口（round 16）──
+// handler 业务折叠的 retryAfter、耗尽折叠的 remediation 经真实 mock 路由钉
+// BigInt 窄化；body-read catch 的裸 status 读在包装口自己的 catch 里引爆——
+// text() 拒绝 + 敌意 status getter 不得浮出 TypeError。
+
+test('a BigInt retryAfter through the handler business fold rides absent; the envelope serializes', async () => {
+  const out = await foldViaHandler(
+    Object.assign(new Error('x'), {
+      code: 'HDKIT_QUOTA_EXCEEDED',
+      retryAfter: 1n,
+      remediation: { hint: '配额已满', steps: ['稍后重试'] },
+    }),
+  );
+  assert.equal(out.ok, false);
+  assert.equal(out.code, 'HDKIT_QUOTA_EXCEEDED');
+  assert.equal(out.retryAfter, undefined, 'the hostile retryAfter is absent');
+  assert.equal((out.remediation as { hint: string }).hint, '配额已满');
+  assert.doesNotThrow(() => {
+    JSON.stringify(out);
+  }, 'the business envelope JSON-serializes through the real route');
+});
+
+test('a BigInt remediation through the exhaustion fold rides absent; the envelope serializes', async () => {
+  const out = await foldViaHandler(
+    Object.assign(new Error('exhausted'), {
+      gatewayRetryExhausted: true,
+      connectRetries: 2,
+      code: 'HDKIT_GATEWAY_TIMEOUT',
+      remediation: 1n,
+    }),
+  );
+  assert.equal(out.ok, false);
+  assert.equal(out.remediation, undefined, 'the hostile remediation is absent');
+  assert.equal(out.connectRetries, 2);
+  assert.doesNotThrow(() => {
+    JSON.stringify(out);
+  }, 'the exhaustion envelope JSON-serializes through the real route');
+});
+
+test('the body-read wrap survives a hostile response: a throwing text() plus a throwing status getter surfaces the designed envelope', async () => {
+  const originalFetch = global.fetch;
   try {
-    const out = (await handleConnect({ pool_type: 'ephemeral' }).then(
-      (result: unknown) => result,
+    const hostileResponse = {
+      get status(): number {
+        throw new TypeError('status getter detonates');
+      },
+      text: () => {
+        throw new TypeError('body read died mid-stream');
+      },
+    };
+    global.fetch = (async () => hostileResponse) as unknown as typeof global.fetch;
+    const outcome = await hdkitConnectWithRetry({}).then(
       () => null,
-    )) as Record<string, unknown> | null;
-    assert.ok(out, 'the business envelope folds');
-    assert.equal(out.ok, false);
-    assert.equal(out.code, 'HDKIT_QUOTA_EXCEEDED');
-    assert.equal(out.message, '', 'a refusing message read is absent on the envelope');
+      (error: unknown) => error,
+    );
+    assert.ok(outcome, 'expected rejection');
+    const err = outcome as Error & { bodyUnreadable?: boolean; status?: unknown };
+    assert.ok(!(err instanceof TypeError), 'the wrap never detonates in its own catch');
+    assert.match(err.message, /body read died mid-stream/, 'the real reason carries through cleaned');
+    assert.equal(err.bodyUnreadable, true, 'the wrap marker rides');
+    assert.equal(err.status, undefined, 'a refusing status read is absent — no gateway signal');
   } finally {
-    handlerCarrier = undefined;
+    global.fetch = originalFetch;
   }
 });

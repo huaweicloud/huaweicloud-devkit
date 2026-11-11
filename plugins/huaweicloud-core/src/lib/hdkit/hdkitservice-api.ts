@@ -17,6 +17,7 @@ import {
   isVersionGateError,
   safeMessageText,
   safeReadField,
+  serializableRemediation,
 } from './hdkit-gate.ts';
 import { asRecord } from '../as-record.ts';
 import { asString, asText } from '../as-text.ts';
@@ -126,9 +127,12 @@ async function hdkitRequest(
   try {
     text = await resp.text();
   } catch (error) {
-    throw Object.assign(transportReason(error, 'hdkitservice response body read aborted'), {
-      status: resp.status,
-    });
+    // 状态读过安全卫队（round 16）：text() 拒绝 + 敌意 status getter 不得
+    // 在包装口自己的 catch 里引爆——无状态即无网关信号（不重试），标记照带
+    const wrapped = transportReason(error, 'hdkitservice response body read aborted');
+    const status = safeReadField(resp, 'status');
+    if (typeof status === 'number') Object.assign(wrapped, { status });
+    throw wrapped;
   }
   let data: Record<string, unknown> | unknown[];
   try {
@@ -355,8 +359,7 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   const rawCode = safeReadField(error, 'code');
   const rawClientVersion = safeReadField(error, 'clientVersion');
   const rawMinVersion = safeReadField(error, 'minVersion');
-  const rawRemediation = safeReadField(error, 'remediation');
-  const remediation = rawRemediation !== null && typeof rawRemediation === 'object' ? rawRemediation : undefined;
+  const remediation = serializableRemediation(safeReadField(error, 'remediation'));
   return {
     claimed: false,
     message: cleanMessage(safeMessageText(error)) || unavailableMessage,
