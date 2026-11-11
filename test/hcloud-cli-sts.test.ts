@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { extractApiError, resolveStsInjectArgs, type HcloudPlan } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
+import { withTempAuthHome } from './hcloud-cli-harness.ts';
 import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
 
 // Deterministic-tier seam: disable the once-per-session first-assertion
@@ -12,20 +13,29 @@ import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huawe
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 
 test('koocli lang G4: approval token still rejects args that differ from the approved plan', async () => {
-  const plan = (await callTool('huaweicloud_plan_cli_command', {
-    vendorConfirmed: 'test: vendor established by the harness',
-    args: ['BSS', 'ShowCustomerAccountBalances'],
-    allowWrites: true,
-  })) as HcloudPlan;
-  await assert.rejects(
-    callTool('huaweicloud_run_approved_command', {
+  // Isolated home: without it the minted token lands in the real home's
+  // approvals.json, where parallel test processes' mints race the whole-file
+  // read-modify-write. A lost mint resolves the run as a structured
+  // CONFIRM_TOKEN_NOT_FOUND instead of throwing, and assert.rejects reads
+  // that as "Missing expected rejection" (observed once on ubuntu-22, PR
+  // #10). Every sibling approval test isolates the home; this one was born
+  // without the wrapper.
+  await withTempAuthHome(async () => {
+    const plan = (await callTool('huaweicloud_plan_cli_command', {
       vendorConfirmed: 'test: vendor established by the harness',
-      args: ['BSS', 'DifferentOperation'],
-      approvalToken: plan.approvalToken,
-      approvedByUser: true,
-    }),
-    /do not match the approved plan/,
-  );
+      args: ['BSS', 'ShowCustomerAccountBalances'],
+      allowWrites: true,
+    })) as HcloudPlan;
+    await assert.rejects(
+      callTool('huaweicloud_run_approved_command', {
+        vendorConfirmed: 'test: vendor established by the harness',
+        args: ['BSS', 'DifferentOperation'],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+      }),
+      /do not match the approved plan/,
+    );
+  });
 });
 
 test('koocli lang: extractApiError keeps JSON keys stable under Chinese KooCLI output', () => {

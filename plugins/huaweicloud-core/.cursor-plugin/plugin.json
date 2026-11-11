@@ -16,7 +16,7 @@
   },
   "mcpServers": "./.mcp.json",
   "description": "Guide coding agents to use Huawei Cloud Skills, KooCLI, APIs, SDKs, and future MCP capabilities with safer execution and less context.",
-  "version": "2.0.0-next.0",
+  "version": "2.0.0-next.1",
   "author": {
     "name": "HuaweiCloud Mate",
     "url": "https://github.com/huaweicloud"
