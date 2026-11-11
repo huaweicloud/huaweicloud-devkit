@@ -86,21 +86,17 @@ async function hdkitRequest(
   }
 
   // 响应体读取中断同样携带 resp.status（round 4，v2 标注分歧——dev 裸抛）：
-  // 已收到 502/504 status 时重试契约照常适用。拒绝原因全过清洗口（round 6）——
-  // 空白/纯不可见的字符串或 Error 消息落设计好的 body-read-aborted 文案，
-  // 真文本原样透传；bodyUnreadable 标记供门禁折叠区分传输噪声与服务端话术。
+  // 已收到 502/504 status 时重试契约照常适用。两分支统一从清洗值构建抛出错误
+  // （round 7）：字符串与 Error 原因的清洗输出即为最终消息——边缘空白/不可见
+  // 字符不存活到 MCP 边界，原对象（含传输层自带的 code 属性，如 DOMException
+  // 的 20）不透传；bodyUnreadable 标记供门禁折叠区分传输噪声与服务端话术。
   let text: string;
   try {
     text = await resp.text();
   } catch (error) {
-    let reason: Error;
-    if (error instanceof Error) {
-      reason = cleanMessage(error.message) ? error : new Error('hdkitservice response body read aborted');
-    } else if (typeof error === 'string' && cleanMessage(error)) {
-      reason = new Error(cleanMessage(error));
-    } else {
-      reason = new Error('hdkitservice response body read aborted');
-    }
+    const cleaned =
+      error instanceof Error ? cleanMessage(error.message) : typeof error === 'string' ? cleanMessage(error) : '';
+    const reason = new Error(cleaned || 'hdkitservice response body read aborted');
     throw Object.assign(reason, { status: resp.status, bodyUnreadable: true });
   }
   let data: Record<string, unknown> | unknown[];
@@ -121,10 +117,11 @@ async function hdkitRequest(
   if (!resp.ok) {
     const rec = asRecord(data);
     const rawCode = rec.code;
-    // round 6：无服务端码的 409 不伪造 HTTP_409——模块契约定义 409 即门禁，
-    // 伪造码会击穿无码门禁折叠（sandbox/voucher/relay 出口）；其余状态照旧
-    const code =
-      typeof rawCode === 'string' && rawCode ? rawCode : resp.status === 409 ? undefined : `HTTP_${resp.status}`;
+    // 码字段与消息/版本字段同过清洗口（round 7——此前唯一未窄化的边界读）：
+    // 纯空白/Cf 码视同缺失，409 走无码门禁折叠，其余状态照旧伪造 HTTP_x；
+    // 409 且无码/门禁码即门禁，带其他服务端码的 409 按其自身码处理
+    const serverCode = typeof rawCode === 'string' ? cleanMessage(rawCode) : '';
+    const code = serverCode || (resp.status === 409 ? undefined : `HTTP_${resp.status}`);
     const trace = rec.traceId ? ` [trace: ${asText(rec.traceId)}]` : '';
     // 消息构建口（round 4 + round 5）：空白与纯不可见字符（零宽空格等
     // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'

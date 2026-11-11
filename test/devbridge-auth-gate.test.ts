@@ -322,6 +322,26 @@ test('a readable codeless 409 on the relay folds as the gate with the server cop
   assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
 });
 
+test('a blank-code 409 on the relay folds as the gate, not the credential misdiagnosis', async () => {
+  for (const blankCode of ['   ', '​'] as const) {
+    const lifecycle = fakeKeyLifecycle({
+      ensure: async () => {
+        return Promise.reject(
+          Object.assign(new Error('插件版本过旧，请升级至正式版 2.0.0 及以上。'), {
+            code: blankCode,
+            status: 409,
+          }),
+        );
+      },
+    });
+    const f = await failingGate(lifecycle, 'ephemeral');
+    assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'a blank code is absent to the recognizer');
+    assert.match(f.error ?? '', /插件版本过旧，请升级至正式版 2\.0\.0 及以上/);
+    assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the remediation mints');
+    assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
+  }
+});
+
 test('an aborted codeless 409 on the relay folds as the gate, not the no-credential misdiagnosis', async () => {
   const gateError = Object.assign(new TypeError('terminated'), { status: 409 });
   const lifecycle = fakeKeyLifecycle({

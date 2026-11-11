@@ -33,32 +33,53 @@ export function connectRetryDelaysMs(): number[] {
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
-// 渲染为空白的不可见字符（round 5–6）：trim 只清 \s，零宽/格式字符会穿透
-// trim 渲染成"看起来空白"的消息。round 6 起按 Unicode Cf 一般类别整体判定
-// （\p{Cf}：U+200B–U+200F、U+00AD、U+061C、U+180E、U+202A–U+202E、U+2060–
-// U+2064、U+FEFF、U+E0061 等），外加四个渲染为空白的非 Cf 填充符。
-const BLANK_RENDERING_FILLERS: ReadonlySet<number> = new Set([0x3164, 0x2800, 0x115f, 0x1160]);
+// 渲染为空白的不可见字符（round 5–7）：trim 只清 \s，零宽/格式字符会穿透
+// trim 渲染成"看起来空白"的消息。按 Unicode 类别整体判定——\p{Cf}（U+200B–
+// U+200F、U+00AD、U+061C、U+180E、U+202A–U+202E、U+2060–U+2064、U+FEFF、
+// U+E0061 等）与 \p{Cc} 控制符（BEL/NUL 等，round 7）——外加渲染为空白的
+// 非 Cf 填充符与零宽 Mn 成员（U+FE00–U+FE0F 变体选择子、U+034F 连字结合符，
+// round 7）。Mn 收口决策（台账）：附着可见基底的组合附标（重音符等）独立
+// 渲染出符号，是真文本，不入空白集。
+const BLANK_RENDERING_FILLERS: ReadonlySet<number> = new Set([
+  0x3164, // U+3164 HANGUL FILLER
+  0xffa0, // U+FFA0 HALFWIDTH HANGUL FILLER（U+3164 的半宽孪生，round 7）
+  0x2800, // U+2800 BRAILLE PATTERN BLANK
+  0x115f, // U+115F HANGUL CHOSEONG FILLER
+  0x1160, // U+1160 HANGUL JUNGSEONG FILLER
+  0x034f, // U+034F COMBINING GRAPHEME JOINER（零宽 Mn）
+  ...Array.from({ length: 16 }, (_, i) => 0xfe00 + i), // U+FE00–U+FE0F 变体选择子
+]);
 
 /**
  * 消息可见性判定（round 6 收口）：纯不可见才判空白——只要有任何一个字符
- * 渲染可见（非 \s、非 Cf、非填充符），消息就是真文本；真文本包着一个
- * 不可见字符是可见消息，走 trim 而非缺失。
+ * 渲染可见（非 \s、非 Cf、非 Cc、非零宽成员），消息就是真文本；真文本包着
+ * 一个不可见字符是可见消息，走 trim 而非缺失。
  */
 export function rendersBlank(text: string): boolean {
   const hasVisible = [...text].some(
-    (ch) => !/\s/u.test(ch) && !/\p{Cf}/u.test(ch) && !BLANK_RENDERING_FILLERS.has(ch.codePointAt(0) ?? 0),
+    (ch) =>
+      !/\s/u.test(ch) &&
+      !/\p{Cf}/u.test(ch) &&
+      !/\p{Cc}/u.test(ch) &&
+      !BLANK_RENDERING_FILLERS.has(ch.codePointAt(0) ?? 0),
   );
   return !hasVisible;
 }
 
 /**
- * 消息清洗（round 5）：trim + 不可见字符判定，空白/纯不可见视为缺失。
- * 两个构建口共用——请求层消息构建与 versionGateMessage/耗尽消息——
- * 任何出口都不渲染空白文案。
+ * 消息清洗（round 5 + round 7）：纯空白/纯不可见视为缺失；真文本去掉两端的
+ * 空白与不可见字符（trim 只清 \s——零宽字符在边缘同样要剥掉，round 7 实测），
+ * 内部不可见字符保留（真文本语义）。两个构建口共用——请求层消息构建与
+ * versionGateMessage/耗尽消息——任何出口都不渲染空白文案。
  */
 export function cleanMessage(text: string | undefined): string {
   if (!text) return '';
-  return rendersBlank(text) ? '' : text.trim();
+  if (rendersBlank(text)) return '';
+  let start = 0;
+  let end = text.length;
+  while (start < end && rendersBlank(text[start]!)) start += 1;
+  while (end > start && rendersBlank(text[end - 1]!)) end -= 1;
+  return text.slice(start, end);
 }
 
 /**
@@ -104,20 +125,25 @@ export interface VersionGatePayload {
 /**
  * relay 侧（devbridge-key/auth 折叠链）识别 409 门禁错误的判定。与
  * versionGateResult 共用同一规则源（isCodelessGateStatus）：认
- * VERSION_GATE_CODE，或无码 409——模块头注释定义 409 即门禁（round 5 v2
- * 扩展；round 6 起请求层不再为 409 伪造 HTTP_409，可读无码 409 同折）。
+ * VERSION_GATE_CODE，或无可用码的 409——409 且无码/门禁码即门禁；带其他
+ * 服务端码的 409 按其自身码处理（round 7 措辞收口）。空白/Cf 码视同无码
+ * （round 7），中断形态按 bodyUnreadable 判定（不依赖传输层不占 code 属性）。
  */
 export function isVersionGateError(error: unknown): boolean {
   return (error as { code?: unknown }).code === VERSION_GATE_CODE || isCodelessGateStatus(error);
 }
 
 /**
- * 无码 409 判定（round 6 去重——此前三处内联）：带 409 status 且无服务端
- * 码（body 读取中断 / 非 JSON 页 / 可读但无 code 字段）即门禁。
+ * 无码 409 判定（round 6 去重、round 7 收口）：带 409 status 且无可用服务端
+ * 码——body 读取中断 / 非 JSON 页 / 可读但 code 字段缺失或纯空白——即门禁。
+ * 中断形态以 bodyUnreadable 标记为准：真实传输层中断（AbortController 的
+ * DOMException）自带 code 属性（数值 20），不得以 code 是否存在裁决。
  */
 function isCodelessGateStatus(error: unknown): boolean {
-  const err = error as { code?: unknown; status?: unknown };
-  return err.status === 409 && err.code === undefined;
+  const err = error as { code?: unknown; status?: unknown; bodyUnreadable?: unknown };
+  if (err.status !== 409) return false;
+  if (err.bodyUnreadable === true) return true;
+  return typeof err.code !== 'string' || cleanMessage(err.code) === '';
 }
 
 const UPGRADE_STEPS = [
@@ -246,7 +272,9 @@ export function decorateExhaustedConnect(error: unknown, retries: number): void 
     gatewayRetryExhausted?: boolean;
   };
   err.gatewayRetryExhausted = true;
-  if (!err.code) err.code = 'HDKIT_GATEWAY_TIMEOUT';
+  // 传输层错误可能自带数值 code（AbortController 的 DOMException 是 20）——
+  // 耗尽折叠一律用设计网关码，传输层的数值码不穿透（round 7）
+  if (!err.code || typeof err.code === 'number') err.code = 'HDKIT_GATEWAY_TIMEOUT';
   // 耗尽消息同样过清洗口（round 5）：零宽字符/空白不渲染成不可见文案
   if (err.code === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(typeof err.message === 'string' ? err.message : '')) {
     err.message = `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`;

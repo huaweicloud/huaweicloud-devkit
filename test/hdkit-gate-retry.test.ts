@@ -898,6 +898,13 @@ test('a 500 business error carrying Bad Gateway text is not transient', async ()
 // 声明的 8 码点全部生效；Cf 一般类别整体判定（\p{Cf}）外加渲染为空白的
 // 非 Cf 填充符；纯不可见才判空白——真文本包着一个不可见字符是可见消息。
 
+// 单码点空白断言（round 6/7 共用）：rendersBlank 判空白 + cleanMessage 归缺失
+function assertBlankCodepoint(ch: string): void {
+  const label = `U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase()}`;
+  assert.equal(rendersBlank(ch), true, `${label} must render blank`);
+  assert.equal(cleanMessage(ch), '', `${label} must clean to absent`);
+}
+
 test('rendersBlank matches the Cf class: every declared and newly-covered codepoint is blank, mixed text is not', () => {
   const blankChars = [
     '\u200b',
@@ -926,9 +933,7 @@ test('rendersBlank matches the Cf class: every declared and newly-covered codepo
     '\u{e0061}',
   ];
   for (const ch of blankChars) {
-    const label = `U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase()}`;
-    assert.equal(rendersBlank(ch), true, `${label} must render blank`);
-    assert.equal(cleanMessage(ch), '', `${label} must clean to absent`);
+    assertBlankCodepoint(ch);
   }
   assert.equal(rendersBlank('插件\u200b版本'), false, 'real text around an invisible char is not blank');
   assert.equal(cleanMessage(' 插件\u200b版本 '), '插件\u200b版本', 'mixed text surfaces trimmed, never dropped');
@@ -1073,6 +1078,106 @@ test('an aborted codeless 409 on a voucher exit folds as the gate envelope, neve
     assert.match(result.message ?? '', /插件版本过旧/, 'the designed gate copy fires');
     assert.doesNotMatch(result.message ?? '', /terminated/, 'transport noise never surfaces as the message');
     assert.ok(result.remediation, 'the gate envelope carries the upgrade remediation');
+  } finally {
+    fetch.restore();
+    restoreSeam();
+  }
+});
+
+// ── 码字段收窄与中断 Error 分支统一（round 7）──
+// 码字段是唯一没过清洗口的边界读：真值空白/Cf 码既击穿门禁折叠也击穿 409
+// 不伪造码的规则；abort wrap 的 Error 分支只测清洗值真假、原样抛出原对象，
+// 边缘空白/不可见字符存活到 MCP 边界。
+
+test('a blank or pure-invisible code field is absent: the codeless 409 fold fires on every exit', async () => {
+  for (const blankCode of ['   ', '​'] as const) {
+    const stub = stubConnectSequence([
+      () => jsonEnvelope({ code: blankCode, message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' }, { status: 409 }),
+    ]);
+    try {
+      const cu = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+      assert.equal(cu.ok, false, 'a blank code must not defeat the gate fold');
+      assert.equal(cu.code, 'HDKIT_VERSION_TOO_OLD');
+      assert.match(cu.message ?? '', /插件版本过旧，请升级至正式版 2\.0\.0 及以上/, 'the server copy surfaces');
+      assert.match(cu.remediation!.hint, /当前 未知/);
+      const vs = (await callTool('huaweicloud_voucher_status', {})) as GateResult & { claimed?: boolean };
+      assert.equal(vs.claimed, false);
+      assert.equal(vs.code, 'HDKIT_VERSION_TOO_OLD');
+      assert.ok(vs.remediation, 'the voucher exit folds too');
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test('rendersBlank covers the halfwidth filler, variation selectors, the grapheme joiner, and Cc controls', () => {
+  for (const ch of ['ﾠ', '︀', '️', '͏', '\u0007', '\u0000'] as const) {
+    assertBlankCodepoint(ch);
+  }
+  // Mn 类收口决策（台账）：附着可见基底的组合附标渲染出符号，是真文本——
+  // 只有零宽成员（变体选择子、U+034F 连字结合符）按空白处理
+  assert.equal(rendersBlank('́'), false, 'a standalone combining accent renders a mark: real text by the scoping');
+});
+
+test('a blank-code gate exit never surfaces a visually blank code', async () => {
+  const stub = stubConnectSequence([() => jsonEnvelope({ code: '   ', message: '插件版本过旧。' }, { status: 409 })]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD', 'the folded code is the gate code, never the blank payload');
+    assert.ok(!rendersBlank(String(result.code ?? '')));
+  } finally {
+    stub.restore();
+  }
+});
+
+test('padded and invisible-edged Error reasons surface cleaned: both wrap branches identical', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  try {
+    for (const reason of [new TypeError('  terminated  '), new TypeError('​terminated​')] as const) {
+      const { err, calls } = await captureAbortRejection(500, reason);
+      assert.equal(calls, 1);
+      assert.equal(err.status, 500);
+      assert.equal(err.message, 'terminated', 'the Error branch builds from the cleaned value, like the string branch');
+    }
+  } finally {
+    restoreSeam();
+  }
+});
+
+test('a code-bearing abort reason (the DOMException shape) folds as the gate on 409', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const fetch = installAbortingFetch(409, new DOMException('This operation was aborted', 'AbortError'));
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(err.status, 409);
+    assert.equal(
+      (err as { code?: unknown }).code,
+      undefined,
+      'the wrap never carries the transport-owned code property through',
+    );
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.ok(result.remediation, 'the unknown-version remediation mints for an aborted 409');
+    assertNoLeakyLiterals(result);
+  } finally {
+    fetch.restore();
+    restoreSeam();
+  }
+});
+
+test('a code-bearing abort reason on a 502 exhaustion surfaces the designed gateway code, never the numeric transport code', async () => {
+  const restoreSeam = withRetrySeam('1');
+  const fetch = installAbortingFetch(502, new DOMException('This operation was aborted', 'AbortError'));
+  try {
+    const result = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ExhaustedResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_GATEWAY_TIMEOUT', 'the designed gateway code, never the transport numeric 20');
+    assert.notEqual(result.code, 20);
+    assert.ok(String(result.message ?? '').length > 0, 'the cleaned reason surfaces as real text');
   } finally {
     fetch.restore();
     restoreSeam();
