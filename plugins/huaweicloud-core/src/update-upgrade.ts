@@ -12,6 +12,27 @@ import { invalidateUpdateCache } from './update-cache.ts';
 
 const NPX_BIN = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 
+// Cloud credentials never belong in the upgrade child: the published package
+// install needs no account, and the child is arbitrary registry code.
+const UPGRADE_CREDENTIAL_ENV_KEYS = new Set([
+  'HW_ACCESS_KEY',
+  'HW_SECRET_KEY',
+  'HW_SECURITY_TOKEN',
+  'HUAWEICLOUD_ACCESS_KEY',
+  'HUAWEICLOUD_SECRET_KEY',
+  'HUAWEICLOUD_SECURITY_TOKEN',
+  'HUAWEICLOUD_SECRET_ACCESS_KEY',
+  'AWS_ACCESS_KEY_ID',
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+]);
+
+function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  const next = { ...env };
+  for (const key of UPGRADE_CREDENTIAL_ENV_KEYS) delete next[key];
+  return next;
+}
+
 interface SpawnResultLike {
   status?: number | null;
   stdout?: string;
@@ -38,6 +59,26 @@ function defaultSpawn(
   // the warning; the seam's (command, args) contract is unchanged for the
   // injected test doubles.
   return spawnSync([command, ...args].join(' '), options);
+}
+
+// npm writes diagnostics as `npm error ...` lines and engine, deprecation, and
+// trace noise as `npm warn ...` or `(node:<pid>) ...` lines. Reporting the raw
+// last stderr lines made the warning the recorded failure reason (#1117).
+function extractNpmFailureReason(execResult: SpawnResultLike): string {
+  if (execResult.error?.message) return execResult.error.message;
+  const lines = String(execResult.stderr || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const isNoise = (line: string) =>
+    /^npm warn/i.test(line) ||
+    /^\(node:\d+\)/i.test(line) ||
+    /DeprecationWarning/i.test(line) ||
+    /trace-deprecation/i.test(line);
+  const errorLines = lines.filter((line) => /^npm error/i.test(line) && !isNoise(line));
+  const meaningful = errorLines.length ? errorLines : lines.filter((line) => !isNoise(line));
+  if (meaningful.length) return meaningful.slice(-2).join(' ');
+  return `exit ${execResult.status}`;
 }
 
 function restartMessage(target: string): string {
@@ -97,7 +138,13 @@ export async function upgradePackage(
   const command = ['--yes', `huaweicloud-devkit@${tag}`, 'update', '--target', String(target)];
   let execResult: SpawnResultLike;
   try {
-    execResult = spawnFn(NPX_BIN, command, { encoding: 'utf8', timeout: 300000, windowsHide: true, shell: true });
+    execResult = spawnFn(NPX_BIN, command, {
+      encoding: 'utf8',
+      timeout: 300000,
+      windowsHide: true,
+      shell: true,
+      env: upgradeEnv(),
+    });
   } catch (error) {
     return {
       success: false,
@@ -115,13 +162,7 @@ export async function upgradePackage(
       message: restartMessage(target),
     };
   }
-  const errObj = execResult.error;
-  const stderr = String(execResult.stderr || '').trim();
-  const reason = errObj?.message
-    ? errObj.message
-    : stderr
-      ? stderr.split(/\r?\n/).filter(Boolean).slice(-2).join(' ')
-      : `exit ${execResult.status}`;
+  const reason = extractNpmFailureReason(execResult);
   return {
     success: false,
     error: reason,
