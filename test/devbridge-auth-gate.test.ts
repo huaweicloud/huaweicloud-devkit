@@ -245,10 +245,12 @@ test('the 409 version gate folds through the relay failure with the upgrade reme
 });
 
 test('a woven devbridge quota code surfaces the quota envelope, never the no-credential misdiagnosis', async () => {
+  // 内部织入形态（round 14 台账）：真实链路会把边缘垫入清掉——edge-padded
+  // 夹具不可达，内部织入才是生产可达的拼写
   const lifecycle = fakeKeyLifecycle({
     ensure: async () => {
-      throw Object.assign(new Error('HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED\u200b: 20 key limit'), {
-        code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED\u200b',
+      throw Object.assign(new Error('HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEE\u200bDED: 20 key limit'), {
+        code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEE\u200bDED',
       });
     },
     listKeys: async () => [{ name: 'stale-a', id: 'a', lastUsed: '2026-11-01' }],
@@ -259,6 +261,70 @@ test('a woven devbridge quota code surfaces the quota envelope, never the no-cre
   assert.ok(Array.isArray((f as { currentKeys?: unknown }).currentKeys), 'the quota envelope carries the key list');
   assert.match(f.hint ?? '', /API Key 数量已达上限/, 'the quota guidance fires — not the misdiagnosis');
   assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/);
+});
+
+// ── relay 捕获的裸读收口（round 14）──
+// 配额分支的属性取值（canonCode 的读一半）与配额信封的 message 读仍裸——
+// 两条都在同一 catch 里安全的 isVersionGateError 之前求值：拒读载体到达设计
+// 的泛化降级信封，配额消息拒读时配额信封照常折叠，都不再 TypeError。
+
+test('a refusing code read through the relay catch degrades designed, never a TypeError', async () => {
+  const thrower = new Error('whatever the chain threw');
+  Object.defineProperty(thrower, 'code', {
+    get() {
+      throw new TypeError('code getter detonates');
+    },
+    configurable: true,
+  });
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw thrower;
+    },
+    listKeys: async () => [],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, undefined, 'a refusing code read is absent — no quota branch');
+  assert.match(f.error ?? '', /no usable credential in the sandbox/, 'the generic degradation envelope fires');
+  assert.match(
+    f.hint ?? '',
+    /No DevBridge API Key is available/,
+    'the no-credential guidance — the designed fallback for an unreadable auto-create failure',
+  );
+});
+
+test('a revoked proxy through the relay catch degrades designed, never a TypeError', async () => {
+  const revoked = Proxy.revocable(new Error('revoked carrier'), {});
+  revoked.revoke();
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw revoked.proxy;
+    },
+    listKeys: async () => [],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, undefined, 'a revoked proxy reads absent — no quota branch');
+  assert.match(f.error ?? '', /no usable credential in the sandbox/, 'the generic degradation envelope fires');
+});
+
+test('a quota code with a refusing message read still folds the quota envelope', async () => {
+  const carrier = Object.assign(new Error('never read'), { code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED' });
+  Object.defineProperty(carrier, 'message', {
+    get() {
+      throw new TypeError('message getter detonates');
+    },
+    configurable: true,
+  });
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw carrier;
+    },
+    listKeys: async () => [{ name: 'stale-a', id: 'a', lastUsed: '2026-11-01' }],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED', 'the quota branch fires');
+  assert.equal(f.error, undefined, 'a refusing message read is absent — the field is omitted');
+  assert.ok(Array.isArray((f as { currentKeys?: unknown }).currentKeys), 'the key list still rides');
+  assert.match(f.hint ?? '', /API Key 数量已达上限/, 'the quota guidance fires');
 });
 
 test('the quota flow folds the gate when the key-list read is itself gated', async () => {

@@ -32,8 +32,10 @@ after(() => {
 
 const { hdkitConnectWithRetry } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts');
 const {
+  applyVersionGate,
   connectRetryDelaysMs,
   decorateExhaustedConnect,
+  isGatewayTransient,
   isNonRetryableBusinessError,
   rendersBlank,
   cleanMessage,
@@ -666,7 +668,12 @@ test('the deleted message-form fallback stays deleted (structure pin on the gate
   const source = readFileSync(join(pluginSourceRoot, 'src', 'lib', 'hdkit', 'hdkit-gate.ts'), 'utf8');
   assert.doesNotMatch(source, /Gateway Time-out|Bad Gateway/, 'the message-form fallback must not return');
   assert.doesNotMatch(source, /non-JSON \\\(status/, 'the non-JSON message sniff must not return');
-  assert.match(source, /TRANSIENT_STATUSES\.has\(err\.status\)/, 'the verdict stays keyed on the returned status');
+  assert.match(source, /TRANSIENT_STATUSES\.has\(status\)/, 'the verdict stays keyed on the returned status');
+  assert.match(
+    source,
+    /isGatewayTransient[\s\S]*safeReadField\(error, 'status'\)/,
+    'the status read goes through the safe wrapper (round 14)',
+  );
 });
 
 // ── 账号校验裁决码不参与重试（round 4）──
@@ -1926,6 +1933,145 @@ test('a swallowed-set proxy falls to the clone: the marker must actually land', 
     'the proxy stays undecorated',
   );
   // 折叠在返回值上生效
+  const fold = transientExhaustionResult(out);
+  assert.equal(fold?.ok, false, 'the fold fires on the clone');
+});
+
+// ── 剩余裸读的收口（round 14）──
+// isGatewayTransient 是重试 catch 里第一个求值的谓词、也是最后一个裸读
+// status 的裁决器——抛出型 getter 或撤销代理在硬化过的姊妹谓词跑之前就把
+// 原错误换成 TypeError，一切折叠被跳过。applyVersionGate 的 payload 读既无
+// 安全卫队也无字符串窄化——round 12 回归类的原文，正是 round 13 重新窄化的
+// 字段的上游一道缝。回读拒绝路径走克隆时没有回滚被拒键——写入可能已经落在
+// 转发 [[Set]] 的代理目标上，被丢弃的原对象带半截装饰。
+
+test('isGatewayTransient reads status through the safe wrapper: refusing and revoked carriers settle non-transient', () => {
+  const statusThrower = new Error('boom');
+  Object.defineProperty(statusThrower, 'status', {
+    get() {
+      throw new TypeError('status getter detonates');
+    },
+    configurable: true,
+  });
+  let verdict: boolean | undefined;
+  assert.doesNotThrow(() => {
+    verdict = isGatewayTransient(statusThrower);
+  }, 'a refusing status read is absent, never a TypeError');
+  assert.equal(verdict, false, 'an absent status is not transient');
+
+  const revoked = Proxy.revocable(Object.assign(new Error('boom'), { status: 502 }), {});
+  revoked.revoke();
+  assert.doesNotThrow(() => {
+    verdict = isGatewayTransient(revoked.proxy);
+  }, 'a revoked proxy reads absent, never a TypeError');
+  assert.equal(verdict, false, 'a revoked proxy is not transient');
+
+  // 干净控制：502/504 照旧瞬时，500 照旧非瞬时
+  assert.equal(isGatewayTransient(Object.assign(new Error('x'), { status: 502 })), true);
+  assert.equal(isGatewayTransient(Object.assign(new Error('x'), { status: 504 })), true);
+  assert.equal(isGatewayTransient(Object.assign(new Error('x'), { status: 500 })), false);
+});
+
+test('the retry catch line takes the non-transient path with the original error preserved on hostile carriers', () => {
+  // 求值顺序与 hdkitservice-api.ts 的捕获行逐字一致（isGatewayTransient(error)
+  // && !isNonRetryableBusinessError(error)）。请求层的传输包装保证真实链路
+  // 不会把敌意载体递进这条捕获行——此处钉的是导出面捕获行本身的行为
+  const hostile = new Error('the real diagnosis the caller should see');
+  Object.defineProperty(hostile, 'status', {
+    get() {
+      throw new TypeError('status getter detonates');
+    },
+    configurable: true,
+  });
+  let transient: boolean | undefined;
+  assert.doesNotThrow(() => {
+    transient = isGatewayTransient(hostile) && !isNonRetryableBusinessError(hostile);
+  }, 'the catch line never detonates — the hardened sibling gets its turn');
+  assert.equal(transient, false, 'a hostile carrier takes the non-transient path');
+  // 非瞬时分支 `throw error`：浮出的就是原错误——原诊断不丢
+  let surfaced: unknown;
+  try {
+    throw hostile;
+  } catch (error) {
+    surfaced = error;
+  }
+  assert.equal(surfaced, hostile, 'the original error is preserved on the non-transient path');
+
+  const revoked = Proxy.revocable(Object.assign(new Error('revoked diagnosis'), { status: 504 }), {});
+  revoked.revoke();
+  assert.doesNotThrow(() => {
+    transient = isGatewayTransient(revoked.proxy) && !isNonRetryableBusinessError(revoked.proxy);
+  }, 'the catch line never detonates on a revoked proxy');
+  assert.equal(transient, false, 'a revoked proxy takes the non-transient path');
+});
+
+test('applyVersionGate folds hostile payloads with the designed fallbacks, never a throw', () => {
+  const err = new Error('gate');
+  assert.doesNotThrow(() => {
+    applyVersionGate(err, { clientVersion: 2, minVersion: 7 } as unknown as Parameters<typeof applyVersionGate>[1]);
+  }, 'a numeric payload field never detonates the fold entrance');
+  assert.equal((err as { clientVersion?: unknown }).clientVersion, undefined, 'a numeric version narrows away');
+  assert.equal((err as { minVersion?: unknown }).minVersion, undefined);
+  assert.match(
+    String((err as { remediation?: { hint?: string } }).remediation?.hint ?? ''),
+    /当前 未知.*最新版/,
+    'the designed fallback hint fires',
+  );
+
+  const err2 = new Error('gate');
+  assert.doesNotThrow(() => {
+    applyVersionGate(err2, { clientVersion: { major: 2 }, message: { deep: true } } as unknown as Parameters<
+      typeof applyVersionGate
+    >[1]);
+  }, 'an object payload field never detonates the fold entrance');
+  assert.equal((err2 as { clientVersion?: unknown }).clientVersion, undefined, 'an object version narrows away');
+  assert.match(String((err2 as { remediation?: { hint?: string } }).remediation?.hint ?? ''), /当前 未知.*最新版/);
+
+  const refusing = new Error('gate');
+  const payload = {} as Parameters<typeof applyVersionGate>[1];
+  Object.defineProperty(payload, 'clientVersion', {
+    get() {
+      throw new TypeError('payload getter detonates');
+    },
+    configurable: true,
+    enumerable: true,
+  });
+  assert.doesNotThrow(() => {
+    applyVersionGate(refusing, payload);
+  }, 'a refusing payload read is absent — no detonation');
+  assert.equal((refusing as { clientVersion?: unknown }).clientVersion, undefined, 'a refusing read narrows away');
+
+  // 干净控制：字符串照旧装填
+  const clean = new Error('gate');
+  applyVersionGate(clean, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0', message: '插件版本过旧。' });
+  assert.equal((clean as { clientVersion?: unknown }).clientVersion, '2.0.0-next.0');
+  assert.equal((clean as { message?: string }).message, '插件版本过旧。');
+  assert.match(String((clean as { remediation?: { hint?: string } }).remediation?.hint ?? ''), /当前 2\.0\.0-next\.0/);
+});
+
+test('a lying readback rolls the refused key back on the discarded original', () => {
+  // [[Set]] 转发落值、[[Get]] 撒谎：写入已落在代理的目标上，回读不等 → 走
+  // 克隆；被丢弃的原对象（目标）不得带被拒键的半截装饰
+  const target = Object.assign(new Error('forwarded'), {});
+  const proxy = new Proxy(target, {
+    set(t, key, value) {
+      (t as unknown as Record<string | symbol, unknown>)[key] = value;
+      return true;
+    },
+    get(t, key) {
+      if (key === 'gatewayRetryExhausted') return undefined;
+      return (t as unknown as Record<string | symbol, unknown>)[key];
+    },
+  });
+  const out = decorateExhaustedConnect(proxy, 1);
+  assert.notEqual(out, proxy, 'a lying readback falls to the clone');
+  assert.ok(out instanceof Error, 'the clone carries the error shape');
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.equal(
+    (target as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted,
+    undefined,
+    'the refused key is rolled back on the discarded original — no half decoration',
+  );
   const fold = transientExhaustionResult(out);
   assert.equal(fold?.ok, false, 'the fold fires on the clone');
 });

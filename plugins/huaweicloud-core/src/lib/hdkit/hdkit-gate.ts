@@ -87,8 +87,11 @@ export function cleanMessage(text: string | undefined): string {
  * 起 Object.assign 携带），消息兜底随之全死并删除。
  */
 export function isGatewayTransient(error: unknown): boolean {
-  const err = error as { status?: unknown };
-  return typeof err.status === 'number' && TRANSIENT_STATUSES.has(err.status);
+  // status 过安全读（round 14）：重试 catch 里第一个求值的谓词——抛出型
+  // getter 或撤销代理按缺失（非瞬时），不在 catch 里把原错误换成 TypeError，
+  // 硬化过的姊妹谓词（裁决码集合）才有机会跑
+  const status = safeReadField(error, 'status');
+  return typeof status === 'number' && TRANSIENT_STATUSES.has(status);
 }
 
 /**
@@ -163,10 +166,16 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): v
     remediation?: { hint: string; steps: string[] };
   };
   // round 6：版本字段与消息同过清洗口（cleanMessage）——纯不可见值视同缺失，
-  // hint 不留不可见空位，兜底（未知/最新版）照常生效
-  const clientVersion = cleanMessage(payload.clientVersion) || undefined;
-  const minVersion = cleanMessage(payload.minVersion) || undefined;
-  const message = cleanMessage(payload.message) || undefined;
+  // hint 不留不可见空位，兜底（未知/最新版）照常生效。
+  // round 14：payload 读补齐 gateFoldPayload 的双卫队（round 12 回归类——
+  // 安全读丢了字符串窄化，非字符串值在清洗口迭代时抛 TypeError）——
+  // 安全读防抛出型 getter，窄化防非字符串值，缺一不可
+  const rawClientVersion = safeReadField(payload, 'clientVersion');
+  const rawMinVersion = safeReadField(payload, 'minVersion');
+  const rawMessage = safeReadField(payload, 'message');
+  const clientVersion = typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
+  const minVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
+  const message = typeof rawMessage === 'string' ? cleanMessage(rawMessage) || undefined : undefined;
   err.clientVersion = clientVersion;
   err.minVersion = minVersion;
   if (message) err.message = message;
@@ -261,7 +270,7 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
 
 // 安全字段读取（round 10–11）：抛出型 getter 不引爆——按缺失处理，装饰与
 // 折叠分支的设计文案兜底。message 专读（字符串或缺失）与通用字段读共用。
-function safeReadField(target: unknown, key: string): unknown {
+export function safeReadField(target: unknown, key: string): unknown {
   try {
     return (target as Record<string, unknown>)[key];
   } catch {
@@ -269,7 +278,7 @@ function safeReadField(target: unknown, key: string): unknown {
   }
 }
 
-function safeMessageText(err: unknown): string {
+export function safeMessageText(err: unknown): string {
   const raw = safeReadField(err, 'message');
   return typeof raw === 'string' ? raw : '';
 }
@@ -283,8 +292,12 @@ function blankCharsRemoved(text: string): string {
 }
 
 // 码字段裁决标准（round 12）：一切码身份比较的唯一口径——剔除全部空白渲染
-// 字符（内部与边缘一视同仁）。服务端亲署业务码不含空白渲染字符；织入/垫入/
-// 分隔符替换的拼写与干净拼写同码。非字符串值归 ''（无码）。
+// 字符（内部与边缘一视同仁）。服务端亲署业务码不含空白渲染字符；织入与边缘
+// 垫入的拼写与干净拼写同码。已知边界（round 12 台账，round 14 注释对齐）：
+// 空白顶替下划线的业务码拼写不在此列——剔除不能凭空造出下划线
+// （'HDKIT\u00a0QUOTA_EXCEEDED' 不会规范成 'HDKIT_QUOTA_EXCEEDED'），该拼写
+// 同样绝非服务端亲署，按未知码处理；伪造 HTTP 家族不受影响（家族判定下划线
+// 可选，分隔符替换照旧命中）。非字符串值归 ''（无码）。
 export function canonCode(code: unknown): string {
   return typeof code === 'string' ? blankCharsRemoved(code) : '';
 }
@@ -330,21 +343,22 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       prior = undefined;
     }
     snapshots.set(key, { had, value: prior });
-    let landed = false;
+    let wrote = false;
     try {
       target[key] = value;
-      landed = true;
+      wrote = true;
     } catch {
       try {
         Object.defineProperty(target, key, { value, writable: true, configurable: true });
-        landed = true;
+        wrote = true;
       } catch {
-        // 两条写入路径都被拒——landed 保持 false，走克隆分支
+        // 两条写入路径都被拒——未写即拒，走克隆分支
       }
     }
     // 写后回读（round 13）：陷阱代理的 [[Set]] 可既不抛也不落——回读不等
     // 即视为拒绝，走克隆分支；回读本身抛出同样视为未落
-    if (landed) {
+    let landed = false;
+    if (wrote) {
       try {
         landed = target[key] === value;
       } catch {
@@ -352,7 +366,10 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       }
     }
     if (!landed) {
-      for (const done of applied) {
+      // 回滚清单并入被拒键（round 14）：写入可能已经落在转发 [[Set]] 的代理
+      // 目标上（[[Get]] 撒谎）——被丢弃的原对象不得带半截装饰
+      const rollbackKeys = wrote ? [...applied, key] : applied;
+      for (const done of rollbackKeys) {
         const snap = snapshots.get(done)!;
         try {
           if (snap.had) target[done] = snap.value;

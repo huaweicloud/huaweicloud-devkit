@@ -3,7 +3,14 @@ import { runOneShot } from './devbridge-exec.ts';
 import { evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import type { ExposeTunnelResult } from './devbridge-expose.ts';
 import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
-import { canonCode, gateFoldPayload, isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
+import {
+  canonCode,
+  cleanMessage,
+  gateFoldPayload,
+  isVersionGateError,
+  safeMessageText,
+  safeReadField,
+} from '../lib/hdkit/hdkit-gate.ts';
 
 // 409 门禁在 relay 出口的统一折叠（v2 扩展，台账记录）：三个 catch 位共用——
 // 自动创建、自愈重建、配额清单读取。authMode/attempts 保留（探测到的真实状态，
@@ -277,7 +284,10 @@ export async function gateExposeAuth(
         }
       } catch (error) {
         // 自动创建失败（含配额满 13002）→ 结构化降级
-        if (canonCode((error as { code?: unknown }).code) === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
+        // 属性取值过安全卫队（round 14）：抛出型 getter/撤销代理按缺失——
+        // 缺失即非配额，落回泛化降级；此行在本 catch 的安全 isVersionGateError
+        // 之前求值，裸读会先引爆
+        if (canonCode(safeReadField(error, 'code')) === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
           // 配额清单读取本身遭遇 409：门禁优先（清 key 引导拿不出 currentKeys）；
           // 其余读取失败仍降级为空清单
           let keysHint: Awaited<ReturnType<typeof keyUpgrade.listKeysForQuotaHint>> = [];
@@ -286,12 +296,15 @@ export async function gateExposeAuth(
           } catch (listError) {
             if (isVersionGateError(listError)) return versionGateFailure(listError, port, authMode, attempts);
           }
+          // 消息读同样过卫队与清洗口（round 14）：拒读/空白按缺失——字段缺省，
+          // 信封的 error_code/hint/currentKeys 不受影响
+          const quotaMessage = cleanMessage(safeMessageText(error));
           return {
             ok: false,
             failure: {
               ok: false,
               port,
-              error: (error as Error).message,
+              ...(quotaMessage ? { error: quotaMessage } : {}),
               error_code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
               authMode: authMode || 'UNKNOWN',
               attempts,
