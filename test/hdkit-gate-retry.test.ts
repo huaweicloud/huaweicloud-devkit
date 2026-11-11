@@ -135,10 +135,21 @@ test('connectRetryDelaysMs parses the env seam and falls back to the dev table o
     assert.deepEqual(connectRetryDelaysMs(), [1, 2]);
     process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = '0';
     assert.deepEqual(connectRetryDelaysMs(), [0]);
+    process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = '5, 7';
+    assert.deepEqual(connectRetryDelaysMs(), [5, 7], 'whitespace inside a valid entry trims fine');
     process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = 'bogus';
     assert.deepEqual(connectRetryDelaysMs(), [30000, 45000]);
     delete process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS;
     assert.deepEqual(connectRetryDelaysMs(), [30000, 45000]);
+    // 空条目非法（Number('') === 0 的陷阱：空白条目会变成零延迟重试档）
+    process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = '5,,7';
+    assert.deepEqual(connectRetryDelaysMs(), [30000, 45000], 'a blank entry falls back wholesale');
+    process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = ',';
+    assert.deepEqual(connectRetryDelaysMs(), [30000, 45000], 'a lone comma is illegal');
+    process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = '5,7,';
+    assert.deepEqual(connectRetryDelaysMs(), [30000, 45000], 'a trailing comma adds no zero-delay retry');
+    process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = ' , ';
+    assert.deepEqual(connectRetryDelaysMs(), [30000, 45000], 'whitespace-only entries are illegal');
   } finally {
     if (saved === undefined) delete process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS;
     else process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = saved;
@@ -340,6 +351,113 @@ test('callTool connect: gateway 502 exhaustion returns ok:false with the attempt
     assert.match(result.remediation!.hint, /网关/);
     assert.match(result.remediation!.hint, /重试 1 次/);
     assert.equal(stub.calls(), 2);
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+});
+
+// ── 部分载荷门禁（409 只带部分字段）：设计好的兜底必须真正生效 ──
+// 窄化规则：asText(undefined) === 'undefined'（真值），asText(rec.x) || undefined
+// 永不回退——hdkitservice 边界读取必须用 asString 窄化，否则字面量 "undefined"
+// 会流进用户可见文案（移植引入缺陷，dev 501fd8b4 直传原始值）。
+
+function gateJson(payload: Record<string, unknown>): Response {
+  return jsonEnvelope({ code: 'HDKIT_VERSION_TOO_OLD', ...payload }, { status: 409 });
+}
+
+function assertNoLeakyLiterals(result: unknown): void {
+  const serialized = JSON.stringify(result);
+  assert.ok(!serialized!.includes('undefined'), `no literal "undefined" in the surfaced copy: ${serialized}`);
+  assert.ok(!serialized!.includes('null'), `no literal "null" in the surfaced copy: ${serialized}`);
+}
+
+test('version gate with absent versions falls back to the designed 未知/最新版 copy', async () => {
+  const stub = stubConnectSequence([() => gateJson({ message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' })]);
+  try {
+    const err = (await captureConnectRejection({})) as ExhaustedResult & Error;
+    assert.equal(err.clientVersion, undefined);
+    assert.equal(err.minVersion, undefined);
+    assert.match(err.remediation!.hint, /当前 未知/);
+    assert.match(err.remediation!.hint, /最新版/);
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as Record<string, unknown>;
+    assert.equal('clientVersion' in result, false);
+    assert.equal('minVersion' in result, false);
+    assertNoLeakyLiterals(result);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('version gate with minVersion only missing keeps clientVersion and the fallback floor', async () => {
+  const stub = stubConnectSequence([() => gateJson({ message: '插件版本过旧。', clientVersion: '2.0.0-next.0' })]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_sign_agreement', {})) as GateResult;
+    assert.equal(result.clientVersion, '2.0.0-next.0');
+    assert.equal('minVersion' in (result as Record<string, unknown>), false);
+    assert.match(result.remediation!.hint, /最新版/);
+    assertNoLeakyLiterals(result);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('version gate with message only missing keeps the code-prefixed error message', async () => {
+  const stub = stubConnectSequence([() => gateJson({ clientVersion: '2.0.0-next.0', minVersion: '2.0.0' })]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.match(result.message ?? '', /HDKIT_VERSION_TOO_OLD/);
+    assertNoLeakyLiterals(result);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('version gate with null-valued fields narrows to the designed fallbacks', async () => {
+  const stub = stubConnectSequence([() => gateJson({ message: null, clientVersion: null, minVersion: null })]);
+  try {
+    const result = (await callTool('huaweicloud_voucher_status', {})) as GateResult;
+    assert.match(result.remediation!.hint, /当前 未知/);
+    assert.match(result.remediation!.hint, /最新版/);
+    assertNoLeakyLiterals(result);
+  } finally {
+    stub.restore();
+  }
+});
+
+// ── 瞬时判定：有 status 时只认 502/504（v2 标注分歧，dev 的消息正则无条件生效）──
+
+test('a 500 business error carrying Bad Gateway text is not transient', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const stub = stubConnectSequence([
+    () =>
+      jsonEnvelope(
+        {
+          code: 'HDKIT_UPSTREAM_ERROR',
+          message: '沙箱编排上游调用失败: GET /open-api-public/v2/devenvs failed: Bad Gateway',
+        },
+        { status: 500 },
+      ),
+  ]);
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(stub.calls(), 1, 'a status-500 error must not be retried');
+    assert.equal(err.code, 'HDKIT_UPSTREAM_ERROR');
+    assert.equal(err.connectRetries, 0);
+    assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+    assert.equal(err.remediation, undefined, 'no transient remediation copy on a non-gateway status');
+    // callTool 层：非门禁/非耗尽/非业务折叠的错误按原样抛出（MCP 信封只带
+    // code+message）——不允许折叠成带 connectRetries/网关 remediation 的结果
+    await assert.rejects(
+      callTool('huaweicloud_sandbox_connect', { vendorConfirmed: VENDOR, pool_type: 'ephemeral' }),
+      (error: ExhaustedResult & Error) => {
+        assert.equal(error.code, 'HDKIT_UPSTREAM_ERROR');
+        assert.equal((error as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+        assert.equal(error.remediation, undefined);
+        return true;
+      },
+    );
+    assert.equal(stub.calls(), 2, 'the callTool-level attempt was also a single fetch');
   } finally {
     stub.restore();
     restoreSeam();

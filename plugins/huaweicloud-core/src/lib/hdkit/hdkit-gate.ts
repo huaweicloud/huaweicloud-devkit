@@ -22,25 +22,30 @@ const SEAM_ENV = 'HW_SANDBOX_CONNECT_RETRY_DELAYS_MS';
 /**
  * 重试表解析：HW_SANDBOX_CONNECT_RETRY_DELAYS_MS 逗号分隔毫秒。任一条目非法
  * 即整体回退默认表（写错的值宁可全默认，不静默改变节奏）；空表同样回退。
+ * 空白条目按非法处理——Number('') === 0，放行会成为零延迟重试档。
  */
 export function connectRetryDelaysMs(): number[] {
   const raw = process.env[SEAM_ENV];
   if (!raw) return [...CONNECT_RETRY_DELAYS_MS];
-  const entries = raw.split(',').map((entry) => Number(entry.trim()));
-  const usable = entries.length > 0 && entries.every((ms) => Number.isFinite(ms) && ms >= 0);
-  return usable ? entries : [...CONNECT_RETRY_DELAYS_MS];
+  const parts = raw.split(',').map((entry) => entry.trim());
+  const usable =
+    parts.length > 0 && parts.every((part) => part !== '' && Number.isFinite(Number(part)) && Number(part) >= 0);
+  return usable ? parts.map((part) => Number(part)) : [...CONNECT_RETRY_DELAYS_MS];
 }
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
 /**
- * 网关 502/504 瞬时判定（dev e0c8700b）：编排期响应超时，非创建失败——服务端
- * 可能已在编排实例，重试通常复用同一实例。非 JSON 网关页不带 status 字段，
- * 以消息形态识别。
+ * 网关 502/504 瞬时判定（dev e0c8700b + v2 分歧）：编排期响应超时，非创建
+ * 失败——服务端可能已在编排实例，重试通常复用同一实例。携带 status 的错误
+ * （JSON 信封路径）只按 status 判定；消息形态仅服务无 status 的非 JSON 网关页。
+ * v2 分歧（台账记录）：dev 的消息正则无条件生效，一个 HTTP 500 业务错误只要
+ * 文案里带 "Bad Gateway"（如烧核 HDKIT_UPSTREAM_ERROR 转述上游文本）就会被
+ * 误判成瞬时网关超时。
  */
 export function isGatewayTransient(error: unknown): boolean {
   const err = error as { status?: unknown; message?: unknown };
-  if (typeof err.status === 'number' && TRANSIENT_STATUSES.has(err.status)) return true;
+  if (typeof err.status === 'number') return TRANSIENT_STATUSES.has(err.status);
   const message = typeof err.message === 'string' ? err.message : '';
   return /non-JSON \(status (502|504)\)/i.test(message) || /Gateway Time-out|Bad Gateway/i.test(message);
 }
@@ -49,6 +54,14 @@ export interface VersionGatePayload {
   clientVersion?: string;
   minVersion?: string;
   message?: string;
+}
+
+/**
+ * relay 侧（devbridge-key/auth 折叠链）识别 409 门禁错误的唯一判定。与
+ * versionGateResult 共用同一规则源：只认 VERSION_GATE_CODE。
+ */
+export function isVersionGateError(error: unknown): boolean {
+  return (error as { code?: unknown }).code === VERSION_GATE_CODE;
 }
 
 const UPGRADE_STEPS = [

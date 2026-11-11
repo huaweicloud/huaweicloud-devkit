@@ -13,7 +13,7 @@ import {
   isGatewayTransient,
 } from './hdkit-gate.ts';
 import { asRecord } from '../as-record.ts';
-import { asText } from '../as-text.ts';
+import { asString, asText } from '../as-text.ts';
 
 export interface HdkitError extends Error {
   code?: string;
@@ -132,12 +132,14 @@ async function hdkitRequest(
       err.message = asText(rec.message) || err.message;
     }
     // 版本硬门禁（409 HDKIT_VERSION_TOO_OLD）：结构化升级引导，remediation 才能
-    // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性
+    // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性。
+    // asString 窄化（不用 asText：asText(undefined) === 'undefined' 是真值，
+    // `|| undefined` 兜底永不生效，字面量会流进用户可见文案）
     if (code === VERSION_GATE_CODE) {
       applyVersionGate(err, {
-        clientVersion: asText(rec.clientVersion) || undefined,
-        minVersion: asText(rec.minVersion) || undefined,
-        message: asText(rec.message) || undefined,
+        clientVersion: asString(rec.clientVersion),
+        minVersion: asString(rec.minVersion),
+        message: asString(rec.message),
       });
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
