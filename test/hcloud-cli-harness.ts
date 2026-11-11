@@ -70,6 +70,11 @@ export function fakeHcloudScript(source: string) {
   return script;
 }
 
+// POSIX-only shape: this writes an extension-less shebang script, which
+// Windows cannot exec — a shell:false spawn of it fails before the child
+// runs (SPAWN_ERROR, observed on the windows lanes, run 42979717544).
+// Windows callers must guard with a win32 skip or assert spawn-indifferent
+// outcomes (the approval battery's approved:true shape).
 export function fakeHcloudExecutable(source: string) {
   const dir = fixtureDir('huaweicloud-toolkit-bin-');
   const script = join(dir, 'fake-hcloud');
