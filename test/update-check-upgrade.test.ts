@@ -987,6 +987,51 @@ test('upgradePackage 失败原因: 冒号位置的大写进度词同样不冒充
   }
 });
 
+test('upgradePackage 失败原因: command 回显里的子进程诊断词不抢子进程自己的行', async () => {
+  const reason = await reasonFor(failureStderr('command-echo-tie.err'));
+  assert.match(reason, /native build failed: missing libfoo. rebuild aborted/);
+  assert.doesNotMatch(reason, /command sh -c|code 7/);
+});
+
+test('upgradePackage 失败原因: 没有子进程文本时 command 回显仍是诚实兜底', async () => {
+  const stderr = [
+    'npm error code 1',
+    'npm error path /home/op/x',
+    'npm error command failed',
+    'npm error command sh -c npm test',
+    'npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code 1/);
+  assert.match(reason, /command sh -c npm test/);
+});
+
+test('upgradePackage 失败原因: 冒号前带空格的中文标签指针行也剥掉', async () => {
+  const stderr = ['payload copy stopped', '日志 : /home/op/logs/2026-debug-0.log'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.equal(reason, 'payload copy stopped');
+});
+
+test('upgradePackage 失败原因: 真实 eval 嵌套帧全部丢掉', async () => {
+  const reason = await reasonFor(failureStderr('crash-eval-nested.err'));
+  assert.match(reason, /Error: payload copy stopped/);
+  assert.doesNotMatch(reason, /at eval|eval at <anonymous>/);
+});
+
+test('upgradePackage 失败原因: 嵌套 eval 帧不压过弱位置层行', async () => {
+  const stderr = [
+    'payload copy stopped',
+    '    at eval (eval at <anonymous> (eval at <anonymous> ([eval]:1:1)), <anonymous>:1:7)',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.equal(reason, 'payload copy stopped');
+});
+
+test('upgradePackage 失败原因: EINVALIDPACKAGENAME 在封闭词表内', async () => {
+  const reason = await reasonFor(['EINVALIDPACKAGENAME: name contains uppercase letters', 'progress 1/2'].join('\n'));
+  assert.match(reason, /EINVALIDPACKAGENAME/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });

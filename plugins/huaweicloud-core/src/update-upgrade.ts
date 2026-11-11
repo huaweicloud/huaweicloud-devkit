@@ -123,10 +123,11 @@ function defaultSpawn(
 // npm reports failures as `npm error ...` lines (npm 7+) or `npm ERR! ...`
 // (legacy), with ANSI color, pty spinners, warnings, notices, and log pointers
 // around them. The tail is boilerplate, so the reason keeps the identifying
-// code line plus the human diagnostic (#1117).
+// code line plus the human diagnostic when the npm block wins, and the stronger
+// code-less line alone when that line wins the branch competition (#1117).
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
 const LOG_POINTER_SUFFIX =
-  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|日志[:：]|Please include the following file with any support request:).*$/;
+  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|日志\s*[:：]|Please include the following file with any support request:).*$/;
 const DIAGNOSTIC_HINT =
   /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported)\b|permission denied|错误|失败|不支持|未知/i;
 // Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
@@ -226,6 +227,7 @@ const ERRNO_CODES = new Set([
   'EMISSINGROOT',
   'ELOCKVERIFY',
   'EINTEGRITY',
+  'EINVALIDPACKAGENAME',
   'ECOMPROMISED',
   'EAI_SYSTEM',
   'EAI_SOCKTYPE',
@@ -295,7 +297,7 @@ function isNpmErrorLine(line: string): boolean {
 function isPointerOnlyLine(line: string): boolean {
   const payload = npmPayload(line)
     .trim()
-    .replace(/^(?:[A-Za-z][\w .-]*|[\u4e00-\u9fa5]+)[:：]\s*/, '');
+    .replace(/^(?:[A-Za-z][\w .-]*|[\u4e00-\u9fa5]+\s*)[:：]\s*/, '');
   if (!/(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload)) return false;
   if (/^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])/.test(payload)) return true;
   // A bare relative log name ("npm-debug.log", "logs/npm-debug-0.log").
@@ -316,6 +318,12 @@ function isStackFrame(payload: string): boolean {
   if (call) {
     const location = call[1]!.trim();
     return location === '<anonymous>' || /^\S+:\d+(?::\d+)?$/.test(location);
+  }
+  // Nested eval frames close more than one paren (eval at <anonymous> (...)),
+  // so the flat paren match above cannot span them; a frame ends with a paren
+  // and carries a location token.
+  if (/\)\s*$/.test(rest) && /(?:file:|node:|\[eval\]|eval at |<anonymous>|:\d+(?::\d+)?)/.test(rest)) {
+    return true;
   }
   return /^(?:file:|node:)\S*:\d+:\d+$/.test(rest) || /^\S+:\d+:\d+$/.test(rest);
 }
@@ -347,8 +355,12 @@ function lineRank(line: string): number {
   for (const match of payload.matchAll(/(?<=:\s)(E[A-Z0-9][A-Z0-9_]+)\b/g)) {
     if (isErrnoToken(match[1])) return 0;
   }
-  if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 3;
-  if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+|\[[^\]]*\])\s*,?\s*$/.test(payload)) return 3;
+  if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 4;
+  if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+|\[[^\]]*\])\s*,?\s*$/.test(payload)) return 4;
+  // npm's echo of the failing script carries the child's words in quotes, so it
+  // must not tie with the child's own line; it is the honest fallback only when
+  // the child printed nothing.
+  if (/^command\b/.test(payload)) return 3;
   if (DIAGNOSTIC_HINT.test(payload)) return 1;
   return 2;
 }
@@ -357,7 +369,7 @@ function selectFailureLine(
   lines: string[],
   { positionLast }: { positionLast: boolean },
 ): { line: string; rank: number } | undefined {
-  for (const rank of [0, 1, 2, 3]) {
+  for (const rank of [0, 1, 2, 3, 4]) {
     const hits = lines.filter((line) => lineRank(line) === rank);
     if (!hits.length) continue;
     const later = rank === 0 || (rank === 2 && positionLast);
