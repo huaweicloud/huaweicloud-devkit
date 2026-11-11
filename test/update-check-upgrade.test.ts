@@ -13,8 +13,12 @@ import {
   upgradePackage,
 } from '../plugins/huaweicloud-core/src/update-check.ts';
 import type { UpgradeOptions } from '../plugins/huaweicloud-core/src/update-check.ts';
+import { isCredentialEnvVarName } from '../plugins/huaweicloud-core/src/lib/secret-vault/refs.ts';
 
 type UpgradeSpawnFn = NonNullable<UpgradeOptions['spawnFn']>;
+
+const FAILURE_FIXTURES = new URL('./fixtures/update-npm-failure/', import.meta.url);
+const failureStderr = (name: string) => readFileSync(new URL(name, FAILURE_FIXTURES), 'utf8');
 
 test('must-notify: 节流过期后重查成功 → 立即补提 hint', async () => {
   invalidateUpdateCache();
@@ -185,6 +189,12 @@ function failingSpawn(stderr: string, status = 1): UpgradeSpawnFn {
   return () => ({ status, stdout: '', stderr });
 }
 
+async function reasonFor(stderr: string, status = 1): Promise<string> {
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: failingSpawn(stderr, status) });
+  assert.equal(r.success, false);
+  return r.error ?? '';
+}
+
 test('upgradePackage 失败原因: 取 npm error 行, 不把 npm warn 噪声当原因', async () => {
   const stderr = [
     'npm error code ELIFECYCLE',
@@ -214,27 +224,95 @@ test('upgradePackage 失败原因: Node 弃用警告行同样不算原因', asyn
   assert.equal(r.error, 'exit 1');
 });
 
-test('upgradePackage 升级子进程: 凭证键族剥掉, 其余环境与 argv 保留', async () => {
-  const credentialKeys = [
+test('upgradePackage 失败原因: E404 保留 code 行与首条诊断, 丢掉日志指针', async () => {
+  const reason = await reasonFor(failureStderr('e404.err'));
+  assert.match(reason, /E404/);
+  assert.match(reason, /404 Not Found - GET/);
+  assert.doesNotMatch(reason, /A complete log of this run|For a full report see/);
+});
+
+test('upgradePackage 失败原因: ECONNREFUSED 保留网络诊断, 丢掉栈帧与日志指针', async () => {
+  const reason = await reasonFor(failureStderr('econnrefused.err'));
+  assert.match(reason, /ECONNREFUSED/);
+  assert.match(reason, /FetchError: request to http:.*reason: connect ECONNREFUSED/);
+  assert.doesNotMatch(reason, /A complete log of this run|^\s*at |\bat ClientRequest/);
+});
+
+test('upgradePackage 失败原因: ETARGET 保留 code 行与 notarget 诊断', async () => {
+  const reason = await reasonFor(failureStderr('etarget.err'));
+  assert.match(reason, /ETARGET/);
+  assert.match(reason, /No matching version found for huaweicloud-devkit@999\.999\.999/);
+  assert.doesNotMatch(reason, /A complete log of this run/);
+});
+
+test('upgradePackage 失败原因: npm 9 的 npm ERR! 前缀同样识别', async () => {
+  const reason = await reasonFor(failureStderr('legacy-etarget.err'));
+  assert.match(reason, /ETARGET/);
+  assert.match(reason, /No matching version found/);
+});
+
+test('upgradePackage 失败原因: ERESOLVE 丢掉报告指针行', async () => {
+  const reason = await reasonFor(failureStderr('eresolve.err'));
+  assert.match(reason, /ERESOLVE unable to resolve dependency tree/);
+  assert.doesNotMatch(reason, /For a full report see|eresolve-report\.txt|A complete log/);
+});
+
+test('upgradePackage 失败原因: color=always 的 ANSI 行先归一化再取原因', async () => {
+  const reason = await reasonFor(failureStderr('eresolve-ansi.err'));
+  assert.match(reason, /ERESOLVE unable to resolve dependency tree/);
+  assert.ok(!reason.includes(String.fromCharCode(27)), 'no ANSI escape survives');
+  assert.doesNotMatch(reason, /For a full report see|A complete log/);
+});
+
+test('upgradePackage 失败原因: npm ERR! 尾部 npm notice 升级提示不进原因', async () => {
+  const reason = await reasonFor(failureStderr('legacy-notice-eresolve.err'));
+  assert.match(reason, /ERESOLVE unable to resolve dependency tree/);
+  assert.doesNotMatch(reason, /npm notice|New major version|A complete log/);
+});
+
+test('upgradePackage 失败原因: 真实 lifecycle 块取 code 行与失败脚本行, 不取通用建议', async () => {
+  const reason = await reasonFor(failureStderr('lifecycle-warn-tail.err'));
+  assert.match(reason, /ELIFECYCLE/);
+  assert.match(reason, /huaweicloud-devkit@2\.0\.1 update/);
+  assert.doesNotMatch(reason, /This is probably not a problem|A complete log|EBADENGINE/);
+});
+
+test('upgradePackage 失败: 信号致死不报 exit null', async () => {
+  const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
+  assert.equal(r.success, false);
+  assert.match(r.error ?? '', /SIGKILL/);
+  assert.doesNotMatch(r.error ?? '', /exit null/);
+});
+
+test('upgradePackage 升级子进程: 凭据谓词命中的环境变量全部剥掉, 其余环境与 argv 保留', async () => {
+  const candidates = [
     'HW_ACCESS_KEY',
-    'HW_SECRET_KEY',
+    'hw_access_key',
     'HW_SECURITY_TOKEN',
-    'HUAWEICLOUD_ACCESS_KEY',
-    'HUAWEICLOUD_SECRET_KEY',
-    'HUAWEICLOUD_SECURITY_TOKEN',
-    'HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'HUAWEICLOUD_SDK_SECURITY_TOKEN',
+    'HUAWEICLOUD_SDK_AK',
+    'HUAWEICLOUD_SDK_SK',
+    'HWC_ACCESS_KEY',
+    'HWC_SECRET_KEY',
+    'HWC_SECRET_ACCESS_KEY',
+    'HCLOUD_SECRET_KEY',
+    'OS_SECRET_KEY',
+  ];
+  const credentialKeys = candidates.filter((name) => isCredentialEnvVarName(name));
+  assert.equal(credentialKeys.length, candidates.length, 'every candidate must be predicate-positive');
+  // Dev 4890d78c's AWS keys and KooCLI's HUAWEI_* aliases: the vault predicate
+  // does not claim these spellings.
+  const extraKeys = [
     'AWS_ACCESS_KEY_ID',
     'AWS_SECRET_ACCESS_KEY',
     'AWS_SESSION_TOKEN',
-    'HW_API_KEY',
-    'HW_VAULT_MASTER_KEY',
-    'HUAWEICLOUD_SDK_AK',
-    'HUAWEICLOUD_SDK_SK',
     'HUAWEI_ACCESS_KEY',
     'HUAWEI_SECRET_KEY',
   ];
   const marker = 'DEVKIT_UPGRADE_ENV_MARKER';
-  const touched = [...credentialKeys, marker];
+  assert.equal(isCredentialEnvVarName(marker), false, 'the control must be predicate-negative');
+  const touched = [...credentialKeys, ...extraKeys, marker];
   const saved = new Map(touched.map((key) => [key, process.env[key]]));
   for (const key of touched) process.env[key] = `fixture-${key}`;
   try {
@@ -247,8 +325,12 @@ test('upgradePackage 升级子进程: 凭证键族剥掉, 其余环境与 argv �
     assert.equal(r.success, true);
     assert.deepEqual(spawned!.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
     const env = spawned!.opts.env as NodeJS.ProcessEnv;
-    for (const key of credentialKeys) assert.equal(env[key], undefined, `${key} must not reach npx`);
+    for (const key of [...credentialKeys, ...extraKeys]) {
+      assert.equal(env[key], undefined, `${key} must not reach npx`);
+    }
     assert.equal(env[marker], `fixture-${marker}`);
+    assert.equal(env.PATH, process.env.PATH);
+    assert.equal(env.HOME, process.env.HOME);
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];

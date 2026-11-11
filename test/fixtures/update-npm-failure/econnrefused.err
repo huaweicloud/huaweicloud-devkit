@@ -1,0 +1,20 @@
+npm error code ECONNREFUSED
+npm error syscall connect
+npm error errno ECONNREFUSED
+npm error FetchError: request to http://127.0.0.1:9/huaweicloud-devkit failed, reason: connect ECONNREFUSED 127.0.0.1:9
+npm error     at ClientRequest.<anonymous> (/home/yanchengyu/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/minipass-fetch/lib/index.js:130:14)
+npm error     at ClientRequest.emit (node:events:514:20)
+npm error     at emitErrorEvent (node:_http_client:115:11)
+npm error     at _destroy (node:_http_client:1198:9)
+npm error     at onSocketNT (node:_http_client:1219:5)
+npm error     at process.processTicksAndRejections (node:internal/process/task_queues:91:21) {
+npm error   code: 'ECONNREFUSED',
+npm error   errno: 'ECONNREFUSED',
+npm error   syscall: 'connect',
+npm error   address: '127.0.0.1',
+npm error   port: 9,
+npm error   type: 'system'
+npm error }
+npm error
+npm error If you are behind a proxy, please make sure that the 'proxy' config is set properly.  See: 'npm help config'
+npm error A complete log of this run can be found in: /home/yanchengyu/.npm/_logs/2026-11-11T05_26_58_201Z-debug-0.log

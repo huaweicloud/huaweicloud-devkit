@@ -5,6 +5,7 @@
 import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'node:child_process';
 
 import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.ts';
+import { isCredentialEnvVarName } from './lib/secret-vault/refs.ts';
 import { determineTarget, semverCompare, type DistTags } from './update-semver.ts';
 import { readInstalledVersion } from './update-installed.ts';
 import { queryDistTags, errorMessage } from './update-registry.ts';
@@ -12,37 +13,31 @@ import { invalidateUpdateCache } from './update-cache.ts';
 
 const NPX_BIN = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 
-// Cloud credentials never belong in the upgrade child: the published package
-// install needs no account, and the child is arbitrary registry code. The first
-// block is dev 4890d78c's set; the second names the credential variables this
-// tree itself reads (DevBridge key, vault custody, KooCLI/SDK spellings).
-const UPGRADE_CREDENTIAL_ENV_KEYS = new Set([
-  'HW_ACCESS_KEY',
-  'HW_SECRET_KEY',
-  'HW_SECURITY_TOKEN',
-  'HUAWEICLOUD_ACCESS_KEY',
-  'HUAWEICLOUD_SECRET_KEY',
-  'HUAWEICLOUD_SECURITY_TOKEN',
-  'HUAWEICLOUD_SECRET_ACCESS_KEY',
+// The upgrade child is arbitrary registry code and the published package needs
+// no account, so it gets an environment without the credential family the
+// vault predicate owns (case-normalized, so a Windows spelling cannot survive),
+// plus dev 4890d78c's AWS keys and KooCLI's `HUAWEI_*` alias spellings, which the
+// predicate does not claim.
+const UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS = new Set([
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
-  'HW_API_KEY',
-  'HW_VAULT_MASTER_KEY',
-  'HUAWEICLOUD_SDK_AK',
-  'HUAWEICLOUD_SDK_SK',
   'HUAWEI_ACCESS_KEY',
   'HUAWEI_SECRET_KEY',
 ]);
 
 function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const next = { ...env };
-  for (const key of UPGRADE_CREDENTIAL_ENV_KEYS) delete next[key];
+  const next: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(key.toUpperCase())) continue;
+    next[key] = value;
+  }
   return next;
 }
 
 interface SpawnResultLike {
   status?: number | null;
+  signal?: string | null;
   stdout?: string;
   stderr?: string;
   error?: { message?: string } | null;
@@ -69,24 +64,59 @@ function defaultSpawn(
   return spawnSync([command, ...args].join(' '), options);
 }
 
-// npm writes diagnostics as `npm error ...` lines and engine, deprecation, and
-// trace noise as `npm warn ...` or `(node:<pid>) ...` lines. Reporting the raw
-// last stderr lines made the warning the recorded failure reason (#1117).
+// npm reports failures as `npm error ...` lines (npm 7+) or `npm ERR! ...`
+// (legacy), with ANSI color, warnings, notices, and log pointers around them.
+// The trailing lines are boilerplate, so the reason keeps the identifying code
+// line plus the first diagnostic instead of the tail (#1117).
+const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, 'g');
+
+function normalizeNpmLine(line: string): string {
+  return line
+    .replace(ANSI_ESCAPE, '')
+    .trim()
+    .replace(/^npm ERR!\s?/, 'npm error ');
+}
+
+function npmPayload(line: string): string {
+  return line.replace(/^npm error\s*/, '');
+}
+
+function isNpmErrorLine(line: string): boolean {
+  return /^npm error\b/.test(line);
+}
+
+function isNpmNoiseLine(line: string): boolean {
+  if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
+  if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
+  const payload = npmPayload(line);
+  return (
+    /^A complete log of this run can be found in:/.test(payload) ||
+    /^For a full report see:/.test(payload) ||
+    /(?:-debug-\d+\.log|-eresolve-report\.txt)$/.test(payload) ||
+    /^\s*at\s/.test(payload)
+  );
+}
+
+function isNpmStructuredHeader(line: string): boolean {
+  const payload = npmPayload(line);
+  return payload === '' || /^(?:errno|syscall|code)\b/.test(payload);
+}
+
 function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (execResult.error?.message) return execResult.error.message;
   const lines = String(execResult.stderr || '')
     .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-  const isNoise = (line: string) =>
-    /^npm warn/i.test(line) ||
-    /^\(node:\d+\)/i.test(line) ||
-    /DeprecationWarning/i.test(line) ||
-    /trace-deprecation/i.test(line);
-  const errorLines = lines.filter((line) => /^npm error/i.test(line) && !isNoise(line));
-  const meaningful = errorLines.length ? errorLines : lines.filter((line) => !isNoise(line));
-  if (meaningful.length) return meaningful.slice(-2).join(' ');
-  return `exit ${execResult.status}`;
+    .map((line) => normalizeNpmLine(line))
+    .filter((line) => line && !isNpmNoiseLine(line));
+  const codeLine = lines.find((line) => isNpmErrorLine(line) && /^code \S+/.test(npmPayload(line)));
+  const diagnostic = lines.find((line) => isNpmErrorLine(line) && line !== codeLine && !isNpmStructuredHeader(line));
+  const kept = [codeLine, diagnostic].filter((line): line is string => Boolean(line));
+  if (kept.length) return kept.join(' ');
+  const first = lines.find((line) => !isNpmErrorLine(line));
+  if (first) return first;
+  if (execResult.signal) return `signal ${execResult.signal}`;
+  if (typeof execResult.status === 'number') return `exit ${execResult.status}`;
+  return 'unknown failure';
 }
 
 function restartMessage(target: string): string {

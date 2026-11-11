@@ -1,0 +1,6 @@
+npm ERR! code ETARGET
+npm ERR! notarget No matching version found for huaweicloud-devkit@0.0.0-does-not-exist.
+npm ERR! notarget In most cases you or one of your dependencies are requesting
+npm ERR! notarget a package version that doesn't exist.
+
+npm ERR! A complete log of this run can be found in: /home/yanchengyu/.npm/_logs/2026-11-11T05_23_37_899Z-debug-0.log
