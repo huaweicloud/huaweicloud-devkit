@@ -131,7 +131,7 @@ const SINGLE_FRAME_BEFORE_ESCAPE = new RegExp(`^[|\\\\/-](?=${ESCAPE})`);
 const LOG_POINTER_SUFFIX =
   /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|Please include the following file with any support request:).*$/;
 const DIAGNOSTIC_HINT =
-  /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported)\b|permission denied|错误|失败|不支持|未知/i;
+  /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported|stopped|halted)\b|permission denied|错误|失败|不支持|未知/i;
 // Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
 // and the bracketed dump header `[TypeError: ...] {`.
 const ERROR_NAME = /^(?:\[?[A-Za-z]*Error\b|fatal\b|FATAL\b)/;
@@ -392,7 +392,7 @@ function lineRank(line: string): number {
   // npm's echo of the failing script carries the child's words in quotes, so it
   // must not tie with the child's own line; it is the honest fallback only when
   // the child printed nothing.
-  if (/^(?:npm\s+)?(?:command|info run)\b/.test(payload)) return 3;
+  if (/^command sh -c\b/.test(payload) || /^npm info run\b/.test(line)) return 3;
   if (DIAGNOSTIC_HINT.test(payload)) return 1;
   return 2;
 }
@@ -480,20 +480,25 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   ) {
     bare = undefined;
   }
-  // One raw non-empty line has no ambiguity to resolve, so it is the child's
-  // dying words and survives a nonzero exit. A killed child's line is not
-  // dying words, and neither is a success assertion or an npm echo.
-  const rawNonEmpty = String(execResult.stderr || '')
+  // A sole surviving diagnostic line is the child's dying words and is kept
+  // after the floor, even when noise filtering discarded its companions (a
+  // pointer, a stack frame, spinner residue). Only a failure-marked line
+  // qualifies: plain progress chatter does not distinguish itself, and a
+  // filtered success assertion (a code-0 result, gyp's info channel) means the
+  // survivor belongs to a script that did not fail.
+  const rawLines = String(execResult.stderr || '')
     .split(/\r?\n/)
-    .map((line) => line.trim())
+    .map((line) => normalizeNpmLine(line))
     .filter(Boolean);
+  const successAsserted = rawLines.some(
+    (line) => /^gyp info\b/i.test(line) || (isNpmScriptResult(line) && !isFailingScriptResult(line)),
+  );
   if (
     typeof execResult.status === 'number' &&
     execResult.status !== 0 &&
-    rawNonEmpty.length === 1 &&
     lines.length === 1 &&
-    !isNpmScriptResult(rawNonEmpty[0]!) &&
-    lineRank(lines[0]!) !== 3
+    lineRank(lines[0]!) <= 1 &&
+    !successAsserted
   ) {
     return lines[0]!;
   }

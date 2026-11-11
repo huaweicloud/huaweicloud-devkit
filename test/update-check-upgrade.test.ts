@@ -1099,7 +1099,7 @@ test('upgradePackage 失败原因: 字形粘连的 npm warn 行进入噪声类',
 });
 
 test('upgradePackage 失败原因: 日志标签在句中时整行保留', async () => {
-  const stderr = ['npm error code 1', 'payload copy stopped', '详细日志：/home/op/logs/run.log 以及 EACCES 细节'].join(
+  const stderr = ['npm error code 1', 'copying payload files', '详细日志：/home/op/logs/run.log 以及 EACCES 细节'].join(
     '\n',
   );
   const reason = await reasonFor(stderr);
@@ -1110,7 +1110,7 @@ test('upgradePackage 失败原因: 日志标签在句中时整行保留', async 
 test('upgradePackage 失败原因: 英文句子里的日志标签不被截断', async () => {
   const stderr = [
     'npm error code 1',
-    'payload copy stopped',
+    'copying payload files',
     'For details see 日志 : /home/op/logs/run.log and EACCES info',
   ].join('\n');
   const reason = await reasonFor(stderr);
@@ -1304,9 +1304,9 @@ test('upgradePackage 失败原因: 已恢复的 gyp 错误不顶替失败 postin
   assert.doesNotMatch(reason, /gyp ERR|EACCES/);
 });
 
-test('upgradePackage 失败原因: 单行捕获是该行本身，不再走地板', async () => {
+test('upgradePackage 失败原因: 单行无标记聊天仍走地板', async () => {
   const reason = await reasonFor(failureStderr('nc-silent-preinstall.err'));
-  assert.match(reason, /preinstall: preparing workspace/);
+  assert.equal(reason, 'exit 1');
 });
 
 test('upgradePackage 失败原因: 斜杠与短横的 ASCII spinner 帧也被剥掉', async () => {
@@ -1329,9 +1329,9 @@ test('upgradePackage 失败原因: npm 9 的 sill 频道行不冒充原因', asy
   assert.doesNotMatch(reason, /npm sill|<html>|audit bulk/);
 });
 
-test('upgradePackage 失败原因: 单行聊天捕获也保留唯一一行', async () => {
+test('upgradePackage 失败原因: 单行无标记 chatter 在有块时不冒充', async () => {
   const reason = await reasonFor(failureStderr('default-chatty-preinstall.err'), 7);
-  assert.match(reason, /preinstall stage completed/);
+  assert.equal(reason, 'exit 7');
 });
 
 test('upgradePackage 失败原因: pty 字形粘连的子进程行被剥帧', async () => {
@@ -1480,6 +1480,47 @@ test('upgradePackage 失败原因: 孤立 gyp info ok 不是临终遗言', async
 test('upgradePackage 失败原因: 孤立成功结果行不是临终遗言', async () => {
   const reason = await reasonFor('npm info run pkg@1.0.0 postinstall { code: 0, signal: null }', 7);
   assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 原因行加指针行时保留原因', async () => {
+  const stderr = [
+    'native build failed: missing libfoo. rebuild aborted.',
+    '/home/op/.npm/_logs/2026-11-11T00_00_00_000Z-debug-0.log',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.match(reason, /native build failed: missing libfoo/);
+});
+
+test('upgradePackage 失败原因: TypeError 加栈帧时保留原因', async () => {
+  const stderr = [
+    "TypeError: Cannot read properties of null (reading 'x')",
+    '    at Object.<anonymous> (/home/op/x.js:1:1)',
+    '    at Module._compile (node:internal/modules/cjs/loader:1:1)',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.match(reason, /TypeError: Cannot read properties of null/);
+});
+
+test('upgradePackage 失败原因: frame-anon 语料形状保留唯一原因行', async () => {
+  const reason = await reasonFor(failureStderr('frame-anon.err'), 7);
+  assert.match(reason, /payload copy stopped/);
+});
+
+test('upgradePackage 失败原因: zh-label-pointer 语料形状保留唯一原因行', async () => {
+  const reason = await reasonFor(failureStderr('zh-label-pointer.err'), 7);
+  assert.match(reason, /cp: cannot create regular file/);
+});
+
+test('upgradePackage 失败原因: 子进程的 command: 行不是 npm 回显', async () => {
+  const stderr = ['npm error code 1', 'progress 1/2', 'command: node-gyp rebuild'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /command: node-gyp rebuild/);
+});
+
+test('upgradePackage 失败原因: 子进程的 info run: 行不是 npm 回显', async () => {
+  const stderr = ['npm error code 1', 'progress 1/2', 'info run: child says the payload is broken'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /info run: child says the payload is broken/);
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
