@@ -1,0 +1,2 @@
+npm info run pkg@1.0.0 postinstall node ./b.js
+TypeError: Cannot read properties of null (reading 'x')

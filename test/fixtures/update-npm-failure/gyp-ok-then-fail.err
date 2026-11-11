@@ -1,0 +1,3 @@
+gyp info spawn args [ 'build', '-v', 'rebuild' ]
+gyp info ok
+native build failed: missing libfoo. rebuild aborted.

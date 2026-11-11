@@ -1584,6 +1584,44 @@ test('upgradePackage 失败原因: failure 词提升会压过其后的详情行�
   assert.match(reason, /payload copy stopped/);
 });
 
+test('upgradePackage 失败原因: gyp 先成功后失败的同一脚本保留原因', async () => {
+  const reason = await reasonFor(failureStderr('gyp-ok-then-fail.err'), 7);
+  assert.match(reason, /native build failed: missing libfoo/);
+});
+
+test('upgradePackage 失败原因: 子进程的 command sh -c 句子不当回显', async () => {
+  const reason = await reasonFor(failureStderr('child-command-shc-diagnostic.err'), 7);
+  assert.match(reason, /command sh -c exited with 127/);
+  assert.doesNotMatch(reason, /progress 1\/2/);
+});
+
+test('upgradePackage 失败原因: 真实异步崩溃保留 TypeError', async () => {
+  const reason = await reasonFor(failureStderr('crash-async-real.err'), 1);
+  assert.match(reason, /TypeError: Cannot read properties of null/);
+  assert.doesNotMatch(reason, /Promise\.all|Node\.js/);
+});
+
+test('upgradePackage 失败原因: 完整崩溃前导与注释片段不阻塞唯一原因', async () => {
+  const reason = await reasonFor(failureStderr('crash-full-preamble.err'), 1);
+  assert.match(reason, /TypeError: Cannot read properties of null/);
+});
+
+test('upgradePackage 失败原因: Require stack 条目不再阻塞原因', async () => {
+  const reason = await reasonFor(failureStderr('crash-require-stack.err'), 1);
+  assert.match(reason, /Error: Cannot find module/);
+  assert.doesNotMatch(reason, /Require stack|- \/home/);
+});
+
+test('upgradePackage 失败原因: echo 伴随时 TypeError 仍是原因', async () => {
+  const reason = await reasonFor(failureStderr('echo-plus-typeerror.err'), 1);
+  assert.match(reason, /TypeError: Cannot read properties of null/);
+});
+
+test('upgradePackage 失败原因: echo 伴随时 EPERM 仍是原因', async () => {
+  const reason = await reasonFor(failureStderr('echo-plus-eperm.err'), 1);
+  assert.match(reason, /EPERM: operation not permitted/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });

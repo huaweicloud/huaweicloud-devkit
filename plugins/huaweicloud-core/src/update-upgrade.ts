@@ -325,10 +325,10 @@ function isStackFrame(payload: string): boolean {
   const rest = match[1]!.trim();
   if (rest === '<anonymous>') return true;
   if (/^wasm[-:]/.test(rest) || /\bwasm-function\b/.test(rest)) return true;
-  const call = /^\S+(?:\s+\[as [^\]]+\])?\s*\(([^)]*)\)\s*$/.exec(rest);
+  const call = /^\S+(?:\s+\[as [^\]]+\])?\s*\(([^)]*)\)\s*{?\s*$/.exec(rest);
   if (call) {
     const location = call[1]!.trim();
-    return location === '<anonymous>' || /^\S+:\d+(?::\d+)?$/.test(location);
+    return location === '<anonymous>' || /^index \d+$/.test(location) || /^\S+:\d+(?::\d+)?$/.test(location);
   }
   // Nested eval frames close more than one paren (eval at <anonymous> (...)),
   // so the flat paren match above cannot span them; a frame ends with a paren
@@ -341,6 +341,8 @@ function isStackFrame(payload: string): boolean {
 
 function isNpmNoiseLine(line: string): boolean {
   if (/^Node\.js v\d/.test(line) || /^\s*\^\s*$/.test(line)) return true;
+  if (/^Require stack:/.test(line) || /^\s*-\s+[/~]/.test(line)) return true;
+  if (/^\s*throw err;\s*$/.test(line)) return true;
   if (!/[\p{L}\p{N}]/u.test(line)) return true;
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
   // npm's log channels are not diagnostics: every `npm <channel>` prefix is
@@ -384,9 +386,15 @@ function isFailingScriptResult(line: string): boolean {
 // line that merely starts with "command:" or a shell word is not an echo.
 function isEchoLine(line: string, payload: string): boolean {
   if (/^npm info run\b/.test(line)) return true;
-  if (/^command\s+\S.*\s(?:-c|\/c)(?:\s|$)/i.test(payload)) return true;
-  if (/^(?:\S*\/)?(?:ba|z|k|da)?sh\s+-c(?:\s|$)/.test(payload)) return true;
-  if (/^cmd(?:\.exe)?\b.*\/c(?:\s|$)/i.test(payload)) return true;
+  // npm's block echo, whichever shell it named.
+  if (/^npm error\s+command\s+/i.test(line)) return true;
+  // A bare shell lead counts only when the -c payload is one command (quoted
+  // or a single token), not a child sentence that merely starts with one.
+  const commandEnd = /^(?:"[^"]*"|'[^']*'|\S+)\s*$/;
+  const shell = /^(?:\S*\/)?(?:ba|z|k|da)?sh\s+-c\s+(.*)$/.exec(payload)?.[1];
+  if (shell && commandEnd.test(shell)) return true;
+  const cmd = /^cmd(?:\.exe)?\b[^]*?\/c\s+(.*)$/i.exec(payload)?.[1];
+  if (cmd && commandEnd.test(cmd)) return true;
   return false;
 }
 
@@ -403,6 +411,7 @@ function lineRank(line: string): number {
   }
   if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 4;
   if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+|\[[^\]]*\])\s*,?\s*$/.test(payload)) return 4;
+  if (/^\s*[A-Za-z_]\w*:\s*\[.*$/.test(payload) || /^\s*'[^']*',?\s*$/.test(payload)) return 4;
   if (isNpmScriptResult(payload)) return 4;
   // npm's echo of the failing script carries the child's words in quotes, so it
   // must not tie with the child's own line; it is the honest fallback only when
@@ -519,20 +528,22 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     .split(/\r?\n/)
     .map((line) => normalizeNpmLine(line))
     .filter(Boolean);
-  const successAsserted = rawLines.some(
-    (line) => /^gyp info\b/i.test(line) || (isNpmScriptResult(line) && !isFailingScriptResult(line)),
-  );
-  const attributableSurvivors = lines.filter((line) => lineRank(line) <= 2);
+  const isSuccessAssertion = (line: string) =>
+    /^gyp info ok\b/i.test(line) ||
+    /^prebuilt binary installed\b/i.test(line) ||
+    (isNpmScriptResult(line) && !isFailingScriptResult(line));
+  const attributableSurvivors = lines.filter((line) => lineRank(line) <= 1);
   if (
     !block &&
     !codeLine &&
     typeof execResult.status === 'number' &&
     execResult.status !== 0 &&
-    attributableSurvivors.length === 1 &&
-    lineRank(attributableSurvivors[0]!) <= 1 &&
-    !successAsserted
+    attributableSurvivors.length === 1
   ) {
-    return attributableSurvivors[0]!;
+    const survivor = attributableSurvivors[0]!;
+    const survivorIndex = rawLines.lastIndexOf(survivor);
+    const successAfter = rawLines.some((line, index) => index >= survivorIndex && isSuccessAssertion(line));
+    if (!successAfter) return survivor;
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
   // the block keeps its code prefix when the block wins or when only a weak
