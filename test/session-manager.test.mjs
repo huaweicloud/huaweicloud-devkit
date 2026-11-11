@@ -545,7 +545,9 @@ test('G404: buildDeployCheckScript probes listed tunnels and selects one that ac
   // Candidate loop (bounded) instead of blindly taking the first `devbridge list` row —
   // list order is arbitrary and a stale tunnel listed first must not shadow the live one.
   assert.match(script, /for CAND in \$TUNNEL_IDS/);
-  assert.match(script, /CAND_URL="https:\/\/\$\{CAND\}-8080\./);
+  // (#981) the probe targets the DETECTED nginx port ($PROBE_PORT), not the
+  // caller-supplied port verbatim — a drifted port would otherwise probe a dead URL.
+  assert.match(script, /CAND_URL="https:\/\/\$\{CAND\}-\$PROBE_PORT\./);
   assert.match(script, /head -5/);
   // TUNNEL_URL is only set from a candidate that passed the probe
   assert.match(script, /TUNNEL_URL="\$SELECTED_URL"/);
@@ -977,7 +979,10 @@ test('#981: evaluateDeployNginxVerify returns ok:true for OSC-wrapped DB_NGINX_T
   // OSC-wrapped stdout is stripped, parsed, then evaluated. exitCode 0 + PASS
   // must yield ok:true — the D3-C3/D3-S3 false failure must not recur.
   const result = { exitCode: 0 };
-  const rawStdout = [oscLine('nginx: configuration file /etc/nginx/nginx.conf test is successful'), oscLine('DB_NGINX_T=PASS')].join('\r\n');
+  const rawStdout = [
+    oscLine('nginx: configuration file /etc/nginx/nginx.conf test is successful'),
+    oscLine('DB_NGINX_T=PASS'),
+  ].join('\r\n');
   const verify = parseDeployNginxVerifyOutput(stripTerminalEscapes(rawStdout));
   const verdict = evaluateDeployNginxVerify(result, verify, '/etc/nginx/conf.d/x.conf');
   assert.equal(verdict.ok, true);
