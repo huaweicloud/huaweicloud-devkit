@@ -218,6 +218,20 @@ async function withEnv(vars: Record<string, string | undefined>, run: () => Prom
   }
 }
 
+async function errorForSpawn(result: {
+  status?: number | null;
+  signal?: string | null;
+  stderr?: string;
+  error?: Error;
+}): Promise<string> {
+  const r = await upgradePackage(
+    { target: 'opencode' },
+    { doQuery: stubQuery, spawnFn: () => ({ stdout: '', ...result }) },
+  );
+  assert.equal(r.success, false);
+  return r.error ?? '';
+}
+
 async function childEnv(): Promise<NodeJS.ProcessEnv> {
   let captured: NodeJS.ProcessEnv | null = null;
   const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
@@ -1392,43 +1406,80 @@ test('upgradePackage 失败原因: 单个前导短横的合法诊断行保留首
 });
 
 test('upgradePackage 失败原因: 超时 kill 报 spawn 工件而不是中途进度', async () => {
-  const r = await upgradePackage(
-    { target: 'opencode' },
-    {
-      doQuery: stubQuery,
-      spawnFn: () => ({
-        status: null,
-        signal: 'SIGTERM',
-        stdout: '',
-        stderr: ['reify: copying payload files', 'reify: copying payload files', 'progress 2/10'].join('\n'),
-        error: new Error('spawnSync /bin/sh ETIMEDOUT'),
-      }),
-    },
-  );
-  assert.equal(r.error, 'spawnSync /bin/sh ETIMEDOUT');
+  const error = await errorForSpawn({
+    status: null,
+    signal: 'SIGTERM',
+    stderr: ['reify: copying payload files', 'reify: copying payload files', 'progress 2/10'].join('\n'),
+    error: new Error('spawnSync /bin/sh ETIMEDOUT'),
+  });
+  assert.equal(error, 'spawnSync /bin/sh ETIMEDOUT');
 });
 
 test('upgradePackage 失败原因: 超限 kill 报 ENOBUFS 工件而不是填充文本', async () => {
   const filler = Array.from({ length: 40 }, () => 'truncated filler line from a talkative child').join('\n');
-  const r = await upgradePackage(
-    { target: 'opencode' },
-    {
-      doQuery: stubQuery,
-      spawnFn: () => ({
-        status: null,
-        signal: null,
-        stdout: '',
-        stderr: filler,
-        error: new Error('spawnSync /bin/sh ENOBUFS'),
-      }),
-    },
-  );
-  assert.equal(r.error, 'spawnSync /bin/sh ENOBUFS');
+  const error = await errorForSpawn({
+    status: null,
+    signal: null,
+    stderr: filler,
+    error: new Error('spawnSync /bin/sh ENOBUFS'),
+  });
+  assert.equal(error, 'spawnSync /bin/sh ENOBUFS');
 });
 
 test('upgradePackage 失败原因: 只有一行真实原因时保留它', async () => {
   const reason = await reasonFor('native build failed: missing libfoo. rebuild aborted.', 7);
   assert.match(reason, /native build failed: missing libfoo/);
+});
+
+test('upgradePackage 失败原因: 单行超时 kill 报 ETIMEDOUT', async () => {
+  const error = await errorForSpawn({
+    status: null,
+    signal: 'SIGTERM',
+    stderr: 'reify: copying payload files',
+    error: new Error('spawnSync /bin/sh ETIMEDOUT'),
+  });
+  assert.equal(error, 'spawnSync /bin/sh ETIMEDOUT');
+});
+
+test('upgradePackage 失败原因: 单行超限 kill 报 ENOBUFS', async () => {
+  const filler = 'truncated filler '.repeat(4000);
+  const error = await errorForSpawn({
+    status: null,
+    signal: null,
+    stderr: filler,
+    error: new Error('spawnSync /bin/sh ENOBUFS'),
+  });
+  assert.equal(error, 'spawnSync /bin/sh ENOBUFS');
+});
+
+test('upgradePackage 失败原因: kill 时的孤立 echo 退到信号', async () => {
+  const error = await errorForSpawn({
+    status: null,
+    signal: 'SIGKILL',
+    stderr: 'npm info run pkg@1.0.0 postinstall node ./b.js',
+  });
+  assert.equal(error, 'signal SIGKILL');
+});
+
+test('upgradePackage 失败原因: 带信号的单行进度行退到信号', async () => {
+  const error = await errorForSpawn({ status: null, signal: 'SIGKILL', stderr: 'progress 1/2' });
+  assert.equal(error, 'signal SIGKILL');
+});
+
+test('upgradePackage 失败原因: 噪声行加聊天行不算单行豁免', async () => {
+  const stderr = ['npm warn deprecated foo@1.0.0', 'progress 1/2'].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 孤立 gyp info ok 不是临终遗言', async () => {
+  const reason = await reasonFor('gyp info ok', 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 孤立成功结果行不是临终遗言', async () => {
+  const reason = await reasonFor('npm info run pkg@1.0.0 postinstall { code: 0, signal: null }', 7);
+  assert.equal(reason, 'exit 7');
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {

@@ -351,6 +351,7 @@ function isNpmNoiseLine(line: string): boolean {
     return true;
   }
   if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
+  if (/^gyp info\b/i.test(line)) return true;
   const payload = npmPayload(line);
   return (
     /^A complete log of this run can be found in:/.test(payload) ||
@@ -463,17 +464,38 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (bare?.rank === 2 && /^(?:Terminated|Killed)\b/i.test(bare.line) && hasFailingPair) {
     bare = { line: failingEcho!.line, rank: 3, index: failingEcho!.index };
   }
-  // One non-empty line has no ambiguity to resolve: it is the child's dying
-  // words, so it survives the floor regardless of rank.
-  if (lines.length === 1) return lines[0]!;
   // A spawn kill (timeout, buffer ceiling) or a plain nonzero status with no
   // failing pair and no error block leaves no line attributable to the failing
   // script: the spawn artifact or the exit status is the honest reason.
-  const killed =
+  const unattributableStatus =
     (typeof execResult.status === 'number' && execResult.status !== 0) ||
     (execResult.status === null && Boolean(execResult.signal || execResult.error));
-  if (!block && !codeLine && !hasFailingPair && bare && !/^(?:Terminated|Killed)\b/i.test(bare.line) && killed) {
+  if (
+    !block &&
+    !codeLine &&
+    !hasFailingPair &&
+    bare &&
+    !/^(?:Terminated|Killed)\b/i.test(bare.line) &&
+    unattributableStatus
+  ) {
     bare = undefined;
+  }
+  // One raw non-empty line has no ambiguity to resolve, so it is the child's
+  // dying words and survives a nonzero exit. A killed child's line is not
+  // dying words, and neither is a success assertion or an npm echo.
+  const rawNonEmpty = String(execResult.stderr || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (
+    typeof execResult.status === 'number' &&
+    execResult.status !== 0 &&
+    rawNonEmpty.length === 1 &&
+    lines.length === 1 &&
+    !isNpmScriptResult(rawNonEmpty[0]!) &&
+    lineRank(lines[0]!) !== 3
+  ) {
+    return lines[0]!;
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
   // the block keeps its code prefix when the block wins or when only a weak
