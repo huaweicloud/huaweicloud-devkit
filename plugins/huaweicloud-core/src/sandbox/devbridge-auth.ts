@@ -3,7 +3,7 @@ import { runOneShot } from './devbridge-exec.ts';
 import { evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import type { ExposeTunnelResult } from './devbridge-expose.ts';
 import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
-import { gateFoldPayload, isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
+import { canonCode, gateFoldPayload, isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
 
 // 409 门禁在 relay 出口的统一折叠（v2 扩展，台账记录）：三个 catch 位共用——
 // 自动创建、自愈重建、配额清单读取。authMode/attempts 保留（探测到的真实状态，
@@ -277,7 +277,7 @@ export async function gateExposeAuth(
         }
       } catch (error) {
         // 自动创建失败（含配额满 13002）→ 结构化降级
-        if ((error as { code?: string }).code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
+        if (canonCode((error as { code?: unknown }).code) === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
           // 配额清单读取本身遭遇 409：门禁优先（清 key 引导拿不出 currentKeys）；
           // 其余读取失败仍降级为空清单
           let keysHint: Awaited<ReturnType<typeof keyUpgrade.listKeysForQuotaHint>> = [];

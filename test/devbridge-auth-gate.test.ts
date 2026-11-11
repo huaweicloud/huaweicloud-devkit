@@ -244,6 +244,23 @@ test('the 409 version gate folds through the relay failure with the upgrade reme
   assert.equal(f.port, 8080);
 });
 
+test('a woven devbridge quota code surfaces the quota envelope, never the no-credential misdiagnosis', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw Object.assign(new Error('HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED\u200b: 20 key limit'), {
+        code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED\u200b',
+      });
+    },
+    listKeys: async () => [{ name: 'stale-a', id: 'a', lastUsed: '2026-11-01' }],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED', 'the woven quota code is recognized canonically');
+  assert.match(f.error ?? '', /20 key limit/);
+  assert.ok(Array.isArray((f as { currentKeys?: unknown }).currentKeys), 'the quota envelope carries the key list');
+  assert.match(f.hint ?? '', /API Key 数量已达上限/, 'the quota guidance fires — not the misdiagnosis');
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/);
+});
+
 test('the quota flow folds the gate when the key-list read is itself gated', async () => {
   const lifecycle = fakeKeyLifecycle({
     ensure: async () => {

@@ -136,10 +136,11 @@ export function isVersionGateError(error: unknown): boolean {
  * DOMException）自带 code 属性（数值 20），不得以 code 是否存在裁决。
  */
 function isCodelessGateStatus(error: unknown): boolean {
-  const err = error as { code?: unknown; status?: unknown; bodyUnreadable?: unknown };
-  if (err.status !== 409) return false;
-  if (err.bodyUnreadable === true) return true;
-  return canonCode(err.code) === '';
+  // 三读全过安全卫队（round 13）：抛出型 getter 与撤销代理按缺失——
+  // 缺失的 status 即非 409，不折叠也不引爆
+  if (safeReadField(error, 'status') !== 409) return false;
+  if (safeReadField(error, 'bodyUnreadable') === true) return true;
+  return canonCode(safeReadField(error, 'code')) === '';
 }
 
 const UPGRADE_STEPS = [
@@ -217,8 +218,13 @@ export interface GateFoldPayload {
 export function gateFoldPayload(error: unknown): GateFoldPayload {
   const rawCode = safeReadField(error, 'code');
   if (canonCode(rawCode) === VERSION_GATE_CODE) {
-    const clientVersion = cleanMessage(safeReadField(error, 'clientVersion') as string | undefined) || undefined;
-    const minVersion = cleanMessage(safeReadField(error, 'minVersion') as string | undefined) || undefined;
+    // 字符串收窄恢复（round 13）：安全读只防抛出，非字符串值（数字/对象）
+    // 仍需窄化后再进清洗口——cleanMessage 会迭代输入
+    const rawClientVersion = safeReadField(error, 'clientVersion');
+    const rawMinVersion = safeReadField(error, 'minVersion');
+    const clientVersion =
+      typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
+    const minVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
     const remediation = safeReadField(error, 'remediation') as { hint: string; steps: string[] } | undefined;
     return {
       code: VERSION_GATE_CODE,
@@ -293,11 +299,17 @@ const MANUFACTURED_FAMILY = /^HTTP_?\d+$/;
 // 仅在装饰的 replaceCode 分支使用（拼写必为 HTTP 家族或空）。
 function manufacturedPrefixPattern(spelling: string): RegExp | undefined {
   if (!spelling) return undefined;
-  const body = [...spelling].map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(BLANK_STAR);
-  return new RegExp(`^${BLANK_STAR}${body}${BLANK_STAR}:`, 'u');
+  // 下划线不是字面量而是分隔符位（round 13）：分隔符位接受下划线或任意
+  // 空白渲染字符——空白顶替下划线（HTTP\u00a0502 对 HTTP_502）与镜像
+  // （HTTP_502 对 HTTP\u00a0502 码）两个方向都命中；其余字符间同样可夹
+  // 空白。拼写里的下划线并入分隔符位（删除后以 SEP_STAR 连接）。
+  const significant = [...spelling].filter((ch) => ch !== '_');
+  if (significant.length === 0) return undefined;
+  const body = significant.map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(SEP_STAR);
+  return new RegExp(`^${SEP_STAR}${body}${SEP_STAR}:`, 'u');
 }
 
-const BLANK_STAR = '[\\s\\p{Default_Ignorable_Code_Point}\\p{Cc}\u{FFF9}-\u{FFFB}\u{13430}-\u{1343F}\u2800]*';
+const SEP_STAR = `[\\s\\p{Default_Ignorable_Code_Point}\\p{Cc}\u{FFF9}-\u{FFFB}\u{13430}-\u{1343F}\u2800_]*`;
 
 // 装填辅助（round 9 收口、round 10 回滚）：普通赋值失败（getter-only 原型
 // 访问器，如 DOMException.code）用 defineProperty 落 own 属性；载体整体拒绝
@@ -318,26 +330,40 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       prior = undefined;
     }
     snapshots.set(key, { had, value: prior });
+    let landed = false;
     try {
       target[key] = value;
-      applied.push(key);
+      landed = true;
     } catch {
       try {
         Object.defineProperty(target, key, { value, writable: true, configurable: true });
-        applied.push(key);
+        landed = true;
       } catch {
-        for (const done of applied) {
-          const snap = snapshots.get(done)!;
-          try {
-            if (snap.had) target[done] = snap.value;
-            else delete target[done];
-          } catch {
-            // 还原亦被拒（被丢弃的原对象，尽力而为）
-          }
-        }
-        return false;
+        // 两条写入路径都被拒——landed 保持 false，走克隆分支
       }
     }
+    // 写后回读（round 13）：陷阱代理的 [[Set]] 可既不抛也不落——回读不等
+    // 即视为拒绝，走克隆分支；回读本身抛出同样视为未落
+    if (landed) {
+      try {
+        landed = target[key] === value;
+      } catch {
+        landed = false;
+      }
+    }
+    if (!landed) {
+      for (const done of applied) {
+        const snap = snapshots.get(done)!;
+        try {
+          if (snap.had) target[done] = snap.value;
+          else delete target[done];
+        } catch {
+          // 还原亦被拒（被丢弃的原对象，尽力而为）
+        }
+      }
+      return false;
+    }
+    applied.push(key);
   }
   return true;
 }
@@ -398,7 +424,10 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
       }
     }
     const cleaned = cleanMessage(remainder);
-    const opensWithSpelling = spelling !== '' && canonCode(cleaned).startsWith(spelling);
+    // 形态不敏感兜底（round 13）：下划线与空白在两侧都可互换——剥完仍以
+    // 制造拼写开头（含"消息=码"形态）按去下划线的规范形态比较
+    const formFree = (text: string) => canonCode(text).replaceAll('_', '');
+    const opensWithSpelling = spelling !== '' && formFree(cleaned).startsWith(formFree(spelling));
     fields.push(['message', cleaned === '' || opensWithSpelling ? designedCopy : cleaned]);
   } else if (canonCode(effectiveCode) === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(rawMessage)) {
     fields.push(['message', designedCopy]);

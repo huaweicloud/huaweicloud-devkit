@@ -1671,7 +1671,7 @@ test('a large non-JSON body bounds the snippet allocation', async () => {
 // 织入码（HDKIT_VERSION_T\u200bOO_OLD）在一切身份比较处按规范拼写裁决——
 // 模块内码身份比较全部走 canonCode（剔除全部空白渲染字符），不再裸读。
 
-test('a woven gate code on a 409 folds at the sandbox exit, the voucher exit, and the relay', async () => {
+test('a woven gate code on a 409 folds at the sandbox exit and the voucher exit', async () => {
   const woven = 'HDKIT_VERSION_T\u200bOO_OLD';
   const stub = stubConnectSequence([
     () =>
@@ -1795,7 +1795,6 @@ test('the fold exits read every field safely; the clone survives revoked proxies
   });
   assert.equal(gate, undefined, 'a refusing code read is absent — no gate fold, no detonation');
 
-  const { Proxy, RevocableProxy } = { Proxy: globalThis.Proxy, RevocableProxy: null };
   const revoked = Proxy.revocable(new Error('revoked'), {});
   revoked.revoke();
   let plain: unknown;
@@ -1805,4 +1804,128 @@ test('the fold exits read every field safely; the clone survives revoked proxies
   assert.ok(plain instanceof Error);
   assert.equal((plain as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
   assert.ok((plain as { remediation?: unknown }).remediation);
+});
+
+// ── 类型收窄回归、码身份收尾、分隔符互换（round 13）──
+// round-12 的安全读丢了既有的 typeof-string 收窄——非字符串版本字段在清洗口
+// 迭代时抛 TypeError。织入的 devbridge 配额码是边界上最后一个未走规范的码
+// 身份比较。无码识别器的裸读在带 409 status 的抛出型载体上引爆。前缀骨架
+// 把下划线当字面量——空白字符顶替分隔符的交叉形态两侧都存活。
+
+test('non-string version fields narrow away: numeric and object payloads never throw the fold', () => {
+  const numeric = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    clientVersion: 2,
+    minVersion: 7,
+  });
+  let out: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    out = versionGateResult(numeric);
+  }, 'a numeric version field never detonates the fold');
+  assert.equal(out?.ok, false);
+  assert.equal(out?.clientVersion, undefined, 'a numeric version narrows away');
+  assert.equal(out?.minVersion, undefined);
+  assert.match(String(out?.remediation ? (out.remediation as { hint: string }).hint : ''), /当前 未知/);
+
+  const objectVersion = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    clientVersion: { major: 2 },
+  });
+  let out2: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    out2 = versionGateResult(objectVersion);
+  });
+  assert.equal(out2?.clientVersion, undefined, 'an object version narrows away');
+  assert.equal(out2?.minVersion, undefined);
+
+  const stringControl = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    clientVersion: '2.0.0-next.0',
+  });
+  const out3 = versionGateResult(stringControl) as Record<string, unknown>;
+  assert.equal(out3.clientVersion, '2.0.0-next.0', 'the string control still rides');
+});
+
+test('the codeless recognizer reads status, bodyUnreadable, and code through the safe wrapper', () => {
+  const codeThrower = Object.assign(new Error('boom'), { status: 409 });
+  Object.defineProperty(codeThrower, 'code', {
+    get() {
+      throw new TypeError('code getter detonates');
+    },
+    configurable: true,
+  });
+  let gate: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    gate = versionGateResult(codeThrower);
+  }, 'a throwing code getter with status 409 never detonates the recognizer');
+  assert.equal(gate?.ok, false, 'a refusing code read is absent — the 409 folds as codeless');
+  assert.equal(gate?.code, 'HDKIT_VERSION_TOO_OLD');
+
+  const markerThrower = Object.assign(new Error('boom'), { status: 409 });
+  Object.defineProperty(markerThrower, 'bodyUnreadable', {
+    get() {
+      throw new TypeError('bodyUnreadable getter detonates');
+    },
+    configurable: true,
+  });
+  let gate2: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    gate2 = versionGateResult(markerThrower);
+  }, 'a throwing bodyUnreadable getter never detonates the recognizer');
+  assert.equal(gate2?.ok, false, 'a refusing marker read is absent — the plain codeless 409 still folds');
+  assert.equal(gate2?.code, 'HDKIT_VERSION_TOO_OLD');
+
+  const revoked = Proxy.revocable(Object.assign(new Error('revoked 409'), { status: 409 }), {});
+  revoked.revoke();
+  let gate3: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    gate3 = versionGateResult(revoked.proxy);
+  }, 'a revoked proxy carrier never detonates the recognizer');
+  assert.equal(gate3, undefined, 'every read is absent on a revoked proxy — no gate, no throw');
+});
+
+test('the separator interchange strips both directions: blank for underscore and the mirror', () => {
+  for (const [label, code, message, expectServer] of [
+    ['clean code + blank-for-underscore copy', 'HTTP_502', 'HTTP\u00a0502: gateway busy', true],
+    ['clean code + space-for-underscore copy', 'HTTP_502', 'HTTP 502: gateway busy', true],
+    ['blank-form code + underscore copy', 'HTTP\u00a0502', 'HTTP_502: gateway busy', true],
+    ['blank-form code + ideographic copy', 'HTTP\u3000502', 'HTTP\u3000502: gateway busy', true],
+    ['authored + woven spelling-only copy', 'HTTP_502', 'HTTP\u00a0502', false],
+    ['codeless (client-minted) + woven copy', 'HTTP_502', 'HTTP_502: HTTP\u00a0502: gateway busy', true],
+  ] as const) {
+    const carrier = Object.assign(new Error(String(message)), { code });
+    const out = decorateExhaustedConnect(carrier, 1) as { code?: string; message?: string };
+    assert.equal(out.code, 'HDKIT_GATEWAY_TIMEOUT', `${label}: mints`);
+    if (expectServer) {
+      assert.match(String(out.message ?? ''), /gateway busy/, `${label}: the server copy carries`);
+    } else {
+      assert.match(String(out.message ?? ''), /网关 502\/504 超时/, `${label}: the designed copy fires`);
+    }
+    assert.ok(!/HTTP[^\d]/.test(String(out.message ?? '')), `${label}: no manufactured spelling remains`);
+  }
+});
+
+test('a swallowed-set proxy falls to the clone: the marker must actually land', () => {
+  const base = Object.assign(new Error('swallow'), {});
+  const proxy = new Proxy(base, {
+    set() {
+      return true;
+    },
+    get(target, key) {
+      return (target as unknown as Record<string | symbol, unknown>)[key];
+    },
+  });
+  const out = decorateExhaustedConnect(proxy, 1);
+  assert.notEqual(out, proxy, 'a proxy that swallows writes is not returned as decorated');
+  assert.ok(out instanceof Error, 'the clone carries the decoration');
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.equal((out as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, true);
+  assert.equal(
+    (proxy as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted,
+    undefined,
+    'the proxy stays undecorated',
+  );
+  // 折叠在返回值上生效
+  const fold = transientExhaustionResult(out);
+  assert.equal(fold?.ok, false, 'the fold fires on the clone');
 });
