@@ -748,7 +748,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_deploy_check',
     description:
-      'Run a deployment completeness check on the sandbox. Verifies nginx is serving, output directory exists, DevBridge tunnel is active and accessible, and QR code exists (cross-platform). Returns a score, nextStep, and (when the DevBridge tunnel is missing) an executable "remediation" command string. Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
+      'Run a deployment completeness check on the sandbox. Verifies nginx is serving, output directory exists, DevBridge tunnel is active and accessible, and QR code exists (cross-platform). Returns a score, nextStep, and (when the DevBridge tunnel is missing) an executable "remediation" command string. Detects PORT DRIFT: nginx may listen on an auto-incremented port instead of the requested one — the result then carries portDrift {requested, actual, message} + nginxListenPort, probes run against the actual port, and remediation names it. Use portDrift.actual instead of retrying the stale port. Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
     inputSchema: {
       type: 'object',
       required: ['port', 'project', 'output_dir'],

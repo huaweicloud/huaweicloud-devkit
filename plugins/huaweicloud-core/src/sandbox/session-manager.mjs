@@ -1077,13 +1077,53 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `PASS=0`,
     `TOTAL=0`,
     ``,
+    `# Port-drift detection (#981): deploy_nginx auto-increments its listen port when`,
+    `# the requested one is occupied and returns the ACTUAL port in its "port" field.`,
+    `# A caller that keeps probing the original port drives every check at a dead`,
+    `# port and never learns the right one, so detect the actual nginx listen port`,
+    `# READ-ONLY (ss + nginx -T root match) and probe with it.`,
+    `NGINX_T_FILE=/tmp/.dc_nginx_T`,
+    `NGINX_LISTEN_PORTS=$(ss -tlnp 2>/dev/null | grep -E '"nginx"' | awk '{print $4}' | sed 's/.*://' | grep -E '^[0-9]+$' | sort -un | tr '\\n' ' ')`,
+    `if [ -z "$NGINX_LISTEN_PORTS" ]; then`,
+    `  NGINX_LISTEN_PORTS=$(grep -rhoE '^[[:space:]]*listen[[:space:]]+[0-9]+' /etc/nginx/conf.d/*.conf 2>/dev/null | grep -oE '[0-9]+' | sort -un | tr '\\n' ' ')`,
+    `fi`,
+    `DEPLOY_LISTEN_PORT=""`,
+    `if timeout 10 sudo nginx -T > "$NGINX_T_FILE" 2>/dev/null; then`,
+    `  DEPLOY_LISTEN_PORT=$(awk -v want="${outputPath}" '`,
+    `    /^[[:space:]]*listen[[:space:]]+[0-9]+/ { l=$0; sub(/^[[:space:]]*listen[[:space:]]+/, "", l); sub(/[^0-9].*$/, "", l); cur=l; next }`,
+    `    /^[[:space:]]*(root|alias)[[:space:]]+/ { if (index($0, want) > 0 && cur != "") { print cur; exit } }`,
+    `  ' "$NGINX_T_FILE")`,
+    `fi`,
+    `rm -f "$NGINX_T_FILE"`,
+    `ACTUAL_PORT=""`,
+    `if [ -n "$DEPLOY_LISTEN_PORT" ] && echo " $NGINX_LISTEN_PORTS " | grep -q " $DEPLOY_LISTEN_PORT "; then`,
+    `  ACTUAL_PORT="$DEPLOY_LISTEN_PORT"`,
+    `elif echo " $NGINX_LISTEN_PORTS " | grep -q " ${port} "; then`,
+    `  ACTUAL_PORT="${port}"`,
+    `elif [ -n "$DEPLOY_LISTEN_PORT" ]; then`,
+    `  ACTUAL_PORT="$DEPLOY_LISTEN_PORT"`,
+    `elif [ -n "$NGINX_LISTEN_PORTS" ]; then`,
+    `  ACTUAL_PORT=$(echo "$NGINX_LISTEN_PORTS" | awk '{print $1}')`,
+    `fi`,
+    `PROBE_PORT="\${ACTUAL_PORT:-${port}}"`,
+    `if [ -z "$ACTUAL_PORT" ]; then`,
+    `  echo "PORT_DRIFT:unknown"`,
+    `elif [ "$ACTUAL_PORT" = "${port}" ]; then`,
+    `  echo "PORT_DRIFT:none"`,
+    `else`,
+    `  echo "PORT_DRIFT:${port}->$ACTUAL_PORT"`,
+    `fi`,
+    `echo "NGINX_LISTEN_PORT:\${ACTUAL_PORT:-unknown}"`,
+    ``,
     `TOTAL=$((TOTAL+1))`,
-    `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null)`,
+    `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:$PROBE_PORT 2>/dev/null)`,
     `if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then`,
-    `  echo "nginx_serving:PASS (port ${port}, HTTP \${HTTP_CODE})"`,
+    `  DRIFT_NOTE=""`,
+    `  if [ "$PROBE_PORT" != "${port}" ]; then DRIFT_NOTE=", drift from ${port}"; fi`,
+    `  echo "nginx_serving:PASS (port $PROBE_PORT, HTTP \${HTTP_CODE}\${DRIFT_NOTE})"`,
     `  PASS=$((PASS+1))`,
     `else`,
-    `  echo "nginx_serving:FAIL (port ${port}, no HTTP response)"`,
+    `  echo "nginx_serving:FAIL (port $PROBE_PORT, no HTTP response)"`,
     `fi`,
     ``,
     `TOTAL=$((TOTAL+1))`,
@@ -1098,7 +1138,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `FINGERPRINT_FILE="${outputPath}/.deploy_fingerprint"`,
     `FINGERPRINT_EXPECTED=$(cat "$FINGERPRINT_FILE" 2>/dev/null)`,
     `if [ -n "$FINGERPRINT_EXPECTED" ]; then`,
-    `  FINGERPRINT_ACTUAL=$(curl -s http://localhost:${port}/.deploy_fingerprint 2>/dev/null)`,
+    `  FINGERPRINT_ACTUAL=$(curl -s http://localhost:$PROBE_PORT/.deploy_fingerprint 2>/dev/null)`,
     `  if [ "$FINGERPRINT_EXPECTED" = "$FINGERPRINT_ACTUAL" ]; then`,
     `    echo "content_verified:PASS"`,
     `    PASS=$((PASS+1))`,
@@ -1153,7 +1193,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `FIRST_ID=""`,
     `for CAND in $TUNNEL_IDS; do`,
     `  if [ -z "$FIRST_ID" ]; then FIRST_ID="$CAND"; fi`,
-    `  CAND_URL="https://\${CAND}-${port}.${DEVBRIDGE_TUNNEL_DOMAIN}"`,
+    `  CAND_URL="https://\${CAND}-$PROBE_PORT.${DEVBRIDGE_TUNNEL_DOMAIN}"`,
     `  if probe_tunnel "$CAND_URL"; then`,
     `    SELECTED_URL="$CAND_URL"`,
     `    break`,
@@ -1164,7 +1204,9 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `  echo "tunnel_url_accessible:PASS ($SELECTED_URL)"`,
     `  PASS=$((PASS+1))`,
     `elif [ -n "$FIRST_ID" ]; then`,
-    `  echo "tunnel_url_accessible:FAIL (https://\${FIRST_ID}-${port}.${DEVBRIDGE_TUNNEL_DOMAIN} -> $PROBE_FAIL_REASON)"`,
+    `  DRIFT_NOTE=""`,
+    `  if [ "$PROBE_PORT" != "${port}" ]; then DRIFT_NOTE=", nginx listens on $PROBE_PORT instead of ${port}"; fi`,
+    `  echo "tunnel_url_accessible:FAIL (https://\${FIRST_ID}-$PROBE_PORT.${DEVBRIDGE_TUNNEL_DOMAIN} -> $PROBE_FAIL_REASON\${DRIFT_NOTE})"`,
     `else`,
     `  echo "tunnel_url_accessible:FAIL (no tunnel)"`,
     `fi`,
@@ -1242,6 +1284,26 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
   const tunnelMatch = cleanStdout.match(TUNNEL_URL_PATTERN);
   const complete = /VERDICT:COMPLETE/.test(cleanStdout);
 
+  // Port drift (#981): deploy_check probes nginx on its ACTUAL listen port (the
+  // caller-supplied `port` may be the pre-drift value after deploy_nginx
+  // auto-incremented). Surface the drift explicitly so agents stop retrying the
+  // wrong port and rebind the tunnel to the right one.
+  const listenPortMatch = cleanStdout.match(/^NGINX_LISTEN_PORT:(\d+|unknown)$/m);
+  const nginxListenPort =
+    listenPortMatch && listenPortMatch[1] !== 'unknown' ? parseInt(listenPortMatch[1], 10) : undefined;
+  const driftMatch = cleanStdout.match(/^PORT_DRIFT:(?:none|unknown|(\d+)->(\d+))$/m);
+  const driftFrom = driftMatch && driftMatch[1] ? parseInt(driftMatch[1], 10) : undefined;
+  const driftTo = driftMatch && driftMatch[2] ? parseInt(driftMatch[2], 10) : undefined;
+  const portDrift =
+    driftFrom !== undefined && driftTo !== undefined && driftFrom !== driftTo
+      ? {
+          requested: driftFrom,
+          actual: driftTo,
+          message: `nginx listens on port ${driftTo}, not ${driftFrom} — checks probed port ${driftTo}; rebind the DevBridge tunnel to port ${driftTo}`,
+        }
+      : undefined;
+  const effectivePort = portDrift ? portDrift.actual : port;
+
   const missing = [];
   if (!complete) {
     for (const [key, val] of Object.entries(checks)) {
@@ -1277,8 +1339,11 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
     missingSteps: missing.length > 0 ? missing.join(', ') : undefined,
     parseWarning,
     rawOutput: parseWarning ? String(stdout || '').trim() : undefined,
+    requestedPort: port,
+    nginxListenPort,
+    portDrift,
     nextStep: nextStepValue,
-    remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(port) : undefined,
+    remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(effectivePort) : undefined,
   };
 }
 
