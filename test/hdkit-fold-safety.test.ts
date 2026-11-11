@@ -187,7 +187,7 @@ test('a BigInt retryAfter through the handler business fold rides absent; the en
   }, 'the business envelope JSON-serializes through the real route');
 });
 
-test('a BigInt remediation through the exhaustion fold rides absent; the envelope serializes', async () => {
+test('a BigInt remediation at the exhaustion fold mints the designed transient guidance through the real route', async () => {
   const out = await foldViaHandler(
     Object.assign(new Error('exhausted'), {
       gatewayRetryExhausted: true,
@@ -197,7 +197,12 @@ test('a BigInt remediation through the exhaustion fold rides absent; the envelop
     }),
   );
   assert.equal(out.ok, false);
-  assert.equal(out.remediation, undefined, 'the hostile remediation is absent');
+  const remediation = out.remediation as { hint?: string } | undefined;
+  assert.match(
+    String(remediation?.hint ?? ''),
+    /连续遭遇网关 502\/504 超时/,
+    'the hostile remediation is replaced by the designed transient guidance — never dropped (round 17)',
+  );
   assert.equal(out.connectRetries, 2);
   assert.doesNotThrow(() => {
     JSON.stringify(out);
@@ -229,4 +234,125 @@ test('the body-read wrap survives a hostile response: a throwing text() plus a t
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+// ── 判别器在站点 3/4 与 resp 接缝的收口（round 17）──
+// toJSON 上下文判别器同样在 handler 业务折叠与 voucher 信封通关；resp 接缝
+// 的五个裸读（非 JSON 两读、!ok、无码三元、429 双 headers.get）在各自分支
+// 里把设计信封换成 TypeError。
+
+test('a toJSON context discriminator never rides the handler business or voucher envelopes', async () => {
+  const hostile = () => ({
+    hint: 'hostile hint',
+    steps: ['hostile step'],
+    toJSON(key: string) {
+      return key === '' ? { hint: 'safe view', steps: [] } : { hint: 1n, steps: [] };
+    },
+  });
+  // 站点 3：handler 业务折叠——判别器被拒，配额码照骑，信封可序列化
+  const out = await foldViaHandler(
+    Object.assign(new Error('x'), {
+      code: 'HDKIT_QUOTA_EXCEEDED',
+      remediation: hostile(),
+    }),
+  );
+  assert.equal(out.code, 'HDKIT_QUOTA_EXCEEDED');
+  assert.equal(
+    out.remediation,
+    undefined,
+    'the discriminator is rejected — no remediation rides the business envelope',
+  );
+  assert.doesNotThrow(() => {
+    JSON.stringify(out, null, 2);
+  }, 'site 3: the boundary-form serialization succeeds');
+  // 站点 4：voucher 非门禁信封——判别器被拒，claimed:false 照骑
+  credentialCarrier = Object.assign(new Error('x'), { remediation: hostile() });
+  try {
+    const envelope = (await hdkitVoucherStatus()) as Record<string, unknown>;
+    assert.equal(envelope.claimed, false);
+    assert.equal(envelope.remediation, undefined, 'the discriminator is rejected at the voucher envelope');
+    assert.doesNotThrow(() => {
+      JSON.stringify(envelope, null, 2);
+    }, 'site 4: the boundary-form serialization succeeds');
+  } finally {
+    credentialCarrier = undefined;
+  }
+});
+
+// 敌意响应对象的共用跑法（round 17 去重）：装 fetch 桩 → 跑真实连接 → 收
+// 拒绝 → 复原。返回浮出的错误（测试自身的失败传 null）
+async function rejectViaHostileResponse(response: unknown): Promise<Error> {
+  const originalFetch = global.fetch;
+  global.fetch = (async () => response) as typeof global.fetch;
+  try {
+    const outcome = await hdkitConnectWithRetry({}).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    assert.ok(outcome, 'expected rejection from the hostile response');
+    return outcome as Error;
+  } finally {
+    global.fetch = originalFetch;
+  }
+}
+
+test('the non-JSON branch survives a throwing status getter: the designed wrap carries, no TypeError', async () => {
+  const err = (await rejectViaHostileResponse({
+    get status(): number {
+      throw new TypeError('status getter detonates');
+    },
+    text: async () => '<html>not json</html>',
+  })) as Error & { bodyUnreadable?: boolean; status?: unknown };
+  assert.ok(!(err instanceof TypeError), 'the non-JSON branch never detonates on a hostile status read');
+  assert.match(err.message, /non-JSON/, 'the designed non-JSON wrap carries');
+  assert.equal(err.bodyUnreadable, true, 'the wrap marker rides');
+  assert.equal(err.status, undefined, 'a refusing status read attaches nothing');
+});
+
+test('the error branch survives a throwing ok getter: the designed error envelope carries', async () => {
+  const err = (await rejectViaHostileResponse({
+    status: 500,
+    get ok(): boolean {
+      throw new TypeError('ok getter detonates');
+    },
+    text: async () => JSON.stringify({ code: 'HDKIT_INTERNAL', message: 'server error' }),
+  })) as Error & { code?: string; status?: unknown };
+  assert.ok(!(err instanceof TypeError), 'the error branch never detonates on a hostile ok read');
+  assert.equal(err.code, 'HDKIT_INTERNAL', 'the server code rides');
+  assert.equal(err.status, 500, 'the honest status attaches');
+});
+
+test('the codeless ternary survives a throwing status getter: no manufactured undefined literal', async () => {
+  const err = await rejectViaHostileResponse({
+    get status(): number {
+      throw new TypeError('status getter detonates');
+    },
+    ok: false,
+    text: async () => JSON.stringify({ message: 'gateway busy' }),
+  });
+  assert.ok(!(err instanceof TypeError), 'the ternary never detonates on a hostile status read');
+  assert.equal(
+    (err as { code?: unknown }).code,
+    undefined,
+    'no server code, no manufacture — never the literal "HTTP_undefined"',
+  );
+  assert.notEqual(err.message, 'HTTP_undefined: gateway busy');
+  assert.match(err.message, /gateway busy/);
+});
+
+test('the 429 quota branch survives a throwing headers.get: the quota envelope carries, retryAfter absent', async () => {
+  const err = (await rejectViaHostileResponse({
+    status: 429,
+    ok: false,
+    headers: {
+      get(name: string): string {
+        throw new TypeError('headers.get detonates');
+      },
+    },
+    text: async () => JSON.stringify({ code: 'HDKIT_QUOTA_EXCEEDED', message: 'quota full' }),
+  })) as Error & { code?: string; retryAfter?: unknown; remediation?: { hint?: string } };
+  assert.ok(!(err instanceof TypeError), 'the quota branch never detonates on a hostile header read');
+  assert.equal(err.code, 'HDKIT_QUOTA_EXCEEDED', 'the quota code rides');
+  assert.equal(err.retryAfter, undefined, 'a refusing header read attaches nothing');
+  assert.match(err.remediation?.hint ?? '', /配额已满/, 'the quota remediation still rides');
 });

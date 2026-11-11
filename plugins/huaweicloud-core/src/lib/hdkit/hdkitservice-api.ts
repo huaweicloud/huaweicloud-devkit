@@ -50,6 +50,35 @@ function getHdkitBaseUrl(): string {
 // 抛出错误——空白/纯不可见原因落设计文案，真文本原样透传；原对象（含传输
 // 层自带的 code 属性，如 AbortError DOMException 的数值 20）不透传；
 // bodyUnreadable 标记供门禁折叠区分传输形态与服务端话术。
+// resp 接缝的安全读（round 17）：敌意响应对象的 status/ok/headers.get 都
+// 是 getter——裸读在各分支里把设计信封换成 TypeError。三读全部带卫队与
+// 窄化：status 只在数字时携带，ok 只在真布尔时按真处理（缺读按非 ok——
+// 不可确认的成功不是成功），Retry-After 只在头读返回字符串时携带
+function safeRespStatus(resp: unknown): number | undefined {
+  const status = safeReadField(resp, 'status');
+  return typeof status === 'number' ? status : undefined;
+}
+
+function safeRespOk(resp: unknown): boolean {
+  return safeReadField(resp, 'ok') === true;
+}
+
+function safeRetryAfterHeader(resp: unknown): string | undefined {
+  try {
+    const headers = safeReadField(resp, 'headers');
+    if (headers !== null && typeof headers === 'object') {
+      const read = safeReadField(headers, 'get');
+      if (typeof read === 'function') {
+        const value = (read as (name: string) => unknown).call(headers, 'Retry-After');
+        return typeof value === 'string' ? value : undefined;
+      }
+    }
+  } catch {
+    // 敌意头对象按缺失
+  }
+  return undefined;
+}
+
 function transportReason(error: unknown, fallback: string): Error {
   // 来因形态不可信（round 15）：instanceof 在撤销代理上抛（[[GetPrototypeOf]]
   // 陷阱），message 读在抛出型 getter 上抛——包装口全部的意义就是不信任来因。
@@ -130,8 +159,8 @@ async function hdkitRequest(
     // 状态读过安全卫队（round 16）：text() 拒绝 + 敌意 status getter 不得
     // 在包装口自己的 catch 里引爆——无状态即无网关信号（不重试），标记照带
     const wrapped = transportReason(error, 'hdkitservice response body read aborted');
-    const status = safeReadField(resp, 'status');
-    if (typeof status === 'number') Object.assign(wrapped, { status });
+    const status = safeRespStatus(resp);
+    if (status !== undefined) Object.assign(wrapped, { status });
     throw wrapped;
   }
   let data: Record<string, unknown> | unknown[];
@@ -148,20 +177,27 @@ async function hdkitRequest(
     // 先按 UTF-16 单元截头部再按码点截断（round 11）：[...text] 会物化整个
     // 响应体（40MB 页面实测 1.07GB 堆），400 单元保证覆盖 200 码点
     const snippet = cleanMessage([...text.slice(0, 400)].slice(0, 200).join(''));
+    // 状态过安全读（round 17）：敌意 status getter 不得在本分支引爆——
+    // 缺读渲染"未知状态"，status 仅数字时携带
+    const nonJsonStatus = safeRespStatus(resp);
     throw Object.assign(
-      new Error(`hdkitservice returned non-JSON (status ${resp.status})${snippet ? `: ${snippet}` : ''}`),
-      { status: resp.status, bodyUnreadable: true },
+      new Error(`hdkitservice returned non-JSON (status ${nonJsonStatus ?? '未知'})${snippet ? `: ${snippet}` : ''}`),
+      { ...(nonJsonStatus !== undefined ? { status: nonJsonStatus } : {}), bodyUnreadable: true },
     );
   }
 
-  if (!resp.ok) {
+  if (!safeRespOk(resp)) {
     const rec = asRecord(data);
     const rawCode = rec.code;
     // 码字段与消息/版本字段同过清洗口（round 7——此前唯一未窄化的边界读）：
     // 纯空白/Cf 码视同缺失，409 走无码门禁折叠，其余状态照旧伪造 HTTP_x；
     // 409 且无码/门禁码即门禁，带其他服务端码的 409 按其自身码处理
     const serverCode = typeof rawCode === 'string' ? cleanMessage(rawCode) : '';
-    const code = serverCode || (resp.status === 409 ? undefined : `HTTP_${resp.status}`);
+    // 状态读过卫队（round 17）：缺读不制造 "HTTP_undefined" 伪码——无状态即
+    // 无码，信封裸 message 兜底；409 语义照旧
+    const respStatus = safeRespStatus(resp);
+    const code =
+      serverCode || (respStatus === 409 ? undefined : respStatus !== undefined ? `HTTP_${respStatus}` : undefined);
     const trace = rec.traceId ? ` [trace: ${asText(rec.traceId)}]` : '';
     // 消息构建口（round 4 + round 5）：空白与纯不可见字符（零宽空格等
     // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'
@@ -169,7 +205,7 @@ async function hdkitRequest(
     const message = cleanMessage(asString(rec.message)) || 'hdkitservice error';
     let err = new Error(code ? `${code}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
     err.code = code;
-    err.status = resp.status;
+    if (respStatus !== undefined) err.status = respStatus;
     err.traceId = rec.traceId;
     if (canonCode(code) === 'HDKIT_CRED_INVALID') {
       err.remediation = {
@@ -185,7 +221,7 @@ async function hdkitRequest(
     // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
     // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
     if (canonCode(code) === 'HDKIT_QUOTA_EXCEEDED') {
-      err.retryAfter = resp.headers.get('Retry-After') || undefined;
+      err.retryAfter = safeRetryAfterHeader(resp) || undefined;
       err.remediation = {
         hint: '沙箱并发配额已满（每账号最多 5 台、每类型 1 台），重试无效：',
         steps: [
@@ -196,7 +232,7 @@ async function hdkitRequest(
       };
     }
     if (canonCode(code) === 'HDKIT_CAPACITY_INSUFFICIENT') {
-      err.retryAfter = resp.headers.get('Retry-After') || undefined;
+      err.retryAfter = safeRetryAfterHeader(resp) || undefined;
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）。
       // cleanMessage 窄化（round 5）：undefined/空白/纯不可见字符均不覆盖——
       // 保留构建口的代码前缀兜底
@@ -353,9 +389,10 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   if (isVersionGateError(error)) {
     return { claimed: false, ...gateFoldPayload(error) };
   }
-  // 非门禁信封的字段读全过安全卫队与窄化（round 15）：抛出型 getter/撤销
-  // 代理按缺失，缺失的消息走 unavailable 文案；remediation 窄到对象（null
-  // 除外），非对象不骑信封（JSON 序列化同口径）
+  // 非门禁信封的字段读全过安全卫队与窄化（round 15 建、round 16 升深验）：
+  // 抛出型 getter/撤销代理按缺失，缺失的消息走 unavailable 文案；remediation
+  // 经 serializableRemediation 深验（嵌套上下文 + 快照往返）——非对象、嵌套
+  // BigInt、循环引用、判别器、有状态换值一并不骑信封
   const rawCode = safeReadField(error, 'code');
   const rawClientVersion = safeReadField(error, 'clientVersion');
   const rawMinVersion = safeReadField(error, 'minVersion');

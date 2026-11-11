@@ -2278,7 +2278,6 @@ test('a non-object remediation through the gate fold falls to the minted copy; t
 
 test('the exhaustion fold narrows every field: a BigInt on remediation, code, connectRetries, or retryAfter never rides the envelope', () => {
   for (const [label, field] of [
-    ['remediation', 'remediation'],
     ['code', 'code'],
     ['connectRetries', 'connectRetries'],
     ['retryAfter', 'retryAfter'],
@@ -2299,6 +2298,8 @@ test('the exhaustion fold narrows every field: a BigInt on remediation, code, co
     }, `${label}: the envelope JSON-serializes`);
     assert.ok(serialized.includes('"ok":false'));
   }
+  // remediation 的敌意值走铸造（round 17/MUST 4）：不是丢弃——耗尽信封的
+  // 指引不得少于空载体的设计文案，见下方专钉
   // 干净控制：真值照常随信封
   const clean = Object.assign(new Error('exhausted'), {
     gatewayRetryExhausted: true,
@@ -2480,4 +2481,183 @@ test('a swallowing-set trap with a pre-existing key: the delete trades the intac
   );
   assert.equal(transientExhaustionResult(original), undefined, 'the fold never fires either way');
   assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone carries the decoration');
+});
+
+// ── 深验的序列化上下文、resp 接缝、回滚的验证中和（round 17）──
+// 深验在顶层 stringify——toJSON 拿到键 ''，而边界按键 'remediation' 嵌套序列
+// 化：无状态判别器在四个装填口全数通关并在真实 MCP 边界引爆。验证返回的是
+// 活引用——有状态 getter 验证后换值照样骑上。删除式回滚对非配置落盘的 plain
+// class 无效——回读验证 + 赋值中和才能守住折叠永不点燃。
+
+test('a toJSON context discriminator fails every envelope site: the gate verifies in the nested form', () => {
+  const hostile = () => ({
+    hint: 'hostile hint',
+    steps: ['hostile step'],
+    toJSON(key: string) {
+      return key === '' ? { hint: 'safe view for the gate', steps: [] } : { hint: 1n, steps: [] };
+    },
+  });
+  // 站点 1：门禁折叠——判别器被拒，铸造的未知版本引导随信封
+  const gateCarrier = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    remediation: hostile(),
+  });
+  const gate = versionGateResult(gateCarrier)!;
+  assert.match(
+    String((gate.remediation as { hint?: string }).hint ?? ''),
+    /当前 未知.*最新版/,
+    'the discriminator never rides — the minted copy does',
+  );
+  assert.doesNotThrow(() => {
+    JSON.stringify(gate, null, 2);
+  }, 'site 1: the boundary-form serialization succeeds');
+  // 站点 2：耗尽折叠——判别器被拒，设计的瞬时引导随信封（MUST 4）
+  const exhaustedCarrier = Object.assign(new Error('exhausted'), {
+    gatewayRetryExhausted: true,
+    connectRetries: 2,
+    remediation: hostile(),
+  });
+  const exhausted = transientExhaustionResult(exhaustedCarrier)!;
+  assert.match(
+    String((exhausted.remediation as { hint?: string }).hint ?? ''),
+    /连续遭遇网关 502\/504 超时/,
+    'site 2: the designed transient guidance replaces the discriminator',
+  );
+  assert.doesNotThrow(() => {
+    JSON.stringify(exhausted, null, 2);
+  }, 'site 2: the boundary-form serialization succeeds');
+});
+
+test('the deep gate returns a snapshot, not the live reference: stateful getters cannot breach', () => {
+  // 有状态 getter：验证读数（第一次）良性，之后的读数炸——活引用骑上边界
+  // 即引爆；快照往返后信封搭载的是被验证过的字节。第一次读必须完全可序列
+  // 化（否则是"拒绝"路径而非"换值"路径——那是另一个钉覆盖的类）
+  let reads = 0;
+  const stateful = {
+    get hint() {
+      reads += 1;
+      return reads <= 1 ? 'first-read benign' : 1n;
+    },
+    steps: ['s'],
+  };
+  const carrier = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    remediation: stateful,
+  });
+  const fold = versionGateResult(carrier)!;
+  const remediation = fold.remediation as { hint?: string; steps?: string[] };
+  assert.equal(remediation.hint, 'first-read benign', 'the snapshot carries the verified view');
+  assert.doesNotThrow(() => {
+    JSON.stringify(fold, null, 2);
+  }, 'the stateful remediation cannot breach the boundary — the envelope rides the snapshot');
+  // 信封搭载的必须是纯数据快照，不是原对象（原对象后续读数炸也不影响信封）
+  assert.notEqual(fold.remediation, stateful, 'the riding remediation is a parsed snapshot, not the live object');
+  const exhaustedCarrier = Object.assign(new Error('exhausted'), {
+    gatewayRetryExhausted: true,
+    connectRetries: 1,
+    remediation: stateful,
+  });
+  const exhaustedFold = transientExhaustionResult(exhaustedCarrier)!;
+  assert.notEqual(exhaustedFold.remediation, stateful, 'the exhaustion envelope also rides the snapshot');
+  assert.doesNotThrow(() => {
+    JSON.stringify(exhaustedFold, null, 2);
+  });
+});
+
+test('an unserializable remediation at the exhaustion fold mints the designed transient guidance, never drops it', () => {
+  const carrier = Object.assign(new Error('exhausted'), {
+    gatewayRetryExhausted: true,
+    connectRetries: 2,
+    code: 'HDKIT_GATEWAY_TIMEOUT',
+    remediation: { hint: 'real', steps: [1n] },
+  });
+  const fold = transientExhaustionResult(carrier)!;
+  assert.equal(fold.ok, false);
+  assert.equal(fold.code, 'HDKIT_GATEWAY_TIMEOUT');
+  const remediation = fold.remediation as { hint?: string; steps?: string[] };
+  assert.match(
+    String(remediation.hint ?? ''),
+    /连续遭遇网关 502\/504 超时（瞬时故障，非沙箱创建失败）/,
+    'the hostile remediation is replaced by the designed transient guidance — never dropped',
+  );
+  assert.ok(Array.isArray(remediation.steps) && remediation.steps.length > 0, 'the designed steps ride');
+  assert.doesNotThrow(() => {
+    JSON.stringify(fold, null, 2);
+  });
+});
+
+// plain class：原型 setter 把 own 属性非配置落盘并封壳——无需 Proxy 即可让
+// 删除式回滚静默失败
+class SealOnWrite extends Error {
+  set gatewayRetryExhausted(value: unknown) {
+    Object.defineProperty(this, 'gatewayRetryExhausted', {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: false,
+    });
+    Object.seal(this);
+  }
+}
+
+class SealOnWriteClientVersion extends Error {
+  set clientVersion(value: unknown) {
+    Object.defineProperty(this, 'clientVersion', {
+      value,
+      writable: true,
+      enumerable: true,
+      configurable: false,
+    });
+    Object.seal(this);
+  }
+}
+
+test('a plain-class carrier whose marker lands non-configurable never folds the discarded original', () => {
+  const original = new SealOnWrite('the real diagnosis') as unknown as HostileTarget;
+  Object.assign(original, { code: 20 });
+  const out = decorateExhaustedConnect(original, 2);
+  assert.notEqual(out, original, 'the refusing carrier falls to the clone');
+  assert.equal(
+    transientExhaustionResult(original),
+    undefined,
+    'the fold never fires on the discarded original — the marker is neutralized after the failed delete',
+  );
+  assert.equal(
+    (original as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
+    undefined,
+    'the non-removable marker is falsified in place',
+  );
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone carries the decoration');
+  assert.equal(transientExhaustionResult(out)?.ok, false, 'the fold fires on the clone');
+});
+
+test('applyVersionGate neutralizes its half decoration on a plain-class discarded original', () => {
+  const original = new SealOnWriteClientVersion('gate') as unknown as HostileTarget;
+  Object.assign(original, { code: 'HDKIT_VERSION_TOO_OLD' });
+  const out = applyVersionGate(original, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.notEqual(out, original, 'the refusing carrier falls to the clone');
+  assert.equal(
+    (original as { clientVersion?: unknown }).clientVersion,
+    undefined,
+    'the non-removable half decoration is falsified in place',
+  );
+  assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0', 'the clone carries the payload');
+});
+
+test('the descriptor-restore arm restores a pre-existing own property by its descriptor', () => {
+  // 预存 own connectRetries（有描述符）+ code 拒写：回滚走 defineProperty 臂
+  const carrier = new Error('the real diagnosis') as unknown as HostileTarget;
+  Object.assign(carrier, { code: 20, connectRetries: 1 });
+  Object.defineProperty(carrier, 'code', { get: () => 20, configurable: false });
+  const out = decorateExhaustedConnect(carrier, 2);
+  assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  const desc = Object.getOwnPropertyDescriptor(carrier, 'connectRetries');
+  assert.equal((carrier as { connectRetries?: unknown }).connectRetries, 1, 'the pre-write value returns');
+  assert.ok(
+    desc && desc.enumerable && desc.configurable,
+    'the descriptor traits restore through the defineProperty arm',
+  );
+  assert.equal('gatewayRetryExhausted' in carrier, false, 'the applied marker deletes cleanly (no descriptor)');
+  assert.equal(transientExhaustionResult(carrier), undefined, 'the fold never fires on the discarded original');
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
 });

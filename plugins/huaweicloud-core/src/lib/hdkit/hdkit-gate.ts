@@ -310,18 +310,24 @@ export function canonCode(code: unknown): string {
   return typeof code === 'string' ? blankCharsRemoved(code) : '';
 }
 
-// remediation 的深序列化验证（round 16）：窄化只看第一层——嵌套 BigInt 或
-// 循环引用在 MCP 序列化边界照样炸。装填口统一深验：对象且 JSON.stringify
-// 成功才随信封，其余（非对象、序列化炸）按缺失——各出口的设计引导兜底。
-// 折叠是错误路径上的一次调用，深验的 stringify 成本可忽略
+// remediation 的深序列化验证（round 16 建、round 17 修上下文与快照）：
+// 窄化只看第一层——嵌套 BigInt/循环引用在 MCP 序列化边界照样炸，故按边界
+// 形态深验。round 17：① 验证必须在嵌套上下文——边界按信封键 'remediation'
+// 序列化，JSON.stringify 把属性键传给 toJSON，顶层验证时 toJSON 收到 ''——
+// 无状态判别器（toJSON 看 key 分叉）可在顶层过关并在真实边界引爆（实测经
+// 真实 registerTool 链端到端复现）；② 信封搭载的必须是验证过的字节，不是
+// 活引用——有状态 getter（验证读数良性、后续读数炸）无从换值。往返快照
+// 一次解决两类：stringify({ remediation: raw }) 即边界形态，JSON.parse 取
+// 回纯数据快照。折叠是错误路径上的一次调用，往返成本可忽略
 export function serializableRemediation(raw: unknown): { hint: string; steps: string[] } | undefined {
   if (raw === null || typeof raw !== 'object') return undefined;
   try {
-    JSON.stringify(raw);
+    const verified = JSON.stringify({ remediation: raw });
+    const snapshot = JSON.parse(verified) as { remediation?: unknown };
+    return snapshot.remediation as { hint: string; steps: string[] };
   } catch {
     return undefined;
   }
-  return raw as { hint: string; steps: string[] };
 }
 
 // 伪造码家族判定（round 12）：规范拼写为 HTTP 加可选下划线加数字——下划线
@@ -360,7 +366,9 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
   // 抛出按无描述符处理（删除兜底）。残留边界：连 gOPD 陷阱一并撒谎的代理
   // 能骗过任何客户端方案——导出面防御的记录边界
   const snapshots = new Map<string, PropertyDescriptor | undefined>();
+  const writtenValues = new Map<string | symbol, unknown>();
   for (const [key, value] of fields) {
+    writtenValues.set(key, value);
     let prior: PropertyDescriptor | undefined;
     try {
       prior = Object.getOwnPropertyDescriptor(target, key);
@@ -380,10 +388,6 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
         // 两条写入路径都抛出——写入可能已物理落地（先转发后抛的陷阱，
         // round 15），拒绝由回滚的尽力删除兜底，走克隆分支
       }
-      // 吞写陷阱（round 16 注释如实化）：写入被吞时回读读到目标真值，同样
-      // 落到这里——被拒键的删除会摧毁目标的完好原值（如预存 code 20）。
-      // 该交换成立：折叠以标记为触发，标记不落地即不折叠，删除后标记更不
-      // 存在——原值风险换残留风险，载体本被丢弃
     }
     // 写后回读（round 13）：陷阱代理的 [[Set]] 可既不抛也不落——回读不等
     // 即视为拒绝，走克隆分支；回读本身抛出同样视为未落。回读也探测先转发
@@ -399,10 +403,11 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
     if (!landed) {
       // 被拒键的回滚绝不信敌意视图（round 15）：`wrote` 布尔不可信——陷阱可
       // 先转发后抛（写入物理落地而 wrote=false，round-14 的 wrote 门把被拒键
-      // 漏出清单）。被拒键一律尽力删除（round 16 注释如实化：写入未落地时
-      // 删除并非空操作——吞写陷阱下它会摧毁目标的完好原值，原值风险换残留
-      // 风险，折叠以标记为触发、两端都不折叠；删除被拒亦尽力而为——载体
-      // 本就被丢弃；冻结/不可配置键的删除抛出即被吞）
+      // 漏出清单）。被拒键一律尽力删除（round 16 注释如实化，round 17 移至
+      // 其真实路径：吞写陷阱在此落点——写入被吞、回读读回目标真值，删除并
+      // 非空操作，会摧毁目标的完好原值（如预存 code 20）；原值风险换残留风
+      // 险，折叠以标记为触发、两端都不折叠，载体本被丢弃；删除被拒亦尽力而
+      // 为——冻结/不可配置键的删除抛出即被吞）
       try {
         delete target[key];
       } catch {
@@ -421,11 +426,52 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
           // 还原亦被拒（被丢弃的原对象，尽力而为）
         }
       }
+      // 回滚验证与中和（round 17）：删除/恢复都可能被拒或被谎——不可配置
+      // 落盘（plain class 的原型 setter 落 own 属性后封壳，删除与恢复双双
+      // 静默失败）、撒谎 deleteProperty（报成功不删除）。逐键回读：装饰值
+      // 仍在则按赋值中和（有快照恢复快照值，否则 undefined——标记值被中和
+      // 即折叠永不点燃）；赋值亦被拒（全写路径封死的载体）是记录边界——
+      // 无任何客户端方案能从只读落盘里移除装饰，载体本被丢弃，台账记录
+      for (const done of [...applied, key]) {
+        const written = writtenValues.get(done);
+        let current: unknown;
+        try {
+          current = target[done];
+        } catch {
+          continue;
+        }
+        if (current !== written) continue;
+        const snap = snapshots.get(done);
+        const neutral: unknown = snap && snap.value !== undefined ? snap.value : undefined;
+        try {
+          target[done] = neutral;
+        } catch {
+          // 全写路径封死——记录边界（见注释）
+        }
+      }
       return false;
     }
     applied.push(key);
   }
   return true;
+}
+
+// 耗尽引导的统一铸造（round 17）：装饰两处（就地/纯载体）与折叠口共三处
+// 铸造同一文案——深验拒绝敌意 remediation 时，折叠口绝不丢弃（信封指引不
+// 得少于空载体；round-16 的丢弃行为按 round-17 MUST 4 修为铸造）。次数已知
+// 时文案与装饰逐字一致；无次数（导出面裸载体）省略次数短句
+export function designedTransientRemediation(retries: number | undefined): {
+  hint: string;
+  steps: string[];
+} {
+  return {
+    hint: `${retries !== undefined ? `连接已自动重试 ${retries} 次仍失败，` : ''}连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,
+    steps: [
+      '服务端可能已创建/启动沙箱实例——再次 connect 同池实例会自动复用，通常直接成功',
+      '稍后重试 connect；网关超时通常在数分钟内自愈',
+      '多次重试仍失败时，检查本地网络或代理配置后再试',
+    ],
+  };
 }
 
 /**
@@ -493,17 +539,7 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
     fields.push(['message', designedCopy]);
   }
   if (!rawRemediation) {
-    fields.push([
-      'remediation',
-      {
-        hint: `连接已自动重试 ${retries} 次仍失败，连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,
-        steps: [
-          '服务端可能已创建/启动沙箱实例——再次 connect 同池实例会自动复用，通常直接成功',
-          '稍后重试 connect；网关超时通常在数分钟内自愈',
-          '多次重试仍失败时，检查本地网络或代理配置后再试',
-        ],
-      },
-    ]);
+    fields.push(['remediation', designedTransientRemediation(retries)]);
   }
   const decorateTarget = err as unknown as Record<string, unknown>;
   if (decorateInPlace(decorateTarget, fields)) return error;
@@ -517,17 +553,7 @@ function decoratePlainCarrier(retries: number): Error {
     ['gatewayRetryExhausted', true],
     ['connectRetries', retries],
     ['code', 'HDKIT_GATEWAY_TIMEOUT'],
-    [
-      'remediation',
-      {
-        hint: `连接已自动重试 ${retries} 次仍失败，连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,
-        steps: [
-          '服务端可能已创建/启动沙箱实例——再次 connect 同池实例会自动复用，通常直接成功',
-          '稍后重试 connect；网关超时通常在数分钟内自愈',
-          '多次重试仍失败时，检查本地网络或代理配置后再试',
-        ],
-      },
-    ],
+    ['remediation', designedTransientRemediation(retries)],
   ];
   decorateInPlace(plain as unknown as Record<string, unknown>, fields);
   return plain;
@@ -568,11 +594,14 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
   const rawRetryAfter = safeReadField(error, 'retryAfter');
   const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
-  const remediation = serializableRemediation(safeReadField(error, 'remediation'));
   const rawCode = safeReadField(error, 'code');
   const code = typeof rawCode === 'string' ? rawCode : undefined;
   const rawRetries = safeReadField(error, 'connectRetries');
   const connectRetries = typeof rawRetries === 'number' ? rawRetries : undefined;
+  // remediation 深验拒绝即铸造（round 17 / MUST 4）：耗尽信封的指引不得少于
+  // 空载体——丢弃敌意值换来"零引导"是倒退；设计瞬时文案统一铸造
+  const remediation =
+    serializableRemediation(safeReadField(error, 'remediation')) ?? designedTransientRemediation(connectRetries);
   return {
     ok: false,
     ...(code !== undefined ? { code } : {}),
@@ -581,6 +610,6 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     ...(connectRetries !== undefined ? { connectRetries } : {}),
     ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
     ...(retryAfter ? { retryAfter } : {}),
-    ...(remediation ? { remediation } : {}),
+    remediation,
   };
 }
