@@ -585,8 +585,8 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   assert.match(
     exposeDesc,
-    /The auto-create relay goes through hdkitservice and inherits its 409 HDKIT_VERSION_TOO_OLD version gate: an outdated plugin fails auto-create the same way it fails connect, and the expose failure carries error_code HDKIT_VERSION_TOO_OLD with clientVersion, minVersion, and the upgrade remediation under gateRemediation — upgrade the plugin instead of creating a key by hand\./,
-    'the expose description must teach the relay gate fold with its taught field name gateRemediation',
+    /The auto-create relay goes through hdkitservice and inherits its 409 HDKIT_VERSION_TOO_OLD version gate: an outdated plugin fails auto-create the same way it fails connect, and the expose failure carries error_code HDKIT_VERSION_TOO_OLD with the upgrade remediation under gateRemediation, and clientVersion and minVersion when the service sends them — upgrade the plugin instead of creating a key by hand\./,
+    'the expose description must teach the relay gate fold with its taught field name gateRemediation and the versions as service-conditional',
   );
 
   const closeDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_close_session');
