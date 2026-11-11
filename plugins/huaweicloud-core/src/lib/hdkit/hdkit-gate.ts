@@ -158,13 +158,7 @@ const UPGRADE_STEPS = [
  * autoUpgrade 字段（其自动升级模块未移植）。空白字段值归一为缺失——hint 不留
  * 空位，兜底（未知/最新版）照常生效。
  */
-export function applyVersionGate(error: unknown, payload: VersionGatePayload): void {
-  const err = error as {
-    clientVersion?: string;
-    minVersion?: string;
-    message?: string;
-    remediation?: { hint: string; steps: string[] };
-  };
+export function applyVersionGate(error: unknown, payload: VersionGatePayload): Error {
   // round 6：版本字段与消息同过清洗口（cleanMessage）——纯不可见值视同缺失，
   // hint 不留不可见空位，兜底（未知/最新版）照常生效。
   // round 14：payload 读补齐 gateFoldPayload 的双卫队（round 12 回归类——
@@ -176,13 +170,23 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): v
   const clientVersion = typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
   const minVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
   const message = typeof rawMessage === 'string' ? cleanMessage(rawMessage) || undefined : undefined;
-  err.clientVersion = clientVersion;
-  err.minVersion = minVersion;
-  if (message) err.message = message;
-  err.remediation = {
-    hint: `插件版本过旧（当前 ${clientVersion || '未知'}，需升级至正式版 ${minVersion || '最新版'} 及以上）：`,
-    steps: [...UPGRADE_STEPS],
-  };
+  // 装填走 decorateInPlace 模式（round 15）：写口与读口同为门禁折叠的入口
+  // ——拒绝装饰的载体（冻结/不可配置 getter；请求层自建载体恒可写，仅导出
+  // 面可达）克隆后装填。返回值即生效载体——调用方抛它
+  const fields: Array<[string, unknown]> = [
+    ['clientVersion', clientVersion],
+    ['minVersion', minVersion],
+    [
+      'remediation',
+      {
+        hint: `插件版本过旧（当前 ${clientVersion || '未知'}，需升级至正式版 ${minVersion || '最新版'} 及以上）：`,
+        steps: [...UPGRADE_STEPS],
+      },
+    ],
+  ];
+  if (message) fields.push(['message', message]);
+  if (decorateInPlace(error as Record<string, unknown>, fields)) return error as Error;
+  return cloneCarrier(error as object, fields);
 }
 
 /**
@@ -234,7 +238,14 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const clientVersion =
       typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
     const minVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
-    const remediation = safeReadField(error, 'remediation') as { hint: string; steps: string[] } | undefined;
+    // remediation 窄化（round 15）：安全读只防抛出，原断言是编译期的——
+    // BigInt 等非对象值骑上信封即炸 JSON 序列化。窄到对象（null 除外），
+    // 其余回设计引导
+    const rawRemediation = safeReadField(error, 'remediation');
+    const remediation =
+      rawRemediation !== null && typeof rawRemediation === 'object'
+        ? (rawRemediation as { hint: string; steps: string[] })
+        : undefined;
     return {
       code: VERSION_GATE_CODE,
       message: versionGateMessage(error),
@@ -352,11 +363,13 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
         Object.defineProperty(target, key, { value, writable: true, configurable: true });
         wrote = true;
       } catch {
-        // 两条写入路径都被拒——未写即拒，走克隆分支
+        // 两条写入路径都抛出——写入可能已物理落地（先转发后抛的陷阱，
+        // round 15），拒绝由回滚的尽力删除兜底，走克隆分支
       }
     }
     // 写后回读（round 13）：陷阱代理的 [[Set]] 可既不抛也不落——回读不等
-    // 即视为拒绝，走克隆分支；回读本身抛出同样视为未落
+    // 即视为拒绝，走克隆分支；回读本身抛出同样视为未落。回读也探测先转发
+    // 后抛的陷阱（round 15）：写入落地而回读抛出 → 拒绝 → 被拒键删除
     let landed = false;
     if (wrote) {
       try {
@@ -366,10 +379,18 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       }
     }
     if (!landed) {
-      // 回滚清单并入被拒键（round 14）：写入可能已经落在转发 [[Set]] 的代理
-      // 目标上（[[Get]] 撒谎）——被丢弃的原对象不得带半截装饰
-      const rollbackKeys = wrote ? [...applied, key] : applied;
-      for (const done of rollbackKeys) {
+      // 被拒键的回滚绝不信敌意视图（round 15）：`wrote` 布尔不可信——陷阱可
+      // 先转发后抛（写入物理落地而 wrote=false，round-14 的 wrote 门把被拒键
+      // 漏出清单）；快照读同样不可信——撒谎的 has+get 让"恢复"变成种回谎言
+      // 或用谎言覆盖原码。被拒键一律尽力删除（写未落时空操作，删除被拒亦尽
+      // 力而为——载体本就被丢弃；冻结/不可配置键的删除抛出即被吞，原值不
+      // 动）。快照恢复只用于装饰自身装填并经回读验证过的 applied 键
+      try {
+        delete target[key];
+      } catch {
+        // 尽力而为
+      }
+      for (const done of applied) {
         const snap = snapshots.get(done)!;
         try {
           if (snap.had) target[done] = snap.value;

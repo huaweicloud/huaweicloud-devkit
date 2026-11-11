@@ -1,6 +1,13 @@
 import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
 import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../../lib/hdkit/hdkitservice-api.ts';
-import { canonCode, versionGateResult, transientExhaustionResult } from '../../lib/hdkit/hdkit-gate.ts';
+import {
+  canonCode,
+  cleanMessage,
+  safeMessageText,
+  safeReadField,
+  transientExhaustionResult,
+  versionGateResult,
+} from '../../lib/hdkit/hdkit-gate.ts';
 import type { HdkitError } from '../../lib/hdkit/hdkitservice-api.ts';
 import {
   validatePoolType,
@@ -62,19 +69,27 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     if (gate) return gate;
     const exhausted = transientExhaustionResult(err);
     if (exhausted) return exhausted;
+    // 业务折叠的字段读全过安全卫队与窄化（round 15）：抛出型 getter/撤销代理
+    // 按缺失——缺失的码不进业务分支，原错误原样抛出；remediation 窄到对象
+    // （null 除外），非对象不骑信封（JSON 序列化同口径）
+    const businessCode = canonCode(safeReadField(error, 'code'));
+    const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
     if (
-      canonCode(err.code) === 'HDKIT_QUOTA_EXCEEDED' ||
-      canonCode(err.code) === 'HDKIT_CAPACITY_INSUFFICIENT' ||
-      canonCode(err.code) === 'HDKIT_CRED_INVALID' ||
-      err.coreHoursExhausted
+      businessCode === 'HDKIT_QUOTA_EXCEEDED' ||
+      businessCode === 'HDKIT_CAPACITY_INSUFFICIENT' ||
+      businessCode === 'HDKIT_CRED_INVALID' ||
+      coreHoursExhausted
     ) {
+      const retryAfter = safeReadField(error, 'retryAfter');
+      const rawRemediation = safeReadField(error, 'remediation');
+      const remediation = rawRemediation !== null && typeof rawRemediation === 'object' ? rawRemediation : undefined;
       return {
         ok: false,
-        code: canonCode(err.code),
-        message: err.message,
-        ...(err.retryAfter !== undefined ? { retryAfter: err.retryAfter } : {}),
-        ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
-        ...(err.remediation ? { remediation: err.remediation } : {}),
+        code: businessCode,
+        message: cleanMessage(safeMessageText(error)),
+        ...(retryAfter !== undefined ? { retryAfter } : {}),
+        ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+        ...(remediation ? { remediation } : {}),
       };
     }
     throw error;

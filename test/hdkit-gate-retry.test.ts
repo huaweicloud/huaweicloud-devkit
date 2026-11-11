@@ -669,11 +669,14 @@ test('the deleted message-form fallback stays deleted (structure pin on the gate
   assert.doesNotMatch(source, /Gateway Time-out|Bad Gateway/, 'the message-form fallback must not return');
   assert.doesNotMatch(source, /non-JSON \\\(status/, 'the non-JSON message sniff must not return');
   assert.match(source, /TRANSIENT_STATUSES\.has\(status\)/, 'the verdict stays keyed on the returned status');
+  // 作用域钉（round 15）：函数体内收口——跨文件贪婪匹配会被文件后文的安全读
+  // 误命中，回退成裸读不红（审计变异证明）；裸读字面量同时直接钉死
   assert.match(
     source,
-    /isGatewayTransient[\s\S]*safeReadField\(error, 'status'\)/,
-    'the status read goes through the safe wrapper (round 14)',
+    /export function isGatewayTransient\(error: unknown\): boolean \{[^}]*safeReadField\(error, 'status'\)/,
+    'the status read goes through the safe wrapper, scoped to the function body',
   );
+  assert.doesNotMatch(source, /TRANSIENT_STATUSES\.has\(err\.status\)/, 'the bare status read must not return');
 });
 
 // ── 账号校验裁决码不参与重试（round 4）──
@@ -2074,4 +2077,182 @@ test('a lying readback rolls the refused key back on the discarded original', ()
   );
   const fold = transientExhaustionResult(out);
   assert.equal(fold?.ok, false, 'the fold fires on the clone');
+});
+
+// ── 回滚视图与装填写口（round 15）──
+// 回滚信两个输入都来自被拒键的同一敌意视图：`wrote` 布尔（先转发后抛的陷阱
+// 让写入物理落地而 wrote=false，被拒键漏出回滚清单）与快照读（撒谎的
+// has+get 让回滚"恢复"谎言——把标记种回原对象，或用谎言覆盖原码）。
+// applyVersionGate 的装填写裸写（读口 round 14 已卫队）——冻结/不可配置
+// getter 载体在导出面引爆。门禁折叠的 remediation 读只有编译期断言——
+// BigInt 一路骑上信封，JSON 序列化即炸。
+
+type HostileTarget = Error & Record<string | symbol, unknown>;
+
+test('the refused-key rollback never trusts the hostile view: write-then-throw, lying has, lying get', () => {
+  // A. 先转发后抛：写入物理落在目标上而 wrote=false——被拒键必须删除
+  {
+    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
+    const proxy = new Proxy(original, {
+      set(t: HostileTarget, k: string | symbol, v: unknown) {
+        t[k] = v;
+        throw new TypeError('set trap writes then throws');
+      },
+      defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
+        Object.defineProperty(t, k, d);
+        throw new TypeError('defineProperty trap writes then throws');
+      },
+    });
+    const out = decorateExhaustedConnect(proxy, 2);
+    assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
+    assert.equal(
+      (original as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted,
+      undefined,
+      'the physically-landed marker is deleted from the discarded original',
+    );
+    assert.equal((original as { code?: unknown }).code, 20, 'the unswapped transport code stays');
+    assert.equal(transientExhaustionResult(original), undefined, 'the fold never fires on the discarded original');
+  }
+  // B. 晚键先转发后抛：装饰码值物理落在目标上——被拒键删除，不残留装饰值
+  {
+    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
+    const proxy = new Proxy(original, {
+      set(t: HostileTarget, k: string | symbol, v: unknown) {
+        t[k] = v;
+        if (k === 'code') throw new TypeError('code trap writes then throws');
+        return true;
+      },
+      defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
+        Object.defineProperty(t, k, d);
+        if (k === 'code') throw new TypeError('code define trap writes then throws');
+        return true;
+      },
+    });
+    const out = decorateExhaustedConnect(proxy, 2);
+    assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
+    assert.equal(
+      (original as { code?: unknown }).code,
+      undefined,
+      'the planted decoration code is deleted from the discarded original',
+    );
+    assert.equal(
+      (original as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted,
+      undefined,
+      'the earlier applied fields roll back',
+    );
+  }
+  // C. 撒谎 has+get：快照喂给回滚谎言——被拒键绝不从快照恢复，一律删除
+  {
+    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
+    let gwSeenWrite = false;
+    const proxy = new Proxy(original, {
+      has(t: HostileTarget, k: string | symbol): boolean {
+        if (k === 'gatewayRetryExhausted') return true;
+        return Reflect.has(t, k);
+      },
+      get(t: HostileTarget, k: string | symbol): unknown {
+        if (k === 'gatewayRetryExhausted') return gwSeenWrite ? false : true;
+        return Reflect.get(t, k);
+      },
+      set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
+        const r = Reflect.set(t, k, v);
+        if (k === 'gatewayRetryExhausted') gwSeenWrite = true;
+        return r;
+      },
+    });
+    const out = decorateExhaustedConnect(proxy, 2);
+    assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
+    assert.equal(
+      (original as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted,
+      undefined,
+      'the lying snapshot never plants the marker through the rollback',
+    );
+    assert.equal((original as { code?: unknown }).code, 20);
+    assert.equal(transientExhaustionResult(original), undefined, 'the fold never fires on the discarded original');
+  }
+  // D. 预存键+撒谎 get：回滚绝不"恢复"谎言——尽力删除（真值已遭转发写覆盖，
+  //    载体本被丢弃，台账记录）
+  {
+    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
+    const proxy = new Proxy(original, {
+      get(t: HostileTarget, k: string | symbol): unknown {
+        if (k === 'code') return 'HTTP_502';
+        return Reflect.get(t, k);
+      },
+      set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
+        return Reflect.set(t, k, v);
+      },
+    });
+    const out = decorateExhaustedConnect(proxy, 2);
+    assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
+    assert.notEqual(
+      (original as { code?: unknown }).code,
+      'HTTP_502',
+      'the lied prior is never restored over the original',
+    );
+    assert.equal((original as { code?: unknown }).code, undefined, 'the refused key is best-effort deleted');
+    assert.equal((original as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+  }
+});
+
+test('applyVersionGate decorates refusing carriers through the clone; each folds with the designed remediation', () => {
+  // 冻结载体：两条写路都被拒——克隆装填，返回值即生效载体
+  const frozen = Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  Object.freeze(frozen);
+  let out: Error | undefined;
+  assert.doesNotThrow(() => {
+    out = applyVersionGate(frozen, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  }, 'a frozen carrier never detonates the fold entrance');
+  assert.ok(out instanceof Error, 'the effective carrier is an Error');
+  assert.notEqual(out, frozen, 'the refusing carrier is cloned');
+  assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+  assert.equal((out as { minVersion?: string }).minVersion, '2.0.0');
+  assert.match(String((out as { remediation?: { hint?: string } }).remediation?.hint ?? ''), /当前 2\.0\.0-next\.0/);
+  assert.equal(
+    (frozen as { clientVersion?: string }).clientVersion,
+    undefined,
+    'the frozen original stays undecorated',
+  );
+  // 不可配置 own getter：写入被拒——克隆兜底
+  const getterOnly = Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  Object.defineProperty(getterOnly, 'clientVersion', {
+    get() {
+      return '9.9.9';
+    },
+    configurable: false,
+  });
+  let out2: Error | undefined;
+  assert.doesNotThrow(() => {
+    out2 = applyVersionGate(getterOnly, { clientVersion: '2.0.0-next.0' });
+  }, 'a non-configurable own getter never detonates the fold entrance');
+  assert.notEqual(out2, getterOnly, 'the refusing carrier is cloned');
+  assert.equal(
+    (out2 as { clientVersion?: string }).clientVersion,
+    '2.0.0-next.0',
+    'the clone carries the payload version',
+  );
+  assert.match(String((out2 as { remediation?: { hint?: string } }).remediation?.hint ?? ''), /当前 2\.0\.0-next\.0/);
+  // 干净控制：可写载体就地装填，返回原对象
+  const plain = new Error('gate');
+  const out3 = applyVersionGate(plain, { clientVersion: '2.0.0-next.0' });
+  assert.equal(out3, plain, 'a writable carrier decorates in place');
+  assert.equal((plain as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+});
+
+test('a non-object remediation through the gate fold falls to the minted copy; the envelope serializes', () => {
+  const carrier = Object.assign(new Error('gate'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    remediation: 1n,
+  });
+  let out: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    out = versionGateResult(carrier);
+  }, 'a BigInt remediation never detonates the fold');
+  const remediation = (out?.remediation ?? {}) as { hint?: string };
+  assert.match(String(remediation.hint ?? ''), /当前 未知.*最新版/, 'the minted remediation fires');
+  let serialized = '';
+  assert.doesNotThrow(() => {
+    serialized = JSON.stringify(out);
+  }, 'the envelope JSON-serializes — no BigInt rides it');
+  assert.ok(serialized.includes('HDKIT_VERSION_TOO_OLD'));
 });

@@ -15,6 +15,8 @@ import {
   isGatewayTransient,
   isNonRetryableBusinessError,
   isVersionGateError,
+  safeMessageText,
+  safeReadField,
 } from './hdkit-gate.ts';
 import { asRecord } from '../as-record.ts';
 import { asString, asText } from '../as-text.ts';
@@ -48,9 +50,21 @@ function getHdkitBaseUrl(): string {
 // 层自带的 code 属性，如 AbortError DOMException 的数值 20）不透传；
 // bodyUnreadable 标记供门禁折叠区分传输形态与服务端话术。
 function transportReason(error: unknown, fallback: string): Error {
-  const cleaned =
-    error instanceof Error ? cleanMessage(error.message) : typeof error === 'string' ? cleanMessage(error) : '';
-  return Object.assign(new Error(cleaned || fallback), { bodyUnreadable: true });
+  // 来因形态不可信（round 15）：instanceof 在撤销代理上抛（[[GetPrototypeOf]]
+  // 陷阱），message 读在抛出型 getter 上抛——包装口全部的意义就是不信任来因。
+  // 原型检查与消息读都带防护，任一被拒按缺失（兜底文案）
+  let reason = '';
+  try {
+    if (error instanceof Error) {
+      const raw = (error as { message?: unknown }).message;
+      if (typeof raw === 'string') reason = raw;
+    } else if (typeof error === 'string') {
+      reason = error;
+    }
+  } catch {
+    reason = '';
+  }
+  return Object.assign(new Error(cleanMessage(reason) || fallback), { bodyUnreadable: true });
 }
 
 async function hdkitRequest(
@@ -149,7 +163,7 @@ async function hdkitRequest(
     // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'
     // 兜底在所有出口生效
     const message = cleanMessage(asString(rec.message)) || 'hdkitservice error';
-    const err = new Error(code ? `${code}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
+    let err = new Error(code ? `${code}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
     err.code = code;
     err.status = resp.status;
     err.traceId = rec.traceId;
@@ -189,7 +203,9 @@ async function hdkitRequest(
     // asString 窄化（不用 asText：asText(undefined) === 'undefined' 是真值，
     // `|| undefined` 兜底永不生效，字面量会流进用户可见文案）
     if (canonCode(code) === VERSION_GATE_CODE) {
-      applyVersionGate(err, {
+      // 返回值即生效载体（round 15）：请求层自建载体恒可写、就地装填返回原
+      // 对象；拒绝装饰的载体（仅导出面可达）返回装填好的克隆
+      err = applyVersionGate(err, {
         clientVersion: asString(rec.clientVersion),
         minVersion: asString(rec.minVersion),
         message: asString(rec.message),
@@ -333,22 +349,23 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   if (isVersionGateError(error)) {
     return { claimed: false, ...gateFoldPayload(error) };
   }
-  const err = error as {
-    message?: unknown;
-    code?: unknown;
-    clientVersion?: unknown;
-    minVersion?: unknown;
-    remediation?: unknown;
-  };
+  // 非门禁信封的字段读全过安全卫队与窄化（round 15）：抛出型 getter/撤销
+  // 代理按缺失，缺失的消息走 unavailable 文案；remediation 窄到对象（null
+  // 除外），非对象不骑信封（JSON 序列化同口径）
+  const rawCode = safeReadField(error, 'code');
+  const rawClientVersion = safeReadField(error, 'clientVersion');
+  const rawMinVersion = safeReadField(error, 'minVersion');
+  const rawRemediation = safeReadField(error, 'remediation');
+  const remediation = rawRemediation !== null && typeof rawRemediation === 'object' ? rawRemediation : undefined;
   return {
     claimed: false,
-    message: cleanMessage(typeof err.message === 'string' ? err.message : '') || unavailableMessage,
-    code: err.code,
+    message: cleanMessage(safeMessageText(error)) || unavailableMessage,
+    code: typeof rawCode === 'string' ? rawCode : undefined,
     // dev voucherErrorResult 语义：非门禁错误自带的指引字段（如 CRED_INVALID
     // 的 S1 修复引导）按存在性透传
-    ...(err.clientVersion ? { clientVersion: err.clientVersion } : {}),
-    ...(err.minVersion ? { minVersion: err.minVersion } : {}),
-    ...(err.remediation ? { remediation: err.remediation } : {}),
+    ...(typeof rawClientVersion === 'string' && rawClientVersion ? { clientVersion: rawClientVersion } : {}),
+    ...(typeof rawMinVersion === 'string' && rawMinVersion ? { minVersion: rawMinVersion } : {}),
+    ...(remediation ? { remediation } : {}),
   };
 }
 
