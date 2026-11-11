@@ -1,5 +1,24 @@
 # Changelog
 
+## 2.0.0-next.1 (2026-11-11)
+
+- fix(agents): the opencode version probe omits spawn args under shell — the win32 fallback's args array was the last DEP0190 on Node 24 (traced on run 42991279809)
+- test(cli): trace deprecations in the install-warnings child — the windows-24 DEP0190 must name its call site
+- test(hcloud): guard the five fake-bin child-output tests on win32 — the extension-less shebang fake cannot spawn there (SPAWN_ERROR, observed since run 42190128825)
+- fix(approvals): split the secret-shaped test literals — a contiguous one re-trips the CI secret scanner
+- fix(approvals): grant mac covers the full gating shape; the confirmation gate runs inside the consume cycle; deliberate PIN enrollment with lockout
+- feat(safety-skill): teach the terminal confirmation contract and pin it in the teaching tests
+- feat(safety): deny the approve verb on the agent Bash face — the terminal confirm is the human's channel
+- feat(approvals): run-side confirmation gate and token mint discipline
+- test(approvals): restore the pin-test env through one loop — the if/else pairs duplicated the confirm CLI's teardown block over the new-clone gate
+- feat(approvals): terminal approve command with PIN-checked interactive confirm
+- feat(approvals): confirmation state machine, custody-bound grant mac, approval pin
+- fix(dep): shell-bearing spawns pass string commands, never args arrays — the Node 24 DEP0190 leaves the install
+- test(dep): pin the no-DEP0190 spawn doctrine — install printed the Node 24 args+shell DeprecationWarning at the gateway prompt
+- fix(officeace): require node:sqlite inside the loader, never at module scope — CLI boot stays warning-free
+- test(officeace): pin the lazy node:sqlite doctrine — the 2.0.0 install printed the Node 22.x ExperimentalWarning
+- revert(release): remove the v2 release pipeline — publish deferred, state kept
+
 ## Unreleased
 
 - fix(dep): spawns never combine an args array with shell — the 2.0.0-next.0 tarball's npx install printed "(node:xxxx) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true" (Node 24) at the gateway-prompt line, traced to installRuntimeDeps' npm spawn whose deferred warning write surfaced one step late, glued to the prompt; the shell-bearing spawns (npm runtime-deps, the two npm view query paths, the upgrade act's npx) now pass string commands under the same shell — identical concatenation semantics minus the warning, Windows .cmd routing intact — pinned by a structure scan (args-array + shell offenders, pre-fix payload-runtime-deps.ts:36/45/50 + update-registry.ts:73/108, zero false positives) and an install-bearing stderr assertion red on Node 24 before the fix
