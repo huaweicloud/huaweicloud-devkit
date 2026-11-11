@@ -1,6 +1,6 @@
 import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
 import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../../lib/hdkit/hdkitservice-api.ts';
-import { versionGateResult, transientExhaustionResult } from '../../lib/hdkit/hdkit-gate.ts';
+import { canonCode, versionGateResult, transientExhaustionResult } from '../../lib/hdkit/hdkit-gate.ts';
 import type { HdkitError } from '../../lib/hdkit/hdkitservice-api.ts';
 import {
   validatePoolType,
@@ -63,14 +63,14 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     const exhausted = transientExhaustionResult(err);
     if (exhausted) return exhausted;
     if (
-      err.code === 'HDKIT_QUOTA_EXCEEDED' ||
-      err.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
-      err.code === 'HDKIT_CRED_INVALID' ||
+      canonCode(err.code) === 'HDKIT_QUOTA_EXCEEDED' ||
+      canonCode(err.code) === 'HDKIT_CAPACITY_INSUFFICIENT' ||
+      canonCode(err.code) === 'HDKIT_CRED_INVALID' ||
       err.coreHoursExhausted
     ) {
       return {
         ok: false,
-        code: err.code,
+        code: canonCode(err.code),
         message: err.message,
         ...(err.retryAfter !== undefined ? { retryAfter: err.retryAfter } : {}),
         ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),

@@ -34,9 +34,11 @@ const { hdkitConnectWithRetry } = await import('../plugins/huaweicloud-core/src/
 const {
   connectRetryDelaysMs,
   decorateExhaustedConnect,
+  isNonRetryableBusinessError,
   rendersBlank,
   cleanMessage,
   versionGateMessage,
+  versionGateResult,
   transientExhaustionResult,
 } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
 const { callTool } = await import('../plugins/huaweicloud-core/src/tools.ts');
@@ -109,7 +111,7 @@ async function captureConnectRejection(options: Record<string, unknown>): Promis
   return outcome as ExhaustedResult & Error;
 }
 
-// 中断响应的 fetch 桩安装（round 6 去重）：五个 codeless-409/中断用例共用
+// 中断响应的 fetch 桩安装（round 6 去重）：七个 codeless-409/中断用例共用
 function installAbortingFetch(status: number, reason: unknown): { restore: () => void; calls: () => number } {
   const originalFetch = global.fetch;
   let calls = 0;
@@ -1663,4 +1665,144 @@ test('a large non-JSON body bounds the snippet allocation', async () => {
     delta < 150 * 1024 * 1024,
     `the snippet path must not materialize the whole body (heap delta ${(delta / 1024 / 1024).toFixed(0)}MB)`,
   );
+});
+
+// ── 码身份的规范裁决（round 12）──
+// 织入码（HDKIT_VERSION_T\u200bOO_OLD）在一切身份比较处按规范拼写裁决——
+// 模块内码身份比较全部走 canonCode（剔除全部空白渲染字符），不再裸读。
+
+test('a woven gate code on a 409 folds at the sandbox exit, the voucher exit, and the relay', async () => {
+  const woven = 'HDKIT_VERSION_T\u200bOO_OLD';
+  const stub = stubConnectSequence([
+    () =>
+      jsonEnvelope(
+        { code: woven, message: '插件版本过旧。', clientVersion: '2.0.0-next.0', minVersion: '2.0.0' },
+        { status: 409 },
+      ),
+  ]);
+  try {
+    const cu = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal(cu.ok, false, 'a woven gate code is the gate');
+    assert.equal(cu.code, 'HDKIT_VERSION_TOO_OLD', 'the surfaced code is the canonical gate code');
+    assert.equal(cu.clientVersion, '2.0.0-next.0', 'the coded-gate payload rides the fold');
+    assert.equal(cu.minVersion, '2.0.0');
+    assert.match(cu.remediation!.hint, /当前 2\.0\.0-next\.0/);
+    const vs = (await callTool('huaweicloud_voucher_status', {})) as GateResult & { claimed?: boolean };
+    assert.equal(vs.claimed, false);
+    assert.equal(vs.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.ok(vs.remediation, 'the voucher exit folds the woven gate code');
+  } finally {
+    stub.restore();
+  }
+  // 同一出口在 callTool 重试判定上：织入门禁码不重试（非瞬时）
+  const retryStub = stubConnectSequence([
+    () => jsonEnvelope({ code: woven, message: '插件版本过旧。' }, { status: 409 }),
+  ]);
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(retryStub.calls(), 1, 'the woven gate code is never retried');
+    assert.equal(err.code, woven, 'the raw spelling rides the error');
+  } finally {
+    retryStub.restore();
+  }
+});
+
+test('a woven quota code under a rewritten 502 costs one fetch and keeps its quota remediation', async () => {
+  const result = await connectUnder(
+    () =>
+      jsonEnvelope(
+        { code: 'HDKIT_QUOTA_EXCEE\u200bDED', message: '沙箱并发配额已满' },
+        { status: 502, headers: { 'Retry-After': '60' } },
+      ),
+    '5,5',
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HDKIT_QUOTA_EXCEEDED', 'the canonical quota code rides the envelope');
+  assert.equal(result.retryAfter, '60');
+  assert.match(result.remediation?.hint ?? '', /配额已满/, 'the quota remediation survives — no gateway re-label');
+});
+
+test('a woven remainder falls to the designed copy; the woven designed-code twin matches the clean twin', () => {
+  // 干净码 + 织入副本：交叉形态同样剥除（规范比较）
+  const wovenCopy = Object.assign(new Error('HTTP_5\u206002: gateway busy'), { code: 'HTTP_502' });
+  const out1 = decorateExhaustedConnect(wovenCopy, 1) as { code?: string; message?: string };
+  assert.equal(out1.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.match(String(out1.message ?? ''), /gateway busy/, 'the canonical prefix match strips the woven copy');
+  assert.doesNotMatch(String(out1.message ?? ''), /HTTP_50/);
+  // 织入且无冒号的残留 → 设计文案
+  const wovenNoColon = Object.assign(new Error('HTTP_5\u206002'), { code: 'HTTP_502' });
+  const out2 = decorateExhaustedConnect(wovenNoColon, 1) as { code?: string; message?: string };
+  assert.match(
+    String(out2.message ?? ''),
+    /网关 502\/504 超时/,
+    'a woven spelling-only remainder falls to the designed copy',
+  );
+  // 设计码的织入孪生与干净孪生行为一致：亲署保留、空消息铸文案
+  const wovenTwin = Object.assign(new Error('   '), { code: 'HDKIT_GATEWAY_TI\u200bMEOUT' });
+  const out3 = decorateExhaustedConnect(wovenTwin, 1) as { code?: unknown; message?: string };
+  assert.equal(out3.code, 'HDKIT_GATEWAY_TI\u200bMEOUT', 'the authored woven twin is preserved like the clean twin');
+  assert.match(String(out3.message ?? ''), /网关 502\/504 超时/, 'the designed-copy branch fires canonically');
+});
+
+test('blank-separator HTTP spellings are the manufactured family: NBSP, ZWSP, space, ideographic space', () => {
+  for (const separator of ['\u00a0', '\u200b', ' ', '\u3000'] as const) {
+    const spelling = `HTTP${separator}502`;
+    const carrier = Object.assign(new Error(`${spelling}: gateway busy`), { code: spelling });
+    const out = decorateExhaustedConnect(carrier, 1) as { code?: string; message?: string };
+    assert.equal(
+      out.code,
+      'HDKIT_GATEWAY_TIMEOUT',
+      `the ${separator.charCodeAt(0).toString(16)} separator spelling mints`,
+    );
+    assert.match(String(out.message ?? ''), /gateway busy/);
+    assert.doesNotMatch(String(out.message ?? ''), /HTTP/);
+    // 重试判定同口径：织入（非替换）的配额码按规范拼写识别为客户端裁决
+    const quotaCarrier = Object.assign(new Error('quota'), {
+      code: 'HDKIT_QUOTA_EXCEE\u200bDED',
+    });
+    assert.equal(
+      isNonRetryableBusinessError(quotaCarrier),
+      true,
+      'a woven-in quota code is still a client verdict — recognized, not transient',
+    );
+  }
+});
+
+test('the fold exits read every field safely; the clone survives revoked proxies', () => {
+  const foldCarrier = new Error('never read') as Error & Record<PropertyKey, unknown>;
+  Object.defineProperty(foldCarrier, 'gatewayRetryExhausted', {
+    get() {
+      throw new TypeError('detonates');
+    },
+    configurable: true,
+  });
+  let fold: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    fold = transientExhaustionResult(foldCarrier);
+  });
+  assert.equal(fold, undefined, 'a refusing marker read is absent — no fold, no detonation');
+
+  const gateCarrier = new Error('gate read') as Error & Record<PropertyKey, unknown>;
+  Object.defineProperty(gateCarrier, 'code', {
+    get() {
+      throw new TypeError('detonates');
+    },
+    configurable: true,
+  });
+  let gate: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    gate = versionGateResult(gateCarrier);
+  });
+  assert.equal(gate, undefined, 'a refusing code read is absent — no gate fold, no detonation');
+
+  const { Proxy, RevocableProxy } = { Proxy: globalThis.Proxy, RevocableProxy: null };
+  const revoked = Proxy.revocable(new Error('revoked'), {});
+  revoked.revoke();
+  let plain: unknown;
+  assert.doesNotThrow(() => {
+    plain = decorateExhaustedConnect(revoked.proxy, 1);
+  }, 'a revoked proxy carrier never detonates the seam');
+  assert.ok(plain instanceof Error);
+  assert.equal((plain as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.ok((plain as { remediation?: unknown }).remediation);
 });

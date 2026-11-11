@@ -7,6 +7,7 @@ import { pinnedTemplateFor } from './sandbox-pool.ts';
 import {
   VERSION_GATE_CODE,
   applyVersionGate,
+  canonCode,
   cleanMessage,
   connectRetryDelaysMs,
   decorateExhaustedConnect,
@@ -152,7 +153,7 @@ async function hdkitRequest(
     err.code = code;
     err.status = resp.status;
     err.traceId = rec.traceId;
-    if (code === 'HDKIT_CRED_INVALID') {
+    if (canonCode(code) === 'HDKIT_CRED_INVALID') {
       err.remediation = {
         hint: '已保存的凭证(S1)可能已失效。请执行以下操作之一：',
         steps: [
@@ -165,7 +166,7 @@ async function hdkitRequest(
     // 429 双错误码（两池配额契约）：配额满给出释放/复用引导；池容量不足只透传服务端
     // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
     // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
-    if (code === 'HDKIT_QUOTA_EXCEEDED') {
+    if (canonCode(code) === 'HDKIT_QUOTA_EXCEEDED') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       err.remediation = {
         hint: '沙箱并发配额已满（每账号最多 5 台、每类型 1 台），重试无效：',
@@ -176,7 +177,7 @@ async function hdkitRequest(
         ],
       };
     }
-    if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
+    if (canonCode(code) === 'HDKIT_CAPACITY_INSUFFICIENT') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）。
       // cleanMessage 窄化（round 5）：undefined/空白/纯不可见字符均不覆盖——
@@ -187,7 +188,7 @@ async function hdkitRequest(
     // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性。
     // asString 窄化（不用 asText：asText(undefined) === 'undefined' 是真值，
     // `|| undefined` 兜底永不生效，字面量会流进用户可见文案）
-    if (code === VERSION_GATE_CODE) {
+    if (canonCode(code) === VERSION_GATE_CODE) {
       applyVersionGate(err, {
         clientVersion: asString(rec.clientVersion),
         minVersion: asString(rec.minVersion),

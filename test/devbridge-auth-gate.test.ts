@@ -431,7 +431,12 @@ test('the real relay path under a VS17-only or astral-padded gate code folds as 
   const keyMod = await import('../plugins/huaweicloud-core/src/sandbox/devbridge-key.ts');
   const originalFetch = global.fetch;
   try {
-    for (const code of ['HDKIT_VERSION_TOO_OLD󠄀', 'HDKIT_VERSION_TOO_OLD\uFFF9', '󠄀'] as const) {
+    for (const code of [
+      'HDKIT_VERSION_TOO_OLD󠄀',
+      'HDKIT_VERSION_TOO_OLD\uFFF9',
+      'HDKIT_VERSION_T\u200bOO_OLD',
+      '󠄀',
+    ] as const) {
       global.fetch = async () =>
         new Response(JSON.stringify({ code, message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' }), {
           status: 409,

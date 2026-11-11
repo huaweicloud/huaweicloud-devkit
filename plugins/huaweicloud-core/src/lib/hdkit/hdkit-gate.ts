@@ -109,8 +109,7 @@ const NON_RETRYABLE_CLIENT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 export function isNonRetryableBusinessError(error: unknown): boolean {
-  const code = (error as { code?: unknown }).code;
-  return typeof code === 'string' && NON_RETRYABLE_CLIENT_CODES.has(code);
+  return NON_RETRYABLE_CLIENT_CODES.has(canonCode(safeReadField(error, 'code')));
 }
 
 export interface VersionGatePayload {
@@ -127,7 +126,7 @@ export interface VersionGatePayload {
  * （round 7），中断形态按 bodyUnreadable 判定（不依赖传输层不占 code 属性）。
  */
 export function isVersionGateError(error: unknown): boolean {
-  return (error as { code?: unknown }).code === VERSION_GATE_CODE || isCodelessGateStatus(error);
+  return canonCode(safeReadField(error, 'code')) === VERSION_GATE_CODE || isCodelessGateStatus(error);
 }
 
 /**
@@ -140,7 +139,7 @@ function isCodelessGateStatus(error: unknown): boolean {
   const err = error as { code?: unknown; status?: unknown; bodyUnreadable?: unknown };
   if (err.status !== 409) return false;
   if (err.bodyUnreadable === true) return true;
-  return typeof err.code !== 'string' || cleanMessage(err.code) === '';
+  return canonCode(err.code) === '';
 }
 
 const UPGRADE_STEPS = [
@@ -216,27 +215,23 @@ export interface GateFoldPayload {
  * 透传服务端 copy。versionGateResult / voucherFallback / relay 折叠共用此份。
  */
 export function gateFoldPayload(error: unknown): GateFoldPayload {
-  const err = error as {
-    code?: unknown;
-    clientVersion?: unknown;
-    minVersion?: unknown;
-    remediation?: { hint: string; steps: string[] };
-    bodyUnreadable?: unknown;
-  };
-  if (err.code === VERSION_GATE_CODE) {
-    const clientVersion = cleanMessage(typeof err.clientVersion === 'string' ? err.clientVersion : '') || undefined;
-    const minVersion = cleanMessage(typeof err.minVersion === 'string' ? err.minVersion : '') || undefined;
+  const rawCode = safeReadField(error, 'code');
+  if (canonCode(rawCode) === VERSION_GATE_CODE) {
+    const clientVersion = cleanMessage(safeReadField(error, 'clientVersion') as string | undefined) || undefined;
+    const minVersion = cleanMessage(safeReadField(error, 'minVersion') as string | undefined) || undefined;
+    const remediation = safeReadField(error, 'remediation') as { hint: string; steps: string[] } | undefined;
     return {
       code: VERSION_GATE_CODE,
-      message: versionGateMessage(err),
-      remediation: err.remediation ?? codelessGateFields().remediation,
+      message: versionGateMessage(error),
+      remediation: remediation ?? codelessGateFields().remediation,
       ...(clientVersion ? { clientVersion } : {}),
       ...(minVersion ? { minVersion } : {}),
     };
   }
+  const bodyUnreadable = safeReadField(error, 'bodyUnreadable');
   return {
     code: VERSION_GATE_CODE,
-    message: err.bodyUnreadable === true ? VERSION_GATE_FALLBACK_MESSAGE : versionGateMessage(err),
+    message: bodyUnreadable === true ? VERSION_GATE_FALLBACK_MESSAGE : versionGateMessage(error),
     remediation: codelessGateFields().remediation,
   };
 }
@@ -247,12 +242,14 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
  */
 export function versionGateResult(error: unknown): Record<string, unknown> | undefined {
   if (!isVersionGateError(error)) return undefined;
-  const err = error as { retryAfter?: unknown; coreHoursExhausted?: unknown };
+  // round 12：字段读安全化（抛出型 getter 按缺失）
+  const retryAfter = safeReadField(error, 'retryAfter');
+  const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
   return {
     ok: false,
     ...gateFoldPayload(error),
-    ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
-    ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+    ...(retryAfter ? { retryAfter } : {}),
+    ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
   };
 }
 
@@ -278,6 +275,29 @@ function safeMessageText(err: unknown): string {
 function blankCharsRemoved(text: string): string {
   return [...text].filter((ch) => !rendersBlank(ch)).join('');
 }
+
+// 码字段裁决标准（round 12）：一切码身份比较的唯一口径——剔除全部空白渲染
+// 字符（内部与边缘一视同仁）。服务端亲署业务码不含空白渲染字符；织入/垫入/
+// 分隔符替换的拼写与干净拼写同码。非字符串值归 ''（无码）。
+export function canonCode(code: unknown): string {
+  return typeof code === 'string' ? blankCharsRemoved(code) : '';
+}
+
+// 伪造码家族判定（round 12）：规范拼写为 HTTP 加可选下划线加数字——下划线
+// 被空白渲染字符替换（HTTP\u00a0502 / HTTP 502 / HTTP_5\u206002）同样是伪造拼写，
+// 按模块自身教义，含空白渲染字符的码绝非服务端亲署。
+const MANUFACTURED_FAMILY = /^HTTP_?\d+$/;
+
+// 伪造码前缀的规范匹配（round 12）：以拼写为骨、字符间与冒号前允许夹任意
+// 空白渲染字符——'HTTP_5⁠02: ' 与 'HTTP 502: ' 都命中 'HTTP_502' 的模式。
+// 仅在装饰的 replaceCode 分支使用（拼写必为 HTTP 家族或空）。
+function manufacturedPrefixPattern(spelling: string): RegExp | undefined {
+  if (!spelling) return undefined;
+  const body = [...spelling].map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(BLANK_STAR);
+  return new RegExp(`^${BLANK_STAR}${body}${BLANK_STAR}:`, 'u');
+}
+
+const BLANK_STAR = '[\\s\\p{Default_Ignorable_Code_Point}\\p{Cc}\u{FFF9}-\u{FFFB}\u{13430}-\u{1343F}\u2800]*';
 
 // 装填辅助（round 9 收口、round 10 回滚）：普通赋值失败（getter-only 原型
 // 访问器，如 DOMException.code）用 defineProperty 落 own 属性；载体整体拒绝
@@ -352,8 +372,8 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
   // mint 判定用拼写口径（round 11）：内部与边缘的空白渲染字符一并剔除——
   // HTTP_5⁠02（词连接符藏码内）与垫码（HTTP_504+ZWSP）同为伪造拼写；
   // 服务端亲署业务码不含空白渲染字符，不受影响
-  const spelling = typeof rawCode === 'string' ? blankCharsRemoved(rawCode) : '';
-  const replaceCode = typeof rawCode !== 'string' || spelling === '' || /^HTTP_\d+$/.test(spelling);
+  const spelling = canonCode(rawCode);
+  const replaceCode = spelling === '' || MANUFACTURED_FAMILY.test(spelling);
   const effectiveCode = replaceCode ? 'HDKIT_GATEWAY_TIMEOUT' : rawCode;
   const designedCopy = `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`;
   const fields: Array<[string, unknown]> = [
@@ -366,19 +386,21 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
     // 前缀循环剥除（页面消息以码拼写开头会翻倍），原始与拼写两种形态都剥；
     // 剥后仍以拼写开头（含"消息=码"形态）或为空则用设计文案
     let remainder = rawMessage;
-    const prefixes = [
-      typeof rawCode === 'string' && rawCode !== '' ? `${rawCode}: ` : '',
-      spelling ? `${spelling}: ` : '',
-    ];
-    for (;;) {
-      const hit = prefixes.find((p) => p && remainder.startsWith(p));
-      if (!hit) break;
-      remainder = remainder.slice(hit.length);
+    // 按规范比较（round 12）：拼写字符间与冒号前可夹空白渲染字符——织入副本
+    // 与干净码的交叉形态同样剥除；剥后仍以拼写开头（含"消息=码"形态，规范
+    // 口径）或为空则用设计文案
+    const prefixPattern = manufacturedPrefixPattern(spelling);
+    if (prefixPattern) {
+      for (;;) {
+        const hit = prefixPattern.exec(remainder);
+        if (!hit) break;
+        remainder = remainder.slice(hit[0].length);
+      }
     }
     const cleaned = cleanMessage(remainder);
-    const opensWithSpelling = spelling !== '' && cleaned.startsWith(spelling);
+    const opensWithSpelling = spelling !== '' && canonCode(cleaned).startsWith(spelling);
     fields.push(['message', cleaned === '' || opensWithSpelling ? designedCopy : cleaned]);
-  } else if (effectiveCode === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(rawMessage)) {
+  } else if (canonCode(effectiveCode) === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(rawMessage)) {
     fields.push(['message', designedCopy]);
   }
   if (!rawRemediation) {
@@ -428,12 +450,16 @@ function decoratePlainCarrier(retries: number): Error {
 function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
   const clone = new Error(safeMessageText(err));
   const decoratedKeys = new Set<string | symbol>(fields.map(([key]) => key));
-  for (const key of Reflect.ownKeys(err)) {
-    // 字符串与符号键都按描述符复制（round 11：符号键是业务字段），message/
-    // stack 与被装饰键除外——装饰键由 fields 落值
-    if (key === 'message' || key === 'stack' || decoratedKeys.has(key)) continue;
-    const desc = Object.getOwnPropertyDescriptor(err, key);
-    if (desc) Object.defineProperty(clone, key, desc);
+  try {
+    for (const key of Reflect.ownKeys(err)) {
+      // 字符串与符号键都按描述符复制（round 11：符号键是业务字段），message/
+      // stack 与被装饰键除外——装饰键由 fields 落值
+      if (key === 'message' || key === 'stack' || decoratedKeys.has(key)) continue;
+      const desc = Object.getOwnPropertyDescriptor(err, key);
+      if (desc) Object.defineProperty(clone, key, desc);
+    }
+  } catch {
+    // 撤销/陷阱代理（round 12）：枚举即抛——按无携带字段处理，设计值兜底
   }
   decorateInPlace(clone as unknown as Record<string, unknown>, fields);
   return clone;
@@ -444,24 +470,20 @@ function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
  * 标记的错误转 ok:false 结构化返回，remediation 与尝试次数穿透 MCP 边界。
  */
 export function transientExhaustionResult(error: unknown): Record<string, unknown> | undefined {
-  const err = error as {
-    gatewayRetryExhausted?: unknown;
-    code?: unknown;
-    message?: unknown;
-    connectRetries?: unknown;
-    coreHoursExhausted?: unknown;
-    retryAfter?: unknown;
-    remediation?: unknown;
-  };
-  if (err.gatewayRetryExhausted !== true) return undefined;
+  // round 12：全部字段过安全读——抛出型 getter 按缺失，标记缺失即不折叠
+  const gatewayRetryExhausted = safeReadField(error, 'gatewayRetryExhausted');
+  if (gatewayRetryExhausted !== true) return undefined;
+  const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
+  const retryAfter = safeReadField(error, 'retryAfter');
+  const remediation = safeReadField(error, 'remediation');
   return {
     ok: false,
-    code: err.code,
+    code: safeReadField(error, 'code'),
     // round 6：耗尽出口的消息读同样过清洗口——纯不可见原因不渲染成不可见文案
-    message: cleanMessage(safeMessageText(err)) || 'connect 持续遭遇网关 502/504 超时',
-    connectRetries: err.connectRetries,
-    ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
-    ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
-    ...(err.remediation ? { remediation: err.remediation } : {}),
+    message: cleanMessage(safeMessageText(error)) || 'connect 持续遭遇网关 502/504 超时',
+    connectRetries: safeReadField(error, 'connectRetries'),
+    ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+    ...(retryAfter ? { retryAfter } : {}),
+    ...(remediation ? { remediation } : {}),
   };
 }
