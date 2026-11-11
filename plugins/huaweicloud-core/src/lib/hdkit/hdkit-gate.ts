@@ -9,8 +9,6 @@
 // - connect 成功路径的 connect_retries 回显（dev 只在错误路径带尝试次数）
 // - 瞬时耗尽的 connect 出口结构化折叠（dev 在此路径裸抛）
 
-import { asText } from '../as-text.ts';
-
 /** 版本门禁（服务端 UPGRADE_MIN_VERSION 硬门禁）的唯一错误码 */
 export const VERSION_GATE_CODE = 'HDKIT_VERSION_TOO_OLD';
 
@@ -35,29 +33,22 @@ export function connectRetryDelaysMs(): number[] {
 
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
-// 渲染为空白的不可见字符（round 5）：trim 只清空白，零宽空格等 Cf 类字符
-// 会穿透 trim 渲染成"看起来空白"的消息——视同缺失。
-const INVISIBLE_CODE_POINTS: ReadonlySet<number> = new Set([
-  0x200b,
-  0x200c,
-  0x200d,
-  0x200e,
-  0x200f, // U+200B–U+200F
-  0x2060, // U+2060 word joiner
-  0x3164, // U+3164 hangul filler
-  0x2800, // U+2800 braille blank
-]);
+// 渲染为空白的不可见字符（round 5–6）：trim 只清 \s，零宽/格式字符会穿透
+// trim 渲染成"看起来空白"的消息。round 6 起按 Unicode Cf 一般类别整体判定
+// （\p{Cf}：U+200B–U+200F、U+00AD、U+061C、U+180E、U+202A–U+202E、U+2060–
+// U+2064、U+FEFF、U+E0061 等），外加四个渲染为空白的非 Cf 填充符。
+const BLANK_RENDERING_FILLERS: ReadonlySet<number> = new Set([0x3164, 0x2800, 0x115f, 0x1160]);
 
 /**
- * 消息可见性判定：trim 后仍需不含纯不可见字符。零宽空格不属于 \s，
- * trim 不清除（round 5 实测），渲染为空白的消息必须走设计好的兜底。
+ * 消息可见性判定（round 6 收口）：纯不可见才判空白——只要有任何一个字符
+ * 渲染可见（非 \s、非 Cf、非填充符），消息就是真文本；真文本包着一个
+ * 不可见字符是可见消息，走 trim 而非缺失。
  */
 export function rendersBlank(text: string): boolean {
-  const visible = [...text].every((ch) => {
-    const cp = ch.codePointAt(0) ?? 0;
-    return cp !== 0x200b && cp !== 0x2060 && cp !== 0x3164 && cp !== 0x2800;
-  });
-  return text.trim() === '' || !visible;
+  const hasVisible = [...text].some(
+    (ch) => !/\s/u.test(ch) && !/\p{Cf}/u.test(ch) && !BLANK_RENDERING_FILLERS.has(ch.codePointAt(0) ?? 0),
+  );
+  return !hasVisible;
 }
 
 /**
@@ -112,12 +103,21 @@ export interface VersionGatePayload {
 
 /**
  * relay 侧（devbridge-key/auth 折叠链）识别 409 门禁错误的判定。与
- * versionGateResult 共用同一规则源：认 VERSION_GATE_CODE，或无码 409
- * （body 读取中断——模块头注释定义 409 即门禁，round 5 v2 扩展）。
+ * versionGateResult 共用同一规则源（isCodelessGateStatus）：认
+ * VERSION_GATE_CODE，或无码 409——模块头注释定义 409 即门禁（round 5 v2
+ * 扩展；round 6 起请求层不再为 409 伪造 HTTP_409，可读无码 409 同折）。
  */
 export function isVersionGateError(error: unknown): boolean {
+  return (error as { code?: unknown }).code === VERSION_GATE_CODE || isCodelessGateStatus(error);
+}
+
+/**
+ * 无码 409 判定（round 6 去重——此前三处内联）：带 409 status 且无服务端
+ * 码（body 读取中断 / 非 JSON 页 / 可读但无 code 字段）即门禁。
+ */
+function isCodelessGateStatus(error: unknown): boolean {
   const err = error as { code?: unknown; status?: unknown };
-  return err.code === VERSION_GATE_CODE || (err.code === undefined && err.status === 409);
+  return err.status === 409 && err.code === undefined;
 }
 
 const UPGRADE_STEPS = [
@@ -139,9 +139,11 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): v
     message?: string;
     remediation?: { hint: string; steps: string[] };
   };
-  const clientVersion = payload.clientVersion?.trim() || undefined;
-  const minVersion = payload.minVersion?.trim() || undefined;
-  const message = payload.message?.trim() || undefined;
+  // round 6：版本字段与消息同过清洗口（cleanMessage）——纯不可见值视同缺失，
+  // hint 不留不可见空位，兜底（未知/最新版）照常生效
+  const clientVersion = cleanMessage(payload.clientVersion) || undefined;
+  const minVersion = cleanMessage(payload.minVersion) || undefined;
+  const message = cleanMessage(payload.message) || undefined;
   err.clientVersion = clientVersion;
   err.minVersion = minVersion;
   if (message) err.message = message;
@@ -163,26 +165,8 @@ export function versionGateMessage(error: unknown): string {
 }
 
 /**
- * 门禁字段的统一展开：clientVersion/minVersion/remediation 按存在性附加。
- * versionGateResult 与 voucherFallback 共用——出口信封形态不同（ok:false vs
- * claimed:false），但字段规则只有这一份。
- */
-export function gatePayloadFields(err: {
-  clientVersion?: unknown;
-  minVersion?: unknown;
-  remediation?: unknown;
-}): Record<string, unknown> {
-  return {
-    ...(err.clientVersion ? { clientVersion: err.clientVersion } : {}),
-    ...(err.minVersion ? { minVersion: err.minVersion } : {}),
-    ...(err.remediation ? { remediation: err.remediation } : {}),
-  };
-}
-
-/**
- * 无码 409 折叠（round 5，v2 扩展）：body 读取中断的 409 只有 status 没有
- * code——模块自己的头注释定义 409 即门禁。带 status 409 且无 code 的错误
- * 视同门禁，字段走设计好的未知版本兜底。
+ * 无码 409 的未知版本兜底（round 5 v2 扩展）：body 不可读（读取中断/非 JSON）
+ * 或可读但无服务端码的 409，其 remediation 就地铸出。
  */
 export function codelessGateFields(): { remediation: { hint: string; steps: string[] } } {
   return {
@@ -193,42 +177,60 @@ export function codelessGateFields(): { remediation: { hint: string; steps: stri
   };
 }
 
-function codelessGateResult(error: unknown): Record<string, unknown> | undefined {
-  const err = error as { status?: unknown; code?: unknown };
-  if (err.code !== undefined || err.status !== 409) return undefined;
+export interface GateFoldPayload {
+  code: string;
+  message: string;
+  remediation: { hint: string; steps: string[] };
+  clientVersion?: string;
+  minVersion?: string;
+}
+
+/**
+ * 门禁折叠的统一载荷（round 6 收口，替代三处分叉的折叠逻辑）：带码门禁透传
+ * 服务端字段——消息过 versionGateMessage 清洗口，remediation 缺失时就地铸出，
+ * 版本字段同样清洗（纯不可见视同缺失）。无码 409 走未知版本兜底——body 不可读
+ * 时消息用设计文案（传输噪声不冒充服务端话术，bodyUnreadable 标记），可读时
+ * 透传服务端 copy。versionGateResult / voucherFallback / relay 折叠共用此份。
+ */
+export function gateFoldPayload(error: unknown): GateFoldPayload {
+  const err = error as {
+    code?: unknown;
+    clientVersion?: unknown;
+    minVersion?: unknown;
+    remediation?: { hint: string; steps: string[] };
+    bodyUnreadable?: unknown;
+  };
+  if (err.code === VERSION_GATE_CODE) {
+    const clientVersion = cleanMessage(typeof err.clientVersion === 'string' ? err.clientVersion : '') || undefined;
+    const minVersion = cleanMessage(typeof err.minVersion === 'string' ? err.minVersion : '') || undefined;
+    return {
+      code: VERSION_GATE_CODE,
+      message: versionGateMessage(err),
+      remediation: err.remediation ?? codelessGateFields().remediation,
+      ...(clientVersion ? { clientVersion } : {}),
+      ...(minVersion ? { minVersion } : {}),
+    };
+  }
   return {
-    ok: false,
     code: VERSION_GATE_CODE,
-    message: VERSION_GATE_FALLBACK_MESSAGE,
-    ...codelessGateFields(),
+    message: err.bodyUnreadable === true ? VERSION_GATE_FALLBACK_MESSAGE : versionGateMessage(err),
+    remediation: codelessGateFields().remediation,
   };
 }
 
 /**
  * 各出口的 409 门禁折叠（dev e1255a4b 的 toVersionGateResult）：非门禁错误返回
- * undefined，调用方继续原有抛出/业务折叠。无码 409（body 读取中断）同折（v2 扩展）。
+ * undefined，调用方继续原有抛出/业务折叠。无码 409（可读/中断/非 JSON）同折。
  */
 export function versionGateResult(error: unknown): Record<string, unknown> | undefined {
-  const err = error as {
-    code?: unknown;
-    message?: unknown;
-    retryAfter?: unknown;
-    coreHoursExhausted?: unknown;
-    clientVersion?: unknown;
-    minVersion?: unknown;
-    remediation?: unknown;
+  if (!isVersionGateError(error)) return undefined;
+  const err = error as { retryAfter?: unknown; coreHoursExhausted?: unknown };
+  return {
+    ok: false,
+    ...gateFoldPayload(error),
+    ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
+    ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
   };
-  if (err.code === VERSION_GATE_CODE) {
-    return {
-      ok: false,
-      code: VERSION_GATE_CODE,
-      message: versionGateMessage(err),
-      ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
-      ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
-      ...gatePayloadFields(err),
-    };
-  }
-  return codelessGateResult(error);
 }
 
 /**
@@ -279,7 +281,8 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   return {
     ok: false,
     code: err.code,
-    message: asText(err.message) || 'connect 持续遭遇网关 502/504 超时',
+    // round 6：耗尽出口的消息读同样过清洗口——纯不可见原因不渲染成不可见文案
+    message: cleanMessage(typeof err.message === 'string' ? err.message : '') || 'connect 持续遭遇网关 502/504 超时',
     connectRetries: err.connectRetries,
     ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
     ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),

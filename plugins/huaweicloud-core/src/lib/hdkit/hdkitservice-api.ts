@@ -10,9 +10,10 @@ import {
   cleanMessage,
   connectRetryDelaysMs,
   decorateExhaustedConnect,
-  gatePayloadFields,
+  gateFoldPayload,
   isGatewayTransient,
   isNonRetryableBusinessError,
+  isVersionGateError,
 } from './hdkit-gate.ts';
 import { asRecord } from '../as-record.ts';
 import { asString, asText } from '../as-text.ts';
@@ -85,20 +86,22 @@ async function hdkitRequest(
   }
 
   // 响应体读取中断同样携带 resp.status（round 4，v2 标注分歧——dev 裸抛）：
-  // 已收到 502/504 status 时重试契约照常适用。非 Error 拒绝原因（undefined/null/
-  // 字符串等）不落字面量——String(error) 对 undefined 是真值 "undefined"，与
-  // asText 同款陷阱（round 5）
+  // 已收到 502/504 status 时重试契约照常适用。拒绝原因全过清洗口（round 6）——
+  // 空白/纯不可见的字符串或 Error 消息落设计好的 body-read-aborted 文案，
+  // 真文本原样透传；bodyUnreadable 标记供门禁折叠区分传输噪声与服务端话术。
   let text: string;
   try {
     text = await resp.text();
   } catch (error) {
-    const reason =
-      error instanceof Error
-        ? error
-        : typeof error === 'string' && error.trim() !== ''
-          ? new Error(error)
-          : new Error('hdkitservice response body read aborted');
-    throw Object.assign(reason, { status: resp.status });
+    let reason: Error;
+    if (error instanceof Error) {
+      reason = cleanMessage(error.message) ? error : new Error('hdkitservice response body read aborted');
+    } else if (typeof error === 'string' && cleanMessage(error)) {
+      reason = new Error(cleanMessage(error));
+    } else {
+      reason = new Error('hdkitservice response body read aborted');
+    }
+    throw Object.assign(reason, { status: resp.status, bodyUnreadable: true });
   }
   let data: Record<string, unknown> | unknown[];
   try {
@@ -108,22 +111,26 @@ async function hdkitRequest(
     data = Array.isArray(parsed) ? parsed : asRecord(parsed);
   } catch {
     // 非 JSON 页必须携带 resp.status：瞬时判定按 status 裁决，不带 status 的
-    // 抛错会被消息兜底误判（round 3）
+    // 抛错会被消息兜底误判（round 3）。bodyUnreadable 同标记（round 6）
     throw Object.assign(new Error(`hdkitservice returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`), {
       status: resp.status,
+      bodyUnreadable: true,
     });
   }
 
   if (!resp.ok) {
     const rec = asRecord(data);
     const rawCode = rec.code;
-    const code = typeof rawCode === 'string' && rawCode ? rawCode : `HTTP_${resp.status}`;
+    // round 6：无服务端码的 409 不伪造 HTTP_409——模块契约定义 409 即门禁，
+    // 伪造码会击穿无码门禁折叠（sandbox/voucher/relay 出口）；其余状态照旧
+    const code =
+      typeof rawCode === 'string' && rawCode ? rawCode : resp.status === 409 ? undefined : `HTTP_${resp.status}`;
     const trace = rec.traceId ? ` [trace: ${asText(rec.traceId)}]` : '';
     // 消息构建口（round 4 + round 5）：空白与纯不可见字符（零宽空格等
     // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'
     // 兜底在所有出口生效
     const message = cleanMessage(asString(rec.message)) || 'hdkitservice error';
-    const err = new Error(`${code}: ${message}${trace}`) as HdkitError;
+    const err = new Error(code ? `${code}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
     err.code = code;
     err.status = resp.status;
     err.traceId = rec.traceId;
@@ -295,6 +302,11 @@ export async function hdkitDeleteApiKey(keyId: string): Promise<Record<string, u
 // three endpoints share the fallback; only the service-unavailable wording
 // differs.
 function voucherFallback(error: unknown, unavailableMessage: string): Record<string, unknown> {
+  // 409 门禁（带码或无码）在此出口同折（round 6）：claimed:false 信封 + 门禁
+  // 字段——凭证/传输类错误才走 unavailable 文案
+  if (isVersionGateError(error)) {
+    return { claimed: false, ...gateFoldPayload(error) };
+  }
   const err = error as {
     message?: unknown;
     code?: unknown;
@@ -304,9 +316,13 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   };
   return {
     claimed: false,
-    message: typeof err.message === 'string' && err.message ? err.message : unavailableMessage,
+    message: cleanMessage(typeof err.message === 'string' ? err.message : '') || unavailableMessage,
     code: err.code,
-    ...gatePayloadFields(err),
+    // dev voucherErrorResult 语义：非门禁错误自带的指引字段（如 CRED_INVALID
+    // 的 S1 修复引导）按存在性透传
+    ...(err.clientVersion ? { clientVersion: err.clientVersion } : {}),
+    ...(err.minVersion ? { minVersion: err.minVersion } : {}),
+    ...(err.remediation ? { remediation: err.remediation } : {}),
   };
 }
 

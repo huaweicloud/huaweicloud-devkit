@@ -31,7 +31,8 @@ after(() => {
 });
 
 const { hdkitConnectWithRetry } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts');
-const { connectRetryDelaysMs } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+const { connectRetryDelaysMs, rendersBlank, cleanMessage } =
+  await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
 const { callTool } = await import('../plugins/huaweicloud-core/src/tools.ts');
 
 const VENDOR = 'test: vendor established by the harness';
@@ -100,6 +101,46 @@ async function captureConnectRejection(options: Record<string, unknown>): Promis
   );
   assert.ok(outcome, 'expected rejection');
   return outcome as ExhaustedResult & Error;
+}
+
+// 中断响应的 fetch 桩安装（round 6 去重）：三个 codeless-409/中断用例共用
+function installAbortingFetch(status: number, reason: unknown): { restore: () => void; calls: () => number } {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return abortingBodyWith(status, reason);
+  };
+  return {
+    restore: () => {
+      global.fetch = originalFetch;
+    },
+    calls: () => calls,
+  };
+}
+
+// 中断响应的捕获共用（round 6 去重）：装 fetch 桩→捕获拒绝→还原
+async function captureAbortRejection(
+  status: number,
+  reason: unknown,
+): Promise<{ err: ExhaustedResult & Error; calls: number }> {
+  const fetch = installAbortingFetch(status, reason);
+  try {
+    const err = await captureConnectRejection({});
+    return { err, calls: fetch.calls() };
+  } finally {
+    fetch.restore();
+  }
+}
+
+// voucher_status 出口调用共用（round 6 去重）：装桩→调用→还原
+async function voucherStatusUnder(respond: () => Response): Promise<GateResult & { claimed?: boolean }> {
+  const stub = stubConnectSequence([respond]);
+  try {
+    return (await callTool('huaweicloud_voucher_status', {})) as GateResult & { claimed?: boolean };
+  } finally {
+    stub.restore();
+  }
 }
 
 interface GateResult {
@@ -328,17 +369,12 @@ test('callTool credentials: 409 version gate returns structured guidance after I
 });
 
 test('callTool voucher_status: 409 version gate passes clientVersion/minVersion through the fallback', async () => {
-  const stub = stubConnectSequence([() => jsonEnvelope(VERSION_GATE_409, { status: 409 })]);
-  try {
-    const result = (await callTool('huaweicloud_voucher_status', {})) as GateResult & { claimed?: boolean };
-    // voucher 三出口保持 claimed:false 信封（dev e1255a4b voucherErrorResult 语义），
-    // 门禁字段附加其上而非 ok:false 形态
-    assert.equal(result.claimed, false);
-    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
-    assertGatePayload(result);
-  } finally {
-    stub.restore();
-  }
+  const result = await voucherStatusUnder(() => jsonEnvelope(VERSION_GATE_409, { status: 409 }));
+  // voucher 三出口保持 claimed:false 信封（dev e1255a4b voucherErrorResult 语义），
+  // 门禁字段附加其上而非 ok:false 形态
+  assert.equal(result.claimed, false);
+  assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+  assertGatePayload(result);
 });
 
 // ── callTool 层：瞬时耗尽的结构化折叠（v2 扩展；dev 在此路径裸抛）──
@@ -490,7 +526,6 @@ function abortingBodyWith(status: number, reason: unknown): Response {
 
 test('abort reasons never surface as literals: undefined, null, string, Error each render real text', async () => {
   const restoreSeam = withRetrySeam('5,5');
-  const originalFetch = global.fetch;
   try {
     for (const [reason, expectFragment] of [
       [undefined, /body read aborted/],
@@ -498,19 +533,13 @@ test('abort reasons never surface as literals: undefined, null, string, Error ea
       ['raw string reason', /raw string reason/],
       [new TypeError('terminated'), /terminated/],
     ] as const) {
-      let calls = 0;
-      global.fetch = async () => {
-        calls += 1;
-        return abortingBodyWith(500, reason);
-      };
-      const err = await captureConnectRejection({});
+      const { err, calls } = await captureAbortRejection(500, reason);
       assert.equal(calls, 1, 'a 500 answer, aborted or not, is not transient');
       assert.equal(err.status, 500);
       assert.match(err.message, expectFragment, `the ${String(reason)} reason must surface real text`);
       assert.doesNotMatch(err.message, /^undefined$|^null$/);
     }
   } finally {
-    global.fetch = originalFetch;
     restoreSeam();
   }
 });
@@ -542,10 +571,14 @@ test('a zero-width-space gate message renders the designed fallback on the conne
   try {
     const result = (await callTool('huaweicloud_sandbox_sign_agreement', {})) as GateResult;
     assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
-    // 构建口把 U+200B 视同缺失 → 请求层兜底；门禁折叠的消息读 error.message，
-    // 兜底文案生效，绝不渲染视觉空白
-    assert.match(result.message ?? '', /插件版本过旧/, 'the designed gate copy fires for U+200B');
-    assert.ok((result.message ?? '').trim().length > 0, 'no visually blank message');
+    // 构建口把 U+200B 视同缺失 → 请求层兜底；round 6 起 applyVersionGate 不再
+    // 用不可见消息覆盖好的构建文案——出口渲染真实文本，绝不视觉空白
+    assert.match(
+      result.message ?? '',
+      /HDKIT_VERSION_TOO_OLD: hdkitservice error|插件版本过旧/,
+      'real copy fires for U+200B',
+    );
+    assert.ok(!rendersBlank(result.message ?? ''), 'no visually blank message');
   } finally {
     stub.restore();
   }
@@ -553,15 +586,10 @@ test('a zero-width-space gate message renders the designed fallback on the conne
 
 test('an aborted codeless 409 body folds as the gate with the unknown-version fallbacks', async () => {
   const restoreSeam = withRetrySeam('5,5');
-  const originalFetch = global.fetch;
-  let calls = 0;
-  global.fetch = async () => {
-    calls += 1;
-    return abortingBodyWith(409, new TypeError('terminated'));
-  };
+  const fetch = installAbortingFetch(409, new TypeError('terminated'));
   try {
     const err = await captureConnectRejection({});
-    assert.equal(calls, 1, 'the gate is never retried, codeless or not');
+    assert.equal(fetch.calls(), 1, 'the gate is never retried, codeless or not');
     assert.equal(err.status, 409);
     const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
     assert.equal(result.ok, false);
@@ -572,7 +600,7 @@ test('an aborted codeless 409 body folds as the gate with the unknown-version fa
     assert.equal('clientVersion' in (result as Record<string, unknown>), false);
     assertNoLeakyLiterals(result);
   } finally {
-    global.fetch = originalFetch;
+    fetch.restore();
     restoreSeam();
   }
 });
@@ -862,6 +890,191 @@ test('a 500 business error carrying Bad Gateway text is not transient', async ()
     assert.equal(stub.calls(), 2, 'the callTool-level attempt was also a single fetch');
   } finally {
     stub.restore();
+    restoreSeam();
+  }
+});
+
+// ── Cf 类完整收口与纯不可见语义（round 6）──
+// 声明的 8 码点全部生效；Cf 一般类别整体判定（\p{Cf}）外加渲染为空白的
+// 非 Cf 填充符；纯不可见才判空白——真文本包着一个不可见字符是可见消息。
+
+test('rendersBlank matches the Cf class: every declared and newly-covered codepoint is blank, mixed text is not', () => {
+  const blankChars = [
+    '\u200b',
+    '\u200c',
+    '\u200d',
+    '\u200e',
+    '\u200f',
+    '\u2060',
+    '\u3164',
+    '\u2800',
+    '\u00ad',
+    '\u061c',
+    '\u180e',
+    '\u202a',
+    '\u202b',
+    '\u202c',
+    '\u202d',
+    '\u202e',
+    '\u2061',
+    '\u2062',
+    '\u2063',
+    '\u2064',
+    '\ufeff',
+    '\u115f',
+    '\u1160',
+    '\u{e0061}',
+  ];
+  for (const ch of blankChars) {
+    const label = `U+${(ch.codePointAt(0) ?? 0).toString(16).toUpperCase()}`;
+    assert.equal(rendersBlank(ch), true, `${label} must render blank`);
+    assert.equal(cleanMessage(ch), '', `${label} must clean to absent`);
+  }
+  assert.equal(rendersBlank('插件\u200b版本'), false, 'real text around an invisible char is not blank');
+  assert.equal(cleanMessage(' 插件\u200b版本 '), '插件\u200b版本', 'mixed text surfaces trimmed, never dropped');
+});
+
+test('Cf-class gate messages render the designed copy, never an invisible payload', async () => {
+  for (const ch of ['\u200c', '\u200d', '\u200e', '\u200f', '\u00ad', '\u061c', '\u180e', '\u202e']) {
+    const stub = stubConnectSequence([() => gateJson({ message: ch })]);
+    try {
+      const result = (await callTool('huaweicloud_sandbox_sign_agreement', {})) as GateResult;
+      assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+      assert.match(result.message ?? '', /hdkitservice error|插件版本过旧/, 'real text must surface');
+      assert.ok(!rendersBlank(result.message ?? ''), 'never a visually blank message');
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test('invisible clientVersion and minVersion narrow away; the hint falls to the designed slots', async () => {
+  const stub = stubConnectSequence([
+    () => gateJson({ message: '插件版本过旧。', clientVersion: '\u200b', minVersion: '\u200d' }),
+  ]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal('clientVersion' in (result as Record<string, unknown>), false);
+    assert.equal('minVersion' in (result as Record<string, unknown>), false);
+    assert.match(result.remediation!.hint, /当前 未知/);
+    assert.match(result.remediation!.hint, /最新版/);
+    assertNoLeakyLiterals(result);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('an invisible or blank abort reason surfaces real text on the wrap, on folding and non-folding statuses', async () => {
+  const restoreSeam = withRetrySeam('1');
+  try {
+    for (const reason of ['\u200c', new Error('   '), new Error('\u00ad')] as const) {
+      const { err, calls } = await captureAbortRejection(500, reason);
+      assert.equal(calls, 1, 'a 500 answer is never transient, whatever the reason');
+      assert.equal(err.status, 500);
+      assert.match(err.message, /body read aborted/, 'a blank reason falls to the designed wrap copy');
+      assert.ok(!rendersBlank(err.message), 'never a visually blank wrap message');
+    }
+  } finally {
+    restoreSeam();
+  }
+});
+
+test('a blank Error abort reason on a 502 exhaustion surfaces real text, never the invisible reason', async () => {
+  const restoreSeam = withRetrySeam('1');
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return abortingBodyWith(502, new Error('\u200c'));
+  };
+  try {
+    const result = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ExhaustedResult;
+    assert.equal(calls, 2, 'the 502 retries then exhausts');
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_GATEWAY_TIMEOUT', 'the exhaustion fold fires');
+    assert.ok(!rendersBlank(String(result.message ?? '')), 'the exhaustion exit never renders blank');
+    assert.ok(String(result.message ?? '').length > 0, 'the cleaned reason or the designed copy fires');
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+});
+
+// ── 可读无码 409（round 6）：请求层不再为 409 伪造 HTTP_409 码 ──
+
+test('the request layer no longer manufactures a code for a codeless 409', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const stub = stubConnectSequence([
+    () => jsonEnvelope({ message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' }, { status: 409 }),
+  ]);
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(stub.calls(), 1, 'a 409 is never retried, codeless or not');
+    assert.equal(err.code, undefined, 'a codeless 409 must not carry a manufactured HTTP_409');
+    assert.equal(err.status, 409);
+    assert.match(
+      err.message ?? '',
+      /插件版本过旧，请升级至正式版 2\.0\.0 及以上/,
+      'the server copy survives unprefixed',
+    );
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+});
+
+test('a readable codeless 409 folds as the gate on the sandbox and voucher exits with the server copy', async () => {
+  const stub = stubConnectSequence([
+    () => jsonEnvelope({ message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' }, { status: 409 }),
+  ]);
+  try {
+    const cu = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal(cu.ok, false);
+    assert.equal(cu.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.match(
+      cu.message ?? '',
+      /插件版本过旧，请升级至正式版 2\.0\.0 及以上/,
+      'the readable shape surfaces the server copy',
+    );
+    assert.ok(cu.remediation, 'the unknown-version remediation mints');
+    assert.match(cu.remediation!.hint, /当前 未知/);
+    assert.match(cu.remediation!.hint, /最新版/);
+    const vs = (await callTool('huaweicloud_voucher_status', {})) as GateResult & { claimed?: boolean };
+    assert.equal(vs.claimed, false);
+    assert.equal(vs.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.match(vs.message ?? '', /插件版本过旧，请升级至正式版 2\.0\.0 及以上/);
+    assert.ok(vs.remediation, 'the voucher exit folds the readable codeless 409 too');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('voucher exits surface the gate copy for a Cf-class gate message, never an invisible payload', async () => {
+  const result = await voucherStatusUnder(() =>
+    gateJson({ message: '\u200d', clientVersion: '2.0.0-next.0', minVersion: '2.0.0' }),
+  );
+  assert.equal(result.claimed, false);
+  assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+  assert.match(result.message ?? '', /HDKIT_VERSION_TOO_OLD/, 'the gate copy path fires, not the raw payload');
+  assert.ok(!rendersBlank(String(result.message ?? '')), 'never a visually blank voucher message');
+});
+
+test('an aborted codeless 409 on a voucher exit folds as the gate envelope, never the transport noise', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const fetch = installAbortingFetch(409, new TypeError('terminated'));
+  try {
+    const result = (await callTool('huaweicloud_voucher_status', {})) as GateResult & { claimed?: boolean };
+    assert.equal(fetch.calls(), 1);
+    assert.equal(result.claimed, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.match(result.message ?? '', /插件版本过旧/, 'the designed gate copy fires');
+    assert.doesNotMatch(result.message ?? '', /terminated/, 'transport noise never surfaces as the message');
+    assert.ok(result.remediation, 'the gate envelope carries the upgrade remediation');
+  } finally {
+    fetch.restore();
     restoreSeam();
   }
 });

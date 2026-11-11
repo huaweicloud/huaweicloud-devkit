@@ -3,12 +3,7 @@ import { runOneShot } from './devbridge-exec.ts';
 import { evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import type { ExposeTunnelResult } from './devbridge-expose.ts';
 import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
-import {
-  VERSION_GATE_CODE,
-  codelessGateFields,
-  isVersionGateError,
-  versionGateMessage,
-} from '../lib/hdkit/hdkit-gate.ts';
+import { gateFoldPayload, isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
 
 // 409 门禁在 relay 出口的统一折叠（v2 扩展，台账记录）：三个 catch 位共用——
 // 自动创建、自愈重建、配额清单读取。authMode/attempts 保留（探测到的真实状态，
@@ -19,24 +14,17 @@ function versionGateFailure(
   authMode: string,
   attempts: Record<string, string>,
 ): { ok: false; failure: ExposeTunnelResult } {
-  const gate = error as {
-    clientVersion?: string;
-    minVersion?: string;
-    remediation?: { hint: string; steps: string[] };
-  };
-  // 无码 409（body 读取中断）没有装载 remediation——按出口折叠需就地铸出
-  // 未知版本兜底（round 5，v2 扩展），其余形态原样透传
-  const remediation = gate.remediation ?? codelessGateFields().remediation;
+  const fold = gateFoldPayload(error);
   return {
     ok: false,
     failure: {
       ok: false,
       port,
-      error: versionGateMessage(error),
-      error_code: VERSION_GATE_CODE,
-      ...(gate.clientVersion ? { clientVersion: gate.clientVersion } : {}),
-      ...(gate.minVersion ? { minVersion: gate.minVersion } : {}),
-      gateRemediation: remediation,
+      error: fold.message,
+      error_code: fold.code,
+      ...(fold.clientVersion ? { clientVersion: fold.clientVersion } : {}),
+      ...(fold.minVersion ? { minVersion: fold.minVersion } : {}),
+      gateRemediation: fold.remediation,
       authMode: authMode || 'UNKNOWN',
       attempts,
     },
