@@ -270,11 +270,66 @@ test('upgradePackage 失败原因: npm ERR! 尾部 npm notice 升级提示不进
   assert.doesNotMatch(reason, /npm notice|New major version|A complete log/);
 });
 
-test('upgradePackage 失败原因: 真实 lifecycle 块取 code 行与失败脚本行, 不取通用建议', async () => {
-  const reason = await reasonFor(failureStderr('lifecycle-warn-tail.err'));
-  assert.match(reason, /ELIFECYCLE/);
-  assert.match(reason, /huaweicloud-devkit@2\.0\.1 update/);
-  assert.doesNotMatch(reason, /This is probably not a problem|A complete log|EBADENGINE/);
+test('upgradePackage 失败原因: 单行安装失败保留子进程原因, 只剪掉日志指针尾巴', async () => {
+  const reason = await reasonFor(failureStderr('install-failed.err'));
+  assert.match(reason, /npm install failed in/);
+  assert.match(reason, /404 tarball, folder, http url, or git url/);
+  assert.doesNotMatch(reason, /-debug-\d+\.log/);
+  assert.doesNotMatch(reason, /^exit /);
+});
+
+test('upgradePackage 失败原因: 第二条单行安装失败同样保留代理诊断', async () => {
+  const reason = await reasonFor(failureStderr('install-failed-proxy.err'));
+  assert.match(reason, /npm install failed in/);
+  assert.match(reason, /proxy/);
+  assert.doesNotMatch(reason, /-debug-\d+\.log/);
+});
+
+test('upgradePackage 失败原因: ENOENT 跳过 path 元数据, 取 enoent 人读行', async () => {
+  const reason = await reasonFor(failureStderr('enoent.err'));
+  assert.match(reason, /ENOENT/);
+  assert.match(reason, /unknown git error occurred/);
+  assert.doesNotMatch(reason, /path git|A complete log/);
+});
+
+test('upgradePackage 失败原因: 安装脚本失败取 command 行, 不取 path 元数据', async () => {
+  const reason = await reasonFor(failureStderr('command-failed.err'));
+  assert.match(reason, /code 1/);
+  assert.match(reason, /sh -c node -e/);
+  assert.doesNotMatch(reason, /path \/tmp|A complete log/);
+});
+
+test('upgradePackage 失败原因: EACCES 取缓存说明, 不取缓存路径', async () => {
+  const reason = await reasonFor(failureStderr('eacces.err'));
+  assert.match(reason, /EACCES/);
+  assert.match(reason, /root-owned files|permission denied/);
+  assert.doesNotMatch(reason, /path \/tmp/);
+});
+
+test('upgradePackage 失败原因: 退出码 7 的安装块保留 fatal 原因行', async () => {
+  const reason = await reasonFor(failureStderr('code-7.err'));
+  assert.match(reason, /code 7/);
+  assert.match(reason, /fatal: native build failed: missing libfoo/);
+  assert.doesNotMatch(reason, /path \/tmp|A complete log/);
+});
+
+test('upgradePackage 失败原因: pty 里的 spinner 字形不挡住 npm error 行', async () => {
+  const reason = await reasonFor(failureStderr('tty-e404.err'));
+  assert.match(reason, /code E404/);
+  assert.match(reason, /404 Not Found - GET/);
+  assert.ok(!reason.includes(String.fromCharCode(0x2826)), 'no spinner glyph survives');
+});
+
+test('upgradePackage 失败原因: 无 code 行的 CLI stderr 优先取失败诊断行, 不取首行', async () => {
+  const reason = await reasonFor(failureStderr('binfail.err'));
+  assert.match(reason, /不支持的升级目标/);
+  assert.doesNotMatch(reason, /^AUDIT/);
+});
+
+test('upgradePackage 失败原因: Node loader 崩溃取 Error 行, 不取帧头', async () => {
+  const reason = await reasonFor(failureStderr('crash-loader.err'));
+  assert.match(reason, /Error: Cannot find module/);
+  assert.doesNotMatch(reason, /^node:internal/);
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
@@ -285,7 +340,7 @@ test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   assert.doesNotMatch(r.error ?? '', /exit null/);
 });
 
-test('upgradePackage 升级子进程: 凭据谓词命中的环境变量全部剥掉, 其余环境与 argv 保留', async () => {
+test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配置与镜像 pin', async () => {
   const candidates = [
     'HW_ACCESS_KEY',
     'hw_access_key',
@@ -310,11 +365,35 @@ test('upgradePackage 升级子进程: 凭据谓词命中的环境变量全部剥
     'HUAWEI_ACCESS_KEY',
     'HUAWEI_SECRET_KEY',
   ];
+  // Non-credential namespace members the upgrade child's own update graph reads,
+  // grouped by the behaviour they carry.
+  const preserveGroups = {
+    hcloudBinary: 'HCLOUD_BIN HCLOUD_BIN_ARGS_JSON HCLOUD_CONFIG_PATH HCLOUD_META_DIR HCLOUD_OBS_CONFIG_PATH',
+    stateRoot: 'HUAWEICLOUD_HOME HUAWEICLOUD_DEVKIT_HOME HUAWEICLOUD_DEVKIT_DEBUG',
+    registry: 'HUAWEICLOUD_NPM_REGISTRY',
+    installSkips:
+      'HUAWEICLOUD_DEVKIT_SKIP_DSH_PLUGIN_INSTALL HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT HUAWEICLOUD_DEVKIT_SKIP_UPDATE HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL',
+    telemetry: 'HUAWEICLOUD_DEVKIT_TELEMETRY HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT',
+    surface:
+      'HUAWEICLOUD_AGENT_TOOLKIT_MODE HUAWEICLOUD_ICONS_OFFLINE HUAWEICLOUD_OPENCODE_PERMISSION_SEAM HUAWEICLOUD_REGION HUAWEICLOUD_VENDOR_CHALLENGE',
+    endpoints: 'HUAWEICLOUD_INJECT_STS_CMD HUAWEICLOUD_MCP_POLICY_FILE HW_IAM_ENDPOINT HW_REGION HW_WORKSPACE_ID',
+    sandbox: 'HW_POOL_TEMPLATE_EPHEMERAL HW_POOL_TEMPLATE_PERSISTENT HW_SANDBOX_POOL_CACHE_PATH HW_STS_EXPIRES_AT',
+  };
+  const preserveKeys = Object.values(preserveGroups).join(' ').split(' ');
+  for (const key of [...credentialKeys, ...preserveKeys]) {
+    assert.equal(isCredentialEnvVarName(key), true, `${key} sits in the predicate namespace`);
+  }
+  const prefixes = [...new Set(preserveKeys.map((key) => `${key.split('_')[0]}_`))];
+  const unlistedKeys = prefixes.map((prefix) => `${prefix}UNLISTED_CREDENTIAL_PROBE`);
+  assert.equal(unlistedKeys.filter((key) => isCredentialEnvVarName(key)).length, prefixes.length);
   const marker = 'DEVKIT_UPGRADE_ENV_MARKER';
   assert.equal(isCredentialEnvVarName(marker), false, 'the control must be predicate-negative');
-  const touched = [...credentialKeys, ...extraKeys, marker];
+  const mirror = 'http://127.0.0.1:4873';
+  const touched = [...credentialKeys, ...extraKeys, ...preserveKeys, ...unlistedKeys, marker];
   const saved = new Map(touched.map((key) => [key, process.env[key]]));
+  const savedRegistry = process.env.HUAWEICLOUD_NPM_REGISTRY;
   for (const key of touched) process.env[key] = `fixture-${key}`;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = mirror;
   try {
     let spawned: { args: readonly string[]; opts: SpawnSyncOptions } | null = null;
     const spawnFn: UpgradeSpawnFn = (_cmd, args, opts) => {
@@ -325,16 +404,41 @@ test('upgradePackage 升级子进程: 凭据谓词命中的环境变量全部剥
     assert.equal(r.success, true);
     assert.deepEqual(spawned!.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
     const env = spawned!.opts.env as NodeJS.ProcessEnv;
-    for (const key of [...credentialKeys, ...extraKeys]) {
+    for (const key of [...credentialKeys, ...extraKeys, ...unlistedKeys]) {
       assert.equal(env[key], undefined, `${key} must not reach npx`);
     }
+    for (const key of preserveKeys) {
+      if (key === 'HUAWEICLOUD_NPM_REGISTRY') continue;
+      assert.equal(env[key], `fixture-${key}`, `${key} must reach npx`);
+    }
+    assert.equal(env.HUAWEICLOUD_NPM_REGISTRY, mirror);
     assert.equal(env[marker], `fixture-${marker}`);
     assert.equal(env.PATH, process.env.PATH);
     assert.equal(env.HOME, process.env.HOME);
+    assert.equal(env.npm_config_registry, mirror, 'the child npm config follows the operator mirror');
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
+    if (savedRegistry === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = savedRegistry;
+  }
+});
+
+test('upgradePackage 升级子进程: 没有镜像时 npm 配置落到公共 registry', async () => {
+  const saved = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+  try {
+    let spawned: SpawnSyncOptions | null = null;
+    const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
+      spawned = opts;
+      return { status: 0 };
+    };
+    await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn });
+    assert.equal((spawned!.env as NodeJS.ProcessEnv).npm_config_registry, 'https://registry.npmjs.org');
+  } finally {
+    if (saved === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = saved;
   }
 });

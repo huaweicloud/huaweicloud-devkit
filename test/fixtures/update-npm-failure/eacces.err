@@ -1,0 +1,11 @@
+npm error code EACCES
+npm error syscall mkdir
+npm error path /tmp/opencode/interrogate/pr-3-r2/reviewer-2/captures/eacces/ro-cache/_cacache
+npm error errno EACCES
+npm error
+npm error Your cache folder contains root-owned files, due to a bug in previous versions of npm which has since been addressed.
+npm error
+npm error To permanently fix this problem, please run:
+npm error   sudo chown -R 1002:1002 "/tmp/opencode/interrogate/pr-3-r2/reviewer-2/captures/eacces/ro-cache"
+npm error Log files were not written due to an error writing to the directory: /tmp/opencode/interrogate/pr-3-r2/reviewer-2/captures/eacces/ro-cache/_logs
+npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal

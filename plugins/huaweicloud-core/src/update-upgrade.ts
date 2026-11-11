@@ -26,12 +26,56 @@ const UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS = new Set([
   'HUAWEI_SECRET_KEY',
 ]);
 
+// The predicate's prefixes also cover the devkit's own configuration. These
+// names are read by the child's update graph (registry, proxy, state root,
+// binary resolution, install skips), so they pass through unchanged.
+const UPGRADE_PRESERVE_ENV_KEYS = new Set([
+  'HCLOUD_BIN',
+  'HCLOUD_BIN_ARGS_JSON',
+  'HCLOUD_CONFIG_PATH',
+  'HCLOUD_META_DIR',
+  'HCLOUD_OBS_CONFIG_PATH',
+  'HUAWEICLOUD_AGENT_TOOLKIT_MODE',
+  'HUAWEICLOUD_DEVKIT_DEBUG',
+  'HUAWEICLOUD_DEVKIT_HOME',
+  'HUAWEICLOUD_DEVKIT_SKIP_DSH_PLUGIN_INSTALL',
+  'HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT',
+  'HUAWEICLOUD_DEVKIT_SKIP_UPDATE',
+  'HUAWEICLOUD_DEVKIT_TELEMETRY',
+  'HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT',
+  'HUAWEICLOUD_HOME',
+  'HUAWEICLOUD_ICONS_OFFLINE',
+  'HUAWEICLOUD_INJECT_STS_CMD',
+  'HUAWEICLOUD_MCP_POLICY_FILE',
+  'HUAWEICLOUD_NPM_REGISTRY',
+  'HUAWEICLOUD_OPENCODE_PERMISSION_SEAM',
+  'HUAWEICLOUD_REGION',
+  'HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL',
+  'HUAWEICLOUD_VENDOR_CHALLENGE',
+  'HW_IAM_ENDPOINT',
+  'HW_POOL_TEMPLATE_EPHEMERAL',
+  'HW_POOL_TEMPLATE_PERSISTENT',
+  'HW_REGION',
+  'HW_SANDBOX_POOL_CACHE_PATH',
+  'HW_STS_EXPIRES_AT',
+  'HW_WORKSPACE_ID',
+]);
+
 function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {};
+  let registry: string | undefined;
   for (const [key, value] of Object.entries(env)) {
-    if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(key.toUpperCase())) continue;
+    const upper = key.toUpperCase();
+    if (upper === 'HUAWEICLOUD_NPM_REGISTRY') registry = value;
+    if (UPGRADE_PRESERVE_ENV_KEYS.has(upper)) {
+      next[key] = value;
+      continue;
+    }
+    if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(upper)) continue;
     next[key] = value;
   }
+  // Dev 4890d78c's pin: the child's npm config follows the operator mirror.
+  next.npm_config_registry = registry || 'https://registry.npmjs.org';
   return next;
 }
 
@@ -65,16 +109,32 @@ function defaultSpawn(
 }
 
 // npm reports failures as `npm error ...` lines (npm 7+) or `npm ERR! ...`
-// (legacy), with ANSI color, warnings, notices, and log pointers around them.
-// The trailing lines are boilerplate, so the reason keeps the identifying code
-// line plus the first diagnostic instead of the tail (#1117).
+// (legacy), with ANSI color, pty spinners, warnings, notices, and log pointers
+// around them. The tail is boilerplate, so the reason keeps the identifying
+// code line plus the first human diagnostic (#1117).
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, 'g');
+const LOG_POINTER_SUFFIX =
+  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:).*$/;
+const DIAGNOSTIC_HINT = /\b(?:error|failed|failure|fatal|unknown|unsupported)\b|错误|失败|不支持|未知/i;
+
+function stripLogPointerSuffix(line: string): string {
+  return line.replace(LOG_POINTER_SUFFIX, '').trim();
+}
+
+function shiftNpmErrorToken(line: string): string {
+  const at = line.search(/npm error\b/);
+  if (at <= 0) return line;
+  // pty spinners write glyph runs before the line; anything printable before
+  // the token is the child's own message and stays.
+  return /^[^\x20-\x7e]*$/.test(line.slice(0, at)) ? line.slice(at) : line;
+}
 
 function normalizeNpmLine(line: string): string {
-  return line
+  const normalized = line
     .replace(ANSI_ESCAPE, '')
     .trim()
     .replace(/^npm ERR!\s?/, 'npm error ');
+  return stripLogPointerSuffix(shiftNpmErrorToken(normalized));
 }
 
 function npmPayload(line: string): string {
@@ -92,14 +152,19 @@ function isNpmNoiseLine(line: string): boolean {
   return (
     /^A complete log of this run can be found in:/.test(payload) ||
     /^For a full report see:/.test(payload) ||
-    /(?:-debug-\d+\.log|-eresolve-report\.txt)$/.test(payload) ||
+    /^\s*\S*(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload) ||
     /^\s*at\s/.test(payload)
   );
 }
 
-function isNpmStructuredHeader(line: string): boolean {
+// npm's error block leads with metadata fields before the sentence that
+// explains the failure. `command sh -c ...` is a last-resort diagnostic: the
+// command that failed is better than nothing when the block has no sentence.
+function npmDiagnosticRank(line: string): number {
   const payload = npmPayload(line);
-  return payload === '' || /^(?:errno|syscall|code)\b/.test(payload);
+  if (payload === '' || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 2;
+  if (/^command\b/.test(payload)) return 1;
+  return 0;
 }
 
 function extractNpmFailureReason(execResult: SpawnResultLike): string {
@@ -109,10 +174,12 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     .map((line) => normalizeNpmLine(line))
     .filter((line) => line && !isNpmNoiseLine(line));
   const codeLine = lines.find((line) => isNpmErrorLine(line) && /^code \S+/.test(npmPayload(line)));
-  const diagnostic = lines.find((line) => isNpmErrorLine(line) && line !== codeLine && !isNpmStructuredHeader(line));
+  const others = lines.filter((line) => isNpmErrorLine(line) && line !== codeLine);
+  const diagnostic =
+    others.find((line) => npmDiagnosticRank(line) === 0) ?? others.find((line) => npmDiagnosticRank(line) === 1);
   const kept = [codeLine, diagnostic].filter((line): line is string => Boolean(line));
   if (kept.length) return kept.join(' ');
-  const first = lines.find((line) => !isNpmErrorLine(line));
+  const first = lines.find((line) => !isNpmErrorLine(line) && DIAGNOSTIC_HINT.test(line)) ?? lines[0];
   if (first) return first;
   if (execResult.signal) return `signal ${execResult.signal}`;
   if (typeof execResult.status === 'number') return `exit ${execResult.status}`;

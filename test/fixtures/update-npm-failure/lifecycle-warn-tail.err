@@ -1,9 +1,0 @@
-npm error code ELIFECYCLE
-npm error errno 1
-npm error huaweicloud-devkit@2.0.1 update: `node ./bin/setup.cjs update --target opencode`
-npm error Exit status 1
-npm error Failed at the huaweicloud-devkit@2.0.1 update script.
-npm error This is probably not a problem with npm. There is likely additional logging output above.
-npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T05_00_00_000Z-debug-0.log
-npm warn EBADENGINE Unsupported engine
-npm warn EBADENGINE current: {"node":"v22.14.0"}

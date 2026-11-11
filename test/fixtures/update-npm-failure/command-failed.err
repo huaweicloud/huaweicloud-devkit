@@ -1,0 +1,5 @@
+npm error code 1
+npm error path /tmp/swarm-pr-3/worker-a2-r2/cap/depbad/host/node_modules/depbad
+npm error command failed
+npm error command sh -c node -e "process.exit(1)"
+npm error A complete log of this run can be found in: /home/yanchengyu/.npm/_logs/2026-11-11T06_02_22_455Z-debug-0.log
