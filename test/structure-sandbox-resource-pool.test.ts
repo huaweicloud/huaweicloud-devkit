@@ -468,8 +468,8 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     skill.split('\n').find((line) => line.includes('Gateway 502/504 vs the 409 version gate')) ?? '';
   assert.match(
     gateWarningsRow,
-    /A connect answered by gateway 502\/504 is a transient orchestration timeout, NOT a failed create: Gateway 502\/504 timeouts during orchestration are retried automatically \(30s\/45s backoff\) — the server may already have created the instance, so a retry reuses it; on exhaustion the result is ok:false with the attempt count, and the remediation follows the failing answer — a gateway page carries the transient-class copy, while a business-coded 502 \(e\.g\. burn-core HD\.97520422\) keeps its own remediation\./,
-    'the gate warnings row must mirror the connect description retry sentence with the exhaustion observable and the remediation-precision split',
+    /A connect answered by gateway 502\/504 is a transient orchestration timeout, NOT a failed create: Gateway 502\/504 timeouts during orchestration are retried automatically \(30s\/45s backoff\) — the server may already have created the instance, so a retry reuses it; on exhaustion the result is ok:false with the attempt count, and the remediation follows the failing answer — a gateway page carries the transient-class copy, while a business-coded 502 that carries its own remediation keeps it \(one without its own copy falls to the transient copy\)\./,
+    'the gate warnings row must mirror the retry sentence with the exhaustion observable and the exact remediation-split rule',
   );
   assert.match(
     gateWarningsRow,
@@ -481,8 +481,8 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   // issue"互为印证）
   assert.match(
     skill,
-    /\*\*Version gate\*\* \(`HDKIT_VERSION_TOO_OLD`\): NOT a credential problem — the plugin version is too old\. The failure carries the upgrade remediation \(npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or call `huaweicloud_upgrade`\); creating a key or re-running `huaweicloud_sandbox_credentials` cannot clear it\./,
-    'the Step 1 NO_CREDENTIAL branch must discriminate the version gate before the quota and manual fallbacks',
+    /\*\*Version gate\*\* \(`HDKIT_VERSION_TOO_OLD`\): NOT a credential problem — the plugin version is too old\. The failure carries the upgrade remediation under gateRemediation \(npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or call `huaweicloud_upgrade`\); creating a key or re-running `huaweicloud_sandbox_credentials` cannot clear it\./,
+    'the Step 1 NO_CREDENTIAL branch must discriminate the version gate before the quota and manual fallbacks, with the taught field name gateRemediation',
   );
   assert.match(
     gateWarningsRow,
@@ -525,8 +525,8 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   assert.match(
     connectDesc,
-    /An outdated plugin version is rejected by the 409 HDKIT_VERSION_TOO_OLD version gate, surfaced by the sandbox tools \(connect\/check_user\/sign_agreement\/credentials\) as ok:false and by the voucher trio as claimed:false, always carrying clientVersion, minVersion, and remediation naming the upgrade act \(npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or huaweicloud_upgrade\)\./,
-    'connect must state the version-gate arrival with the split ok/claimed envelopes and the upgrade remediation',
+    /An outdated plugin version is rejected by the 409 HDKIT_VERSION_TOO_OLD version gate, surfaced by the sandbox tools \(connect\/check_user\/sign_agreement\/credentials\) as ok:false and by the voucher trio as claimed:false, always carrying code, message, and remediation naming the upgrade act \(npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or huaweicloud_upgrade\), with clientVersion and minVersion present when the service sends them\./,
+    'connect must state the version-gate arrival with the split ok/claimed envelopes, the always-present fields, and the version fields as service-conditional',
   );
   assert.doesNotMatch(
     connectDesc,
@@ -585,8 +585,8 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   assert.match(
     exposeDesc,
-    /The auto-create relay goes through hdkitservice and inherits its 409 HDKIT_VERSION_TOO_OLD version gate: an outdated plugin fails auto-create the same way it fails connect, and the expose failure carries error_code HDKIT_VERSION_TOO_OLD with the upgrade remediation — upgrade the plugin instead of creating a key by hand\./,
-    'the expose description must teach that the relay inherits the version gate and surfaces it on the failure',
+    /The auto-create relay goes through hdkitservice and inherits its 409 HDKIT_VERSION_TOO_OLD version gate: an outdated plugin fails auto-create the same way it fails connect, and the expose failure carries error_code HDKIT_VERSION_TOO_OLD with clientVersion, minVersion, and the upgrade remediation under gateRemediation — upgrade the plugin instead of creating a key by hand\./,
+    'the expose description must teach the relay gate fold with its taught field name gateRemediation',
   );
 
   const closeDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_close_session');
