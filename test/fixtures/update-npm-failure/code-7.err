@@ -1,5 +1,5 @@
 npm error code 7
-npm error path /tmp/opencode/interrogate/pr-3-r2/reviewer-2/captures/lifecycle/consumer/node_modules/broken-install-fixture
+npm error path /home/op/captures/lifecycle/consumer/node_modules/broken-install-fixture
 npm error command failed
 npm error command sh -c node -e "console.error('fatal: native build failed: missing libfoo'); process.exit(7)"
 npm error fatal: native build failed: missing libfoo

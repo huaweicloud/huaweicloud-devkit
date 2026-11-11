@@ -35,7 +35,6 @@ const UPGRADE_PRESERVE_ENV_KEYS = new Set([
   'HCLOUD_CONFIG_PATH',
   'HCLOUD_META_DIR',
   'HCLOUD_OBS_CONFIG_PATH',
-  'HUAWEICLOUD_AGENT_TOOLKIT_MODE',
   'HUAWEICLOUD_DEVKIT_DEBUG',
   'HUAWEICLOUD_DEVKIT_HOME',
   'HUAWEICLOUD_DEVKIT_SKIP_DSH_PLUGIN_INSTALL',
@@ -50,7 +49,6 @@ const UPGRADE_PRESERVE_ENV_KEYS = new Set([
   'HUAWEICLOUD_NPM_REGISTRY',
   'HUAWEICLOUD_OPENCODE_PERMISSION_SEAM',
   'HUAWEICLOUD_REGION',
-  'HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL',
   'HUAWEICLOUD_VENDOR_CHALLENGE',
   'HW_IAM_ENDPOINT',
   'HW_POOL_TEMPLATE_EPHEMERAL',
@@ -63,10 +61,12 @@ const UPGRADE_PRESERVE_ENV_KEYS = new Set([
 
 function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {};
+  const registrySpellings: string[] = [];
   let registry: string | undefined;
   for (const [key, value] of Object.entries(env)) {
     const upper = key.toUpperCase();
     if (upper === 'HUAWEICLOUD_NPM_REGISTRY') registry = value;
+    if (upper === 'NPM_CONFIG_REGISTRY') registrySpellings.push(key);
     if (UPGRADE_PRESERVE_ENV_KEYS.has(upper)) {
       next[key] = value;
       continue;
@@ -74,8 +74,13 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(upper)) continue;
     next[key] = value;
   }
-  // Dev 4890d78c's pin: the child's npm config follows the operator mirror.
-  next.npm_config_registry = registry || 'https://registry.npmjs.org';
+  // Dev 4890d78c's pin, scoped to the operator's devkit mirror: when it is set,
+  // every npm registry spelling collapses to it; when it is unset, npm's own env
+  // and .npmrc channels reach the child untouched.
+  if (registry?.trim()) {
+    for (const key of registrySpellings) delete next[key];
+    next.npm_config_registry = registry;
+  }
   return next;
 }
 
@@ -112,10 +117,14 @@ function defaultSpawn(
 // (legacy), with ANSI color, pty spinners, warnings, notices, and log pointers
 // around them. The tail is boilerplate, so the reason keeps the identifying
 // code line plus the first human diagnostic (#1117).
-const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*[A-Za-z]`, 'g');
+const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
 const LOG_POINTER_SUFFIX =
   /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:).*$/;
 const DIAGNOSTIC_HINT = /\b(?:error|failed|failure|fatal|unknown|unsupported)\b|错误|失败|不支持|未知/i;
+// Strong failure markers: an errno-style code token (ENOTFOUND, EACCES, E404) or
+// a line that opens with Error/fatal. The CLI convention puts the cause last,
+// so ties inside a tier take the later line.
+const STRONG_MARKER = /\bE[A-Z][A-Z0-9]{2,}\b|^(?:Error|error|fatal|FATAL)\b/;
 
 function stripLogPointerSuffix(line: string): string {
   return line.replace(LOG_POINTER_SUFFIX, '').trim();
@@ -124,9 +133,9 @@ function stripLogPointerSuffix(line: string): string {
 function shiftNpmErrorToken(line: string): string {
   const at = line.search(/npm error\b/);
   if (at <= 0) return line;
-  // pty spinners write glyph runs before the line; anything printable before
-  // the token is the child's own message and stays.
-  return /^[^\x20-\x7e]*$/.test(line.slice(0, at)) ? line.slice(at) : line;
+  // pty spinners write glyph runs, spaces, or cursor escapes before the line;
+  // anything printable before the token is the child's own message and stays.
+  return /^[^\x21-\x7e]*$/.test(line.slice(0, at)) ? line.slice(at) : line;
 }
 
 function normalizeNpmLine(line: string): string {
@@ -152,7 +161,7 @@ function isNpmNoiseLine(line: string): boolean {
   return (
     /^A complete log of this run can be found in:/.test(payload) ||
     /^For a full report see:/.test(payload) ||
-    /^\s*\S*(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload) ||
+    /^\s*.*(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload) ||
     /^\s*at\s/.test(payload)
   );
 }
@@ -179,7 +188,10 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     others.find((line) => npmDiagnosticRank(line) === 0) ?? others.find((line) => npmDiagnosticRank(line) === 1);
   const kept = [codeLine, diagnostic].filter((line): line is string => Boolean(line));
   if (kept.length) return kept.join(' ');
-  const first = lines.find((line) => !isNpmErrorLine(line) && DIAGNOSTIC_HINT.test(line)) ?? lines[0];
+  const codeless = lines.filter((line) => !isNpmErrorLine(line));
+  const strong = codeless.filter((line) => STRONG_MARKER.test(line));
+  const hinted = codeless.filter((line) => DIAGNOSTIC_HINT.test(line));
+  const first = strong.at(-1) ?? hinted.at(-1) ?? codeless[0];
   if (first) return first;
   if (execResult.signal) return `signal ${execResult.signal}`;
   if (typeof execResult.status === 'number') return `exit ${execResult.status}`;

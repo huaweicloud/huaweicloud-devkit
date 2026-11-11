@@ -5,4 +5,4 @@ npm error errno -2
 npm error enoent An unknown git error occurred
 npm error enoent This is related to npm not being able to find a file.
 npm error enoent
-npm error A complete log of this run can be found in: /tmp/opencode/interrogate/pr-3-r2/reviewer-1/captures/npm-cache/_logs/2026-11-11T06_21_09_648Z-debug-0.log
+npm error A complete log of this run can be found in: /home/op/captures/npm-cache/_logs/2026-11-11T06_21_09_648Z-debug-0.log

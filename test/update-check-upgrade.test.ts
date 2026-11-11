@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SpawnSyncOptions } from 'node:child_process';
@@ -195,6 +195,44 @@ async function reasonFor(stderr: string, status = 1): Promise<string> {
   return r.error ?? '';
 }
 
+async function withEnv(vars: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
+  const saved = new Map(Object.keys(vars).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(vars)) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+async function childEnv(): Promise<NodeJS.ProcessEnv> {
+  let captured: NodeJS.ProcessEnv | null = null;
+  const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
+    captured = opts.env as NodeJS.ProcessEnv;
+    return { status: 0 };
+  };
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn });
+  assert.equal(r.success, true);
+  assert.ok(captured);
+  return captured;
+}
+
+const NO_REGISTRY = {
+  HUAWEICLOUD_NPM_REGISTRY: undefined,
+  npm_config_registry: undefined,
+  NPM_CONFIG_REGISTRY: undefined,
+};
+
+function registrySpellings(env: NodeJS.ProcessEnv): string[] {
+  return Object.keys(env).filter((key) => key.toUpperCase() === 'NPM_CONFIG_REGISTRY');
+}
+
 test('upgradePackage 失败原因: 取 npm error 行, 不把 npm warn 噪声当原因', async () => {
   const stderr = [
     'npm error code ELIFECYCLE',
@@ -320,10 +358,97 @@ test('upgradePackage 失败原因: pty 里的 spinner 字形不挡住 npm error 
   assert.ok(!reason.includes(String.fromCharCode(0x2826)), 'no spinner glyph survives');
 });
 
+test('upgradePackage 失败原因: spinner 字形加空格后的 npm error 行仍被识别', async () => {
+  const stderr = [
+    '\u2826 npm error code E404',
+    'npm error 404 Not Found - GET https://registry.example/x - Not found',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code E404/);
+  assert.match(reason, /404 Not Found - GET/);
+});
+
+test('upgradePackage 失败原因: 字形加 show-cursor 转义再加空格也不挡 token', async () => {
+  const cursor = `\u2826 \u001b[?25h `;
+  const stderr = [
+    `${cursor}npm error code E404`,
+    'npm error 404 Not Found - GET https://registry.example/x - Not found',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code E404/);
+  assert.match(reason, /404 Not Found - GET/);
+});
+
+test('upgradePackage 失败原因: 两行指针里的带空格 profile 路径不进原因', async () => {
+  const stderr = [
+    'npm error code E404',
+    'npm error A complete log of this run can be found in:',
+    'npm error     /Users/John Doe/.npm/_logs/2026-01-01T00_00_00_000Z-debug-0.log',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.equal(reason, 'npm error code E404');
+});
+
 test('upgradePackage 失败原因: 无 code 行的 CLI stderr 优先取失败诊断行, 不取首行', async () => {
   const reason = await reasonFor(failureStderr('binfail.err'));
   assert.match(reason, /不支持的升级目标/);
   assert.doesNotMatch(reason, /^AUDIT/);
+});
+
+test('upgradePackage 失败原因: 无 code 行的 EACCES 行盖过前置审计行', async () => {
+  const reason = await reasonFor(failureStderr('b1-audit-eacces.err'));
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /^AUDIT/);
+});
+
+test('upgradePackage 失败原因: 强标记行盖过前置带提示词的审计行', async () => {
+  const reason = await reasonFor(failureStderr('b2-audit-hint-then-install.err'));
+  assert.match(reason, /npm install failed in/);
+  assert.doesNotMatch(reason, /^AUDIT/);
+});
+
+test('upgradePackage 失败原因: 进度行之后的裸 EACCES 仍然被选中', async () => {
+  const reason = await reasonFor(failureStderr('b4-progress-eacces.err'));
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /^Resolving package metadata/);
+});
+
+test('upgradePackage 失败原因: 审计提示行不压过其后的 Error 行', async () => {
+  const reason = await reasonFor(failureStderr('b6-audit-hint-then-error.err'));
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /^AUDIT/);
+});
+
+test('upgradePackage 失败原因: 重试提示行不压过其前的 ENOTFOUND 行', async () => {
+  const reason = await reasonFor(failureStderr('enotfound-retry.err'));
+  assert.match(reason, /ENOTFOUND registry\.internal\.corp/);
+  assert.doesNotMatch(reason, /checkout failed/);
+});
+
+test('upgradePackage 失败原因: 可选步骤警告不压过其前的 ENOTFOUND 行', async () => {
+  const reason = await reasonFor(failureStderr('enotfound-warning.err'));
+  assert.match(reason, /ENOTFOUND registry\.internal\.corp/);
+  assert.doesNotMatch(reason, /warning/);
+});
+
+test('upgradePackage 失败原因: 同层命中取靠后的那行', async () => {
+  const stderr = [
+    'cleanup failed, ignored',
+    'npm install failed in /home/op/x: 404 tarball, folder, http url, or git url',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /npm install failed in/);
+  assert.doesNotMatch(reason, /cleanup failed/);
+});
+
+test('upgradePackage 失败原因: 无强标记时提示词行压过其前的无关行', async () => {
+  const stderr = [
+    'settings restored from backup',
+    'warning: could not restore previous settings; user config left failed',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /could not restore previous settings/);
+  assert.doesNotMatch(reason, /^settings restored/);
 });
 
 test('upgradePackage 失败原因: Node loader 崩溃取 Error 行, 不取帧头', async () => {
@@ -372,10 +497,10 @@ test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配�
     stateRoot: 'HUAWEICLOUD_HOME HUAWEICLOUD_DEVKIT_HOME HUAWEICLOUD_DEVKIT_DEBUG',
     registry: 'HUAWEICLOUD_NPM_REGISTRY',
     installSkips:
-      'HUAWEICLOUD_DEVKIT_SKIP_DSH_PLUGIN_INSTALL HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT HUAWEICLOUD_DEVKIT_SKIP_UPDATE HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL',
+      'HUAWEICLOUD_DEVKIT_SKIP_DSH_PLUGIN_INSTALL HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT HUAWEICLOUD_DEVKIT_SKIP_UPDATE',
     telemetry: 'HUAWEICLOUD_DEVKIT_TELEMETRY HUAWEICLOUD_DEVKIT_TELEMETRY_ENDPOINT',
     surface:
-      'HUAWEICLOUD_AGENT_TOOLKIT_MODE HUAWEICLOUD_ICONS_OFFLINE HUAWEICLOUD_OPENCODE_PERMISSION_SEAM HUAWEICLOUD_REGION HUAWEICLOUD_VENDOR_CHALLENGE',
+      'HUAWEICLOUD_ICONS_OFFLINE HUAWEICLOUD_OPENCODE_PERMISSION_SEAM HUAWEICLOUD_REGION HUAWEICLOUD_VENDOR_CHALLENGE',
     endpoints: 'HUAWEICLOUD_INJECT_STS_CMD HUAWEICLOUD_MCP_POLICY_FILE HW_IAM_ENDPOINT HW_REGION HW_WORKSPACE_ID',
     sandbox: 'HW_POOL_TEMPLATE_EPHEMERAL HW_POOL_TEMPLATE_PERSISTENT HW_SANDBOX_POOL_CACHE_PATH HW_STS_EXPIRES_AT',
   };
@@ -415,6 +540,7 @@ test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配�
     assert.equal(env[marker], `fixture-${marker}`);
     assert.equal(env.PATH, process.env.PATH);
     assert.equal(env.HOME, process.env.HOME);
+    assert.deepEqual(registrySpellings(env), ['npm_config_registry'], 'one registry spelling reaches npx');
     assert.equal(env.npm_config_registry, mirror, 'the child npm config follows the operator mirror');
   } finally {
     for (const [key, value] of saved) {
@@ -426,19 +552,51 @@ test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配�
   }
 });
 
-test('upgradePackage 升级子进程: 没有镜像时 npm 配置落到公共 registry', async () => {
-  const saved = process.env.HUAWEICLOUD_NPM_REGISTRY;
-  delete process.env.HUAWEICLOUD_NPM_REGISTRY;
-  try {
-    let spawned: SpawnSyncOptions | null = null;
-    const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
-      spawned = opts;
-      return { status: 0 };
-    };
-    await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn });
-    assert.equal((spawned!.env as NodeJS.ProcessEnv).npm_config_registry, 'https://registry.npmjs.org');
-  } finally {
-    if (saved === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
-    else process.env.HUAWEICLOUD_NPM_REGISTRY = saved;
-  }
+test('upgradePackage 升级子进程: devkit 镜像未设时保留操作者的 npm_config_registry', async () => {
+  const mirror = 'http://127.0.0.1:4873';
+  await withEnv({ ...NO_REGISTRY, npm_config_registry: mirror }, async () => {
+    const env = await childEnv();
+    assert.equal(env.npm_config_registry, mirror, 'the operator registry reaches the child');
+    assert.deepEqual(registrySpellings(env), ['npm_config_registry'], 'no second spelling appears');
+  });
+});
+
+test('upgradePackage 升级子进程: devkit 镜像未设时不注入 registry, .npmrc 仍然生效', async () => {
+  await withEnv(NO_REGISTRY, async () => {
+    const env = await childEnv();
+    assert.deepEqual(registrySpellings(env), [], 'npm keeps its own config channels');
+  });
+});
+
+test('upgradePackage 升级子进程: devkit 镜像设了时两种拼写都收敛到 pin', async () => {
+  const pin = 'http://devkit-mirror.corp.local:4873';
+  await withEnv(
+    {
+      HUAWEICLOUD_NPM_REGISTRY: pin,
+      npm_config_registry: 'http://operator-mirror.corp.local:4873',
+      NPM_CONFIG_REGISTRY: 'http://operator-upper.corp.local:4873',
+    },
+    async () => {
+      const env = await childEnv();
+      assert.deepEqual(registrySpellings(env), ['npm_config_registry'], 'one spelling survives');
+      assert.equal(env.npm_config_registry, pin, 'the devkit pin wins deterministically');
+      assert.equal(env.HUAWEICLOUD_NPM_REGISTRY, pin, 'the devkit override reaches the child');
+    },
+  );
+});
+
+test('upgradePackage 升级子进程: 全空时由 npm 自己的公共默认决定', async () => {
+  await withEnv(NO_REGISTRY, async () => {
+    const env = await childEnv();
+    assert.equal(env.npm_config_registry, undefined);
+    assert.deepEqual(registrySpellings(env), []);
+  });
+});
+
+test('fixtures: no update failure capture embeds a /tmp scratch path', () => {
+  const dir = fileURLToPath(FAILURE_FIXTURES);
+  const offenders = readdirSync(dir)
+    .filter((name) => name.endsWith('.err'))
+    .filter((name) => readFileSync(join(dir, name), 'utf8').includes('/tmp'));
+  assert.deepEqual(offenders, []);
 });
