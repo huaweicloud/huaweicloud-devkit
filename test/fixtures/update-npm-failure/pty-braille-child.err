@@ -1,0 +1,18 @@
+[1mnpm[22m [34mverbose[39m [94mcli[39m /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+[1mnpm[22m [36minfo[39m [94musing[39m npm@11.20.0
+[1mnpm[22m [36minfo[39m [94musing[39m node@v26.13.0
+[1mnpm[22m [34mverbose[39m [94mtitle[39m npm exec file:/home/op/loud update --target opencode
+[1mnpm[22m [34mverbose[39m [94margv[39m "exec" "--loglevel" "verbose" "--yes" "--foreground-scripts" "--" "file:/home/op/loud" "update" "--target" "opencode"
+[1mnpm[22m [34mverbose[39m [94mlogfile[39m logs-max:10 dir:/home/op/cache-loud/_logs/2026-11-11T16_33_00_884Z-
+[1mnpm[22m [34mverbose[39m [94mlogfile[39m /home/op/cache-loud/_logs/2026-11-11T16_33_00_884Z-debug-0.log
+⠙[1G[0K[1mnpm[22m [34mverbose[39m [94mshrinkwrap[39m failed to load node_modules/.package-lock.json out of date, updated: node_modules
+⠙[1G[0K⠹[1G[0K[1mnpm[22m [36minfo[39m [94mrun[39m r11-loud-pkg@1.0.0 postinstall ../../../loud node ./build.js
+⠹[1G[0Knative build failed: missing libfoo. rebuild aborted.
+⠙[1G[0K[1mnpm[22m [36minfo[39m [94mrun[39m r11-loud-pkg@1.0.0 postinstall { code: [33m7[39m, signal: [1mnull[22m }
+⠙[1G[0K[1mnpm[22m [34mverbose[39m [94mcwd[39m /home/op/fx
+⠙[1G[0K[1mnpm[22m [34mverbose[39m [94mos[39m Linux 6.8.0-106-generic
+⠙[1G[0K[1mnpm[22m [34mverbose[39m [94mnode[39m v26.13.0
+⠙[1G[0K[1mnpm[22m [34mverbose[39m [94mnpm [39m v11.20.0
+⠙[1G[0K[1mnpm[22m [34mverbose[39m [94mexit[39m [33m7[39m
+⠙[1G[0K[1mnpm[22m [34mverbose[39m [94mcode[39m [33m7[39m
+⠙[1G[0K

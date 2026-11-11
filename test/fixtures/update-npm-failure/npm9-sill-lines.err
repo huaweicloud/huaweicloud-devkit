@@ -1,0 +1,114 @@
+npm verb cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/.bin/npm
+npm info using npm@9.2.0
+npm info using node@v26.13.0
+npm verb title npm install huaweicloud-devkit@9.9.11
+npm verb argv "install" "--registry" "http://127.0.0.1:8127" "--loglevel" "silly" "huaweicloud-devkit@9.9.11"
+npm verb logfile logs-max:10 dir:/home/op/cache/legacy3/_logs/2026-11-11T18_09_29_262Z-
+npm verb logfile /home/op/cache/legacy3/_logs/2026-11-11T18_09_29_262Z-debug-0.log
+npm sill logfile done cleaning log files
+npm sill idealTree buildDeps
+npm sill fetch manifest huaweicloud-devkit@9.9.11
+npm verb shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+npm http fetch GET 200 http://127.0.0.1:8127/huaweicloud-devkit 51ms (cache miss)
+npm sill placeDep ROOT huaweicloud-devkit@9.9.11 OK for:  want: 9.9.11
+npm sill reify mark retired [ '/home/op/node_modules/left-pad' ]
+npm sill reify mark retired [ '/home/op/node_modules/prose-fail-pkg' ]
+npm sill reify mark retired [ '/home/op/node_modules/prose-pkg2' ]
+npm sill reify mark retired [ '/home/op/node_modules/rev2-dep' ]
+npm sill reify mark retired [ '/home/op/node_modules/rev2-dep2' ]
+npm sill reify mark retired [ '/home/op/node_modules/rev2-noisy' ]
+npm sill reify mark retired [ '/home/op/node_modules/rev2-opt' ]
+npm sill reify mark retired [ '/home/op/node_modules/rev2-silent' ]
+npm sill reify mark retired [
+npm sill reify   '/home/op/node_modules/rev2-silentbin',
+npm sill reify   '/home/op/node_modules/.bin/rev2-silentbin'
+npm sill reify ]
+npm sill reify mark retired [
+npm sill reify   '/home/op/node_modules/rev2-f1',
+npm sill reify   '/home/op/node_modules/.bin/rev2-f1'
+npm sill reify ]
+npm sill reify moves {
+npm sill reify   '/home/op/node_modules/left-pad': '/home/op/node_modules/.left-pad-hyI7LdYs',
+npm sill reify   '/home/op/node_modules/prose-fail-pkg': '/home/op/node_modules/.prose-fail-pkg-gJcoO1Yr',
+npm sill reify   '/home/op/node_modules/prose-pkg2': '/home/op/node_modules/.prose-pkg2-bnDCzmjw',
+npm sill reify   '/home/op/node_modules/rev2-dep': '/home/op/node_modules/.rev2-dep-wLR4fTgE',
+npm sill reify   '/home/op/node_modules/rev2-dep2': '/home/op/node_modules/.rev2-dep2-1PS3BnhG',
+npm sill reify   '/home/op/node_modules/rev2-noisy': '/home/op/node_modules/.rev2-noisy-ROwTNpEB',
+npm sill reify   '/home/op/node_modules/rev2-opt': '/home/op/node_modules/.rev2-opt-RpVm45Su',
+npm sill reify   '/home/op/node_modules/rev2-silent': '/home/op/node_modules/.rev2-silent-YO46bcKe',
+npm sill reify   '/home/op/node_modules/rev2-silentbin': '/home/op/node_modules/.rev2-silentbin-lv5URicX',
+npm sill reify   '/home/op/node_modules/.bin/rev2-silentbin': '/home/op/node_modules/.bin/.rev2-silentbin-zB9VhjSp',
+npm sill reify   '/home/op/node_modules/rev2-f1': '/home/op/node_modules/.rev2-f1-vCM0FN8l',
+npm sill reify   '/home/op/node_modules/.bin/rev2-f1': '/home/op/node_modules/.bin/.rev2-f1-DCft487F'
+npm sill reify }
+npm sill audit bulk request {
+npm sill audit   '@types/node': [ '24.19.2' ],
+npm sill audit   'is-number': [ '7.0.0' ],
+npm sill audit   typescript: [ '5.9.3' ],
+npm sill audit   'undici-types': [ '7.24.6' ],
+npm sill audit   'huaweicloud-devkit': [ '9.9.11' ]
+npm sill audit }
+npm http fetch POST 501 http://127.0.0.1:8127/-/npm/v1/security/advisories/bulk 9ms
+npm sill audit bulk request failed <html><body>501 Unsupported method ('POST')</body></html>
+npm http fetch POST 501 http://127.0.0.1:8127/-/npm/v1/security/audits/quick 3ms
+npm verb audit error HttpErrorGeneral: 501 Not Implemented - POST http://127.0.0.1:8127/-/npm/v1/security/audits/quick
+npm verb audit error     at /home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:95:15
+npm verb audit error     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+npm verb audit error     at async [getReport] (/home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:335:21)
+npm verb audit error     at async AuditReport.run (/home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:106:19)
+npm verb audit error  HttpErrorGeneral: 501 Not Implemented - POST http://127.0.0.1:8127/-/npm/v1/security/audits/quick
+npm verb audit error     at /home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:95:15
+npm verb audit error     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+npm verb audit error     at async [getReport] (/home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:335:21)
+npm verb audit error     at async AuditReport.run (/home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:106:19) {
+npm verb audit error   headers: [Object: null prototype] {
+npm verb audit error     'content-type': [ 'text/html' ],
+npm verb audit error     date: [ 'Wed, 11 Nov 2026 18:09:29 GMT' ],
+npm verb audit error     connection: [ 'keep-alive' ],
+npm verb audit error     'keep-alive': [ 'timeout=5' ],
+npm verb audit error     'transfer-encoding': [ 'chunked' ],
+npm verb audit error     'x-fetch-attempts': [ '1' ]
+npm verb audit error   },
+npm verb audit error   statusCode: 501,
+npm verb audit error   code: 'E501',
+npm verb audit error   method: 'POST',
+npm verb audit error   uri: 'http://127.0.0.1:8127/-/npm/v1/security/audits/quick',
+npm verb audit error   body: <Buffer 3c 68 74 6d 6c 3e 3c 62 6f 64 79 3e 35 30 31 20 55 6e 73 75 70 70 6f 72 74 65 64 20 6d 65 74 68 6f 64 20 28 27 50 4f 53 54 27 29 3c 2f 62 6f 64 79 3e ... 7 more bytes>,
+npm verb audit error   pkgid: undefined
+npm verb audit error }
+npm sill audit error <html><body>501 Unsupported method ('POST')</body></html>
+npm sill audit report null
+npm sill tarball no local data for huaweicloud-devkit@http://127.0.0.1:8127/huaweicloud-devkit/-/huaweicloud-devkit-9.9.11.tgz. Extracting by manifest.
+npm http fetch GET 200 http://127.0.0.1:8127/huaweicloud-devkit/-/huaweicloud-devkit-9.9.11.tgz 16ms (cache miss)
+npm info run huaweicloud-devkit@9.9.11 postinstall node_modules/huaweicloud-devkit node ./build.js
+npm info run huaweicloud-devkit@9.9.11 postinstall { code: 7, signal: null }
+npm verb stack Error: command failed
+npm verb stack     at ChildProcess.<anonymous> (/home/op/cache/legacy3/_npx/b6e504e3e67f6921/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js:53:27)
+npm verb stack     at ChildProcess.emit (node:events:514:20)
+npm verb stack     at maybeClose (node:internal/child_process:1156:16)
+npm verb stack     at ChildProcess._handle.onexit (node:internal/child_process:334:5)
+npm verb pkgid huaweicloud-devkit@9.9.11
+npm verb cwd /home/op/legacy-npm
+npm verb Linux 6.8.0-106-generic
+npm verb node v26.13.0
+npm verb npm  v9.2.0
+npm ERR! code 7
+npm ERR! path /home/op/node_modules/huaweicloud-devkit
+npm ERR! command failed
+npm ERR! command sh -c node ./build.js
+npm verb exit 7
+npm verb unfinished npm timer reify 1794420569313
+npm verb unfinished npm timer reify:build 1794420569464
+npm verb unfinished npm timer build 1794420569464
+npm verb unfinished npm timer build:deps 1794420569464
+npm verb unfinished npm timer build:run:postinstall 1794420569466
+npm verb unfinished npm timer build:run:postinstall:node_modules/huaweicloud-devkit 1794420569467
+npm verb code 7
+
+npm ERR! A complete log of this run can be found in:
+npm ERR!     /home/op/cache/legacy3/_logs/2026-11-11T18_09_29_262Z-debug-0.log
+npm notice
+npm notice New major version of npm available! 11.20.0 -> 12.2.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.2
+npm notice To update run: npm install -g npm@12.2.2
+npm notice

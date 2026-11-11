@@ -286,7 +286,8 @@ function normalizeNpmLine(line: string): string {
   const withoutSpinner = line
     .replace(ANSI_ESCAPE, '')
     .trim()
-    .replace(/^(?:[\u2800-\u28ff\s|\\/-]+)(?=npm\b)/, '');
+    .replace(/^[\u2800-\u28ff\s]+/, '')
+    .replace(/^[|\\/-]+(?=\s|npm\b)/, '');
   const shifted = shiftNpmErrorToken(withoutSpinner);
   return stripLogPointerSuffix(shifted.replace(/^npm ERR!\s?/, 'npm error '));
 }
@@ -341,7 +342,7 @@ function isNpmNoiseLine(line: string): boolean {
   // npm's log channels are not diagnostics: every `npm <channel>` prefix is
   // noise except the error channel and the `info run` echo of a script.
   if (
-    /^npm\s+(?:notice|warn|info|verbose|verb(?:ose)?|http|silly|timing)\b/i.test(line) &&
+    /^npm\s+(?:notice|warn|info|verbose|verb(?:ose)?|http|silly|sill|timing)\b/i.test(line) &&
     !/^npm info run\b/i.test(line)
   ) {
     return true;
@@ -448,6 +449,26 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (bare && failing && lastSuccess && lastSuccess.index < failing.index && bare.index < lastSuccess.index) {
     const echo = lastEchoBefore(codeless, failing.index);
     if (echo) bare = { line: echo.line, rank: 3, index: echo.index };
+  }
+  const hasEcho = codeless.some((line) => lineRank(line) === 3);
+  // The outer shell names a signal death "Terminated" or "Killed"; when npm
+  // also emitted the failing echo pair, the named script is the better reason.
+  if (bare?.rank === 2 && /^(?:Terminated|Killed)\b/i.test(bare.line) && hasEcho) {
+    const echo = lastEchoBefore(codeless, Number.POSITIVE_INFINITY);
+    if (echo) bare = { line: echo.line, rank: 3, index: echo.index };
+  }
+  // At the default loglevel npm hides the echo and prints no error block, so a
+  // plain line cannot be attributed to the failing script: the exit floor wins.
+  if (
+    !block &&
+    !codeLine &&
+    !hasEcho &&
+    bare?.rank === 2 &&
+    !/^(?:Terminated|Killed)\b/i.test(bare.line || '') &&
+    typeof execResult.status === 'number' &&
+    execResult.status !== 0
+  ) {
+    bare = undefined;
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
   // the block keeps its code prefix when the block wins or when only a weak

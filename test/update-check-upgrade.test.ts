@@ -698,7 +698,7 @@ test('upgradePackage 失败原因: 块内 at least 行不被栈帧规则吃掉',
 });
 
 test('upgradePackage 失败原因: 数组形元数据片段不压过人读行', async () => {
-  const reason = await reasonFor(failureStderr('metadata-array-fragment.err'));
+  const reason = await reasonFor(['npm error code 1', failureStderr('metadata-array-fragment.err').trim()].join('\n'));
   assert.match(reason, /installing native addon/);
   assert.doesNotMatch(reason, /requireStack/);
 });
@@ -736,9 +736,12 @@ test('upgradePackage 失败原因: at new Promise 形状的帧被丢掉', async 
 });
 
 test('upgradePackage 失败原因: 文件 URI 与 node 帧被丢掉', async () => {
-  const stderr = ['    at file:///home/op/x.js:1:1', '    at node:internal/main:1:1', 'payload copy stopped'].join(
-    '\n',
-  );
+  const stderr = [
+    'npm error code 1',
+    '    at file:///home/op/x.js:1:1',
+    '    at node:internal/main:1:1',
+    'payload copy stopped',
+  ].join('\n');
   const reason = await reasonFor(stderr);
   assert.match(reason, /payload copy stopped/);
   assert.doesNotMatch(reason, /file:\/\/|node:internal/);
@@ -841,7 +844,7 @@ test('upgradePackage 失败原因: 真实崩溃捕获的 [as alias] 帧不进原
 
 test('upgradePackage 失败原因: 无位置帧与 wasm 帧被丢掉', async () => {
   for (const fixture of ['frame-anon.err', 'frame-wasm.err']) {
-    const reason = await reasonFor(failureStderr(fixture));
+    const reason = await reasonFor(['npm error code 1', failureStderr(fixture).trim()].join('\n'));
     assert.match(reason, /payload copy stopped/);
     assert.doesNotMatch(reason, /wasm|<anonymous>/);
   }
@@ -905,22 +908,22 @@ test('upgradePackage 失败原因: 块内位置层取靠前的行', async () => 
 });
 
 test('upgradePackage 失败原因: 无 code 的位置层取最后的行', async () => {
-  const stderr = ['progress 1/2', 'progress 2/2'].join('\n');
+  const stderr = ['npm error code 1', 'progress 1/2', 'progress 2/2'].join('\n');
   const reason = await reasonFor(stderr);
   assert.match(reason, /progress 2\/2/);
   assert.doesNotMatch(reason, /progress 1\/2/);
 });
 
 test('upgradePackage 失败原因: 中文标签指针行在没有提示词竞争时也被剥掉', async () => {
-  const stderr = ['payload copy stopped', '日志: /home/op/logs/2026-debug-0.log'].join('\n');
+  const stderr = ['npm error code 1', 'payload copy stopped', '日志: /home/op/logs/2026-debug-0.log'].join('\n');
   const reason = await reasonFor(stderr);
-  assert.equal(reason, 'payload copy stopped');
+  assert.match(reason, /payload copy stopped/);
 });
 
 test('upgradePackage 失败原因: 中文全角标签指针行同样被剥掉', async () => {
-  const stderr = ['payload copy stopped', '日志：/home/op/logs/2026-debug-0.log'].join('\n');
+  const stderr = ['npm error code 1', 'payload copy stopped', '日志：/home/op/logs/2026-debug-0.log'].join('\n');
   const reason = await reasonFor(stderr);
-  assert.equal(reason, 'payload copy stopped');
+  assert.match(reason, /payload copy stopped/);
 });
 
 test('upgradePackage 失败原因: 块内中文标签指针行不进原因', async () => {
@@ -971,7 +974,7 @@ test('upgradePackage 失败原因: 裸 EACCES 行在行首也被识别', async (
 });
 
 test('upgradePackage 失败原因: 括号里带冒号的散文不是帧', async () => {
-  const reason = await reasonFor('at startup (step 2: syncing payload)');
+  const reason = await reasonFor(['npm error code 1', 'at startup (step 2: syncing payload)'].join('\n'));
   assert.match(reason, /at startup \(step 2: syncing payload\)/);
 });
 
@@ -1014,9 +1017,9 @@ test('upgradePackage 失败原因: 没有子进程文本时 command 回显仍是
 });
 
 test('upgradePackage 失败原因: 冒号前带空格的中文标签指针行也剥掉', async () => {
-  const stderr = ['payload copy stopped', '日志 : /home/op/logs/2026-debug-0.log'].join('\n');
+  const stderr = ['npm error code 1', 'payload copy stopped', '日志 : /home/op/logs/2026-debug-0.log'].join('\n');
   const reason = await reasonFor(stderr);
-  assert.equal(reason, 'payload copy stopped');
+  assert.match(reason, /payload copy stopped/);
 });
 
 test('upgradePackage 失败原因: 真实 eval 嵌套帧全部丢掉', async () => {
@@ -1027,11 +1030,12 @@ test('upgradePackage 失败原因: 真实 eval 嵌套帧全部丢掉', async () 
 
 test('upgradePackage 失败原因: 嵌套 eval 帧不压过弱位置层行', async () => {
   const stderr = [
+    'npm error code 1',
     'payload copy stopped',
     '    at eval (eval at <anonymous> (eval at <anonymous> ([eval]:1:1)), <anonymous>:1:7)',
   ].join('\n');
   const reason = await reasonFor(stderr);
-  assert.equal(reason, 'payload copy stopped');
+  assert.match(reason, /payload copy stopped/);
 });
 
 test('upgradePackage 失败原因: EINVALIDPACKAGENAME 在封闭词表内', async () => {
@@ -1055,14 +1059,20 @@ test('upgradePackage 失败原因: 字形粘连的 npm warn 行进入噪声类',
 });
 
 test('upgradePackage 失败原因: 日志标签在句中时整行保留', async () => {
-  const stderr = ['payload copy stopped', '详细日志：/home/op/logs/run.log 以及 EACCES 细节'].join('\n');
+  const stderr = ['npm error code 1', 'payload copy stopped', '详细日志：/home/op/logs/run.log 以及 EACCES 细节'].join(
+    '\n',
+  );
   const reason = await reasonFor(stderr);
   assert.match(reason, /EACCES 细节/);
   assert.match(reason, /run\.log/);
 });
 
 test('upgradePackage 失败原因: 英文句子里的日志标签不被截断', async () => {
-  const stderr = ['payload copy stopped', 'For details see 日志 : /home/op/logs/run.log and EACCES info'].join('\n');
+  const stderr = [
+    'npm error code 1',
+    'payload copy stopped',
+    'For details see 日志 : /home/op/logs/run.log and EACCES info',
+  ].join('\n');
   const reason = await reasonFor(stderr);
   assert.match(reason, /EACCES info/);
 });
@@ -1128,9 +1138,9 @@ test('upgradePackage 失败原因: npxreg 的 verbose 噪声不压过块内错�
 
 test('upgradePackage 失败原因: 混合标签指针行也被剥掉', async () => {
   for (const label of ['日志 2:', '运行-日志:']) {
-    const stderr = ['payload copy stopped', `${label} /home/op/logs/2026-debug-0.log`].join('\n');
+    const stderr = ['npm error code 1', 'payload copy stopped', `${label} /home/op/logs/2026-debug-0.log`].join('\n');
     const reason = await reasonFor(stderr);
-    assert.equal(reason, 'payload copy stopped', `${label} must drop`);
+    assert.match(reason, /payload copy stopped/, `${label} must drop`);
   }
 });
 
@@ -1252,9 +1262,9 @@ test('upgradePackage 失败原因: 已恢复的 gyp 错误不顶替失败 postin
   assert.doesNotMatch(reason, /gyp ERR|EACCES/);
 });
 
-test('upgradePackage 失败原因: 没有 echo 对时保留裸行行为', async () => {
+test('upgradePackage 失败原因: 默认 loglevel 的成功脚本噪声退到退出码', async () => {
   const reason = await reasonFor(failureStderr('nc-silent-preinstall.err'));
-  assert.match(reason, /preinstall: preparing workspace/);
+  assert.equal(reason, 'exit 1');
 });
 
 test('upgradePackage 失败原因: 斜杠与短横的 ASCII spinner 帧也被剥掉', async () => {
@@ -1268,6 +1278,45 @@ test('upgradePackage 失败原因: 斜杠与短横的 ASCII spinner 帧也被剥
     assert.match(reason, /code E404/, `${frame} frame strips`);
     assert.doesNotMatch(reason, /npm verbose/);
   }
+});
+
+test('upgradePackage 失败原因: npm 9 的 sill 频道行不冒充原因', async () => {
+  const reason = await reasonFor(failureStderr('npm9-sill-lines.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node .\/build\.js/);
+  assert.doesNotMatch(reason, /npm sill|<html>|audit bulk/);
+});
+
+test('upgradePackage 失败原因: 默认 loglevel 的聊天成功脚本退到退出码', async () => {
+  const reason = await reasonFor(failureStderr('default-chatty-preinstall.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 只有 stdout 的默认捕获同样退到退出码', async () => {
+  const reason = await reasonFor(failureStderr('stdout-only-default.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: pty 字形粘连的子进程行被剥帧', async () => {
+  const reason = await reasonFor(failureStderr('pty-braille-child.err'));
+  assert.match(reason, /native build failed: missing libfoo/);
+  assert.ok(!/[\u2800-\u28ff]/.test(reason), 'no glyph survives');
+});
+
+test('upgradePackage 失败原因: 有 echo 对时 Terminated 外壳词让位给失败脚本', async () => {
+  const stderr = [
+    'npm info run pkg@1.0.0 postinstall node ./b.js',
+    'npm info run pkg@1.0.0 postinstall { code: 137, signal: null }',
+    'Terminated',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /Terminated/);
+});
+
+test('upgradePackage 失败原因: 没有 echo 时 Terminated 就是诚实原因', async () => {
+  const reason = await reasonFor('Terminated');
+  assert.equal(reason, 'Terminated');
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
