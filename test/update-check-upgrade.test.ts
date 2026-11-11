@@ -1523,6 +1523,67 @@ test('upgradePackage 失败原因: 子进程的 info run: 行不是 npm 回显',
   assert.match(reason, /info run: child says the payload is broken/);
 });
 
+test('upgradePackage 失败原因: 回显里的 errno 词不与子进程诊断并列', async () => {
+  const stderr = [
+    'EACCES: permission denied, open /home/op/x',
+    'npm error code 1',
+    'npm error command sh -c node -e "console.error(\'EACCES: permission denied\')"',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /EACCES: permission denied, open \/home\/op\/x/);
+  assert.doesNotMatch(reason, /command sh -c/);
+});
+
+test('upgradePackage 失败原因: bash 脚本外壳的回显仍被识别', async () => {
+  const stderr = [
+    'native build failed: missing libfoo. rebuild aborted.',
+    'npm error code 7',
+    `npm error command /bin/bash -c "node build.js --msg 'native build failed'"`,
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /native build failed: missing libfoo\. rebuild aborted/);
+  assert.doesNotMatch(reason, /command \/bin\/bash/);
+});
+
+test('upgradePackage 失败原因: cmd.exe 的回显仍被识别', async () => {
+  const stderr = [
+    'native build failed: missing libfoo. rebuild aborted.',
+    'npm error code 7',
+    `npm error command cmd.exe /d /s /c "node build.js --msg 'native build failed'"`,
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /native build failed: missing libfoo\. rebuild aborted/);
+  assert.doesNotMatch(reason, /cmd\.exe/);
+});
+
+test('upgradePackage 失败原因: 真实崩溃的头部正文与页脚不阻塞唯一原因', async () => {
+  const reason = await reasonFor(failureStderr('crash-preamble-real.err'), 1);
+  assert.match(reason, /TypeError: Cannot read properties/);
+});
+
+test('upgradePackage 失败原因: 无语料块的崩溃也用唯一原因行', async () => {
+  const reason = await reasonFor(failureStderr('crash-no-block-corpus.err'), 1);
+  assert.match(reason, /Error: ENOENT/);
+});
+
+test('upgradePackage 失败原因: 原因加 echo 对时仍保留原因', async () => {
+  const stderr = [
+    'native build failed: missing libfoo. rebuild aborted.',
+    'npm info run pkg@1.0.0 postinstall node ./b.js',
+    'npm info run pkg@1.0.0 postinstall { code: 7, signal: null }',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.match(reason, /native build failed: missing libfoo/);
+});
+
+test('upgradePackage 失败原因: failure 词提升会压过其后的详情行（已记账）', async () => {
+  const stderr = ['npm error code 1', 'payload copy stopped', '详细日志：/home/op/logs/run.log 以及 EACCES 细节'].join(
+    '\n',
+  );
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /payload copy stopped/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });

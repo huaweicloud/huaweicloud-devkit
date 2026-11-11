@@ -1,0 +1,3 @@
+npm error code 7
+npm error command /bin/bash -c node ./build.js
+command: node-gyp rebuild

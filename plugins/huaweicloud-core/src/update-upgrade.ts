@@ -131,7 +131,7 @@ const SINGLE_FRAME_BEFORE_ESCAPE = new RegExp(`^[|\\\\/-](?=${ESCAPE})`);
 const LOG_POINTER_SUFFIX =
   /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|Please include the following file with any support request:).*$/;
 const DIAGNOSTIC_HINT =
-  /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported|stopped|halted)\b|permission denied|错误|失败|不支持|未知/i;
+  /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported|stopped)\b|permission denied|错误|失败|不支持|未知/i;
 // Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
 // and the bracketed dump header `[TypeError: ...] {`.
 const ERROR_NAME = /^(?:\[?[A-Za-z]*Error\b|fatal\b|FATAL\b)/;
@@ -336,10 +336,11 @@ function isStackFrame(payload: string): boolean {
   if (/\)\s*$/.test(rest) && /(?:file:|node:|\[eval\]|eval at |<anonymous>|:\d+(?::\d+)?)/.test(rest)) {
     return true;
   }
-  return /^(?:file:|node:)\S*:\d+:\d+$/.test(rest) || /^\S+:\d+:\d+$/.test(rest);
+  return /^(?:file:|node:)\S*:\d+:\d+\b/.test(rest) || /^\S+:\d+:\d+\b/.test(rest);
 }
 
 function isNpmNoiseLine(line: string): boolean {
+  if (/^Node\.js v\d/.test(line) || /^\s*\^\s*$/.test(line)) return true;
   if (!/[\p{L}\p{N}]/u.test(line)) return true;
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
   // npm's log channels are not diagnostics: every `npm <channel>` prefix is
@@ -378,8 +379,22 @@ function isFailingScriptResult(line: string): boolean {
   return !(match[1] === '0' && match[2] === 'null');
 }
 
+// npm's echo of a failing script: the block's `command <shell> -c <script>`
+// line (sh, bash, or cmd.exe) and the npm-prefixed `info run` echo. A child
+// line that merely starts with "command:" or a shell word is not an echo.
+function isEchoLine(line: string, payload: string): boolean {
+  if (/^npm info run\b/.test(line)) return true;
+  if (/^command\s+\S.*\s(?:-c|\/c)(?:\s|$)/i.test(payload)) return true;
+  if (/^(?:\S*\/)?(?:ba|z|k|da)?sh\s+-c(?:\s|$)/.test(payload)) return true;
+  if (/^cmd(?:\.exe)?\b.*\/c(?:\s|$)/i.test(payload)) return true;
+  return false;
+}
+
 function lineRank(line: string): number {
   const payload = npmPayload(line);
+  // The echo test runs before the strong-marker scans: an echo that quotes the
+  // child's own errno token must not tie with the child's line.
+  if (isEchoLine(line, payload)) return 3;
   if (ERROR_NAME.test(payload)) return 0;
   const token = /^([A-Z0-9_]+)(?=:|\s|$)/.exec(payload)?.[1];
   if (isErrnoToken(token)) return 0;
@@ -392,7 +407,6 @@ function lineRank(line: string): number {
   // npm's echo of the failing script carries the child's words in quotes, so it
   // must not tie with the child's own line; it is the honest fallback only when
   // the child printed nothing.
-  if (/^command sh -c\b/.test(payload) || /^npm info run\b/.test(line)) return 3;
   if (DIAGNOSTIC_HINT.test(payload)) return 1;
   return 2;
 }
@@ -434,10 +448,25 @@ function selectFailureLine(
 }
 
 function extractNpmFailureReason(execResult: SpawnResultLike): string {
-  const lines = String(execResult.stderr || '')
+  const normalizedLines = String(execResult.stderr || '')
     .split(/\r?\n/)
     .map((line) => normalizeNpmLine(line))
-    .filter((line) => line && !isNpmNoiseLine(line));
+    .filter(Boolean);
+  // A Node crash preamble carries three lines the per-line rules cannot judge:
+  // the `file:line` header, the source snippet, and the caret under it.
+  const crashPreamble = new Set<number>();
+  normalizedLines.forEach((line, index) => {
+    const header = /^\S+:\d+$/.test(line);
+    const snippet = Boolean(normalizedLines[index + 1] && /[;=()]/.test(normalizedLines[index + 1]!));
+    const caret = /^\s*\^\s*$/.test(normalizedLines[index + 2] ?? '');
+    if (header && snippet && caret) {
+      crashPreamble
+        .add(index)
+        .add(index + 1)
+        .add(index + 2);
+    }
+  });
+  const lines = normalizedLines.filter((line, index) => !crashPreamble.has(index) && !isNpmNoiseLine(line));
   const codeLine = lines.find((line) => isNpmErrorLine(line) && /^code \S+/.test(npmPayload(line)));
   const others = lines.filter((line) => isNpmErrorLine(line) && line !== codeLine);
   const codeless = lines.filter((line) => !isNpmErrorLine(line));
@@ -493,14 +522,17 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   const successAsserted = rawLines.some(
     (line) => /^gyp info\b/i.test(line) || (isNpmScriptResult(line) && !isFailingScriptResult(line)),
   );
+  const attributableSurvivors = lines.filter((line) => lineRank(line) <= 2);
   if (
+    !block &&
+    !codeLine &&
     typeof execResult.status === 'number' &&
     execResult.status !== 0 &&
-    lines.length === 1 &&
-    lineRank(lines[0]!) <= 1 &&
+    attributableSurvivors.length === 1 &&
+    lineRank(attributableSurvivors[0]!) <= 1 &&
     !successAsserted
   ) {
-    return lines[0]!;
+    return attributableSurvivors[0]!;
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
   // the block keeps its code prefix when the block wins or when only a weak
@@ -511,8 +543,8 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (block) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
   if (codeLine) return codeLine;
   if (bare) return bare.line;
-  // A spawn artifact (timeout, ENOBUFS) is a cause only when the child said
-  // nothing on stderr.
+  // A spawn artifact (timeout, ENOBUFS) names the kill for unattributable
+  // stderr; a block or a failing pair has already won above.
   if (execResult.error?.message) return execResult.error.message;
   if (execResult.signal) return `signal ${execResult.signal}`;
   if (typeof execResult.status === 'number') return `exit ${execResult.status}`;
