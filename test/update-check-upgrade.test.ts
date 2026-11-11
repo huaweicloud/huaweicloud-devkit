@@ -179,6 +179,12 @@ test('upgradePackage 查询失败: 不 spawn 并给手动提示', async () => {
   assert.match(r.manual ?? '', /huaweicloud-devkit@latest update/);
 });
 
+const stubQuery = async () => ({ latest: '1.1.1', next: null });
+
+function failingSpawn(stderr: string, status = 1): UpgradeSpawnFn {
+  return () => ({ status, stdout: '', stderr });
+}
+
 test('upgradePackage 失败原因: 取 npm error 行, 不把 npm warn 噪声当原因', async () => {
   const stderr = [
     'npm error code ELIFECYCLE',
@@ -186,9 +192,7 @@ test('upgradePackage 失败原因: 取 npm error 行, 不把 npm warn 噪声当�
     'npm warn EBADENGINE Unsupported engine',
     'npm warn EBADENGINE current: {"node":"v22.14.0"}',
   ].join('\n');
-  const spawnFn = () => ({ status: 1, stdout: '', stderr });
-  const doQuery = async () => ({ latest: '1.1.1', next: null });
-  const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: failingSpawn(stderr) });
   assert.equal(r.success, false);
   assert.match(r.error ?? '', /ELIFECYCLE/);
   assert.match(r.error ?? '', /exit code 1/);
@@ -196,13 +200,8 @@ test('upgradePackage 失败原因: 取 npm error 行, 不把 npm warn 噪声当�
 });
 
 test('upgradePackage 失败原因: 只有噪声时退到退出码', async () => {
-  const spawnFn = () => ({
-    status: 1,
-    stdout: '',
-    stderr: ['npm warn deprecated foo@1.0.0', 'npm warn EBADENGINE Unsupported engine'].join('\n'),
-  });
-  const doQuery = async () => ({ latest: '1.1.1', next: null });
-  const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  const stderr = ['npm warn deprecated foo@1.0.0', 'npm warn EBADENGINE Unsupported engine'].join('\n');
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: failingSpawn(stderr) });
   assert.equal(r.error, 'exit 1');
 });
 
@@ -211,68 +210,49 @@ test('upgradePackage 失败原因: Node 弃用警告行同样不算原因', asyn
     '(node:12345) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true',
     '(Use `node --trace-deprecation ...` to show where the warning was created)',
   ].join('\n');
-  const spawnFn = () => ({ status: 1, stdout: '', stderr });
-  const doQuery = async () => ({ latest: '1.1.1', next: null });
-  const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: failingSpawn(stderr) });
   assert.equal(r.error, 'exit 1');
 });
 
-test('upgradePackage 升级子进程: 剥掉凭证环境变量, 保留其余环境', async () => {
-  const saved = {
-    accessKey: process.env.HW_ACCESS_KEY,
-    secretKey: process.env.HUAWEICLOUD_SECRET_KEY,
-    marker: process.env.DEVKIT_UPGRADE_ENV_MARKER,
-  };
-  process.env.HW_ACCESS_KEY = 'fixture-ak';
-  process.env.HUAWEICLOUD_SECRET_KEY = 'fixture-sk';
-  process.env.DEVKIT_UPGRADE_ENV_MARKER = 'kept';
+test('upgradePackage 升级子进程: 凭证键族剥掉, 其余环境与 argv 保留', async () => {
+  const credentialKeys = [
+    'HW_ACCESS_KEY',
+    'HW_SECRET_KEY',
+    'HW_SECURITY_TOKEN',
+    'HUAWEICLOUD_ACCESS_KEY',
+    'HUAWEICLOUD_SECRET_KEY',
+    'HUAWEICLOUD_SECURITY_TOKEN',
+    'HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+    'HW_API_KEY',
+    'HW_VAULT_MASTER_KEY',
+    'HUAWEICLOUD_SDK_AK',
+    'HUAWEICLOUD_SDK_SK',
+    'HUAWEI_ACCESS_KEY',
+    'HUAWEI_SECRET_KEY',
+  ];
+  const marker = 'DEVKIT_UPGRADE_ENV_MARKER';
+  const touched = [...credentialKeys, marker];
+  const saved = new Map(touched.map((key) => [key, process.env[key]]));
+  for (const key of touched) process.env[key] = `fixture-${key}`;
   try {
     let spawned: { args: readonly string[]; opts: SpawnSyncOptions } | null = null;
     const spawnFn: UpgradeSpawnFn = (_cmd, args, opts) => {
       spawned = { args, opts };
       return { status: 0 };
     };
-    const doQuery = async () => ({ latest: '1.1.1', next: null });
-    const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
+    const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn });
     assert.equal(r.success, true);
     assert.deepEqual(spawned!.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
     const env = spawned!.opts.env as NodeJS.ProcessEnv;
-    assert.equal(env.HW_ACCESS_KEY, undefined);
-    assert.equal(env.HUAWEICLOUD_SECRET_KEY, undefined);
-    assert.equal(env.DEVKIT_UPGRADE_ENV_MARKER, 'kept');
+    for (const key of credentialKeys) assert.equal(env[key], undefined, `${key} must not reach npx`);
+    assert.equal(env[marker], `fixture-${marker}`);
   } finally {
-    for (const [key, value] of Object.entries({
-      HW_ACCESS_KEY: saved.accessKey,
-      HUAWEICLOUD_SECRET_KEY: saved.secretKey,
-      DEVKIT_UPGRADE_ENV_MARKER: saved.marker,
-    })) {
+    for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-  }
-});
-
-test('upgradePackage 升级子进程: 完整凭证键族（含 AWS 与 STS）都不进环境', async () => {
-  const keys = [
-    'HW_SECURITY_TOKEN',
-    'HUAWEICLOUD_ACCESS_KEY',
-    'HUAWEICLOUD_SECURITY_TOKEN',
-    'HUAWEICLOUD_SECRET_ACCESS_KEY',
-    'AWS_ACCESS_KEY_ID',
-    'AWS_SECRET_ACCESS_KEY',
-    'AWS_SESSION_TOKEN',
-  ];
-  for (const key of keys) process.env[key] = `fixture-${key}`;
-  try {
-    let captured: NodeJS.ProcessEnv | null = null;
-    const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
-      captured = opts.env as NodeJS.ProcessEnv;
-      return { status: 0 };
-    };
-    const doQuery = async () => ({ latest: '1.1.1', next: null });
-    await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
-    for (const key of keys) assert.equal(captured![key], undefined, `${key} must not reach npx`);
-  } finally {
-    for (const key of keys) delete process.env[key];
   }
 });

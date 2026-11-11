@@ -13,7 +13,9 @@ import { invalidateUpdateCache } from './update-cache.ts';
 const NPX_BIN = process.platform === 'win32' ? 'npx.cmd' : 'npx';
 
 // Cloud credentials never belong in the upgrade child: the published package
-// install needs no account, and the child is arbitrary registry code.
+// install needs no account, and the child is arbitrary registry code. The first
+// block is dev 4890d78c's set; the second names the credential variables this
+// tree itself reads (DevBridge key, vault custody, KooCLI/SDK spellings).
 const UPGRADE_CREDENTIAL_ENV_KEYS = new Set([
   'HW_ACCESS_KEY',
   'HW_SECRET_KEY',
@@ -25,6 +27,12 @@ const UPGRADE_CREDENTIAL_ENV_KEYS = new Set([
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
+  'HW_API_KEY',
+  'HW_VAULT_MASTER_KEY',
+  'HUAWEICLOUD_SDK_AK',
+  'HUAWEICLOUD_SDK_SK',
+  'HUAWEI_ACCESS_KEY',
+  'HUAWEI_SECRET_KEY',
 ]);
 
 function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
