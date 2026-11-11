@@ -144,6 +144,41 @@ test('the py hook derives the obfuscation gate write vocabulary from policy.json
   );
 });
 
+test('the py hook derives the approval-CLI deny regex from policy.json (no hand-copied list)', () => {
+  // The approve and pin verbs' deny ships in all three hook layers through
+  // one vocabulary. The py compile must read the policy field, never a local
+  // alternation: a hand-copied list drifts from policy.json exactly like
+  // the retired WRITE_VOCAB_RE hardcode did.
+  const pyHook = readSource(join('hooks', 'huaweicloud-safety.py'));
+  const policy = readJson(join(pluginRoot, 'safety', 'policy.json')) as Record<string, unknown>;
+  assert.ok(
+    Array.isArray(policy.blockedApprovalCliPatterns) && policy.blockedApprovalCliPatterns.length >= 1,
+    'policy.json must carry blockedApprovalCliPatterns',
+  );
+  const approvalPatterns = (policy.blockedApprovalCliPatterns as unknown[]).filter(
+    (pattern): pattern is string => typeof pattern === 'string',
+  );
+  for (const verb of ['approve', 'pin']) {
+    assert.ok(
+      approvalPatterns.some((pattern) => pattern.includes(`\\s+${verb}\\b`)),
+      `policy.json must deny the ${verb} verb on the devkit binary spellings`,
+    );
+  }
+  assert.match(pyHook, /APPROVAL_CLI_RE = None/);
+  assert.match(pyHook, /blocked_approval_cli = policy\.get\("blockedApprovalCliPatterns", \[\]\)/);
+  const approvalAssignments = pyHook.match(/APPROVAL_CLI_RE = re\.compile\([^\n]*\)/g) ?? [];
+  assert.ok(approvalAssignments.length >= 1, 'the approval deny must be compiled inside load_policy');
+  for (const assignment of approvalAssignments) {
+    assert.match(assignment, /blocked_approval_cli/, `policy-derived compile required: ${assignment}`);
+  }
+  // A compile with no applied gate is a no-op: the deny must search both
+  // shadow candidates, like the reveal gate beside it.
+  assert.match(
+    pyHook,
+    /if APPROVAL_CLI_RE and any\(APPROVAL_CLI_RE\.search\(candidate\) for candidate in candidates\)/,
+  );
+});
+
 test('the py hook degrades coherently: derived vocabularies, isolated fields, fail-closed gates (interrogate round 1)', () => {
   // The read vocabulary is ALSO policy-derived (the last hand-maintained
   // policy mirror), the write gate's read exemption is start-anchored
@@ -445,6 +480,26 @@ test('the proxy scrub fixture never spells a contiguous secret literal', () => {
   const fixture = readFileSync(join(root, 'test', 'e2e-gateway-proxy.test.ts'), 'utf8');
   assert.doesNotMatch(fixture, /const SECRET = '[^']{10,}'/, 'a contiguous literal re-trips the secret scanner');
   assert.match(fixture, /const SECRET = '[^']{1,9}' \+/, 'the scrub target stays assembled from short halves');
+});
+
+test('the approval test fixtures never spell a contiguous secret literal', () => {
+  // Same doctrine as the signing vectors and the proxy scrub fixture above:
+  // the CI secret scanner (gitleaks generic-api-key) matches a
+  // keyword-adjacent contiguous value — it flagged the pinning probe's
+  // EvilSecret77Bb (run 42979717544, PR #9, 2026-11-11). The probes need
+  // real-secret-SHAPED values to test the pin view and the substitutable
+  // flag, so each one stays ASSEMBLED from halves (the '--password' +
+  // '"RealPw1"' spelling in the same file is the precedent); a cleanup
+  // merging them back into one literal re-trips the gate, and this pin
+  // makes that a named failure instead of a red CI mystery.
+  const fixture = readFileSync(join(root, 'test', 'hcloud-cli-approval.test.ts'), 'utf8');
+  assert.doesNotMatch(
+    fixture,
+    /--password=(Evil|First|Different|Real)[A-Za-z0-9]{4}/,
+    'a contiguous literal re-trips the secret scanner',
+  );
+  assert.match(fixture, /'--password=Evil' \+ 'Secret77Bb'/, 'the probe value stays assembled from halves');
+  assert.match(fixture, /'--password=First' \+ 'Secret99Aa'/, 'the probe value stays assembled from halves');
 });
 
 test('the src/safety family never imports the hcloud-* KooCLI modules (hook-graph purity)', () => {

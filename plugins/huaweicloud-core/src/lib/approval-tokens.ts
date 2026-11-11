@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import {
   existsSync,
   mkdirSync,
@@ -12,6 +12,7 @@ import {
 import { dirname, join } from 'node:path';
 
 import { redactSecrets } from '../safety-policy.ts';
+import { ensureMasterKey, resolveMasterKey, type ResolvedMasterKey } from './secret-vault/custody.ts';
 import { huaweiConfigBase } from './pack-state.ts';
 
 // The CLI face's approval tokens: the consent layer for
@@ -41,7 +42,20 @@ import { huaweiConfigBase } from './pack-state.ts';
 // Persist to a per-user JSON file as the single source of truth. Only the
 // sha256 of the args plus the redacted form are stored — never the raw args,
 // which may carry --adminPass / --server.user_data secrets.
-interface ApprovalEntry {
+// Confirmation-state values for an approval entry. `awaiting_user` is the
+// mint state; `user_confirmed` is written only by confirmApprovalToken and
+// only together with a confirmGrant.
+export type ApprovalEntryState = 'awaiting_user' | 'user_confirmed';
+
+// The tamper-evident record of the user's terminal confirmation: when the
+// flip happened, and an HMAC (over the vault custody master key) binding
+// that moment to THIS token's command hash.
+export interface ConfirmGrant {
+  confirmedAt: number;
+  mac: string;
+}
+
+export interface ApprovalEntry {
   argsHash: string;
   argsRedacted: unknown;
   createdAt: number;
@@ -59,6 +73,13 @@ interface ApprovalEntry {
   // substitution flow works for every form the detector sees. Absent on
   // pre-schema entries, which fall back to the argsRedacted comparison.
   argsPinView?: unknown;
+  // Terminal-confirmation state. Absent on legacy pre-feature entries, where
+  // absent reads as awaiting_user: nothing was ever confirmed.
+  state?: ApprovalEntryState;
+  // Written only by confirmApprovalToken. approvals.json is same-user
+  // editable, so the state string alone proves nothing — the grant is the
+  // evidence, and its mac cannot be forged without the custody secret.
+  confirmGrant?: ConfirmGrant;
 }
 
 // Tombstone for a consumed token (D4-24, #745): consumption writes
@@ -173,12 +194,29 @@ function readApprovals(): ApprovalMap {
         createdAt: entry.createdAt,
         ...(entry.secretsSubstitutable === true ? { secretsSubstitutable: true } : {}),
         ...(entry.argsPinView !== undefined ? { argsPinView: entry.argsPinView } : {}),
+        ...(isApprovalEntryState(entry.state) ? { state: entry.state } : {}),
+        ...(isConfirmGrant(entry.confirmGrant)
+          ? { confirmGrant: { confirmedAt: entry.confirmGrant.confirmedAt, mac: entry.confirmGrant.mac } }
+          : {}),
       };
     }
     return result;
   } catch {
     return {};
   }
+}
+
+// The store is untrusted input: a malformed field reads as absent, never as
+// a value. A wrong-typed state or grant therefore degrades to the legacy
+// entry shape (awaiting_user, no grant), which every consumer fails closed on.
+function isApprovalEntryState(value: unknown): value is ApprovalEntryState {
+  return value === 'awaiting_user' || value === 'user_confirmed';
+}
+
+function isConfirmGrant(value: unknown): value is ConfirmGrant {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const grant = value as Record<string, unknown>;
+  return typeof grant.confirmedAt === 'number' && typeof grant.mac === 'string';
 }
 
 function writeApprovals(map: ApprovalMap): void {
@@ -255,6 +293,7 @@ export function createApprovalToken(
     createdAt: Date.now(),
     ...(opts.secretsSubstitutable === true ? { secretsSubstitutable: true } : {}),
     ...(opts.argsPinView !== undefined ? { argsPinView: opts.argsPinView } : {}),
+    state: 'awaiting_user',
   };
   pruneStale(map);
   pruneConsumedMarkers();
@@ -290,26 +329,168 @@ export function inspectApprovalToken(token: string): ApprovalInspection {
 }
 
 // Mint→approve→run across processes: consume claims the entry and replaces it
-// with a tombstone. Returns the claimed entry on success, null otherwise
-// (unknown, already-consumed, or expired — classify via inspectApprovalToken).
-export function consumeApprovalToken(token: string): ApprovalEntry | null {
-  if (!TOKEN_SHAPE.test(token)) return null;
+// with a tombstone. The result is distinguishable so the run tool can map
+// each refusal to its precise contract code:
+//   'consumed'       — this caller won the claim; entry is the claimed snapshot
+//   'grant_required' — the freshly read entry failed the terminal-
+//                      confirmation gate (state or grant); NOTHING was
+//                      claimed or written (refusal never burns)
+//   'gone'           — unknown, already-consumed, expired, or race-lost;
+//                      classify via inspectApprovalToken
+export type ConsumeApprovalResult =
+  { status: 'consumed'; entry: ApprovalEntry } | { status: 'grant_required'; reason?: string } | { status: 'gone' };
+
+export function consumeApprovalToken(token: string, opts: { requireGrant?: boolean } = {}): ConsumeApprovalResult {
+  if (!TOKEN_SHAPE.test(token)) return { status: 'gone' };
   const map = readApprovals();
   const entry = map[token];
-  if (!entry || isTombstone(entry)) return null;
+  if (!entry || isTombstone(entry)) return { status: 'gone' };
   if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) {
     delete map[token];
     writeApprovals(map);
-    return null;
+    return { status: 'gone' };
+  }
+  // The confirmation gate rides INSIDE the consume cycle, on THIS freshly
+  // read snapshot: state and grant are verified on the same entry the
+  // execution will consume, before any marker claim and before any
+  // tombstone write — the ApprovalSafety Run step is one atomic read over
+  // the entry, by construction. A gate that read a different snapshot than
+  // the one execution consumed was the TOCTOU the adversarial review
+  // reproduced.
+  if (opts.requireGrant) {
+    const grant = verifyConfirmationGrant(entry, token);
+    if (!grant.ok) return { status: 'grant_required', reason: grant.reason };
   }
   // Claim after validation: the marker exists only for tokens that were
-  // real and unexpired at read time. A crash between claim and the
-  // tombstone-write below can burn a valid token without spending it —
-  // fail-closed, rare, accepted.
-  if (!claimSingleUse(token)) return null;
+  // real, unexpired, and (when required) grant-verified at read time. A
+  // crash between claim and the tombstone-write below can burn a valid
+  // token without spending it — fail-closed, rare, accepted.
+  if (!claimSingleUse(token)) return { status: 'gone' };
   // Tombstone instead of deleting outright (D4-24): a repeat call is
   // already_processed, not not_found.
   map[token] = { consumedAt: Date.now(), createdAt: entry.createdAt };
   writeApprovals(map);
-  return entry;
+  return { status: 'consumed', entry };
+}
+
+// ── Terminal confirmation ──────────────────────────────────────────────────
+// The user authorizes a pending approval in their own terminal (PIN-checked
+// by the confirm CLI). confirmApprovalToken is the machine-side record of
+// that act: the ONLY writer of user_confirmed, and it always writes a
+// custody-bound grant alongside, because the state string on its own is
+// same-user forgeable. verifyConfirmationGrant is the read side the run gate
+// consults: state plus a valid grant mac is the server-verifiable evidence
+// that the human said yes to THIS token's command.
+
+export type ConfirmApprovalStatus =
+  'confirmed' | 'already_confirmed' | 'custody_unavailable' | 'expired' | 'already_consumed' | 'not_found';
+
+export interface ConfirmApprovalResult {
+  status: ConfirmApprovalStatus;
+  reason?: string;
+}
+
+export interface GrantVerification {
+  ok: boolean;
+  reason?: string;
+}
+
+// The grant mac's domain separator: custody-keyed material from one HMAC use
+// never verifies in another (the approval PIN has its own domain), and the
+// mac binds the token, the confirmation time, and the FULL execution-gating
+// shape of the entry — a same-user edit of any field the run gate trusts
+// (argsHash, argsPinView, argsRedacted, secretsSubstitutable, createdAt)
+// breaks verification, not just an argsHash swap.
+const GRANT_MAC_DOMAIN = 'huaweicloud-approval-grant';
+
+// The shape digests through hashArgs (the module's canonical-JSON machinery),
+// so the confirm side and the verify side agree no matter how the store was
+// re-serialized between them. undefined-valued keys drop on both sides.
+// createdAt is covered so an attacker extending it cannot lengthen the
+// 5-minute window on an old confirmation.
+function grantMac(
+  masterKey: Buffer,
+  token: string,
+  entry: Pick<ApprovalEntry, 'argsHash' | 'argsPinView' | 'argsRedacted' | 'secretsSubstitutable' | 'createdAt'>,
+  confirmedAt: number,
+): string {
+  const shapeDigest = hashArgs({
+    argsHash: entry.argsHash,
+    argsPinView: entry.argsPinView,
+    argsRedacted: entry.argsRedacted,
+    secretsSubstitutable: entry.secretsSubstitutable,
+    createdAt: entry.createdAt,
+  });
+  return createHmac('sha256', masterKey)
+    .update(`${GRANT_MAC_DOMAIN}\x00${token}\x00${shapeDigest}\x00${String(confirmedAt)}`)
+    .digest('hex');
+}
+
+export function confirmApprovalToken(token: string): ConfirmApprovalResult {
+  if (!TOKEN_SHAPE.test(token)) return { status: 'not_found' };
+  const map = readApprovals();
+  const entry = map[token];
+  if (!entry) return { status: 'not_found' };
+  if (isTombstone(entry)) {
+    return Date.now() - entry.createdAt > APPROVAL_TTL_MS ? { status: 'not_found' } : { status: 'already_consumed' };
+  }
+  if (Date.now() - entry.createdAt > APPROVAL_TTL_MS) return { status: 'expired' };
+  // No rewrite on an already-confirmed entry, even one whose grant a hand
+  // edit mangled: re-minting would upgrade a forged state string to a real
+  // grant the forger cannot make. verifyConfirmationGrant keeps rejecting it.
+  if (entry.state === 'user_confirmed') return { status: 'already_confirmed' };
+  let master: ResolvedMasterKey;
+  try {
+    // Mutating path, so bootstrap semantics match `secret set`: the first
+    // confirm on a keyless machine creates the custody key.
+    master = ensureMasterKey();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { status: 'custody_unavailable', reason: `vault master key unavailable: ${message}` };
+  }
+  const confirmedAt = Date.now();
+  const grant: ConfirmGrant = {
+    confirmedAt,
+    mac: grantMac(master.key, token, entry, confirmedAt),
+  };
+  // The spread is safe because readApprovals rebuilds entries through the
+  // whitelist: unknown fields planted in the file never reach this object.
+  map[token] = { ...entry, state: 'user_confirmed', confirmGrant: grant };
+  writeApprovals(map);
+  return { status: 'confirmed' };
+}
+
+// The verify-path custody seam, shared with the approval PIN: resolve the
+// master key for a read-only check, or say why it cannot be trusted. Never
+// bootstraps — an unresolvable tier fails here instead of minting a fresh
+// key that would match nothing — and never throws: every caller fails closed.
+export type ResolvedVerificationKey = { key: Buffer } | { failure: string };
+
+export function resolveVerificationMasterKey(): ResolvedVerificationKey {
+  try {
+    const master = resolveMasterKey();
+    if (!master) return { failure: 'vault master key unavailable' };
+    return { key: master.key };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { failure: `vault master key unreadable: ${message}` };
+  }
+}
+
+export function verifyConfirmationGrant(entry: ApprovalEntry, token: string): GrantVerification {
+  if (entry.state !== 'user_confirmed') {
+    return { ok: false, reason: 'token is awaiting user confirmation' };
+  }
+  const grant = entry.confirmGrant;
+  if (!isConfirmGrant(grant)) {
+    return { ok: false, reason: 'confirmation grant is missing or malformed' };
+  }
+  const master = resolveVerificationMasterKey();
+  if ('failure' in master) return { ok: false, reason: master.failure };
+  if (!/^[0-9a-f]{64}$/.test(grant.mac)) {
+    return { ok: false, reason: 'confirmation grant mac is malformed' };
+  }
+  const expected = grantMac(master.key, token, entry, grant.confirmedAt);
+  const matches = timingSafeEqual(Buffer.from(expected, 'hex'), Buffer.from(grant.mac, 'hex'));
+  return matches ? { ok: true } : { ok: false, reason: 'confirmation grant does not verify' };
 }

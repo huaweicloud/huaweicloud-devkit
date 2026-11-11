@@ -10,6 +10,7 @@ export interface Policy {
   blockedConfigureSubcommands: string[];
   blockedSecretOperations: string[];
   blockedSecretCliPatterns: string[];
+  blockedApprovalCliPatterns: string[];
   writeOperationPrefixes: string[];
   readOperationPrefixes: string[];
   readOperationExceptions: string[];
@@ -62,6 +63,7 @@ export function loadPolicy(path: string): Policy {
     blockedConfigureSubcommands: toStringArray(raw.blockedConfigureSubcommands, 'blockedConfigureSubcommands'),
     blockedSecretOperations: toStringArray(raw.blockedSecretOperations, 'blockedSecretOperations'),
     blockedSecretCliPatterns: toStringArray(raw.blockedSecretCliPatterns, 'blockedSecretCliPatterns'),
+    blockedApprovalCliPatterns: toStringArray(raw.blockedApprovalCliPatterns, 'blockedApprovalCliPatterns'),
     writeOperationPrefixes,
     readOperationPrefixes: toStringArray(raw.readOperationPrefixes, 'readOperationPrefixes'),
     readOperationExceptions: toStringArray(raw.readOperationExceptions, 'readOperationExceptions'),

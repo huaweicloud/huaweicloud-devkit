@@ -19,6 +19,14 @@ import { triageUnknownService } from './hcloud-triage.ts';
 // The machinery lives in src/lib/approval-tokens.ts (the CLI face's
 // consent layer for plan_cli_command / run_approved_command).
 
+// The plan's terminal-confirmation block: `needed` says the command waits
+// on a confirmation the user makes in their own terminal, `command` is the
+// exact line they run (present only on plans that minted a token).
+export interface HcloudPlanUserConfirmation {
+  needed: boolean;
+  command?: string;
+}
+
 export interface HcloudPlan {
   executable: string;
   args: string[];
@@ -27,7 +35,11 @@ export interface HcloudPlan {
   warnings: Array<string | SgFinding>;
   classification: RiskDecision;
   sgFindings: SgFinding[];
-  approvalToken: string;
+  // Present only when this call minted one: run paths pass
+  // mintApprovalToken:false, so a run result never carries a fresh usable
+  // token (the model leaves minting to the plan face).
+  approvalToken?: string;
+  userConfirmation: HcloudPlanUserConfirmation;
   safeToRun: boolean;
 }
 
@@ -41,6 +53,20 @@ export interface HcloudPlanOptions extends ClassifyOptions {
   // operator-side only — never a tool argument an agent could aim at a fake
   // catalog to downgrade its own verdict.
   metaDir?: string;
+  // False on run paths: only the plan face mints approval tokens. Defaults
+  // true, so the plan tool face keeps its consent contract unchanged.
+  mintApprovalToken?: boolean;
+}
+
+// Does this command wait on the user's terminal confirmation? The verdict
+// comes from the STRICT view — allowWrites forced false — never the
+// caller's option, so an agent passing allowWrites:true cannot weaken it.
+// Only write/execution denies answer true: secret, credential, and invalid
+// denies are never unlockable by a terminal confirmation, and reads never
+// need one.
+export function needsUserConfirmation(args: string[], options: ClassifyOptions = {}): boolean {
+  const strict = classifyHcloudArgs(args, { ...options, allowWrites: false });
+  return strict.decision === 'deny' && (strict.risk === 'write' || strict.risk === 'execution');
 }
 
 function quoteShellArg(value: unknown): string {
@@ -323,6 +349,14 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
       warnings.push(`${triage.message} ${triage.nextStep}`);
     }
   }
+  const approvalToken =
+    options.mintApprovalToken === false
+      ? undefined
+      : createApprovalToken(normalizedArgs, {
+          secretsSubstitutable: secretsSubstitutable(normalizedArgs),
+          argsPinView: pinViewArgs(normalizedArgs),
+        });
+  const needsConfirmation = needsUserConfirmation(normalizedArgs, options);
   return {
     executable: 'hcloud',
     args: normalizedArgs.map((arg) => redactSecrets(arg)),
@@ -335,10 +369,15 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
     warnings,
     classification: applyPreflightFindings(effectiveClassification, sgFindings),
     sgFindings,
-    approvalToken: createApprovalToken(normalizedArgs, {
-      secretsSubstitutable: secretsSubstitutable(normalizedArgs),
-      argsPinView: pinViewArgs(normalizedArgs),
-    }),
+    ...(approvalToken !== undefined ? { approvalToken } : {}),
+    // `command` exists only where a token was minted: a run-path plan stays
+    // silent rather than name a line for a token the run cannot offer.
+    userConfirmation: needsConfirmation
+      ? {
+          needed: true,
+          ...(approvalToken !== undefined ? { command: `npx huaweicloud-devkit approve ${approvalToken}` } : {}),
+        }
+      : { needed: false },
     safeToRun: effectiveClassification.decision === 'allow',
   };
 }
