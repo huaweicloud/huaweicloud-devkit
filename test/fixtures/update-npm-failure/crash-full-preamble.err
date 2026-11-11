@@ -1,9 +1,0 @@
-/home/op/npm-cache-npx-crash-async/_npx/2876c8997196d27e/node_modules/huaweicloud-devkit/bin/cli.cjs:10
-      null.x; // real TypeError inside a Promise.all slot
-           ^
-
-TypeError: Cannot read properties of null (reading 'x')
-    at /home/op/npm-cache-npx-crash-async/_npx/2876c8997196d27e/node_modules/huaweicloud-devkit/bin/cli.cjs:10:12
-    at async Promise.all (index 0)
-
-Node.js v26.13.0

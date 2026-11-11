@@ -24,6 +24,11 @@ const UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS = new Set([
   'AWS_SESSION_TOKEN',
   'HUAWEI_ACCESS_KEY',
   'HUAWEI_SECRET_KEY',
+  'NPM_TOKEN',
+  'NODE_AUTH_TOKEN',
+  'GITHUB_TOKEN',
+  'GH_TOKEN',
+  'DOCKER_PASSWORD',
 ]);
 
 // The predicate's prefixes also cover the devkit's own configuration. These
@@ -341,7 +346,8 @@ function isStackFrame(payload: string): boolean {
 
 function isNpmNoiseLine(line: string): boolean {
   if (/^Node\.js v\d/.test(line) || /^\s*\^\s*$/.test(line)) return true;
-  if (/^Require stack:/.test(line) || /^\s*-\s+[/~]/.test(line)) return true;
+  if (/^Require stack:/.test(line) || /^\s*-\s+[/~]\S*$/.test(line)) return true;
+  if (/^\[cause\]:/.test(line)) return true;
   if (/^\s*throw err;\s*$/.test(line)) return true;
   if (!/[\p{L}\p{N}]/u.test(line)) return true;
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
@@ -385,9 +391,10 @@ function isFailingScriptResult(line: string): boolean {
 // line (sh, bash, or cmd.exe) and the npm-prefixed `info run` echo. A child
 // line that merely starts with "command:" or a shell word is not an echo.
 function isEchoLine(line: string, payload: string): boolean {
+  if (isNpmScriptResult(line) || isNpmScriptResult(payload)) return false;
   if (/^npm info run\b/.test(line)) return true;
-  // npm's block echo, whichever shell it named.
-  if (/^npm error\s+command\s+/i.test(line)) return true;
+  // npm's block echo, whichever shell it named; `command failed` is metadata.
+  if (/^npm error\s+command\s+/i.test(line) && !/^command failed$/i.test(payload)) return true;
   // A bare shell lead counts only when the -c payload is one command (quoted
   // or a single token), not a child sentence that merely starts with one.
   const commandEnd = /^(?:"[^"]*"|'[^']*'|\S+)\s*$/;
@@ -411,7 +418,8 @@ function lineRank(line: string): number {
   }
   if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 4;
   if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+|\[[^\]]*\])\s*,?\s*$/.test(payload)) return 4;
-  if (/^\s*[A-Za-z_]\w*:\s*\[.*$/.test(payload) || /^\s*'[^']*',?\s*$/.test(payload)) return 4;
+  if (/^\s*[A-Za-z_]\w*:\s*\[[^\]]*\]\s*,?\s*$/.test(payload)) return 4;
+  if (/^\s*requireStack:\s*\[.*$/.test(payload) || /^\s*'[^']*',?\s*$/.test(payload)) return 4;
   if (isNpmScriptResult(payload)) return 4;
   // npm's echo of the failing script carries the child's words in quotes, so it
   // must not tie with the child's own line; it is the honest fallback only when
@@ -479,7 +487,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   const codeLine = lines.find((line) => isNpmErrorLine(line) && /^code \S+/.test(npmPayload(line)));
   const others = lines.filter((line) => isNpmErrorLine(line) && line !== codeLine);
   const codeless = lines.filter((line) => !isNpmErrorLine(line));
-  const block = selectFailureLine(others, { positionLast: false });
+  let block = selectFailureLine(others, { positionLast: false });
   let bare = selectFailureLine(codeless, { positionLast: true });
   // A loud successful script (or a gyp error it survived) is not the cause when
   // npm emitted a failing echo pair later: the echo names the failing script.
@@ -542,8 +550,45 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   ) {
     const survivor = attributableSurvivors[0]!;
     const survivorIndex = rawLines.lastIndexOf(survivor);
+    const echoIndex = failingEcho ? rawLines.lastIndexOf(failingEcho.line) : -1;
     const successAfter = rawLines.some((line, index) => index >= survivorIndex && isSuccessAssertion(line));
-    if (!successAfter) return survivor;
+    const laterFailingPair =
+      hasFailingPair &&
+      echoIndex > survivorIndex &&
+      rawLines.some((line, index) => index > survivorIndex && index < echoIndex && isSuccessAssertion(line));
+    if (!laterFailingPair && (!successAfter || hasFailingPair)) return survivor;
+  }
+  // A trailing success assertion after the chosen block line means that line
+  // belongs to a step that recovered; the block's code line plus its command
+  // echo is the honest reason instead.
+  if (block && block.rank <= 1) {
+    const blockIndex = rawLines.lastIndexOf(block.line);
+    const recovered = blockIndex >= 0 && rawLines.some((line, index) => index > blockIndex && isSuccessAssertion(line));
+    if (recovered) {
+      const echo = lastEchoBefore(others, Number.POSITIVE_INFINITY);
+      if (echo) block = { line: echo.line, rank: 3, index: echo.index };
+    }
+  }
+  // A success assertion after the winning code-less line means that line came
+  // from a step that recovered; the block's code line plus its command echo is
+  // the honest reason instead.
+  if (bare && block && bare.rank <= 1) {
+    const bareIndex = rawLines.lastIndexOf(bare.line);
+    const recovered = bareIndex >= 0 && rawLines.some((line, index) => index > bareIndex && isSuccessAssertion(line));
+    if (recovered) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
+  }
+  // A failing pair after an earlier dying-words line, with a success assertion
+  // between them, names a later failing step; prefer it. Without that gap the
+  // pair belongs to the same script as the cause, and the cause stays.
+  if (
+    hasFailingPair &&
+    failingEcho &&
+    bare &&
+    bare.index < failingEcho.index &&
+    bare.rank <= 1 &&
+    rawLines.some((line, index) => index > bare!.index && index < failingEcho.index && isSuccessAssertion(line))
+  ) {
+    bare = { line: failingEcho.line, rank: 3, index: failingEcho.index };
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
   // the block keeps its code prefix when the block wins or when only a weak

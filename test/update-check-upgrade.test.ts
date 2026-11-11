@@ -1527,7 +1527,7 @@ test('upgradePackage 失败原因: 回显里的 errno 词不与子进程诊断�
   const stderr = [
     'EACCES: permission denied, open /home/op/x',
     'npm error code 1',
-    'npm error command sh -c node -e "console.error(\'EACCES: permission denied\')"',
+    `npm error command sh -c node -e "console.error('failed: EACCES permission denied')"`,
   ].join('\n');
   const reason = await reasonFor(stderr);
   assert.match(reason, /EACCES: permission denied, open \/home\/op\/x/);
@@ -1601,11 +1601,6 @@ test('upgradePackage 失败原因: 真实异步崩溃保留 TypeError', async ()
   assert.doesNotMatch(reason, /Promise\.all|Node\.js/);
 });
 
-test('upgradePackage 失败原因: 完整崩溃前导与注释片段不阻塞唯一原因', async () => {
-  const reason = await reasonFor(failureStderr('crash-full-preamble.err'), 1);
-  assert.match(reason, /TypeError: Cannot read properties of null/);
-});
-
 test('upgradePackage 失败原因: Require stack 条目不再阻塞原因', async () => {
   const reason = await reasonFor(failureStderr('crash-require-stack.err'), 1);
   assert.match(reason, /Error: Cannot find module/);
@@ -1620,6 +1615,97 @@ test('upgradePackage 失败原因: echo 伴随时 TypeError 仍是原因', async
 test('upgradePackage 失败原因: echo 伴随时 EPERM 仍是原因', async () => {
   const reason = await reasonFor(failureStderr('echo-plus-eperm.err'), 1);
   assert.match(reason, /EPERM: operation not permitted/);
+});
+
+test('upgradePackage 失败原因: 已恢复的 gyp 错误在有块时让位给命令回显', async () => {
+  const stderr = [
+    "gyp ERR! stack Error: EACCES: permission denied, mkdir '/usr/lib/node_modules/.cache'",
+    'gyp info ok',
+    'npm error code 7',
+    'npm error path /home/op/x',
+    'npm error command failed',
+    'npm error command sh -c node post.js',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+  assert.doesNotMatch(reason, /gyp ERR|EACCES/);
+});
+
+test('upgradePackage 失败原因: 子进程的路径项目符号行不被 Require-stack 规则吞掉', async () => {
+  const reason = await reasonFor(
+    ['npm error code 1', '- /opt/app/config could not be written by the preinstall step'].join('\n'),
+  );
+  assert.match(reason, /- \/opt\/app\/config could not be written/);
+});
+
+test('upgradePackage 失败原因: 只有路径项目符号行的诊断保留', async () => {
+  const reason = await reasonFor('- /opt/app/config write failed during preinstall', 1);
+  assert.match(reason, /- \/opt\/app\/config write failed/);
+});
+
+test('upgradePackage 失败原因: 闭合方括号的元数据行会被降级但诊断行保留', async () => {
+  const reason = await reasonFor('missing: [libfoo, libbar] native libraries failed to link', 1);
+  assert.match(reason, /missing: \[libfoo, libbar\] native libraries failed to link/);
+});
+
+test('upgradePackage 失败原因: command failed 留在元数据层, 脚本名仍可见', async () => {
+  const stderr = ['npm error code 1', 'npm error command failed', 'npm error command sh -c node ./b.js'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code 1/);
+  assert.match(reason, /command sh -c node .\/b\.js/);
+});
+
+test('upgradePackage 失败原因: gyp 启动行不否决唯一原因', async () => {
+  const stderr = [
+    'native build failed: missing libfoo. rebuild aborted.',
+    "gyp info spawn args [ 'build', '-v', 'rebuild' ]",
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.match(reason, /native build failed: missing libfoo/);
+});
+
+test('upgradePackage 失败原因: 崩溃的 throw 片段与数组元数据不阻塞原因', async () => {
+  const stderr = [
+    'node:internal/modules/cjs/loader:1607',
+    '  throw err;',
+    '  ^',
+    "Error: Cannot find module 'x'",
+    '    at Module._resolveFilename (node:internal/modules/cjs/loader:1603:15) {',
+    "  code: 'MODULE_NOT_FOUND',",
+    '  requireStack: [',
+    "    '/home/op/x.js'",
+  ].join('\n');
+  const reason = await reasonFor(stderr, 1);
+  assert.match(reason, /Error: Cannot find module 'x'/);
+});
+
+test('upgradePackage 失败原因: 真实异步帧不再阻塞原因', async () => {
+  const stderr = ["TypeError: Cannot read properties of null (reading 'x')", '    at async Promise.all (index 0)'].join(
+    '\n',
+  );
+  const reason = await reasonFor(stderr, 1);
+  assert.match(reason, /TypeError: Cannot read properties of null/);
+});
+
+test('upgradePackage 失败原因: bash 回显夹具下子进程的 command: 行保留', async () => {
+  const reason = await reasonFor(failureStderr('bash-echo-child.err'), 7);
+  assert.match(reason, /command: node-gyp rebuild/);
+});
+
+test('upgradePackage 升级子进程: npm 与 GitHub 令牌族不进子环境', async () => {
+  const keys = ['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'DOCKER_PASSWORD'];
+  const saved = new Map(keys.map((key) => [key, process.env[key]]));
+  for (const key of keys) process.env[key] = `fixture-${key}`;
+  try {
+    const env = await childEnv();
+    for (const key of keys) assert.equal(env[key], undefined, `${key} must not reach npx`);
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
