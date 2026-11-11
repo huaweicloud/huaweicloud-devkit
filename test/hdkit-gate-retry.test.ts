@@ -2089,20 +2089,59 @@ test('a lying readback rolls the refused key back on the discarded original', ()
 
 type HostileTarget = Error & Record<string | symbol, unknown>;
 
+// 传输码 20 载体：四形态共用的原对象工厂
+function hostileCarrier(code: unknown = 20): HostileTarget {
+  return Object.assign(new Error('the real diagnosis'), { code }) as unknown as HostileTarget;
+}
+
+// 先转发后抛的陷阱（形态 A/B）：写入物理落在目标上再抛——`wrote` 布尔
+// 不可信的两种形态共用。onlyKey 指定时仅该键抛（晚键形态 B），缺省全抛（形态 A）
+function writeThenThrowProxy(original: HostileTarget, onlyKey?: string): HostileTarget {
+  const shouldThrow = (key: string | symbol) => onlyKey === undefined || key === onlyKey;
+  return new Proxy(original, {
+    set(t: HostileTarget, k: string | symbol, v: unknown) {
+      t[k] = v;
+      if (shouldThrow(k)) throw new TypeError('set trap writes then throws');
+      return true;
+    },
+    defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
+      Object.defineProperty(t, k, d);
+      if (shouldThrow(k)) throw new TypeError('defineProperty trap writes then throws');
+      return true;
+    },
+  });
+}
+
+// 撒谎视图（形态 C/D）：get 对谎键报 read() 的读数（markWrite 为真时对谎键
+// 的写入会翻转 seenWrite，供 read() 消费——形态 C 的先真后谎）；has 谎报
+// 可选；其余读/写全转发
+function lyingViewProxy(
+  original: HostileTarget,
+  view: { key: string; read: (seenWrite: boolean) => unknown; has?: boolean; markWrite?: boolean },
+): HostileTarget {
+  let seenWrite = false;
+  return new Proxy(original, {
+    has(t: HostileTarget, k: string | symbol): boolean {
+      if (view.has !== undefined && k === view.key) return view.has;
+      return Reflect.has(t, k);
+    },
+    get(t: HostileTarget, k: string | symbol): unknown {
+      if (k === view.key) return view.read(seenWrite);
+      return Reflect.get(t, k);
+    },
+    set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
+      const result = Reflect.set(t, k, v);
+      if (view.markWrite && k === view.key) seenWrite = true;
+      return result;
+    },
+  });
+}
+
 test('the refused-key rollback never trusts the hostile view: write-then-throw, lying has, lying get', () => {
   // A. 先转发后抛：写入物理落在目标上而 wrote=false——被拒键必须删除
   {
-    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
-    const proxy = new Proxy(original, {
-      set(t: HostileTarget, k: string | symbol, v: unknown) {
-        t[k] = v;
-        throw new TypeError('set trap writes then throws');
-      },
-      defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
-        Object.defineProperty(t, k, d);
-        throw new TypeError('defineProperty trap writes then throws');
-      },
-    });
+    const original = hostileCarrier();
+    const proxy = writeThenThrowProxy(original);
     const out = decorateExhaustedConnect(proxy, 2);
     assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
     assert.equal(
@@ -2115,19 +2154,8 @@ test('the refused-key rollback never trusts the hostile view: write-then-throw, 
   }
   // B. 晚键先转发后抛：装饰码值物理落在目标上——被拒键删除，不残留装饰值
   {
-    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
-    const proxy = new Proxy(original, {
-      set(t: HostileTarget, k: string | symbol, v: unknown) {
-        t[k] = v;
-        if (k === 'code') throw new TypeError('code trap writes then throws');
-        return true;
-      },
-      defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
-        Object.defineProperty(t, k, d);
-        if (k === 'code') throw new TypeError('code define trap writes then throws');
-        return true;
-      },
-    });
+    const original = hostileCarrier();
+    const proxy = writeThenThrowProxy(original, 'code');
     const out = decorateExhaustedConnect(proxy, 2);
     assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
     assert.equal(
@@ -2141,24 +2169,15 @@ test('the refused-key rollback never trusts the hostile view: write-then-throw, 
       'the earlier applied fields roll back',
     );
   }
-  // C. 撒谎 has+get：快照喂给回滚谎言——被拒键绝不从快照恢复，一律删除
+  // C. 撒谎 has+get：快照喂给回滚谎言——被拒键绝不从快照恢复，一律删除。
+  //    谎报先真（true）后谎（false）：写后翻供，快照存的是翻供后的假值
   {
-    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
-    let gwSeenWrite = false;
-    const proxy = new Proxy(original, {
-      has(t: HostileTarget, k: string | symbol): boolean {
-        if (k === 'gatewayRetryExhausted') return true;
-        return Reflect.has(t, k);
-      },
-      get(t: HostileTarget, k: string | symbol): unknown {
-        if (k === 'gatewayRetryExhausted') return gwSeenWrite ? false : true;
-        return Reflect.get(t, k);
-      },
-      set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
-        const r = Reflect.set(t, k, v);
-        if (k === 'gatewayRetryExhausted') gwSeenWrite = true;
-        return r;
-      },
+    const original = hostileCarrier();
+    const proxy = lyingViewProxy(original, {
+      key: 'gatewayRetryExhausted',
+      read: (seenWrite) => (seenWrite ? false : true),
+      has: true,
+      markWrite: true,
     });
     const out = decorateExhaustedConnect(proxy, 2);
     assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
@@ -2173,16 +2192,8 @@ test('the refused-key rollback never trusts the hostile view: write-then-throw, 
   // D. 预存键+撒谎 get：回滚绝不"恢复"谎言——尽力删除（真值已遭转发写覆盖，
   //    载体本被丢弃，台账记录）
   {
-    const original = Object.assign(new Error('the real diagnosis'), { code: 20 }) as unknown as HostileTarget;
-    const proxy = new Proxy(original, {
-      get(t: HostileTarget, k: string | symbol): unknown {
-        if (k === 'code') return 'HTTP_502';
-        return Reflect.get(t, k);
-      },
-      set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
-        return Reflect.set(t, k, v);
-      },
-    });
+    const original = hostileCarrier();
+    const proxy = lyingViewProxy(original, { key: 'code', read: () => 'HTTP_502' });
     const out = decorateExhaustedConnect(proxy, 2);
     assert.notEqual(out, proxy, 'the refused carrier falls to the clone');
     assert.notEqual(
