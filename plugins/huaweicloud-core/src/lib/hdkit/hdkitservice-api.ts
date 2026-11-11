@@ -4,6 +4,14 @@ import { detectAgent } from '../../telemetry/agent-detect.ts';
 import { readInstalledVersion } from '../../update-check.ts';
 import { getCredentials } from './hwlink-api.ts';
 import { pinnedTemplateFor } from './sandbox-pool.ts';
+import {
+  VERSION_GATE_CODE,
+  applyVersionGate,
+  connectRetryDelaysMs,
+  decorateExhaustedConnect,
+  gatePayloadFields,
+  isGatewayTransient,
+} from './hdkit-gate.ts';
 import { asRecord } from '../as-record.ts';
 import { asText } from '../as-text.ts';
 
@@ -14,6 +22,8 @@ export interface HdkitError extends Error {
   remediation?: { hint: string; steps: string[] };
   retryAfter?: string;
   coreHoursExhausted?: boolean;
+  clientVersion?: string;
+  minVersion?: string;
 }
 
 // Structural surface shared by the global and undici Response implementations;
@@ -121,6 +131,15 @@ async function hdkitRequest(
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
       err.message = asText(rec.message) || err.message;
     }
+    // 版本硬门禁（409 HDKIT_VERSION_TOO_OLD）：结构化升级引导，remediation 才能
+    // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性
+    if (code === VERSION_GATE_CODE) {
+      applyVersionGate(err, {
+        clientVersion: asText(rec.clientVersion) || undefined,
+        minVersion: asText(rec.minVersion) || undefined,
+        message: asText(rec.message) || undefined,
+      });
+    }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
     // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。
     // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 双码/凭证指引）
@@ -175,6 +194,34 @@ export async function hdkitConnect(options: Record<string, unknown> = {}): Promi
   return asRecord(await hdkitRequest('POST', 'connect', body));
 }
 
+/**
+ * connect 专用网关 502/504 重试（dev e0c8700b）：编排期响应超时不是创建失败，
+ * 服务端可能已创建/启动实例，重试通常复用。有界重试、逐档退避，其余状态一律
+ * 不重试（含 409 版本门禁——不可重试裁决由 hdkit-gate 的瞬时判定独占）。
+ * 重试表经 HW_SANDBOX_CONNECT_RETRY_DELAYS_MS 针脚可覆写（v2 扩展）。
+ * 成功路径回显 connect_retries（v2 扩展；dev 仅在错误路径带尝试次数）。
+ */
+export async function hdkitConnectWithRetry(options: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const delays = connectRetryDelaysMs();
+  let retries = 0;
+  for (;;) {
+    try {
+      const result = await hdkitConnect(options);
+      if (retries > 0) result.connect_retries = retries;
+      return result;
+    } catch (error) {
+      const transient = isGatewayTransient(error);
+      if (!transient || retries >= delays.length) {
+        (error as { connectRetries?: number }).connectRetries = retries;
+        if (transient) decorateExhaustedConnect(error, retries);
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delays[retries]));
+      retries += 1;
+    }
+  }
+}
+
 export async function hdkitCredentials(
   sessionId: unknown,
   devStageId: unknown,
@@ -218,12 +265,18 @@ export async function hdkitDeleteApiKey(keyId: string): Promise<Record<string, u
 // three endpoints share the fallback; only the service-unavailable wording
 // differs.
 function voucherFallback(error: unknown, unavailableMessage: string): Record<string, unknown> {
-  const err = error as { message?: unknown; code?: unknown; remediation?: unknown };
+  const err = error as {
+    message?: unknown;
+    code?: unknown;
+    clientVersion?: unknown;
+    minVersion?: unknown;
+    remediation?: unknown;
+  };
   return {
     claimed: false,
     message: typeof err.message === 'string' && err.message ? err.message : unavailableMessage,
     code: err.code,
-    ...(err.remediation ? { remediation: err.remediation } : {}),
+    ...gatePayloadFields(err),
   };
 }
 

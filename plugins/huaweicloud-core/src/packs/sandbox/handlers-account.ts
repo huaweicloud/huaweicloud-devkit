@@ -1,5 +1,6 @@
 import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
-import { hdkitCheckUser, hdkitSignAgreement, hdkitConnect } from '../../lib/hdkit/hdkitservice-api.ts';
+import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../../lib/hdkit/hdkitservice-api.ts';
+import { versionGateResult, transientExhaustionResult } from '../../lib/hdkit/hdkit-gate.ts';
 import type { HdkitError } from '../../lib/hdkit/hdkitservice-api.ts';
 import {
   validatePoolType,
@@ -17,11 +18,25 @@ import { transferGitRepo } from './git-transfer.ts';
 // invocation (git-transfer.ts).
 
 export async function handleCheckUser(_args: ToolArgs = {}, _opts: CallToolOptions = {}) {
-  return await hdkitCheckUser();
+  try {
+    return await hdkitCheckUser();
+  } catch (error) {
+    // 409 版本门禁按出口折叠（dev e1255a4b）：MCP 错误信封只携带 code+message，
+    // clientVersion/minVersion/remediation 必须展开为结构化返回才能穿透
+    const gate = versionGateResult(error);
+    if (gate) return gate;
+    throw error;
+  }
 }
 
 export async function handleSignAgreement(_args: ToolArgs = {}, _opts: CallToolOptions = {}) {
-  return await hdkitSignAgreement();
+  try {
+    return await hdkitSignAgreement();
+  } catch (error) {
+    const gate = versionGateResult(error);
+    if (gate) return gate;
+    throw error;
+  }
 }
 
 export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
@@ -37,11 +52,16 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
   }
   let connectResult: Record<string, unknown>;
   try {
-    connectResult = await hdkitConnect(connectArgs);
+    connectResult = await hdkitConnectWithRetry(connectArgs);
   } catch (error) {
     // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
-    // 其余错误维持抛出（MCP 层透传 code+message）
+    // 其余错误维持抛出（MCP 层透传 code+message）。
+    // 409 版本门禁（dev e1255a4b）与网关 502/504 重试耗尽（v2 扩展）同样在此折叠。
     const err = error as HdkitError;
+    const gate = versionGateResult(err);
+    if (gate) return gate;
+    const exhausted = transientExhaustionResult(err);
+    if (exhausted) return exhausted;
     if (
       err.code === 'HDKIT_QUOTA_EXCEEDED' ||
       err.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
