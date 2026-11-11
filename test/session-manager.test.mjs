@@ -113,6 +113,9 @@ test('buildExposeRemediation includes credential sourcing and host command with 
   assert.match(msg, /source \/tmp\/hw_api_key/);
   assert.match(msg, /devbridge port create <tunnelId> -p 82 --protocol http -a/);
   assert.match(msg, /use THAT port instead/);
+  // #981 review: selective cleanup only — a shared sandbox must not see delete-all.
+  assert.match(msg, /devbridge delete <stale-tunnel-id>/);
+  assert.doesNotMatch(msg, /devbridge delete-all(?!")/);
 });
 
 test('TUNNEL_URL_PATTERN matches a real tunnel URL', () => {

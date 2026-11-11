@@ -223,8 +223,12 @@ export async function resolveProxyNodePort(nodePort, nginxListenPort, isPortInUs
   return candidate;
 }
 
+// #981 review R2: selective cleanup only. `devbridge delete-all` is a GLOBAL
+// operation on a shared sandbox (it kills other sessions' tunnels), and the skill
+// tells agents to run this string verbatim — so the remediation must never carry it.
+// The tunnel already bound to this port is the only record that may be replaced.
 export function buildExposeRemediation(port) {
-  return `In the sandbox: source /tmp/hw_creds.sh; source /tmp/hw_api_key 2>/dev/null; devbridge delete-all; devbridge create <name>; devbridge port create <tunnelId> -p ${port} --protocol http -a; nohup devbridge host <tunnelId> -p ${port} > /tmp/host.log 2>&1 & If deploy_nginx reported a different (auto-incremented) port in its "port" field, use THAT port instead of the one shown here. Full procedure in huawei-sandbox skill, Step 7 (Expose via DevBridge).`;
+  return `In the sandbox: source /tmp/hw_creds.sh; source /tmp/hw_api_key 2>/dev/null; devbridge list -j; devbridge delete <stale-tunnel-id>; devbridge create <name>; devbridge port create <tunnelId> -p ${port} --protocol http -a; nohup devbridge host <tunnelId> -p ${port} > /tmp/host.log 2>&1 & Delete ONLY stale tunnels (or the one already bound to this port) — never "devbridge delete-all" on a shared sandbox, it kills tunnels published by other sessions. Prefer huaweicloud_sandbox_expose_tunnel {"port": ${port}} — it performs the same selective cleanup (cleanup_mode=stale) and verifies the URL before returning it. If deploy_nginx reported a different (auto-incremented) port in its "port" field, use THAT port instead of the one shown here. Full procedure in huawei-sandbox skill, Step 7 (Expose via DevBridge).`;
 }
 
 // #953: classify a local upload path BEFORE touching the file, so the error names
@@ -1082,7 +1086,9 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `# A caller that keeps probing the original port drives every check at a dead`,
     `# port and never learns the right one, so detect the actual nginx listen port`,
     `# READ-ONLY (ss + nginx -T root match) and probe with it.`,
-    `NGINX_T_FILE=/tmp/.dc_nginx_T`,
+    `# mktemp: a fixed /tmp path races when two deploy_check calls run concurrently`,
+    `# (second call truncates the first one's nginx -T dump mid-parse).`,
+    `NGINX_T_FILE=$(mktemp /tmp/.dc_nginx_T.XXXXXX 2>/dev/null || echo "/tmp/.dc_nginx_T.$$")`,
     `NGINX_LISTEN_PORTS=$(ss -tlnp 2>/dev/null | grep -E '"nginx"' | awk '{print $4}' | sed 's/.*://' | grep -E '^[0-9]+$' | sort -un | tr '\\n' ' ')`,
     `if [ -z "$NGINX_LISTEN_PORTS" ]; then`,
     `  NGINX_LISTEN_PORTS=$(grep -rhoE '^[[:space:]]*listen[[:space:]]+[0-9]+' /etc/nginx/conf.d/*.conf 2>/dev/null | grep -oE '[0-9]+' | sort -un | tr '\\n' ' ')`,
@@ -1091,27 +1097,41 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `if timeout 10 sudo nginx -T > "$NGINX_T_FILE" 2>/dev/null; then`,
     `  DEPLOY_LISTEN_PORT=$(awk -v want="${outputPath}" '`,
     `    /^[[:space:]]*listen[[:space:]]+[0-9]+/ { l=$0; sub(/^[[:space:]]*listen[[:space:]]+/, "", l); sub(/[^0-9].*$/, "", l); cur=l; next }`,
-    `    /^[[:space:]]*(root|alias)[[:space:]]+/ { if (index($0, want) > 0 && cur != "") { print cur; exit } }`,
+    `    /^[[:space:]]*(root|alias)[[:space:]]+/ {`,
+    `      v=$0; sub(/^[[:space:]]*(root|alias)[[:space:]]+/, "", v); sub(/;.*$/, "", v); gsub(/"/, "", v)`,
+    `      # Path boundary: a sibling site under /workspace/myapp/dist-old or`,
+    `      # /workspace/myapp/dist2 must NOT be attributed to THIS deployment.`,
+    `      if ((v == want || index(v, want "/") == 1) && cur != "") { print cur; exit }`,
+    `    }`,
     `  ' "$NGINX_T_FILE")`,
     `fi`,
     `rm -f "$NGINX_T_FILE"`,
+    `PORT_COUNT=$(echo "$NGINX_LISTEN_PORTS" | wc -w | tr -d '[:space:]')`,
     `ACTUAL_PORT=""`,
+    `PORT_BASIS="unknown"`,
     `if [ -n "$DEPLOY_LISTEN_PORT" ] && echo " $NGINX_LISTEN_PORTS " | grep -q " $DEPLOY_LISTEN_PORT "; then`,
-    `  ACTUAL_PORT="$DEPLOY_LISTEN_PORT"`,
+    `  ACTUAL_PORT="$DEPLOY_LISTEN_PORT"; PORT_BASIS="listening"`,
     `elif echo " $NGINX_LISTEN_PORTS " | grep -q " ${port} "; then`,
-    `  ACTUAL_PORT="${port}"`,
+    `  ACTUAL_PORT="${port}"; PORT_BASIS="listening"`,
     `elif [ -n "$DEPLOY_LISTEN_PORT" ]; then`,
-    `  ACTUAL_PORT="$DEPLOY_LISTEN_PORT"`,
-    `elif [ -n "$NGINX_LISTEN_PORTS" ]; then`,
-    `  ACTUAL_PORT=$(echo "$NGINX_LISTEN_PORTS" | awk '{print $1}')`,
+    `  ACTUAL_PORT="$DEPLOY_LISTEN_PORT"; PORT_BASIS="configured"`,
+    `elif [ "$PORT_COUNT" = "1" ]; then`,
+    `  # Exactly one nginx listener and no site match: attribution is unambiguous.`,
+    `  ACTUAL_PORT=$(echo "$NGINX_LISTEN_PORTS" | awk '{print $1}'); PORT_BASIS="listening"`,
     `fi`,
+    `# Several nginx listeners + no root match + requested port absent => the port`,
+    `# belongs to ANOTHER site. Claiming the first one would attribute this project's`,
+    `# drift to someone else's port, so stay unknown and fail open on the caller port.`,
     `PROBE_PORT="\${ACTUAL_PORT:-${port}}"`,
     `if [ -z "$ACTUAL_PORT" ]; then`,
     `  echo "PORT_DRIFT:unknown"`,
+    `  echo "PORT_DRIFT_BASIS:unknown"`,
     `elif [ "$ACTUAL_PORT" = "${port}" ]; then`,
     `  echo "PORT_DRIFT:none"`,
+    `  echo "PORT_DRIFT_BASIS:$PORT_BASIS"`,
     `else`,
     `  echo "PORT_DRIFT:${port}->$ACTUAL_PORT"`,
+    `  echo "PORT_DRIFT_BASIS:$PORT_BASIS"`,
     `fi`,
     `echo "NGINX_LISTEN_PORT:\${ACTUAL_PORT:-unknown}"`,
     ``,
@@ -1120,6 +1140,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then`,
     `  DRIFT_NOTE=""`,
     `  if [ "$PROBE_PORT" != "${port}" ]; then DRIFT_NOTE=", drift from ${port}"; fi`,
+    `  if [ "$PORT_BASIS" = "configured" ]; then DRIFT_NOTE="$DRIFT_NOTE (configured, not listening)"; fi`,
     `  echo "nginx_serving:PASS (port $PROBE_PORT, HTTP \${HTTP_CODE}\${DRIFT_NOTE})"`,
     `  PASS=$((PASS+1))`,
     `else`,
@@ -1174,16 +1195,19 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `# still be in \`list\`); 404 "port not configured" = URL port not registered; 502`,
     `# "bad gateway" = tunnel alive, local service down. grep -x (exact-line match) +`,
     `# status gating avoids flagging app-generated 404/502 pages.`,
+    `# mktemp: a shared fixed body file would let concurrent deploy_check calls`,
+    `# overwrite each other's probe response mid-grep.`,
+    `TUNNEL_BODY_FILE=$(mktemp /tmp/.dc_tunnel_body.XXXXXX 2>/dev/null || echo "/tmp/.dc_tunnel_body.$$")`,
     `probe_tunnel() {`,
     `  local url="$1" code`,
-    `  code=$(curl -s -o /tmp/.dc_tunnel_body -w "%{http_code}" --max-time 5 "$url" 2>/dev/null)`,
+    `  code=$(curl -s -o $TUNNEL_BODY_FILE -w "%{http_code}" --max-time 5 "$url" 2>/dev/null)`,
     `  PROBE_FAIL_REASON=""`,
-    `  if [ "$code" = "000" ]; then PROBE_FAIL_REASON="unreachable"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
-    `  if grep -q "${DEVBRIDGE_MIGRATION_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="migration placeholder page"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
-    `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="tunnel not found (no live host session on the gateway)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
-    `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="port not configured (URL port not registered on the tunnel)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
-    `  if [ "$code" = "502" ] && grep -qx "${DEVBRIDGE_BAD_GATEWAY_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="bad gateway (tunnel alive, local service not serving)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
-    `  rm -f /tmp/.dc_tunnel_body`,
+    `  if [ "$code" = "000" ]; then PROBE_FAIL_REASON="unreachable"; rm -f $TUNNEL_BODY_FILE; return 1; fi`,
+    `  if grep -q "${DEVBRIDGE_MIGRATION_MARKER}" $TUNNEL_BODY_FILE 2>/dev/null; then PROBE_FAIL_REASON="migration placeholder page"; rm -f $TUNNEL_BODY_FILE; return 1; fi`,
+    `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER}" $TUNNEL_BODY_FILE 2>/dev/null; then PROBE_FAIL_REASON="tunnel not found (no live host session on the gateway)"; rm -f $TUNNEL_BODY_FILE; return 1; fi`,
+    `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER}" $TUNNEL_BODY_FILE 2>/dev/null; then PROBE_FAIL_REASON="port not configured (URL port not registered on the tunnel)"; rm -f $TUNNEL_BODY_FILE; return 1; fi`,
+    `  if [ "$code" = "502" ] && grep -qx "${DEVBRIDGE_BAD_GATEWAY_MARKER}" $TUNNEL_BODY_FILE 2>/dev/null; then PROBE_FAIL_REASON="bad gateway (tunnel alive, local service not serving)"; rm -f $TUNNEL_BODY_FILE; return 1; fi`,
+    `  rm -f $TUNNEL_BODY_FILE`,
     `  return 0`,
     `}`,
     `# Probe each listed tunnel (bounded to 5) and select the first one that actually`,
@@ -1199,6 +1223,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `    break`,
     `  fi`,
     `done`,
+    `rm -f $TUNNEL_BODY_FILE`,
     `TUNNEL_URL="$SELECTED_URL"`,
     `if [ -n "$SELECTED_URL" ]; then`,
     `  echo "tunnel_url_accessible:PASS ($SELECTED_URL)"`,
@@ -1206,6 +1231,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `elif [ -n "$FIRST_ID" ]; then`,
     `  DRIFT_NOTE=""`,
     `  if [ "$PROBE_PORT" != "${port}" ]; then DRIFT_NOTE=", nginx listens on $PROBE_PORT instead of ${port}"; fi`,
+    `  if [ "$PORT_BASIS" = "configured" ]; then DRIFT_NOTE="$DRIFT_NOTE (configured but not listening — reload nginx)"; fi`,
     `  echo "tunnel_url_accessible:FAIL (https://\${FIRST_ID}-$PROBE_PORT.${DEVBRIDGE_TUNNEL_DOMAIN} -> $PROBE_FAIL_REASON\${DRIFT_NOTE})"`,
     `else`,
     `  echo "tunnel_url_accessible:FAIL (no tunnel)"`,
@@ -1294,12 +1320,20 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
   const driftMatch = cleanStdout.match(/^PORT_DRIFT:(?:none|unknown|(\d+)->(\d+))$/m);
   const driftFrom = driftMatch && driftMatch[1] ? parseInt(driftMatch[1], 10) : undefined;
   const driftTo = driftMatch && driftMatch[2] ? parseInt(driftMatch[2], 10) : undefined;
+  // 'listening' = observed in ss; 'configured' = only the nginx config names it (a
+  // reload is still pending). The two cases need different advice, so keep the basis.
+  const basisMatch = cleanStdout.match(/^PORT_DRIFT_BASIS:(listening|configured)$/m);
+  const driftBasis = basisMatch ? basisMatch[1] : 'listening';
   const portDrift =
     driftFrom !== undefined && driftTo !== undefined && driftFrom !== driftTo
       ? {
           requested: driftFrom,
           actual: driftTo,
-          message: `nginx listens on port ${driftTo}, not ${driftFrom} — checks probed port ${driftTo}; rebind the DevBridge tunnel to port ${driftTo}`,
+          basis: driftBasis,
+          message:
+            driftBasis === 'configured'
+              ? `nginx config for this deployment listens on port ${driftTo}, but nothing is listening on it (requested ${driftFrom}) — reload/restart nginx, then rebind the DevBridge tunnel to port ${driftTo}`
+              : `nginx listens on port ${driftTo}, not ${driftFrom} — checks probed port ${driftTo}; rebind the DevBridge tunnel to port ${driftTo}`,
         }
       : undefined;
   const effectivePort = portDrift ? portDrift.actual : port;
@@ -1344,6 +1378,42 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
     portDrift,
     nextStep: nextStepValue,
     remediation: nextStepValue === 'expose_via_devbridge' ? buildExposeRemediation(effectivePort) : undefined,
+  };
+}
+
+// #981 review R1: auto-rebind is an EXPLICIT opt-in WRITE step layered on top of the
+// read-only check. Only a real drift with a dead tunnel qualifies — a complete check,
+// a clean port, or an unknown port must never trigger a tunnel rebuild. Auto-rebind
+// keeps the reporting path closed (drift → checked URL) without making the default
+// deploy_check a mutating call.
+export function shouldAutoRebind(checkResult) {
+  if (!checkResult || checkResult.complete || !checkResult.portDrift) return false;
+  const tunnel = checkResult.checks?.tunnel_url_accessible;
+  if (tunnel) return tunnel.status === 'FAIL';
+  return (checkResult.missingSteps || '').split(',').some((step) => step.trim() === 'tunnel_url_accessible');
+}
+
+// Merge a re-exposed tunnel + re-checked result back onto the ORIGINAL drift report:
+// requestedPort/portDrift/nginxListenPort stay as diagnosed (that is the evidence),
+// while complete/publicUrl/nextStep come from the re-check on the actual port.
+export function applyAutoRebind(checkResult, exposeResult, recheckResult) {
+  const drift = checkResult?.portDrift;
+  const publicUrl = exposeResult?.publicUrl || exposeResult?.tunnelUrl;
+  const rebound = Boolean(exposeResult?.ok && publicUrl);
+  const base = rebound && recheckResult ? recheckResult : checkResult;
+  return {
+    ...base,
+    requestedPort: checkResult?.requestedPort,
+    portDrift: drift,
+    ...(checkResult?.nginxListenPort !== undefined ? { nginxListenPort: checkResult.nginxListenPort } : {}),
+    autoRebind: {
+      attempted: true,
+      ok: rebound,
+      from: drift?.requested,
+      to: drift?.actual,
+      ...(rebound ? { publicUrl } : {}),
+      ...(rebound ? {} : { error: exposeResult?.error || 'expose_tunnel returned no verified publicUrl' }),
+    },
   };
 }
 
