@@ -19,6 +19,8 @@ process.env.USERPROFILE = tmpHome;
 let mockKeys: Array<Record<string, unknown>> = [];
 let mockCreateResult: Record<string, unknown> | null = null;
 let mockCreateError: (Error & { code?: string }) | null = null;
+let mockListError: (Error & { code?: string }) | null = null;
+let mockCreateCalls = 0;
 let mockDeleteCalls: string[] = [];
 
 mock.module('../plugins/huaweicloud-core/src/lib/hdkit/hwlink-api.ts', {
@@ -31,10 +33,14 @@ mock.module('../plugins/huaweicloud-core/src/lib/hdkit/hwlink-api.ts', {
 mock.module('../plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts', {
   namedExports: {
     hdkitCreateApiKey: async (name: string, scope: string) => {
+      mockCreateCalls += 1;
       if (mockCreateError) throw mockCreateError;
       return mockCreateResult || { api_key: 'devbridge_MOCKKEY', name, scope, id: 'mock-id' };
     },
-    hdkitListApiKeys: async () => mockKeys,
+    hdkitListApiKeys: async () => {
+      if (mockListError) throw mockListError;
+      return mockKeys;
+    },
     hdkitDeleteApiKey: async (keyId: string) => {
       mockDeleteCalls.push(keyId);
       return { deleted: true };
@@ -139,6 +145,45 @@ test('recreateDevbridgeKey propagates the relay create error (quota path depends
   }
 });
 
+test('the orphan-list step re-throws the 409 version gate instead of swallowing it', async () => {
+  clearCachedKey('test-ak', 'ephemeral');
+  mockListError = Object.assign(new Error('HDKIT_VERSION_TOO_OLD: 插件版本过旧，请升级至正式版 2.0.0 及以上。'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    clientVersion: '2.0.0-next.0',
+    minVersion: '2.0.0',
+    remediation: { hint: '插件版本过旧（当前 2.0.0-next.0，需升级至正式版 2.0.0 及以上）：', steps: ['x'] },
+  });
+  mockCreateCalls = 0;
+  try {
+    // 409 门禁必须穿透孤儿清理的容错吞错（relay 侧按出口折叠的前提），
+    // 否则 create 抛错被泛化降级掩盖成凭证误诊
+    await assert.rejects(ensureDevbridgeKey('ephemeral'), (error: Error & { code?: string }) => {
+      assert.equal(error.code, 'HDKIT_VERSION_TOO_OLD');
+      assert.equal((error as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+      assert.ok((error as { remediation?: unknown }).remediation, 'the gate payload must survive the re-throw');
+      return true;
+    });
+    assert.equal(mockCreateCalls, 0, 'a gated client must not spend a create call');
+  } finally {
+    mockListError = null;
+  }
+});
+
+test('a non-gate list failure still does not block creation', async () => {
+  clearCachedKey('test-ak', 'ephemeral');
+  mockListError = new Error('network unreachable');
+  mockCreateCalls = 0;
+  mockCreateResult = { api_key: 'devbridge_AFTER_LIST_FAIL', name: 'devkit-ephemeral', id: 'after-list-id' };
+  try {
+    const result = await ensureDevbridgeKey('ephemeral');
+    assert.equal(result.mode, 'CREATED');
+    assert.equal(mockCreateCalls, 1);
+  } finally {
+    mockListError = null;
+    mockCreateResult = null;
+  }
+});
+
 // ── keyring 注入命令构建 ──
 
 test('buildKeyringInjectScript includes keyring set and file fallback', () => {
@@ -154,6 +199,8 @@ test('buildKeyringInjectScript includes keyring set and file fallback', () => {
 test('cleanup tmp home', () => {
   mockKeys = [];
   mockCreateResult = null;
+  mockListError = null;
+  mockCreateCalls = 0;
   mockDeleteCalls = [];
   if (realHome) process.env.HOME = realHome;
   if (realProfile) process.env.USERPROFILE = realProfile;

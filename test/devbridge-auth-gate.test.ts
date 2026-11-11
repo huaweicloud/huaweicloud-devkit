@@ -190,6 +190,45 @@ test('a non-quota create failure keeps the plain no-credential degradation', asy
   assert.match(f.hint ?? '', /quota \(20 key limit\)/);
 });
 
+test('the 409 version gate folds through the relay failure with the upgrade remediation', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw Object.assign(new Error('插件版本过旧，请升级至正式版 2.0.0 及以上。'), {
+        code: 'HDKIT_VERSION_TOO_OLD',
+        clientVersion: '2.0.0-next.0',
+        minVersion: '2.0.0',
+        remediation: {
+          hint: '插件版本过旧（当前 2.0.0-next.0，需升级至正式版 2.0.0 及以上）：',
+          steps: [
+            '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+            '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+            '也可直接调用 huaweicloud_upgrade 工具完成升级',
+          ],
+        },
+      });
+    },
+  });
+  const f = await failingGate(lifecycle);
+  // 门禁按 relay 出口折叠（v2 扩展）：不是凭证误诊——quota/NO_CREDENTIAL 引导
+  // 不出现，升级引导穿透 expose 结果
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+  assert.match(f.error ?? '', /插件版本过旧/);
+  assert.equal((f as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+  assert.equal((f as { minVersion?: string }).minVersion, '2.0.0');
+  const remediation = (f as { gateRemediation?: { hint: string; steps: string[] } }).gateRemediation;
+  assert.ok(remediation, 'the gate remediation must reach the expose result');
+  assert.match(remediation!.hint, /版本过旧/);
+  assert.match(remediation!.steps.join(' '), /huaweicloud-devkit@latest update --target <agent>/);
+  assert.match(remediation!.steps.join(' '), /huaweicloud_upgrade/);
+  assert.doesNotMatch(
+    f.hint ?? '',
+    /No DevBridge API Key is available/,
+    'the no-credential misdiagnosis must not fire',
+  );
+  assert.doesNotMatch(f.hint ?? '', /quota/, 'the quota guidance must not fire');
+  assert.equal(f.port, 8080);
+});
+
 test('the version gate precedes the key-upgrade ladder — no key is created for a 0.1.x binary', async () => {
   const lifecycle = fakeKeyLifecycle();
   let failure: ExposeTunnelResult | undefined;

@@ -3,6 +3,7 @@ import { runOneShot } from './devbridge-exec.ts';
 import { evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import type { ExposeTunnelResult } from './devbridge-expose.ts';
 import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
+import { VERSION_GATE_CODE, isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
 
 // The DevBridge auth waterfall, extracted from devbridge-tunnel so the auth
 // probe script, its stdout parser, and (with the devbridge-tunnel
@@ -261,6 +262,30 @@ export async function gateExposeAuth(
               attempts,
               currentKeys: keysHint,
               hint: DEVBRIDGE_KEY_QUOTA_HINT,
+            },
+          };
+        }
+        // 409 版本门禁按 relay 出口折叠（v2 扩展，台账记录）：被门禁的客户端不是
+        // 凭证问题——NO_CREDENTIAL 降级会把升级信号误诊成清 key/重注凭证引导，
+        // 升级引导必须穿透 expose 结果
+        if (isVersionGateError(error)) {
+          const gate = error as {
+            clientVersion?: string;
+            minVersion?: string;
+            remediation?: { hint: string; steps: string[] };
+          };
+          return {
+            ok: false,
+            failure: {
+              ok: false,
+              port,
+              error: (error as Error).message,
+              error_code: VERSION_GATE_CODE,
+              ...(gate.clientVersion ? { clientVersion: gate.clientVersion } : {}),
+              ...(gate.minVersion ? { minVersion: gate.minVersion } : {}),
+              ...(gate.remediation ? { gateRemediation: gate.remediation } : {}),
+              authMode: authMode || 'UNKNOWN',
+              attempts,
             },
           };
         }

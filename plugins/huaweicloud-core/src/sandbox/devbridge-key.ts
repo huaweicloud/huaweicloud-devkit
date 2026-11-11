@@ -19,6 +19,7 @@ import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
 import { hdkitCreateApiKey, hdkitListApiKeys, hdkitDeleteApiKey } from '../lib/hdkit/hdkitservice-api.ts';
+import { isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
 import { getCredentials } from '../lib/hdkit/hwlink-api.ts';
 
 const POOL_KEY_NAMES: Record<'ephemeral' | 'persistent', string> = {
@@ -123,8 +124,10 @@ export async function ensureDevbridgeKey(poolType: string | undefined | null): P
     if (orphan && typeof orphan['id'] === 'string') {
       await hdkitDeleteApiKey(orphan['id']);
     }
-  } catch {
-    // list/delete 失败不阻断创建（可能权限或网络问题，继续尝试创建）
+  } catch (error) {
+    // 409 版本门禁必须穿透（relay 侧按出口折叠的前提）：吞掉它会被后续 create
+    // 失败的泛化降级掩盖成凭证误诊；其余 list/delete 失败仍不阻断创建
+    if (isVersionGateError(error)) throw error;
   }
 
   // 3. 创建
