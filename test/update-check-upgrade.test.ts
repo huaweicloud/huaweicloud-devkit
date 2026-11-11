@@ -146,7 +146,7 @@ test('upgradePackage 失败: 返回手动命令', async () => {
   const doQuery = async () => ({ latest: '1.1.1', next: null });
   const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn });
   assert.equal(r.success, false);
-  assert.match(r.manual ?? '', /npx --yes huaweicloud-devkit@latest update --target opencode/);
+  assert.match(r.manual ?? '', /npx --yes --foreground-scripts huaweicloud-devkit@latest update --target opencode/);
   assert.match(r.error ?? '', /EPERM/);
 });
 
@@ -1093,6 +1093,57 @@ test('upgradePackage 升级命令: 带 --foreground-scripts 让安装脚本输�
 test('upgradePackage 失败原因: 打开前景脚本后子进程文本成为原因', async () => {
   const reason = await reasonFor(failureStderr('npx-foreground-scripts.err'));
   assert.match(reason, /native build failed: missing libfoo/);
+});
+
+test('upgradePackage 失败原因: verbose 配置下子进程自己的行仍胜出', async () => {
+  const reason = await reasonFor(failureStderr('verbose-loud-child.err'));
+  assert.match(reason, /native build failed: missing libfoo/);
+  assert.doesNotMatch(reason, /shrinkwrap|npm verbose|npm verb/);
+});
+
+test('upgradePackage 失败原因: verbose 静默子进程回落到失败脚本的 echo', async () => {
+  const reason = await reasonFor(failureStderr('verbose-silent-child.err'));
+  assert.match(reason, /postinstall/);
+  assert.match(reason, /node .\/build\.js/);
+  assert.doesNotMatch(reason, /shrinkwrap|npm verbose|npm verb/);
+});
+
+test('upgradePackage 失败原因: echo 层选中与 { code: 7 } 相邻的 postinstall', async () => {
+  const reason = await reasonFor(failureStderr('verbose-multi-script.err'));
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /preinstall|npm verbose/);
+});
+
+test('upgradePackage 失败原因: 只有 echo 行时同样选中失败脚本', async () => {
+  const reason = await reasonFor(failureStderr('verbose-echolines-only.err'));
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /preinstall/);
+});
+
+test('upgradePackage 失败原因: npxreg 的 verbose 噪声不压过块内错误行', async () => {
+  const reason = await reasonFor(failureStderr('verbose-npxreg.err'));
+  assert.match(reason, /could not determine executable to run/);
+  assert.doesNotMatch(reason, /shrinkwrap|npm verbose|npm verb/);
+});
+
+test('upgradePackage 失败原因: 混合标签指针行也被剥掉', async () => {
+  for (const label of ['日志 2:', '运行-日志:']) {
+    const stderr = ['payload copy stopped', `${label} /home/op/logs/2026-debug-0.log`].join('\n');
+    const reason = await reasonFor(stderr);
+    assert.equal(reason, 'payload copy stopped', `${label} must drop`);
+  }
+});
+
+test('upgradePackage 失败原因: npm 自有的新 errno 拼写被承认', async () => {
+  for (const code of ['EUNKNOWNCOMMAND', 'ENOVERSIONS']) {
+    const reason = await reasonFor([`${code}: probe`, 'progress 1/2'].join('\n'));
+    assert.match(reason, new RegExp(code));
+  }
+});
+
+test('upgradePackage 升级命令: 手动兜底命令同样带 --foreground-scripts', async () => {
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery: async () => null, spawnFn: () => ({ status: 0 }) });
+  assert.match(r.manual ?? '', /npx --yes --foreground-scripts huaweicloud-devkit@latest update --target opencode/);
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {

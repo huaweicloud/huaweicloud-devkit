@@ -1,0 +1,22 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm exec is-number@7.0.0
+npm verbose argv "exec" "--loglevel" "verbose" "--yes" "--foreground-scripts" "--" "is-number@7.0.0"
+npm verbose logfile logs-max:10 dir:/home/op/cReg/_logs/2026-11-11T15_47_20_791Z-
+npm verbose logfile /home/op/cReg/_logs/2026-11-11T15_47_20_791Z-debug-0.log
+npm verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+npm verbose stack Error: could not determine executable to run
+npm verbose stack     at getBinFromManifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/libnpmexec/lib/get-bin-from-manifest.js:17:23)
+npm verbose stack     at exec (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/libnpmexec/lib/index.js:223:15)
+npm verbose stack     at async Npm.exec (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/lib/npm.js:193:9)
+npm verbose stack     at async module.exports (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/lib/cli/entry.js:67:5)
+npm verbose pkgid is-number@7.0.0
+npm error could not determine executable to run
+npm verbose cwd /home/op/fx/npxreg
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 1
+npm verbose code 1
+npm error A complete log of this run can be found in: /home/op/cReg/_logs/2026-11-11T15_47_20_791Z-debug-0.log

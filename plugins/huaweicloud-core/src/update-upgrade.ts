@@ -247,17 +247,20 @@ const ERRNO_CODES = new Set([
   'EBADPLATFORM',
   'EJSONPARSE',
   'ELIFECYCLE',
+  'EMAXREDIRECT',
   'EMAXREDIRECTS',
   'ENOAUDIT',
   'ENOLOCAL',
   'ENOLOCK',
   'ENOSELF',
+  'ENOVERSIONS',
   'ENOTCACHED',
   'ENOTFOUND',
   'EOTP',
   'EREGISTRY',
   'ERESOLVE',
   'ETARGET',
+  'EUNKNOWNCOMMAND',
   'EUNSUPPORTEDPROTOCOL',
 ]);
 
@@ -301,7 +304,7 @@ function isNpmErrorLine(line: string): boolean {
 function isPointerOnlyLine(line: string): boolean {
   const payload = npmPayload(line)
     .trim()
-    .replace(/^(?:[A-Za-z][\w .-]*|[\u4e00-\u9fa5]+\s*)[:：]\s*/, '');
+    .replace(/^(?:[A-Za-z][\w .-]*|[\u4e00-\u9fa5][\u4e00-\u9fa5\w .-]*)\s*[:：]\s*/, '');
   if (!/(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload)) return false;
   if (/^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])/.test(payload)) return true;
   // A bare relative log name ("npm-debug.log", "logs/npm-debug-0.log").
@@ -334,7 +337,9 @@ function isStackFrame(payload: string): boolean {
 
 function isNpmNoiseLine(line: string): boolean {
   if (!/[\p{L}\p{N}]/u.test(line)) return true;
-  if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
+  if (/^(?:npm warn\b|npm notice\b|npm verb(?:ose)?\b|\(node:\d+\))/i.test(line)) return true;
+  // npm's info channel is logging, except the `info run` echo of a script.
+  if (/^npm info\b/i.test(line) && !/^npm info run\b/i.test(line)) return true;
   if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
   const payload = npmPayload(line);
   return (
@@ -377,6 +382,14 @@ function selectFailureLine(
   for (const rank of [0, 1, 2, 3, 4]) {
     const hits = lines.filter((line) => lineRank(line) === rank);
     if (!hits.length) continue;
+    if (rank === 3) {
+      // The echo tier names the failing script: the echo next to its
+      // "{ code: N" result line wins, else the last echo in the branch.
+      const paired = lines.filter(
+        (line, index) => lineRank(line) === 3 && /\{\s*code:\s*-?\d+/.test(lines[index + 1] ?? ''),
+      );
+      return { line: (paired.at(-1) ?? hits.at(-1))!, rank };
+    }
     const later = rank === 0 || (rank === 2 && positionLast);
     return { line: (later ? hits.at(-1) : hits[0])!, rank };
   }
@@ -446,7 +459,7 @@ export async function upgradePackage(
     return {
       success: false,
       error: errorMessage(error) || '无法确认最新版本（registry 查询失败）。',
-      manual: `npx --yes huaweicloud-devkit@latest update --target ${target}`,
+      manual: `npx --yes --foreground-scripts huaweicloud-devkit@latest update --target ${target}`,
     };
   }
   const targetVersion = determineTarget(previousVersion, distTags ?? {});
@@ -454,7 +467,7 @@ export async function upgradePackage(
     return {
       success: false,
       error: '无法确认最新版本（registry 查询失败）。',
-      manual: `npx --yes huaweicloud-devkit@latest update --target ${target}`,
+      manual: `npx --yes --foreground-scripts huaweicloud-devkit@latest update --target ${target}`,
     };
   }
   if (!targetVersion) {
@@ -476,7 +489,7 @@ export async function upgradePackage(
     return {
       success: false,
       error: errorMessage(error) || '升级命令执行失败。',
-      manual: `npx --yes huaweicloud-devkit@${tag} update --target ${target}`,
+      manual: `npx --yes --foreground-scripts huaweicloud-devkit@${tag} update --target ${target}`,
     };
   }
   if (execResult.status === 0) {
@@ -493,6 +506,6 @@ export async function upgradePackage(
   return {
     success: false,
     error: reason,
-    manual: `npx --yes huaweicloud-devkit@${tag} update --target ${target}`,
+    manual: `npx --yes --foreground-scripts huaweicloud-devkit@${tag} update --target ${target}`,
   };
 }
