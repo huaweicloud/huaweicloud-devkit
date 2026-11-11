@@ -56,7 +56,11 @@ function probeOpencodeVersion(): string | null {
   const probeEnv = { ...process.env, XDG_CONFIG_HOME: probeRoot };
   const run = (cmd: string, shell: boolean): string | null => {
     try {
-      const r = spawnSync(cmd, ['--version'], {
+      // Args ride the command string whenever shell is true: an args array
+      // under shell is DEP0190 on Node 24+ (and would double the --version
+      // the win32 fallback string already carries). Without a shell the
+      // array stays — spawn needs the separated argument there.
+      const r = spawnSync(cmd, shell ? undefined : ['--version'], {
         shell,
         windowsHide: true,
         stdio: 'pipe',

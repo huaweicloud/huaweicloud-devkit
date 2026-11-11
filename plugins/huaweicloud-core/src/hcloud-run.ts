@@ -54,8 +54,11 @@ export async function runHcloud(args: unknown, options: HcloudRunOptions = {}): 
   // longer reach the spawn as a doubled `hcloud hcloud ...` prefix. The
   // warning for the stripped token comes from the plan this call builds.
   const { args: normalizedArgs } = stripLeadingHcloudBinArgs(inputArgs);
+  // Run paths never mint approval tokens: only the plan face does, so a run
+  // result can never hand the agent a fresh usable token for the next
+  // execution.
   const plan: HcloudPlanWithArgs = {
-    ...planHcloudCommand(normalizedArgs, options),
+    ...planHcloudCommand(normalizedArgs, { ...options, mintApprovalToken: false }),
     rawArgs: normalizedArgs,
   };
   assertAllowed(plan.classification);

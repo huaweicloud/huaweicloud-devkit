@@ -33,7 +33,15 @@ export function installRuntimeDeps(pluginsDir: string): void {
     stdio: 'pipe',
     timeout: 120000,
   };
-  let r = spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], spawnOpts);
+  // A string command, never an args array: args + shell:true is DEP0190 on
+  // Node 24 (the shell concatenates args unescaped), and the warning lands
+  // on the CLI's own stderr mid-install — deferred by emitWarning, it even
+  // surfaced glued to the provisioning prompt (2026-11-10 report #2). The
+  // words are static, so the shell concatenation is injection-safe by
+  // construction, and shell:true stays load-bearing: it routes npm.cmd on
+  // Windows (the #643 EINVAL doctrine).
+  const installCommand = 'npm install --omit=dev --no-audit --no-fund';
+  let r = spawnSync(installCommand, spawnOpts);
   const isRetryable = (res: SpawnSyncReturns<unknown>): boolean => {
     if (res.status === 0) return false;
     const stderr = asText(res.stderr || '');
@@ -42,12 +50,12 @@ export function installRuntimeDeps(pluginsDir: string): void {
   if (r.status !== 0 && isRetryable(r)) {
     console.log(`  \x1b[33m[WARN]\x1b[0m npm install hit file-lock error, retrying in 2s...`);
     sleepSync(2000);
-    r = spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], spawnOpts);
+    r = spawnSync(installCommand, spawnOpts);
   }
   if (r.status !== 0 && !isRetryable(r)) {
     console.log(`  \x1b[33m[RETRY]\x1b[0m npm install failed (exit ${r.status}), retrying in 3s...`);
     sleepSync(3000);
-    r = spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], spawnOpts);
+    r = spawnSync(installCommand, spawnOpts);
   }
   const undiciDir = join(pluginsDir, 'node_modules', 'undici');
   if (r.status === 0 && existsSync(undiciDir)) {

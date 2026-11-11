@@ -559,22 +559,36 @@ test('planHcloudCommand strips a leading hcloud bin token and warns, classificat
   assert.deepEqual(keep.args, ['obs', 'ls', 'hcloud-backup']);
 });
 
-test('runHcloud passes the stripped argv to the child (no doubled hcloud prefix)', async () => {
-  const fake = fakeHcloudExecutable(`console.log('ARGV:' + process.argv.slice(2).join(','));`);
-  const result = await runHcloud(['hcloud', 'obs', 'ls'], { executable: fake, maxRetries: 0 });
-  assert.equal(result.ok, true);
-  assert.match(result.stdout ?? '', /^ARGV:obs,ls$/m);
-});
+// The five tests below spawn the fake bin and assert on its child output
+// (argv echo, USE_ERROR shapes). fakeHcloudExecutable writes an extension-
+// less shebang script, which Windows cannot exec — spawn with shell:false
+// fails before the child runs, and runHcloudOnce reports SPAWN_ERROR
+// (ok:false, errorCode undefined; observed on run 42979717544). They are
+// POSIX-bound like the G4 and EPIPE tests above.
+test(
+  'runHcloud passes the stripped argv to the child (no doubled hcloud prefix)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const fake = fakeHcloudExecutable(`console.log('ARGV:' + process.argv.slice(2).join(','));`);
+    const result = await runHcloud(['hcloud', 'obs', 'ls'], { executable: fake, maxRetries: 0 });
+    assert.equal(result.ok, true);
+    assert.match(result.stdout ?? '', /^ARGV:obs,ls$/m);
+  },
+);
 
-test('the KooCLI USE_ERROR format-error shape is a PARAM_ERROR, not a false success (#921 family)', async () => {
-  // `[USE_ERROR]参数ls的格式错误` exits 0 — the old ok-gate missed the shape
-  // and reported ok:true for a command that never ran.
-  const fake = fakeHcloudExecutable(`console.log('[USE_ERROR]参数ls的格式错误,正确格式为:--param=value');`);
-  const result = await runHcloud(['hcloud', 'obs', 'ls'], { executable: fake, maxRetries: 0 });
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'PARAM_ERROR');
-  assert.match(result.errorMessage ?? '', /格式错误/);
-});
+test(
+  'the KooCLI USE_ERROR format-error shape is a PARAM_ERROR, not a false success (#921 family)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // `[USE_ERROR]参数ls的格式错误` exits 0 — the old ok-gate missed the shape
+    // and reported ok:true for a command that never ran.
+    const fake = fakeHcloudExecutable(`console.log('[USE_ERROR]参数ls的格式错误,正确格式为:--param=value');`);
+    const result = await runHcloud(['hcloud', 'obs', 'ls'], { executable: fake, maxRetries: 0 });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PARAM_ERROR');
+    assert.match(result.errorMessage ?? '', /格式错误/);
+  },
+);
 
 test('wrapper/env-prefixed input normalizes through the classifier vocabulary (loop round 2 R1)', () => {
   // The classifier deep-unwraps env/sudo prefixes; the seam must too, or
@@ -601,26 +615,34 @@ test('wrapper/env-prefixed input normalizes through the classifier vocabulary (l
   assert.ok(!envObs.command.includes('hcloud hcloud'));
 });
 
-test('long dotted parameter names are inside the USE_ERROR gate (loop round 2 R5)', async () => {
-  // `server.nics.1.subnet_id` (23 chars) escaped the old bounded span and
-  // reported ok:true for a command that never ran.
-  const fake = fakeHcloudExecutable(
-    `console.log('[USE_ERROR]参数server.nics.1.subnet_id的格式错误,正确格式为:--param=value');`,
-  );
-  const result = await runHcloud(['hcloud', 'ECS', 'ListServersDetails'], { executable: fake, maxRetries: 0 });
-  assert.equal(result.ok, false);
-  assert.equal(result.errorCode, 'PARAM_ERROR');
-});
+test(
+  'long dotted parameter names are inside the USE_ERROR gate (loop round 2 R5)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // `server.nics.1.subnet_id` (23 chars) escaped the old bounded span and
+    // reported ok:true for a command that never ran.
+    const fake = fakeHcloudExecutable(
+      `console.log('[USE_ERROR]参数server.nics.1.subnet_id的格式错误,正确格式为:--param=value');`,
+    );
+    const result = await runHcloud(['hcloud', 'ECS', 'ListServersDetails'], { executable: fake, maxRetries: 0 });
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, 'PARAM_ERROR');
+  },
+);
 
-test('a successful payload quoting a historical USE_ERROR line stays ok:true (loop round 2 R5)', async () => {
-  // Log-query/task-detail results embed past CLI errors mid-text; the
-  // ok-gate must not read quoted data as this command's own failure.
-  const fake = fakeHcloudExecutable(
-    `console.log(JSON.stringify({logs:['2026-01-01 command failed: [USE_ERROR]参数flavorRef的格式错误'],count:3}));`,
-  );
-  const result = await runHcloud(['obs', 'ls'], { executable: fake, maxRetries: 0 });
-  assert.equal(result.ok, true, `quoted USE_ERROR data must not become PARAM_ERROR, got: ${result.errorCode}`);
-});
+test(
+  'a successful payload quoting a historical USE_ERROR line stays ok:true (loop round 2 R5)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // Log-query/task-detail results embed past CLI errors mid-text; the
+    // ok-gate must not read quoted data as this command's own failure.
+    const fake = fakeHcloudExecutable(
+      `console.log(JSON.stringify({logs:['2026-01-01 command failed: [USE_ERROR]参数flavorRef的格式错误'],count:3}));`,
+    );
+    const result = await runHcloud(['obs', 'ls'], { executable: fake, maxRetries: 0 });
+    assert.equal(result.ok, true, `quoted USE_ERROR data must not become PARAM_ERROR, got: ${result.errorCode}`);
+  },
+);
 
 test('a child that exits without reading stdin no longer crashes the process with EPIPE', async () => {
   // Deterministic EPIPE: the child never reads, so the 64KB kernel pipe
@@ -638,17 +660,21 @@ test('a child that exits without reading stdin no longer crashes the process wit
   assert.equal(result.ok, true);
 });
 
-test('a multi-line payload with a line-initial historical USE_ERROR stays ok:true (loop round 3 S1-B4)', async () => {
-  // OBS cat of a log file preserves whole lines; a historical CLI error that
-  // begins its own line inside a larger body must not read as THIS command's
-  // failure — only a whole-output single USE_ERROR line is a PARAM_ERROR.
-  const fake = fakeHcloudExecutable(
-    `console.log('2026-10-01 job started');\nconsole.log('[USE_ERROR]参数flavorRef的格式错误,正确格式为:--param=value');\nconsole.log('2026-10-02 job finished');`,
-  );
-  const result = await runHcloud(['obs', 'cat', 'obs://logs/run.log'], { executable: fake, maxRetries: 0 });
-  assert.equal(
-    result.ok,
-    true,
-    `a quoted line-initial USE_ERROR inside data must stay ok:true, got: ${result.errorCode}`,
-  );
-});
+test(
+  'a multi-line payload with a line-initial historical USE_ERROR stays ok:true (loop round 3 S1-B4)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    // OBS cat of a log file preserves whole lines; a historical CLI error that
+    // begins its own line inside a larger body must not read as THIS command's
+    // failure — only a whole-output single USE_ERROR line is a PARAM_ERROR.
+    const fake = fakeHcloudExecutable(
+      `console.log('2026-10-01 job started');\nconsole.log('[USE_ERROR]参数flavorRef的格式错误,正确格式为:--param=value');\nconsole.log('2026-10-02 job finished');`,
+    );
+    const result = await runHcloud(['obs', 'cat', 'obs://logs/run.log'], { executable: fake, maxRetries: 0 });
+    assert.equal(
+      result.ok,
+      true,
+      `a quoted line-initial USE_ERROR inside data must stay ok:true, got: ${result.errorCode}`,
+    );
+  },
+);

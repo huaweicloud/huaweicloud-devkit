@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
@@ -32,6 +32,100 @@ test('agent-registration reports openclaw registration status', () => {
   assert.match(registration, /function openclawRegistered\(\)/);
   assert.match(registration, /agent === 'openclaw'/);
   assert.match(registration, /'\.agents', 'huaweicloud-plugins', '\.mcp\.json'/);
+});
+
+test('node:sqlite is required inside functions, never at module scope', () => {
+  // 2026-11-10: the 2.0.0 tarball install printed "(node:xxxx)
+  // ExperimentalWarning: SQLite is an experimental feature" on Node 22.x
+  // (the CLI's declared floor) because the OfficeAce connector family
+  // required node:sqlite at module scope — every CLI boot, install
+  // included, paid the warning (and a hard error below Node 22.5) though
+  // only the officeace packs/doctor paths ever open the connector db.
+  // agent-registration.ts kept the correct shape all along: its require
+  // sits inside officeaceRegistered(). This scan pins that shape for every
+  // src module — a require of node:sqlite must never start a line at
+  // column 0, the textual signature of a module-scope load. The behavioral
+  // half of the guard is test/cli-boot-warnings.test.ts spawning the real
+  // CLI and asserting its stderr carries no Node warning lines (that half
+  // only has teeth on Node 22.x, where the builtin still warns).
+  const srcDir = join(root, 'plugins', 'huaweicloud-core', 'src');
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.name.endsWith('.ts')) {
+        for (const [idx, line] of readFileSync(entryPath, 'utf8').split('\n').entries()) {
+          if (/^(const|let|var)\b.*\(\s*['"]node:sqlite['"]\s*\)/.test(line)) {
+            offenders.push(`${relative(srcDir, entryPath)}:${idx + 1}`);
+          }
+        }
+      }
+    }
+  };
+  walk(srcDir);
+  assert.deepEqual(offenders, [], 'node:sqlite requires must sit inside functions (lazy), never at module scope');
+});
+
+test('spawn call sites never combine a non-empty args array with shell', () => {
+  // 2026-11-10 report #2: the install's gateway-prompt line carried
+  // "(node:xxxx) [DEP0190] DeprecationWarning: Passing args to a child
+  // process with shell option true..." — installRuntimeDeps spawned npm
+  // with an args array plus shell:true (Node 24 deprecates the shape:
+  // shell concatenates the args unescaped). emitWarning defers the
+  // stderr write, so the warning surfaced one step later, glued to the
+  // provisioning prompt. The fixed shape spawns a string command under
+  // shell — identical concatenation semantics minus the warning, and
+  // shell stays load-bearing for Windows .cmd routing (#643). Args
+  // arrays remain correct for shell-less spawns (gateway/dep-resolve
+  // pass argv directly). The scan flags a spawn call whose arguments
+  // start with a non-empty array literal while shell:true sits in the
+  // call's own options, inline or through the options binding's const
+  // initializer. Honest limit: an array passed via an identifier (the
+  // update-upgrade seam's args) escapes a textual scan; that line is
+  // held by the seam's injected test doubles plus the join inside
+  // defaultSpawn. The behavioral half is cli-boot-warnings.test.ts's
+  // install spawn, which failed red on Node 24 before the fix.
+  const srcDir = join(root, 'plugins', 'huaweicloud-core', 'src');
+  const offenders: string[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const entryPath = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(entryPath);
+      } else if (entry.name.endsWith('.ts')) {
+        const rel = relative(srcDir, entryPath);
+        const text = readFileSync(entryPath, 'utf8');
+        const lines = text.split('\n');
+        for (let i = 0; i < lines.length; i++) {
+          // Call-start lines only (every args-array spawn in the tree
+          // starts its call on one line); the empty-array shell sites
+          // (codex family, doctor's hcloud auth check) are excluded by
+          // the lookahead.
+          if (!/\bspawn(?:Sync)?\([^\n,]*,\s*\[\s*(?!\s*\])/.test(lines[i]!)) continue;
+          const window = lines.slice(i, i + 10).join('\n');
+          if (/shell:\s*true/.test(window)) {
+            offenders.push(`${rel}:${i + 1}`);
+            continue;
+          }
+          const optionsBinding = lines
+            .slice(i, i + 7)
+            .join('\n')
+            .match(/,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/)?.[1];
+          if (optionsBinding && new RegExp(`const ${optionsBinding}\\b[\\s\\S]{0,600}?shell:\\s*true`).test(text)) {
+            offenders.push(`${rel}:${i + 1}`);
+          }
+        }
+      }
+    }
+  };
+  walk(srcDir);
+  assert.deepEqual(
+    offenders,
+    [],
+    'spawn with a non-empty args array must not set shell (DEP0190 on Node 24); pass a string command instead',
+  );
 });
 
 test('test fixtures: raw mkdtempSync is denied by default across the suite', () => {

@@ -246,16 +246,37 @@ async function runApprovedCommand(args: ToolArgs = {}) {
     );
   }
 
-  const stored = consumeApprovalToken(token);
-  if (!stored) {
-    // Defensive: inspectApprovalToken said 'valid' but consume returned null.
-    // The only path is the O_EXCL claim losing a race — another consumer is
-    // spending this exact token right now — so classify as already_consumed
-    // (never a misleading success, never a false not_found).
+  // The strict plan is pure, so it is computed before the token is consumed:
+  // its userConfirmation.needed decides whether the consume requires a grant,
+  // and the result still embeds it.
+  const strictPlan = planHcloudCommand(effectiveArgs, { allowWrites: false, mintApprovalToken: false });
+
+  // One snapshot: the confirmation gate, the args-hash binding, the pinView
+  // fallback, and the single-use claim all read the SAME entry — the one
+  // consumeApprovalToken returns. The pre-consume inspect-gate this replaces
+  // verified the grant on one read while execution consumed another, which
+  // a same-user store swap between the two reads laundered (the review's
+  // TOCTOU repro).
+  const consumed = consumeApprovalToken(token, { requireGrant: strictPlan.userConfirmation.needed });
+  if (consumed.status === 'grant_required') {
+    return {
+      status: 'rejected',
+      code: 'USER_CONFIRMATION_REQUIRED',
+      nextStep:
+        'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.',
+    };
+  }
+  if (consumed.status === 'gone') {
+    // Defensive: inspectApprovalToken said 'valid' but consume returned gone.
+    // The paths are the O_EXCL claim losing a race (another consumer is
+    // spending this exact token right now) or a store swap removing the
+    // entry between the two reads — classify via re-inspect, never a
+    // misleading success and never a false not_found.
     const recheck = inspectApprovalToken(token);
     if (recheck.state === 'expired') return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
     return { status: 'ok', outcome: 'already_processed' };
   }
+  const stored = consumed.entry;
   if (hashArgs(effectiveArgs) !== stored.argsHash) {
     // The pin view is the canonical fold for the substitution comparison
     // (loop round 4, seat-1 B2): it folds the two-token/glued secret forms
@@ -285,7 +306,6 @@ async function runApprovedCommand(args: ToolArgs = {}) {
       );
     }
   }
-  const strictPlan = planHcloudCommand(effectiveArgs, { allowWrites: false });
   const result = await runHcloud(effectiveArgs, {
     allowWrites: true,
     timeoutMs: args.timeoutMs,
@@ -422,7 +442,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_plan_cli_command',
     description:
-      'Classify and plan a Huawei Cloud hcloud command without executing it. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      "Classify and plan a Huawei Cloud hcloud command without executing it. When the result's userConfirmation.needed is true, the USER must confirm in their own terminal by running the userConfirmation.command line (npx huaweicloud-devkit approve <approvalToken>) before huaweicloud_run_approved_command will accept the command. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
     schema: planCliCommandSchema,
     handler: handlePlanCliCommand,
   },
@@ -443,7 +463,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_run_approved_command',
     description:
-      'Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user, and after the user confirmed the plan token in their own terminal (npx huaweicloud-devkit approve <token>). A non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: runApprovedCommandSchema,
     handler: handleRunApprovedCommand,
   },

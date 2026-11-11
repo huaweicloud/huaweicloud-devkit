@@ -198,6 +198,66 @@ function expectHookDecision(command: string, expected: 'deny' | 'allow'): void {
   assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
 }
 
+test('python hook blocks the approval CLI, including the Hermes output shape', () => {
+  const token = '550e8400-e29b-41d4-a716-446655440000';
+  const denied = [
+    `npx huaweicloud-devkit approve ${token}`,
+    `node dist/setup-cli.js approve ${token}`,
+    'node bin/setup.cjs approve some-token',
+    'npx huaweicloud-devkit@2.0.0 approve x',
+  ];
+  for (const command of denied) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0, command);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /terminal/i, command);
+  }
+  // Hermes carries the same verdict in its own shape.
+  const hermes = runHook({
+    hook_event_name: 'pre_tool_call',
+    tool_name: 'terminal',
+    tool_input: { command: `npx huaweicloud-devkit approve ${token}` },
+    session_id: 'test',
+    cwd: '/tmp',
+  });
+  if (pythonUnavailable(hermes)) return;
+  assert.equal(hermes.status, 0);
+  const hermesOutput = JSON.parse(hermes.stdout);
+  assert.equal(hermesOutput.action, 'block');
+  assert.match(hermesOutput.message, /terminal/i);
+  // An hcloud operation whose name merely carries the word Approve stays
+  // allowed: the patterns anchor on the devkit binary spelling.
+  const allowed = runHook({ tool_name: 'Bash', tool_input: { command: 'hcloud Workspace Approve --x=1' } });
+  if (pythonUnavailable(allowed)) return;
+  assert.equal(allowed.status, 0);
+  assert.equal(allowed.stdout.trim(), '');
+});
+
+test('python hook blocks the pin enrollment verb on the agent Bash face', () => {
+  const denied = [
+    'npx huaweicloud-devkit pin',
+    'node dist/setup-cli.js pin',
+    'node bin/setup.cjs pin',
+    'npx huaweicloud-devkit@2.0.0 pin',
+  ];
+  for (const command of denied) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0, command);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
+    assert.match(output.hookSpecificOutput.permissionDecisionReason, /terminal/i, command);
+  }
+  // An hcloud operation whose name merely carries the word Pin stays
+  // allowed: the patterns anchor on the devkit binary spelling.
+  const allowed = runHook({ tool_name: 'Bash', tool_input: { command: 'hcloud Workspace Pin --x=1' } });
+  if (pythonUnavailable(allowed)) return;
+  assert.equal(allowed.status, 0);
+  assert.equal(allowed.stdout.trim(), '');
+});
+
 test('python hook write-gate sees quote-adjacent hcloud inside secret exec', () => {
   const result = runHook({
     tool_name: 'Bash',
