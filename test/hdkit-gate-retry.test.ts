@@ -1,9 +1,11 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
+import { pluginRoot } from './structure-helpers.ts';
 
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
@@ -463,6 +465,157 @@ test('quota-class client-verdict payloads under a 502 status are never retried',
     }
   }
   restoreSeam();
+});
+
+// ── 空白消息在构建口收窄（round 4）：出口逐个钉 ──
+// 构建口只有两处读 rec.message：请求层消息构建与容量分支。空白即缺失，
+// 设计好的兜底（'hdkitservice error' / 代码前缀构建 / 门禁文案）在各出口生效。
+
+test('gate exit: a whitespace-only 409 message renders the designed fallback, never blank', async () => {
+  const stub = stubConnectSequence([() => gateJson({ message: '   \t\n ' })]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_check_user', {})) as GateResult;
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.match(result.message ?? '', /hdkitservice error/, 'the request-layer designed fallback must fire');
+    assert.doesNotMatch(result.message ?? '', /\s+$/, 'no blank tail on the surfaced copy');
+    assertNoLeakyLiterals(result);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('capacity exit: a whitespace-only 429 message keeps the code-prefixed fallback, never blank', async () => {
+  const stub = stubConnectSequence([
+    () =>
+      jsonEnvelope(
+        { code: 'HDKIT_CAPACITY_INSUFFICIENT', message: '   ' },
+        { status: 429, headers: { 'Retry-After': '60' } },
+      ),
+  ]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ExhaustedResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_CAPACITY_INSUFFICIENT');
+    assert.match(result.message ?? '', /HDKIT_CAPACITY_INSUFFICIENT/, 'the code-prefixed build must survive');
+    assert.doesNotMatch(result.message ?? '', /^\s+|\s+$/, 'no pure-blank message field');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('voucher exit: a whitespace-only gate message never renders blank', async () => {
+  const stub = stubConnectSequence([() => gateJson({ message: ' \n\t ' })]);
+  try {
+    const result = (await callTool('huaweicloud_voucher_status', {})) as GateResult & { claimed?: boolean };
+    assert.equal(result.claimed, false);
+    assert.match(result.message ?? '', /HDKIT_VERSION_TOO_OLD/, 'the code-prefixed build must survive');
+    assert.doesNotMatch(result.message ?? '', /^\s*$|\s+$/, 'no blank message on the voucher fallback');
+  } finally {
+    stub.restore();
+  }
+});
+
+test('the deleted message-form fallback stays deleted (structure pin on the gate module)', () => {
+  const source = readFileSync(join(pluginRoot, 'src', 'lib', 'hdkit', 'hdkit-gate.ts'), 'utf8');
+  assert.doesNotMatch(source, /Gateway Time-out|Bad Gateway/, 'the message-form fallback must not return');
+  assert.doesNotMatch(source, /non-JSON \\\(status/, 'the non-JSON message sniff must not return');
+  assert.match(source, /TRANSIENT_STATUSES\.has\(err\.status\)/, 'the verdict stays keyed on the returned status');
+});
+
+// ── 账号校验裁决码不参与重试（round 4）──
+// SKILL 的 connect 契约把 HDKIT_NOT_REALNAME / _NOT_AGREEMENT /
+// _NOT_REALNAME_AND_AGREEMENT 教成"告知开发者一次即停"的裁决——与配额同类
+// 的调用方动作码；状态改写网关把它们套在 502/504 下送达时，满表重试后盖上
+// 瞬时网关 remediation 是相反的指引。
+
+test('account-verification verdicts under rewritten 502/504 statuses cost one fetch and keep their own envelope', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  try {
+    for (const status of [502, 504] as const) {
+      for (const code of ['HDKIT_NOT_REALNAME', 'HDKIT_NOT_AGREEMENT', 'HDKIT_NOT_REALNAME_AND_AGREEMENT'] as const) {
+        const stub = stubConnectSequence([
+          () => jsonEnvelope({ code, message: 'realname and agreement required' }, { status }),
+        ]);
+        try {
+          const err = await captureConnectRejection({});
+          assert.equal(stub.calls(), 1, `${code} under ${status} must not be retried`);
+          assert.equal(err.code, code, 'the verdict keeps its own code');
+          assert.equal(err.status, status);
+          assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+          assert.equal(err.remediation, undefined, 'no transient copy may decorate it');
+          await assert.rejects(
+            callTool('huaweicloud_sandbox_connect', { vendorConfirmed: VENDOR, pool_type: 'ephemeral' }),
+            (error: ExhaustedResult & Error) => error.code === code,
+            `${code} must keep its own thrown envelope at the tool exit`,
+          );
+          assert.equal(stub.calls(), 2, 'the callTool-level attempt was also a single fetch');
+        } finally {
+          stub.restore();
+        }
+      }
+    }
+  } finally {
+    restoreSeam();
+  }
+});
+
+// ── 响应体读取中断携带 status（round 4，v2 标注分歧）──
+// dev 对 body 读取中断裸抛（无 status）；v2 用与 non-JSON 抛错同款的
+// Object.assign 携带 resp.status——重试契约在已收到 status 时照常适用。
+
+function abortingBody(status: number): Response {
+  return {
+    ok: false,
+    status,
+    headers: { get: () => null },
+    text: async () => {
+      throw new TypeError('terminated');
+    },
+  } as unknown as Response;
+}
+
+test('a body-read abort on a 502 status is retried and the count surfaces', async () => {
+  const restoreSeam = withRetrySeam('5');
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return calls === 1
+      ? abortingBody(502)
+      : jsonEnvelope({ session_id: 's1', dev_stage_id: 'd1', pool_type: 'ephemeral' });
+  };
+  try {
+    const result = (await hdkitConnectWithRetry({ pool_type: 'ephemeral' })) as Record<string, unknown>;
+    assert.equal(result.session_id, 's1');
+    assert.equal(result.connect_retries, 1, 'the aborted 502 body is a transient answer and retries');
+    assert.equal(calls, 2);
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+});
+
+test('a body-read abort on a 500 status costs one fetch and carries its status', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return abortingBody(500);
+  };
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(calls, 1, 'a 500 answer, aborted or not, is not transient');
+    assert.equal(err.status, 500, 'the aborted body read must carry its status');
+    assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+    assert.equal(err.connectRetries, 0);
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
 });
 
 // ── 窄化反模式清理（round 3）：容量分支同款 asText 陷阱 ──

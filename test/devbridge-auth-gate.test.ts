@@ -257,6 +257,26 @@ test('the quota flow folds the gate when the key-list read is itself gated', asy
   assert.doesNotMatch(f.hint ?? '', /quota/);
 });
 
+test('the relay fold never renders a blank error field for a whitespace gate message', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      return Promise.reject(
+        Object.assign(new Error('   '), {
+          code: 'HDKIT_VERSION_TOO_OLD',
+          remediation: {
+            hint: '插件版本过旧（当前 2.0.0-next.0，需升级至正式版 2.0.0 及以上）：',
+            steps: ['也可直接调用 huaweicloud_upgrade 工具完成升级'],
+          },
+        }),
+      );
+    },
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+  assert.ok((f.error ?? '').trim() !== '', 'the error field must not render blank');
+  assert.match(f.error ?? '', /版本过旧/, 'the designed gate copy fires');
+});
+
 test('the self-heal catch folds the gate on the first gated relay call', async () => {
   const lifecycle = fakeKeyLifecycle({
     recreate: async () => {

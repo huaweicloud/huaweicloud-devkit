@@ -3,7 +3,7 @@ import { runOneShot } from './devbridge-exec.ts';
 import { evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import type { ExposeTunnelResult } from './devbridge-expose.ts';
 import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
-import { VERSION_GATE_CODE, isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
+import { VERSION_GATE_CODE, isVersionGateError, versionGateMessage } from '../lib/hdkit/hdkit-gate.ts';
 
 // 409 门禁在 relay 出口的统一折叠（v2 扩展，台账记录）：三个 catch 位共用——
 // 自动创建、自愈重建、配额清单读取。authMode/attempts 保留（探测到的真实状态，
@@ -24,7 +24,7 @@ function versionGateFailure(
     failure: {
       ok: false,
       port,
-      error: (error as Error).message,
+      error: versionGateMessage(error),
       error_code: VERSION_GATE_CODE,
       ...(gate.clientVersion ? { clientVersion: gate.clientVersion } : {}),
       ...(gate.minVersion ? { minVersion: gate.minVersion } : {}),

@@ -48,16 +48,20 @@ export function isGatewayTransient(error: unknown): boolean {
 }
 
 /**
- * 客户端裁决码不参与重试（round 3）：状态改写网关可能把业务信封套在 502/504
- * 下送达。四类码的 remediation 指向调用方要做的动作（升级/释放/错峰/修凭证），
- * 有界即时重试无法推进——与上游错误码（如烧核 HDKIT_UPSTREAM_ERROR，跟随
- * status，dev 同款）的分界即在于此。
+ * 客户端裁决码不参与重试（round 3 + round 4）：状态改写网关可能把业务信封套在
+ * 502/504 下送达。裁决码的 remediation/指引指向调用方要做的动作（升级/释放/
+ * 错峰/修凭证/实名签署），有界即时重试无法推进——与上游错误码（如烧核
+ * HDKIT_UPSTREAM_ERROR，跟随 status，dev 同款）的分界即在于此。round 4 补入
+ * 账号校验三码：SKILL 的 connect 契约把它们教成"告知开发者一次即停"的裁决。
  */
 const NON_RETRYABLE_CLIENT_CODES: ReadonlySet<string> = new Set([
   VERSION_GATE_CODE,
   'HDKIT_QUOTA_EXCEEDED',
   'HDKIT_CAPACITY_INSUFFICIENT',
   'HDKIT_CRED_INVALID',
+  'HDKIT_NOT_REALNAME',
+  'HDKIT_NOT_AGREEMENT',
+  'HDKIT_NOT_REALNAME_AND_AGREEMENT',
 ]);
 
 export function isNonRetryableBusinessError(error: unknown): boolean {
@@ -111,6 +115,18 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): v
 }
 
 /**
+ * 门禁消息的统一读取（round 4）：空白即缺失，兜底文案只此一份——
+ * versionGateResult 与 relay 折叠共用，任何出口都不渲染空白的 error 字段。
+ */
+export const VERSION_GATE_FALLBACK_MESSAGE = '插件版本过旧，请升级插件后重启会话';
+
+export function versionGateMessage(error: unknown): string {
+  const raw = (error as { message?: unknown }).message;
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  return text || VERSION_GATE_FALLBACK_MESSAGE;
+}
+
+/**
  * 门禁字段的统一展开：clientVersion/minVersion/remediation 按存在性附加。
  * versionGateResult 与 voucherFallback 共用——出口信封形态不同（ok:false vs
  * claimed:false），但字段规则只有这一份。
@@ -145,7 +161,7 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
   return {
     ok: false,
     code: VERSION_GATE_CODE,
-    message: asText(err.message) || '插件版本过旧，请升级插件后重启会话',
+    message: versionGateMessage(err),
     ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
     ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
     ...gatePayloadFields(err),
