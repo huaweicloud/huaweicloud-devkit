@@ -31,6 +31,10 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', {
     uploadProjectWithSession: async () => ({ ok: true }),
     deployNginx: async () => ({ ok: true, port: 8080 }),
     deployCheck: async () => ({ ok: true, complete: true }),
+    // #981 review: tools.mjs imports these; a mocked module must expose every
+    // named export the caller imports or the whole file fails to instantiate.
+    shouldAutoRebind: () => false,
+    applyAutoRebind: (checkResult) => checkResult,
     exposeTunnel: async () => ({ ok: true, publicUrl: 'https://stub.example' }),
     renewTunnel: async () => ({ ok: true, renewedForHours: 720 }),
     installKeepaliveWatchdog: async () => ({ ok: true, pid: '123' }),

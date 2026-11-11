@@ -16,21 +16,25 @@
 ## 需求
 
 1. `deploy_check` 以只读方式获取 nginx **实际监听端口**（`ss -tlnp` + `nginx -T` 中 `root/alias` 命中当前 `output_dir` 的 `listen`）。
-2. 与调用方 `port` 比对，漂移时返回明确字段：`portDrift: { requested, actual, message }` + `nginxListenPort`。
+2. 与调用方 `port` 比对，漂移时返回明确字段：`portDrift: { requested, actual, basis, message }` + `nginxListenPort`。
 3. 所有本地探测（nginx 响应、部署指纹、隧道 URL）使用实际端口，使"用错端口"不再导致假失败。
-4. `remediation` 直接指向实际端口，agent 无需自行换算；`nextStep` 语义保持不变（`expose_via_devbridge`）。
-5. 探测失败（无法识别端口）时**失败开放**：不报漂移、保持原端口行为，评分口径不变。
+4. `remediation` 直接指向实际端口，agent 无需自行换算；`nextStep` 语义保持不变（`expose_via_devbridge`）。remediation 只做**选择性清理**（`devbridge list` + `delete <stale-id>`），绝不携带 `devbridge delete-all`（技能要求按 remediation 原样执行，共享沙箱会误删他人隧道）。
+5. 探测失败（无法识别端口）时**失败开放**：不报漂移、保持原端口行为，评分口径不变。多站点场景（多个 nginx 监听端口且无 root 命中）同样降级 unknown，不把漂移归因到其它项目端口。
 6. 漂移诊断**不进入评分**（不新增 PASS/TOTAL 项），避免改变既有 `score` 契约。
+7. 报告场景闭环：`deploy_check` 新增 `auto_rebind` 显式 opt-in——漂移且隧道探测 FAIL 时，按实际端口选择性重绑并复检，返回 `autoRebind {attempted, ok, from, to, publicUrl}`；默认关闭，保持只读。
 
 ## 非目标（本期不做）
 
-- 不自动执行 `devbridge port create` / 重启 `devbridge host`（安全边界见 `plan.md` §4）。
+- 不在 `deploy_check` 默认路径上执行任何写操作：`auto_rebind` 必须显式传 `true` 才触发（安全边界见 `plan.md` §4）。
 - 不修改 `deploy_nginx` 的端口自增逻辑与 `formatPortDriftWarning` 文案。
 - 不重复修改 OSC-133 `strip`（解析侧 :805 已修复，#983 调用点改动保留但非本缺陷必需）。
 
 ## 验收
 
-- 漂移场景：`PORT_DRIFT:8080->8081` + `NGINX_LISTEN_PORT:8081` 的检查输出，解析结果 `portDrift.actual=8081`、`nginxListenPort=8081`、`requestedPort=8080`，隧道探测 URL 与 `remediation` 均为 8081。
+- 漂移场景：`PORT_DRIFT:8080->8081` + `PORT_DRIFT_BASIS:listening` + `NGINX_LISTEN_PORT:8081` 的检查输出，解析结果 `portDrift.actual=8081`、`nginxListenPort=8081`、`requestedPort=8080`，隧道探测 URL 与 `remediation` 均为 8081。
+- 仅配置未监听：`PORT_DRIFT_BASIS:configured`，`portDrift.basis="configured"`，文案区分"需 reload"与"已监听"。
+- 多站点歧义：多个 nginx 监听端口、root 未命中（含路径前缀相似如 `dist-old`）→ `PORT_DRIFT:unknown`，探测回退调用方端口。
 - 无漂移：不返回 `portDrift`，行为与 1.1.14-next.2 完全一致。
 - 无法识别：`PORT_DRIFT:unknown`，不报漂移、不改变 `nextStep`/`score`。
-- OSC-133/CRLF 噪声下仍可解析。
+- `auto_rebind: true`：漂移 + 隧道 FAIL → 重绑实际端口并复检，`complete=true` 且 `publicUrl` 为实际端口隧道；失败时保留原结果并给出 `autoRebind.error`。
+- OSC-133/CRLF 噪声下仍可解析；漂移分支有 shell 执行级测试（假 `ss`/`sudo`/`nginx`/`curl` 实跑脚本）。
