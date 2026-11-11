@@ -31,8 +31,14 @@ after(() => {
 });
 
 const { hdkitConnectWithRetry } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts');
-const { connectRetryDelaysMs, decorateExhaustedConnect, rendersBlank, cleanMessage } =
-  await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+const {
+  connectRetryDelaysMs,
+  decorateExhaustedConnect,
+  rendersBlank,
+  cleanMessage,
+  versionGateMessage,
+  transientExhaustionResult,
+} = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
 const { callTool } = await import('../plugins/huaweicloud-core/src/tools.ts');
 
 const VENDOR = 'test: vendor established by the harness';
@@ -103,7 +109,7 @@ async function captureConnectRejection(options: Record<string, unknown>): Promis
   return outcome as ExhaustedResult & Error;
 }
 
-// 中断响应的 fetch 桩安装（round 6 去重）：三个 codeless-409/中断用例共用
+// 中断响应的 fetch 桩安装（round 6 去重）：五个 codeless-409/中断用例共用
 function installAbortingFetch(status: number, reason: unknown): { restore: () => void; calls: () => number } {
   const originalFetch = global.fetch;
   let calls = 0;
@@ -1490,5 +1496,171 @@ test('the clone carries non-enumerable business fields and survives throwing get
   assert.ok(
     !rendersBlank(String((out as { message?: string }).message ?? '')),
     'the clone message is real text or the designed copy, never blank',
+  );
+});
+
+// ── 装饰缝的读卫与拼写判定（round 11）──
+// code/remediation 的裸读在快照防护之前引爆抛出型 getter；mint 与剥除判定
+// 用原始拼写——内部不可见字符（HTTP_5⁠02）与边缘垫码（HTTP_504+ZWSP）都
+// 绕过 /^HTTP_\d+$/，一个缝两种行为；前缀剥除不循环，翻倍前缀只剥一层。
+
+test('throwing code and remediation getters never detonate the decoration seam', () => {
+  const codeThrower = new Error('code getter throws') as Error & { code?: unknown };
+  Object.defineProperty(codeThrower, 'code', {
+    get() {
+      throw new TypeError('code detonates');
+    },
+    configurable: true,
+  });
+  const out1 = decorateExhaustedConnect(codeThrower, 1) as { code?: string; remediation?: unknown };
+  assert.equal(out1.code, 'HDKIT_GATEWAY_TIMEOUT', 'a refusing code read is absent — the mint fires');
+  assert.ok(out1.remediation, 'the minted remediation lands');
+
+  const remediationThrower = new Error('remediation getter throws') as Error & {
+    code?: unknown;
+    remediation?: unknown;
+  };
+  remediationThrower.code = 'HTTP_502';
+  Object.defineProperty(remediationThrower, 'remediation', {
+    get() {
+      throw new TypeError('remediation detonates');
+    },
+    configurable: true,
+  });
+  const out2 = decorateExhaustedConnect(remediationThrower, 1) as { code?: string; remediation?: unknown };
+  assert.equal(out2.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.ok(out2.remediation, 'a refusing remediation read is absent — the mint fires');
+});
+
+test('padded HTTP_x spellings mint and strip on both sides of the seam', () => {
+  for (const padded of ['HTTP_504\u200b', '  HTTP_504  '] as const) {
+    const carrier = Object.assign(new Error(`${padded}: gateway busy`), { code: padded });
+    const out = decorateExhaustedConnect(carrier, 1) as { code?: string; message?: string };
+    assert.equal(out.code, 'HDKIT_GATEWAY_TIMEOUT', 'a padded spelling mints the designed code');
+    assert.doesNotMatch(String(out.message ?? ''), /HTTP_50/, 'the prefix is stripped');
+    assert.match(String(out.message ?? ''), /gateway busy/, 'the server copy carries');
+  }
+});
+
+test('internal-invisible HTTP_x spellings are manufactured: word-joiner and internal Cf', () => {
+  for (const invisibleCode of ['HTTP_5\u206002', 'HTTP_50\u200b2'] as const) {
+    const carrier = Object.assign(new Error(`${invisibleCode}: gateway busy`), { code: invisibleCode });
+    const out = decorateExhaustedConnect(carrier, 1) as { code?: string; message?: string };
+    assert.equal(out.code, 'HDKIT_GATEWAY_TIMEOUT', 'an invisible-woven spelling is not a business code');
+    assert.doesNotMatch(String(out.message ?? ''), /HTTP_50/);
+    assert.match(String(out.message ?? ''), /gateway busy/);
+  }
+  // 控制行：真实业务码不受影响
+  const business = Object.assign(new Error('HDKIT_UPSTREAM_ERROR: burn core'), { code: 'HDKIT_UPSTREAM_ERROR' });
+  const outBiz = decorateExhaustedConnect(business, 1) as { code?: string; message?: string };
+  assert.equal(outBiz.code, 'HDKIT_UPSTREAM_ERROR');
+  assert.match(String(outBiz.message ?? ''), /burn core/);
+});
+
+test('doubled prefixes strip in a loop; message-equals-code falls to the designed copy', () => {
+  const doubled = Object.assign(new Error('HTTP_502: HTTP_502: gateway busy'), { code: 'HTTP_502' });
+  const out1 = decorateExhaustedConnect(doubled, 1) as { code?: string; message?: string };
+  assert.equal(out1.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.match(String(out1.message ?? ''), /gateway busy/, 'both manufactured prefixes strip');
+  assert.doesNotMatch(String(out1.message ?? ''), /HTTP_50/);
+
+  const equals = Object.assign(new Error('HTTP_502: HTTP_502'), { code: 'HTTP_502' });
+  const out2 = decorateExhaustedConnect(equals, 1) as { code?: string; message?: string };
+  assert.equal(out2.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.match(String(out2.message ?? ''), /网关 502\/504 超时/, 'no server copy remains — the designed copy fires');
+});
+
+test('a doubled-prefix message through the request layer surfaces the server copy once', async () => {
+  const result = await connectUnder(
+    () => jsonEnvelope({ code: 'HTTP_502', message: 'HTTP_502: gateway busy' }, { status: 502 }),
+    '1',
+  );
+  assert.equal(result.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.match(String(result.message ?? ''), /gateway busy/);
+  assert.equal(String(result.message ?? '').match(/HTTP_50/g)?.length ?? 0, 0, 'no manufactured spelling remains');
+});
+
+test('versionGateMessage and transientExhaustionResult survive throwing message getters', () => {
+  const carrier = new Error('never read') as Error & { code?: string; gatewayRetryExhausted?: boolean };
+  Object.defineProperty(carrier, 'message', {
+    get() {
+      throw new TypeError('message detonates');
+    },
+    configurable: true,
+  });
+  carrier.code = 'HDKIT_VERSION_TOO_OLD';
+  let gateMessage = '';
+  assert.doesNotThrow(() => {
+    gateMessage = versionGateMessage(carrier);
+  });
+  assert.match(gateMessage, /插件版本过旧/, 'the gate fallback copy fires');
+
+  const exhausted = new Error('never read') as Error & {
+    gatewayRetryExhausted?: boolean;
+    connectRetries?: number;
+  };
+  Object.defineProperty(exhausted, 'message', {
+    get() {
+      throw new TypeError('message detonates');
+    },
+    configurable: true,
+  });
+  exhausted.gatewayRetryExhausted = true;
+  exhausted.connectRetries = 1;
+  let fold: Record<string, unknown> | undefined;
+  assert.doesNotThrow(() => {
+    fold = transientExhaustionResult(exhausted);
+  });
+  assert.equal(fold?.ok, false);
+  assert.match(String(fold?.message ?? ''), /connect 持续遭遇网关/, 'the exhaustion fallback fires');
+});
+
+test('the clone carries symbol-keyed fields and non-object carriers return a plain decorated Error', () => {
+  const sym = Symbol('business');
+  const carrier = new Error('symbol carrier') as Error & Record<PropertyKey, unknown>;
+  carrier[sym] = 'tag';
+  Object.defineProperty(carrier, 'code', { get: () => 20, configurable: false });
+  const out = decorateExhaustedConnect(carrier, 1) as Record<PropertyKey, unknown>;
+  assert.notEqual(out, carrier);
+  assert.equal(out[sym], 'tag', 'symbol-keyed own fields carry');
+  assert.equal(out['code'], 'HDKIT_GATEWAY_TIMEOUT');
+
+  for (const nonObject of ['primitive', null, 42] as const) {
+    let plain: unknown;
+    assert.doesNotThrow(
+      () => {
+        plain = decorateExhaustedConnect(nonObject, 1);
+      },
+      `${String(nonObject)} never detonates the seam`,
+    );
+    assert.ok(plain instanceof Error, 'a plain decorated Error returns');
+    assert.equal((plain as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+    assert.ok((plain as { remediation?: unknown }).remediation);
+  }
+});
+
+test('a large non-JSON body bounds the snippet allocation', async () => {
+  const restoreSeam = withRetrySeam('0');
+  const originalFetch = global.fetch;
+  const bigBody = 'x'.repeat(32 * 1024 * 1024);
+  global.fetch = async () =>
+    ({
+      ok: false,
+      status: 502,
+      headers: { get: () => null },
+      text: async () => bigBody,
+    }) as unknown as Response;
+  global.gc?.();
+  const before = process.memoryUsage().heapUsed;
+  try {
+    await captureConnectRejection({});
+  } finally {
+    global.fetch = originalFetch;
+    restoreSeam();
+  }
+  const delta = process.memoryUsage().heapUsed - before;
+  assert.ok(
+    delta < 150 * 1024 * 1024,
+    `the snippet path must not materialize the whole body (heap delta ${(delta / 1024 / 1024).toFixed(0)}MB)`,
   );
 });

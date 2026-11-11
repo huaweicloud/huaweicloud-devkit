@@ -126,7 +126,9 @@ async function hdkitRequest(
     // 抛错会被消息兜底误判（round 3）。bodyUnreadable 同标记（round 6）。
     // 片段按码点截断并过清洗口（round 10）：UTF-16 单元截断会把星面区对截成
     // 孤立代理对，阻断所有清洗——不可见字符随片段骑进折叠消息
-    const snippet = cleanMessage([...text].slice(0, 200).join(''));
+    // 先按 UTF-16 单元截头部再按码点截断（round 11）：[...text] 会物化整个
+    // 响应体（40MB 页面实测 1.07GB 堆），400 单元保证覆盖 200 码点
+    const snippet = cleanMessage([...text.slice(0, 400)].slice(0, 200).join(''));
     throw Object.assign(
       new Error(`hdkitservice returned non-JSON (status ${resp.status})${snippet ? `: ${snippet}` : ''}`),
       { status: resp.status, bodyUnreadable: true },

@@ -183,8 +183,8 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): v
 export const VERSION_GATE_FALLBACK_MESSAGE = '插件版本过旧，请升级插件后重启会话';
 
 export function versionGateMessage(error: unknown): string {
-  const raw = (error as { message?: unknown }).message;
-  return cleanMessage(typeof raw === 'string' ? raw : '') || VERSION_GATE_FALLBACK_MESSAGE;
+  // round 11：消息读过安全卫队——抛出型 getter 按缺失，兜底文案生效
+  return cleanMessage(safeMessageText(error)) || VERSION_GATE_FALLBACK_MESSAGE;
 }
 
 /**
@@ -256,15 +256,27 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
   };
 }
 
-// 安全消息读取（round 10）：抛出型 getter 不引爆——按缺失处理，装饰分支
-// 的设计文案兜底。
-function safeMessageText(err: object): string {
+// 安全字段读取（round 10–11）：抛出型 getter 不引爆——按缺失处理，装饰与
+// 折叠分支的设计文案兜底。message 专读（字符串或缺失）与通用字段读共用。
+function safeReadField(target: unknown, key: string): unknown {
   try {
-    const raw = (err as { message?: unknown }).message;
-    return typeof raw === 'string' ? raw : '';
+    return (target as Record<string, unknown>)[key];
   } catch {
-    return '';
+    return undefined;
   }
+}
+
+function safeMessageText(err: unknown): string {
+  const raw = safeReadField(err, 'message');
+  return typeof raw === 'string' ? raw : '';
+}
+
+// 拼写清洗（round 11）：剔除全部空白渲染字符（权威类 + 19 Cf 附加 + \s +
+// 盲文空白），内部与边缘一视同仁——码字段的判定口径。消息清洗（cleanMessage）
+// 保留内部不可见（真文本语义）；码拼写不保留：HTTP_5⁠02 与 HTTP_502 同为
+// 伪造拼写，服务端亲署业务码不含空白渲染字符。
+function blankCharsRemoved(text: string): string {
+  return [...text].filter((ch) => !rendersBlank(ch)).join('');
 }
 
 // 装填辅助（round 9 收口、round 10 回滚）：普通赋值失败（getter-only 原型
@@ -321,14 +333,28 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
  * 调用方须抛出返回值。DOMException 等可扩展原型访问器载体仍就地装填。
  */
 export function decorateExhaustedConnect(error: unknown, retries: number): unknown {
+  // 非对象载体（round 11 导出面防御）：null/原始值上的属性读取即抛——直接
+  // 返回装填好设计字段的普通 Error
+  if (error === null || (typeof error !== 'object' && typeof error !== 'function')) {
+    return decoratePlainCarrier(retries);
+  }
   const err = error as {
     code?: unknown;
     message?: unknown;
     remediation?: { hint: string; steps: string[] };
     gatewayRetryExhausted?: boolean;
   };
-  const replaceCode = typeof err.code !== 'string' || err.code === '' || /^HTTP_\d+$/.test(err.code);
-  const effectiveCode = replaceCode ? 'HDKIT_GATEWAY_TIMEOUT' : err.code;
+  // 码与 remediation 过安全读（round 11）：抛出型 getter 按缺失处理——与
+  // message 同一卫队，快照防护之前不再引爆
+  const rawCode = safeReadField(err, 'code');
+  const rawMessage = safeMessageText(err);
+  const rawRemediation = safeReadField(err, 'remediation');
+  // mint 判定用拼写口径（round 11）：内部与边缘的空白渲染字符一并剔除——
+  // HTTP_5⁠02（词连接符藏码内）与垫码（HTTP_504+ZWSP）同为伪造拼写；
+  // 服务端亲署业务码不含空白渲染字符，不受影响
+  const spelling = typeof rawCode === 'string' ? blankCharsRemoved(rawCode) : '';
+  const replaceCode = typeof rawCode !== 'string' || spelling === '' || /^HTTP_\d+$/.test(spelling);
+  const effectiveCode = replaceCode ? 'HDKIT_GATEWAY_TIMEOUT' : rawCode;
   const designedCopy = `hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`;
   const fields: Array<[string, unknown]> = [
     ['gatewayRetryExhausted', true],
@@ -336,19 +362,26 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
   ];
   if (replaceCode) {
     fields.push(['code', 'HDKIT_GATEWAY_TIMEOUT']);
-    // 伪造码的最后表面（round 10）：消息里与被替换码同名的前缀 "HTTP_x: "
-    // 一并剥除——一个信封只能有一个码语义；剥后按清洗口判空，空则用设计文案
-    const rawMessage = safeMessageText(err);
-    const manufacturedPrefix = typeof err.code === 'string' && err.code !== '' ? `${err.code}: ` : '';
-    const stripped =
-      manufacturedPrefix && rawMessage.startsWith(manufacturedPrefix)
-        ? rawMessage.slice(manufacturedPrefix.length)
-        : rawMessage;
-    fields.push(['message', cleanMessage(stripped) || designedCopy]);
-  } else if (effectiveCode === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(safeMessageText(err))) {
+    // 伪造码的最后表面（round 10–11）：消息里与被替换码同名的 "HTTP_x: "
+    // 前缀循环剥除（页面消息以码拼写开头会翻倍），原始与拼写两种形态都剥；
+    // 剥后仍以拼写开头（含"消息=码"形态）或为空则用设计文案
+    let remainder = rawMessage;
+    const prefixes = [
+      typeof rawCode === 'string' && rawCode !== '' ? `${rawCode}: ` : '',
+      spelling ? `${spelling}: ` : '',
+    ];
+    for (;;) {
+      const hit = prefixes.find((p) => p && remainder.startsWith(p));
+      if (!hit) break;
+      remainder = remainder.slice(hit.length);
+    }
+    const cleaned = cleanMessage(remainder);
+    const opensWithSpelling = spelling !== '' && cleaned.startsWith(spelling);
+    fields.push(['message', cleaned === '' || opensWithSpelling ? designedCopy : cleaned]);
+  } else if (effectiveCode === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(rawMessage)) {
     fields.push(['message', designedCopy]);
   }
-  if (!err.remediation) {
+  if (!rawRemediation) {
     fields.push([
       'remediation',
       {
@@ -366,14 +399,39 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
   return cloneCarrier(err, fields);
 }
 
+// 非对象载体的装填（round 11）：无字段可读——码/消息/remediation 全走设计值
+function decoratePlainCarrier(retries: number): Error {
+  const plain = new Error(`hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`);
+  const fields: Array<[string, unknown]> = [
+    ['gatewayRetryExhausted', true],
+    ['connectRetries', retries],
+    ['code', 'HDKIT_GATEWAY_TIMEOUT'],
+    [
+      'remediation',
+      {
+        hint: `连接已自动重试 ${retries} 次仍失败，连续遭遇网关 502/504 超时（瞬时故障，非沙箱创建失败）：`,
+        steps: [
+          '服务端可能已创建/启动沙箱实例——再次 connect 同池实例会自动复用，通常直接成功',
+          '稍后重试 connect；网关超时通常在数分钟内自愈',
+          '多次重试仍失败时，检查本地网络或代理配置后再试',
+        ],
+      },
+    ],
+  ];
+  decorateInPlace(plain as unknown as Record<string, unknown>, fields);
+  return plain;
+}
+
 // 拒绝装饰载体的克隆（round 10）：own 字段按属性描述符复制（Object.assign
 // 会丢不可枚举业务字段，[[Get]] 读法会引爆抛出型 getter），message/stack 与
 // 被装饰键除外——装饰键由 fields 落值；message 安全读取，读失败按缺失处理。
 function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
   const clone = new Error(safeMessageText(err));
-  const decoratedKeys = new Set(fields.map(([key]) => key));
+  const decoratedKeys = new Set<string | symbol>(fields.map(([key]) => key));
   for (const key of Reflect.ownKeys(err)) {
-    if (typeof key !== 'string' || key === 'message' || key === 'stack' || decoratedKeys.has(key)) continue;
+    // 字符串与符号键都按描述符复制（round 11：符号键是业务字段），message/
+    // stack 与被装饰键除外——装饰键由 fields 落值
+    if (key === 'message' || key === 'stack' || decoratedKeys.has(key)) continue;
     const desc = Object.getOwnPropertyDescriptor(err, key);
     if (desc) Object.defineProperty(clone, key, desc);
   }
@@ -400,7 +458,7 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     ok: false,
     code: err.code,
     // round 6：耗尽出口的消息读同样过清洗口——纯不可见原因不渲染成不可见文案
-    message: cleanMessage(typeof err.message === 'string' ? err.message : '') || 'connect 持续遭遇网关 502/504 超时',
+    message: cleanMessage(safeMessageText(err)) || 'connect 持续遭遇网关 502/504 超时',
     connectRetries: err.connectRetries,
     ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
     ...(err.retryAfter ? { retryAfter: err.retryAfter } : {}),
