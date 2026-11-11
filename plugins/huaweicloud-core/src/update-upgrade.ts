@@ -126,33 +126,128 @@ function defaultSpawn(
 // code line plus the human diagnostic (#1117).
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
 const LOG_POINTER_SUFFIX =
-  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:).*$/;
-const DIAGNOSTIC_HINT = /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported)\b|错误|失败|不支持|未知/i;
+  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|完整的运行日志可在以下位置找到[:：]|本次运行的完整日志可在以下位置查看[:：]|Please include the following file with any support request:).*$/;
+const DIAGNOSTIC_HINT =
+  /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported|cannot|denied|aborted)\b|错误|失败|不支持|未知/i;
 // Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
 // and the bracketed dump header `[TypeError: ...] {`.
 const ERROR_NAME = /^(?:\[?[A-Za-z]*Error\b|fatal\b|FATAL\b)/;
-// Progress vocabulary that looks like an errno token (E + word) but is not
-// one. Stems so inflections (EXTRACTED, EXPORTING, EVALUATING) match too.
-const NON_ERRNO_E_STEMS = [
-  'ENABL',
-  'ENFORC',
-  'ESBUILD',
-  'EVENT',
-  'EVALUAT',
-  'EXEC',
-  'EXIT',
-  'EXPORT',
-  'EXTRACT',
-  'EMAIL',
-  'END',
-  'EVS',
-  'E2E',
-];
+// Errno names are a closed vocabulary (POSIX plus npm's own codes), so
+// membership is the shape test real errno tokens have. An English progress
+// word cannot masquerade no matter how the vocabulary of prose grows
+// (EVICTED, ENQUEUED, EVALUATING, ERRORS, and every future sibling).
 const ERRNO_SHAPE = /^E[A-Z0-9][A-Z0-9_]+$/;
+const ERRNO_CODES = new Set([
+  'E2BIG',
+  'EACCES',
+  'EADDRINUSE',
+  'EADDRNOTAVAIL',
+  'EAFNOSUPPORT',
+  'EAGAIN',
+  'EALREADY',
+  'EBADF',
+  'EBADMSG',
+  'EBUSY',
+  'ECANCELED',
+  'ECHILD',
+  'ECONNABORTED',
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'EDEADLK',
+  'EDESTADDRREQ',
+  'EDOM',
+  'EDQUOT',
+  'EEXIST',
+  'EFAULT',
+  'EFBIG',
+  'EHOSTDOWN',
+  'EHOSTUNREACH',
+  'EIDRM',
+  'EILSEQ',
+  'EINPROGRESS',
+  'EINTR',
+  'EINVAL',
+  'EIO',
+  'EISCONN',
+  'EISDIR',
+  'ELOOP',
+  'EMFILE',
+  'EMLINK',
+  'EMSGSIZE',
+  'EMULTIHOP',
+  'ENAMETOOLONG',
+  'ENETDOWN',
+  'ENETRESET',
+  'ENETUNREACH',
+  'ENFILE',
+  'ENOBUFS',
+  'ENODATA',
+  'ENODEV',
+  'ENOENT',
+  'ENOEXEC',
+  'ENOLCK',
+  'ENOLINK',
+  'ENOMEM',
+  'ENOMSG',
+  'ENOPROTOOPT',
+  'ENOSPC',
+  'ENOSR',
+  'ENOSTR',
+  'ENOSYS',
+  'ENOTCONN',
+  'ENOTDIR',
+  'ENOTEMPTY',
+  'ENOTRECOVERABLE',
+  'ENOTSOCK',
+  'ENOTSUP',
+  'ENOTTY',
+  'ENXIO',
+  'EOPNOTSUPP',
+  'EOVERFLOW',
+  'EOWNERDEAD',
+  'EPERM',
+  'EPIPE',
+  'EPROTO',
+  'EPROTONOSUPPORT',
+  'EPROTOTYPE',
+  'ERANGE',
+  'EROFS',
+  'ESPIPE',
+  'ESRCH',
+  'ESTALE',
+  'ETIME',
+  'ETIMEDOUT',
+  'ETXTBSY',
+  'EWOULDBLOCK',
+  'EXDEV',
+  'EAI_AGAIN',
+  'EAI_NODATA',
+  'E404',
+  'E401',
+  'E403',
+  'E426',
+  'E429',
+  'E500',
+  'EBADENGINE',
+  'EBADPLATFORM',
+  'EJSONPARSE',
+  'ELIFECYCLE',
+  'EMAXREDIRECTS',
+  'ENOAUDIT',
+  'ENOLOCAL',
+  'ENOLOCK',
+  'ENOSELF',
+  'ENOTCACHED',
+  'ENOTFOUND',
+  'EOTP',
+  'EREGISTRY',
+  'ERESOLVE',
+  'ETARGET',
+  'EUNSUPPORTEDPROTOCOL',
+]);
 
 function isErrnoToken(token: string | undefined): boolean {
-  if (!token || !ERRNO_SHAPE.test(token)) return false;
-  return !NON_ERRNO_E_STEMS.some((stem) => token.startsWith(stem));
+  return Boolean(token && ERRNO_SHAPE.test(token) && ERRNO_CODES.has(token));
 }
 
 function stripLogPointerSuffix(line: string): string {
@@ -192,9 +287,20 @@ function isPointerOnlyLine(line: string): boolean {
   return /^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])/.test(payload);
 }
 
-// Frames: `at`, optional async/new, then a token that ends in a call or a
-// location. A sentence that merely opens with "at least" does not match.
-const STACK_FRAME = /^\s*at\s+(?:async\s+|new\s+)?\S+(?:\s*\(|:\d+:\d+\b)/;
+// V8 frames: `at`, optional async/new, a token (optionally aliased `[as x]`),
+// then a location in parentheses, a `file:`/`node:`/`<anonymous>` target, a
+// `wasm` frame, or a bare `:<line>:<col>` tail. A sentence that opens with
+// "at least" or "at startup (retry 1)" carries prose, not a location.
+function isStackFrame(payload: string): boolean {
+  const match = /^\s*at\s+(?:async\s+|new\s+)?(.+)$/.exec(payload);
+  if (!match) return false;
+  const rest = match[1]!.trim();
+  if (rest === '<anonymous>') return true;
+  if (/^wasm[-:]/.test(rest) || /\bwasm-function\b/.test(rest)) return true;
+  const call = /^\S+(?:\s+\[as [^\]]+\])?\s*\(([^)]*)\)\s*$/.exec(rest);
+  if (call) return /:/.test(call[1]!) || call[1]!.trim() === '<anonymous>';
+  return /^(?:file:|node:)\S*:\d+:\d+$/.test(rest) || /^\S+:\d+:\d+$/.test(rest);
+}
 
 function isNpmNoiseLine(line: string): boolean {
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
@@ -206,7 +312,7 @@ function isNpmNoiseLine(line: string): boolean {
     /^Log files were not written due to an error writing to the directory:/.test(payload) ||
     /^You can rerun the command with `--loglevel=verbose`/.test(payload) ||
     isPointerOnlyLine(line) ||
-    STACK_FRAME.test(payload)
+    isStackFrame(payload)
   );
 }
 
@@ -254,8 +360,11 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   const block = selectFailureLine(others, { positionLast: false });
   const bare = selectFailureLine(codeless, { positionLast: true });
   // Both branches compete: an unprefixed crash line outranks a block echo, and
-  // the block keeps its code prefix only when the block itself wins.
-  if (bare && (!block || bare.rank < block.rank)) return bare.line;
+  // the block keeps its code prefix when the block wins or when only a weak
+  // code-less line survives, because the code still identifies the failure.
+  if (bare && (!block || bare.rank < block.rank)) {
+    return codeLine && bare.rank >= 2 ? `${codeLine} ${bare.line}` : bare.line;
+  }
   if (block) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
   if (codeLine) return codeLine;
   if (bare) return bare.line;

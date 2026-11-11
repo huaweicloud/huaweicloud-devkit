@@ -737,6 +737,173 @@ test('upgradePackage 失败原因: 文件 URI 与 node 帧被丢掉', async () =
   assert.doesNotMatch(reason, /file:\/\/|node:internal/);
 });
 
+test('upgradePackage 失败原因: 大写 E 进度词无论词表都不冒充 errno', async () => {
+  const masqueraders = [
+    'EVICTED',
+    'EXCLUDED',
+    'ENQUEUED',
+    'EXPIRED',
+    'EXISTS',
+    'EVAL',
+    'ECHO',
+    'ESCAPED',
+    'EXPECTED',
+    'ERASED',
+    'ERRORS',
+    'ENCODING',
+    'ENTERING',
+    'EXPANDING',
+    'ESTIMATING',
+  ];
+  const cause = 'install failed: could not reach registry';
+  for (const token of masqueraders) {
+    const reason = await reasonFor([`${token} 12 entries, continuing`, cause].join('\n'));
+    assert.equal(reason, cause, `${token} must not outrank the cause`);
+  }
+});
+
+test('upgradePackage 失败原因: 真 errno 在行首与冒号两种位置仍被识别', async () => {
+  const cases: [string, string][] = [
+    ['EACCES: permission denied, open /home/op/x', 'EACCES'],
+    ['ENOTFOUND registry.internal.corp', 'ENOTFOUND'],
+    ['E404 fetching tarball', 'E404'],
+    ['EAI_AGAIN: Temporary failure', 'EAI_AGAIN'],
+  ];
+  for (const [cause, code] of cases) {
+    const reason = await reasonFor([cause, 'cleanup finished'].join('\n'));
+    assert.match(reason, new RegExp(code), `${cause} keeps its code`);
+  }
+});
+
+test('upgradePackage 失败原因: 真实 lifecycle 进度行不压过失败行', async () => {
+  const reason = await reasonFor(failureStderr('mask-evicted-lifecycle.err'));
+  assert.match(reason, /install failed: could not reach registry/);
+  assert.doesNotMatch(reason, /EVICTED/);
+});
+
+test('upgradePackage 失败原因: 中文指针短语行不进原因', async () => {
+  const reason = await reasonFor(failureStderr('zh-pointer-phrase-2line.err'));
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /完整的运行日志|debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: 中文标签指针行不进原因', async () => {
+  const reason = await reasonFor(failureStderr('zh-label-pointer.err'));
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /日志|debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: 中文全角标签指针行不进原因', async () => {
+  const reason = await reasonFor(failureStderr('zh-fullcolon-pointer.err'));
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /日志|debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: 块内中文指针行不进原因', async () => {
+  const stderr = [
+    'npm error code 1',
+    'npm error install failed: could not reach registry',
+    'npm error 完整的运行日志可在以下位置找到: /home/op/logs/2026-debug-0.log',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /install failed: could not reach registry/);
+  assert.doesNotMatch(reason, /完整的运行日志|debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: npm 6 遗留指针短语不进原因', async () => {
+  const reason = await reasonFor(failureStderr('legacy-pointer-phrase.err'));
+  assert.match(reason, /code ELIFECYCLE/);
+  assert.doesNotMatch(reason, /Please include the following file|debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: 真实 V8 的 [as alias] 帧被丢掉', async () => {
+  const stderr = [
+    "cp: cannot create regular file 'ro/hostname': Permission denied",
+    '    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /runMain|at Module/);
+});
+
+test('upgradePackage 失败原因: 真实崩溃捕获的 [as alias] 帧不进原因', async () => {
+  const reason = await reasonFor(failureStderr('crash-aliased-frame.err'));
+  assert.match(reason, /TypeError: Cannot read properties/);
+  assert.doesNotMatch(reason, /runMain|at Module/);
+});
+
+test('upgradePackage 失败原因: 无位置帧与 wasm 帧被丢掉', async () => {
+  for (const fixture of ['frame-anon.err', 'frame-wasm.err']) {
+    const reason = await reasonFor(failureStderr(fixture));
+    assert.match(reason, /payload copy stopped/);
+    assert.doesNotMatch(reason, /wasm|<anonymous>/);
+  }
+});
+
+test('upgradePackage 失败原因: 只有代码行的块把代码前缀粘到弱 codeless 行', async () => {
+  const stderr = ['npm error code E404', 'progress 1/2'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /npm error code E404/);
+  assert.match(reason, /progress 1\/2/);
+});
+
+test('upgradePackage 失败原因: 只有代码行的块把代码前缀粘到元数据行', async () => {
+  const stderr = ['npm error code E404', 'errno: -2'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /npm error code E404/);
+  assert.match(reason, /errno: -2/);
+});
+
+test('upgradePackage 失败原因: cp 失败行压过其后的 cleanup 行', async () => {
+  const stderr = [
+    "cp: cannot create regular file 'assets/policy.json': Permission denied",
+    'cleanup: removed 3 stale staging dirs',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /cleanup: removed/);
+});
+
+test('upgradePackage 失败原因: 块内进度前缀不压过其后的 cp 失败行', async () => {
+  const stderr = [
+    'npm error code 1',
+    'npm error huaweicloud-devkit update: step 2/5 syncing payload',
+    "npm error cp: cannot create regular file 'assets/policy.json': Permission denied",
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /step 2\/5/);
+});
+
+test('upgradePackage 失败原因: 裸相对指针行被丢掉', async () => {
+  const stderr = ['npm error code 1', 'npm error ./npm-debug.log', 'npm error tarball unpack aborted'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /tarball unpack aborted/);
+  assert.doesNotMatch(reason, /npm-debug\.log/);
+});
+
+test('upgradePackage 失败原因: 带括号的 at 句子不被当成帧', async () => {
+  const stderr = ['at startup (retry 1) the payload copy failed with EACCES writing /opt/devkit'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /at startup \(retry 1\)/);
+});
+
+test('upgradePackage 失败原因: 块内位置层取靠前的行', async () => {
+  const stderr = ['npm error code 1', 'npm error staging payload (1/2)', 'npm error finalizing payload (2/2)'].join(
+    '\n',
+  );
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /staging payload \(1\/2\)/);
+  assert.doesNotMatch(reason, /finalizing payload/);
+});
+
+test('upgradePackage 失败原因: 无 code 的位置层取最后的行', async () => {
+  const stderr = ['progress 1/2', 'progress 2/2'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /progress 2\/2/);
+  assert.doesNotMatch(reason, /progress 1\/2/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
@@ -946,13 +1113,35 @@ test('upgradePackage 升级子进程: 全空时由 npm 自己的公共默认决�
   });
 });
 
+function pathOffenders(texts: Record<string, string>): string[] {
+  return Object.entries(texts)
+    .filter(([, text]) => {
+      const normalized = text.replace(/\\/g, '/').replace(/\/{2,}/g, '/');
+      return (
+        normalized.includes('/tmp') || normalized.includes('/home/yanchengyu') || normalized.includes('yanchengyu')
+      );
+    })
+    .map(([name]) => name);
+}
+
 test('fixtures: no update failure capture embeds a scratch or operator path', () => {
   const dir = fileURLToPath(FAILURE_FIXTURES);
-  const offenders = readdirSync(dir)
-    .filter((name) => name.endsWith('.err'))
-    .filter((name) => {
-      const text = readFileSync(join(dir, name), 'utf8');
-      return text.includes('/tmp') || text.includes('/home/yanchengyu');
-    });
-  assert.deepEqual(offenders, []);
+  const fixtures = Object.fromEntries(
+    readdirSync(dir)
+      .filter((name) => name.endsWith('.err'))
+      .map((name) => [name, readFileSync(join(dir, name), 'utf8')]),
+  );
+  assert.deepEqual(pathOffenders(fixtures), []);
+});
+
+test('fixtures guard: windows and double-slash spellings are caught', () => {
+  const bypasses = {
+    'windows.err': 'C:\\Users\\yanchengyu\\.npm\\_logs\\2026-debug-0.log',
+    'doubleslash.err': '/home//yanchengyu/.npm/_logs/2026-debug-0.log',
+    'username-only.err': 'home of yanchengyu',
+  };
+  assert.deepEqual(
+    pathOffenders(bypasses).sort((a, b) => a.localeCompare(b)),
+    ['doubleslash.err', 'username-only.err', 'windows.err'],
+  );
 });
