@@ -904,6 +904,89 @@ test('upgradePackage 失败原因: 无 code 的位置层取最后的行', async 
   assert.doesNotMatch(reason, /progress 1\/2/);
 });
 
+test('upgradePackage 失败原因: 中文标签指针行在没有提示词竞争时也被剥掉', async () => {
+  const stderr = ['payload copy stopped', '日志: /home/op/logs/2026-debug-0.log'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.equal(reason, 'payload copy stopped');
+});
+
+test('upgradePackage 失败原因: 中文全角标签指针行同样被剥掉', async () => {
+  const stderr = ['payload copy stopped', '日志：/home/op/logs/2026-debug-0.log'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.equal(reason, 'payload copy stopped');
+});
+
+test('upgradePackage 失败原因: 块内中文标签指针行不进原因', async () => {
+  const stderr = [
+    'npm error code 1',
+    'npm error 日志: /home/op/logs/2026-debug-0.log',
+    'npm error payload copy stopped',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /npm error code 1/);
+  assert.match(reason, /payload copy stopped/);
+  assert.doesNotMatch(reason, /日志|debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: cleanup aborted 不压过其后的 cp 失败行', async () => {
+  const stderr = [
+    'cleanup aborted: 3 stale locks removed',
+    "cp: cannot create regular file 'assets/policy.json': Permission denied",
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /cleanup aborted/);
+});
+
+test('upgradePackage 失败原因: EINTEGRITY 在封闭词表内', async () => {
+  const reason = await reasonFor(
+    ['EINTEGRITY: sha512 mismatch', 'install failed: could not reach registry'].join('\n'),
+  );
+  assert.match(reason, /EINTEGRITY: sha512 mismatch/);
+});
+
+test('upgradePackage 失败原因: EUSAGE 在封闭词表内', async () => {
+  const reason = await reasonFor(
+    ['EUSAGE: invalid config value', 'install failed: could not reach registry'].join('\n'),
+  );
+  assert.match(reason, /EUSAGE: invalid config value/);
+});
+
+test('upgradePackage 失败原因: 冒号位置的真 errno 也被识别', async () => {
+  const reason = await reasonFor(['pipelines: E404 not present', 'cleanup failed later'].join('\n'));
+  assert.match(reason, /E404 not present/);
+  assert.doesNotMatch(reason, /cleanup failed later/);
+});
+
+test('upgradePackage 失败原因: 裸 EACCES 行在行首也被识别', async () => {
+  const reason = await reasonFor(['EACCES', 'install failed: could not reach registry'].join('\n'));
+  assert.equal(reason, 'EACCES');
+});
+
+test('upgradePackage 失败原因: 括号里带冒号的散文不是帧', async () => {
+  const reason = await reasonFor('at startup (step 2: syncing payload)');
+  assert.match(reason, /at startup \(step 2: syncing payload\)/);
+});
+
+test('upgradePackage 失败原因: 中文短语的另一种措辞也被剥掉', async () => {
+  const stderr = [
+    "cp: cannot create regular file '/home/op/x': Permission denied",
+    '本次运行的完整日志可在以下位置找到: /home/op/logs/2026-debug-0.log',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /cp: cannot create regular file/);
+  assert.doesNotMatch(reason, /运行日志|debug-0\.log/);
+});
+
+test('upgradePackage 失败原因: 冒号位置的大写进度词同样不冒充', async () => {
+  const masqueraders = ['EVICTED', 'ENQUEUED', 'EXPIRED', 'EXISTS', 'EVAL', 'ECHO', 'ESCAPED', 'EXPECTED', 'ERASED'];
+  const cause = 'install failed: could not reach registry';
+  for (const token of masqueraders) {
+    const reason = await reasonFor([`cache: ${token} 12 entries`, cause].join('\n'));
+    assert.equal(reason, cause, `${token} after a colon must not outrank the cause`);
+  }
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });

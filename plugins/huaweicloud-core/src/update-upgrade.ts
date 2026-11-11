@@ -126,9 +126,9 @@ function defaultSpawn(
 // code line plus the human diagnostic (#1117).
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
 const LOG_POINTER_SUFFIX =
-  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|完整的运行日志可在以下位置找到[:：]|本次运行的完整日志可在以下位置查看[:：]|Please include the following file with any support request:).*$/;
+  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|日志[:：]|Please include the following file with any support request:).*$/;
 const DIAGNOSTIC_HINT =
-  /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported|cannot|denied|aborted)\b|错误|失败|不支持|未知/i;
+  /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported)\b|permission denied|错误|失败|不支持|未知/i;
 // Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
 // and the bracketed dump header `[TypeError: ...] {`.
 const ERROR_NAME = /^(?:\[?[A-Za-z]*Error\b|fatal\b|FATAL\b)/;
@@ -221,6 +221,19 @@ const ERRNO_CODES = new Set([
   'EWOULDBLOCK',
   'EXDEV',
   'EAI_AGAIN',
+  'EUSAGE',
+  'ENOGIT',
+  'EMISSINGROOT',
+  'ELOCKVERIFY',
+  'EINTEGRITY',
+  'ECOMPROMISED',
+  'EAI_SYSTEM',
+  'EAI_SOCKTYPE',
+  'EAI_SERVICE',
+  'EAI_OVERFLOW',
+  'EAI_NONAME',
+  'EAI_MEMORY',
+  'EAI_FAIL',
   'EAI_NODATA',
   'E404',
   'E401',
@@ -282,9 +295,11 @@ function isNpmErrorLine(line: string): boolean {
 function isPointerOnlyLine(line: string): boolean {
   const payload = npmPayload(line)
     .trim()
-    .replace(/^[A-Za-z][\w .-]*:\s*/, '');
+    .replace(/^(?:[A-Za-z][\w .-]*|[\u4e00-\u9fa5]+)[:：]\s*/, '');
   if (!/(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload)) return false;
-  return /^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])/.test(payload);
+  if (/^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])/.test(payload)) return true;
+  // A bare relative log name ("npm-debug.log", "logs/npm-debug-0.log").
+  return !/\s/.test(payload) && !payload.includes(':');
 }
 
 // V8 frames: `at`, optional async/new, a token (optionally aliased `[as x]`),
@@ -298,7 +313,10 @@ function isStackFrame(payload: string): boolean {
   if (rest === '<anonymous>') return true;
   if (/^wasm[-:]/.test(rest) || /\bwasm-function\b/.test(rest)) return true;
   const call = /^\S+(?:\s+\[as [^\]]+\])?\s*\(([^)]*)\)\s*$/.exec(rest);
-  if (call) return /:/.test(call[1]!) || call[1]!.trim() === '<anonymous>';
+  if (call) {
+    const location = call[1]!.trim();
+    return location === '<anonymous>' || /^\S+:\d+(?::\d+)?$/.test(location);
+  }
   return /^(?:file:|node:)\S*:\d+:\d+$/.test(rest) || /^\S+:\d+:\d+$/.test(rest);
 }
 
@@ -324,7 +342,7 @@ function isNpmNoiseLine(line: string): boolean {
 function lineRank(line: string): number {
   const payload = npmPayload(line);
   if (ERROR_NAME.test(payload)) return 0;
-  const token = /^([A-Z0-9_]+)(?=:|\s)/.exec(payload)?.[1];
+  const token = /^([A-Z0-9_]+)(?=:|\s|$)/.exec(payload)?.[1];
   if (isErrnoToken(token)) return 0;
   for (const match of payload.matchAll(/(?<=:\s)(E[A-Z0-9][A-Z0-9_]+)\b/g)) {
     if (isErrnoToken(match[1])) return 0;
