@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  confirmApprovalToken,
   consumeApprovalToken,
   createApprovalToken,
   hashArgs,
+  inspectApprovalToken,
+  verifyConfirmationGrant,
 } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
+import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
 // The round-2 hardening of the CLI face's approval store: canonical
@@ -27,6 +32,47 @@ function withAuthHome(fn: () => void | Promise<unknown>): () => Promise<void> {
       else process.env.HUAWEICLOUD_HOME = previous;
     }
   };
+}
+
+// The confirmation battery needs a deterministic custody tier: a fixed env
+// master key (HW_VAULT_MASTER_KEY, the CI tier the vault already documents)
+// over the per-test fresh home. The custody cache is cleared on both ends so
+// a key swap inside one test can never observe a stale tier.
+const TEST_MASTER_KEY = Buffer.alloc(32, 0x33).toString('base64');
+
+function withVaultHome(fn: () => void | Promise<unknown>): () => Promise<void> {
+  return withAuthHome(() => {
+    const previousKey = process.env.HW_VAULT_MASTER_KEY;
+    process.env.HW_VAULT_MASTER_KEY = TEST_MASTER_KEY;
+    clearCustodyCache();
+    try {
+      return fn();
+    } finally {
+      clearCustodyCache();
+      if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
+      else process.env.HW_VAULT_MASTER_KEY = previousKey;
+    }
+  });
+}
+
+function approvalsFile(): string {
+  return join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approvals.json');
+}
+
+// Direct-store reads/writes stand in for the attacker: approvals.json is
+// same-user editable, so the tests mutate it by hand.
+function readStore(): Record<string, Record<string, unknown>> {
+  return JSON.parse(readFileSync(approvalsFile(), 'utf8'));
+}
+
+function writeStore(map: Record<string, unknown>): void {
+  writeFileSync(approvalsFile(), JSON.stringify(map));
+}
+
+function backdate(token: string): void {
+  const map = readStore();
+  map[token]!.createdAt = Date.now() - 6 * 60_000;
+  writeStore(map);
 }
 
 test('hashArgs is canonical: key order never changes the hash', () => {
@@ -179,5 +225,245 @@ test(
     // The traversal string must not have escaped the (never-created) marker dir.
     assert.ok(!existsSync(join(tmpdir(), `${probe}.claimed`)), 'no traversal escape into tmpdir');
     assert.ok(!existsSync(join(process.env.HUAWEICLOUD_HOME!, `${probe}.claimed`)), 'no traversal escape into home');
+  }),
+);
+
+// ── Terminal confirmation: state machine, custody-bound grant ────────────────
+// The agent can mint a token but cannot speak for the user: only
+// confirmApprovalToken writes user_confirmed, and only with a grant mac keyed
+// on the vault custody secret — so a same-user hand-edit of approvals.json
+// can flip the state string but never produce a verifying grant.
+
+test(
+  'a fresh mint awaits the user: no grant, verify fails closed',
+  withVaultHome(() => {
+    const token = createApprovalToken(['ECS', 'ListServersDetails']);
+    const inspection = inspectApprovalToken(token);
+    assert.equal(inspection.state, 'valid');
+    assert.ok(inspection.entry);
+    assert.equal(inspection.entry.state, 'awaiting_user', 'mints start awaiting the user terminal confirmation');
+    assert.equal(inspection.entry.confirmGrant, undefined, 'no grant exists before any confirmation');
+
+    assert.equal(verifyConfirmationGrant(inspection.entry, token).ok, false, 'an unconfirmed token must not verify');
+  }),
+);
+
+test(
+  'confirm flips awaiting_user to user_confirmed, persists a grant, and never consumes',
+  withVaultHome(() => {
+    const token = createApprovalToken(['ECS', 'DeleteServer', '--server_id=x']);
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+
+    const inspection = inspectApprovalToken(token);
+    assert.equal(inspection.state, 'valid', 'confirm must not consume the token');
+    assert.ok(inspection.entry);
+    assert.equal(inspection.entry.state, 'user_confirmed');
+    assert.ok(inspection.entry.confirmGrant, 'the confirmed entry carries a grant');
+    assert.equal(typeof inspection.entry.confirmGrant.confirmedAt, 'number');
+    assert.match(inspection.entry.confirmGrant.mac, /^[0-9a-f]{64}$/, 'the grant mac is a sha256 hex digest');
+
+    assert.ok(verifyConfirmationGrant(inspection.entry, token).ok, 'the confirmed token verifies');
+    assert.ok(consumeApprovalToken(token), 'a confirmed token remains consumable by the run side');
+  }),
+);
+
+test(
+  'confirm is idempotent: a second call keeps the single original grant',
+  withVaultHome(() => {
+    const token = createApprovalToken(['OBS', 'rm', 'obs://bucket/key']);
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+    const before = readStore()[token]!;
+
+    const second = confirmApprovalToken(token);
+    assert.equal(second.status, 'already_confirmed');
+    assert.deepEqual(readStore()[token]!, before, 'no rewrite: state and grant stay byte-identical');
+  }),
+);
+
+test(
+  'confirm classifies bogus, unknown, expired, and consumed tokens without side effects',
+  withVaultHome(() => {
+    assert.equal(confirmApprovalToken('not-a-uuid').status, 'not_found');
+    assert.equal(confirmApprovalToken(randomUUID()).status, 'not_found');
+    assert.ok(!existsSync(approvalsFile()), 'refusals create no store file');
+
+    const expired = createApprovalToken(['ECS', 'DeleteServer']);
+    backdate(expired);
+    assert.equal(confirmApprovalToken(expired).status, 'expired');
+    const stored = readStore()[expired]!;
+    assert.equal(stored.state, 'awaiting_user', 'an expired confirm never flips state');
+    assert.equal(stored.confirmGrant, undefined, 'and never mints a grant');
+
+    const consumed = createApprovalToken(['ECS', 'DeleteServer']);
+    assert.ok(consumeApprovalToken(consumed));
+    assert.equal(confirmApprovalToken(consumed).status, 'already_consumed');
+  }),
+);
+
+test(
+  'a hand-edited store cannot forge a confirmation: missing, fabricated, or transplanted grants all fail',
+  withVaultHome(() => {
+    const attacker = createApprovalToken(['ECS', 'DeleteServer', '--server_id=victim']);
+
+    const flipped = readStore();
+    flipped[attacker] = { ...flipped[attacker]!, state: 'user_confirmed' };
+    writeStore(flipped);
+    let entry = inspectApprovalToken(attacker).entry!;
+    assert.equal(entry.state, 'user_confirmed', 'the hand-edit reached the store read');
+    assert.equal(
+      verifyConfirmationGrant(entry, attacker).ok,
+      false,
+      'state without a grant does not verify: the state string is not the authorization',
+    );
+
+    const fabricated = readStore();
+    fabricated[attacker] = {
+      ...fabricated[attacker]!,
+      confirmGrant: { confirmedAt: Date.now(), mac: 'f'.repeat(64) },
+    };
+    writeStore(fabricated);
+    entry = inspectApprovalToken(attacker).entry!;
+    assert.equal(
+      verifyConfirmationGrant(entry, attacker).ok,
+      false,
+      'a fabricated mac does not verify without the custody secret',
+    );
+
+    // A REAL grant, copied from a legitimately confirmed entry: the mac binds
+    // token and command hash, so the transplant does not verify either.
+    const legit = createApprovalToken(['ECS', 'DeleteServer', '--server_id=other']);
+    assert.equal(confirmApprovalToken(legit).status, 'confirmed');
+    const legitGrant = readStore()[legit]!.confirmGrant;
+    const transplanted = readStore();
+    transplanted[attacker] = { ...transplanted[attacker]!, confirmGrant: legitGrant };
+    writeStore(transplanted);
+    entry = inspectApprovalToken(attacker).entry!;
+    assert.equal(
+      verifyConfirmationGrant(entry, attacker).ok,
+      false,
+      'a grant copied from another token does not verify',
+    );
+    assert.ok(
+      verifyConfirmationGrant(inspectApprovalToken(legit).entry!, legit).ok,
+      'the legitimate confirmation still verifies',
+    );
+  }),
+);
+
+test(
+  'legacy entries without state read as awaiting_user',
+  withVaultHome(() => {
+    const token = createApprovalToken(['ECS', 'ListServersDetails']);
+    const map = readStore();
+    delete map[token]!.state;
+    writeStore(map);
+
+    const inspection = inspectApprovalToken(token);
+    assert.ok(inspection.entry);
+    assert.equal(inspection.entry.state, undefined, 'a deleted state field stays deleted through the whitelist');
+    assert.equal(confirmApprovalToken(token).status, 'confirmed', 'a legacy entry confirms like an awaiting one');
+
+    const confirmed = inspectApprovalToken(token);
+    assert.ok(confirmed.entry);
+    assert.ok(verifyConfirmationGrant(confirmed.entry, token).ok);
+  }),
+);
+
+test(
+  'malformed state and grant fields read as absent (fail closed)',
+  withVaultHome(() => {
+    const token = createApprovalToken(['ECS', 'ListServersDetails']);
+    const mangled = readStore();
+    mangled[token] = { ...mangled[token]!, state: 'banana', confirmGrant: { confirmedAt: 'soon', mac: 42 } };
+    writeStore(mangled);
+
+    const inspection = inspectApprovalToken(token);
+    assert.ok(inspection.entry);
+    assert.equal(inspection.entry.state, undefined, 'an unknown state string is dropped');
+    assert.equal(inspection.entry.confirmGrant, undefined, 'a wrong-shaped grant is dropped');
+
+    const handConfirmed = readStore();
+    handConfirmed[token] = { ...handConfirmed[token]!, state: 'user_confirmed' };
+    writeStore(handConfirmed);
+    const entry = inspectApprovalToken(token).entry!;
+    assert.equal(entry.state, 'user_confirmed', 'a valid state string survives the whitelist');
+    assert.equal(
+      verifyConfirmationGrant(entry, token).ok,
+      false,
+      'user_confirmed without a shape-valid grant fails closed',
+    );
+  }),
+);
+
+test(
+  'confirm rewrites the whitelisted entry: minted fields survive, planted fields drop',
+  withVaultHome(() => {
+    const token = createApprovalToken(['RDS', 'CreateInstance', '--password=<password>'], {
+      secretsSubstitutable: true,
+      argsPinView: ['RDS', 'CreateInstance', '--password=<redacted>'],
+    });
+    const planted = readStore();
+    planted[token] = { ...planted[token]!, plantedByAttacker: 'must-not-survive' };
+    writeStore(planted);
+
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+    const stored = readStore()[token]!;
+    assert.equal(stored.secretsSubstitutable, true, 'the minted substitutable flag survives the confirm rewrite');
+    assert.deepEqual(stored.argsPinView, ['RDS', 'CreateInstance', '--password=<redacted>']);
+    assert.equal(stored.plantedByAttacker, undefined, 'confirm drops fields outside the whitelist');
+    assert.ok(verifyConfirmationGrant(inspectApprovalToken(token).entry!, token).ok);
+  }),
+);
+
+test(
+  'a broken custody tier fails closed: confirm refuses to flip, verify rejects',
+  withVaultHome(() => {
+    const confirmedToken = createApprovalToken(['ECS', 'DeleteServer', '--id=1']);
+    assert.equal(confirmApprovalToken(confirmedToken).status, 'confirmed');
+
+    // A vault record under the home pins ensureMasterKey to loud failure: with
+    // records present, a broken tier is a lost key, not a fresh vault.
+    const root = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'secrets', 'testscope');
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(root, 'record.json'), '{}');
+
+    const pendingToken = createApprovalToken(['ECS', 'DeleteServer', '--id=2']);
+    const previousKey = process.env.HW_VAULT_MASTER_KEY;
+    process.env.HW_VAULT_MASTER_KEY = 'not-32-bytes';
+    clearCustodyCache();
+    try {
+      const refused = confirmApprovalToken(pendingToken);
+      assert.equal(refused.status, 'custody_unavailable');
+      assert.match(refused.reason ?? '', /HW_VAULT_MASTER_KEY/);
+      assert.equal(readStore()[pendingToken]!.state, 'awaiting_user', 'the refused entry stays awaiting');
+
+      const entry = inspectApprovalToken(confirmedToken).entry!;
+      assert.equal(verifyConfirmationGrant(entry, confirmedToken).ok, false, 'no grant verifies under a broken tier');
+    } finally {
+      if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
+      else process.env.HW_VAULT_MASTER_KEY = previousKey;
+      clearCustodyCache();
+    }
+  }),
+);
+
+test(
+  'an unresolvable master key fails closed on verify',
+  withVaultHome(() => {
+    const token = createApprovalToken(['ECS', 'DeleteServer']);
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+
+    const previousKey = process.env.HW_VAULT_MASTER_KEY;
+    delete process.env.HW_VAULT_MASTER_KEY;
+    clearCustodyCache();
+    try {
+      const result = verifyConfirmationGrant(inspectApprovalToken(token).entry!, token);
+      assert.equal(result.ok, false, 'with no resolvable key the mac cannot be recomputed');
+      assert.equal(typeof result.reason, 'string');
+    } finally {
+      if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
+      else process.env.HW_VAULT_MASTER_KEY = previousKey;
+      clearCustodyCache();
+    }
   }),
 );

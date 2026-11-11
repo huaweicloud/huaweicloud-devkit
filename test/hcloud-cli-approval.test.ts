@@ -66,6 +66,21 @@ test('inspectApprovalToken classifies an unknown token as not_found', async () =
   });
 });
 
+test('the plan tool path mints awaiting_user entries with no grant', async () => {
+  await withTempAuthHome(async () => {
+    const token = await planApproval();
+    const inspection = inspectApprovalToken(token);
+    assert.equal(inspection.state, 'valid');
+    assert.ok(inspection.entry);
+    assert.equal(
+      inspection.entry.state,
+      'awaiting_user',
+      'the tool-layer mint carries the confirmation state through the store',
+    );
+    assert.equal(inspection.entry.confirmGrant, undefined, 'planning never confirms anything');
+  });
+});
+
 test('consumeApprovalToken keeps a tombstone so the second call is distinguishable from not_found', async () => {
   await withTempAuthHome(() => {
     const token = createApprovalToken(['ECS', 'ListServersDetails']);
