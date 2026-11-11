@@ -357,6 +357,145 @@ test('callTool connect: gateway 502 exhaustion returns ok:false with the attempt
   }
 });
 
+// ── 非 JSON 路径与状态改写网关（round 3）──
+// 非 JSON 抛错必须携带 resp.status（Object.assign）：否则一个 500/200/401 的
+// 非 JSON 页只要前 200 字符里带 "Bad Gateway" 就会骗过消息兜底，重试满表并
+// 误报成网关超时。消息兜底随之死亡（所有 hdkit 错误都带 status）并删除。
+
+test('a non-JSON 500 page carrying Bad Gateway text costs one fetch and never folds as transient', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const stub = stubConnectSequence([
+    () => htmlPage(500, '<html><head><title>502 Bad Gateway</title></head><body>upstream error page</body></html>'),
+  ]);
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(stub.calls(), 1, 'a non-JSON 500 must not be retried');
+    assert.equal(err.status, 500, 'the non-JSON throw must carry its status');
+    assert.equal(err.code, undefined);
+    assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+    assert.equal(err.remediation, undefined, 'no transient remediation copy on a 500');
+    assert.equal(err.connectRetries, 0);
+    await assert.rejects(
+      callTool('huaweicloud_sandbox_connect', { vendorConfirmed: VENDOR, pool_type: 'ephemeral' }),
+      /non-JSON \(status 500\)/,
+    );
+    assert.equal(stub.calls(), 2, 'the callTool-level attempt was also a single fetch');
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+});
+
+test('non-JSON 200 and 401 pages carrying gateway words do not retry', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  for (const status of [200, 401] as const) {
+    const stub = stubConnectSequence([() => htmlPage(status, '<html>Bad Gateway error template</html>')]);
+    try {
+      const err = await captureConnectRejection({});
+      assert.equal(stub.calls(), 1, `a non-JSON ${status} page must not be retried`);
+      assert.equal(err.status, status);
+      assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+    } finally {
+      stub.restore();
+    }
+  }
+  restoreSeam();
+});
+
+test('a non-JSON 502 page still retries and surfaces the count', async () => {
+  const restoreSeam = withRetrySeam('5');
+  const stub = stubConnectSequence([
+    () => htmlPage(502, '<html>gateway timeout page, no keywords in text</html>'),
+    () => jsonEnvelope({ session_id: 's1', dev_stage_id: 'd1', pool_type: 'ephemeral' }),
+  ]);
+  try {
+    const result = (await hdkitConnectWithRetry({ pool_type: 'ephemeral' })) as Record<string, unknown>;
+    assert.equal(result.session_id, 's1');
+    assert.equal(result.connect_retries, 1);
+    assert.equal(stub.calls(), 2);
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+});
+
+// ── 客户端裁决码不被重试（round 3）：状态改写网关把业务信封套在 502/504 下 ──
+// 门禁/配额/容量/凭证四类是"客户端裁决"——其 remediation 指向调用方要做的动作
+// （升级/释放/错峰/修凭证），有界即时重试无法推进；上游错误码（如烧核
+// HDKIT_UPSTREAM_ERROR）跟随 status（dev 同款）。
+
+test('a gate payload arriving under a 502 status is not retried against its own permanent verdict', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  const stub = stubConnectSequence([() => jsonEnvelope(VERSION_GATE_409, { status: 502 })]);
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(stub.calls(), 1, 'the gate must not be retried even under a 502 status');
+    assert.equal(err.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(err.status, 502);
+    assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+    assert.equal(err.connectRetries, 0);
+    assert.ok(err.remediation);
+    assert.match(err.remediation!.hint, /版本过旧/);
+    const result = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as GateResult;
+    assertGateFold(result);
+    assert.equal(stub.calls(), 2, 'the callTool-level attempt was also a single fetch');
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+});
+
+test('quota-class client-verdict payloads under a 502 status are never retried', async () => {
+  const restoreSeam = withRetrySeam('5,5');
+  for (const code of ['HDKIT_QUOTA_EXCEEDED', 'HDKIT_CAPACITY_INSUFFICIENT', 'HDKIT_CRED_INVALID'] as const) {
+    const stub = stubConnectSequence([() => jsonEnvelope({ code, message: '沙箱并发配额已满' }, { status: 502 })]);
+    try {
+      const err = await captureConnectRejection({});
+      assert.equal(stub.calls(), 1, `${code} must not be retried even under a 502 status`);
+      assert.equal(err.code, code);
+      assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+      assert.equal(err.connectRetries, 0);
+    } finally {
+      stub.restore();
+    }
+  }
+  restoreSeam();
+});
+
+// ── 窄化反模式清理（round 3）：容量分支同款 asText 陷阱 ──
+
+test('a message-less capacity payload keeps the code-prefixed fallback, never the literal', async () => {
+  const stub = stubConnectSequence([
+    () => jsonEnvelope({ code: 'HDKIT_CAPACITY_INSUFFICIENT' }, { status: 429, headers: { 'Retry-After': '60' } }),
+  ]);
+  try {
+    const err = await captureConnectRejection({});
+    assert.equal(err.code, 'HDKIT_CAPACITY_INSUFFICIENT');
+    assert.match(err.message, /HDKIT_CAPACITY_INSUFFICIENT/, 'the message keeps the code-prefixed fallback');
+    assert.doesNotMatch(err.message, /undefined|null/);
+  } finally {
+    stub.restore();
+  }
+});
+
+test('whitespace-only gate field values trim to the designed fallbacks', async () => {
+  const stub = stubConnectSequence([
+    () => gateJson({ message: '插件版本过旧。', clientVersion: '   ', minVersion: '\t ' }),
+  ]);
+  try {
+    const err = (await captureConnectRejection({})) as ExhaustedResult & Error;
+    assert.equal(err.clientVersion, undefined, 'a whitespace-only version narrows away');
+    assert.equal(err.minVersion, undefined);
+    assert.match(err.remediation!.hint, /当前 未知/);
+    assert.match(err.remediation!.hint, /最新版/);
+    assertNoLeakyLiterals({ hint: err.remediation!.hint });
+  } finally {
+    stub.restore();
+  }
+});
 // ── 部分载荷门禁（409 只带部分字段）：设计好的兜底必须真正生效 ──
 // 窄化规则：asText(undefined) === 'undefined'（真值），asText(rec.x) || undefined
 // 永不回退——hdkitservice 边界读取必须用 asString 窄化，否则字面量 "undefined"

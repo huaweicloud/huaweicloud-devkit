@@ -11,6 +11,7 @@ import {
   decorateExhaustedConnect,
   gatePayloadFields,
   isGatewayTransient,
+  isNonRetryableBusinessError,
 } from './hdkit-gate.ts';
 import { asRecord } from '../as-record.ts';
 import { asString, asText } from '../as-text.ts';
@@ -90,7 +91,11 @@ async function hdkitRequest(
     const parsed: unknown = JSON.parse(text);
     data = Array.isArray(parsed) ? parsed : asRecord(parsed);
   } catch {
-    throw new Error(`hdkitservice returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
+    // 非 JSON 页必须携带 resp.status：瞬时判定按 status 裁决，不带 status 的
+    // 抛错会被消息兜底误判（round 3）
+    throw Object.assign(new Error(`hdkitservice returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`), {
+      status: resp.status,
+    });
   }
 
   if (!resp.ok) {
@@ -128,8 +133,9 @@ async function hdkitRequest(
     }
     if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
-      // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
-      err.message = asText(rec.message) || err.message;
+      // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）。
+      // asString 窄化：asText(undefined) 是真值 "undefined"，会把兜底覆盖成字面量
+      err.message = asString(rec.message) || err.message;
     }
     // 版本硬门禁（409 HDKIT_VERSION_TOO_OLD）：结构化升级引导，remediation 才能
     // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性。
@@ -199,7 +205,8 @@ export async function hdkitConnect(options: Record<string, unknown> = {}): Promi
 /**
  * connect 专用网关 502/504 重试（dev e0c8700b）：编排期响应超时不是创建失败，
  * 服务端可能已创建/启动实例，重试通常复用。有界重试、逐档退避，其余状态一律
- * 不重试（含 409 版本门禁——不可重试裁决由 hdkit-gate 的瞬时判定独占）。
+ * 不重试（含 409 版本门禁与配额/容量/凭证类客户端裁决码——不可重试裁决由
+ * hdkit-gate 的瞬时判定与裁决码集合独占）。
  * 重试表经 HW_SANDBOX_CONNECT_RETRY_DELAYS_MS 针脚可覆写（v2 扩展）。
  * 成功路径回显 connect_retries（v2 扩展；dev 仅在错误路径带尝试次数）。
  */
@@ -212,7 +219,7 @@ export async function hdkitConnectWithRetry(options: Record<string, unknown> = {
       if (retries > 0) result.connect_retries = retries;
       return result;
     } catch (error) {
-      const transient = isGatewayTransient(error);
+      const transient = isGatewayTransient(error) && !isNonRetryableBusinessError(error);
       if (!transient || retries >= delays.length) {
         (error as { connectRetries?: number }).connectRetries = retries;
         if (transient) decorateExhaustedConnect(error, retries);

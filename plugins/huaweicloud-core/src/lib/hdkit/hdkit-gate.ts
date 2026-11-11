@@ -36,18 +36,33 @@ export function connectRetryDelaysMs(): number[] {
 const TRANSIENT_STATUSES: ReadonlySet<number> = new Set([502, 504]);
 
 /**
- * 网关 502/504 瞬时判定（dev e0c8700b + v2 分歧）：编排期响应超时，非创建
- * 失败——服务端可能已在编排实例，重试通常复用同一实例。携带 status 的错误
- * （JSON 信封路径）只按 status 判定；消息形态仅服务无 status 的非 JSON 网关页。
- * v2 分歧（台账记录）：dev 的消息正则无条件生效，一个 HTTP 500 业务错误只要
- * 文案里带 "Bad Gateway"（如烧核 HDKIT_UPSTREAM_ERROR 转述上游文本）就会被
- * 误判成瞬时网关超时。
+ * 网关 502/504 瞬时判定（dev e0c8700b + v2 分歧，两轮收口）：编排期响应超时，
+ * 非创建失败——服务端可能已在编排实例，重试通常复用同一实例。
+ * v2 分歧（台账记录）：dev 的消息正则无条件生效，非 JSON 页/转述上游文案的
+ * 错误会被误判；v2 只按 status 裁决——非 JSON 抛错自带 resp.status（round 3
+ * 起 Object.assign 携带），消息兜底随之全死并删除。
  */
 export function isGatewayTransient(error: unknown): boolean {
-  const err = error as { status?: unknown; message?: unknown };
-  if (typeof err.status === 'number') return TRANSIENT_STATUSES.has(err.status);
-  const message = typeof err.message === 'string' ? err.message : '';
-  return /non-JSON \(status (502|504)\)/i.test(message) || /Gateway Time-out|Bad Gateway/i.test(message);
+  const err = error as { status?: unknown };
+  return typeof err.status === 'number' && TRANSIENT_STATUSES.has(err.status);
+}
+
+/**
+ * 客户端裁决码不参与重试（round 3）：状态改写网关可能把业务信封套在 502/504
+ * 下送达。四类码的 remediation 指向调用方要做的动作（升级/释放/错峰/修凭证），
+ * 有界即时重试无法推进——与上游错误码（如烧核 HDKIT_UPSTREAM_ERROR，跟随
+ * status，dev 同款）的分界即在于此。
+ */
+const NON_RETRYABLE_CLIENT_CODES: ReadonlySet<string> = new Set([
+  VERSION_GATE_CODE,
+  'HDKIT_QUOTA_EXCEEDED',
+  'HDKIT_CAPACITY_INSUFFICIENT',
+  'HDKIT_CRED_INVALID',
+]);
+
+export function isNonRetryableBusinessError(error: unknown): boolean {
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' && NON_RETRYABLE_CLIENT_CODES.has(code);
 }
 
 export interface VersionGatePayload {
@@ -73,7 +88,8 @@ const UPGRADE_STEPS = [
 /**
  * 409 门禁装填（hdkitRequest 错误分支调用）：把服务端 payload 与升级引导挂到
  * 抛出的错误上。remediation 文案与 dev 501fd8b4 逐字一致；v2 不带 dev 的
- * autoUpgrade 字段（其自动升级模块未移植）。
+ * autoUpgrade 字段（其自动升级模块未移植）。空白字段值归一为缺失——hint 不留
+ * 空位，兜底（未知/最新版）照常生效。
  */
 export function applyVersionGate(error: unknown, payload: VersionGatePayload): void {
   const err = error as {
@@ -82,11 +98,14 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): v
     message?: string;
     remediation?: { hint: string; steps: string[] };
   };
-  err.clientVersion = payload.clientVersion;
-  err.minVersion = payload.minVersion;
-  if (payload.message) err.message = payload.message;
+  const clientVersion = payload.clientVersion?.trim() || undefined;
+  const minVersion = payload.minVersion?.trim() || undefined;
+  const message = payload.message?.trim() || undefined;
+  err.clientVersion = clientVersion;
+  err.minVersion = minVersion;
+  if (message) err.message = message;
   err.remediation = {
-    hint: `插件版本过旧（当前 ${payload.clientVersion || '未知'}，需升级至正式版 ${payload.minVersion || '最新版'} 及以上）：`,
+    hint: `插件版本过旧（当前 ${clientVersion || '未知'}，需升级至正式版 ${minVersion || '最新版'} 及以上）：`,
     steps: [...UPGRADE_STEPS],
   };
 }

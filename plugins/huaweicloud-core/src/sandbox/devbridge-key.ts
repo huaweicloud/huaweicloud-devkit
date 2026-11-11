@@ -171,7 +171,10 @@ export async function listKeysForQuotaHint(): Promise<DevbridgeQuotaKeyHint[]> {
       id: typeof k['id'] === 'string' ? k['id'] : '',
       lastUsed: typeof k['last_used_at'] === 'string' ? k['last_used_at'] : '',
     }));
-  } catch {
+  } catch (error) {
+    // 409 门禁必须穿透：配额信封拿着读不出来的 currentKeys 教用户清 key 是误诊
+    // （devbridge-auth 侧按出口折叠）；其余读取失败仍降级为空清单
+    if (isVersionGateError(error)) throw error;
     return [];
   }
 }

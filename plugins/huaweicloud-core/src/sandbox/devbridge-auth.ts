@@ -5,6 +5,36 @@ import type { ExposeTunnelResult } from './devbridge-expose.ts';
 import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
 import { VERSION_GATE_CODE, isVersionGateError } from '../lib/hdkit/hdkit-gate.ts';
 
+// 409 门禁在 relay 出口的统一折叠（v2 扩展，台账记录）：三个 catch 位共用——
+// 自动创建、自愈重建、配额清单读取。authMode/attempts 保留（探测到的真实状态，
+// 与配额失败信封同款，台账记录该取舍）。
+function versionGateFailure(
+  error: unknown,
+  port: number,
+  authMode: string,
+  attempts: Record<string, string>,
+): { ok: false; failure: ExposeTunnelResult } {
+  const gate = error as {
+    clientVersion?: string;
+    minVersion?: string;
+    remediation?: { hint: string; steps: string[] };
+  };
+  return {
+    ok: false,
+    failure: {
+      ok: false,
+      port,
+      error: (error as Error).message,
+      error_code: VERSION_GATE_CODE,
+      ...(gate.clientVersion ? { clientVersion: gate.clientVersion } : {}),
+      ...(gate.minVersion ? { minVersion: gate.minVersion } : {}),
+      ...(gate.remediation ? { gateRemediation: gate.remediation } : {}),
+      authMode: authMode || 'UNKNOWN',
+      attempts,
+    },
+  };
+}
+
 // The DevBridge auth waterfall, extracted from devbridge-tunnel so the auth
 // probe script, its stdout parser, and (with the devbridge-tunnel
 // modularization) the expose flow's auth/version gate form one cohesive auth
@@ -233,8 +263,10 @@ export async function gateExposeAuth(
         if (isUsableAuthMode(healParsed.authMode)) {
           effectiveAuthMode = 'API_KEY_AUTO';
         }
-      } catch {
-        // 自愈失败 → 走泛化降级
+      } catch (error) {
+        // 409 门禁即时折叠：自愈 catch 原样吞掉会多跑一轮泛化 relay 调用才折
+        // 叠（round 3）；其余自愈失败仍走泛化降级
+        if (isVersionGateError(error)) return versionGateFailure(error, port, authMode, attempts);
       }
     }
     // keyring/文件均无 key → host 调 relay API 自动创建 → 注入沙箱 → 重跑 probe
@@ -250,7 +282,14 @@ export async function gateExposeAuth(
       } catch (error) {
         // 自动创建失败（含配额满 13002）→ 结构化降级
         if ((error as { code?: string }).code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
-          const keysHint = await keyUpgrade.listKeysForQuotaHint();
+          // 配额清单读取本身遭遇 409：门禁优先（清 key 引导拿不出 currentKeys）；
+          // 其余读取失败仍降级为空清单
+          let keysHint: Awaited<ReturnType<typeof keyUpgrade.listKeysForQuotaHint>> = [];
+          try {
+            keysHint = await keyUpgrade.listKeysForQuotaHint();
+          } catch (listError) {
+            if (isVersionGateError(listError)) return versionGateFailure(listError, port, authMode, attempts);
+          }
           return {
             ok: false,
             failure: {
@@ -269,25 +308,7 @@ export async function gateExposeAuth(
         // 凭证问题——NO_CREDENTIAL 降级会把升级信号误诊成清 key/重注凭证引导，
         // 升级引导必须穿透 expose 结果
         if (isVersionGateError(error)) {
-          const gate = error as {
-            clientVersion?: string;
-            minVersion?: string;
-            remediation?: { hint: string; steps: string[] };
-          };
-          return {
-            ok: false,
-            failure: {
-              ok: false,
-              port,
-              error: (error as Error).message,
-              error_code: VERSION_GATE_CODE,
-              ...(gate.clientVersion ? { clientVersion: gate.clientVersion } : {}),
-              ...(gate.minVersion ? { minVersion: gate.minVersion } : {}),
-              ...(gate.remediation ? { gateRemediation: gate.remediation } : {}),
-              authMode: authMode || 'UNKNOWN',
-              attempts,
-            },
-          };
+          return versionGateFailure(error, port, authMode, attempts);
         }
         // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）
       }

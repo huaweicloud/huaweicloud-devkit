@@ -59,7 +59,8 @@ export interface ExposeTunnelResult {
   // The 409 version-gate fold (the HDKIT_VERSION_TOO_OLD relay failure only):
   // the gate payload surfaced flat — `gateRemediation` keeps the structured
   // {hint, steps} copy because `remediation` on this interface is the
-  // deploy_check executable-command string.
+  // DevBridge 0.1.x install-migration string (expose-flow's Step-0 upgrade
+  // copy), not a structured remediation.
   clientVersion?: string;
   minVersion?: string;
   gateRemediation?: { hint: string; steps: string[] };

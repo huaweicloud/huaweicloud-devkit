@@ -80,7 +80,9 @@ test('getCachedKey reads what setCachedKey writes (via ensureDevbridgeKey)', asy
 });
 
 test('clearCachedKey invalidates the cache', async () => {
-  clearCachedKey('test-ak', 'ephemeral');
+  // 缓存键是 getCredentials() 返回的 AK 指纹（mock 返回 TESTAK）——
+  // 传错 AK 会变成空清除，用例就只能靠前序用例的清除级联通过
+  clearCachedKey('TESTAK', 'ephemeral');
   // After clear, next call re-creates
   mockCreateResult = { api_key: 'devbridge_TEST2', name: 'devkit-ephemeral', id: 'id2' };
   const result = await recreateDevbridgeKey('ephemeral');
@@ -91,7 +93,7 @@ test('clearCachedKey invalidates the cache', async () => {
 // ── 孤儿清理 ──
 
 test('ensureDevbridgeKey deletes same-name orphan before creating', async () => {
-  clearCachedKey('test-ak', 'persistent');
+  clearCachedKey('TESTAK', 'persistent');
   mockDeleteCalls = [];
   mockKeys = [
     { name: 'devkit-persistent', id: 'orphan-id' },
@@ -106,7 +108,7 @@ test('ensureDevbridgeKey deletes same-name orphan before creating', async () => 
 });
 
 test('ensureDevbridgeKey does not delete when no orphan exists', async () => {
-  clearCachedKey('test-ak', 'ephemeral');
+  clearCachedKey('TESTAK', 'ephemeral');
   mockDeleteCalls = [];
   mockKeys = [{ name: 'other-key', id: 'other-id' }];
   mockCreateResult = { api_key: 'devbridge_NO_ORPHAN', name: 'devkit-ephemeral', id: 'no-orphan-id' };
@@ -146,7 +148,7 @@ test('recreateDevbridgeKey propagates the relay create error (quota path depends
 });
 
 test('the orphan-list step re-throws the 409 version gate instead of swallowing it', async () => {
-  clearCachedKey('test-ak', 'ephemeral');
+  clearCachedKey('TESTAK', 'ephemeral');
   mockListError = Object.assign(new Error('HDKIT_VERSION_TOO_OLD: 插件版本过旧，请升级至正式版 2.0.0 及以上。'), {
     code: 'HDKIT_VERSION_TOO_OLD',
     clientVersion: '2.0.0-next.0',
@@ -170,7 +172,7 @@ test('the orphan-list step re-throws the 409 version gate instead of swallowing 
 });
 
 test('a non-gate list failure still does not block creation', async () => {
-  clearCachedKey('test-ak', 'ephemeral');
+  clearCachedKey('TESTAK', 'ephemeral');
   mockListError = new Error('network unreachable');
   mockCreateCalls = 0;
   mockCreateResult = { api_key: 'devbridge_AFTER_LIST_FAIL', name: 'devkit-ephemeral', id: 'after-list-id' };
@@ -181,6 +183,22 @@ test('a non-gate list failure still does not block creation', async () => {
   } finally {
     mockListError = null;
     mockCreateResult = null;
+  }
+});
+
+test('listKeysForQuotaHint re-throws the 409 version gate instead of swallowing it', async () => {
+  mockListError = Object.assign(new Error('HDKIT_VERSION_TOO_OLD: 插件版本过旧，请升级至正式版 2.0.0 及以上。'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+  });
+  try {
+    // 配额降级数据读取遭遇门禁必须穿透（devbridge-auth 侧按出口折叠的前提），
+    // 否则配额信封拿着读不出来的 currentKeys 教用户清 key
+    await assert.rejects(listKeysForQuotaHint(), (error: Error & { code?: string }) => {
+      assert.equal(error.code, 'HDKIT_VERSION_TOO_OLD');
+      return true;
+    });
+  } finally {
+    mockListError = null;
   }
 });
 
