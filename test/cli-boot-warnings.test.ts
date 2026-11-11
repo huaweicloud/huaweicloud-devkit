@@ -44,7 +44,9 @@ test('install prints no Node warnings (spawn args arrays never combine with shel
   // structure.test.ts.
   const home = fixtureDir('cli-install-warnings');
   const cwd = fixtureDir('cli-install-warnings-cwd');
-  const res = run('opencode', home, cwd, 'install');
+  // --trace-deprecation rides the child env so a future args-array+shell
+  // regression names its own call site in this assertion's message.
+  const res = run('opencode', home, cwd, 'install', { NODE_OPTIONS: '--trace-deprecation' });
   assert.equal(res.status, 0, res.stderr);
   assert.doesNotMatch(res.stderr, /\(node:\d+\)/, `install must not print Node warning lines: ${res.stderr}`);
 });
