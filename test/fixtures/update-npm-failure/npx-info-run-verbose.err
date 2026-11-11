@@ -1,0 +1,16 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm exec file:/home/op/pkgcombo update --target opencode
+npm verbose argv "exec" "--loglevel" "verbose" "--yes" "--" "file:/home/op/pkgcombo" "update" "--target" "opencode"
+npm verbose logfile logs-max:10 dir:/home/op/.npm/_logs/2026-11-11T14_48_42_248Z-
+npm verbose logfile /home/op/.npm/_logs/2026-11-11T14_48_42_248Z-debug-0.log
+npm info run review-fixture-combo@1.0.0 postinstall ../../../../../home/op/pkgcombo sh -c "echo 'native build failed: missing libfoo' >&2; exit 7"
+native build failed: missing libfoo
+npm info run review-fixture-combo@1.0.0 postinstall { code: 7, signal: null }
+npm verbose cwd /home/op/ws
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7

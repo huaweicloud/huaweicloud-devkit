@@ -123,11 +123,11 @@ function defaultSpawn(
 // npm reports failures as `npm error ...` lines (npm 7+) or `npm ERR! ...`
 // (legacy), with ANSI color, pty spinners, warnings, notices, and log pointers
 // around them. The tail is boilerplate, so the reason keeps the identifying
-// code line plus the human diagnostic when the npm block wins, and the stronger
-// code-less line alone when that line wins the branch competition (#1117).
+// code line plus the human diagnostic when the npm block wins; a strong
+// code-less line wins alone, and a weak one inherits the code line (#1117).
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
 const LOG_POINTER_SUFFIX =
-  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|日志\s*[:：]|Please include the following file with any support request:).*$/;
+  /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:|(?:完整的运行日志|本次运行的完整日志)可在以下位置(?:找到|查看)[:：]|Please include the following file with any support request:).*$/;
 const DIAGNOSTIC_HINT =
   /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported)\b|permission denied|错误|失败|不支持|未知/i;
 // Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
@@ -280,7 +280,11 @@ function shiftNpmErrorToken(line: string): string {
 }
 
 function normalizeNpmLine(line: string): string {
-  const shifted = shiftNpmErrorToken(line.replace(ANSI_ESCAPE, '').trim());
+  const withoutSpinner = line
+    .replace(ANSI_ESCAPE, '')
+    .trim()
+    .replace(/^[\u2800-\u28ff\s]+/, '');
+  const shifted = shiftNpmErrorToken(withoutSpinner);
   return stripLogPointerSuffix(shifted.replace(/^npm ERR!\s?/, 'npm error '));
 }
 
@@ -329,6 +333,7 @@ function isStackFrame(payload: string): boolean {
 }
 
 function isNpmNoiseLine(line: string): boolean {
+  if (!/[\p{L}\p{N}]/u.test(line)) return true;
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
   if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
   const payload = npmPayload(line);
@@ -360,7 +365,7 @@ function lineRank(line: string): number {
   // npm's echo of the failing script carries the child's words in quotes, so it
   // must not tie with the child's own line; it is the honest fallback only when
   // the child printed nothing.
-  if (/^command\b/.test(payload)) return 3;
+  if (/^(?:npm\s+)?(?:command|info run)\b/.test(payload)) return 3;
   if (DIAGNOSTIC_HINT.test(payload)) return 1;
   return 2;
 }
@@ -457,7 +462,7 @@ export async function upgradePackage(
   }
   const isNextTarget = Boolean(distTags.next && semverCompare(targetVersion, distTags.next) === 0);
   const tag = isNextTarget ? 'next' : 'latest';
-  const command = ['--yes', `huaweicloud-devkit@${tag}`, 'update', '--target', String(target)];
+  const command = ['--yes', '--foreground-scripts', `huaweicloud-devkit@${tag}`, 'update', '--target', String(target)];
   let execResult: SpawnResultLike;
   try {
     execResult = spawnFn(NPX_BIN, command, {

@@ -108,7 +108,14 @@ test('upgradePackage 成功路径: 目标版本/重启/文案/缓存失效', asy
   assert.equal(r.requiresRestart, true);
   assert.match(r.message, /重启当前会话/);
   assert.equal(spawned!.cmd, process.platform === 'win32' ? 'npx.cmd' : 'npx');
-  assert.deepEqual(spawned!.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
+  assert.deepEqual(spawned!.args, [
+    '--yes',
+    '--foreground-scripts',
+    'huaweicloud-devkit@latest',
+    'update',
+    '--target',
+    'opencode',
+  ]);
   assert.equal(spawned!.opts.timeout, 300000);
   // 升级后缓存失效 → 下一次检测重新查询（此处不 fetch，只验证 invalidate 生效）
   invalidateUpdateCache();
@@ -1032,6 +1039,62 @@ test('upgradePackage 失败原因: EINVALIDPACKAGENAME 在封闭词表内', asyn
   assert.match(reason, /EINVALIDPACKAGENAME/);
 });
 
+test('upgradePackage 失败原因: 静默子进程的 pty 只余字形时回到 command 兜底', async () => {
+  const reason = await reasonFor(failureStderr('pty-silent-lifecycle.err'));
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node .\/silent\.mjs/);
+  assert.ok(!/[\u2800-\u28ff]/.test(reason), 'no spinner glyph survives');
+});
+
+test('upgradePackage 失败原因: 字形粘连的 npm warn 行进入噪声类', async () => {
+  const reason = await reasonFor(failureStderr('pty-warn-lifecycle.err'));
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c/);
+  assert.doesNotMatch(reason, /npm warn|deprecated/);
+  assert.ok(!/[\u2800-\u28ff]/.test(reason), 'no spinner glyph survives');
+});
+
+test('upgradePackage 失败原因: 日志标签在句中时整行保留', async () => {
+  const stderr = ['payload copy stopped', '详细日志：/home/op/logs/run.log 以及 EACCES 细节'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /EACCES 细节/);
+  assert.match(reason, /run\.log/);
+});
+
+test('upgradePackage 失败原因: 英文句子里的日志标签不被截断', async () => {
+  const stderr = ['payload copy stopped', 'For details see 日志 : /home/op/logs/run.log and EACCES info'].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /EACCES info/);
+});
+
+test('upgradePackage 失败原因: npm info run 回显不抢子进程自己的行', async () => {
+  const reason = await reasonFor(failureStderr('npx-info-run-verbose.err'));
+  assert.match(reason, /native build failed: missing libfoo/);
+  assert.doesNotMatch(reason, /npm info run|sh -c/);
+});
+
+test('upgradePackage 升级命令: 带 --foreground-scripts 让安装脚本输出可见', async () => {
+  let spawned: readonly string[] | null = null;
+  const spawnFn: UpgradeSpawnFn = (_cmd, args) => {
+    spawned = args;
+    return { status: 0 };
+  };
+  await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn });
+  assert.deepEqual(spawned, [
+    '--yes',
+    '--foreground-scripts',
+    'huaweicloud-devkit@latest',
+    'update',
+    '--target',
+    'opencode',
+  ]);
+});
+
+test('upgradePackage 失败原因: 打开前景脚本后子进程文本成为原因', async () => {
+  const reason = await reasonFor(failureStderr('npx-foreground-scripts.err'));
+  assert.match(reason, /native build failed: missing libfoo/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
@@ -1102,7 +1165,14 @@ test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配�
     };
     const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn });
     assert.equal(r.success, true);
-    assert.deepEqual(spawned!.args, ['--yes', 'huaweicloud-devkit@latest', 'update', '--target', 'opencode']);
+    assert.deepEqual(spawned!.args, [
+      '--yes',
+      '--foreground-scripts',
+      'huaweicloud-devkit@latest',
+      'update',
+      '--target',
+      'opencode',
+    ]);
     const env = spawned!.opts.env as NodeJS.ProcessEnv;
     for (const key of [...credentialKeys, ...extraKeys, ...unlistedKeys]) {
       assert.equal(env[key], undefined, `${key} must not reach npx`);
