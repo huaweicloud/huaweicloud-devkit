@@ -1,0 +1,3 @@
+npm error code 1
+npm error EVALUATING package tree
+npm error EACCES: permission denied, open '/home/op/.npm/_cacache'

@@ -1,0 +1,6 @@
+npm error code 1
+npm error path /home/op/x
+npm error command failed
+npm error command sh -c npm test
+npm error at least one dependency failed to install
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

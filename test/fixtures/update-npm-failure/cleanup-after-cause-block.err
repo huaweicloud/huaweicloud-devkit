@@ -1,0 +1,3 @@
+npm error code 1
+npm error install failed: could not reach registry
+npm error cleanup failed: removing temp dir /home/op/x

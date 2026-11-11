@@ -77,17 +77,16 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(upper)) continue;
     next[key] = value;
   }
-  // Pathological case spellings: the exact-case devkit key wins, else the first
-  // spelling in environment order. One canonical channel, so the child's own
-  // devkit lookup and npm's pin cannot disagree.
-  const [canonical, registry] =
-    devkitSpellings.find(([key]) => key === 'HUAWEICLOUD_NPM_REGISTRY') ?? devkitSpellings[0] ?? [];
-  if (registry?.trim()) {
+  // Pathological case spellings: the trimmed non-empty exact-case key wins,
+  // else the first trimmed non-empty spelling; empty and whitespace count as
+  // unset everywhere. One canonical channel, so the child's own devkit lookup
+  // and npm's pin cannot disagree, and an unset override never pins.
+  const nonEmpty = devkitSpellings.filter(([, value]) => Boolean(value?.trim()));
+  const registry = (nonEmpty.find(([key]) => key === 'HUAWEICLOUD_NPM_REGISTRY') ?? nonEmpty[0])?.[1]?.trim();
+  if (registry) {
     next.HUAWEICLOUD_NPM_REGISTRY = registry;
     for (const key of registrySpellings) delete next[key];
     next.npm_config_registry = registry;
-  } else if (canonical) {
-    next[canonical] = registry ?? '';
   }
   return next;
 }
@@ -128,26 +127,33 @@ function defaultSpawn(
 const ANSI_ESCAPE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[A-Za-z]`, 'g');
 const LOG_POINTER_SUFFIX =
   /\s*(?:npm error\s+)?(?:A complete log of this run can be found in:|For a full report see:).*$/;
-const DIAGNOSTIC_HINT = /\b(?:failed|failure|fatal|unknown|unsupported)\b|^error\b|错误|失败|不支持|未知/i;
+const DIAGNOSTIC_HINT = /\b[A-Za-z]*Error\b|\b(?:failed|failure|fatal|unknown|unsupported)\b|错误|失败|不支持|未知/i;
 // Error-name starts: Error, TypeError, RangeError, ReferenceError, SyntaxError,
 // and the bracketed dump header `[TypeError: ...] {`.
 const ERROR_NAME = /^(?:\[?[A-Za-z]*Error\b|fatal\b|FATAL\b)/;
-// Progress vocabulary that looks like an errno token (E + word) but is not one.
-const NON_ERRNO_E_WORDS = new Set([
-  'ENABLED',
-  'ENFORCED',
+// Progress vocabulary that looks like an errno token (E + word) but is not
+// one. Stems so inflections (EXTRACTED, EXPORTING, EVALUATING) match too.
+const NON_ERRNO_E_STEMS = [
+  'ENABL',
+  'ENFORC',
   'ESBUILD',
-  'EVENTS',
+  'EVENT',
+  'EVALUAT',
   'EXEC',
   'EXIT',
-  'EXPORTED',
+  'EXPORT',
   'EXTRACT',
   'EMAIL',
   'END',
   'EVS',
   'E2E',
-]);
+];
 const ERRNO_SHAPE = /^E[A-Z0-9][A-Z0-9_]+$/;
+
+function isErrnoToken(token: string | undefined): boolean {
+  if (!token || !ERRNO_SHAPE.test(token)) return false;
+  return !NON_ERRNO_E_STEMS.some((stem) => token.startsWith(stem));
+}
 
 function stripLogPointerSuffix(line: string): string {
   return line.replace(LOG_POINTER_SUFFIX, '').trim();
@@ -176,15 +182,19 @@ function isNpmErrorLine(line: string): boolean {
   return /^npm error\b/.test(line);
 }
 
-// A pointer line carries nothing but the npm log path; a sentence that mentions
-// the path keeps its content.
+// A pointer line carries nothing but the npm log path (optionally behind a
+// label); a sentence that mentions the path keeps its content.
 function isPointerOnlyLine(line: string): boolean {
-  const payload = npmPayload(line).trim();
+  const payload = npmPayload(line)
+    .trim()
+    .replace(/^[A-Za-z][\w .-]*:\s*/, '');
   if (!/(?:-debug(?:-\d+)?\.log|-eresolve-report\.txt)$/.test(payload)) return false;
-  return /^(?:[A-Za-z]:[\\/]|~[\\/]|[\\/])/.test(payload);
+  return /^(?:[A-Za-z]:[\\/]|~[\\/]|\.{0,2}[\\/])/.test(payload);
 }
 
-const STACK_FRAME = /^\s*at\s+(?:async\s+)?[\w.$<>"'#]+(?:\s+\[as [^\]]+\])?\s*\(/;
+// Frames: `at`, optional async/new, then a token that ends in a call or a
+// location. A sentence that merely opens with "at least" does not match.
+const STACK_FRAME = /^\s*at\s+(?:async\s+|new\s+)?\S+(?:\s*\(|:\d+:\d+\b)/;
 
 function isNpmNoiseLine(line: string): boolean {
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
@@ -193,29 +203,41 @@ function isNpmNoiseLine(line: string): boolean {
   return (
     /^A complete log of this run can be found in:/.test(payload) ||
     /^For a full report see:/.test(payload) ||
+    /^Log files were not written due to an error writing to the directory:/.test(payload) ||
+    /^You can rerun the command with `--loglevel=verbose`/.test(payload) ||
     isPointerOnlyLine(line) ||
     STACK_FRAME.test(payload)
   );
 }
 
 // Tiers: a strong failure marker, then failure words, then the plain position
-// tier, and metadata last. Ties take the later line: CLI causes land late.
+// tier, and metadata last. The strongest tier takes its later line (a fatal
+// line lands after a retry marker), the hint tier its earlier one (the real
+// failure precedes cleanup chatter), and the position tier the later line in
+// the codeless branch.
 function lineRank(line: string): number {
   const payload = npmPayload(line);
   if (ERROR_NAME.test(payload)) return 0;
   const token = /^([A-Z0-9_]+)(?=:|\s)/.exec(payload)?.[1];
-  if (token && ERRNO_SHAPE.test(token) && !NON_ERRNO_E_WORDS.has(token)) return 0;
-  if (/(?<=:\s)E[A-Z0-9][A-Z0-9_]{2,}\b/.test(payload)) return 0;
+  if (isErrnoToken(token)) return 0;
+  for (const match of payload.matchAll(/(?<=:\s)(E[A-Z0-9][A-Z0-9_]+)\b/g)) {
+    if (isErrnoToken(match[1])) return 0;
+  }
   if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 3;
-  if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+)\s*,?\s*$/.test(payload)) return 3;
+  if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+|\[[^\]]*\])\s*,?\s*$/.test(payload)) return 3;
   if (DIAGNOSTIC_HINT.test(payload)) return 1;
   return 2;
 }
 
-function selectFailureLine(lines: string[], preferLast: boolean): string | undefined {
+function selectFailureLine(
+  lines: string[],
+  { positionLast }: { positionLast: boolean },
+): { line: string; rank: number } | undefined {
   for (const rank of [0, 1, 2, 3]) {
     const hits = lines.filter((line) => lineRank(line) === rank);
-    if (hits.length) return preferLast ? hits.at(-1) : hits[0];
+    if (!hits.length) continue;
+    const later = rank === 0 || (rank === 2 && positionLast);
+    return { line: (later ? hits.at(-1) : hits[0])!, rank };
   }
   return undefined;
 }
@@ -228,12 +250,15 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     .filter((line) => line && !isNpmNoiseLine(line));
   const codeLine = lines.find((line) => isNpmErrorLine(line) && /^code \S+/.test(npmPayload(line)));
   const others = lines.filter((line) => isNpmErrorLine(line) && line !== codeLine);
-  const diagnostic = selectFailureLine(others, false);
-  const kept = [codeLine, diagnostic].filter((line): line is string => Boolean(line));
-  if (kept.length) return kept.join(' ');
   const codeless = lines.filter((line) => !isNpmErrorLine(line));
-  const selected = selectFailureLine(codeless, true);
-  if (selected) return selected;
+  const block = selectFailureLine(others, { positionLast: false });
+  const bare = selectFailureLine(codeless, { positionLast: true });
+  // Both branches compete: an unprefixed crash line outranks a block echo, and
+  // the block keeps its code prefix only when the block itself wins.
+  if (bare && (!block || bare.rank < block.rank)) return bare.line;
+  if (block) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
+  if (codeLine) return codeLine;
+  if (bare) return bare.line;
   if (execResult.signal) return `signal ${execResult.signal}`;
   if (typeof execResult.status === 'number') return `exit ${execResult.status}`;
   return 'unknown failure';
