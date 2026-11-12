@@ -1,0 +1,5 @@
+[TypeError: fetch failed] {
+  [cause]: Error: EACCES: permission denied, open '/home/op/.cache/node'
+  code: 'EACCES'
+  errno: -13
+  syscall: 'open'

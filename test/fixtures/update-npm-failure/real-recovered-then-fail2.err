@@ -1,0 +1,67 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm exec huaweicloud-devkit@latest update --target opencode
+npm verbose argv "exec" "--yes" "--foreground-scripts" "--" "huaweicloud-devkit@latest" "update" "--target" "opencode"
+npm verbose logfile logs-max:10 dir:/home/op/npx-cache/_logs/2026-11-12T01_33_47_943Z-
+npm verbose logfile /home/op/npx-cache/_logs/2026-11-12T01_33_47_943Z-debug-0.log
+npm http fetch GET 404 http://127.0.0.1:4887/npm 25ms
+npm http fetch GET 404 http://127.0.0.1:4887/npm 8ms
+npm verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+npm http fetch GET 200 http://127.0.0.1:4887/huaweicloud-devkit 20ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:4887/huaweicloud-devkit 9ms (cache miss)
+npm http fetch POST 404 http://127.0.0.1:4887/-/npm/v1/security/advisories/bulk 9ms
+npm verbose audit error HttpErrorGeneral: 404 Not Found - POST http://127.0.0.1:4887/-/npm/v1/security/advisories/bulk - not found
+npm verbose audit error     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:103:15
+npm verbose audit error     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+npm verbose audit error     at async #getReport (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:334:19)
+npm verbose audit error     at async AuditReport.run (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:101:19) {
+npm verbose audit error   headers: [Object: null prototype] {
+npm verbose audit error     'content-type': [ 'application/json' ],
+npm verbose audit error     date: [ 'Thu, 12 Nov 2026 01:33:48 GMT' ],
+npm verbose audit error     connection: [ 'keep-alive' ],
+npm verbose audit error     'keep-alive': [ 'timeout=5' ],
+npm verbose audit error     'transfer-encoding': [ 'chunked' ],
+npm verbose audit error     'x-fetch-attempts': [ '1' ]
+npm verbose audit error   },
+npm verbose audit error   statusCode: 404,
+npm verbose audit error   code: 'E404',
+npm verbose audit error   method: 'POST',
+npm verbose audit error   uri: 'http://127.0.0.1:4887/-/npm/v1/security/advisories/bulk',
+npm verbose audit error   body: { error: 'not found', url: '/-/npm/v1/security/advisories/bulk' },
+npm verbose audit error   pkgid: undefined
+npm verbose audit error }
+npm http fetch GET 200 http://127.0.0.1:4887/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 19ms (cache miss)
+npm info run huaweicloud-devkit@9.9.9 preinstall node_modules/huaweicloud-devkit node pre.js
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/bin/npm
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm install
+npm verbose argv "install" "--no-audit" "--no-fund" "--registry" "http://127.0.0.1:4887" "--prefix" "/home/op/empty-prefix" "--cache" "/home/op/npx-cache"
+npm verbose logfile logs-max:10 dir:/home/op/npx-cache/_logs/2026-11-12T01_33_48_666Z-
+npm verbose logfile /home/op/npx-cache/_logs/2026-11-12T01_33_48_666Z-debug-0.log
+npm verbose stack Error: Could not read package.json: Error: ENOENT: no such file or directory, open '/home/op/empty-prefix/package.json'
+npm error code ENOENT
+npm error syscall open
+npm error path /home/op/empty-prefix/package.json
+npm error errno -2
+npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/home/op/empty-prefix/package.json'
+npm error enoent This is related to npm not being able to find a file.
+npm error enoent
+npm verbose cwd /home/op/npx-cache/_npx/2876c8997196d27e/node_modules/huaweicloud-devkit
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit -2
+npm verbose code -2
+npm error A complete log of this run can be found in: /home/op/npx-cache/_logs/2026-11-12T01_33_48_666Z-debug-0.log
+npm info run huaweicloud-devkit@9.9.9 preinstall { code: 0, signal: null }
+npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node post.js
+postinstall boom
+npm info run huaweicloud-devkit@9.9.9 postinstall { code: 7, signal: null }
+npm verbose cwd /home/op
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7

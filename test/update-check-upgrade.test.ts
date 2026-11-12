@@ -1780,6 +1780,44 @@ test('upgradePackage 失败原因: 未闭合的 requireStack 数组保留元数�
   assert.doesNotMatch(reason, /requireStack|\/home\/op\/x\.js/);
 });
 
+test('upgradePackage 失败原因: 真实恢复后失败取外层 code 与失败回显', async () => {
+  const reason = await reasonFor(failureStderr('real-recovered-then-fail.err'), 7);
+  assert.match(reason, /postinstall/);
+  assert.match(reason, /node post\.js/);
+  assert.doesNotMatch(reason, /EACCES/);
+});
+
+test('upgradePackage 失败原因: 第二份真实恢复捕获同样取外层块', async () => {
+  const reason = await reasonFor(failureStderr('real-recovered-then-fail2.err'), 7);
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /ENOENT/);
+});
+
+test('upgradePackage 失败原因: 三段块内层代码不粘到外层回显', async () => {
+  const reason = await reasonFor(failureStderr('seam-codepair-inner.err'));
+  assert.match(reason, /code 7/);
+  assert.match(reason, /node two\.js/);
+  assert.doesNotMatch(reason, /code 1|inner\.js/);
+});
+
+test('upgradePackage 失败原因: 三段交错块取最后一段', async () => {
+  const reason = await reasonFor(failureStderr('seam-3block.err'));
+  assert.match(reason, /code 7/);
+  assert.match(reason, /node three\.js/);
+});
+
+test('upgradePackage 失败原因: 文本相同的回显取失败步的那一次', async () => {
+  const reason = await reasonFor(failureStderr('seam-dup-echo.err'));
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node one\.js/);
+});
+
+test('upgradePackage 失败原因: 带 errno 的 [cause] 行仍降级', async () => {
+  const reason = await reasonFor(failureStderr('cause-errno-twist.err'), 1);
+  assert.match(reason, /\[TypeError: fetch failed\]/);
+  assert.doesNotMatch(reason, /\[cause\]|EACCES/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
