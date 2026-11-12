@@ -21,9 +21,41 @@ export const VERSION_GATE_CODE = 'HDKIT_VERSION_TOO_OLD';
  */
 export const DECORATION_REFUSED_FIELD = 'hdkitDecorationRefused';
 
-// 装填被拒的载体登记（round 20）：裁决的权威在模块态。WeakSet 按对象身份
-// 查询——不触发任何代理陷阱，撤销代理/原始值/吞写载体一律安全
-const refusedCarriers = new WeakSet<object>();
+// 装填被拒的载体登记（round 20 建、round 22 升种类与挣得键）：裁决的权威在
+// 模块态。WeakMap 按对象身份查询——不触发任何代理陷阱，撤销代理/原始值/
+// 吞写载体一律安全。round 22：记录携带挣得键与装饰器种类——解除（lift）只在
+// 同装饰器拼写且挣得键全部落定验证时发生（round 21 的无记忆解除让无关字
+// 段的再装饰/跨装饰器拼写整体解除登记，谎言随解除复活）；折叠按种类零读
+// 铸信封（门禁登记铸门禁未知信封，耗尽登记不折叠）
+type RefusalKind = 'gate' | 'exhaustion';
+type RefusalRecord = { kind: RefusalKind; keys: ReadonlySet<string | symbol> };
+const refusedCarriers = new WeakMap<object, RefusalRecord>();
+
+function refusalOf(error: unknown): RefusalRecord | undefined {
+  try {
+    return refusedCarriers.get(error as object);
+  } catch {
+    return undefined;
+  }
+}
+
+// 链上访问器判定（round 22/MUST 1）：gOPD 只看自有属性——原型 getter/setter
+// 对两处新判定全溜过（落定键判定把原件交回、undefined 存活判定跳过登记）。
+// 沿查找链走到首个定义该键的层级定夺：访问器即立着（可随时翻供）；全链无
+// 定义为纯数据。原型走查抛出（撤销代理/敌意链）从严按立着处理
+function chainAccessorStanding(target: object, key: string | symbol): boolean {
+  try {
+    let level: object | null = target;
+    while (level !== null) {
+      const desc = Object.getOwnPropertyDescriptor(level, key);
+      if (desc) return desc.get !== undefined || desc.set !== undefined;
+      level = Object.getPrototypeOf(level) as object | null;
+    }
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 /** 连接重试表（dev e0c8700b 终态）：网关 502/504 各退避重试一次 */
 export const CONNECT_RETRY_DELAYS_MS: readonly number[] = [30000, 45000];
@@ -171,22 +203,35 @@ const UPGRADE_STEPS = [
  * autoUpgrade 字段（其自动升级模块未移植）。空白字段值归一为缺失——hint 不留
  * 空位，兜底（未知/最新版）照常生效。
  */
-export function applyVersionGate(error: unknown, payload: VersionGatePayload): Error {
-  // 非对象载体预检（round 21，同 decorateExhaustedConnect 的 round-11 守卫）：
-  // null/undefined 走到回滚判定会让登记的 WeakSet.add 抛 TypeError——原始
-  // 值/空值按无字段可读处理，换新可写载体递归（新载体恒就地装填成功，不经
-  // 拒绝/登记机制）
-  if (error === null || (typeof error !== 'object' && typeof error !== 'function')) {
-    // 空载体无诊断可给——构造消息是固定形态（此处非错误路径语义），错误类
-    // 名即自我描述；与 decoratePlainCarrier 的设计文案同族
-    return applyVersionGate(new Error('gate payload on a non-object carrier'), payload);
+// 装填载体形态判定（round 22/MUST 3）：装箱原始值（String/Number/Boolean
+// 对象——typeof object，round 21 的原始值预检整个绕过，就地"装饰"交回非
+// Error）、数组、无原型对象、函数都不是调用方能当本模块错误抛出的载体；
+// 原型走查抛出（撤销代理）同样按非载体处理。代理过普通对象照旧可装填
+// （hostile 夹具的形态）
+function isDecorateCarrier(error: unknown): boolean {
+  if (error === null) return false;
+  const kind = typeof error;
+  if (kind !== 'object') return false;
+  try {
+    if (Array.isArray(error)) return false;
+    if (error instanceof String || error instanceof Number || error instanceof Boolean) return false;
+    return Object.getPrototypeOf(error) !== null;
+  } catch {
+    return false;
   }
-  const err = error as {
-    clientVersion?: string;
-    minVersion?: string;
-    message?: string;
-    remediation?: { hint: string; steps: string[] };
-  };
+}
+
+export function applyVersionGate(error: unknown, payload: VersionGatePayload): Error {
+  // 非载体形态预检（round 21 建、round 22 收口）：null/undefined/原始值（round
+  // 21 的 WeakSet.add TypeError 崩溃）与对象样非载体（装箱原始值/数组/无原
+  // 型对象/函数——round 22：装箱 String 此前绕过预检交回非 Error）一律换新
+  // 载体：盖上家族码与兜底文案（decoratePlainCarrier 同款——无码新载体任何
+  // 出口认不出门禁错误），再递归装填（新载体恒就地成功，不经拒绝/登记机制）
+  if (!isDecorateCarrier(error)) {
+    const plain = new Error(VERSION_GATE_FALLBACK_MESSAGE) as Error & { code?: unknown };
+    plain.code = VERSION_GATE_CODE;
+    return applyVersionGate(plain, payload);
+  }
   // round 6：版本字段与消息同过清洗口（cleanMessage）——纯不可见值视同缺失，
   // hint 不留不可见空位，兜底（未知/最新版）照常生效。
   // round 14：payload 读补齐 gateFoldPayload 的双卫队（round 12 回归类——
@@ -213,8 +258,8 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): E
     ],
   ];
   if (message) fields.push(['message', message]);
-  if (decorateInPlace(error as Record<string, unknown>, fields)) return error as Error;
-  return cloneCarrier(error, fields);
+  if (decorateInPlace(error as Record<string, unknown>, fields, 'gate')) return error as Error;
+  return cloneCarrier(error as object, fields);
 }
 
 /**
@@ -257,10 +302,10 @@ export interface GateFoldPayload {
  * 透传服务端 copy。versionGateResult / voucherFallback / relay 折叠共用此份。
  */
 export function gateFoldPayload(error: unknown): GateFoldPayload {
-  // 装填被拒的载体（round 19 建、round 20 收口裁决）：模块态登记按身份拒绝，
-  // 版本字段/消息/remediation 全不信，铸未知版本信封（码仍是服务端亲署——
-  // 门禁判定不受拒绝影响）
-  if (refusedCarriers.has(error as object)) {
+  // 装填被拒的载体（round 19 建、round 20 收口裁决、round 22 身份先于读）：
+  // 模块态登记按身份拒绝，版本字段/消息/remediation 全不信，铸未知版本信封
+  // （码仍是服务端亲署——门禁判定不受拒绝影响）
+  if (refusalOf(error) !== undefined) {
     return {
       code: VERSION_GATE_CODE,
       message: VERSION_GATE_FALLBACK_MESSAGE,
@@ -301,13 +346,18 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
  * undefined，调用方继续原有抛出/业务折叠。无码 409（可读/中断/非 JSON）同折。
  */
 export function versionGateResult(error: unknown): Record<string, unknown> | undefined {
-  if (!isVersionGateError(error)) return undefined;
-  // 拒绝载体零读（round 21/SHOULD 5）：retryAfter/coreHours 不得从丢弃载体
-  // 读取（敌意字段会把信封引向"等 999999 秒"）——拒绝分支经 gateFoldPayload
-  // 的登记分支铸未知信封，不经此处的字段读
-  if (refusedCarriers.has(error as object)) {
-    return { ok: false, ...gateFoldPayload(error) };
+  // 身份先于一切读取（round 22/MUST 4）：登记拒绝的载体此前先过
+  // isVersionGateError——code 视图在登记后变坏（抛出型 getter）即折叠
+  // undefined、原错误裸抛，结构化信封全失。按登记身份零读铸未知版本信封
+  if (refusalOf(error) !== undefined) {
+    return {
+      ok: false,
+      code: VERSION_GATE_CODE,
+      message: VERSION_GATE_FALLBACK_MESSAGE,
+      remediation: codelessGateFields().remediation,
+    };
   }
+  if (!isVersionGateError(error)) return undefined;
   // round 12：字段读安全化（抛出型 getter 按缺失）；retryAfter 窄化到字符串
   // （round 16）——BigInt 等非字符串值不骑信封（MCP 序列化边界）
   const rawRetryAfter = safeReadField(error, 'retryAfter');
@@ -425,7 +475,11 @@ const SEP_STAR = `[\\s\\p{Default_Ignorable_Code_Point}\\p{Cc}\u{FFF9}-\u{FFFB}\
 // 装饰（冻结对象、不可配置的 own getter）时回滚已写字段后返回 false——由
 // 调用方走克隆分支，丢弃的原对象不得带半截装饰（gatewayRetryExhausted 已
 // 落而 code 未换，会把传输码 20 折叠出去）。
-function decorateInPlace(target: Record<string, unknown>, fields: Array<[string, unknown]>): boolean {
+function decorateInPlace(
+  target: Record<string, unknown>,
+  fields: Array<[string, unknown]>,
+  kind?: RefusalKind,
+): boolean {
   const applied: Array<string> = [];
   // 快照改走 own 描述符（round 16）：has/get 都过代理陷阱——撒谎的 has+get
   // 视图让"恢复"变成重新种标记或用谎言覆盖原码（round-15 只关了被拒键，
@@ -505,6 +559,7 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       // round-17 记录边界：全写路径封死的载体无客户端方案可移除，载体本
       // 被丢弃，台账记录。undefined 装饰值跳过——空值点不燃任何折叠触发
       let poisoned = false;
+      const poisonedKeys = new Set<string | symbol>();
       for (const done of [...applied, key]) {
         const written = writtenValues.get(done);
         // 判定无条件跑（round 21/MUST 2）：written === undefined 的跳过让省
@@ -516,16 +571,17 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
           try {
             const desc = Object.getOwnPropertyDescriptor(target, done);
             if (desc && (desc.get !== undefined || desc.set !== undefined)) return true;
+            if (desc) return written !== undefined && desc.value === written;
+            // 无自有描述符：首个定义该键的层级定夺（round 22/MUST 1）——原型
+            // 访问器可翻供，视为立着；全链无定义时 undefined 装饰无物存活，
+            // defined 装饰读一次（无落点可翻供）
+            if (chainAccessorStanding(target, done)) return true;
             if (written === undefined) return false;
-            if (desc && desc.value === written) return true;
-            if (!desc) {
-              try {
-                return target[done] === written;
-              } catch {
-                return false;
-              }
+            try {
+              return target[done] === written;
+            } catch {
+              return false;
             }
-            return false;
           } catch {
             return true;
           }
@@ -534,7 +590,7 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
         if (written === undefined) {
           // undefined 装饰无值可中和——判定已跑、访问器存活即登记
           poisoned = true;
-          refusedCarriers.add(target);
+          poisonedKeys.add(done);
           continue;
         }
         const snap = snapshots.get(done);
@@ -561,12 +617,14 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
         // 陷阱 defineProperty 报成功不落——重判描述符定夺，读数不作数
         if (survivesByDescriptor()) {
           poisoned = true;
-          refusedCarriers.add(target);
+          poisonedKeys.add(done);
         }
       }
-      if (poisoned) {
-        // 诊断字段尽力而为（round 20 降级）：裁决已在模块态（refusedCarriers），
-        // 此写仅观测——吞写/谎报不影响折叠拒绝；双双被拒即 round-17 记录边界
+      if (poisoned && kind !== undefined && refusalOf(target) === undefined) {
+        // 登记挣得键与种类（round 22/MUST 2）：解除只在同装饰器拼写且挣得键
+        // 全部落定验证时发生。诊断字段尽力而为（round 20 降级）——此写仅观
+        // 测，吞写/谎报不影响裁决；双双被拒即 round-17 记录边界
+        refusedCarriers.set(target, { kind, keys: poisonedKeys });
         try {
           target[DECORATION_REFUSED_FIELD] = true;
         } catch {
@@ -590,21 +648,16 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
   // 克隆的设计值折叠（信封不再自相矛盾：hint 一版、字段读谎言）。原对象同
   // 时登记：立着的访问器随时可翻供，丢弃载体的任何陈述不可信——与拒绝路径
   // 的存活登记同一doctrine
-  let landedAccessor = false;
+  const accessorKeys = new Set<string | symbol>();
   for (const done of applied) {
-    try {
-      const desc = Object.getOwnPropertyDescriptor(target, done);
-      if (desc && (desc.get !== undefined || desc.set !== undefined)) {
-        landedAccessor = true;
-        break;
-      }
-    } catch {
-      landedAccessor = true;
-      break;
-    }
+    // 链上访问器判定（round 22/MUST 1）：gOPD 只看自有属性——原型
+    // getter/setter 对此前溜过落定键判定，就地"成功"交回原件，折叠时翻供
+    if (chainAccessorStanding(target, done)) accessorKeys.add(done);
   }
-  if (landedAccessor) {
-    refusedCarriers.add(target);
+  if (accessorKeys.size > 0) {
+    if (kind !== undefined && refusalOf(target) === undefined) {
+      refusedCarriers.set(target, { kind, keys: accessorKeys });
+    }
     try {
       target[DECORATION_REFUSED_FIELD] = true;
     } catch {
@@ -612,14 +665,24 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
     }
     return false;
   }
-  // 验证过的落定解除登记（round 21/MUST 3）：一次拒绝永久生效会让诚实再装
-  // 饰的有效载体被自己的折叠按身份拒绝——结构化信封在 connect 出口全失。
-  // 验证过的落定正是拒绝所求的证据；顺手清掉陈旧诊断字段（不再骑有效载体）
-  refusedCarriers.delete(target);
-  try {
-    delete target[DECORATION_REFUSED_FIELD];
-  } catch {
-    // 尽力而为——被拒的字段不阻塞成功路径
+  // 有范围的解除（round 22/MUST 2，替 round 21 的无记忆整体解除）：解除
+  // 只在同装饰器拼写（kind 相同）且挣得键全部在本轮落定验证时发生——无关
+  // 字段的再装饰（如无 message 的门禁装填触碰不到 message 挣得键）与跨装
+  // 饰器拼写（耗尽装饰成功也不解除门禁登记）一律保持登记。保持登记的载体
+  // 走克隆（return false）——把原件交回会按身份拒绝，结构化信封在 connect
+  // 出口全失（round 20 的错）。访问器挣得的拒绝永不解除：立着的访问器可在
+  // 任何后续读翻供，与拒绝路径同一doctrine——解除只对数据值存活（中和失败
+  // 的落盘值）可达，其再装饰经同键落定验证即解除
+  const prior = refusalOf(target);
+  if (prior !== undefined) {
+    const liftFires = prior.kind === kind && [...prior.keys].every((k) => applied.includes(k as string));
+    if (!liftFires) return false;
+    refusedCarriers.delete(target);
+    try {
+      delete target[DECORATION_REFUSED_FIELD];
+    } catch {
+      // 尽力而为——被拒的字段不阻塞成功路径
+    }
   }
   return true;
 }
@@ -710,7 +773,7 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
     fields.push(['remediation', designedTransientRemediation(retries)]);
   }
   const decorateTarget = err as unknown as Record<string, unknown>;
-  if (decorateInPlace(decorateTarget, fields)) return error;
+  if (decorateInPlace(decorateTarget, fields, 'exhaustion')) return error;
   return cloneCarrier(err, fields);
 }
 
@@ -733,8 +796,13 @@ function decoratePlainCarrier(retries: number): Error {
 function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
   const clone = new Error(safeMessageText(err));
   const decoratedKeys = new Set<string | symbol>(fields.map(([key]) => key));
+  // 拒绝载体的转向字段不随克隆（round 22/SHOULD 5）：retryAfter/coreHours
+  // 经快照复制骑上有效克隆，敌意原载体把信封引向"等 999999 秒"——登记
+  // 载体的这两键从复制中剔除
+  const sourceRefused = refusalOf(err) !== undefined;
   try {
     for (const key of Reflect.ownKeys(err)) {
+      if (sourceRefused && (key === 'retryAfter' || key === 'coreHoursExhausted')) continue;
       // 字符串与符号键都按描述符复制（round 11：符号键是业务字段），message/
       // stack、被装饰键、毒标字段除外——装饰键由 fields 落值；毒标属于丢弃
       // 载体（round 20）：有效载体是调用方要抛的，生而干净——泄过去即耗尽
@@ -774,9 +842,9 @@ function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
  * 标记的错误转 ok:false 结构化返回，remediation 与尝试次数穿透 MCP 边界。
  */
 export function transientExhaustionResult(error: unknown): Record<string, unknown> | undefined {
-  // 装填被拒的载体（round 19 建、round 20 收口裁决）：模块态登记按身份拒绝，
-  // 不读载体——吞写陷阱与谎言 get 骗不过身份查询
-  if (refusedCarriers.has(error as object)) return undefined;
+  // 身份先于一切读取（round 19 建、round 22 排序收口）：登记拒绝的载体
+  // 不在此折叠——丢弃载体上的任何陈述都不可信，零读拒绝
+  if (refusalOf(error) !== undefined) return undefined;
   // round 12：全部字段过安全读——抛出型 getter 按缺失，标记缺失即不折叠。
   // round 16：presence-gate 之上再窄化——code 窄到字符串、connectRetries 窄到
   // 数字、retryAfter 窄到字符串、remediation 深验（serializableRemediation），
