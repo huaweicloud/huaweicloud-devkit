@@ -85,7 +85,11 @@ test('issue-1071: 429 + Retry-After quota semantics present in tool descriptions
   assert.match(connectDescBlock, /429/);
   assert.match(connectDescBlock, /Retry-After/);
   assert.match(connectDescBlock, /HDKIT_QUOTA_EXCEEDED/);
+  assert.match(connectDescBlock, /HDKIT_TEMPLATE_QUOTA_EXCEEDED/);
   assert.match(connectDescBlock, /HDKIT_CAPACITY_INSUFFICIENT/);
+  assert.doesNotMatch(connectDescBlock, /dual error code/);
+  assert.match(skill, /HDKIT_TEMPLATE_QUOTA_EXCEEDED/);
+  assert.match(resourcePool, /HDKIT_TEMPLATE_QUOTA_EXCEEDED/);
   assert.match(connectDescBlock, /1 instance per pool type/);
   assert.match(connectDescBlock, /pool_type/);
   assert.match(connectDescBlock, /Lifecycle numbers are internal/);

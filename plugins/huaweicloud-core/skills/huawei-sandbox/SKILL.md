@@ -72,7 +72,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | 跨日评审 / 展示           | persistent | 评审者后续日期回访；实例保留        |
 
 - **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
-- **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`
+- **429 三错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_TEMPLATE_QUOTA_EXCEEDED`（当前账号此类型沙箱运行中实例达上限，需关机/释放同类型实例后重试，无 `Retry-After`）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。`HDKIT_QUOTA_EXCEEDED` / `HDKIT_CAPACITY_INSUFFICIENT` 响应带 `Retry-After: 60`
 - **生命周期播报**：生命周期数值仅用于内部选池与诊断，不逐次播报。
   - **ephemeral**：交付 URL 时只给 URL。不要提隧道/沙箱有效期、自动续期、闲置关机或删除，也不要建议迁移到持久沙箱或 OBS。例外：隧道无法持久时按 tunnel-persistence 小节的失败路径提示开发者“隧道将在会话结束后失效，请勿分享”；这不属于常规有效期播报。
   - **persistent**：只播报沙箱生命周期（闲置关机、数据盘保留、闲置回收上限），使用 `sandboxLifetime` / connect 的 `pool.ttl_hint` 口径；不要播报 devbridge 隧道有效期或自动续期。

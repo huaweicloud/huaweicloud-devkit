@@ -79,9 +79,10 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
         ],
       };
     }
-    // 429 双错误码（两池配额契约）：配额满给出释放/复用引导；池容量不足只透传服务端
-    // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
-    // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
+    // 429 三错误码：配额满给出释放/复用引导；模板 running 上限与池容量不足只透传
+    // 服务端最终文案（不带 CODE 前缀、不附加额外引导）。
+    // HDKIT_QUOTA_EXCEEDED / HDKIT_CAPACITY_INSUFFICIENT 带 Retry-After；
+    // HDKIT_TEMPLATE_QUOTA_EXCEEDED 不带（需关机/释放同类型实例后重试）。
     if (code === 'HDKIT_QUOTA_EXCEEDED') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       err.remediation = {
@@ -92,6 +93,14 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
           '如需两种生命周期语义并存：ephemeral 与 persistent 各可持有 1 台',
         ],
       };
+    }
+    // 用户级模板 running 上限（HD.98320082）：服务端文案即最终展示内容
+    // （不带 "CODE: " 前缀、不附加旧的“每账号最多 5 台”引导）
+    if (code === 'HDKIT_TEMPLATE_QUOTA_EXCEEDED') {
+      err.message =
+        typeof data.message === 'string' && data.message.trim()
+          ? data.message
+          : '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
     }
     if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;

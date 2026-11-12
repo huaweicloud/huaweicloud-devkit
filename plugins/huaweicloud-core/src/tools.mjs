@@ -893,7 +893,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle numbers are internal: never surface ephemeral tunnel/sandbox lifetime, auto-renewal, idle shutdown/delete, or migration suggestions; for persistent pools relay only the sandbox lifecycle notice (see huawei-sandbox skill).',
+      "Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with one of three codes: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance; Retry-After 60), HDKIT_TEMPLATE_QUOTA_EXCEEDED (the account's running instances for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After), or HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak; Retry-After 60). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle numbers are internal: never surface ephemeral tunnel/sandbox lifetime, auto-renewal, idle shutdown/delete, or migration suggestions; for persistent pools relay only the sandbox lifecycle notice (see huawei-sandbox skill).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -1774,10 +1774,11 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       try {
         connectResult = await hdkitConnectWithRetry(connectArgs);
       } catch (error) {
-        // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
+        // 业务预期失败（429 三码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
         // 其余错误维持抛出（MCP 层透传 code+message）
         if (
           error?.code === 'HDKIT_QUOTA_EXCEEDED' ||
+          error?.code === 'HDKIT_TEMPLATE_QUOTA_EXCEEDED' ||
           error?.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
           error?.code === 'HDKIT_CRED_INVALID' ||
           error?.code === 'HDKIT_VERSION_TOO_OLD' ||

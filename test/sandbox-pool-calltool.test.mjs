@@ -133,6 +133,24 @@ test('callTool connect: capacity-insufficient shows exactly the server message (
   }
 });
 
+test('callTool connect: template-quota-exceeded returns structured copy without remediation or retryAfter', async () => {
+  const finalCopy = '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+  const restore = withFetchResponse(
+    { code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED', message: finalCopy },
+    { status: 429, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+    assert.equal(result.message, finalCopy);
+    assert.equal(result.remediation, undefined, 'template quota copy must not be wrapped in remediation');
+    assert.equal(result.retryAfter, undefined, 'template quota has no Retry-After');
+  } finally {
+    restore();
+  }
+});
+
 test('callTool connect: version-too-old remediation survives the MCP boundary', async () => {
   const restore = withFetchResponse(
     {
