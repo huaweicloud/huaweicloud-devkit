@@ -14,6 +14,7 @@ import {
 } from '../plugins/huaweicloud-core/src/update-check.ts';
 import type { UpgradeOptions } from '../plugins/huaweicloud-core/src/update-check.ts';
 import { isCredentialEnvVarName } from '../plugins/huaweicloud-core/src/lib/secret-vault/refs.ts';
+import { fixtureDir } from './fixture-dir.ts';
 
 type UpgradeSpawnFn = NonNullable<UpgradeOptions['spawnFn']>;
 
@@ -242,6 +243,58 @@ async function childEnv(): Promise<NodeJS.ProcessEnv> {
   assert.equal(r.success, true);
   assert.ok(captured);
   return captured;
+}
+
+type TokenRegistryStub = {
+  registry: string;
+  port: number;
+  seen: Array<string | undefined>;
+  requested: string[];
+};
+
+// A token-guarded local dist-tags stub shared by the pre-flight tests: one
+// server lifecycle and one env save/restore, so the request shapes stay the
+// subject of each case.
+async function withTokenRegistry(
+  token: string,
+  options: { latest?: string },
+  run: (stub: TokenRegistryStub) => Promise<void>,
+): Promise<void> {
+  const { createServer } = await import('node:http');
+  const seen: Array<string | undefined> = [];
+  const requested: string[] = [];
+  const server = createServer((req, res) => {
+    seen.push(req.headers.authorization);
+    requested.push(req.url ?? '');
+    if (token && req.headers.authorization !== `Bearer ${token}`) {
+      res.statusCode = 401;
+      res.end('unauthorized');
+      return;
+    }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ latest: options.latest ?? '9.9.9', next: null }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  assert.ok(address && typeof address === 'object');
+  try {
+    await run({ registry: `http://127.0.0.1:${address.port}`, port: address.port, seen, requested });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+async function withSavedEnv(keys: string[], run: () => Promise<void>): Promise<void> {
+  const saved = new Map(keys.map((key) => [key, process.env[key]] as const));
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 }
 
 const NO_REGISTRY = {
@@ -2078,9 +2131,9 @@ test('upgradePackage 失败原因: 块内重复文本不改写嵌套块的退出
   assert.equal(reason, 'exit 7');
 });
 
-test('upgradePackage 失败原因: 无成功否决时块前前导行成为原因, 块内重复不改变答案', async () => {
+test('upgradePackage 失败原因: 多块捕获的块前前导行不作垂死行, 块内重复不改变答案', async () => {
   const reason = await reasonFor(failureStderr('seam-survivor-in-block.err'), 7);
-  assert.equal(reason, 'probe r26 helper failed once, giving up');
+  assert.equal(reason, 'exit 7');
 });
 
 test('upgradePackage 失败原因: 去掉块内重复的对照同样退出码', async () => {
@@ -2251,6 +2304,95 @@ test('upgradePackage 失败原因: 块体结束后的垂死行仍保留', async 
   assert.equal(reason, 'child failed, giving up');
 });
 
+test('upgradePackage 失败原因: 四块恢复的嵌套块静默失败退回退出码', async () => {
+  const reason = await reasonFor(failureStderr('real-four-nested-recovered.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 并发同身份兄弟的成功窗口各归各的位置', async () => {
+  const reason = await reasonFor(failureStderr('real-concurrent-siblings.err'), 7);
+  assert.equal(reason, 'outer probe failed hard, giving up');
+});
+
+test('upgradePackage 失败原因: 并发兄弟的垂死行落在后段回显之后时对照仍取外层垂死行', async () => {
+  const reason = await reasonFor(failureStderr('real-concurrent-siblings-late.err'), 7);
+  assert.equal(reason, 'outer probe failed hard, giving up');
+});
+
+test('upgradePackage 失败原因: 同身份唯一回显属于恢复运行时退回退出码', async () => {
+  const reason = await reasonFor(failureStderr('seam-sameident-only-echo.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 同身份唯一回显的强诊断同样不冒充失败步', async () => {
+  const reason = await reasonFor(failureStderr('seam-sameident-only-echo-error.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 异身份唯一回显只属于恢复运行', async () => {
+  const reason = await reasonFor(failureStderr('seam-sameident-only-echo-otherident.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 回显层排除恢复窗口自己的回显', async () => {
+  const reason = await reasonFor(failureStderr('seam-window-echo-identity.err'), 7);
+  assert.equal(reason, 'npm info run pkg@1.0.0 postinstall node_modules/pkg node post.js');
+});
+
+test('upgradePackage 失败原因: 裸结果无自身回显时取失败步的体内垂死行', async () => {
+  const reason = await reasonFor(failureStderr('seam-bare-result-recovered-echo.err'), 7);
+  assert.equal(reason, 'build failed hard, cache locked');
+});
+
+test('upgradePackage 失败原因: 未裁剪的真实安装捕获保留尾部块之后的垂死行', async () => {
+  const reason = await reasonFor(failureStderr('real-trailing-block-dying-words.err'), 7);
+  assert.equal(reason, 'build failed hard, cache locked');
+});
+
+test('upgradePackage 失败原因: 语料内的失败对加尾部块同样保留垂死行', async () => {
+  const reason = await reasonFor(failureStderr('real-trailing-block-corpus.err'), 7);
+  assert.equal(reason, 'build failed hard, cache locked');
+});
+
+test('upgradePackage 失败原因: 有体块后的无体重复 code 行保留有体块的 echo', async () => {
+  const stderr = [
+    'npm error code ECONNREFUSED',
+    'npm error syscall connect',
+    'npm error errno ECONNREFUSED',
+    'npm error FetchError: request failed',
+    'npm error code 7',
+    'npm error path /pkg',
+    'npm error command failed',
+    'npm error command sh -c node postinstall.js',
+    'npm error code 7',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node postinstall\.js/);
+});
+
+test('upgradePackage 失败原因: 块后的 [cause] 行仍作为原因', async () => {
+  const stderr = [
+    'npm error code EACCES',
+    'npm error syscall mkdir',
+    'npm error errno EACCES',
+    '[cause]: Error: late cause after the block',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, '[cause]: Error: late cause after the block');
+});
+
+test('upgradePackage 失败原因: 回显即恢复窗口起点时退回退出码', async () => {
+  const stderr = [
+    'npm info run huaweicloud-devkit@1.0.0 postinstall node_modules/huaweicloud-devkit node post.js',
+    'probe failed once, recovered',
+    'npm info run huaweicloud-devkit@1.0.0 postinstall { code: 0, signal: null }',
+    'npm info run huaweicloud-devkit@1.0.0 postinstall { code: 7, signal: null }',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'exit 7');
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
@@ -2301,73 +2443,127 @@ test('upgradePackage 升级子进程: 键名空白按 vault 谓词的归一处�
 });
 
 test('upgradePackage 升级子进程: 预检查询与子进程共享 npm 认证与镜像归一', async () => {
-  const { createServer } = await import('node:http');
-  const seen: Array<string | undefined> = [];
-  const server = createServer((req, res) => {
-    seen.push(req.headers.authorization);
-    if (req.headers.authorization !== 'Bearer fixture-registry-token') {
-      res.statusCode = 401;
-      res.end('unauthorized');
-      return;
-    }
-    res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ latest: '9.9.9', next: null }));
+  await withTokenRegistry('fixture-registry-token', {}, async ({ registry, seen }) => {
+    await withSavedEnv(['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'HUAWEICLOUD_NPM_REGISTRY', 'NPM_TOKEN '], async () => {
+      const attempt = async () => {
+        let env: NodeJS.ProcessEnv | undefined;
+        let spawned = false;
+        const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
+          spawned = true;
+          env = opts.env as NodeJS.ProcessEnv;
+          return { status: 0 };
+        };
+        const result = await upgradePackage({ target: 'opencode' }, { spawnFn });
+        return { result, env, spawned };
+      };
+      process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
+      process.env.NPM_TOKEN = '  fixture-registry-token  ';
+      delete process.env.NODE_AUTH_TOKEN;
+      const paddedToken = await attempt();
+      assert.equal(paddedToken.result.success, true);
+      assert.equal(paddedToken.spawned, true, 'the act proceeds to the spawn after an authenticated query');
+      assert.equal(seen.at(-1), 'Bearer fixture-registry-token', 'the pre-flight trims the token');
+      assert.equal(paddedToken.env?.NPM_TOKEN, 'fixture-registry-token', 'the child env token is trimmed too');
+
+      delete process.env.NPM_TOKEN;
+      process.env.NODE_AUTH_TOKEN = 'fixture-registry-token';
+      const nodeAuth = await attempt();
+      assert.equal(nodeAuth.result.success, true, 'NODE_AUTH_TOKEN also authenticates the query');
+      assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+
+      process.env.HUAWEICLOUD_NPM_REGISTRY = `  ${registry}  `;
+      process.env.NPM_TOKEN = 'fixture-registry-token';
+      delete process.env.NODE_AUTH_TOKEN;
+      const paddedRegistry = await attempt();
+      assert.equal(paddedRegistry.result.success, true, 'a padded registry spelling is usable end-to-end');
+
+      delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+      process.env.huaweicloud_npm_registry = `  ${registry}  `;
+      const variantRegistry = await attempt();
+      assert.equal(variantRegistry.result.success, true, 'a case-variant registry spelling pre-flights the mirror');
+      assert.equal(
+        variantRegistry.env?.HUAWEICLOUD_NPM_REGISTRY,
+        registry,
+        'the child pin resolves the same variant spelling',
+      );
+
+      delete process.env.huaweicloud_npm_registry;
+      process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
+      delete process.env.NPM_TOKEN;
+      process.env['NPM_TOKEN '] = '  fixture-registry-token  ';
+      const paddedKey = await attempt();
+      assert.equal(paddedKey.result.success, true, 'a padded token key authenticates the pre-flight');
+      assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+      assert.equal(paddedKey.env?.NPM_TOKEN, 'fixture-registry-token', 'the child gets the canonical token key');
+      assert.equal(paddedKey.env?.['NPM_TOKEN '], undefined, 'the padded key is not forwarded');
+      delete process.env['NPM_TOKEN '];
+
+      delete process.env.NPM_TOKEN;
+      delete process.env.NODE_AUTH_TOKEN;
+      const withoutToken = await attempt();
+      assert.equal(withoutToken.result.success, false);
+      assert.equal(withoutToken.spawned, false, 'an unauthenticated mirror degrades before the spawn');
+      assert.match(withoutToken.result.error ?? '', /无法确认最新版本/);
+      assert.equal(seen.at(-1), undefined);
+    });
   });
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
-  const address = server.address();
-  assert.ok(address && typeof address === 'object');
-  const registry = `http://127.0.0.1:${address.port}`;
-  const saved = new Map(
-    ['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'HUAWEICLOUD_NPM_REGISTRY'].map((key) => [key, process.env[key]] as const),
-  );
-  const attempt = async () => {
-    let env: NodeJS.ProcessEnv | undefined;
-    let spawned = false;
-    const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
-      spawned = true;
-      env = opts.env as NodeJS.ProcessEnv;
-      return { status: 0 };
-    };
-    const result = await upgradePackage({ target: 'opencode' }, { spawnFn });
-    return { result, env, spawned };
-  };
-  try {
-    process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
-    process.env.NPM_TOKEN = '  fixture-registry-token  ';
-    delete process.env.NODE_AUTH_TOKEN;
-    const paddedToken = await attempt();
-    assert.equal(paddedToken.result.success, true);
-    assert.equal(paddedToken.spawned, true, 'the act proceeds to the spawn after an authenticated query');
-    assert.equal(seen.at(-1), 'Bearer fixture-registry-token', 'the pre-flight trims the token');
-    assert.equal(paddedToken.env?.NPM_TOKEN, 'fixture-registry-token', 'the child env token is trimmed too');
+});
 
-    delete process.env.NPM_TOKEN;
-    process.env.NODE_AUTH_TOKEN = 'fixture-registry-token';
-    const nodeAuth = await attempt();
-    assert.equal(nodeAuth.result.success, true, 'NODE_AUTH_TOKEN also authenticates the query');
-    assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+test('upgradePackage 升级子进程: ~/.npmrc 的 _authToken 也认证预检查询', async () => {
+  await withTokenRegistry('fixture-npmrc-token', {}, async ({ registry, port, seen }) => {
+    const { writeFileSync } = await import('node:fs');
+    const userconfig = join(fixtureDir('devkit-npmrc-'), '.npmrc');
+    writeFileSync(userconfig, `registry=${registry}/\n//127.0.0.1:${port}/:_authToken=fixture-npmrc-token\n`);
+    await withSavedEnv(
+      ['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'HUAWEICLOUD_NPM_REGISTRY', 'NPM_CONFIG_USERCONFIG'],
+      async () => {
+        delete process.env.NPM_TOKEN;
+        delete process.env.NODE_AUTH_TOKEN;
+        process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
+        process.env.NPM_CONFIG_USERCONFIG = userconfig;
+        let spawned = false;
+        const spawnFn: UpgradeSpawnFn = () => {
+          spawned = true;
+          return { status: 0 };
+        };
+        const result = await upgradePackage({ target: 'opencode' }, { spawnFn });
+        assert.equal(result.success, true, 'the npmrc token authenticates the pre-flight');
+        assert.equal(spawned, true, 'the act proceeds to the spawn');
+        assert.equal(seen.at(-1), 'Bearer fixture-npmrc-token');
 
-    process.env.HUAWEICLOUD_NPM_REGISTRY = `  ${registry}  `;
-    process.env.NPM_TOKEN = 'fixture-registry-token';
-    delete process.env.NODE_AUTH_TOKEN;
-    const paddedRegistry = await attempt();
-    assert.equal(paddedRegistry.result.success, true, 'a padded registry spelling is usable end-to-end');
+        writeFileSync(userconfig, `registry=${registry}/\n`);
+        const untokened = await upgradePackage({ target: 'opencode' }, { spawnFn: () => ({ status: 0 }) });
+        assert.equal(untokened.success, false, 'the untokened npmrc control degrades honestly');
+        assert.match(untokened.error ?? '', /无法确认最新版本/);
+      },
+    );
+  });
+});
 
-    delete process.env.NPM_TOKEN;
-    delete process.env.NODE_AUTH_TOKEN;
-    const withoutToken = await attempt();
-    assert.equal(withoutToken.result.success, false);
-    assert.equal(withoutToken.spawned, false, 'an unauthenticated mirror degrades before the spawn');
-    assert.match(withoutToken.result.error ?? '', /无法确认最新版本/);
-    assert.equal(seen.at(-1), undefined);
-  } finally {
-    for (const [key, value] of saved) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-    server.closeAllConnections();
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-  }
+test('upgradePackage 升级子进程: 变体镜像键让预检查询报告子进程实际安装的版本', async () => {
+  await withTokenRegistry('', { latest: '1.0.0' }, async ({ registry, requested }) => {
+    await withSavedEnv(['HUAWEICLOUD_NPM_REGISTRY', 'huaweicloud_npm_registry'], async () => {
+      delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+      process.env.huaweicloud_npm_registry = registry;
+      let spawned = false;
+      const spawnFn: UpgradeSpawnFn = () => {
+        spawned = true;
+        return { status: 0 };
+      };
+      const result = await upgradePackage({ target: 'opencode' }, { spawnFn, currentVersion: '0.0.1' });
+      assert.equal(result.success, true);
+      assert.equal(spawned, true);
+      assert.equal(
+        result.installedVersion,
+        '1.0.0',
+        'the reported version is the mirror the child installs from, not the public registry',
+      );
+      assert.equal(
+        requested.some((url) => url.includes('/-/package/huaweicloud-devkit/dist-tags')),
+        true,
+      );
+    });
+  });
 });
 
 test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配置与镜像 pin', async () => {

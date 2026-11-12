@@ -2,6 +2,9 @@
 // spawn) and the undici fetch path honoring HUAWEICLOUD_NPM_REGISTRY. Part of
 // the src/update-* family behind the src/update-check.ts re-export face.
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 import { fetchWithProxy } from './proxy/proxy-agent.ts';
 import { asText } from './lib/as-text.ts';
@@ -46,10 +49,68 @@ function debugLog(message: string): void {
   }
 }
 
+// The devkit registry override resolves through ONE spelling rule for the
+// pre-flight and the child env: trimmed non-empty exact-case first, else the
+// first trimmed non-empty case/padding variant; whitespace counts as unset.
+export function resolveRegistryOverride(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const spellings = Object.entries(env)
+    .filter(([key, value]) => key.trim().toUpperCase() === 'HUAWEICLOUD_NPM_REGISTRY' && Boolean(value?.trim()))
+    .map(([key, value]) => [key, value!.trim()] as const);
+  const exact = spellings.find(([key]) => key === 'HUAWEICLOUD_NPM_REGISTRY');
+  return (exact ?? spellings[0])?.[1];
+}
+
+// The npm auth channels resolve through the same padding/case normalization the
+// child env applies, so a padded key authenticates both halves.
+function resolveNpmAuthToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  const candidates = Object.entries(env)
+    .filter(([key, value]) => {
+      const upper = key.trim().toUpperCase();
+      return (upper === 'NPM_TOKEN' || upper === 'NODE_AUTH_TOKEN') && Boolean(value?.trim());
+    })
+    .map(([key, value]) => [key.trim().toUpperCase(), value!.trim()] as const);
+  const npmToken = candidates.find(([key]) => key === 'NPM_TOKEN');
+  return (npmToken ?? candidates[0])?.[1];
+}
+
+// npm's mainstream auth channel is the userconfig `_authToken` for the registry
+// host (`npm login` writes it). The pre-flight reads it when the env channels are
+// unset, resolving the userconfig the way npm does; with no token anywhere the
+// query degrades as before.
+function npmrcAuthToken(registry: string): string | undefined {
+  let url: URL;
+  try {
+    url = new URL(registry);
+  } catch {
+    return undefined;
+  }
+  const userconfig = process.env.NPM_CONFIG_USERCONFIG || join(homedir(), '.npmrc');
+  let raw: string;
+  try {
+    raw = readFileSync(userconfig, 'utf8');
+  } catch {
+    return undefined;
+  }
+  const entries = new Map<string, string>();
+  for (const line of raw.split(/\r?\n/)) {
+    const match = /^\s*([^#;\s][^=]*?)\s*=\s*(.*?)\s*$/.exec(line);
+    if (match) entries.set(match[1]!.trim(), match[2]!);
+  }
+  const path = url.pathname.replace(/\/+$/, '');
+  const host = `//${url.host}`;
+  const candidates = [`${host}${path}/:_authToken`, `${host}/:_authToken`];
+  for (const key of candidates) {
+    const value = entries.get(key)?.trim();
+    if (value) return value;
+  }
+  return entries.get('_authToken')?.trim() || undefined;
+}
+
 export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: number } = {}): Promise<DistTags | null> {
-  // One normalization with upgradeEnv: a padded spelling is usable and a
-  // whitespace-only value is unset, so the pre-flight and the child pin agree.
-  const configured = process.env.HUAWEICLOUD_NPM_REGISTRY?.trim();
+  // One normalization with upgradeEnv: a padded or case-variant spelling is
+  // usable and a whitespace-only value is unset, so the pre-flight and the
+  // child pin cannot disagree.
+  const configured = resolveRegistryOverride();
   let registry = 'https://registry.npmjs.org';
   if (configured) {
     registry = configured.replace(/\/+$/, '');
@@ -60,9 +121,7 @@ export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: nu
   // token-guarded private mirror 401s the packument without it, aborting the
   // act before the spawn. The token is read for this request only; the env
   // shaping of the child is a separate concern.
-  const token = [process.env.NPM_TOKEN, process.env.NODE_AUTH_TOKEN]
-    .map((value) => value?.trim())
-    .find((value): value is string => Boolean(value));
+  const token = resolveNpmAuthToken() || npmrcAuthToken(registry);
   const init: RequestInit = token ? { headers: { authorization: `Bearer ${token}` } } : {};
   try {
     const resp = await fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`, init);
@@ -114,7 +173,7 @@ export function queryDistTags({
   // delegation closes that inconsistency, so every default consumer
   // (getCachedUpdateInfo, upgradePackage) honors the operator/E2E override
   // without spawning npm.
-  if (process.env.HUAWEICLOUD_NPM_REGISTRY?.trim()) {
+  if (resolveRegistryOverride()) {
     return queryDistTagsFetch({ timeoutMs });
   }
   return new Promise<DistTags | null>((resolve) => {

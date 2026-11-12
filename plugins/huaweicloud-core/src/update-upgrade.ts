@@ -8,7 +8,7 @@ import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.ts';
 import { isCredentialEnvVarName } from './lib/secret-vault/refs.ts';
 import { determineTarget, semverCompare, type DistTags } from './update-semver.ts';
 import { readInstalledVersion } from './update-installed.ts';
-import { queryDistTags, errorMessage } from './update-registry.ts';
+import { queryDistTags, errorMessage, resolveRegistryOverride } from './update-registry.ts';
 import { invalidateUpdateCache } from './update-cache.ts';
 
 const NPX_BIN = process.platform === 'win32' ? 'npx.cmd' : 'npx';
@@ -84,21 +84,18 @@ const UPGRADE_PRESERVE_ENV_KEYS = new Set([
 function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = {};
   const registrySpellings: string[] = [];
-  const devkitSpellings: Array<[string, string | undefined]> = [];
   for (const [key, value] of Object.entries(env)) {
     // The vault predicate trims its spelling; the strip and preserve lists must
     // agree, so a padded vendor key strips and a padded preserve key survives.
     const upper = key.trim().toUpperCase();
-    if (upper === 'HUAWEICLOUD_NPM_REGISTRY') {
-      devkitSpellings.push([key, value]);
-      continue;
-    }
+    if (upper === 'HUAWEICLOUD_NPM_REGISTRY') continue;
     if (upper === 'NPM_CONFIG_REGISTRY') registrySpellings.push(key);
-    // npm's own auth channels reach the child trimmed, matching the pre-flight
-    // query's bearer: a padded token must authenticate both or neither.
+    // npm's own auth channels reach the child trimmed AND under npm's exact
+    // name, matching the pre-flight query's bearer: a padded token key must
+    // authenticate both halves or neither.
     if (upper === 'NPM_TOKEN' || upper === 'NODE_AUTH_TOKEN') {
       const token = value?.trim();
-      if (token) next[key] = token;
+      if (token) next[upper] = token;
       continue;
     }
     if (UPGRADE_PRESERVE_ENV_KEYS.has(upper)) {
@@ -111,12 +108,10 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(upper)) continue;
     next[key] = value;
   }
-  // Pathological case spellings: the trimmed non-empty exact-case key wins,
-  // else the first trimmed non-empty spelling; empty and whitespace count as
-  // unset everywhere. One canonical channel, so the child's own devkit lookup
-  // and npm's pin cannot disagree, and an unset override never pins.
-  const nonEmpty = devkitSpellings.filter(([, value]) => Boolean(value?.trim()));
-  const registry = (nonEmpty.find(([key]) => key === 'HUAWEICLOUD_NPM_REGISTRY') ?? nonEmpty[0])?.[1]?.trim();
+  // One canonical channel through the shared resolver, so the child's own
+  // devkit lookup, npm's pin, and the pre-flight query cannot disagree; empty
+  // and whitespace count as unset everywhere, and an unset override never pins.
+  const registry = resolveRegistryOverride(env);
   if (registry) {
     next.HUAWEICLOUD_NPM_REGISTRY = registry;
     for (const key of registrySpellings) delete next[key];
@@ -389,6 +384,7 @@ function isNpmNoiseLine(line: string): boolean {
   }
   if (/DeprecationWarning|trace-deprecation/i.test(line)) return true;
   if (/^gyp info\b/i.test(line)) return true;
+  if (/^added \d+ packages? in\b/i.test(line)) return true;
   const payload = npmPayload(line);
   return (
     /^A complete log of this run can be found in:/.test(payload) ||
@@ -471,7 +467,7 @@ function lastEchoBefore(entries: LineEntry[], index: number): LineEntry | undefi
 
 function selectFailureLine(
   entries: LineEntry[],
-  { positionLast }: { positionLast: boolean },
+  { positionLast, echoAllowed = () => true }: { positionLast: boolean; echoAllowed?: (index: number) => boolean },
 ): { line: string; rank: number; index: number } | undefined {
   for (const rank of [0, 1, 2, 3, 4]) {
     const hits = entries.filter((entry) => lineRank(entry.line) === rank);
@@ -479,19 +475,23 @@ function selectFailureLine(
     if (rank === 3) {
       // The echo tier names the failing script: the last echo that carries the
       // failing result's own package/script identity wins, so a nesting script's
-      // nearer echo cannot stand in; else the last echo.
+      // nearer echo cannot stand in; an echo that belongs to a recovered window
+      // never qualifies; else the last allowed echo.
+      const allowed = hits.filter((entry) => echoAllowed(entry.index));
+      if (!allowed.length) continue;
       const failing = lastFailingResult(entries);
       const identity = failing ? npmRunIdentity(failing.line) : undefined;
       const identityPaired = identity
-        ? entries
+        ? allowed
             .filter(
               (entry) =>
                 entry.index < failing!.index && lineRank(entry.line) === 3 && npmRunIdentity(entry.line) === identity,
             )
             .at(-1)
         : undefined;
-      const paired = identityPaired ?? (failing ? lastEchoBefore(entries, failing.index) : undefined);
-      const chosen = paired ?? hits.at(-1)!;
+      const paired =
+        identityPaired ?? (failing ? allowed.filter((entry) => entry.index < failing.index).at(-1) : undefined);
+      const chosen = paired ?? allowed.at(-1)!;
       return { line: chosen.line, rank, index: chosen.index };
     }
     const later = rank === 0 || (rank === 2 && positionLast);
@@ -599,26 +599,36 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // after it (a dying step that printed `gyp info ok` then its result) is not a
   // pair.
   const failingIdentity = failing ? npmRunIdentity(failing.line) : undefined;
-  const identityEchoesBefore = (before: number, identity: string | undefined) =>
-    identity
-      ? entries
-          .filter(
-            (entry) => entry.index < before && lineRank(entry.line) === 3 && npmRunIdentity(entry.line) === identity,
-          )
-          .at(-1)
-      : undefined;
   // A code-0 result owns the lines between its echo and its result, whether or
   // not it shares the failing step's identity: a recovered run of the same
-  // package is a different step. Pair every success with its nearest identity
-  // echo.
+  // package is a different step. Each result claims its nearest preceding echo
+  // of the same identity that no earlier result claimed, so interleaved
+  // same-identity siblings get one window each instead of both anchoring at the
+  // later echo.
   const recoveredWindows: Array<{ start: number; end: number }> = [];
+  const claimedEchoes = new Set<number>();
   for (const result of codelessEntries) {
     if (!isNpmScriptResult(result.line) || isFailingScriptResult(result.line)) continue;
-    const echo = identityEchoesBefore(result.index, npmRunIdentity(result.line));
-    if (echo) recoveredWindows.push({ start: echo.index, end: result.index });
+    const identity = npmRunIdentity(result.line);
+    if (!identity) continue;
+    const echo = entries
+      .filter(
+        (entry) =>
+          entry.index < result.index &&
+          lineRank(entry.line) === 3 &&
+          npmRunIdentity(entry.line) === identity &&
+          !claimedEchoes.has(entry.index),
+      )
+      .at(-1);
+    if (echo) {
+      claimedEchoes.add(echo.index);
+      recoveredWindows.push({ start: echo.index, end: result.index });
+    }
   }
+  const startsRecoveredWindow = (index: number) => recoveredWindows.some((window) => window.start === index);
   // The failing pair's echo is the step's own: the nearest identity echo that
-  // does not start or sit in a recovered window, else the adjacent echo.
+  // does not belong to a recovered window; a fallback echo that does belong to
+  // one leaves the pair unattributable.
   const ownEcho = failing
     ? entries
         .filter(
@@ -626,23 +636,25 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
             entry.index < failing.index &&
             lineRank(entry.line) === 3 &&
             npmRunIdentity(entry.line) === failingIdentity &&
-            !recoveredWindows.some((window) => entry.index >= window.start && entry.index <= window.end),
+            !startsRecoveredWindow(entry.index),
         )
         .at(-1)
     : undefined;
-  const failingPairEcho = ownEcho ?? (failing ? lastEchoBefore(entries, failing.index) : undefined);
+  const fallbackEcho = failing ? lastEchoBefore(entries, failing.index) : undefined;
+  const failingPairEcho =
+    ownEcho ?? (fallbackEcho && !startsRecoveredWindow(fallbackEcho.index) ? fallbackEcho : undefined);
   const hasFailingPair = Boolean(failing && failingPairEcho);
   // A nested window whose own echo starts after the failing pair's echo belongs
   // to a nested step and is excluded even when it sits inside the pair's span;
   // only the failing step's own words between its echo and result are in-pair
-  // survivors.
+  // survivors. Boundaries are inclusive: a window's own echo is not a reason.
   const insideFailingPair = (index: number) =>
     Boolean(failing && failingPairEcho && index > failingPairEcho.index && index < failing.index);
   const inRecoveredWindow = (index: number) =>
     recoveredWindows.some(
       (window) =>
-        index > window.start &&
-        index < window.end &&
+        index >= window.start &&
+        index <= window.end &&
         (window.start > (failingPairEcho?.index ?? -1) || !insideFailingPair(index)),
     );
   // A success assertion is recovery evidence only when it precedes the last
@@ -650,18 +662,19 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // words and before its own result line, is not a recovery.
   const recoverySuccess = failingPairEcho ? lastSuccessIndex(failingPairEcho.index) : -1;
 
-  let block = selectFailureLine(otherEntries, { positionLast: false });
-  let bare = selectFailureLine(codelessEntries, { positionLast: true });
+  const echoAllowed = (index: number) => !startsRecoveredWindow(index);
+  let block = selectFailureLine(otherEntries, { positionLast: false, echoAllowed });
+  let bare = selectFailureLine(codelessEntries, { positionLast: true, echoAllowed });
   let codeLine = codeFor(block);
   let recoveredSwap = false;
+  let bodylessTwin = false;
   const blocks = codeEntries.length ? errorBlocks(codeEntries, otherEntries) : [];
   const blockBodyEnd = (target: ErrorBlock) =>
     target.entries.reduce((max, entry) => Math.max(max, entry.index), target.code.index);
   const firstBlockCode = blocks[0]?.code.index ?? -1;
   const lastBlockBodyEnd = blocks.length ? blockBodyEnd(blocks.at(-1)!) : -1;
-  // A pre-block preamble is the child's own words; the first-block-through-last-
-  // body span belongs to recovered steps and is excluded.
-  const outsideBlocks = (index: number) => !blocks.length || index < firstBlockCode || index > lastBlockBodyEnd;
+  const inBlockRange = (index: number) =>
+    blocks.some((target) => index >= target.code.index && index <= blockBodyEnd(target));
 
   // At npm's default loglevel lifecycle result lines do not exist, so a nested
   // step's recovered block is the only visible error text while the failing
@@ -702,8 +715,17 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
       : !lastHasEcho && typeof execResult.status === 'number' && execResult.status > 1;
     const blockEnd = blockBodyEnd(lastBlock);
     if (overrides) {
-      block = picked ?? { line: lastBlock.code.line, rank: 4, index: lastBlock.code.index };
-      codeLine = lastBlock.code.line;
+      // A body-less trailing duplicate of a tying populated block is npm's
+      // summary of the same step: the populated twin's line and echo ride.
+      const tiedBodyless = !picked && Boolean(previous?.entries.length) && !distinctLastCode;
+      bodylessTwin = tiedBodyless;
+      const owner = tiedBodyless ? previous! : lastBlock;
+      block = (tiedBodyless ? pickInBlock(previous!) : picked) ?? {
+        line: lastBlock.code.line,
+        rank: 4,
+        index: lastBlock.code.index,
+      };
+      codeLine = owner.code.line;
       // The child's earlier chatter belongs to a recovered step; the last
       // block's own echo names the failing script.
       if (bare && bare.index < lastBlock.code.index) bare = undefined;
@@ -726,9 +748,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // a higher-ranked diagnostic (the verbose/default asymmetry). Its code line
   // is the failing step's, so no recovered block's code can be the reason.
   if (hasFailingPair) {
-    const trailing = errorBlocks(codeEntries, otherEntries)
-      .filter((candidate) => candidate.code.index > failing!.index)
-      .at(-1);
+    const trailing = blocks.filter((candidate) => candidate.code.index > failing!.index).at(-1);
     if (trailing) {
       block = pickInBlock(trailing) ?? { line: trailing.code.line, rank: 4, index: trailing.code.index };
       codeLine = trailing.code.line;
@@ -746,17 +766,23 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // earlier chatter belongs to a step that recovered (or another step). This is
   // the in-pair window: a code-0 success between the echo and the result does
   // not restore the earlier line.
-  if (failing && failingPairEcho && bare && bare.index < failingPairEcho.index) {
+  if (failing && failingPairEcho) {
     const inside = codelessEntries
       .filter((entry) => entry.index > failingPairEcho.index && entry.index < failing.index)
       .filter((entry) => lineRank(entry.line) <= 2)
+      .filter((entry) => !inRecoveredWindow(entry.index))
       .at(-1);
-    if (inside) bare = { line: inside.line, rank: lineRank(inside.line), index: inside.index };
+    if (inside) {
+      bare = { line: inside.line, rank: lineRank(inside.line), index: inside.index };
+    } else if (!bare || !insideFailingPair(bare.index)) {
+      bare = { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index };
+    }
   }
   // Lines belonging to a step whose own result says it recovered are not this
-  // failure's words: the failing pair's echo is the honest fallback.
-  if (hasFailingPair && failingPairEcho && bare && inRecoveredWindow(bare.index)) {
-    bare = { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index };
+  // failure's words: the failing pair's echo is the honest fallback, and with no
+  // attributable pair echo the floor is the exit status.
+  if (bare && inRecoveredWindow(bare.index)) {
+    bare = failingPairEcho ? { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index } : undefined;
   }
   // The outer shell names a signal death "Terminated" or "Killed"; when npm
   // emitted the failing echo pair, the named script is the better reason.
@@ -785,7 +811,12 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // qualifies: plain progress chatter does not distinguish itself, and a
   // filtered success assertion (a code-0 result, gyp's info channel) means the
   // survivor belongs to a script that did not fail.
-  const survivorEligible = (entry: LineEntry) => outsideBlocks(entry.index) && !inRecoveredWindow(entry.index);
+  const survivorEligible = (entry: LineEntry) =>
+    !inBlockRange(entry.index) &&
+    !inRecoveredWindow(entry.index) &&
+    (insideFailingPair(entry.index) ||
+      entry.index > lastBlockBodyEnd ||
+      (blocks.length <= 1 && entry.index < firstBlockCode));
   const strongSurvivors = codelessEntries.filter((entry) => lineRank(entry.line) <= 1 && survivorEligible(entry));
   // A demoted `[cause]:` line still rides when it is the only substantive text:
   // the rank-4 demotion exists to keep it from outranking a header, not to
@@ -859,7 +890,13 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (bare && isSuccessAssertion(bare.line)) bare = undefined;
   // The same holds when the echo itself won the tier: npm's block echo follows
   // its code line, so an echo above the last code line is an earlier step's.
-  if (block && lineRank(block.line) === 3 && codeEntries.length && block.index < codeEntries.at(-1)!.index) {
+  if (
+    !bodylessTwin &&
+    block &&
+    lineRank(block.line) === 3 &&
+    codeEntries.length &&
+    block.index < codeEntries.at(-1)!.index
+  ) {
     block = undefined;
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
