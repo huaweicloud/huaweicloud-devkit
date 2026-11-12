@@ -95,7 +95,10 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     }
     if (upper === 'NPM_CONFIG_REGISTRY') registrySpellings.push(key);
     if (UPGRADE_PRESERVE_ENV_KEYS.has(upper)) {
-      next[key] = value;
+      // A padded spelling cannot reach the child's exact-name lookup: forward
+      // the trimmed name, letting an existing exact spelling win.
+      const canonical = key.trim();
+      if (key === canonical || next[canonical] === undefined) next[canonical] = value;
       continue;
     }
     if (isCredentialEnvVarName(key) || UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS.has(upper)) continue;
@@ -513,6 +516,10 @@ function isNumericCodeLine(line: string): boolean {
   return /^-?\d+$/.test(npmPayload(line).replace(/^code\s+/, ''));
 }
 
+function npmRunIdentity(line: string): string | undefined {
+  return /^npm info run (\S+ \S+)\b/.exec(npmPayload(line))?.[1];
+}
+
 function isCauseLine(line: string): boolean {
   const payload = npmPayload(line);
   if (!/^\[cause\]:/.test(payload)) return false;
@@ -573,11 +580,44 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // failing step.
   const failing = lastFailingResult(codelessEntries);
   // npm's echo of the failing script may be a bare shell line or the block's own
-  // `npm error command` line; the pair is the result line plus whichever echo
-  // sits before it. A result line whose echo landed after it (a dying step that
-  // printed `gyp info ok` then its result) is not a pair.
-  const failingPairEcho = failing ? lastEchoBefore(entries, failing.index) : undefined;
+  // `npm error command` line; the pair is the result line plus the echo that
+  // names the same package and lifecycle script. A nesting script's nearer echo
+  // must not stand in for the failing step, and a result line whose echo landed
+  // after it (a dying step that printed `gyp info ok` then its result) is not a
+  // pair.
+  const failingIdentity = failing ? npmRunIdentity(failing.line) : undefined;
+  const identityEcho =
+    failing && failingIdentity
+      ? entries
+          .filter(
+            (entry) =>
+              entry.index < failing.index &&
+              lineRank(entry.line) === 3 &&
+              npmRunIdentity(entry.line) === failingIdentity,
+          )
+          .at(-1)
+      : undefined;
+  const failingPairEcho = identityEcho ?? (failing ? lastEchoBefore(entries, failing.index) : undefined);
   const hasFailingPair = Boolean(failing && failingPairEcho);
+  // A code-0 result owns the lines between its own echo and its result. Those
+  // lines belong to a step that recovered; the failing pair is the only window
+  // whose lines are the dying words.
+  const insideFailingPair = (index: number) =>
+    Boolean(failing && failingPairEcho && index > failingPairEcho.index && index < failing.index);
+  const recoveredWindows: Array<{ start: number; end: number }> = [];
+  for (const result of codelessEntries) {
+    if (!isNpmScriptResult(result.line) || isFailingScriptResult(result.line)) continue;
+    const identity = npmRunIdentity(result.line);
+    if (!identity || identity === failingIdentity) continue;
+    const echo = entries
+      .filter(
+        (entry) => entry.index < result.index && lineRank(entry.line) === 3 && npmRunIdentity(entry.line) === identity,
+      )
+      .at(-1);
+    if (echo) recoveredWindows.push({ start: echo.index, end: result.index });
+  }
+  const inRecoveredWindow = (index: number) =>
+    !insideFailingPair(index) && recoveredWindows.some((window) => index > window.start && index < window.end);
   // A success assertion is recovery evidence only when it precedes the last
   // failing pair: the failing step's own `gyp info ok`, printed after its dying
   // words and before its own result line, is not a recovery.
@@ -587,6 +627,9 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   let bare = selectFailureLine(codelessEntries, { positionLast: true });
   let codeLine = codeFor(block);
   let recoveredSwap = false;
+  // Survivors may not come from an erased nested block or from before it: a
+  // child line that precedes the last nested block belongs to a recovered step.
+  let survivorMinIndex = -1;
 
   // At npm's default loglevel lifecycle result lines do not exist, so a nested
   // step's recovered block is the only visible error text while the failing
@@ -597,9 +640,9 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (!hasFailingPair && codeEntries.length) {
     const blocks = errorBlocks(codeEntries, otherEntries);
     const lastBlock = blocks.at(-1)!;
-    // A duplicate `code N` line (a harness prepend, a repeated metadata block)
-    // is one logical block, not a nested-then-failing pair: the override only
-    // applies when the last block's code differs from the block before it.
+    // A duplicate `code N` line with no body of its own (a harness prepend) is
+    // one logical block; two populated blocks are distinct steps even when
+    // their code text matches, so both shapes keep the last-block rule.
     const previous = blocks.at(-2);
     const distinctLastCode =
       Boolean(previous) &&
@@ -612,12 +655,25 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     const previousHasBody = Boolean(previous && previous.entries.length);
     const overrides = blocks.length > 1 && (distinctLastCode || previousHasBody);
     const picked = pickInBlock(lastBlock);
-    const lastHasEcho = picked?.rank === 3 || lastBlock.entries.some((entry) => lineRank(entry.line) === 3);
-    const unattributableNested =
-      !lastHasEcho &&
-      !isNumericCodeLine(lastBlock.code.line) &&
-      typeof execResult.status === 'number' &&
-      execResult.status > 1;
+    const lastHasEcho = lastBlock.entries.some((entry) => lineRank(entry.line) === 3);
+    const codeToken = npmPayload(lastBlock.code.line).replace(/^code\s+/, '');
+    const numericLast = /^-?\d+$/.test(codeToken);
+    const codeTiesExit =
+      numericLast && typeof execResult.status === 'number' && Number(codeToken) === execResult.status;
+    // Two populated blocks are a recovered step plus npm's summary of the
+    // failing one; a shared code text is the round-25 shape. From three blocks
+    // on, a numeric block whose code does not tie to the exit is another nested
+    // step even when it carries npm's inner script echo.
+    const attributableNumeric =
+      numericLast &&
+      (codeTiesExit ||
+        blocks.length <= 2 ||
+        (previousHasBody && !distinctLastCode) ||
+        typeof execResult.status !== 'number');
+    const unattributableNested = numericLast
+      ? typeof execResult.status === 'number' && execResult.status > 1 && !attributableNumeric
+      : !lastHasEcho && typeof execResult.status === 'number' && execResult.status > 1;
+    const blockEnd = lastBlock.entries.reduce((max, entry) => Math.max(max, entry.index), lastBlock.code.index);
     if (overrides) {
       block = picked ?? { line: lastBlock.code.line, rank: 4, index: lastBlock.code.index };
       codeLine = lastBlock.code.line;
@@ -626,17 +682,16 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
       if (bare && bare.index < lastBlock.code.index) bare = undefined;
     }
     // An errno-coded block with no echo is a nested/recovered block, not this
-    // exit's failure: plural nested blocks are the lone-nested shape. A child
-    // line after it is the dying words; otherwise the exit status is honest.
-    // The override applies to the metadata-only lone block too, but only above
-    // exit 1: a top-level errno failure exits 1 and keeps its code line.
-    if (unattributableNested && (overrides || picked?.rank === 2 || picked === undefined || picked?.rank === 4)) {
-      const dying = codelessEntries
-        .filter((entry) => entry.index > lastBlock.code.index && lineRank(entry.line) <= 2)
-        .at(-1);
+    // exit's failure at an exit above 1: plural nested blocks and the
+    // metadata-only lone block are the same shape. A child line after the block
+    // is the dying words; otherwise the exit status is honest. A top-level errno
+    // failure exits 1 and keeps its code line, as do the numeric blocks above.
+    if (unattributableNested) {
+      const dying = codelessEntries.filter((entry) => entry.index > blockEnd && lineRank(entry.line) <= 2).at(-1);
       if (dying) return dying.line;
       block = undefined;
       codeLine = undefined;
+      survivorMinIndex = blockEnd;
     }
   }
 
@@ -658,19 +713,8 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   }
   // A loud successful script (or a gyp error it survived) is not the cause when
   // npm emitted a failing echo pair later: the echo names the failing script.
-  const lastSuccess = codelessEntries
-    .filter((entry) => isNpmScriptResult(entry.line) && !isFailingScriptResult(entry.line))
-    .at(-1);
-  if (
-    bare &&
-    failing &&
-    failingPairEcho &&
-    lastSuccess &&
-    lastSuccess.index < failingPairEcho.index &&
-    bare.index < lastSuccess.index
-  ) {
-    const echo = lastEchoBefore(codelessEntries, failing.index);
-    if (echo) bare = { line: echo.line, rank: 3, index: echo.index };
+  if (bare && failing && failingPairEcho && recoverySuccess > -1 && bare.index < recoverySuccess) {
+    bare = { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index };
   }
   // The failing step's own dying words sit between its echo and its result;
   // earlier chatter belongs to a step that recovered (or another step). This is
@@ -682,6 +726,11 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
       .filter((entry) => lineRank(entry.line) <= 2)
       .at(-1);
     if (inside) bare = { line: inside.line, rank: lineRank(inside.line), index: inside.index };
+  }
+  // Lines belonging to a step whose own result says it recovered are not this
+  // failure's words: the failing pair's echo is the honest fallback.
+  if (hasFailingPair && failingPairEcho && bare && inRecoveredWindow(bare.index)) {
+    bare = { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index };
   }
   // The outer shell names a signal death "Terminated" or "Killed"; when npm
   // emitted the failing echo pair, the named script is the better reason.
@@ -710,13 +759,14 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // qualifies: plain progress chatter does not distinguish itself, and a
   // filtered success assertion (a code-0 result, gyp's info channel) means the
   // survivor belongs to a script that did not fail.
-  const strongSurvivors = entries.filter((entry) => lineRank(entry.line) <= 1);
+  const survivorEligible = (entry: LineEntry) => entry.index > survivorMinIndex && !inRecoveredWindow(entry.index);
+  const strongSurvivors = codelessEntries.filter((entry) => lineRank(entry.line) <= 1 && survivorEligible(entry));
   // A demoted `[cause]:` line still rides when it is the only substantive text:
   // the rank-4 demotion exists to keep it from outranking a header, not to
   // silence a dump that has nothing else.
   const attributableSurvivors = strongSurvivors.length
     ? strongSurvivors
-    : entries.filter((entry) => isCauseLine(entry.line));
+    : codelessEntries.filter((entry) => isCauseLine(entry.line) && survivorEligible(entry));
   if (
     !block &&
     !codeLine &&
@@ -728,7 +778,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     // The entry's own raw position: a crash snippet that repeats the text must
     // not move the survivor past the success assertion that vetoes it.
     const survivorIndex = survivor.index;
-    const echoIndex = failingPairEcho ? rawLines.lastIndexOf(failingPairEcho.line) : -1;
+    const echoIndex = failingPairEcho ? failingPairEcho.index : -1;
     const successAfter = rawLines.some((line, index) => index >= survivorIndex && isSuccessAssertion(line));
     const laterFailingPair =
       hasFailingPair &&

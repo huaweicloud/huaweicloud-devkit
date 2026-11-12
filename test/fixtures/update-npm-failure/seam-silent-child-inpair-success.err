@@ -1,0 +1,5 @@
+npm info run probe-root@1.0.0 preinstall node_modules/probe-root node a-helper.js
+helper failed once, retrying
+npm info run probe-root@1.0.0 postinstall node_modules/probe-root node build.js
+npm info run probe-root@1.0.0 preinstall { code: 0, signal: null }
+npm info run probe-root@1.0.0 postinstall { code: 7, signal: null }

@@ -53,8 +53,16 @@ export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: nu
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // The pre-flight query needs the same mirror auth the child npm gets: a
+  // token-guarded private mirror 401s the packument without it, aborting the
+  // act before the spawn. The token is read for this request only; the env
+  // shaping of the child is a separate concern.
+  const token = [process.env.NPM_TOKEN, process.env.NODE_AUTH_TOKEN]
+    .map((value) => value?.trim())
+    .find((value): value is string => Boolean(value));
+  const init: RequestInit = token ? { headers: { authorization: `Bearer ${token}` } } : {};
   try {
-    const resp = await fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`);
+    const resp = await fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`, init);
     clearTimeout(timer);
     if (!resp || !resp.ok) return null;
     return toDistTags(await resp.json().catch(() => null));
