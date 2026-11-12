@@ -1,6 +1,8 @@
 import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
 import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../../lib/hdkit/hdkitservice-api.ts';
 import {
+  MANUFACTURED_FAMILY,
+  manufacturedPrefixPattern,
   canonCode,
   chainDataValue,
   cleanMessage,
@@ -86,10 +88,29 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     // 空白码同样省略（never-blank-code 教义——此前渲染 code:''）
     const rawBusinessCode = safeReadField(error, 'code');
     const businessCode = canonCode(rawBusinessCode);
+    // 伪造码不渲染（round 30/MUST 3，round 8 教义在业务折叠落地）：
+    // 无码烧核 502/504 经请求层制造了 HTTP_502/504——分发追踪靠标记
+    // （r29），信封的码字段与前缀不得渲染客户端制造拼写
     const renderCode =
-      typeof rawBusinessCode === 'string' && businessCode !== '' && businessCode === rawBusinessCode
+      typeof rawBusinessCode === 'string' &&
+      businessCode !== '' &&
+      businessCode === rawBusinessCode &&
+      !MANUFACTURED_FAMILY.test(businessCode)
         ? rawBusinessCode
         : undefined;
+    // 伪造码的消息前缀一并剥除（round 30/MUST 3，与耗尽装饰同法：
+    // 请求层把 "HTTP_x: " 合进了消息——客户端制造拼写不得以任何表面（码字段或
+    // 可见消息）渲染上信封；循环剥除（页面消息可翻倍），剥后为空则走设计兜底
+    let businessMessage = cleanMessage(safeMessageText(error)) || '';
+    if (businessCode !== '' && MANUFACTURED_FAMILY.test(businessCode)) {
+      const stripPattern = manufacturedPrefixPattern(businessCode);
+      while (stripPattern) {
+        const hit = stripPattern.exec(businessMessage);
+        if (!hit) break;
+        businessMessage = businessMessage.slice(hit[0].length);
+      }
+      businessMessage = cleanMessage(businessMessage);
+    }
     // 转向字段改自有数据描述符读（round 26/MUST 3）：[[Get]] 读让立着访问
     // 器注入任意文案（pay-here URL）；与门禁/耗尽折叠的 ownDataValue 同标
     // 准（round 25 漏掉了本折叠）
@@ -111,7 +132,7 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
       return {
         ok: false,
         ...(renderCode ? { code: renderCode } : {}),
-        message: cleanMessage(safeMessageText(error)) || fallbackMessage,
+        message: businessMessage || fallbackMessage,
         ...(retryAfter ? { retryAfter } : {}),
         ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
         ...(remediation ? { remediation } : {}),

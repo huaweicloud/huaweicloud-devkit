@@ -234,7 +234,10 @@ async function hdkitRequest(
     const boundedServerText = (raw: unknown): string | undefined => {
       const text = asString(raw);
       if (text === undefined) return undefined;
-      if (text.length <= 400) return text;
+      // 200-code-point cap applies unconditionally (round 30/MUST 4, the
+      // 400-unit fast path dropped: 201-400-code-point server strings rode
+      // whole against the stated contract); UTF-16 head slice first, then
+      // the code-point cut — an astral character is never split
       return [...text.slice(0, 400)].slice(0, 200).join('');
     };
     const rawCode = rec.code;
@@ -298,11 +301,13 @@ async function hdkitRequest(
     // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性。
     // asString 窄化（不用 asText：asText(undefined) === 'undefined' 是真值，
     // `|| undefined` 兜底永不生效，字面量会流进用户可见文案）
-    // 无码 409 的版本搭载（round 29/DOC 3a）：409 即门禁——正文带版本时无论码可用
-    // 与否都把有界版本挂上（服务端确实发送了它们——connect 工具描述“服务端发送时
-    // 携带”的承诺在无码 409 下也成立）；无码门禁折叠据此渲染真实版本而非未知/
-    // 最新版兜底；带其他服务端码的 409 照其自身码处理（round 7 掚辞），挂上的版本不进任何门禁信封
-    if (respStatus === 409) {
+    // 无码 409 的版本搭载（round 29/DOC 3a 建、round 30/MUST 1 收窄范围）：
+    // 只挂门禁形态（409 且码为门禁码或无可用码）——无条件挂载会把版本加到非门禁
+    // 409 信封上（审计实测：voucher HDKIT_CRED_INVALID 的 409 携带了版本——加性泄漏）。门禁形态下服务端确实
+    // 发送了版本——connect 描述“服务端发送时携带”的承诺成立；无码门禁折叠渲染真实版本而非
+    // 未知/最新版兜底
+    const gateShape = respStatus === 409 && (canonCode(code) === VERSION_GATE_CODE || serverCode === '');
+    if (gateShape) {
       const clientVersion = boundedServerText(rec.clientVersion);
       const minVersion = boundedServerText(rec.minVersion);
       if (clientVersion !== undefined) err.clientVersion = clientVersion;
@@ -320,7 +325,10 @@ async function hdkitRequest(
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
     // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。
     // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 双码/凭证指引）
-    if (!err.remediation && asText(rec.message || '').includes('HD.97520422')) {
+    // 烧核排除 409（round 30/MUST 2，操作员裁定）：409 是门禁的领地——门禁码形态下门禁
+    // 全胜、烧核块不慢行（一致控制行）；无码 409 此前两张信封混合（门禁折叠丢弃烧核指引、
+    // 转向读又把烧核标记骑上——升级+烧核同时说）。烧核块只在非 409（502/504 等）上生效
+    if (!err.remediation && respStatus !== 409 && asText(rec.message || '').includes('HD.97520422')) {
       err.coreHoursExhausted = true;
       err.remediation = {
         hint: '账号核心时长（核时）已耗尽，沙箱无法继续运行：',

@@ -692,6 +692,24 @@ test('the relay auto-create catch checks the gate before the quota comparison: a
 
 // ── 落定裁决在种类集下存活（round 26/MUST 2，中继半边）──
 
+test('the relay renders the attached versions for a codeless 409 (the round-30 relay half)', async () => {
+  // round 30/MUST 1 的 relay 半边：无码 409 载体带挂载版本——relay 的
+  // versionGateFailure 经 gateFoldPayload 的无码分支渲染真实版本而非
+  // 未知/最新版兜底
+  const carrier = Object.assign(new Error('relay codeless gate'), {
+    status: 409,
+    clientVersion: '2.0.0-next.0',
+    minVersion: '2.0.0',
+  });
+  const f = await failingGateThrowing(carrier);
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'the relay folds the codeless gate');
+  assert.match(
+    String((f as { gateRemediation?: { hint: string } }).gateRemediation?.hint ?? ''),
+    /当前 2\.0\.0-next\.0，需升级至正式版 2\.0\.0 及以上/,
+    'the relay guidance renders the attached versions',
+  );
+});
+
 test('the relay verdict survives cross-kind re-decorations and foreign refusals (B1/B3 at the relay)', async () => {
   // B1：门禁落定 → 耗尽再装饰 → 中继裁决存活（此前单槽 __kind 被覆写——
   // 中继复现 NO_CREDENTIAL 误诊，正是记录要防的形态）；B3：门禁落定 → 耗

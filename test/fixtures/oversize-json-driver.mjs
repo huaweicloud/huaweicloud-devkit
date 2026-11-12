@@ -7,8 +7,9 @@
 // message on stderr).
 // argv[2] = shape: gate409 | exhaust502 | trace | nonjson-control
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 
-const ROOT = '/home/yanchengyu/.local/share/opencode/worktree/1d0d58/dev-port-pr-1';
+const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const shape = process.argv[2] ?? 'gate409';
 const { hdkitConnectWithRetry } = await import(`${ROOT}/plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts`);
 const { transientExhaustionResult, versionGateResult } = await import(

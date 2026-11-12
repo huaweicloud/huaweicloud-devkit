@@ -444,7 +444,7 @@ const UPGRADE_STEPS = [
 // Reflect.ownKeys 先物化+校验完整陷阱数组才轮到本模块的迭代（20 万键 203ms、4M 键 8.1s，每次装饰
 // 两度）。round 28 构造器自指：载体自有 constructor 经 gOPD 读出函数，该函数自有
 // prototype 再经 gOPD 读出——与载体恒等即拒绝（它就是某函数的共享原型）。O(1)、零容器枚举
-// （零成本/零上界/零竞态/零访问器触发——裁决面零容器枚举；import 期工具捕获有一次守护内的绑定读链，见 下方错误家族工具注释），一个构造关闭所有形态：后注册家族
+// （零成本/零上界/零竞态/零访问器触发——裁决面零容器枚举；import 期工具捕获有一次守护内的绑定读链，见下方错误家族工具注释），一个构造关闭所有形态：后注册家族
 // （原型上的 constructor 不依赖全局绑定）、塞键洗钱、预加载重绑（重绑的 TypeError 仍指真
 // 家族——constructor 是函数对象上的自有属性，绑定无关）。边界明确收窄（round 28 裁定）：
 // 凡自指原型一律拒绝——含模块作用域的用户子类原型（此前为记录边界，现为拒绝——
@@ -611,7 +611,11 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const rawRem =
       provenField(error, 'gate', 'remediation') ??
       // 拒绝史门控（round 29/DOC 3b，镜像耗尽半边）：任何拒绝在身即载体未装饰的陈述不可信
-      // ——拒绝中间层的残写不得经回退驱信封（分册或设计兜底）
+      // ——拒绝中间层的残写不得经回退驱信封（分册或设计兜底）。如实化（round 30/DOC 5，
+      // 审计 finding 6）：本门在 remediation 半边不可达——applyVersionGate 恒把 remediation
+      // 写进分册，provenField 恒有值，?? 右支只剩 foreignExhaustionLanded 一个入口；可达的
+      // 只有消息半边（与耗尽孪生不同——耗尽装饰只在烧核时写 remediation，其门是真的）。
+      // 保留对称写法：不删防御性条件，但台账不再声称两半都活
       (foreignExhaustionLanded || refusalOf(error) !== undefined ? undefined : ownDataValue(error, 'remediation'));
     const remediation = serializableRemediation(rawRem);
     const rawMessage =
@@ -651,11 +655,24 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
       ...(minVersion ? { minVersion } : {}),
     };
   }
+  // 无码 409 的版本渲染（round 30/MUST 1）：请求层在抛出前把正文版本挂上载体
+  // （round 29/DOC 3a）——折叠必须读它们才成立（连接描述的承诺、台账句子、五方共识：此前无码分支
+  // 返 codelessGateFields()，版本字段一个不读——每个出口仍铸未知/最新版）。与码化路径同清洗口
+  // （挂载值有界但未清洗，adversary-2 指出）；空白视同缺失，未知/最新版兜底保持
   const bodyUnreadable = safeReadField(error, 'bodyUnreadable');
+  const rawCv = safeReadField(error, 'clientVersion');
+  const rawMv = safeReadField(error, 'minVersion');
+  const codelessCv = typeof rawCv === 'string' ? cleanMessage(rawCv) || undefined : undefined;
+  const codelessMv = typeof rawMv === 'string' ? cleanMessage(rawMv) || undefined : undefined;
   return {
     code: VERSION_GATE_CODE,
     message: bodyUnreadable === true ? VERSION_GATE_FALLBACK_MESSAGE : versionGateMessage(error),
-    remediation: codelessGateFields().remediation,
+    remediation: {
+      hint: `插件版本过旧（当前 ${codelessCv ?? '未知'}，需升级至正式版 ${codelessMv ?? '最新版'} 及以上）：`,
+      steps: [...UPGRADE_STEPS],
+    },
+    ...(codelessCv ? { clientVersion: codelessCv } : {}),
+    ...(codelessMv ? { minVersion: codelessMv } : {}),
   };
 }
 
@@ -786,12 +803,13 @@ export function serializableRemediation(raw: unknown): { hint: string; steps: st
 // 伪造码家族判定（round 12）：规范拼写为 HTTP 加可选下划线加数字——下划线
 // 被空白渲染字符替换（HTTP\u00a0502 / HTTP 502 / HTTP_5\u206002）同样是伪造拼写，
 // 按模块自身教义，含空白渲染字符的码绝非服务端亲署。
-const MANUFACTURED_FAMILY = /^HTTP_?\d+$/;
+// 伪造码家族（round 11 建、round 30 导出）：请求层为无码非 409 制造的 HTTP_x 拼写
+export const MANUFACTURED_FAMILY = /^HTTP_?\d+$/;
 
 // 伪造码前缀的规范匹配（round 12）：以拼写为骨、字符间与冒号前允许夹任意
 // 空白渲染字符——'HTTP_5⁠02: ' 与 'HTTP 502: ' 都命中 'HTTP_502' 的模式。
 // 仅在装饰的 replaceCode 分支使用（拼写必为 HTTP 家族或空）。
-function manufacturedPrefixPattern(spelling: string): RegExp | undefined {
+export function manufacturedPrefixPattern(spelling: string): RegExp | undefined {
   if (!spelling) return undefined;
   // 下划线不是字面量而是分隔符位（round 13）：分隔符位接受下划线或任意
   // 空白渲染字符——空白顶替下划线（HTTP\u00a0502 对 HTTP_502）与镜像
@@ -818,9 +836,10 @@ function decorateInPlace(
   // 三阶段写入路径（round 28/MUST 2 建、round 29 措辞收口）：读阶段（所有
   // gOPD 快照——敌意窗口全部集中于此）→ 裁决阶段（原子性复检 + 访问器立着
   // 预判——决不为将被拒的键调用载体 setter，快照早已知其为访问器）→ 写阶段
-  // （写入+回读验证）。本模块不做写后复检（round 29 如实化：构造器自指是静态裁决，
-  // 真家族原型在任何阶段都被拒，写后无需再看一眼；代理洗钱形态——对共享原型的
-  // 转发代理——为记录边界：候选身份识别看不穿转发代理）
+  // （写入+回读验证）。写阶段无第二次 deny 复检（round 30 如实化：构造器自指
+  // 是静态裁决——真家族原型在任何阶段都被拒；逐键的写后回读验证照常存在（写
+  // 落没落的判定），不存在的是写后的第二轮身份复检；代理洗钱形态——对共享原型
+  // 的转发代理——为记录边界：候选身份识别看不穿转发代理）
   // —— 读阶段：对全部字段先行 gOPD 快照（每键一次，写入前的免空写判定也用它）
   const snapshots = new Map<string, PropertyDescriptor | undefined>();
   const writtenValues = new Map<string | symbol, unknown>();
@@ -1340,7 +1359,7 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     const foreignGateLanded = provenKindIs(error, 'gate');
     const rawRemediation =
       provenField(error, 'exhaustion', 'remediation') ??
-      // 拒绝史门控对称（round 29）：remiediation 与消息同律——拒绝中间层的残写不骑
+      // 拒绝史门控对称（round 29）：remediation 与消息同律——拒绝中间层的残写不骑
       (foreignGateLanded || refusal !== undefined ? undefined : ownDataValue(error, 'remediation'));
     const remediation = serializableRemediation(rawRemediation);
     const connectRetries =

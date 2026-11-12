@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
+import type { ToolName } from '../plugins/huaweicloud-core/src/tools.ts';
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
 import { standingAccessor, swallowOnceProxy, landedThenFlippedCarrier } from './hdkit-gate-fixtures.ts';
@@ -255,7 +256,9 @@ test('hdkitConnectWithRetry retries gateway 502/504 then succeeds, surfacing con
     assert.equal(result.connect_retries, 2, 'a successful retry must surface the count (v2 extension)');
     assert.equal(stub.calls(), 3);
     assert.ok(elapsed >= 10, `expected the two 5ms backoff steps to run, took ${elapsed}ms`);
-    assert.ok(elapsed < 250, `retry path must stay under the table ceiling, took ${elapsed}ms`);
+    // 上界宽松到 5000ms（round 30/DOC 5：250ms 在近六波中三次闪失——同一刻度下的磁盘/负载噪声；
+    // 真正的行为上限是发版表 75s，刻意切断这个行为需要 mock 时钟——本钉保留轻量粘性）
+    assert.ok(elapsed < 5000, `retry path must stay far under the shipped 75s table, took ${elapsed}ms`);
   } finally {
     stub.restore();
     restoreSeam();
@@ -5042,11 +5045,9 @@ test('the constructor check is O(1) and fires zero accessor getters on the error
     const out = decorateExhaustedConnect(carrier, 2);
     const elapsed = Date.now() - t0;
     assert.equal(out, carrier, 'the hostile 200k-key container never blocks the decoration');
-    // O(1)：模块从不过ownKeys/枚举——敌意容器的键数与成本无关
-    assert.ok(
-      elapsed < 5000,
-      `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms, hook-parity bound)`,
-    );
+    // O(1) 的判别断言在结构钉（deny verdict never enumerates a container）——
+    // 墙钟断言在负载主机上不再判别（round 30/DOC 5），此处只守粗上界
+    assert.ok(elapsed < 5000, `the decoration stays fast even under the hostile container (took ${elapsed}ms)`);
     assert.equal(accessorFires, 0, 'no accessor-served global is [[Get]]-ed on the error path');
   } finally {
     globalThis.WebAssembly = saved;
@@ -5225,11 +5226,13 @@ test('the cross-kind fallbacks fall to designed defaults: each envelope keeps it
 // 绝落定）；不换码分支把亲署码/消息写入分册；链回退只适用于无拒绝史的
 // 载体。
 
-test('the import completes under deleted and throwing Error/WebAssembly bindings', async () => {
-  // r28-MUST 1（r27-a1/e2/e6 形态）：快照的 Error.prototype 种子读、
-  // readWasmBinding 的 [[Get]]、scan(globalThis) 的裸绑定——删除/访问器
-  // 化/抛出各杀 import 或谎报"零 Get"。构造器自指后模块加载零容器读——
-  // 任何绑定状态都不中止加载，两个装饰器照常折叠
+test('the import completes under deleted and throwing Error bindings', async () => {
+  // r28-MUST 1（r27-a1/e2/e6 形态）、round 30/DOC 5 如实化：模块的导入期
+  // 只有一条守护的错误家族工具读链（readErrorConstructor），globalThis 与
+  // WebAssembly 的绑定状态一概不读——r28 电池标榜的"第二绑定家族"是空
+  // 转（审计：两个 WebAssembly 态惰性，删除后模块无任何 WebAssembly 引
+  // 用），本轮删态只留真实家族。删除/访问器化/抛出下导入照样完成、两个
+  // 装饰器照常折叠
   const errorDesc = Object.getOwnPropertyDescriptor(globalThis, 'Error');
   const errorProto = Error.prototype;
   const states: Array<[string, () => void]> = [
@@ -5250,25 +5253,7 @@ test('the import completes under deleted and throwing Error/WebAssembly bindings
         });
       },
     ],
-    [
-      'deleted WebAssembly',
-      () => {
-        delete (globalThis as { WebAssembly?: unknown }).WebAssembly;
-      },
-    ],
-    [
-      'throwing WebAssembly getter',
-      () => {
-        Object.defineProperty(globalThis, 'WebAssembly', {
-          configurable: true,
-          get() {
-            throw new TypeError('WebAssembly binding detonates');
-          },
-        });
-      },
-    ],
   ];
-  const wasmDesc = Object.getOwnPropertyDescriptor(globalThis, 'WebAssembly');
   // 预加载重绑行（round 29/DOC 3c，落地 r28 提交信息的“预加载重绑已钉”
   // 主张——先重绑再导入）：真 TypeError.prototype 的 constructor 是函数对象上的
   // 自有属性，绑定无关——新导入的模块照样拒绝真家族原型
@@ -5311,12 +5296,10 @@ test('the import completes under deleted and throwing Error/WebAssembly bindings
         );
       } finally {
         Object.defineProperty(globalThis, 'Error', errorDesc as PropertyDescriptor);
-        Object.defineProperty(globalThis, 'WebAssembly', wasmDesc as PropertyDescriptor);
       }
     }
   } finally {
     Object.defineProperty(globalThis, 'Error', errorDesc as PropertyDescriptor);
-    Object.defineProperty(globalThis, 'WebAssembly', wasmDesc as PropertyDescriptor);
   }
 });
 
@@ -5415,13 +5398,8 @@ test('the module-scoped subclass prototype routes to a stamped carrier; the hone
   });
   (globalThis as Record<string, unknown>).WebAssembly = hostile;
   try {
-    const t0 = Date.now();
     assert.equal(isErrorCarrier(new Error('x')), true);
-    const elapsed = Date.now() - t0;
-    assert.ok(
-      elapsed < 5000,
-      `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms, hook-parity bound)`,
-    );
+    // O(1) 的判别断言在结构钉（同上）——墙钟线在负载主机上不再判别（round 30/DOC 5）
   } finally {
     globalThis.WebAssembly = wasm;
   }
@@ -5633,4 +5611,205 @@ test('a gate carrier with a refusal history renders no residue: the message chai
     /clean authored/,
     'the refusal-free chain read still rides',
   );
+});
+
+// ── 无码 409 版本渲染、混合裁决、伪码剥除、200 码点上界（round 30）──
+// 无码 409 的版本搭载（round 29）必须被折叠读到（五方共实：连接描述承诺、
+// 台账句子、每个出口——此前无码分支返回 codelessGateFields() 一个版本字
+// 段都不读）；搭载范围收窄到门禁形态（409+门禁码或无码——无条件下搭载把
+// 版本加上了非门禁 409 信封）；烧核块排除 409（409 是门禁领地——无码 409
+// 带烧核消息此前渲染"升级+烧核"两说信封）；业务折叠不渲染伪码（码字段与
+// 消息前缀都不渲染 HTTP_x——round 8 教义）；200 码点上界无条件生效。
+
+test('a codeless 409 with body versions renders them at every exit; without versions the fallbacks hold', async () => {
+  // round 30/MUST 1
+  const run = async (tool: ToolName, extra: Record<string, unknown> = {}): Promise<GateResult> =>
+    (await callTool(tool, { vendorConfirmed: VENDOR, ...extra })) as GateResult;
+  {
+    const stub = stubConnectSequence([
+      () => jsonEnvelope({ clientVersion: '2.0.0-next.0', minVersion: '2.0.0', message: '升级提示' }, { status: 409 }),
+    ]);
+    try {
+      const connect = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(connect.code, 'HDKIT_VERSION_TOO_OLD');
+      assert.equal(connect.clientVersion, '2.0.0-next.0', 'connect renders the attached clientVersion');
+      assert.equal(connect.minVersion, '2.0.0');
+      assert.match(
+        String((connect.remediation as { hint?: string }).hint ?? ''),
+        /当前 2\.0\.0-next\.0，需升级至正式版 2\.0\.0 及以上/,
+        'the hint renders the real versions',
+      );
+      const check = await run('huaweicloud_sandbox_check_user');
+      assert.equal(check.clientVersion, '2.0.0-next.0', 'check_user renders them too');
+      const voucher = await run('huaweicloud_voucher_status');
+      assert.equal(voucher.clientVersion, '2.0.0-next.0', 'the voucher renders them too');
+    } finally {
+      stub.restore();
+    }
+  }
+  {
+    const stub = stubConnectSequence([() => jsonEnvelope({ message: 'plain gate' }, { status: 409 })]);
+    try {
+      const gate = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(gate.clientVersion, undefined, 'no body versions — the field stays absent');
+      assert.match(
+        String((gate.remediation as { hint?: string }).hint ?? ''),
+        /当前 未知，需升级至正式版 最新版 及以上/,
+        'the unknown/latest fallbacks hold',
+      );
+    } finally {
+      stub.restore();
+    }
+  }
+  {
+    const stub = stubConnectSequence([
+      () =>
+        jsonEnvelope(
+          { code: 'HDKIT_CRED_INVALID', clientVersion: '2.0.0-next.0', minVersion: '2.0.0' },
+          { status: 409 },
+        ),
+    ]);
+    try {
+      const connect = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(connect.code, 'HDKIT_CRED_INVALID', 'the non-gate 409 keeps its own code');
+      assert.equal(connect.clientVersion, undefined, 'a non-gate 409 envelope carries no version fields');
+      assert.equal(connect.minVersion, undefined);
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test('a codeless 409 with a burn-core message folds a pure gate envelope: the burn block skips 409', async () => {
+  // round 30/MUST 2
+  const burnMsg = 'upstream error HD.97520422: The remaining core hours has been used up';
+  {
+    const stub = stubConnectSequence([() => jsonEnvelope({ message: burnMsg }, { status: 409 })]);
+    try {
+      const gate = (await callTool('huaweicloud_sandbox_connect', {
+        vendorConfirmed: VENDOR,
+        pool_type: 'ephemeral',
+      })) as GateResult & { coreHoursExhausted?: boolean };
+      assert.equal(gate.code, 'HDKIT_VERSION_TOO_OLD', 'the gate verdict governs the 409');
+      assert.equal(gate.coreHoursExhausted, undefined, 'the burn marker never rides the gate envelope');
+      assert.match(
+        String((gate.remediation as { hint?: string }).hint ?? ''),
+        /插件版本过旧/,
+        'the guidance is pure gate',
+      );
+    } finally {
+      stub.restore();
+    }
+  }
+  {
+    const stub = stubConnectSequence([
+      () => jsonEnvelope({ code: 'HDKIT_VERSION_TOO_OLD', message: burnMsg }, { status: 409 }),
+    ]);
+    try {
+      const gate = (await callTool('huaweicloud_sandbox_connect', {
+        vendorConfirmed: VENDOR,
+        pool_type: 'ephemeral',
+      })) as GateResult & { coreHoursExhausted?: boolean };
+      assert.equal(gate.coreHoursExhausted, undefined, 'the coded-gate 409 stays pure too');
+      assert.match(String((gate.remediation as { hint?: string }).hint ?? ''), /插件版本过旧/);
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test('a codeless burn-core 502/504 renders no manufactured HTTP_x in code or message prefix', async () => {
+  // round 30/MUST 3
+  const burnMsg = 'upstream error HD.97520422: The remaining core hours has been used up';
+  for (const status of [502, 504] as const) {
+    const restoreSeam = withRetrySeam('1');
+    const stub = stubConnectSequence([() => jsonEnvelope({ message: burnMsg }, { status })]);
+    try {
+      // 经真实 handler 出口（业务折叠在此）——裸捕请求层错误的码字段未过折叠
+      const envelope = (await callTool('huaweicloud_sandbox_connect', {
+        vendorConfirmed: VENDOR,
+        pool_type: 'ephemeral',
+      })) as ExhaustedResult & { code?: string } & { coreHoursExhausted?: boolean };
+      assert.equal(stub.calls(), 1, `status ${status}: the burn verdict is never retried`);
+      assert.equal(envelope.coreHoursExhausted, true, 'the burn marker rides');
+      assert.match(
+        String((envelope.remediation as { hint?: string }).hint ?? ''),
+        /核心时长/,
+        'the burn guidance keeps',
+      );
+      assert.doesNotMatch(
+        String(envelope.code ?? ''),
+        /^HTTP_/,
+        `status ${status}: no manufactured family in the code field`,
+      );
+      assert.doesNotMatch(
+        String(envelope.message ?? ''),
+        new RegExp(`HTTP_${status}:`),
+        `status ${status}: the visible message prefix carries no manufactured spelling`,
+      );
+      assert.match(String(envelope.message ?? ''), /upstream error HD\.97520422/, 'the server copy itself rides');
+    } finally {
+      stub.restore();
+      restoreSeam();
+    }
+  }
+});
+
+test('the 200-code-point cap applies unconditionally: the 201-400 band folds at 200', async () => {
+  // round 30/MUST 4
+  for (const cp of [250, 400]) {
+    const stub = stubConnectSequence([() => jsonEnvelope({ message: 'B'.repeat(cp) }, { status: 500 })]);
+    try {
+      const envelope = (await captureConnectRejection({})) as ExhaustedResult & { message?: string };
+      const msg = String(envelope.message ?? '');
+      assert.ok(msg.length <= 220, `cp=${cp}: the message folds at 200 (got ${msg.length})`);
+      assert.notEqual(msg.length, cp, `cp=${cp}: the fast path no longer rides the whole string`);
+    } finally {
+      stub.restore();
+    }
+  }
+  {
+    const astral = '𝕊'.repeat(201);
+    const stub = stubConnectSequence([() => jsonEnvelope({ message: astral }, { status: 500 })]);
+    try {
+      const envelope = (await captureConnectRejection({})) as ExhaustedResult & { message?: string };
+      const msg = String(envelope.message ?? '');
+      // 组成前缀（"HTTP_500: "）叠加码点——上界对服务器串计：200 码点 + 前缀
+      assert.ok([...msg].length <= 220, `the astral server string folds at 200 (got ${[...msg].length})`);
+      for (const ch of msg) {
+        const code = ch.codePointAt(0)!;
+        assert.ok(!(code >= 0xd800 && code <= 0xdfff), 'no lone surrogate rides the cut');
+      }
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test('the deny verdict never enumerates a container: the structural no-enumeration pin', () => {
+  // round 30/DOC 5: the 5000ms wall-clock assertions stopped discriminating —
+  // the structural claim: the verdict reads the candidate's own descriptors
+  // only; no container trap fires
+  let ownKeysFires = 0;
+  let gopdFires = 0;
+  const hostile = new Proxy(globalThis.WebAssembly, {
+    ownKeys() {
+      ownKeysFires += 1;
+      throw new TypeError('never enumerated');
+    },
+    getOwnPropertyDescriptor() {
+      gopdFires += 1;
+      throw new TypeError('never enumerated');
+    },
+  });
+  const wasm = globalThis.WebAssembly;
+  (globalThis as Record<string, unknown>).WebAssembly = hostile;
+  try {
+    assert.equal(isErrorCarrier(new Error('x')), true, 'an honest instance is a carrier');
+    assert.equal(isErrorCarrier(TypeError.prototype), false, 'the family prototype is denied');
+    assert.equal(ownKeysFires, 0, 'no container ownKeys trap fires');
+    assert.equal(gopdFires, 0, 'no container descriptor trap fires');
+  } finally {
+    globalThis.WebAssembly = wasm;
+  }
 });
