@@ -7,6 +7,7 @@
 HuaweiCloud DevKit Doctor
 
   [PASS] Node.js >= 22.19
+  [PASS] State directory writable (~/.config/huaweicloud)
   [FAIL] MCP server installed — Run: npx huaweicloud-devkit install
   [FAIL] Runtime deps (undici) installed — Run: npx huaweicloud-devkit install
   [FAIL] Safety policy installed — Run: npx huaweicloud-devkit install
@@ -18,5 +19,5 @@ HuaweiCloud DevKit Doctor
   [PASS] hcloud credentials configured
   [FAIL] Skills tree (server data; MCP catalog + stdio skillRoot instructions) — Run: npx huaweicloud-devkit install (from a git checkout: npm run build first)
 
-Results: 5 pass, 0 warn, 5 fail
+Results: 6 pass, 0 warn, 5 fail
 Fix failures above, then restart your session.

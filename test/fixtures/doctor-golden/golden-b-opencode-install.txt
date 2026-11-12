@@ -7,6 +7,7 @@
 HuaweiCloud DevKit Doctor
 
   [PASS] Node.js >= 22.19
+  [PASS] State directory writable (~/.config/huaweicloud)
   [PASS] MCP server installed
   [PASS] MCP server can start (OpenCode)
   [PASS] Runtime deps (undici) installed
@@ -23,7 +24,7 @@ HuaweiCloud DevKit Doctor
   [WARN] open-mcp-gateway not found — npx huaweicloud-devkit dep install open-mcp-gateway
   [INFO] devbridge: sandbox-resident, not probed host-side
 
-Results: 12 pass, 1 warn, 0 fail
+Results: 13 pass, 1 warn, 0 fail
 
 All checks passed. You can now describe your Huawei Cloud task
 

@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path';
 
 import { redactSecrets } from '../safety-policy.ts';
 import { ensureMasterKey, resolveMasterKey, type ResolvedMasterKey } from './secret-vault/custody.ts';
-import { huaweiConfigBase } from './pack-state.ts';
+import { devkitStateBase } from './pack-state.ts';
 
 // The CLI face's approval tokens: the consent layer for
 // plan_cli_command / run_approved_command in the huaweicloud-cli pack.
@@ -110,7 +110,7 @@ export interface ApprovalInspection {
 const APPROVAL_TTL_MS = 5 * 60_000;
 
 function approvalFilePath(): string {
-  return join(huaweiConfigBase(), 'approvals.json');
+  return join(devkitStateBase(), 'approvals.json');
 }
 
 function sha256Hex(data: string): string {
@@ -244,7 +244,7 @@ function pruneStale(map: ApprovalMap, now = Date.now()): boolean {
 }
 
 function consumedMarkerDir(): string {
-  return join(huaweiConfigBase(), 'approvals-consumed');
+  return join(devkitStateBase(), 'approvals-consumed');
 }
 
 // Exclusive-create claim on a token: 'wx' maps to O_EXCL|O_CREAT, so the

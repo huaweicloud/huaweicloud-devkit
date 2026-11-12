@@ -1,26 +1,33 @@
 import { chmodSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 
 import type { PackId } from './pack-types.ts';
+import { devkitStateBase, huaweiConfigBase } from './state-dir.ts';
+
+export { devkitStateBase, huaweiConfigBase };
 
 // The pack-scoped state space and the single resolver for the devkit's
 // config tree (~/.config/huaweicloud, relocatable whole-tree via
-// HUAWEICLOUD_HOME).
+// HUAWEICLOUD_HOME) and its writable state tree (state-dir.ts: the same tree
+// by default, the agent-owned devkit-state directory on a read-only home).
 //
 // Ownership criterion, stated here so the next state file does not have to
 // guess: the writer/reader set decides where state lives. approvals.json
 // is the CLI approval face's store (plan_cli_command /
 // run_approved_command mint and consume), credentials.json is the
 // devkit-wide S1 store, and deps/ belongs to the dependency domain — all
-// three stay at the config root. State with exactly one pack as writer
+// three live in the state tree. State with exactly one pack as writer
 // and reader (the open-mcp gateway's policy file) lives under packs/<id>/,
 // so ownership is derivable from the directory name and an uninstall can
 // preserve user state without a manifest. Modules that still hand-roll
-// the base (auth/credentials, dep/receipts, update-check, proxy-config,
-// officeace-paths) migrate here when next touched; the guard below
-// already resolves through this module, so guard and store cannot
-// disagree about where the tree is.
+// the base (dep/receipts, update-check, proxy-config, officeace-paths)
+// migrate when next touched; the guard below already resolves through this
+// module, so guard and store cannot disagree about where the trees are.
+//
+// S1 is the one exception: credentials are WRITTEN to the state tree but
+// READ from the state tree first and the config tree second, so a
+// pre-provisioned credentials.json in a read-only home keeps resolving.
 //
 // The same resolver backs the protected-tree guard the gateway face uses:
 // anything the devkit or its operator considers consent infrastructure (the
@@ -34,16 +41,8 @@ import type { PackId } from './pack-types.ts';
 // — the installer chain (dist/setup-cli.js, plain tsc output) must never
 // pull zod, same contract as dependency-model.ts and dep-resolve.ts.
 
-export function huaweiConfigBase(env: NodeJS.ProcessEnv = process.env): string {
-  // resolve() absolutizes once, here, so every consumer — store writes and
-  // the guard below — shares one anchor even for a relative
-  // HUAWEICLOUD_HOME (a relative base previously made the store land at
-  // the process cwd while the guard protected a tmpdir-anchored tree).
-  return resolve(env.HUAWEICLOUD_HOME || homedir(), '.config', 'huaweicloud');
-}
-
 export function packStateDir(packId: PackId, env: NodeJS.ProcessEnv = process.env): string {
-  return join(huaweiConfigBase(env), 'packs', packId);
+  return join(devkitStateBase(env), 'packs', packId);
 }
 
 export interface PackStateLayout {
@@ -153,20 +152,24 @@ function resolveForWrite(target: string): string | null {
   }
 }
 
-// The roots a gateway file write must never touch: the devkit config tree
-// plus whatever policy/audit paths the operator configured (the LIVE paths,
-// not what the devkit would have provisioned). Returns null when a root is
+// The roots a gateway file write must never touch: the devkit config tree,
+// the writable state tree (they differ on a read-only-home fallback), plus
+// whatever policy/audit paths the operator configured (the LIVE paths, not
+// what the devkit would have provisioned). Returns null when a root is
 // present-but-unresolvable — callers deny everything in that case.
 export function protectedTreeRoots(env: NodeJS.ProcessEnv = process.env): string[] | null {
-  const candidates: string[] = [huaweiConfigBase(env)];
+  const candidates: string[] = [huaweiConfigBase(env), devkitStateBase(env)];
   for (const key of ['HUAWEICLOUD_MCP_POLICY_FILE', 'HUAWEICLOUD_MCP_AUDIT_FILE'] as const) {
     const value = (env[key] ?? '').trim();
     if (value !== '') candidates.push(value);
   }
   const roots: string[] = [];
+  const seen = new Set<string>();
   for (const candidate of candidates) {
     const resolved = resolveForWrite(candidate);
     if (resolved === null) return null;
+    if (seen.has(resolved)) continue;
+    seen.add(resolved);
     roots.push(resolved);
   }
   return roots;

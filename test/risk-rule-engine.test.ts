@@ -620,3 +620,63 @@ test('the variable-port rule warns on ANY non-literal port value behind a public
     );
   }
 });
+
+test('privileged containers deny, escalation warns, and explicit false stays quiet', () => {
+  const yaml = evaluateArtifacts([{ path: 'deploy.yaml', content: 'securityContext:\n  privileged: true\n' }]);
+  assert.equal(yaml.decision, 'deny');
+  assert.ok(yaml.findings.some((finding) => finding.ruleId === 'hwc-container-privileged'));
+
+  const json = evaluateArtifacts([{ path: 'deploy.json', content: '{"securityContext":{"privileged":true}}' }]);
+  assert.equal(json.decision, 'deny', 'quoted JSON keys match too');
+
+  const off = evaluateArtifacts([{ path: 'deploy.yaml', content: 'privileged: false\n' }]);
+  assert.equal(off.decision, 'allow');
+
+  const escalation = evaluateArtifacts([{ path: 'deploy.yaml', content: 'allowPrivilegeEscalation: true\n' }]);
+  assert.equal(escalation.decision, 'warn');
+  assert.ok(escalation.findings.some((finding) => finding.ruleId === 'hwc-container-privilege-escalation'));
+});
+
+test('plaintext passwords warn in XML and key-value shapes, placeholders stay quiet', () => {
+  const xml = evaluateArtifacts([{ path: 'settings.xml', content: '<password>Hunter2Plain</password>' }]);
+  assert.equal(xml.decision, 'warn');
+  assert.ok(xml.findings.some((finding) => finding.ruleId === 'hwc-artifact-plaintext-password'));
+
+  const kv = evaluateDeployPlan({ env: { DB_PASSWORD: 'Hunter2Plain' } });
+  assert.ok(kv.findings.some((finding) => finding.ruleId === 'hwc-artifact-plaintext-password'));
+
+  for (const content of [
+    '<password>${env.PASSWORD}</password>',
+    '<password>******</password>',
+    'password: var.db_password',
+    'password: secret://user/db',
+    'password_policy: strong',
+  ]) {
+    const result = evaluateArtifacts([{ path: 'artifact', content }]);
+    assert.ok(
+      !result.findings.some((finding) => finding.ruleId === 'hwc-artifact-plaintext-password'),
+      `placeholder shape must stay quiet: ${content}`,
+    );
+  }
+});
+
+test('wildcard IAM actions are caught in Terraform, plural, and no-Effect shapes', () => {
+  const terraform = evaluateArtifacts([
+    { path: 'iam.tf', content: 'policy = "x"\neffect = "Allow"\nactions = ["*"]\n' },
+  ]);
+  assert.equal(terraform.decision, 'deny');
+  assert.ok(terraform.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
+
+  const noEffect = evaluateDeployPlan({ iam: { actions: ['*'] } });
+  assert.equal(noEffect.decision, 'warn');
+  assert.ok(noEffect.findings.some((finding) => finding.ruleId === 'hwc-iam-wildcard-action'));
+
+  const narrow = evaluateArtifacts([
+    { path: 'iam.tf', content: 'policy = "x"\neffect = "Allow"\nactions = ["vpc:subnets:get"]\n' },
+  ]);
+  assert.ok(
+    !narrow.findings.some(
+      (finding) => finding.ruleId === 'hwc-iam-admin-policy' || finding.ruleId === 'hwc-iam-wildcard-action',
+    ),
+  );
+});

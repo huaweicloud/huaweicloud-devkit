@@ -822,3 +822,45 @@ test('serviceCatalog double-clause tails mentioning the deploy word fire (loop r
     );
   }
 });
+
+test('the advisory face warns on write operations and marks allow as unmatched', async () => {
+  const write = (await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud ECS CreateServers --server.name=x',
+  })) as HookCheckResult & { unmatched?: boolean };
+  assert.equal(write.decision, 'warn');
+  assert.equal(write.ok, true, 'warn stays advisory — the face never blocks');
+  assert.equal(write.findings[0]?.ruleId, 'hwc-write-operation');
+  assert.equal(write.unmatched, undefined);
+
+  const read = (await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud ECS ListServersDetails',
+  })) as HookCheckResult & { unmatched?: boolean };
+  assert.equal(read.decision, 'allow');
+  assert.equal(read.unmatched, true, 'allow means no rule matched, not approval');
+
+  const deny = (await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud ECS DeleteServers --force',
+  })) as HookCheckResult & { unmatched?: boolean };
+  assert.equal(deny.decision, 'deny', 'a specific risk rule still wins');
+  assert.equal(deny.unmatched, undefined);
+});
+
+test('artifact checks catch privileged containers, plaintext passwords, and wildcard IAM', async () => {
+  const privileged = (await callTool('huaweicloud_hook_check_artifacts', {
+    artifacts: [{ path: 'k8s.yaml', content: 'securityContext:\n  privileged: true\n' }],
+  })) as HookCheckResult;
+  assert.equal(privileged.decision, 'deny');
+  assert.ok(privileged.findings.some((finding) => finding.ruleId === 'hwc-container-privileged'));
+
+  const password = (await callTool('huaweicloud_hook_check_artifacts', {
+    artifacts: [{ path: 'settings.xml', content: '<password>Hunter2Plain</password>' }],
+  })) as HookCheckResult;
+  assert.equal(password.decision, 'warn');
+  assert.ok(password.findings.some((finding) => finding.ruleId === 'hwc-artifact-plaintext-password'));
+
+  const iam = (await callTool('huaweicloud_hook_check_deploy_plan', {
+    plan: { iam: { actions: ['*'] } },
+  })) as HookCheckResult;
+  assert.equal(iam.decision, 'warn');
+  assert.ok(iam.findings.some((finding) => finding.ruleId === 'hwc-iam-wildcard-action'));
+});

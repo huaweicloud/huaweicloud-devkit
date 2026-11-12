@@ -139,6 +139,8 @@ npx --yes huaweicloud-devkit uninstall --target codearts-work
 ```
 
 > **CodeArts Work** (CodeArts Space, appId: `com.codearts.work`) uses user-level config at `%USERPROFILE%\.codeartswork\`. No project-level `.codeartswork` directory is created.
+>
+> **Read-only home**: when `~/.config/huaweicloud` is not writable (sandbox home), devkit state — gateway policy, approval tokens, update skip, S1 writes — moves automatically to `~/.codearts*/devkit-state`; a pre-provisioned `credentials.json` in the old tree remains readable. `doctor` reports the resolved state directory; set `HUAWEICLOUD_STATE_DIR` to an absolute path to pin it explicitly.
 
 ### WorkBuddy
 

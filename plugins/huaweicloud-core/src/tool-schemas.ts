@@ -165,6 +165,22 @@ export function toolSchemaEntries(): Array<[ToolName, LooseToolSchema]> {
   return Object.entries(TOOL_SCHEMAS) as Array<[ToolName, LooseToolSchema]>;
 }
 
+const argKeyCache = new Map<ToolName, ReadonlySet<string>>();
+
+// The keys a tool's input schema declares, plus the central vendorConfirmed
+// part (rendered only on cloud-facing tools but accepted by the dispatch gate
+// everywhere). callTool's unknown-parameter warning reads this; the #530
+// pass-through leniency itself is unchanged.
+export function toolArgKeys(name: ToolName): ReadonlySet<string> {
+  const cached = argKeyCache.get(name);
+  if (cached) return cached;
+  const def = (TOOL_SCHEMAS[name] as unknown as { _zod?: { def?: { shape?: Record<string, unknown> } } })._zod?.def;
+  const keys = new Set<string>(Object.keys(def?.shape ?? {}));
+  keys.add('vendorConfirmed');
+  argKeyCache.set(name, keys);
+  return keys;
+}
+
 // Runtime guard: every entry must be a constructed zod loose-object. A bare
 // raw shape would be wrapped by the SDK into STRIP semantics, silently
 // dropping client keys instead of passing them through.
