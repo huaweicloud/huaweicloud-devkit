@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
-
+import { standingAccessor } from './hdkit-gate-fixtures.ts';
 import {
   _setOneShotForTests,
   gateExposeAuth,
@@ -136,6 +136,20 @@ test('self-heal failure falls through to the generic auto-create fallback', asyn
     assert.equal(probes(), 2);
   });
 });
+
+// 掷出型 ensure 的中继钉共用（round 24 去重）：登记载体直掷 ensure，走
+// failingGate 的同一降级链
+async function failingGateThrowing(carrier: unknown) {
+  return failingGate(
+    fakeKeyLifecycle({
+      ensure: async () => {
+        throw carrier;
+      },
+      listKeys: async () => [],
+    }),
+    'ephemeral',
+  );
+}
 
 // Drive the gate over a scripted probe stdout and return the failure
 // object — the structured-degradation assertions share this harness (the
@@ -564,17 +578,7 @@ test('the relay detector consults the registration first: a registered gate carr
   const { applyVersionGate } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
   // 登记：自有 clientVersion 访问器（读谎）挣得门禁拒绝
   const carrier = Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD' });
-  let storedCv: unknown;
-  Object.defineProperty(carrier, 'clientVersion', {
-    configurable: true,
-    enumerable: true,
-    get() {
-      return storedCv;
-    },
-    set(v: unknown) {
-      storedCv = v;
-    },
-  });
+  standingAccessor(carrier, 'clientVersion');
   applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
   // code 视图变坏：抛出型 getter——检测器与折叠都不得读它
   Object.defineProperty(carrier, 'code', {
@@ -583,13 +587,7 @@ test('the relay detector consults the registration first: a registered gate carr
     },
     configurable: true,
   });
-  const lifecycle = fakeKeyLifecycle({
-    ensure: async () => {
-      throw carrier;
-    },
-    listKeys: async () => [],
-  });
-  const f = await failingGate(lifecycle, 'ephemeral');
+  const f = await failingGateThrowing(carrier);
   assert.equal(
     f.error_code,
     'HDKIT_VERSION_TOO_OLD',
@@ -598,4 +596,59 @@ test('the relay detector consults the registration first: a registered gate carr
   assert.match(f.error ?? '', /插件版本过旧，请升级插件后重启会话/, 'the registered fallback message carries');
   assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the unknown-version remediation mints');
   assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the credential misdiagnosis never fires');
+});
+
+// ── 中继检测器的种类对称（round 24/MUST 4）──
+// 仅耗尽登记的载体不是门禁——其自身字段读不可采信（谎报的 code 访问器把
+// 瞬时耗尽伪装成升级信号）。检测器与 versionGateResult 同规则：登记先裁、
+// 按种类零读，中继出口不再从两个不可信的 code 读铸造门禁信封。
+
+test('the relay detector is kind-symmetric: an exhaustion-registered carrier with a lying code getter never mints the gate', async () => {
+  const { applyVersionGate, decorateExhaustedConnect } =
+    await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  // 耗尽登记：标记访问器（读谎）挣得拒绝；谎报的 code 访问器常驻
+  // HDKIT_VERSION_TOO_OLD——检测器绝不能读它
+  const carrier = Object.assign(new Error('exhaustion relay twin'), { connectRetries: 1 });
+  standingAccessor(carrier, 'gatewayRetryExhausted');
+  let codeReads = 0;
+  Object.defineProperty(carrier, 'code', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      codeReads += 1;
+      return 'HDKIT_VERSION_TOO_OLD';
+    },
+    set() {
+      // 吞写——访问器立着
+    },
+  });
+  const decorated = decorateExhaustedConnect(carrier, 2);
+  assert.notEqual(decorated, carrier, 'the marker accessor earns the exhaustion registration');
+  // 门禁对照用的立着 clientVersion 访问器：门禁装饰的键挣得拒绝才并入
+  // gate 种类（成功落定只解除或走克隆、不加种类——round 22 教义）
+  standingAccessor(carrier, 'clientVersion');
+  const readsAfterDecoration = codeReads;
+  const f = await failingGateThrowing(carrier);
+  assert.equal(f.error_code, undefined, 'the relay exit never mints the gate off an exhaustion registration');
+  assert.match(
+    f.hint ?? '',
+    /No DevBridge API Key is available/,
+    'the credential path takes over — the misroute is dead',
+  );
+  assert.doesNotMatch(f.error ?? '', /插件版本过旧/, 'the gate fallback message never surfaces');
+  // 读数口径：装饰口的 rawCode 读 + 中继配额分支的门禁检查前安全读各一
+  // （round 20 教义：配额判定先求值）——检测器本身零读；多于两读即检测器
+  // 又读了不可信视图
+  assert.equal(
+    codeReads,
+    readsAfterDecoration + 1,
+    'the detector itself reads no code — only the quota pre-check does',
+  );
+  // 对照：门禁装饰经 clientVersion 立着访问器挣得拒绝——两登记并存
+  // （kinds 含 gate），检测器随即零读铸造
+  const gateDecorated = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
+  assert.notEqual(gateDecorated, carrier, 'the standing clientVersion accessor earns the gate registration');
+  const f2 = await failingGateThrowing(carrier);
+  assert.equal(f2.error_code, 'HDKIT_VERSION_TOO_OLD', 'the gate kind added — the registration alone decides');
+  assert.equal(codeReads, readsAfterDecoration + 2, 'still no detector read — one more quota pre-check only');
 });

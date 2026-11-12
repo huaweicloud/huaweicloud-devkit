@@ -429,14 +429,21 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   const rawClientVersion = safeReadField(error, 'clientVersion');
   const rawMinVersion = safeReadField(error, 'minVersion');
   const remediation = serializableRemediation(safeReadField(error, 'remediation'));
+  // 非门禁信封同过清洗口（round 24/SHOULD 6）：纯空白/纯不可见版本字段视同
+  // 缺失（round 6 出口信条——不渲染空白文案）；码按拼写口径——纯空白视同
+  // 缺失，织入空白渲染字符的拼写渲染清洗形（不可见边缘不上信封）
+  const cleanedCode = typeof rawCode === 'string' && canonCode(rawCode) !== '' ? canonCode(rawCode) : undefined;
+  const cleanedClientVersion =
+    typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
+  const cleanedMinVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
   return {
     claimed: false,
     message: cleanMessage(safeMessageText(error)) || unavailableMessage,
-    code: typeof rawCode === 'string' ? rawCode : undefined,
     // dev voucherErrorResult 语义：非门禁错误自带的指引字段（如 CRED_INVALID
-    // 的 S1 修复引导）按存在性透传
-    ...(typeof rawClientVersion === 'string' && rawClientVersion ? { clientVersion: rawClientVersion } : {}),
-    ...(typeof rawMinVersion === 'string' && rawMinVersion ? { minVersion: rawMinVersion } : {}),
+    // 的 S1 修复引导）清洗后透传
+    ...(cleanedCode !== undefined ? { code: cleanedCode } : {}),
+    ...(cleanedClientVersion !== undefined ? { clientVersion: cleanedClientVersion } : {}),
+    ...(cleanedMinVersion !== undefined ? { minVersion: cleanedMinVersion } : {}),
     ...(remediation ? { remediation } : {}),
   };
 }

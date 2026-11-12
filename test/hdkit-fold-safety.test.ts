@@ -70,6 +70,26 @@ test('a throwing message getter through the voucher envelope folds the unavailab
   }
 });
 
+test('the voucher non-gate envelope never renders blank or invisible-laden fields', async () => {
+  // round 24/SHOULD 6：非门禁分支的 clientVersion/minVersion/code 此前裸透
+  // ——纯空白版本字段与织入 Cf 的码原样上信封（round-6 出口信条的漏网口）
+  credentialCarrier = Object.assign(new Error('real diagnosis'), {
+    code: '\u200bHDKIT\u200bCRED_INVALID',
+    clientVersion: '   ',
+    minVersion: '\u200b',
+  });
+  try {
+    const envelope = (await hdkitVoucherStatus()) as Record<string, unknown>;
+    assert.equal(envelope.claimed, false);
+    assert.equal(envelope.clientVersion, undefined, 'a whitespace-only clientVersion never rides');
+    assert.equal(envelope.minVersion, undefined, 'an invisible-only minVersion never rides');
+    assert.equal(envelope.code, 'HDKITCRED_INVALID', 'the Cf-woven code renders its cleaned spelling');
+    assert.doesNotMatch(String(envelope.code ?? ''), /[\u200b\u00a0]/, 'no invisible edge survives on the code');
+  } finally {
+    credentialCarrier = undefined;
+  }
+});
+
 test('a revoked proxy through the voucher envelope folds the unavailable copy', async () => {
   const revoked = Proxy.revocable(new Error('revoked voucher carrier'), {});
   revoked.revoke();
@@ -354,7 +374,7 @@ test('the 429 quota branch survives a throwing headers.get: the quota envelope c
     status: 429,
     ok: false,
     headers: {
-      get(name: string): string {
+      get(_name: string): string {
         throw new TypeError('headers.get detonates');
       },
     },
