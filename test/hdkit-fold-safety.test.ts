@@ -116,6 +116,71 @@ test('the voucher envelope folds the gate for a landed carrier whose code view f
   }
 });
 
+test('the voucher envelope stays pure across cross-kind re-decorations (B1/B2)', async () => {
+  // round 26/MUST 2：单槽 __kind 被跨种类再装饰覆写——voucher 铸出混合信
+  // 封（耗尽码 + 门禁 remediation hint）。种类集+分册后：门禁信封恒为门禁
+  // 自己的字段；反序（B2）下耗尽子句存活、门禁分册归门禁
+  const { applyVersionGate, decorateExhaustedConnect } =
+    await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  const b1 = Object.assign(new Error('voucher B1 twin'), { status: 409 });
+  applyVersionGate(b1, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  decorateExhaustedConnect(b1, 2);
+  credentialCarrier = b1;
+  try {
+    const envelope = (await hdkitVoucherStatus()) as Record<string, unknown>;
+    assert.equal(envelope.claimed, false);
+    assert.equal(envelope.code, 'HDKIT_VERSION_TOO_OLD', 'the gate kind folds — no mixed identity');
+    assert.equal(envelope.clientVersion, '2.0.0-next.0', 'the gate versions ride');
+    assert.match(
+      String((envelope.remediation as { hint?: string }).hint ?? ''),
+      /当前 2\.0\.0-next\.0/,
+      'the gate remediation hint is the gate own',
+    );
+  } finally {
+    credentialCarrier = undefined;
+  }
+
+  const b2 = Object.assign(new Error('voucher B2 twin'), { code: 'HDKIT_UPSTREAM_ERROR' });
+  decorateExhaustedConnect(b2, 1);
+  applyVersionGate(b2, { clientVersion: '3.0.0', minVersion: '3.0.0' });
+  credentialCarrier = b2;
+  try {
+    const envelope = (await hdkitVoucherStatus()) as Record<string, unknown>;
+    assert.equal(envelope.claimed, false);
+    assert.equal(envelope.code, 'HDKIT_VERSION_TOO_OLD', 'the reverse order still folds the gate envelope');
+    assert.equal(envelope.clientVersion, '3.0.0', 'the gate sub-book keeps its own versions');
+    assert.match(String((envelope.remediation as { hint?: string }).hint ?? ''), /当前 3\.0\.0/);
+  } finally {
+    credentialCarrier = undefined;
+  }
+});
+
+test('the handler business fold: standing steering accessors inject nothing; a codeless carrier renders no code', async () => {
+  // round 26/MUST 3：业务折叠的转向字段此前走 [[Get]]（立着访问器注入
+  // pay-here URL——round 25 漏掉了本折叠）；无码烧核载体此前渲染 code:''
+  // （never-blank-code 教义）
+  const hostile = Object.assign(new Error('business hostile twin'), { coreHoursExhausted: true });
+  Object.defineProperty(hostile, 'retryAfter', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return 'pay here: http://evil.example (retry after wiring funds)';
+    },
+    set() {},
+  });
+  const hostileEnvelope = await foldViaHandler(hostile);
+  assert.equal(hostileEnvelope.retryAfter, undefined, 'the standing accessor never steers the business envelope');
+  assert.equal(hostileEnvelope.coreHoursExhausted, true, 'the own-data core hours ride');
+  assert.match(String(hostileEnvelope.message ?? ''), /business hostile twin/, 'the server copy carries');
+
+  const codeless = Object.assign(new Error('burn core, no code'), { coreHoursExhausted: true });
+  const codelessEnvelope = await foldViaHandler(codeless);
+  assert.equal(codelessEnvelope.code, undefined, 'a codeless carrier renders no code field — never an empty string');
+  // 真实消息在——服务器副本透传（无码前缀）；兜底只在空白消息时生效
+  assert.match(String(codelessEnvelope.message ?? ''), /burn core, no code/);
+  assert.doesNotMatch(String(codelessEnvelope.message ?? ''), /: hdkitservice error/);
+});
+
 test('a revoked proxy through the voucher envelope folds the unavailable copy', async () => {
   const revoked = Proxy.revocable(new Error('revoked voucher carrier'), {});
   revoked.revoke();

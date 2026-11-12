@@ -43,34 +43,60 @@ function refusalOf(error: unknown): RefusalRecord | undefined {
   return refusedCarriers.get(error);
 }
 
-// 落定登记（round 24/MUST 3c）：就地装填成功时记下设计字段——折叠口按记
-// 录值铸信封而非经 [[Get]] 重读（落定后的翻供/删除让门禁信封自相矛盾、耗
-// 尽折叠消失成裸抛）。登记只在成功路径整体重写：拒绝路径不写（登记在身的
-// 载体由登记裁决折叠），解除后的再装饰按新落定记录折叠
-const provenLandings = new WeakMap<object, Map<string, unknown>>();
+// 落定登记（round 24/MUST 3c 建、round 26/MUST 2 改种类集）：就地装填成
+// 功时记下设计字段——折叠口按记录值铸信封而非经 [[Get]] 重读（落定后的翻
+// 供/删除让门禁信封自相矛盾、耗尽折叠消失成裸抛）。round 26：种类与字段
+// 按装饰器分册（拒绝记录同构）——跨种类再装饰不再覆写他种类的落定（此前
+// 单槽 __kind 让耗尽再装饰静默抹掉已落定的门禁裁决：handler 折叠消失、
+// voucher 混合信封、中继复现 NO_CREDENTIAL 误诊）；每种各自记字段，两折
+// 叠各读自己的分册，信封不再混合身份。记录值深快照（round 26/SHOULD 4）：
+// 记录若存装饰写入的同一对象引用，落定后的嵌套改写直达信封——对象走
+// JSON 往返（round 17 同法，敌意/不可序列化形态按缺失，折叠口铸造兜底），
+// 原始值原样
+interface ProvenRecord {
+  kinds: Set<RefusalKind>;
+  byKind: Map<RefusalKind, Map<string, unknown>>;
+}
+
+const provenLandings = new WeakMap<object, ProvenRecord>();
+
+function snapshotProvenValue(value: unknown): unknown {
+  if (value === null || typeof value !== 'object') return value;
+  try {
+    return JSON.parse(JSON.stringify(value));
+  } catch {
+    // 敌意/不可序列化形态——按缺失记录，折叠口的铸造兜底
+    return undefined;
+  }
+}
 
 function recordProvenLanding(target: object, fields: Array<[string, unknown]>, kind?: RefusalKind): void {
-  const record = new Map<string, unknown>();
-  for (const [key, value] of fields) record.set(key, value);
-  if (kind !== undefined) record.set('__kind', kind);
-  provenLandings.set(target, record);
+  if (kind === undefined) return;
+  let record = provenLandings.get(target);
+  if (record === undefined) {
+    record = { kinds: new Set<RefusalKind>(), byKind: new Map<RefusalKind, Map<string, unknown>>() };
+    provenLandings.set(target, record);
+  }
+  record.kinds.add(kind);
+  const fieldsForKind = record.byKind.get(kind) ?? new Map<string, unknown>();
+  for (const [key, value] of fields) fieldsForKind.set(key, snapshotProvenValue(value));
+  record.byKind.set(kind, fieldsForKind);
 }
 
 function provenKindIs(error: unknown, kind: RefusalKind): boolean {
   if (typeof error !== 'object' || error === null) return false;
-  return provenLandings.get(error)?.get('__kind') === kind;
+  return provenLandings.get(error)?.kinds.has(kind) === true;
 }
 
-function provenField(error: unknown, key: string): unknown {
+function provenField(error: unknown, kind: RefusalKind, key: string): unknown {
   if (typeof error !== 'object' || error === null) return undefined;
-  const record = provenLandings.get(error);
-  return record !== undefined && record.has(key) ? record.get(key) : undefined;
+  return provenLandings.get(error)?.byKind.get(kind)?.get(key);
 }
 
 // 折叠口对记录未含字段（服务端亲署码/消息/转向字段不经装饰）的回退读
 // （round 24/MUST 3c）：自有数据描述符取值（honest gOPD，非 [[Get]]——翻
 // 供、删除、抛出不波及）；访问器、无自有定义、敌意 gOPD 一律按缺失
-function ownDataValue(error: unknown, key: string): unknown {
+export function ownDataValue(error: unknown, key: string): unknown {
   if (typeof error !== 'object' || error === null) return undefined;
   try {
     const desc = Object.getOwnPropertyDescriptor(error, key);
@@ -303,15 +329,21 @@ export function isVersionGateError(error: unknown): boolean {
     // 种类对称（round 24/MUST 4）：门禁登记即门禁（零读）；仅耗尽登记的
     // 载体不是门禁——其自身字段读不可采信（中继出口此前照读，铸出门禁
     // 信封而每个 handler 出口都拒绝同载体）。与 versionGateResult 同规则
-    return refusal.kinds.has('gate');
+    if (refusal.kinds.has('gate')) return true;
+    // 异种拒绝不遮蔽落定门禁（round 26/MUST 2 B3）：落定的 gate 种类先于
+    // 拒绝的 identity 裁决——已落定的 409 门禁不得因后续耗尽拒绝而裸抛
+    // （handler/relay/voucher 全失结构化信封）；无落定门禁则按登记种类零读
+    // 拒绝（round 24 规则不变）
+    if (provenKindIs(error, 'gate')) return true;
+    return false;
   }
-  // 落定登记的裁决（round 25/MUST 2）：就地落定后 code 的 [[Get]] 读仍是
-  // 一次敌意读——applyVersionGate 就地路径从不写 code（只有克隆盖戳），落
-  // 定后翻转/删除 code 即在每个出口杀掉门禁信封（handler 裸抛、中继
-  // NO_CREDENTIAL 误诊、voucher 留翻转码），而耗尽孪生因自带码装填而存活
-  // ——不对称。记录种类先裁（与登记同规则）：gate 落定即门禁（零读）；
-  // exhaustion 落定不是门禁（亲署码不可越装饰的种类——502/504 载体装饰成
-  // 耗尽后，其亲署码不得再把门禁折叠引来）
+  // 落定登记的裁决（round 25/MUST 2 建、round 26/MUST 2 种类集）：就地落
+  // 定后 code 的 [[Get]] 读仍是一次敌意读——applyVersionGate 就地路径从不
+  // 写 code（只有克隆盖戳），落定后翻转/删除 code 即在每个出口杀掉门禁信
+  // 封（handler 裸抛、中继 NO_CREDENTIAL 误诊、voucher 留翻转码），而耗
+  // 尽孪生因自带码装填而存活——不对称。种类集裁决：gate 落定即门禁（零
+  // 读，跨种类再装饰不抹除）；exhaustion 落定不是门禁（亲署码不可越装饰
+  // 的种类——502/504 载体装饰成耗尽后，其亲署码不得再把门禁折叠引来）
   if (provenKindIs(error, 'gate')) return true;
   if (provenKindIs(error, 'exhaustion')) return false;
   return canonCode(safeReadField(error, 'code')) === VERSION_GATE_CODE || isCodelessGateStatus(error);
@@ -350,21 +382,23 @@ const UPGRADE_STEPS = [
 // 安全（visited 集合——getPrototypeOf 陷阱的 2-环既不抛也不终止）；走查
 // 抛出（撤销代理）按非载体。谎报 null 原型（r3 形态）在链上看不到
 // Error.prototype → 换新载体——继承访问器对无从隐藏
-// 内建错误家族原型的结构化点名（round 24 建八名单、round 25 改结构化）：
-// 名单挡不住引擎新家族——DOMException/SuppressedError/WebAssembly 三家实测
-// 溜过（原型链皆可达 Error.prototype，就地装填即进程级污染：此后该家族每
-// 个实例都折家族信封，AbortController 的 reason 读注入文案）。模块加载时
-// 遍历 globalThis 与 WebAssembly 的自有属性：函数且其 prototype 链有界可
-// 达 Error.prototype 的，prototype 一律点名（DOMException 以引擎 JS 源码
-// 形式呈现，无 [native code] 标记——链可达性是唯一判据；globalThis 上注
-// 册的用户 class 一并拒绝，严格更安全）。模块作用域的用户子类原型保持记
-// 录边界（不在 globalThis 上）。原生 instanceof 不作判据：TypeError.
-// prototype instanceof Error 实测为 true（实例检查挡不住共享原型），且
-// OrdinaryHasInstance 无界走查、只靠 V8 内部 RangeError 兜底——界不归本模
-// 块定。点名集是恒等比较零读零陷阱
-const BUILTIN_ERROR_PROTOTYPES = collectBuiltinErrorPrototypes();
+// 共享原型拒绝（round 24 建八名单、round 25 改结构化快照、round 26 改逐
+// 调用裁决）：就地装填共享原型即进程级污染（该家族每个实例都折家族信
+// 封）。加载期快照三缝实测：[[Get]] 读 .prototype 会触发/引爆/谎报（模块
+// 加载图上的敌意代码、抛出即拒绝启动、谎报让真家族溜出点名）；快照无法
+// 见后注册的家族；描述符-only 对访问器暴露的家族失明（Node 的惰性全局即
+// 访问器）。逐调用规则：候选载体若与任一"当前可从 globalThis/WebAssembly
+// 枚举到的函数"的 .prototype 恒等即拒绝——枚举与取值全在守卫内，值经描
+// 述符读（数据属性零 [[Get]]）或经 [[Get]]（访问器暴露的家族只有调用可
+// 见——只在装饰/拒绝路径上触发，惰性 getter 的实验警告不落在 boot 图），
+// 函数的 .prototype 经 gOPD 与 [[Get]] 双读（gOPD 过代理见目标的诚实槽——
+// 谎报陷阱的构造器形态；[[Get]] 见运行时视图——改写绑定/后注册的谎报形
+// 态），任一视图命中即拒绝。模块作用域的用户子类原型不在枚举范围——保
+// 持记录边界（污染面仅调用方自己的类实例）。原生 instanceof 不作判据：
+// TypeError.prototype instanceof Error 实测为 true，且 OrdinaryHasInstance
+// 无界走查、只靠 V8 内部 RangeError 兜底——界不归本模块定
 
-// 有界 Error.prototype 可达走查（round 25/MUST 1 去重）：点名集收集器与
+// 有界 Error.prototype 可达走查（round 25/MUST 1 去重）：共享原型判定与
 // isErrorCarrier 白名单共用——visited+1024 跳上界，超深同环按不可达；走查
 // 抛出（撤销代理）按不可达
 function chainReachesErrorPrototype(start: object): boolean {
@@ -386,43 +420,70 @@ function chainReachesErrorPrototype(start: object): boolean {
   }
 }
 
-function collectBuiltinErrorPrototypes(): Set<unknown> {
-  const found = new Set<unknown>([Error.prototype]);
-  const scan = (container: object): void => {
-    for (const key of Reflect.ownKeys(container)) {
-      // 经描述符读取（round 25）：直读容器属性会触发惰性 getter——
-      // globalThis.localStorage 即实验警告源（CLI 启动钉实测被污染：每次
-      // boot 打一行 ExperimentalWarning）。gOPD 不调 [[Get]]；内建构造器皆
-      // 数据属性，访问器属性（惰性实验面）自然跳过
-      let desc: PropertyDescriptor | undefined;
+function currentPrototypeSlots(): unknown[] {
+  const slots: unknown[] = [];
+  const readPrototypeViews = (fn: object): void => {
+    for (const read of [
+      (): unknown => {
+        const desc = Object.getOwnPropertyDescriptor(fn, 'prototype');
+        return desc?.value;
+      },
+      (): unknown => (fn as { prototype?: unknown }).prototype,
+    ] as const) {
       try {
-        desc = Object.getOwnPropertyDescriptor(container, key);
+        const view = read();
+        if (view !== undefined) slots.push(view);
       } catch {
-        continue;
+        // 抛出型视图——按不可见
       }
-      const value: unknown = desc?.value;
-      // 原生判据不可用：DOMException 实测以引擎 JS 源码形式呈现（toString
-      // 无 [native code]，与用户 class 同形）——判据只剩链可达性本身：普通
-      // 函数的 .prototype 链不达 Error.prototype（走 Object.prototype），
-      // 只有错误家族构造器的原型可达；globalThis 上注册的用户 class 一并
-      // 拒绝（拒绝装饰严格更安全，无污染面）；模块作用域的用户子类原型保持
-      // 记录边界（不在 globalThis 上，枚举不可见）
-      if (typeof value !== 'function') continue;
-      const proto = (value as { prototype?: unknown }).prototype;
-      if (typeof proto !== 'object' || proto === null) continue;
-      if (chainReachesErrorPrototype(proto)) found.add(proto);
+    }
+  };
+  const scan = (container: unknown): void => {
+    try {
+      if (typeof container !== 'object' || container === null) return;
+      for (const key of Reflect.ownKeys(container)) {
+        let value: unknown;
+        let desc: PropertyDescriptor | undefined;
+        try {
+          desc = Object.getOwnPropertyDescriptor(container, key);
+        } catch {
+          continue;
+        }
+        if (desc === undefined) continue;
+        if (desc.get !== undefined || desc.set !== undefined) {
+          // 访问器暴露的全局：调用才可见（守卫内）——惰性实验 getter 的警
+          // 告只出现在装饰/拒绝路径
+          try {
+            value = (container as Record<string | symbol, unknown>)[key];
+          } catch {
+            continue;
+          }
+        } else {
+          value = desc.value;
+        }
+        if (typeof value !== 'function') continue;
+        readPrototypeViews(value);
+      }
+    } catch {
+      // 可替换绑定上的 ownKeys 抛出——按无枚举
     }
   };
   scan(globalThis);
   scan(WebAssembly);
-  return found;
+  return slots;
 }
 
 export function isErrorCarrier(error: unknown): boolean {
   if (error === null) return false;
   if (typeof error !== 'object') return false;
-  if (BUILTIN_ERROR_PROTOTYPES.has(error)) return false;
-  return chainReachesErrorPrototype(error);
+  // 链可达先行（廉价）：不可达即非载体，不进入枚举
+  if (!chainReachesErrorPrototype(error)) return false;
+  // 逐调用的共享原型裁决（round 26/MUST 1）：候选是任一枚举函数当前的
+  // .prototype 即拒绝（恒等比较，取值已在守卫内完成）
+  for (const slot of currentPrototypeSlots()) {
+    if (slot === error) return false;
+  }
+  return true;
 }
 
 export function applyVersionGate(error: unknown, payload: VersionGatePayload): Error {
@@ -512,8 +573,10 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
   // 装填被拒的载体（round 19 建、round 20 收口裁决、round 22 身份先于读）：
   // 模块态登记按身份拒绝，版本字段/消息/remediation 全不信，铸未知版本信封
   // （码仍是服务端亲署——门禁判定不受拒绝影响）。round 23：此处为载荷铸造
-  // 口（门禁判定已由调用方/检测器成立），不分种类一律铸拒绝信封
-  if (refusalOf(error) !== undefined) {
+  // 口（门禁判定已由调用方/检测器成立），不分种类一律铸拒绝信封；round 26/
+  // MUST 2 B3：异种拒绝不遮蔽落定门禁——落定的 gate 分册先于拒绝信封（409
+  // 不得因后续耗尽拒绝而裸抛未知版）
+  if (refusalOf(error) !== undefined && !provenKindIs(error, 'gate')) {
     return {
       code: VERSION_GATE_CODE,
       message: VERSION_GATE_FALLBACK_MESSAGE,
@@ -525,13 +588,13 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
   // 不经装饰）回退自有数据描述符读（ownDataValue）。载荷形态与通用分支同
   // （ok 与转向字段由 versionGateResult 的外壳补齐）
   if (provenKindIs(error, 'gate')) {
-    const rawCv = provenField(error, 'clientVersion');
-    const rawMv = provenField(error, 'minVersion');
+    const rawCv = provenField(error, 'gate', 'clientVersion');
+    const rawMv = provenField(error, 'gate', 'minVersion');
     const clientVersion = typeof rawCv === 'string' ? cleanMessage(rawCv) || undefined : undefined;
     const minVersion = typeof rawMv === 'string' ? cleanMessage(rawMv) || undefined : undefined;
-    const rawRem = provenField(error, 'remediation') ?? ownDataValue(error, 'remediation');
+    const rawRem = provenField(error, 'gate', 'remediation') ?? ownDataValue(error, 'remediation');
     const remediation = serializableRemediation(rawRem);
-    const rawMessage = provenField(error, 'message') ?? chainDataValue(error, 'message');
+    const rawMessage = provenField(error, 'gate', 'message') ?? chainDataValue(error, 'message');
     const message = cleanMessage(typeof rawMessage === 'string' ? rawMessage : '') || VERSION_GATE_FALLBACK_MESSAGE;
     return {
       code: VERSION_GATE_CODE,
@@ -574,6 +637,20 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
  * 各出口的 409 门禁折叠（dev e1255a4b 的 toVersionGateResult）：非门禁错误返回
  * undefined，调用方继续原有抛出/业务折叠。无码 409（可读/中断/非 JSON）同折。
  */
+// 门禁信封的转向字段（round 25/MUST 3 建、round 26/MUST 2 去重为两路共
+// 用）：自有数据描述符读——[[Get]] 读让立着访问器注入任意文案（pay-here
+// URL 骑上信封）；真实 409 门禁载体从不携带 retryAfter——出现即敌意，与
+// 耗尽折叠的 ownDataValue 同标准
+function steeringOfGateCarrier(error: unknown): Record<string, unknown> {
+  const rawRetryAfter = ownDataValue(error, 'retryAfter');
+  const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
+  const coreHoursExhausted = ownDataValue(error, 'coreHoursExhausted');
+  return {
+    ...(retryAfter ? { retryAfter } : {}),
+    ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+  };
+}
+
 export function versionGateResult(error: unknown): Record<string, unknown> | undefined {
   // 身份先于一切读取（round 22/MUST 4）、按种类裁决（round 23/SHOULD 7）：
   // gate 登记零读铸门禁未知信封——exhaustion 登记不是门禁（其结构化信封属
@@ -582,20 +659,22 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
   const refusal = refusalOf(error);
   if (refusal !== undefined) {
     if (refusal.kinds.has('gate')) return registeredGateEnvelope();
+    // 异种拒绝不遮蔽落定门禁（round 26/MUST 2 B3）：落定记录是模块自身的
+    // 裁决数据——继续走载荷路径；无落定门禁才按 identity 拒绝
+    if (provenKindIs(error, 'gate')) {
+      return {
+        ok: false,
+        ...gateFoldPayload(error),
+        ...steeringOfGateCarrier(error),
+      };
+    }
     return undefined;
   }
   if (!isVersionGateError(error)) return undefined;
-  // 转向字段改自有数据描述符读（round 25/MUST 3）：[[Get]] 读让立着访问器
-  // 注入任意文案（pay-here URL 骑上信封）；真实 409 门禁载体从不携带
-  // retryAfter——出现即敌意，与耗尽折叠的 ownDataValue 同标准
-  const rawRetryAfter = ownDataValue(error, 'retryAfter');
-  const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
-  const coreHoursExhausted = ownDataValue(error, 'coreHoursExhausted');
   return {
     ok: false,
     ...gateFoldPayload(error),
-    ...(retryAfter ? { retryAfter } : {}),
-    ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+    ...steeringOfGateCarrier(error),
   };
 }
 
@@ -1154,25 +1233,30 @@ function cloneCarrier(
  */
 export function transientExhaustionResult(error: unknown): Record<string, unknown> | undefined {
   // 身份先于一切读取（round 19 建、round 22 排序收口）：登记拒绝的载体
-  // 不在此折叠——丢弃载体上的任何陈述都不可信，零读拒绝。
+  // 不在此折叠——丢弃载体上的任何陈述都不可信，零读拒绝。异种拒绝不遮
+  // 蔽落定耗尽（round 26/MUST 2 对称收口）：落定记录是模块自身的裁决数据
+  // ——门禁拒绝不得让已落定的耗尽折叠消失（与 B3 的门禁半边同规则）
+  const refusal = refusalOf(error);
+  if (refusal !== undefined && (refusal.kinds.has('exhaustion') || !provenKindIs(error, 'exhaustion'))) {
+    return undefined;
+  }
   // 落定登记优先（round 24/MUST 3c）：经 [[Get]] 重读会翻供/删除——按记
   // 录的设计字段铸信封，零载体读
-  if (refusalOf(error) !== undefined) return undefined;
   if (provenKindIs(error, 'exhaustion')) {
-    const marker = provenField(error, 'gatewayRetryExhausted');
+    const marker = provenField(error, 'exhaustion', 'gatewayRetryExhausted');
     if (marker !== true) return undefined;
     // 记录未含的字段（服务端亲署码/消息/转向字段不经装饰）回退到自有数据
     // 描述符读（ownDataValue）——亲署码与消息保留（round-24 授权行）；窄化
     // 与通用分支同口径（round 16/18/19）
-    const rawCode = provenField(error, 'code') ?? chainDataValue(error, 'code');
-    const rawRetries = provenField(error, 'connectRetries') ?? ownDataValue(error, 'connectRetries');
-    const rawRetryAfter = provenField(error, 'retryAfter') ?? ownDataValue(error, 'retryAfter');
-    const rawCore = provenField(error, 'coreHoursExhausted') ?? ownDataValue(error, 'coreHoursExhausted');
-    const rawRemediation = provenField(error, 'remediation') ?? ownDataValue(error, 'remediation');
+    const rawCode = provenField(error, 'exhaustion', 'code') ?? chainDataValue(error, 'code');
+    const rawRetries = provenField(error, 'exhaustion', 'connectRetries') ?? ownDataValue(error, 'connectRetries');
+    const rawRetryAfter = provenField(error, 'exhaustion', 'retryAfter') ?? ownDataValue(error, 'retryAfter');
+    const rawCore = provenField(error, 'exhaustion', 'coreHoursExhausted') ?? ownDataValue(error, 'coreHoursExhausted');
+    const rawRemediation = provenField(error, 'exhaustion', 'remediation') ?? ownDataValue(error, 'remediation');
     const remediation = serializableRemediation(rawRemediation);
     const connectRetries =
       typeof rawRetries === 'number' && Number.isSafeInteger(rawRetries) && rawRetries >= 0 ? rawRetries : undefined;
-    const rawMessage = provenField(error, 'message') ?? chainDataValue(error, 'message');
+    const rawMessage = provenField(error, 'exhaustion', 'message') ?? chainDataValue(error, 'message');
     return {
       ok: false,
       ...(typeof rawCode === 'string' ? { code: rawCode } : {}),

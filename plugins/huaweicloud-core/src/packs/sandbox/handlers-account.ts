@@ -3,6 +3,7 @@ import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../..
 import {
   canonCode,
   cleanMessage,
+  ownDataValue,
   safeMessageText,
   safeReadField,
   serializableRemediation,
@@ -75,8 +76,23 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     // 撤销代理按缺失——缺失的码不进业务分支，原错误原样抛出；remediation 经
     // serializableRemediation 深验——非对象、嵌套 BigInt、循环引用、判别器、
     // 有状态换值、非对象 JSON 视图一并不骑信封
-    const businessCode = canonCode(safeReadField(error, 'code'));
-    const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
+    // 判等口径 vs 渲染口径（round 26/MUST 3）：canonCode 只作判等——织入/垫
+    // 码的业务码仍按 round-12 教义识别（传输噪声下的真服务码）；渲染对齐
+    // voucher 谓词——服务端亲署码不含空白渲染字符，原始拼写带空白渲染字
+    // 符即非亲署，渲染其清洗形会把伪造码洗成亲署拼写的字节等价物（
+    // HDKIT_QUOTA\u200b_EXCEEDED 洗成签名 HDKIT_QUOTA_EXCEEDED——真实 wire
+    // 路径可经网关/代理注入织入拼写）——一律省略（码字段与前缀同判）；
+    // 空白码同样省略（never-blank-code 教义——此前渲染 code:''）
+    const rawBusinessCode = safeReadField(error, 'code');
+    const businessCode = canonCode(rawBusinessCode);
+    const renderCode =
+      typeof rawBusinessCode === 'string' && businessCode !== '' && businessCode === rawBusinessCode
+        ? rawBusinessCode
+        : undefined;
+    // 转向字段改自有数据描述符读（round 26/MUST 3）：[[Get]] 读让立着访问
+    // 器注入任意文案（pay-here URL）；与门禁/耗尽折叠的 ownDataValue 同标
+    // 准（round 25 漏掉了本折叠）
+    const coreHoursExhausted = ownDataValue(error, 'coreHoursExhausted');
     if (
       businessCode === 'HDKIT_QUOTA_EXCEEDED' ||
       businessCode === 'HDKIT_CAPACITY_INSUFFICIENT' ||
@@ -85,15 +101,15 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     ) {
       // retryAfter 窄到字符串、remediation 深验（round 16）：BigInt 等敌意值
       // 不骑信封（MCP 序列化边界，与门禁/耗尽折叠同口径）
-      const rawRetryAfter = safeReadField(error, 'retryAfter');
+      const rawRetryAfter = ownDataValue(error, 'retryAfter');
       const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
       const remediation = serializableRemediation(safeReadField(error, 'remediation'));
       // 空白/缺失消息走构建口同款代码前缀兜底（round 20）：其余折叠口从不
       // 渲染空 message，此处对齐——纯不可见消息按缺失
-      const fallbackMessage = businessCode ? `${businessCode}: hdkitservice error` : 'hdkitservice error';
+      const fallbackMessage = renderCode ? `${renderCode}: hdkitservice error` : 'hdkitservice error';
       return {
         ok: false,
-        code: businessCode,
+        ...(renderCode ? { code: renderCode } : {}),
         message: cleanMessage(safeMessageText(error)) || fallbackMessage,
         ...(retryAfter ? { retryAfter } : {}),
         ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),

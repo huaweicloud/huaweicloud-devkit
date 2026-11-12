@@ -688,3 +688,36 @@ test('the relay auto-create catch checks the gate before the quota comparison: a
   assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the upgrade guidance carries');
   assert.doesNotMatch(f.hint ?? '', /API Key 数量已达上限/, 'the quota hint never fires for a gate carrier');
 });
+
+// ── 落定裁决在种类集下存活（round 26/MUST 2，中继半边）──
+
+test('the relay verdict survives cross-kind re-decorations and foreign refusals (B1/B3 at the relay)', async () => {
+  // B1：门禁落定 → 耗尽再装饰 → 中继裁决存活（此前单槽 __kind 被覆写——
+  // 中继复现 NO_CREDENTIAL 误诊，正是记录要防的形态）；B3：门禁落定 → 耗
+  // 尽装饰拒绝 → 同判
+  const { applyVersionGate, decorateExhaustedConnect } =
+    await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  const b1 = Object.assign(new Error('relay B1 twin'), { status: 409 });
+  applyVersionGate(b1, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  decorateExhaustedConnect(b1, 2);
+  const f1 = await failingGateThrowing(b1);
+  assert.equal(
+    f1.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the cross-kind re-decoration never kills the relay gate verdict',
+  );
+  assert.ok((f1 as { gateRemediation?: { hint: string } }).gateRemediation, 'the upgrade guidance rides');
+  assert.doesNotMatch(f1.hint ?? '', /No DevBridge API Key is available/, 'the NO_CREDENTIAL misdiagnosis never fires');
+
+  const b3 = Object.assign(new Error('relay B3 twin'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  applyVersionGate(b3, { clientVersion: '4.0.0', minVersion: '4.0.0' });
+  standingAccessor(b3, 'connectRetries');
+  decorateExhaustedConnect(b3, 5);
+  const f3 = await failingGateThrowing(b3);
+  assert.equal(
+    f3.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the foreign refusal never shadows the landed gate at the relay',
+  );
+  assert.doesNotMatch(f3.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis never fires for B3 either');
+});

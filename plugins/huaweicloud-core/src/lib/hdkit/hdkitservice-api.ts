@@ -440,8 +440,8 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   // 洗形会让伪造码洗成亲署拼写的字节等价物（HDKIT_CRED_INVA\u200bLID 洗成
   // HDKIT_CRED_INVALID）——一律省略（比较口径的 canonCode 只作判等，不作
   // 渲染；round-24 的"渲染清洗形"预期按本条取代）
-  const cleanedCode =
-    typeof rawCode === 'string' && canonCode(rawCode) !== '' && canonCode(rawCode) === rawCode ? rawCode : undefined;
+  const canonicalCode = typeof rawCode === 'string' ? canonCode(rawCode) : '';
+  const cleanedCode = canonicalCode !== '' && canonicalCode === rawCode ? rawCode : undefined;
   const cleanedClientVersion =
     typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
   const cleanedMinVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
