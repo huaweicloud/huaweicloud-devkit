@@ -151,8 +151,13 @@ test('without --packs the install writes no DEVKIT_PACKS key', () => {
     const res = runCli(home, ['install', '--target', 'opencode']);
     assert.equal(res.status, 0, res.stderr || res.stdout);
     const entry = readEntry(home);
-    assert.equal(entry.environment, undefined, 'no environment field may appear without the flag');
-    assert.equal(entry.env, undefined, 'no env field may appear without the flag');
+    // The packs policy's contract is the DEVKIT_PACKS key, not the whole
+    // environment field: the ASK posture (version-gated, independent of
+    // --packs) legitimately writes DEVKIT_APPROVAL_MODE there on opencode
+    // >= 2.0, so an environment-object absence pin would fail on hosts
+    // with a probe-eligible opencode and pass vacuously elsewhere.
+    assert.equal(entry.environment?.DEVKIT_PACKS, undefined, 'no DEVKIT_PACKS key may appear without the flag');
+    assert.equal(entry.env?.DEVKIT_PACKS, undefined, 'no DEVKIT_PACKS key may appear without the flag');
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -22,6 +22,12 @@ import {
   removeSkillTreePermissionSeam,
   skillTreePermissionGlobs,
 } from '../lib/opencode-permission-seam.ts';
+import {
+  ASK_RULE_ACTION,
+  applyAskPermissionRule,
+  opencodeAskRuleVersionSupported,
+  removeAskPermissionRule,
+} from '../lib/opencode-ask-rule.ts';
 import { asRecord } from '../lib/as-record.ts';
 import { devkitOwnedSkillNames, tryCoreSkillNames } from '../install-payload.ts';
 
@@ -92,6 +98,43 @@ export function openCodeSeamGate(): 'on' | 'off' {
   return opencodeSeamVersionSupported(probeOpencodeVersion()) ? 'on' : 'off';
 }
 
+// The ask rule's version gate, same doctrine as the seam's:
+// HUAWEICLOUD_OPENCODE_ASK_RULE=on|off is the deterministic override for
+// the installer test suite (e2e strips it — the runner's install relies on
+// the natural probe); unset runs the probe. Unknown polarity is off: the
+// `permissions` array is the V2 shape measured on 2.2.7 only, so a
+// below-2.0, absent, or unparsable opencode writes NEITHER half of the
+// posture — the client rule without the server env double-gates, the env
+// without the rule fail-opens, and the pair must move together.
+export function openCodeAskGate(): 'on' | 'off' {
+  const forced = process.env.HUAWEICLOUD_OPENCODE_ASK_RULE;
+  if (forced === 'on' || forced === 'off') return forced;
+  return opencodeAskRuleVersionSupported(probeOpencodeVersion()) ? 'on' : 'off';
+}
+
+// The server half of the ask posture: DEVKIT_APPROVAL_MODE=ask in the mcp
+// entry's environment (the field OpenCode reads — the applyPacksToEntry
+// 'environment' precedent). Add-only-if-absent with the packs-write
+// doctrine: a user-set value other than 'ask' is theirs and wins with a
+// one-line WARN; 'ask' already present needs no write. An absent or empty
+// environment object is created. No delete path: uninstall removes the
+// whole mcp entry wholesale. Runs ONLY under the ask gate — see
+// openCodeAskGate for why the halves must move together.
+function applyApprovalModeToEntry(entry: Record<string, unknown>): boolean {
+  const env = asRecord(entry.environment);
+  const current = env.DEVKIT_APPROVAL_MODE;
+  if (current === 'ask') return false;
+  if (current !== undefined) {
+    const shown = typeof current === 'string' ? current : JSON.stringify(current);
+    console.log(
+      `  \x1b[33m[WARN]\x1b[0m OpenCode mcp entry already sets DEVKIT_APPROVAL_MODE=${shown} — keeping the user's value; it may not match the permissions ask rule (see README, Harness permission notes).`,
+    );
+    return false;
+  }
+  entry.environment = { ...env, DEVKIT_APPROVAL_MODE: 'ask' };
+  return true;
+}
+
 // The glob set the seam covers: the plugin-dir tree actually deployed by
 // this run plus per-skill globs for the native core meta-skill copies
 // (under the XDG opencode skills dir). An unusable manifest degrades to the
@@ -140,11 +183,33 @@ export function updateOpenCodeConfig(pluginDir: string): void {
       '  \x1b[33m[INFO]\x1b[0m opencode not verifiably at or above the measured permission floor — skipping the skills-tree permission write; see README (Harness permission notes) if direct skill reads prompt for approval.',
     );
   }
+  const askOn = openCodeAskGate() === 'on';
+  // The ask rule is a FOURTH change source, computed before the unchanged
+  // short-circuit for the same reason as the seam: an unchanged mcp entry
+  // is the dominant update shape, and every install made before the ask
+  // posture existed is exactly the population this must heal. The rule
+  // mutates config in place (ownership rules in lib/opencode-ask-rule.ts),
+  // so the single write below carries it.
+  let askRuleChanged = false;
+  if (askOn) {
+    const applied = applyAskPermissionRule(config);
+    askRuleChanged = applied.changed;
+    if (applied.skipped) {
+      console.log(
+        `  \x1b[33m[WARN]\x1b[0m opencode permissions already has an entry for ${ASK_RULE_ACTION} — keeping it as the user's (the posture follows its effect; see README, Harness permission notes).`,
+      );
+    }
+  } else {
+    console.log(
+      '  \x1b[33m[INFO]\x1b[0m opencode not verifiably at or above 2.0 — keeping the terminal token approval gate; no permissions ask rule or DEVKIT_APPROVAL_MODE is written.',
+    );
+  }
   const existing: unknown = asRecord(config.mcp)['huaweicloud-devkit'];
   if (existing) {
     const { entry, changed } = mergeCommandStyle(existing, { mcpPath });
     const packsChanged = applyPacksToEntry(entry, 'environment', 'OpenCode');
-    if (!changed && !packsChanged && !permChanged) {
+    const askEnvChanged = askOn && applyApprovalModeToEntry(entry);
+    if (!changed && !packsChanged && !permChanged && !askRuleChanged && !askEnvChanged) {
       console.log(`  OpenCode MCP config unchanged: ${configPath}`);
       return;
     }
@@ -153,6 +218,9 @@ export function updateOpenCodeConfig(pluginDir: string): void {
     config.mcp = mcpMap;
     writeMcpSettingsFile(configPath, config);
     console.log(`  OpenCode MCP config merged (user fields preserved): ${configPath}`);
+    if (askRuleChanged || askEnvChanged) {
+      console.log(`  ASK approval (permissions ask rule + DEVKIT_APPROVAL_MODE) -> ${configPath}`);
+    }
     return;
   }
   const mcpMap: Record<string, unknown> = asRecord(config.mcp);
@@ -162,10 +230,14 @@ export function updateOpenCodeConfig(pluginDir: string): void {
   const delta = takeAgentDelta('opencode');
   if (delta) entry = asRecord(applyUserDelta(entry, delta, 'command'));
   applyPacksToEntry(entry, 'environment', 'OpenCode');
+  const askEnvChanged = askOn && applyApprovalModeToEntry(entry);
   mcpMap['huaweicloud-devkit'] = entry;
   config.mcp = mcpMap;
   writeMcpSettingsFile(configPath, config);
   console.log(`  OpenCode config updated: ${configPath}`);
+  if (askRuleChanged || askEnvChanged) {
+    console.log(`  ASK approval (permissions ask rule + DEVKIT_APPROVAL_MODE) -> ${configPath}`);
+  }
 }
 
 export function removeOpenCodeConfig(): void {
@@ -190,8 +262,16 @@ export function removeOpenCodeConfig(): void {
   // value-exact deletion keeps user-modified rules (the ownership contract
   // lives in lib/opencode-permission-seam.ts).
   const permCleaned = removeSkillTreePermissionSeam(config, openCodeSeamGlobs(opencodePluginsDir()));
-  if (!hadEntry && !permCleaned) return;
+  // The ask-rule cleanup also runs unconditionally of the version gate: an
+  // uninstall must remove what any past install wrote — the opencode that
+  // gated the write may since have been upgraded, downgraded, or removed
+  // from PATH. Value-exact deletion keeps user-modified entries (the
+  // ownership contract lives in lib/opencode-ask-rule.ts); the mcp entry
+  // (and its DEVKIT_APPROVAL_MODE env) is already gone wholesale above.
+  const askCleaned = removeAskPermissionRule(config);
+  if (!hadEntry && !permCleaned && !askCleaned) return;
   writeMcpSettingsFile(configPath, config);
   if (hadEntry) console.log(`  OpenCode MCP config cleaned: ${configPath}`);
   if (permCleaned) console.log(`  Skills-tree permission rules removed: ${configPath}`);
+  if (askCleaned) console.log(`  ASK permission rule removed: ${configPath}`);
 }

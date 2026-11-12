@@ -31,6 +31,16 @@ The confirmation authorizes one execution of one command.
 - A run result's plan is minted without a token, so it never carries a usable approval. Re-running the command needs a fresh `huaweicloud_plan_cli_command` call and a fresh terminal confirmation.
 - Changing the arguments rejects the run, because the token pins the exact command hash and any real secret values in it.
 
+## Ask mode (DEVKIT_APPROVAL_MODE=ask)
+
+An alternative posture where the confirmation happens in the harness client's own permission prompt instead of the terminal. The plan mints no token and its `userConfirmation` carries `{ needed: true, mode: "ask", note }` instead of a `command` line; `huaweicloud_run_approved_command` needs only the same `args` plus `approvedByUser: true` — the client's prompt on that call IS the user's confirmation.
+
+The operator opts in; it is never the default. On OpenCode the installer (at or above 2.0) writes a top-level `permissions` array entry with effect `ask` for the `huaweicloud-devkit_huaweicloud_run_approved_command` action, plus `DEVKIT_APPROVAL_MODE=ask` in the mcp entry's environment, so the client half and the server half move together — the rule without the env double-gates (the client prompts AND the server still demands a token), the env without the rule fail-opens (the server trusts a prompt nobody shows). On other harnesses the operator sets `DEVKIT_APPROVAL_MODE=ask` in the server environment themselves; Claude Code needs no permission rule because the run tool declares `_meta` `anthropic/requiresUserInteraction` and the client prompts on every call.
+
+What changes: no approval token, no UUID in the model's context, no 5-minute TTL, and no single-use replay guard — a retried or repeated call simply prompts the user again. The PIN and TTY checks do not apply; the client's own prompt UI is the gate. `approvedByUser: true` is still required and still means the user approved this exact command.
+
+Honest trust boundary: the evidence is the client prompt itself — a harness without a per-tool prompt (or one whose permission system auto-approves) would execute without any user confirmation, which is why the mode is opt-in and the pair must stay whole. OpenCode's "Allow always" answer to the prompt saves an `allow` rule on the same action that removes the gate from then on — `npx huaweicloud-devkit doctor` fails that state; delete the rule or set its effect back to `ask`. The remote transport refuses ask mode outright and forces token mode. Token mode remains the default and the fallback for harnesses without a per-tool prompt.
+
 ## What the agent must not do
 
 - Never run `npx huaweicloud-devkit approve` or `npx huaweicloud-devkit pin` yourself, in any spelling. The confirmation's value is that the user's own terminal records it, and the safety hook denies both verbs on the agent Bash face for exactly that reason.

@@ -28,6 +28,16 @@ The run step validates:
 
 If all checks pass, the stored args are used to execute `runHcloud`.
 
+## Ask Mode (DEVKIT_APPROVAL_MODE=ask)
+
+The token contract above is the default. `DEVKIT_APPROVAL_MODE=ask` moves the confirmation onto the harness client's own permission prompt — the operator opts in (the OpenCode installer at or above 2.0 writes the client's top-level `permissions` ask rule on the `huaweicloud-devkit_huaweicloud_run_approved_command` action and the server env together, so the halves cannot drift; other harnesses set the env themselves).
+
+- Plan: `planHcloudCommand` mints NO token (nothing lands in the approvals store) and `userConfirmation` carries `{ needed: true, mode: 'ask', note }` instead of the approve `command` line.
+- Run: `runApprovedCommand` requires only `approvedByUser: true` plus the same `args` — no `approvalToken` (the tool schema keeps it optional and documents it as token-mode-only). The harness client's prompt on the call is the user's confirmation.
+- Replay semantics: no 5-minute TTL and no single-use claim — a retried or repeated call prompts the user again. The placeholder-secret guard and the strict re-classification of the executed args are unchanged in both modes.
+- `_meta` declaration: the run tool declares `anthropic/requiresUserInteraction: true`, so clients that honor the annotation (Claude Code) prompt on every call without any installer-written rule.
+- Remote carve-out: the stateless remote transport has no per-call permission prompt to trust, so it refuses ask mode, forces token mode, and warns — ask mode is a stdio-harness posture.
+
 ## Implementation
 
 ### Token Storage
