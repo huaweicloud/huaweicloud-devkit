@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.14-next.4 (2026-11-12)
+
+- style(sandbox): format resource-pool table
+- fix(sandbox): align resource-pool lifetime wording
+- fix(sandbox): keep lifetime reminders out of the final report
+
 ## 1.1.14-next.3 (2026-11-12)
 
 - fix(install): gate update on the node floor
