@@ -131,7 +131,8 @@ export function computeOnboarding({ credentials, reconciled } = {}) {
   } else {
     scenario = 3;
     reason = 's1-missing';
-    message = '未配置华为云凭证,需要完成登录后才能使用云能力。';
+    // #1055 D3-C14: exact contract string — clients match the precise text.
+    message = 'credentials not configured';
     steps = buildOnboardingSteps(3, { codearts: codeArts });
   }
 
