@@ -1,6 +1,6 @@
 
 ╔══════════════════════════════════════════════╗
-║     HuaweiCloud DevKit v2.0.0-next.1          ║
+║     HuaweiCloud DevKit v2.0.0-next.2          ║
 ║     https://github.com/huaweicloud   ║
 ╚══════════════════════════════════════════════╝
 
