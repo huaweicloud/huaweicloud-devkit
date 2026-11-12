@@ -40,6 +40,8 @@ mock.module(HWLINK_SPEC, {
 } as unknown as Parameters<typeof mock.module>[1]);
 
 const { hdkitVoucherStatus, hdkitConnectWithRetry } = await import(API_SPEC);
+const { transientExhaustionResult, versionGateResult } =
+  await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
 
 function fieldThrower(field: string, base?: Error): Error {
   const carrier = base ?? new Error('the real diagnosis');
@@ -305,6 +307,11 @@ test('the non-JSON branch survives a throwing status getter: the designed wrap c
   })) as Error & { bodyUnreadable?: boolean; status?: unknown };
   assert.ok(!(err instanceof TypeError), 'the non-JSON branch never detonates on a hostile status read');
   assert.match(err.message, /non-JSON/, 'the designed non-JSON wrap carries');
+  assert.match(
+    err.message,
+    /status 未知/,
+    'the absent status renders 未知 — never a manufactured literal (round 18 判别式)',
+  );
   assert.equal(err.bodyUnreadable, true, 'the wrap marker rides');
   assert.equal(err.status, undefined, 'a refusing status read attaches nothing');
 });
@@ -355,4 +362,71 @@ test('the 429 quota branch survives a throwing headers.get: the quota envelope c
   assert.equal(err.code, 'HDKIT_QUOTA_EXCEEDED', 'the quota code rides');
   assert.equal(err.retryAfter, undefined, 'a refusing header read attaches nothing');
   assert.match(err.remediation?.hint ?? '', /配额已满/, 'the quota remediation still rides');
+});
+
+// ── 敌意体与非有限状态（round 18）──
+// text() 可 resolve 出任意值——非字符串在非 JSON catch 里裸做 text.slice，
+// 原始 TypeError 顶替设计信封：409 门禁折叠死、502 不再重试。status 窄化只
+// 看 typeof——NaN/Infinity 被伪造成 HTTP_NaN/HTTP_Infinity。
+
+test('a text() resolving to a non-string is a hostile body: the 409 folds as the gate', async () => {
+  for (const [label, body] of [
+    ['object', { deep: true }],
+    ['undefined', undefined],
+    ['number', 123],
+  ] as const) {
+    const err = (await rejectViaHostileResponse({
+      status: 409,
+      ok: false,
+      text: async () => body,
+    })) as Error & { status?: unknown; bodyUnreadable?: boolean };
+    assert.ok(!(err instanceof TypeError), `${label}: never a raw TypeError`);
+    assert.equal(err.bodyUnreadable, true, `${label}: the wrap marker rides`);
+    assert.equal(err.status, 409, `${label}: the honest status attaches`);
+    const gate = versionGateResult(err);
+    assert.equal(gate?.code, 'HDKIT_VERSION_TOO_OLD', `${label}: the codeless 409 folds as the gate`);
+  }
+});
+
+test('a text() resolving to a non-string under a 502 retries like the string twin, then folds the exhaustion', async () => {
+  const savedSeam = process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS;
+  process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = '0,0';
+  let calls = 0;
+  const originalFetch = global.fetch;
+  global.fetch = (async () => {
+    calls += 1;
+    return { status: 502, ok: false, text: async () => ({ deep: true }) };
+  }) as unknown as typeof global.fetch;
+  try {
+    const outcome = await hdkitConnectWithRetry({}).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    assert.ok(outcome, 'expected rejection');
+    assert.equal(calls, 3, 'the hostile body under 502 retries exactly like the string twin (1 + 2 retries)');
+    const err = outcome as Error & { gatewayRetryExhausted?: boolean };
+    assert.ok(!(err instanceof TypeError), 'never a raw TypeError');
+    assert.equal(err.gatewayRetryExhausted, true, 'the exhaustion decoration rides');
+    const fold = transientExhaustionResult(err);
+    assert.equal(fold?.ok, false, 'the exhaustion fold fires on the decorated carrier');
+    assert.equal(fold?.code, 'HDKIT_GATEWAY_TIMEOUT');
+  } finally {
+    global.fetch = originalFetch;
+    if (savedSeam === undefined) delete process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS;
+    else process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = savedSeam;
+  }
+});
+
+test('a non-finite status manufactures nothing: NaN and Infinity never become HTTP_x', async () => {
+  for (const status of [Number.NaN, Number.POSITIVE_INFINITY] as const) {
+    const err = (await rejectViaHostileResponse({
+      status,
+      ok: false,
+      text: async () => JSON.stringify({ message: 'gateway busy' }),
+    })) as Error & { code?: unknown; status?: unknown };
+    assert.ok(!(err instanceof TypeError));
+    assert.equal(err.code, undefined, `status ${String(status)}: no HTTP_ manufactured code`);
+    assert.match(err.message, /gateway busy/, `status ${String(status)}: the message carries`);
+    assert.equal(err.status, undefined, `status ${String(status)}: a non-finite status does not attach`);
+  }
 });

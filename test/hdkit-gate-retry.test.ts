@@ -2580,6 +2580,11 @@ test('an unserializable remediation at the exhaustion fold mints the designed tr
     /连续遭遇网关 502\/504 超时（瞬时故障，非沙箱创建失败）/,
     'the hostile remediation is replaced by the designed transient guidance — never dropped',
   );
+  assert.match(
+    String(remediation.hint ?? ''),
+    /已自动重试 2 次仍失败/,
+    'the minted guidance carries the real retry count from the carrier (round 18 判别式)',
+  );
   assert.ok(Array.isArray(remediation.steps) && remediation.steps.length > 0, 'the designed steps ride');
   assert.doesNotThrow(() => {
     JSON.stringify(fold, null, 2);
@@ -2645,14 +2650,23 @@ test('applyVersionGate neutralizes its half decoration on a plain-class discarde
 });
 
 test('the descriptor-restore arm restores a pre-existing own property by its descriptor', () => {
-  // 预存 own connectRetries（有描述符）+ code 拒写：回滚走 defineProperty 臂
+  // 预存 own connectRetries（round 18 起判别式描述符：writable false——赋值
+  // 式"恢复"在严格模式下抛出被吞、装饰值残留，只有 defineProperty 臂能
+  // 还原）+ code 拒写：回滚走 defineProperty 臂
   const carrier = new Error('the real diagnosis') as unknown as HostileTarget;
-  Object.assign(carrier, { code: 20, connectRetries: 1 });
+  Object.assign(carrier, { code: 20 });
+  Object.defineProperty(carrier, 'connectRetries', {
+    value: 1,
+    writable: false,
+    configurable: true,
+    enumerable: true,
+  });
   Object.defineProperty(carrier, 'code', { get: () => 20, configurable: false });
   const out = decorateExhaustedConnect(carrier, 2);
   assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
   const desc = Object.getOwnPropertyDescriptor(carrier, 'connectRetries');
   assert.equal((carrier as { connectRetries?: unknown }).connectRetries, 1, 'the pre-write value returns');
+  assert.equal(desc && desc.writable, false, 'the writable-false trait restores — an assignment-based restore cannot');
   assert.ok(
     desc && desc.enumerable && desc.configurable,
     'the descriptor traits restore through the defineProperty arm',
@@ -2660,4 +2674,128 @@ test('the descriptor-restore arm restores a pre-existing own property by its des
   assert.equal('gatewayRetryExhausted' in carrier, false, 'the applied marker deletes cleanly (no descriptor)');
   assert.equal(transientExhaustionResult(carrier), undefined, 'the fold never fires on the discarded original');
   assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+});
+
+// ── 快照窄化、谎言 set 中和、非有限数（round 18）──
+// 深验对 parse 结果无条件断言——toJSON 在 remediation 键下呈现 0/''/[] 也照
+// 骑，铸造永不触发（比空载体的引导还少）。中和写不带读回——谎言 set 接受
+// 写入但存回装饰值，标记在丢弃原对象上存活、折叠照点。connectRetries/status
+// 的窄化只看 typeof——NaN 渲染进铸造文案。
+
+test('a non-object JSON view under the remediation key never rides: the mint fires at both folds', () => {
+  for (const view of [0, '', []] as const) {
+    const hostile = {
+      hint: 'hostile',
+      steps: ['s'],
+      toJSON() {
+        return view;
+      },
+    };
+    const gateCarrier = Object.assign(new Error('gate'), {
+      code: 'HDKIT_VERSION_TOO_OLD',
+      remediation: hostile,
+    });
+    const gate = versionGateResult(gateCarrier)!;
+    const gateRemediation = gate.remediation as unknown;
+    assert.ok(
+      gateRemediation !== null && typeof gateRemediation === 'object' && !Array.isArray(gateRemediation),
+      `view ${JSON.stringify(view)}: the minted gate remediation rides, never the raw view`,
+    );
+    assert.match(String((gateRemediation as { hint?: string }).hint ?? ''), /当前 未知.*最新版/);
+
+    const exhaustedCarrier = Object.assign(new Error('exhausted'), {
+      gatewayRetryExhausted: true,
+      connectRetries: 2,
+      remediation: hostile,
+    });
+    const exhausted = transientExhaustionResult(exhaustedCarrier)!;
+    const exhaustedRemediation = exhausted.remediation as unknown;
+    assert.ok(
+      exhaustedRemediation !== null && typeof exhaustedRemediation === 'object' && !Array.isArray(exhaustedRemediation),
+      `view ${JSON.stringify(view)}: the designed transient guidance rides`,
+    );
+    assert.match(String((exhaustedRemediation as { hint?: string }).hint ?? ''), /连续遭遇网关 502\/504 超时/);
+  }
+  // 对照：真实引导经快照往返逐字节一致
+  const real = { hint: 'real hint', steps: ['a', 'b'] };
+  const control = versionGateResult(
+    Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD', remediation: real }),
+  )!;
+  assert.deepEqual(control.remediation, real);
+});
+
+test('a lying-set marker accessor cannot survive the neutralization: the fold never fires on the discarded original', () => {
+  const carrier = new Error('the real diagnosis') as unknown as HostileTarget;
+  Object.assign(carrier, { code: 20 });
+  let stored = false;
+  // 谎言 set：接受每次写入但存回装饰值——写路径没封死，赋值"成功"
+  Object.defineProperty(carrier, 'gatewayRetryExhausted', {
+    configurable: true,
+    enumerable: true,
+    get: () => stored,
+    set: () => {
+      stored = true;
+    },
+  });
+  // 第二键双路封死，装饰在标记已装填后走回滚分支
+  Object.defineProperty(carrier, 'connectRetries', {
+    configurable: false,
+    writable: false,
+    value: 1,
+    enumerable: true,
+  });
+  const out = decorateExhaustedConnect(carrier, 2);
+  assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  assert.equal(
+    (carrier as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
+    undefined,
+    'the lying-set marker is falsified in place — the readback catches the lie, the defineProperty arm replaces the accessor',
+  );
+  assert.equal(transientExhaustionResult(carrier), undefined, 'the fold never fires on the discarded original');
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone carries the decoration');
+});
+
+test('applyVersionGate falsifies a lying-set half decoration on the discarded original', () => {
+  const carrier = new Error('gate') as unknown as HostileTarget;
+  Object.assign(carrier, { code: 'HDKIT_VERSION_TOO_OLD' });
+  let storedClient = 'old-value';
+  Object.defineProperty(carrier, 'clientVersion', {
+    configurable: true,
+    enumerable: true,
+    get: () => storedClient,
+    set: () => {
+      storedClient = '2.0.0-next.0';
+    },
+  });
+  Object.defineProperty(carrier, 'minVersion', {
+    configurable: false,
+    writable: false,
+    value: '1.0.0',
+    enumerable: true,
+  });
+  const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  assert.equal(
+    (carrier as { clientVersion?: unknown }).clientVersion,
+    undefined,
+    'the lying-set half decoration is falsified in place',
+  );
+  assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0', 'the clone carries the payload');
+});
+
+test('a non-finite connectRetries narrows away: the envelope carries no NaN and the mint omits the count', () => {
+  const carrier = Object.assign(new Error('exhausted'), {
+    gatewayRetryExhausted: true,
+    code: 'HDKIT_GATEWAY_TIMEOUT',
+    connectRetries: Number.NaN,
+    remediation: 1n,
+  });
+  const fold = transientExhaustionResult(carrier)!;
+  assert.equal(fold.connectRetries, undefined, 'a NaN count never rides the envelope');
+  const hint = String((fold.remediation as { hint?: string }).hint ?? '');
+  assert.ok(!hint.includes('NaN'), 'the mint hint never renders NaN');
+  assert.ok(!hint.includes('已自动重试'), 'no count sentence without a finite count');
+  assert.doesNotThrow(() => {
+    JSON.stringify(fold);
+  });
 });

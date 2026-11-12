@@ -238,8 +238,9 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const clientVersion =
       typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
     const minVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
-    // remediation 窄化升级深验（round 16）：嵌套 BigInt/循环引用同样兜底，
-    // 共用 serializableRemediation（安全读防抛出 + 深序列化验证）
+    // remediation 深验（round 16 建、round 17 修嵌套上下文+快照往返、
+    // round 18 快照形态窄化）：嵌套 BigInt/循环引用/判别器/有状态换值/
+    // 非对象 JSON 视图同样兜底，共用 serializableRemediation
     const remediation = serializableRemediation(safeReadField(error, 'remediation'));
     return {
       code: VERSION_GATE_CODE,
@@ -324,7 +325,12 @@ export function serializableRemediation(raw: unknown): { hint: string; steps: st
   try {
     const verified = JSON.stringify({ remediation: raw });
     const snapshot = JSON.parse(verified) as { remediation?: unknown };
-    return snapshot.remediation as { hint: string; steps: string[] };
+    // 快照形态窄化（round 18）：toJSON 在 remediation 键下可呈现任意 JSON
+    // 值——非对象（0/''/null）与数组不是引导记录（无 hint 可读），按拒绝
+    // 处理，各出口的设计引导铸造兜底——信封指引不得少于空载体
+    const parsed = snapshot.remediation;
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
+    return parsed as { hint: string; steps: string[] };
   } catch {
     return undefined;
   }
@@ -426,14 +432,19 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
           // 还原亦被拒（被丢弃的原对象，尽力而为）
         }
       }
-      // 回滚验证与中和（round 17）：删除/恢复都可能被拒或被谎——不可配置
-      // 落盘（plain class 的原型 setter 落 own 属性后封壳，删除与恢复双双
-      // 静默失败）、撒谎 deleteProperty（报成功不删除）。逐键回读：装饰值
-      // 仍在则按赋值中和（有快照恢复快照值，否则 undefined——标记值被中和
-      // 即折叠永不点燃）；赋值亦被拒（全写路径封死的载体）是记录边界——
-      // 无任何客户端方案能从只读落盘里移除装饰，载体本被丢弃，台账记录
+      // 回滚验证与中和（round 17 建、round 18 补读回验证）：删除/恢复都可能
+      // 被拒或被谎——不可配置落盘（plain class 的原型 setter 落 own 属性后
+      // 封壳，删除与恢复双双静默失败）、撒谎 deleteProperty（报成功不删
+      // 除）、谎言 set（接受写入但存回装饰值——赋值"成功"而标记存活）。
+      // 逐键回读：装饰值仍在则中和——先赋值（有快照恢复快照值，否则
+      // undefined），赋值后回读验证（装饰写自 round 13 起的读回纪律，中和
+      // 写 round 18 起同律）；读回仍是装饰值则走 defineProperty 臂——把可
+      // 配置的访问器整体替换为数据属性（恢复臂的同款能力）；再失败即
+      // round-17 记录边界：全写路径封死的载体无客户端方案可移除，载体本
+      // 被丢弃，台账记录。undefined 装饰值跳过——空值点不燃任何折叠触发
       for (const done of [...applied, key]) {
         const written = writtenValues.get(done);
+        if (written === undefined) continue;
         let current: unknown;
         try {
           current = target[done];
@@ -443,10 +454,23 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
         if (current !== written) continue;
         const snap = snapshots.get(done);
         const neutral: unknown = snap && snap.value !== undefined ? snap.value : undefined;
+        let neutralized = false;
         try {
           target[done] = neutral;
+          try {
+            neutralized = target[done] !== written;
+          } catch {
+            // 读回抛出——视为未中和，走 defineProperty 臂
+          }
         } catch {
-          // 全写路径封死——记录边界（见注释）
+          // 赋值被拒——视为未中和，走 defineProperty 臂
+        }
+        if (!neutralized) {
+          try {
+            Object.defineProperty(target, done, { value: neutral, writable: true, configurable: true });
+          } catch {
+            // 全写路径封死——记录边界（见注释）
+          }
         }
       }
       return false;
@@ -597,7 +621,9 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   const rawCode = safeReadField(error, 'code');
   const code = typeof rawCode === 'string' ? rawCode : undefined;
   const rawRetries = safeReadField(error, 'connectRetries');
-  const connectRetries = typeof rawRetries === 'number' ? rawRetries : undefined;
+  // 有限数窄化（round 18）：NaN 是 number 但不可作为次数——骑上信封序列化
+  // 成 null，进铸造文案渲染"重试 NaN 次"；缺省时铸造文案省略次数短句
+  const connectRetries = typeof rawRetries === 'number' && Number.isFinite(rawRetries) ? rawRetries : undefined;
   // remediation 深验拒绝即铸造（round 17 / MUST 4）：耗尽信封的指引不得少于
   // 空载体——丢弃敌意值换来"零引导"是倒退；设计瞬时文案统一铸造
   const remediation =

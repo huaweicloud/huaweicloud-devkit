@@ -70,10 +70,11 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     if (gate) return gate;
     const exhausted = transientExhaustionResult(err);
     if (exhausted) return exhausted;
-    // 业务折叠的字段读全过安全卫队与窄化（round 15 建、round 16 升深验）：
-    // 抛出型 getter/撤销代理按缺失——缺失的码不进业务分支，原错误原样抛出；
-    // remediation 经 serializableRemediation 深验（嵌套上下文 + 快照往返），
-    // 非对象、嵌套 BigInt、循环引用、判别器、有状态换值一并不骑信封
+    // 业务折叠的字段读全过安全卫队与窄化（round 15 建、round 16 深验、
+    // round 17 嵌套上下文+快照往返、round 18 快照形态窄化）：抛出型 getter/
+    // 撤销代理按缺失——缺失的码不进业务分支，原错误原样抛出；remediation 经
+    // serializableRemediation 深验——非对象、嵌套 BigInt、循环引用、判别器、
+    // 有状态换值、非对象 JSON 视图一并不骑信封
     const businessCode = canonCode(safeReadField(error, 'code'));
     const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
     if (

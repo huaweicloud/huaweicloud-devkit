@@ -46,17 +46,16 @@ function getHdkitBaseUrl(): string {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
 }
 
-// 传输层拒绝的统一包装（round 7 响应体 + round 8 fetch 层）：从清洗值构建
-// 抛出错误——空白/纯不可见原因落设计文案，真文本原样透传；原对象（含传输
-// 层自带的 code 属性，如 AbortError DOMException 的数值 20）不透传；
-// bodyUnreadable 标记供门禁折叠区分传输形态与服务端话术。
-// resp 接缝的安全读（round 17）：敌意响应对象的 status/ok/headers.get 都
-// 是 getter——裸读在各分支里把设计信封换成 TypeError。三读全部带卫队与
-// 窄化：status 只在数字时携带，ok 只在真布尔时按真处理（缺读按非 ok——
-// 不可确认的成功不是成功），Retry-After 只在头读返回字符串时携带
+// resp 接缝的安全读（round 17 建、round 18 补有限数窄化）：敌意响应对象
+// 的 status/ok/headers.get 都是 getter——裸读在各分支里把设计信封换成
+// TypeError。三读全部带卫队与窄化：status 只在有限数字时携带，ok 只在真
+// 布尔时按真处理（缺读按非 ok——不可确认的成功不是成功），Retry-After
+// 只在头读返回字符串时携带
 function safeRespStatus(resp: unknown): number | undefined {
   const status = safeReadField(resp, 'status');
-  return typeof status === 'number' ? status : undefined;
+  // 有限数窄化（round 18）：NaN/Infinity 是 number 但不可序列化为合法
+  // 状态——携带会伪造 HTTP_NaN/HTTP_Infinity 伪码，也不可作瞬时判定输入
+  return typeof status === 'number' && Number.isFinite(status) ? status : undefined;
 }
 
 function safeRespOk(resp: unknown): boolean {
@@ -79,10 +78,14 @@ function safeRetryAfterHeader(resp: unknown): string | undefined {
   return undefined;
 }
 
+// 传输层拒绝的统一包装（round 7 响应体 + round 8 fetch 层）：从清洗值构建
+// 抛出错误——空白/纯不可见原因落设计文案，真文本原样透传；原对象（含传输
+// 层自带的 code 属性，如 AbortError DOMException 的数值 20）不透传；
+// bodyUnreadable 标记供门禁折叠区分传输形态与服务端话术。
+// round 17 起来因形态也不可信：instanceof 在撤销代理上抛（[[GetPrototypeOf]]
+// 陷阱），message 读在抛出型 getter 上抛——包装口全部的意义就是不信任来因。
+// 原型检查与消息读都带防护，任一被拒按缺失（兜底文案）
 function transportReason(error: unknown, fallback: string): Error {
-  // 来因形态不可信（round 15）：instanceof 在撤销代理上抛（[[GetPrototypeOf]]
-  // 陷阱），message 读在抛出型 getter 上抛——包装口全部的意义就是不信任来因。
-  // 原型检查与消息读都带防护，任一被拒按缺失（兜底文案）
   let reason = '';
   try {
     if (error instanceof Error) {
@@ -155,6 +158,13 @@ async function hdkitRequest(
   let text: string;
   try {
     text = await resp.text();
+    // 敌意体收口（round 18）：text() 可 resolve 出任意值——非字符串先前在非
+    // JSON catch 里裸做 text.slice，原始 TypeError 顶替设计信封（409 门禁折
+    // 叠死、502 不再重试）。按不可读体处理：本 catch 的设计包装（清洗文案 +
+    // bodyUnreadable + 安全读 status），与 text() 拒绝孪生同形
+    if (typeof text !== 'string') {
+      throw new TypeError(`hdkitservice response body is not text (typeof ${typeof text})`);
+    }
   } catch (error) {
     // 状态读过安全卫队（round 16）：text() 拒绝 + 敌意 status getter 不得
     // 在包装口自己的 catch 里引爆——无状态即无网关信号（不重试），标记照带
@@ -170,15 +180,15 @@ async function hdkitRequest(
     const parsed: unknown = JSON.parse(text);
     data = Array.isArray(parsed) ? parsed : asRecord(parsed);
   } catch {
-    // 非 JSON 页必须携带 resp.status：瞬时判定按 status 裁决，不带 status 的
-    // 抛错会被消息兜底误判（round 3）。bodyUnreadable 同标记（round 6）。
+    // 非 JSON 页携带 status（round 17 起过安全读+窄化）：诚实的有限数字照带
+    // ——瞬时判定按 status 裁决（round 3 的教训：不带 status 的抛错会被消息
+    // 兜底误判）；敌意/非有限读按缺读处理——渲染"未知"、不携带（无状态即
+    // 无码可制造）。bodyUnreadable 同标记（round 6）。
     // 片段按码点截断并过清洗口（round 10）：UTF-16 单元截断会把星面区对截成
     // 孤立代理对，阻断所有清洗——不可见字符随片段骑进折叠消息
     // 先按 UTF-16 单元截头部再按码点截断（round 11）：[...text] 会物化整个
     // 响应体（40MB 页面实测 1.07GB 堆），400 单元保证覆盖 200 码点
     const snippet = cleanMessage([...text.slice(0, 400)].slice(0, 200).join(''));
-    // 状态过安全读（round 17）：敌意 status getter 不得在本分支引爆——
-    // 缺读渲染"未知状态"，status 仅数字时携带
     const nonJsonStatus = safeRespStatus(resp);
     throw Object.assign(
       new Error(`hdkitservice returned non-JSON (status ${nonJsonStatus ?? '未知'})${snippet ? `: ${snippet}` : ''}`),
@@ -389,10 +399,11 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   if (isVersionGateError(error)) {
     return { claimed: false, ...gateFoldPayload(error) };
   }
-  // 非门禁信封的字段读全过安全卫队与窄化（round 15 建、round 16 升深验）：
-  // 抛出型 getter/撤销代理按缺失，缺失的消息走 unavailable 文案；remediation
-  // 经 serializableRemediation 深验（嵌套上下文 + 快照往返）——非对象、嵌套
-  // BigInt、循环引用、判别器、有状态换值一并不骑信封
+  // 非门禁信封的字段读全过安全卫队与窄化（round 15 建、round 16 深验、
+  // round 17 嵌套上下文+快照往返、round 18 快照形态窄化）：抛出型 getter/
+  // 撤销代理按缺失，缺失的消息走 unavailable 文案；remediation 经
+  // serializableRemediation 深验——非对象、嵌套 BigInt、循环引用、判别器、
+  // 有状态换值、非对象 JSON 视图一并不骑信封
   const rawCode = safeReadField(error, 'code');
   const rawClientVersion = safeReadField(error, 'clientVersion');
   const rawMinVersion = safeReadField(error, 'minVersion');
