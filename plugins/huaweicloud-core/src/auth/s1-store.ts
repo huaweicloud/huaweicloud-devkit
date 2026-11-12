@@ -4,9 +4,9 @@
 // resolution seam, the last-sync sidecar, and the backup/restore pair.
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { homedir } from 'node:os';
 
 import { asText } from '../lib/as-text.ts';
+import { devkitStateBase, huaweiConfigBase } from '../lib/pack-state.ts';
 import { resolveSecretValue } from '../lib/secret-vault/store.ts';
 
 // The credential vault is JSON on disk shaped like this. Fields stay `unknown`
@@ -57,23 +57,38 @@ export function ensurePrivateMode(path: string): void {
   }
 }
 
-function baseHome(): string {
-  return process.env.HUAWEICLOUD_HOME || homedir();
-}
-
 export function globalCredentialsPath(): string {
-  return join(baseHome(), '.config', 'huaweicloud', 'credentials.json');
+  return join(devkitStateBase(), 'credentials.json');
 }
 
-export function readGlobalCredentials(): StoredCredentials | null {
-  const path = globalCredentialsPath();
+// The historical read location. On a read-only-home fallback the config tree
+// may still carry a pre-provisioned credentials.json; reads prefer the
+// writable state tree but fall back here so those credentials keep working.
+function legacyGlobalCredentialsPath(): string {
+  return join(huaweiConfigBase(), 'credentials.json');
+}
+
+function readJsonObject(path: string): Record<string, unknown> | null {
   if (!existsSync(path)) return null;
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null;
   } catch {
     return null;
   }
+}
+
+export function readGlobalCredentials(): StoredCredentials | null {
+  const primary = globalCredentialsPath();
+  const stored = readJsonObject(primary);
+  if (stored) return stored;
+  if (!existsSync(primary)) {
+    const legacy = legacyGlobalCredentialsPath();
+    if (legacy !== primary) return readJsonObject(legacy);
+  }
+  return null;
 }
 
 // S1 may hold secret://<scope>/<name> refs in its secret-bearing fields (the
@@ -156,18 +171,22 @@ export function setConfiguredBySession(flag: unknown): void {
 }
 
 export function lastSyncPath(): string {
-  return join(baseHome(), '.config', 'huaweicloud', '.last_sync');
+  return join(devkitStateBase(), '.last_sync');
+}
+
+function readLastSyncFile(path: string): LastSyncRecord | null {
+  return readJsonObject(path);
 }
 
 export function readLastSync(): LastSyncRecord | null {
-  const path = lastSyncPath();
-  if (!existsSync(path)) return null;
-  try {
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
-  } catch {
-    return null;
+  const primary = lastSyncPath();
+  const stored = readLastSyncFile(primary);
+  if (stored) return stored;
+  if (!existsSync(primary)) {
+    const legacy = join(huaweiConfigBase(), '.last_sync');
+    if (legacy !== primary) return readLastSyncFile(legacy);
   }
+  return null;
 }
 
 export interface LastSyncMetadata {
@@ -188,11 +207,13 @@ export function writeLastSync(metadata: LastSyncMetadata = {}): void {
 }
 
 export function backupGlobalCredentials(): string | null {
-  const path = globalCredentialsPath();
-  if (!existsSync(path)) return null;
-  const bakPath = `${path}.bak`;
+  const target = globalCredentialsPath();
+  const source = existsSync(target) ? target : legacyGlobalCredentialsPath();
+  if (!existsSync(source)) return null;
+  const bakPath = `${target}.bak`;
   try {
-    copyFileSync(path, bakPath);
+    mkdirSync(dirname(bakPath), { recursive: true });
+    copyFileSync(source, bakPath);
     ensurePrivateMode(bakPath);
     return bakPath;
   } catch {

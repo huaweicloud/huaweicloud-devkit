@@ -7,6 +7,7 @@
 HuaweiCloud DevKit Doctor
 
   [PASS] Node.js >= 22.19
+  [PASS] State directory writable (~/.config/huaweicloud)
   [PASS] MCP server installed
   [PASS] MCP server can start (OfficeAce)
   [FAIL] Runtime deps (undici) installed — Run: npx huaweicloud-devkit install
@@ -22,5 +23,5 @@ HuaweiCloud DevKit Doctor
   [INFO] Packs (OfficeAce): core, huaweicloud-cli
   [WARN] Packs (OfficeAce): the secret vault is initialized but the secrets pack is trimmed — the vault MCP tools (huaweicloud_secret_set/list/delete) are not disclosed on this target; secret:// refs still resolve wherever their consumers are enabled. Enable: npx huaweicloud-devkit packs enable secrets --target <agent>
 
-Results: 8 pass, 1 warn, 4 fail
+Results: 9 pass, 1 warn, 4 fail
 Fix failures above, then restart your session.

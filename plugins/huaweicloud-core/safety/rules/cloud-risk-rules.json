@@ -183,6 +183,61 @@
       "remediation": "Remove the literal credential: reference it from environment variables, a DEW CSMS secret reference, or the platform credential vault (huaweicloud_secret_set), and rotate the exposed key immediately."
     },
     {
+      "id": "hwc-artifact-plaintext-password",
+      "title": "Plaintext password in artifact",
+      "category": "secret",
+      "severity": "warn",
+      "stages": ["artifact", "deploy_plan"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "[A-Za-z0-9_.-]*(?:password|passwd|pwd|secret)(?!://)[\"']?\\s*[:=]\\s*[\"']?(?!(?:<|\\$|%|\\{\\{|#\\{|secret://|var\\.|local\\.|module\\.|data\\.|each\\.|path\\.|terraform\\.|env\\.|os\\.environ|process\\.env|\\*{3,}|changeme|change_me|placeholder|example|xxx|none|N/A))[^\\s\"'<>]{3,}"
+          },
+          {
+            "field": "text",
+            "regex": "<(?:password|passwd|pwd)[^>]*>\\s*(?!(?:<|\\$|%|\\{\\{|#\\{|secret://|\\*{3,}|changeme|change_me|placeholder|example|xxx|none|N/A))[^<\\s][^<]{2,}\\s*</(?:password|passwd|pwd)>"
+          }
+        ]
+      },
+      "message": "The artifact or plan carries what looks like a plaintext password or secret value.",
+      "remediation": "Replace the literal with a secret reference (DEW CSMS, huaweicloud_secret_set, ${VAR}, or var.<name>) and rotate any value that was committed."
+    },
+    {
+      "id": "hwc-container-privileged",
+      "title": "Privileged container",
+      "category": "container",
+      "severity": "deny",
+      "stages": ["artifact", "deploy_plan"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "\\bprivileged[\"']?\\s*[:=]\\s*[\"']?true\\b"
+          }
+        ]
+      },
+      "message": "The manifest or plan runs a container with privileged: true (host devices and capabilities).",
+      "remediation": "Drop privileged mode. Grant only the specific capabilities the workload needs (capabilities.add) and run as a non-root user."
+    },
+    {
+      "id": "hwc-container-privilege-escalation",
+      "title": "Container privilege escalation allowed",
+      "category": "container",
+      "severity": "warn",
+      "stages": ["artifact", "deploy_plan"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "\\ballowPrivilegeEscalation[\"']?\\s*[:=]\\s*[\"']?true\\b"
+          }
+        ]
+      },
+      "message": "The manifest allows a process to gain more privileges than its parent (allowPrivilegeEscalation: true).",
+      "remediation": "Set allowPrivilegeEscalation: false and runAsNonRoot: true unless the workload provably requires escalation."
+    },
+    {
       "id": "hwc-obs-anonymous-write",
       "title": "OBS anonymous write",
       "category": "public_exposure",
@@ -244,16 +299,37 @@
           },
           {
             "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
+            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|[\"']?actions?[\"']?\\s*[=:]\\s*(?:\\[\\s*)?[\"']?(?:\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
           },
           {
             "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
+            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*[\"']?Allow[\"']?)"
           }
         ]
       },
       "message": "The change appears to grant broad administrator permissions.",
       "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials for generated application workflows."
+    },
+    {
+      "id": "hwc-iam-wildcard-action",
+      "title": "Wildcard IAM action",
+      "category": "iam",
+      "severity": "warn",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(IAM|policy|role|agency|Statement|Action|actions)"
+          },
+          {
+            "field": "text",
+            "regex": "[\"']?(?:Action|actions?)[\"']?\\s*[:=]\\s*(?:\\[\\s*)?[\"']?(?:\\*|\\*:\\*)[\"']?"
+          }
+        ]
+      },
+      "message": "The IAM grant uses a wildcard action (* or *:*), which grants every operation on the matched resources.",
+      "remediation": "Replace the wildcard with the least-privilege service actions the workflow actually calls, and constrain the resources."
     },
     {
       "id": "hwc-iam-highrisk-write",

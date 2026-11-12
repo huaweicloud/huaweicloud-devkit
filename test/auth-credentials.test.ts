@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 
 import {
   globalCredentialsPath,
+  readGlobalCredentials,
   writeGlobalCredentials,
   clearRuntimeCredentials,
   getParentCwd,
@@ -396,3 +397,29 @@ test('pickDevkitMcpServer is order-independent and returns null for empty/non-ob
 });
 
 // ── #900 failure-path regression guards (ported from main's guidance tests) ──
+
+test('S1 reads the legacy config tree only when the state tree has no credentials', () => {
+  const previousHome = process.env.HUAWEICLOUD_HOME;
+  const previousState = process.env.HUAWEICLOUD_STATE_DIR;
+  const home = mkdtempSync(join(tmpdir(), 'hwc-legacy-home-'));
+  const state = mkdtempSync(join(tmpdir(), 'hwc-state-dir-'));
+  const legacyPath = join(home, '.config', 'huaweicloud', 'credentials.json');
+  mkdirSync(dirname(legacyPath), { recursive: true });
+  writeFileSync(legacyPath, JSON.stringify({ ak: 'LEGACY_AK', sk: 'LEGACY_SK', region: 'cn-north-4' }));
+  process.env.HUAWEICLOUD_HOME = home;
+  process.env.HUAWEICLOUD_STATE_DIR = state;
+  try {
+    assert.equal(globalCredentialsPath(), join(state, 'credentials.json'));
+    assert.equal(readGlobalCredentials()?.ak, 'LEGACY_AK', 'the pre-provisioned read-only store still resolves');
+    writeGlobalCredentials({ ak: 'STATE_AK', sk: 'STATE_SK', region: 'cn-north-4' });
+    assert.equal(readGlobalCredentials()?.ak, 'STATE_AK', 'the writable state tree wins once written');
+    assert.equal(readGlobalCredentials()?.sk, 'STATE_SK');
+  } finally {
+    if (previousHome === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = previousHome;
+    if (previousState === undefined) delete process.env.HUAWEICLOUD_STATE_DIR;
+    else process.env.HUAWEICLOUD_STATE_DIR = previousState;
+    rmSync(home, { recursive: true, force: true });
+    rmSync(state, { recursive: true, force: true });
+  }
+});

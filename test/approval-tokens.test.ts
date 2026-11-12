@@ -566,3 +566,27 @@ test(
     );
   }),
 );
+
+test('approval tokens follow the explicit writable state directory', () => {
+  const previousHome = process.env.HUAWEICLOUD_HOME;
+  const previousState = process.env.HUAWEICLOUD_STATE_DIR;
+  const home = fixtureDir('approval-legacy-home-');
+  const state = fixtureDir('approval-state-');
+  process.env.HUAWEICLOUD_HOME = home;
+  process.env.HUAWEICLOUD_STATE_DIR = state;
+  try {
+    const token = createApprovalToken(['OBS', 'ls']);
+    assert.ok(existsSync(join(state, 'approvals.json')), 'the store lands in the state tree');
+    assert.ok(
+      !existsSync(join(home, '.config', 'huaweicloud', 'approvals.json')),
+      'the legacy config tree stays untouched',
+    );
+    assert.ok(consumeApprovalToken(token), 'the token round-trips through the state tree');
+    assert.ok(existsSync(join(state, 'approvals-consumed', `${token}.claimed`)), 'the claim marker follows');
+  } finally {
+    if (previousHome === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = previousHome;
+    if (previousState === undefined) delete process.env.HUAWEICLOUD_STATE_DIR;
+    else process.env.HUAWEICLOUD_STATE_DIR = previousState;
+  }
+});

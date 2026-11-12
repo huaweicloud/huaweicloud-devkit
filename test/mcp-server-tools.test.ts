@@ -219,6 +219,11 @@ test('tools/call accepts string numerics and passes unknown keys through (#530 l
     });
     assert.equal(ok.result.isError, false, 'the acceptance arm must observe a successful dispatch');
     assert.ok(ok.result, `expected a result: ${JSON.stringify(ok).slice(0, 300)}`);
+    assert.match(
+      ok.result.content[0].text,
+      /Unknown parameter .*unknownExtra.* was ignored/,
+      'the leniency is no longer silent',
+    );
 
     const bad = await client.request('tools/call', {
       name: 'huaweicloud_list_operations',

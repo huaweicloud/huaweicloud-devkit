@@ -1,12 +1,12 @@
 // Skip-state (dismiss) persistence for the update machinery: the plugin-local
-// skip file with per-session suffixing (#607), the HUAWEICLOUD_HOME fallback,
-// and the atomic read/write pair. Part of the src/update-* family behind the
-// src/update-check.ts re-export face.
+// skip file with per-session suffixing (#607), the writable-state-tree
+// fallback, and the atomic read/write pair. Part of the src/update-* family
+// behind the src/update-check.ts re-export face.
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync, rmSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
-import { homedir } from 'node:os';
 
 import { asText } from './lib/as-text.ts';
+import { devkitStateBase } from './lib/pack-state.ts';
 import { selfDir } from './update-installed.ts';
 
 const COOLDOWN_DAYS = 3;
@@ -22,8 +22,7 @@ export function skipFilePath(): string {
 }
 
 export function fallbackSkipFilePath(): string {
-  const base = process.env.HUAWEICLOUD_HOME || homedir();
-  return join(base, '.config', 'huaweicloud', 'devkit-skip.json');
+  return join(devkitStateBase(), 'devkit-skip.json');
 }
 
 // 会话化 skip 文件：remote 多会话按 sessionId 拆分，stdio/默认保持原文件(向后兼容)。

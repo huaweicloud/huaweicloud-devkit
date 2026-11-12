@@ -14,6 +14,7 @@ import {
 } from '../targets.ts';
 import { findHcloudBin } from '../hcloud-probe.ts';
 import { asRecord } from '../lib/as-record.ts';
+import { stateDirNotice } from '../lib/state-dir.ts';
 import { ensureMcpServersConfig, printMcpConfigStatus, removeMcpServerEntry } from '../mcp-config-io.ts';
 import {
   PACKAGE_ROOT,
@@ -53,6 +54,9 @@ export async function deployCodeArts(mode: DeployMode): Promise<void> {
   const pluginDest = codeartsPluginsDir();
 
   copyServerPayload(pluginDest);
+
+  const stateNotice = stateDirNotice();
+  if (stateNotice) console.log(`  [CodeArts] ${stateNotice}`);
 
   const codeartsHookDir = join(homedir(), '.codeartsdoer', 'plugins');
   mkdirSync(codeartsHookDir, { recursive: true });

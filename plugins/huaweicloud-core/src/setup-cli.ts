@@ -46,6 +46,7 @@ import { queryDistTagsFetch, determineTarget, semverCompare } from './update-che
 import { getKooCliVersion, compareVersion, kooCliDownloadBase } from './koocli-version.ts';
 import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud } from './hcloud-probe.ts';
 import { asRecord } from './lib/as-record.ts';
+import { devkitStateBase, displayStatePath, huaweiConfigBase, probeWritableDir } from './lib/state-dir.ts';
 import { DEPENDENCIES, DEPENDENCY_IDS, requiredDependencies, type DependencyId } from './lib/dependency-model.ts';
 import { resolveDependencyCommand } from './lib/dep-resolve.ts';
 // The installer's payload machinery: file ops, server payload placement,
@@ -923,6 +924,26 @@ async function cmdDoctor(): Promise<void> {
   const nodeParts = process.versions.node.split('.').map(Number);
   const nodeOk = nodeParts[0]! > 22 || (nodeParts[0]! === 22 && nodeParts[1]! >= 19);
   check('Node.js >= 22.19', nodeOk, 'Run: nvm install 22.19 && nvm use 22.19');
+
+  // State directory — gateway pack state, approval tokens, S1 writes and
+  // update state all write here. A read-only home falls back to an
+  // agent-owned dir (state-dir.ts); the fallback is a warning, not a failure.
+  const configBase = huaweiConfigBase();
+  const stateBase = devkitStateBase();
+  const stateDisplay = displayStatePath(stateBase);
+  if (stateBase === configBase) {
+    check(
+      `State directory writable (${stateDisplay})`,
+      probeWritableDir(stateBase),
+      'Fix permissions, or set HUAWEICLOUD_STATE_DIR to a writable path',
+    );
+  } else if (probeWritableDir(stateBase)) {
+    ctx.warn(
+      `State directory fallback: ${stateDisplay} (${displayStatePath(configBase)} is not writable; set HUAWEICLOUD_STATE_DIR to pin it)`,
+    );
+  } else {
+    check(`State directory writable (${stateDisplay})`, false, 'Set HUAWEICLOUD_STATE_DIR to a writable path');
+  }
 
   // MCP server — derived from the per-row doctor bindings (one membership
   // table for every payload check in this doctor run). The bindings run the

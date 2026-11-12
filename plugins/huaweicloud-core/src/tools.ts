@@ -36,12 +36,14 @@ import { PACK_TOOL_HANDLERS, isPackToolName, type PackToolName } from './packs/r
 // the build-time --check stray scan, and validate-package's skill gate all
 // hold one membership predicate (dir-or-symlink with a SKILL.md).
 import { listSkillDirs } from './lib/skill-tree.ts';
+import { attachParamWarnings, unknownParamWarnings } from './lib/param-warnings.ts';
 import { recordToolCall, traceEnabled } from './lib/call-trace.ts';
 // The tool name/description registry (TOOL_DEFINITIONS_LITERALS and its
 // derived types) lives in tool-definitions.ts; this module keeps the
 // re-export face every importer (mcp-protocol, tests, scripts) already
 // targets — same exported names, same import path, same behavior.
 import { TOOL_DEFINITIONS, type ToolName } from './tool-definitions.ts';
+import { toolArgKeys } from './tool-schemas.ts';
 // The vendorConfirmed gate (VENDOR_GATED_TOOLS, the gate/challenge
 // messages, and the once-per-session challenge state) lives in
 // vendor-gate.ts; this module re-exports the roster for its existing
@@ -237,15 +239,19 @@ export async function callTool(name: ToolName, rawArgs: ToolArgs = {}, opts: Cal
   const args = normalizeNumericArgs(rawArgs);
   const toolValue = toolInvokeValue(name, args);
   trackToolInvoke(name, toolValue);
+  // Unknown keys stay accepted (#530 leniency) but are no longer silent: a
+  // typo'd optional parameter would otherwise return a default-shaped result
+  // the model reads as a successful filter.
+  const paramWarnings = unknownParamWarnings(args, toolArgKeys(name));
 
   // Trace sits between normalization and dispatch: it records the shape
   // the handler will actually see, and only calls that reached dispatch —
   // SDK-level zod rejects never get here (see lib/call-trace.ts contract).
-  if (!traceEnabled()) return dispatchTool(name, args, opts);
+  if (!traceEnabled()) return attachParamWarnings(await dispatchTool(name, args, opts), paramWarnings);
   try {
     const result = await dispatchTool(name, args, opts);
     recordToolCall(name, args, true);
-    return result;
+    return attachParamWarnings(result, paramWarnings);
   } catch (error) {
     recordToolCall(name, args, false, error);
     throw error;
@@ -318,12 +324,15 @@ function hookResult(result: RiskEvaluation) {
     ok: result.decision !== 'deny',
     decision: result.decision,
     findings: result.findings,
+    // allow means "no rule matched", never "approved": make that explicit so
+    // an agent cannot read a green advisory check as a safety verdict.
+    ...(result.decision === 'allow' ? { unmatched: true } : {}),
     nextStep:
       result.decision === 'deny'
         ? 'Revise the command, artifact, or deployment plan before execution.'
         : result.decision === 'warn'
           ? 'Review the warnings with the user before proceeding.'
-          : 'No Huawei Cloud hook risk rule matched.',
+          : 'No Huawei Cloud hook risk rule matched. This is not a safety verdict or an approval.',
   };
 }
 
@@ -339,7 +348,10 @@ function hookResult(result: RiskEvaluation) {
 // cn hint, and a real service or a missing catalog keeps the original wording.
 // The run faces stay allow for everything but the triage's negative-evidence
 // deny (refined at planHcloudCommand, which the run engine asserts), and the
-// PreToolUse hook is untouched (it acts on deny alone).
+// PreToolUse hook is untouched (it acts on deny alone). The same face upgrades
+// classified write/execution operations to hwc-write-operation: the advisory
+// signal that a write needs the plan + approval path, never an execution
+// block (run_readonly_command and the approval chain own that decision).
 // `classify` is injectable so the OBS-14-shape closure is honestly pinnable:
 // a classifier crash used to fall through to the bare allow (silent fail-open,
 // the #564 shape one layer up); it now degrades to an hwc-unverified-command
@@ -372,6 +384,21 @@ const unverifiedFinding = (command: string): RiskFinding => ({
   evidence: command.slice(0, 240),
 });
 
+const writeOperationFinding = (command: string): RiskFinding => ({
+  ruleId: 'hwc-write-operation',
+  title: 'Write or execution operation',
+  category: 'approval',
+  severity: 'warn',
+  message:
+    'This command is classified as a write or execution operation. Raw shell execution is blocked; ' +
+    'writes require a plan and explicit user approval.',
+  remediation:
+    'Plan the exact command with huaweicloud_plan_cli_command, show it to the user, obtain explicit approval, ' +
+    'then run it with huaweicloud_run_approved_command and the approval token.',
+  source: 'command',
+  evidence: command.slice(0, 240),
+});
+
 export function withUnknownOperationWarn(
   command: string,
   result: RiskEvaluation,
@@ -383,6 +410,14 @@ export function withUnknownOperationWarn(
     classification = classify(command);
   } catch {
     return { ...result, decision: 'warn', findings: [unverifiedFinding(command)] };
+  }
+  // The advisory face never turns a write into "safe": classified writes and
+  // execution operations get a warn even when the pattern catalog has no
+  // specific finding. The enforcement faces (run_readonly_command, the
+  // PreToolUse hook, the plan/run approval chain) are unchanged — this is
+  // the pre-flight signal, not the gate.
+  if (classification?.risk === 'write' || classification?.risk === 'execution') {
+    return { ...result, decision: 'warn', findings: [writeOperationFinding(command)] };
   }
   if (classification?.risk !== 'unknown_read') return result;
   const triage = triageUnknownService(classification.service);

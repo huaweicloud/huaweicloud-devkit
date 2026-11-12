@@ -24,6 +24,9 @@
 - fix(dep): spawns never combine an args array with shell — the 2.0.0-next.0 tarball's npx install printed "(node:xxxx) [DEP0190] DeprecationWarning: Passing args to a child process with shell option true" (Node 24) at the gateway-prompt line, traced to installRuntimeDeps' npm spawn whose deferred warning write surfaced one step late, glued to the prompt; the shell-bearing spawns (npm runtime-deps, the two npm view query paths, the upgrade act's npx) now pass string commands under the same shell — identical concatenation semantics minus the warning, Windows .cmd routing intact — pinned by a structure scan (args-array + shell offenders, pre-fix payload-runtime-deps.ts:36/45/50 + update-registry.ts:73/108, zero false positives) and an install-bearing stderr assertion red on Node 24 before the fix
 
 - fix(officeace): node:sqlite joins the lazy-load doctrine — the 2.0.0 tarball's npx install printed the Node 22.x "(node:xxxx) ExperimentalWarning: SQLite is an experimental feature" because the connector family required the builtin at module scope, so every CLI boot paid it; the require now sits inside the loader (openOfficeaceDb's single construction site), pinned by a structure scan (module-scope node:sqlite fails on any Node) and a floor-runtime boot test (spawn the real CLI, assert no (node:) warning lines — red under node@22.19.0 before the fix, green after)
+- fix(packs): D-03 — read-only homes fall back to an agent-owned `devkit-state` tree (`HUAWEICLOUD_STATE_DIR` pins it); S1 reads keep the legacy `credentials.json`, and doctor reports the resolved root
+- fix(safety): D-02 — rule coverage for privileged containers, plaintext passwords, and wildcard IAM actions; the advisory command face warns on write/execution operations and marks `allow` as `unmatched`
+- fix(mcp): D-04 — unknown/typo'd parameters are accepted but now return a `warnings` did-you-mean entry (#530 leniency preserved)
 
 ## 2.0.0-next.0 (2026-11-09)
 

@@ -12,6 +12,7 @@ import { mergeCommandStyle, applyUserDelta, inheritPeerUserEnv } from '../mcp-co
 import { takeAgentDelta } from '../mcp-config-backup.ts';
 import { printMcpConfigStatus, readJsonRecord, removeMcpServerEntry, writeMcpSettingsFile } from '../mcp-config-io.ts';
 import { asRecord } from '../lib/as-record.ts';
+import { stateDirNotice } from '../lib/state-dir.ts';
 import {
   copyServerPayload,
   installRuntimeDeps,
@@ -112,6 +113,8 @@ export async function deployCodeArtsWork(_mode: DeployMode): Promise<void> {
   const pluginDest = codeartsWorkPluginsDir();
 
   copyServerPayload(pluginDest);
+  const stateNotice = stateDirNotice();
+  if (stateNotice) console.log(`  [CodeArts Work] ${stateNotice}`);
   registerCodeartsWorkMcp();
 
   installRuntimeDeps(pluginDest);

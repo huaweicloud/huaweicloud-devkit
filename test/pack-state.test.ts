@@ -5,12 +5,18 @@ import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import {
+  devkitStateBase,
   ensurePackState,
   huaweiConfigBase,
   isInsideProtectedTree,
   packStateDir,
   protectedTreeRoots,
 } from '../plugins/huaweicloud-core/src/lib/pack-state.ts';
+import {
+  _resetStateDirCache,
+  displayStatePath,
+  stateDirNotice,
+} from '../plugins/huaweicloud-core/src/lib/state-dir.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
 // The pack state space and the protected-tree guard: one resolver for the
@@ -39,6 +45,47 @@ test('packStateDir nests one directory per pack id under packs/', () => {
     packStateDir('huaweicloud-open-mcp', { HUAWEICLOUD_HOME: home }),
     join(home, '.config', 'huaweicloud', 'packs', 'huaweicloud-open-mcp'),
   );
+});
+
+test('devkitStateBase defaults to the config tree and honors the explicit state dir', () => {
+  const home = tempHome();
+  _resetStateDirCache();
+  assert.equal(devkitStateBase({ HUAWEICLOUD_HOME: home }), join(home, '.config', 'huaweicloud'));
+  assert.equal(
+    devkitStateBase({ HUAWEICLOUD_HOME: home, HUAWEICLOUD_STATE_DIR: join(home, 'state') }),
+    join(home, 'state'),
+  );
+  assert.throws(
+    () => devkitStateBase({ HUAWEICLOUD_HOME: home, HUAWEICLOUD_STATE_DIR: 'relative/state' }),
+    /HUAWEICLOUD_STATE_DIR must be an absolute path/,
+  );
+});
+
+test('devkitStateBase falls back to an agent state dir on an unwritable config tree', () => {
+  const home = tempHome();
+  _resetStateDirCache();
+  mkdirSync(join(home, '.codeartswork'));
+  // Cross-platform read-only simulation: the config parent is a FILE, so the
+  // probe's mkdir fails with ENOTDIR on every platform.
+  writeFileSync(join(home, '.config'), 'not a directory');
+  const env = { HUAWEICLOUD_HOME: home };
+  const state = join(home, '.codeartswork', 'devkit-state');
+  assert.equal(devkitStateBase(env), state);
+  assert.equal(packStateDir('huaweicloud-open-mcp', env), join(state, 'packs', 'huaweicloud-open-mcp'));
+
+  const layout = ensurePackState('huaweicloud-open-mcp', ['policy'], env);
+  assert.equal(layout.dir, join(state, 'packs', 'huaweicloud-open-mcp'));
+  assert.ok(existsSync(layout.files.policy), 'the policy is provisioned in the fallback tree');
+
+  const roots = protectedTreeRoots(env);
+  assert.ok(
+    roots?.some((root) => root.includes('.codeartswork') && root.endsWith('devkit-state')),
+    'the fallback state root joins the protected tree',
+  );
+  assert.ok(isInsideProtectedTree(layout.files.policy, env));
+
+  assert.equal(displayStatePath(state, env), '~/.codeartswork/devkit-state', 'display paths are home-relative');
+  assert.match(stateDirNotice(env) ?? '', /not writable; set HUAWEICLOUD_STATE_DIR/);
 });
 
 test('ensurePackState creates 0700/0600 idempotently and repairs loose permissions', () => {

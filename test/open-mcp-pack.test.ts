@@ -523,6 +523,17 @@ test('resolveGatewaySpawnArgs pins openapi + the provisioned policy when gateway
   assert.equal(plan.args[plan.args.indexOf('--policy') + 1], plan.provision.policyPath);
 });
 
+test('resolveGatewaySpawnArgs provisions into the writable state fallback on a read-only config tree', () => {
+  const home = fixtureDir('openmcp-ro-home-');
+  mkdirSync(join(home, '.codeartswork'), { recursive: true });
+  writeFileSync(join(home, '.config'), 'not a directory');
+  const plan = resolveGatewaySpawnArgs({ HOME: home, HUAWEICLOUD_HOME: home });
+  const stateDir = join(home, '.codeartswork', 'devkit-state', 'packs', 'huaweicloud-open-mcp');
+  assert.equal(plan.provision?.dir, stateDir);
+  assert.equal(plan.provision?.policyPath, join(stateDir, 'policy'));
+  assert.equal(plan.args[plan.args.indexOf('--policy') + 1], join(stateDir, 'policy'));
+});
+
 test('resolveGatewaySpawnArgs defers to operator envs and never passes an audit arg', () => {
   const plan = resolveGatewaySpawnArgs({
     HOME: '/nonexistent',
