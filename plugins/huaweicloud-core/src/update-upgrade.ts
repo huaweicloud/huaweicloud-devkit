@@ -559,28 +559,40 @@ function npmRunIdentity(line: string): string | undefined {
 const RECOVER_TOKEN = /\brecover(?:ed|ing|s|y|ies)?\b/i;
 const RECOVER_CONTINUATION =
   /^\s*(?:[.!?]?\s*$|,\s*(?:continuing\b|anyway\b|complete\b|succeeded\b|ok\b|fine\b).*|\s+(?:complete|completely|fully|succeeded|ok|fine)\b.*)$/i;
-const RECOVER_FAILURE =
-  /\b(?:FATAL|failed|failure|error|refus(?:ed|ing)|reject(?:ed|ing)|abort(?:ed|ing)|could not|cannot|can't|unable|denied)\b/i;
-// The governing verb/negation immediately before the token turns a sentence
-// into a failure statement ("failed to recover", "not recovered", "no
-// recovery"), even when the recover token is the sentence's last word.
+// The governing verb/negation before the token turns a sentence into a failure
+// statement ("failed to recover", "not yet recovered", "no recovery"), even
+// when the recover token is the sentence's last word. Adverbs may sit between
+// the negation and the verb.
 const RECOVER_GOVERNING =
-  /(?:failed|failure|refused|rejected|unable|could not|cannot|can't|not|never|no)\s+(?:to\s+)?$/i;
+  /(?:failed|failure|refused|rejected|unable|could not|cannot|can't|not|never|no)\s+(?:(?:yet|still|even|ever|really|quite|fully|actually|entirely)\s+)*(?:to\s+)?$/i;
 // A recovered step's continuation notices ("falling back to the bundled
-// toolchain", "retrying from snapshot") are announcements even when they carry
-// a failure marker; a failing step's own words are the failure-marked lines
-// that do not take one of these continuation shapes.
-const CONTINUATION_ANNOUNCEMENT = /\b(?:falling back(?: to\b|\b)|retrying(?: from\b|\b))/i;
+// toolchain", "retrying from snapshot") are announcements only in those full
+// forms; bare "retrying"/"falling back" may be a failing step's dying words.
+const CONTINUATION_ANNOUNCEMENT = /\b(?:falling back to|retrying from)\b/i;
 function isRecoveryAnnouncement(line: string): boolean {
   const payload = npmPayload(line);
+  // A command/echo line names a script, not prose: "sh -c node recover" is not
+  // a recovery announcement.
+  if (
+    /^command\b/i.test(payload) ||
+    /^(?:\S*\/)?(?:ba|z|k|da)?sh\s+-c\b/i.test(payload) ||
+    /^cmd(?:\.exe)?\s/i.test(payload)
+  ) {
+    return false;
+  }
   const match = RECOVER_TOKEN.exec(payload);
-  if (!match) return CONTINUATION_ANNOUNCEMENT.test(payload);
-  const prefix = payload.slice(0, match.index);
-  const suffix = payload.slice(match.index + match[0].length);
-  // Governing negation/verb first: the sentence-final shortcut must not eat it.
-  if (RECOVER_GOVERNING.test(prefix)) return false;
-  if (/^[.!?]?\s*$/.test(suffix)) return true;
-  return !RECOVER_FAILURE.test(prefix) && RECOVER_CONTINUATION.test(suffix);
+  if (match) {
+    const prefix = payload.slice(0, match.index);
+    const suffix = payload.slice(match.index + match[0].length);
+    // Governing negation/verb first: the sentence-final shortcut must not eat it.
+    if (RECOVER_GOVERNING.test(prefix)) return false;
+    // The recovery is the sentence's final clause: a failure mention earlier in
+    // the sentence ("first attempt failed, recovered, fine") does not veto it.
+    return RECOVER_CONTINUATION.test(suffix);
+  }
+  const continuation = CONTINUATION_ANNOUNCEMENT.exec(payload);
+  if (!continuation) return false;
+  return !RECOVER_GOVERNING.test(payload.slice(0, continuation.index));
 }
 
 function isCauseLine(line: string): boolean {
@@ -668,11 +680,17 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     const strongWordEcho = identityEchoes
       .filter((echo) => {
         const next = codelessEntries.find((entry) => entry.index > echo.index && entry.index < failing.index);
-        return Boolean(next && lineRank(next.line) === 0 && !isNpmScriptResult(next.line) && lineRank(next.line) !== 3);
+        return Boolean(
+          next &&
+          lineRank(next.line) === 0 &&
+          !isNpmScriptResult(next.line) &&
+          lineRank(next.line) !== 3 &&
+          !isRecoveryAnnouncement(next.line),
+        );
       })
       .at(-1);
-    // A lone echo has no sibling run to claim the other side; the pair stays
-    // unattributable there.
+    // A lone echo cannot be split between two runs; reserving it would leave
+    // the pair with nothing, so the sequential claim handles that shape.
     if (strongWordEcho && identityEchoes.length >= 2) reservedPairEchoes.add(strongWordEcho.index);
   }
   const recoveredWindows: Array<{ start: number; end: number }> = [];
@@ -893,7 +911,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // failure's words: the failing pair's echo is the honest fallback, and with no
   // attributable pair echo the floor is the exit status. The in-pair promotion
   // already filtered its own candidates.
-  if (bare && lineRank(bare.line) !== 3 && lineExcluded(bare.index)) {
+  if (bare && lineExcluded(bare.index)) {
     bare = failingPairEcho ? { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index } : undefined;
   }
   // The outer shell names a signal death "Terminated" or "Killed"; when npm

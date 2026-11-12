@@ -87,19 +87,48 @@ function expandTilde(value: string): string {
   return value.startsWith('~/') ? join(homedir(), value.slice(2)) : value;
 }
 
+function packageJsonHasWorkspaces(path: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    const workspaces =
+      parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).workspaces : undefined;
+    return Array.isArray(workspaces) || (Boolean(workspaces) && typeof workspaces === 'object');
+  } catch {
+    return false;
+  }
+}
+
 function localPrefix(start: string = process.cwd()): string {
+  // npm's localPrefix follows the workspace root: the nearest package.json is
+  // the fallback, but an ancestor declaring `workspaces` wins.
+  let nearest: string | undefined;
   let current = start;
   for (;;) {
-    if (existsSync(join(current, 'package.json'))) return current;
+    const manifest = join(current, 'package.json');
+    if (existsSync(manifest)) {
+      nearest ??= current;
+      if (packageJsonHasWorkspaces(manifest)) return current;
+    }
     const parent = dirname(current);
-    if (parent === current) return start;
+    if (parent === current) return nearest ?? start;
     current = parent;
   }
 }
 
+// Env spellings for npm's own config keys are case-insensitive; npm takes the
+// last one when both are exported.
+function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
+  const entry = Object.entries(env)
+    .filter(([key]) => key.toUpperCase() === name)
+    .at(-1);
+  const raw = entry?.[1];
+  return raw !== undefined ? raw.trim() : undefined;
+}
+
 function globalconfigPath(env: NodeJS.ProcessEnv): string {
-  if (env.npm_config_globalconfig) return expandTilde(env.npm_config_globalconfig);
-  const prefix = env.npm_config_prefix || env.PREFIX || dirname(dirname(process.execPath));
+  const globalconfig = envValue(env, 'NPM_CONFIG_GLOBALCONFIG');
+  if (globalconfig) return expandTilde(globalconfig);
+  const prefix = envValue(env, 'NPM_CONFIG_PREFIX') || env.PREFIX || dirname(dirname(process.execPath));
   return join(prefix, 'etc', 'npmrc');
 }
 
@@ -188,9 +217,12 @@ function basicHeader(username: string | undefined, password: string | undefined)
 }
 
 // The pre-flight auth header for a registry, resolved the way npm resolves it:
-// walk the nerf-dart path levels (never past the host root when a path exists),
-// and take the first token/basic entry found across the config cascade.
-function npmrcAuthHeader(registry: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+// walk every nerf-dart path level through to the host root (both the slash and
+// slash-less keys), and take the first token/basic entry found across the
+// config cascade. An explicit empty token at a higher layer suppresses the
+// lower layers (npm's merged key is empty and sends nothing) and is reported as
+// `null` so the env-token fallback does not resurrect it.
+function npmrcAuthHeader(registry: string, env: NodeJS.ProcessEnv = process.env): string | undefined | null {
   let url: URL;
   try {
     url = new URL(registry);
@@ -200,33 +232,36 @@ function npmrcAuthHeader(registry: string, env: NodeJS.ProcessEnv = process.env)
   const host = `//${url.host}`;
   const path = url.pathname.replace(/\/+$/, '');
   const levels: string[] = [];
-  if (path) {
-    let current = path;
-    while (current) {
-      levels.push(current);
-      const next = current.replace(/\/[^/]*$/, '');
-      if (next === current) break;
-      current = next;
-    }
-  } else {
-    levels.push('');
+  let current = path;
+  for (;;) {
+    levels.push(current);
+    if (!current) break;
+    const next = current.replace(/\/[^/]*$/, '');
+    if (next === current) break;
+    current = next;
   }
   const layers = configLayers(env);
+  // `undefined` means no layer names the key; an empty string is an explicit
+  // suppression.
   const lookup = (key: string): string | undefined => {
     for (const layer of layers) {
-      const value = layer.get(key);
-      if (value) return value;
+      if (layer.has(key)) return layer.get(key);
     }
     return undefined;
   };
   for (const level of levels) {
     const prefix = `${host}${level}`;
-    const token = lookup(`${prefix}/:_authToken`);
-    if (token) return token.startsWith('Bearer ') ? token : `Bearer ${token}`;
-    const auth = lookup(`${prefix}/:_auth`);
-    if (auth) return `Basic ${auth}`;
-    const basic = basicHeader(lookup(`${prefix}/:username`), lookup(`${prefix}/:_password`));
-    if (basic) return basic;
+    const token = lookup(`${prefix}/:_authToken`) ?? lookup(`${prefix}:_authToken`);
+    if (token !== undefined) return token ? (token.startsWith('Bearer ') ? token : `Bearer ${token}`) : null;
+    const auth = lookup(`${prefix}/:_auth`) ?? lookup(`${prefix}:_auth`);
+    if (auth !== undefined) return auth ? `Basic ${auth}` : null;
+    const username = lookup(`${prefix}/:username`);
+    const password = lookup(`${prefix}/:_password`);
+    if (username !== undefined && password !== undefined) {
+      if (!username && !password) return null;
+      const basic = basicHeader(username, password);
+      if (basic) return basic;
+    }
   }
   return undefined;
 }
@@ -237,8 +272,13 @@ function npmrcAuthHeader(registry: string, env: NodeJS.ProcessEnv = process.env)
 // cross-origin, matching npm's registry client.
 async function fetchFollowingAuth(url: string, init: RequestInit) {
   let current = url;
+  const originalHost = new URL(url).hostname;
   for (let hop = 0; hop < 5; hop += 1) {
-    const response = await fetchWithProxy(current, { ...init, redirect: 'manual' });
+    const hopInit = { ...init, redirect: 'manual' as const };
+    // npm re-authenticates a same-host redirect (port/scheme changes) but strips
+    // the Authorization when the hostname changes.
+    if (new URL(current).hostname !== originalHost) delete hopInit.headers;
+    const response = await fetchWithProxy(current, hopInit);
     const location = response.status >= 300 && response.status < 400 ? response.headers.get('location') : undefined;
     if (!location) return response;
     try {
@@ -254,11 +294,27 @@ export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: nu
   // One normalization with upgradeEnv: a padded or case-variant spelling is
   // usable and a whitespace-only value is unset, so the pre-flight and the
   // child pin cannot disagree.
-  const configured = resolveRegistryOverride();
-  let registry = 'https://registry.npmjs.org';
+  let configured = resolveRegistryOverride();
+  // A registry override may carry URL credentials; npm sends them as Basic, so
+  // the pre-flight strips them from the request URL and attaches the header.
+  let urlAuth: string | undefined;
   if (configured) {
-    registry = configured.replace(/\/+$/, '');
+    try {
+      const parsed = new URL(configured);
+      if (parsed.username || parsed.password) {
+        const username = decodeURIComponent(parsed.username);
+        const password = decodeURIComponent(parsed.password);
+        urlAuth = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+        parsed.username = '';
+        parsed.password = '';
+        configured = parsed.toString().replace(/\/+$/, '');
+      }
+    } catch {
+      // a malformed URL degrades like npm's own registry parse
+    }
   }
+  let registry = 'https://registry.npmjs.org';
+  if (configured) registry = configured;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   // The pre-flight query needs the same mirror auth the child npm gets: a
@@ -269,7 +325,10 @@ export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: nu
   // interpolate NODE_AUTH_TOKEN even when a stale NPM_TOKEN is exported), then
   // the env tokens, then no auth.
   const token = resolveNpmAuthToken();
-  const authorization = npmrcAuthHeader(registry) ?? (token ? `Bearer ${token}` : undefined);
+  const configAuth = npmrcAuthHeader(registry);
+  // `null` is an explicit empty token at a higher config layer: no fallback.
+  const authorization =
+    urlAuth ?? (configAuth === null ? undefined : (configAuth ?? (token ? `Bearer ${token}` : undefined)));
   const init: RequestInit = {
     signal: controller.signal,
     ...(authorization ? { headers: { authorization } } : {}),
