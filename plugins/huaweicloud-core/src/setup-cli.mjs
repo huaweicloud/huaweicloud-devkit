@@ -4360,6 +4360,7 @@ async function cmdDoctor() {
 async function cmdUpdate() {
   console.log(BANNER);
   const target = parseTarget();
+  checkNode();
   await checkForUpdate();
 
   if (target === 'opencode') {

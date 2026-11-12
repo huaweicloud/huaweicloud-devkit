@@ -66,3 +66,19 @@ test('install rejects a node below the declared floor with a clear message', { s
     rmSync(cwd, { recursive: true, force: true });
   }
 });
+
+test('update rejects a node below the declared floor with a clear message', { skip: skipSupported }, () => {
+  const home = mkdtempSync(join(tmpdir(), 'floor-reject-home-'));
+  const cwd = mkdtempSync(join(tmpdir(), 'floor-reject-proj-'));
+  try {
+    const res = runCli(home, cwd, ['update', '--target', 'codearts']);
+    assert.notEqual(res.status, 0);
+    const output = `${res.stdout}\n${res.stderr}`;
+    assert.match(output, /Node\.js >= 22\.19/);
+    assert.match(output, /23\.4/);
+    assert.doesNotMatch(output, /No such built-in module/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
