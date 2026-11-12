@@ -1,0 +1,24 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:14899/npm 39ms
+npm http fetch GET 404 http://127.0.0.1:14899/npm 5ms
+npm http fetch GET 200 http://127.0.0.1:14899/huaweicloud-devkit 22ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14899/huaweicloud-devkit 15ms (cache miss)
+npm http cache huaweicloud-devkit@http://127.0.0.1:14899/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 0ms (cache hit)
+npm http fetch POST 404 http://127.0.0.1:14899/-/npm/v1/security/advisories/bulk 14ms
+npm http fetch GET 200 http://127.0.0.1:14899/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 22ms (cache miss)
+npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node postinstall.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:14899/inner-ok 42ms (cache miss)
+npm http cache inner-ok@http://127.0.0.1:14899/inner-ok/-/inner-ok-1.0.0.tgz 0ms (cache hit)
+npm http fetch GET 200 http://127.0.0.1:14899/inner-ok/-/inner-ok-1.0.0.tgz 21ms (cache miss)
+npm info run inner-ok@1.0.0 postinstall node_modules/inner-ok node postinstall.js
+inner-ok: build failed once, retrying with the bundled toolchain
+npm info run inner-ok@1.0.0 postinstall { code: 0, signal: null }
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   inner-ok@1.0.0 (postinstall: node postinstall.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+npm info ok
+npm info run huaweicloud-devkit@9.9.9 postinstall { code: 7, signal: null }

@@ -94,6 +94,13 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
       continue;
     }
     if (upper === 'NPM_CONFIG_REGISTRY') registrySpellings.push(key);
+    // npm's own auth channels reach the child trimmed, matching the pre-flight
+    // query's bearer: a padded token must authenticate both or neither.
+    if (upper === 'NPM_TOKEN' || upper === 'NODE_AUTH_TOKEN') {
+      const token = value?.trim();
+      if (token) next[key] = token;
+      continue;
+    }
     if (UPGRADE_PRESERVE_ENV_KEYS.has(upper)) {
       // A padded spelling cannot reach the child's exact-name lookup: forward
       // the trimmed name, letting an existing exact spelling win.
@@ -470,10 +477,20 @@ function selectFailureLine(
     const hits = entries.filter((entry) => lineRank(entry.line) === rank);
     if (!hits.length) continue;
     if (rank === 3) {
-      // The echo tier names the failing script: the last echo before the last
-      // failing "{ code: N, signal: ... }" result line wins, else the last echo.
+      // The echo tier names the failing script: the last echo that carries the
+      // failing result's own package/script identity wins, so a nesting script's
+      // nearer echo cannot stand in; else the last echo.
       const failing = lastFailingResult(entries);
-      const paired = failing ? lastEchoBefore(entries, failing.index) : undefined;
+      const identity = failing ? npmRunIdentity(failing.line) : undefined;
+      const identityPaired = identity
+        ? entries
+            .filter(
+              (entry) =>
+                entry.index < failing!.index && lineRank(entry.line) === 3 && npmRunIdentity(entry.line) === identity,
+            )
+            .at(-1)
+        : undefined;
+      const paired = identityPaired ?? (failing ? lastEchoBefore(entries, failing.index) : undefined);
       const chosen = paired ?? hits.at(-1)!;
       return { line: chosen.line, rank, index: chosen.index };
     }
@@ -510,10 +527,6 @@ function pickInBlock(block: ErrorBlock): { line: string; rank: number; index: nu
     return { line: hit.line, rank, index: hit.index };
   }
   return undefined;
-}
-
-function isNumericCodeLine(line: string): boolean {
-  return /^-?\d+$/.test(npmPayload(line).replace(/^code\s+/, ''));
 }
 
 function npmRunIdentity(line: string): string | undefined {
@@ -586,38 +599,52 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // after it (a dying step that printed `gyp info ok` then its result) is not a
   // pair.
   const failingIdentity = failing ? npmRunIdentity(failing.line) : undefined;
-  const identityEcho =
-    failing && failingIdentity
+  const identityEchoesBefore = (before: number, identity: string | undefined) =>
+    identity
       ? entries
           .filter(
-            (entry) =>
-              entry.index < failing.index &&
-              lineRank(entry.line) === 3 &&
-              npmRunIdentity(entry.line) === failingIdentity,
+            (entry) => entry.index < before && lineRank(entry.line) === 3 && npmRunIdentity(entry.line) === identity,
           )
           .at(-1)
       : undefined;
-  const failingPairEcho = identityEcho ?? (failing ? lastEchoBefore(entries, failing.index) : undefined);
-  const hasFailingPair = Boolean(failing && failingPairEcho);
-  // A code-0 result owns the lines between its own echo and its result. Those
-  // lines belong to a step that recovered; the failing pair is the only window
-  // whose lines are the dying words.
-  const insideFailingPair = (index: number) =>
-    Boolean(failing && failingPairEcho && index > failingPairEcho.index && index < failing.index);
+  // A code-0 result owns the lines between its echo and its result, whether or
+  // not it shares the failing step's identity: a recovered run of the same
+  // package is a different step. Pair every success with its nearest identity
+  // echo.
   const recoveredWindows: Array<{ start: number; end: number }> = [];
   for (const result of codelessEntries) {
     if (!isNpmScriptResult(result.line) || isFailingScriptResult(result.line)) continue;
-    const identity = npmRunIdentity(result.line);
-    if (!identity || identity === failingIdentity) continue;
-    const echo = entries
-      .filter(
-        (entry) => entry.index < result.index && lineRank(entry.line) === 3 && npmRunIdentity(entry.line) === identity,
-      )
-      .at(-1);
+    const echo = identityEchoesBefore(result.index, npmRunIdentity(result.line));
     if (echo) recoveredWindows.push({ start: echo.index, end: result.index });
   }
+  // The failing pair's echo is the step's own: the nearest identity echo that
+  // does not start or sit in a recovered window, else the adjacent echo.
+  const ownEcho = failing
+    ? entries
+        .filter(
+          (entry) =>
+            entry.index < failing.index &&
+            lineRank(entry.line) === 3 &&
+            npmRunIdentity(entry.line) === failingIdentity &&
+            !recoveredWindows.some((window) => entry.index >= window.start && entry.index <= window.end),
+        )
+        .at(-1)
+    : undefined;
+  const failingPairEcho = ownEcho ?? (failing ? lastEchoBefore(entries, failing.index) : undefined);
+  const hasFailingPair = Boolean(failing && failingPairEcho);
+  // A nested window whose own echo starts after the failing pair's echo belongs
+  // to a nested step and is excluded even when it sits inside the pair's span;
+  // only the failing step's own words between its echo and result are in-pair
+  // survivors.
+  const insideFailingPair = (index: number) =>
+    Boolean(failing && failingPairEcho && index > failingPairEcho.index && index < failing.index);
   const inRecoveredWindow = (index: number) =>
-    !insideFailingPair(index) && recoveredWindows.some((window) => index > window.start && index < window.end);
+    recoveredWindows.some(
+      (window) =>
+        index > window.start &&
+        index < window.end &&
+        (window.start > (failingPairEcho?.index ?? -1) || !insideFailingPair(index)),
+    );
   // A success assertion is recovery evidence only when it precedes the last
   // failing pair: the failing step's own `gyp info ok`, printed after its dying
   // words and before its own result line, is not a recovery.
@@ -627,9 +654,14 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   let bare = selectFailureLine(codelessEntries, { positionLast: true });
   let codeLine = codeFor(block);
   let recoveredSwap = false;
-  // Survivors may not come from an erased nested block or from before it: a
-  // child line that precedes the last nested block belongs to a recovered step.
-  let survivorMinIndex = -1;
+  const blocks = codeEntries.length ? errorBlocks(codeEntries, otherEntries) : [];
+  const blockBodyEnd = (target: ErrorBlock) =>
+    target.entries.reduce((max, entry) => Math.max(max, entry.index), target.code.index);
+  const firstBlockCode = blocks[0]?.code.index ?? -1;
+  const lastBlockBodyEnd = blocks.length ? blockBodyEnd(blocks.at(-1)!) : -1;
+  // A pre-block preamble is the child's own words; the first-block-through-last-
+  // body span belongs to recovered steps and is excluded.
+  const outsideBlocks = (index: number) => !blocks.length || index < firstBlockCode || index > lastBlockBodyEnd;
 
   // At npm's default loglevel lifecycle result lines do not exist, so a nested
   // step's recovered block is the only visible error text while the failing
@@ -638,7 +670,6 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // the exit falls to the honest exit status, and a child line outside it is
   // the child's dying words.
   if (!hasFailingPair && codeEntries.length) {
-    const blocks = errorBlocks(codeEntries, otherEntries);
     const lastBlock = blocks.at(-1)!;
     // A duplicate `code N` line with no body of its own (a harness prepend) is
     // one logical block; two populated blocks are distinct steps even when
@@ -665,15 +696,11 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     // on, a numeric block whose code does not tie to the exit is another nested
     // step even when it carries npm's inner script echo.
     const attributableNumeric =
-      numericLast &&
-      (codeTiesExit ||
-        blocks.length <= 2 ||
-        (previousHasBody && !distinctLastCode) ||
-        typeof execResult.status !== 'number');
+      numericLast && (codeTiesExit || blocks.length <= 2 || typeof execResult.status !== 'number');
     const unattributableNested = numericLast
       ? typeof execResult.status === 'number' && execResult.status > 1 && !attributableNumeric
       : !lastHasEcho && typeof execResult.status === 'number' && execResult.status > 1;
-    const blockEnd = lastBlock.entries.reduce((max, entry) => Math.max(max, entry.index), lastBlock.code.index);
+    const blockEnd = blockBodyEnd(lastBlock);
     if (overrides) {
       block = picked ?? { line: lastBlock.code.line, rank: 4, index: lastBlock.code.index };
       codeLine = lastBlock.code.line;
@@ -691,7 +718,6 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
       if (dying) return dying.line;
       block = undefined;
       codeLine = undefined;
-      survivorMinIndex = blockEnd;
     }
   }
 
@@ -759,7 +785,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // qualifies: plain progress chatter does not distinguish itself, and a
   // filtered success assertion (a code-0 result, gyp's info channel) means the
   // survivor belongs to a script that did not fail.
-  const survivorEligible = (entry: LineEntry) => entry.index > survivorMinIndex && !inRecoveredWindow(entry.index);
+  const survivorEligible = (entry: LineEntry) => outsideBlocks(entry.index) && !inRecoveredWindow(entry.index);
   const strongSurvivors = codelessEntries.filter((entry) => lineRank(entry.line) <= 1 && survivorEligible(entry));
   // A demoted `[cause]:` line still rides when it is the only substantive text:
   // the rank-4 demotion exists to keep it from outranking a header, not to

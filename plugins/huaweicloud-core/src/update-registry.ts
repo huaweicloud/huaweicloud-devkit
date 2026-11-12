@@ -47,9 +47,12 @@ function debugLog(message: string): void {
 }
 
 export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: number } = {}): Promise<DistTags | null> {
+  // One normalization with upgradeEnv: a padded spelling is usable and a
+  // whitespace-only value is unset, so the pre-flight and the child pin agree.
+  const configured = process.env.HUAWEICLOUD_NPM_REGISTRY?.trim();
   let registry = 'https://registry.npmjs.org';
-  if (process.env.HUAWEICLOUD_NPM_REGISTRY) {
-    registry = process.env.HUAWEICLOUD_NPM_REGISTRY.replace(/\/+$/, '');
+  if (configured) {
+    registry = configured.replace(/\/+$/, '');
   }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -111,7 +114,7 @@ export function queryDistTags({
   // delegation closes that inconsistency, so every default consumer
   // (getCachedUpdateInfo, upgradePackage) honors the operator/E2E override
   // without spawning npm.
-  if (process.env.HUAWEICLOUD_NPM_REGISTRY) {
+  if (process.env.HUAWEICLOUD_NPM_REGISTRY?.trim()) {
     return queryDistTagsFetch({ timeoutMs });
   }
   return new Promise<DistTags | null>((resolve) => {

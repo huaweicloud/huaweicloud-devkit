@@ -2065,7 +2065,7 @@ test('upgradePackage 失败原因: 最后嵌套块之前的恢复行不是垂死
   assert.equal(reason, 'exit 7');
 });
 
-test('upgradePackage 失败原因: 块内重复的垂死行不解除成功否决', async () => {
+test('upgradePackage 失败原因: 块内重复文本不改写嵌套块的退出码底线', async () => {
   const stderr = [
     'child failed (exit 3)',
     '{ code: 0, signal: null }',
@@ -2078,9 +2078,9 @@ test('upgradePackage 失败原因: 块内重复的垂死行不解除成功否决
   assert.equal(reason, 'exit 7');
 });
 
-test('upgradePackage 失败原因: 无成功否决的块内重复对比夹具同样退出码', async () => {
+test('upgradePackage 失败原因: 无成功否决时块前前导行成为原因, 块内重复不改变答案', async () => {
   const reason = await reasonFor(failureStderr('seam-survivor-in-block.err'), 7);
-  assert.equal(reason, 'exit 7');
+  assert.equal(reason, 'probe r26 helper failed once, giving up');
 });
 
 test('upgradePackage 失败原因: 去掉块内重复的对照同样退出码', async () => {
@@ -2142,6 +2142,115 @@ test('upgradePackage 失败原因: 末块为 errno 的三块对照同样退出�
   assert.equal(reason, 'exit 7');
 });
 
+test('upgradePackage 失败原因: 失败对内嵌套兄弟的成功窗口不冒充失败步', async () => {
+  const reason = await reasonFor(failureStderr('real-inwin-success-sibling.err'), 7);
+  assert.equal(
+    reason,
+    'npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node postinstall.js',
+  );
+});
+
+test('upgradePackage 失败原因: 同名包内嵌套的成功运行不冒充外层失败步', async () => {
+  const reason = await reasonFor(failureStderr('real-samepkg-nested-recovered.err'), 7);
+  assert.equal(
+    reason,
+    'npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node postinstall.js',
+  );
+});
+
+test('upgradePackage 失败原因: 三块共享 code 的嵌套块不声称退出码语义', async () => {
+  const reason = await reasonFor(failureStderr('real-numeric-shared-nested.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 末块 code 不同的对照仍是退出码', async () => {
+  const reason = await reasonFor(failureStderr('real-numeric-shared-control.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 多个失败对内嵌套成功窗口全部排除', async () => {
+  const reason = await reasonFor(failureStderr('real-plural-recovered-windows.err'), 7);
+  assert.equal(
+    reason,
+    'npm info run huaweicloud-devkit@1.0.0 postinstall node_modules/huaweicloud-devkit node post.js',
+  );
+});
+
+test('upgradePackage 失败原因: 单个失败对内嵌套成功窗口同样排除', async () => {
+  const reason = await reasonFor(failureStderr('real-nested-recovered-window.err'), 7);
+  assert.equal(
+    reason,
+    'npm info run huaweicloud-devkit@1.0.0 postinstall node_modules/huaweicloud-devkit node post.js',
+  );
+});
+
+test('upgradePackage 失败原因: 同名嵌套恢复运行后失败步自己的垂死行保留', async () => {
+  const reason = await reasonFor(failureStderr('real-same-name-nested.err'), 7);
+  assert.equal(reason, 'build failed hard, cache locked');
+});
+
+test('upgradePackage 失败原因: 失败对内的同包恢复运行不顶替垂死行', async () => {
+  const reason = await reasonFor(failureStderr('real-inpair-success-nested.err'), 7);
+  assert.equal(reason, 'build failed hard, cache locked');
+});
+
+test('upgradePackage 失败原因: 首个嵌套块之前的前导垂死行保留', async () => {
+  const reason = await reasonFor(failureStderr('real-preamble-before-block.err'), 7);
+  assert.equal(reason, 'probe postinstall: build failed, giving up');
+});
+
+test('upgradePackage 失败原因: 两嵌套块之间的恢复聊天仍不作垂死行', async () => {
+  const reason = await reasonFor(failureStderr('real-chatter-between-blocks.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 回显层按失败结果的包与脚本身份配对', async () => {
+  const stderr = [
+    'npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node post.js',
+    'npm info run inner-ok@1.0.0 postinstall node_modules/inner-ok node ok.js',
+    'npm info run inner-ok@1.0.0 postinstall { code: 0, signal: null }',
+    'npm info run huaweicloud-devkit@9.9.9 postinstall { code: 7, signal: null }',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(
+    reason,
+    'npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node post.js',
+  );
+});
+
+test('upgradePackage 失败原因: 首个代码块之前的 npm 错误正文不作垂死行', async () => {
+  const stderr = [
+    'npm error FetchError: probe recovered fetch failed',
+    'npm error code EACCES',
+    'npm error syscall mkdir',
+    'npm error errno EACCES',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 块体内插入的垂死行不越过块边界', async () => {
+  const stderr = [
+    'npm error code EACCES',
+    'child failed, continuing',
+    'npm error path /home/op/ro-cache/_cacache',
+    'npm error errno EACCES',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 块体结束后的垂死行仍保留', async () => {
+  const stderr = [
+    'npm error code EACCES',
+    'npm error path /home/op/ro-cache/_cacache',
+    'npm error errno EACCES',
+    'child failed, giving up',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'child failed, giving up');
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
@@ -2191,7 +2300,7 @@ test('upgradePackage 升级子进程: 键名空白按 vault 谓词的归一处�
   }
 });
 
-test('upgradePackage 升级子进程: 预检查询向私有镜像带上 npm 认证通道的 bearer', async () => {
+test('upgradePackage 升级子进程: 预检查询与子进程共享 npm 认证与镜像归一', async () => {
   const { createServer } = await import('node:http');
   const seen: Array<string | undefined> = [];
   const server = createServer((req, res) => {
@@ -2207,30 +2316,49 @@ test('upgradePackage 升级子进程: 预检查询向私有镜像带上 npm 认�
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const address = server.address();
   assert.ok(address && typeof address === 'object');
+  const registry = `http://127.0.0.1:${address.port}`;
   const saved = new Map(
     ['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'HUAWEICLOUD_NPM_REGISTRY'].map((key) => [key, process.env[key]] as const),
   );
-  try {
-    process.env.HUAWEICLOUD_NPM_REGISTRY = `http://127.0.0.1:${address.port}`;
-    process.env.NPM_TOKEN = 'fixture-registry-token';
-    delete process.env.NODE_AUTH_TOKEN;
+  const attempt = async () => {
+    let env: NodeJS.ProcessEnv | undefined;
     let spawned = false;
-    const spawnFn: UpgradeSpawnFn = () => {
+    const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
       spawned = true;
+      env = opts.env as NodeJS.ProcessEnv;
       return { status: 0 };
     };
-    const withToken = await upgradePackage({ target: 'opencode' }, { spawnFn });
-    assert.equal(withToken.success, true);
-    assert.equal(spawned, true, 'the act proceeds to the spawn after an authenticated query');
+    const result = await upgradePackage({ target: 'opencode' }, { spawnFn });
+    return { result, env, spawned };
+  };
+  try {
+    process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
+    process.env.NPM_TOKEN = '  fixture-registry-token  ';
+    delete process.env.NODE_AUTH_TOKEN;
+    const paddedToken = await attempt();
+    assert.equal(paddedToken.result.success, true);
+    assert.equal(paddedToken.spawned, true, 'the act proceeds to the spawn after an authenticated query');
+    assert.equal(seen.at(-1), 'Bearer fixture-registry-token', 'the pre-flight trims the token');
+    assert.equal(paddedToken.env?.NPM_TOKEN, 'fixture-registry-token', 'the child env token is trimmed too');
+
+    delete process.env.NPM_TOKEN;
+    process.env.NODE_AUTH_TOKEN = 'fixture-registry-token';
+    const nodeAuth = await attempt();
+    assert.equal(nodeAuth.result.success, true, 'NODE_AUTH_TOKEN also authenticates the query');
     assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+
+    process.env.HUAWEICLOUD_NPM_REGISTRY = `  ${registry}  `;
+    process.env.NPM_TOKEN = 'fixture-registry-token';
+    delete process.env.NODE_AUTH_TOKEN;
+    const paddedRegistry = await attempt();
+    assert.equal(paddedRegistry.result.success, true, 'a padded registry spelling is usable end-to-end');
 
     delete process.env.NPM_TOKEN;
     delete process.env.NODE_AUTH_TOKEN;
-    spawned = false;
-    const withoutToken = await upgradePackage({ target: 'opencode' }, { spawnFn });
-    assert.equal(withoutToken.success, false);
-    assert.equal(spawned, false, 'an unauthenticated mirror degrades before the spawn');
-    assert.match(withoutToken.error ?? '', /无法确认最新版本/);
+    const withoutToken = await attempt();
+    assert.equal(withoutToken.result.success, false);
+    assert.equal(withoutToken.spawned, false, 'an unauthenticated mirror degrades before the spawn');
+    assert.match(withoutToken.result.error ?? '', /无法确认最新版本/);
     assert.equal(seen.at(-1), undefined);
   } finally {
     for (const [key, value] of saved) {
