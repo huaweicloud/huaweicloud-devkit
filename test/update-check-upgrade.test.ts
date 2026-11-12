@@ -1922,6 +1922,53 @@ test('upgradePackage 失败原因: 恢复步的回显不抢元数据外层块', 
   assert.equal(reason, 'npm error code 7');
 });
 
+test('upgradePackage 失败原因: 共享 code 文本的嵌套块仍取外层失败块', async () => {
+  const reason = await reasonFor(failureStderr('real-dup-block-shared-code.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+  assert.doesNotMatch(reason, /child dependency build failed|fail\.js/);
+});
+
+test('upgradePackage 失败原因: 三块共享 code 文本同样取最后失败块', async () => {
+  const reason = await reasonFor(failureStderr('real-three-block-shared-code.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+  assert.doesNotMatch(reason, /child dependency build failed|E404/);
+});
+
+test('upgradePackage 失败原因: code 不同的对照仍取外层块', async () => {
+  const reason = await reasonFor(failureStderr('real-dup-block-distinct-code.err'), 7);
+  assert.match(reason, /code 8/);
+  assert.match(reason, /command sh -c node post\.js/);
+});
+
+test('upgradePackage 失败原因: verbose 下尾部失败块拥有失败结果', async () => {
+  const reason = await reasonFor(failureStderr('real-verbose-sameturn.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+  assert.doesNotMatch(reason, /E404|404 Not Found/);
+});
+
+test('upgradePackage 失败原因: 长 verbose 捕获同样取尾部失败块', async () => {
+  const reason = await reasonFor(failureStderr('real-verbose-sameturn-long.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+  assert.doesNotMatch(reason, /E404|404 Not Found|link step aborted/);
+});
+
+test('upgradePackage 失败原因: 去掉嵌套块的 verbose 对照不变', async () => {
+  const reason = await reasonFor(failureStderr('real-verbose-no-nested.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+});
+
+test('upgradePackage 失败原因: 默认 loglevel 的两块对照仍取外层块', async () => {
+  const reason = await reasonFor(failureStderr('real-two-block-default.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+  assert.doesNotMatch(reason, /E404|404 Not Found/);
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });

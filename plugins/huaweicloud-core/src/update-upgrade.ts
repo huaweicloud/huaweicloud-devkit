@@ -596,10 +596,15 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     // applies when the last block's code differs from the block before it.
     const previous = blocks.at(-2);
     const distinctLastCode =
-      previous &&
-      npmPayload(previous.code.line).replace(/^code\s+/, '') !==
+      Boolean(previous) &&
+      npmPayload(previous!.code.line).replace(/^code\s+/, '') !==
         npmPayload(lastBlock.code.line).replace(/^code\s+/, '');
-    if (blocks.length > 1 && distinctLastCode) {
+    // A harness-prepended `code N` line has no block body of its own: it is the
+    // same logical block as the one that follows the child diagnostic. A real
+    // nested block always carries its own path/echo lines, so shared code text
+    // between two populated blocks must not disable the last-block rule.
+    const previousHasBody = Boolean(previous && previous.entries.length);
+    if (blocks.length > 1 && (distinctLastCode || previousHasBody)) {
       const picked = pickInBlock(lastBlock);
       block = picked ?? { line: lastBlock.code.line, rank: 4, index: lastBlock.code.index };
       codeLine = lastBlock.code.line;
@@ -621,6 +626,22 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     }
   }
 
+  // A block that trails the last failing result is npm's own summary of that
+  // step, and it owns the failure even when an earlier, recovered block carries
+  // a higher-ranked diagnostic (the verbose/default asymmetry). Its code line
+  // is the failing step's, so no recovered block's code can be the reason.
+  if (hasFailingPair) {
+    const trailing = errorBlocks(codeEntries, otherEntries)
+      .filter((candidate) => candidate.code.index > failing!.index)
+      .at(-1);
+    if (trailing) {
+      block = pickInBlock(trailing) ?? { line: trailing.code.line, rank: 4, index: trailing.code.index };
+      codeLine = trailing.code.line;
+      // The child's earlier chatter belongs to the step that recovered.
+      if (bare && bare.index < trailing.code.index) bare = undefined;
+      recoveredSwap = true;
+    }
+  }
   // A loud successful script (or a gyp error it survived) is not the cause when
   // npm emitted a failing echo pair later: the echo names the failing script.
   const lastSuccess = codelessEntries
