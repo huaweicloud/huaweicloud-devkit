@@ -2760,51 +2760,60 @@ test('a non-object JSON view under the remediation key never rides: the mint fir
   assert.deepEqual(control.remediation, real);
 });
 
-test('a lying-set marker accessor cannot survive the neutralization: the fold never fires on the discarded original', () => {
+test('a lying-set marker accessor is never invoked: the pre-check refuses before any setter call', () => {
+  // round 17/18 建、round 28/MUST 2 取代：谎言 set（接受每次写入但存回装饰值）此
+  // 前靠中和兽 defineProperty 臂在写入后粒化——写入本身已把装饰存上载体（写入时注册的
+  // 污染超过拒绝）。访问器立着预判：快照知其为访问器→直接登记拒绝——
+  // 一个 setter 都不调用，谎言 set 无从落地（原件保持预调用前的值）
   const carrier = new Error('the real diagnosis') as unknown as HostileTarget;
   Object.assign(carrier, { code: 20 });
   let stored = false;
-  // 谎言 set：接受每次写入但存回装饰值——写路径没封死，赋值"成功"
+  let setCalls = 0;
   Object.defineProperty(carrier, 'gatewayRetryExhausted', {
     configurable: true,
     enumerable: true,
     get: () => stored,
     set: () => {
+      setCalls += 1;
       stored = true;
     },
   });
-  // 第二键双路封死，装饰在标记已装填后走回滚分支
-  sealedKey(carrier, 'connectRetries', 1);
   const out = decorateExhaustedConnect(carrier, 2);
   assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  assert.equal(setCalls, 0, 'the lying setter is never invoked — no write ever reaches the hostile carrier');
   assert.equal(
     (carrier as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
-    undefined,
-    'the lying-set marker is falsified in place — the readback catches the lie, the defineProperty arm replaces the accessor',
+    false,
+    'the original keeps its pre-call value — no decoration ever landed',
   );
   assert.equal(transientExhaustionResult(carrier), undefined, 'the fold never fires on the discarded original');
   assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone carries the decoration');
 });
 
-test('applyVersionGate falsifies a lying-set half decoration on the discarded original', () => {
+test('applyVersionGate never invokes a lying-set half decoration: the pre-check refuses before any setter call', () => {
+  // round 28/MUST 2 取代 round-18 的中和粒化：访问器立着预判——写入本身不再发生，谎言
+  // set 无从存上载体（预检拒绝在先）；克隆照旧携带载荷
   const carrier = new Error('gate') as unknown as HostileTarget;
   Object.assign(carrier, { code: 'HDKIT_VERSION_TOO_OLD' });
   let storedClient = 'old-value';
+  let setCalls = 0;
   Object.defineProperty(carrier, 'clientVersion', {
     configurable: true,
     enumerable: true,
     get: () => storedClient,
     set: () => {
+      setCalls += 1;
       storedClient = '2.0.0-next.0';
     },
   });
   sealedKey(carrier, 'minVersion', '1.0.0');
   const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
   assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  assert.equal(setCalls, 0, 'the lying setter is never invoked');
   assert.equal(
     (carrier as { clientVersion?: unknown }).clientVersion,
-    undefined,
-    'the lying-set half decoration is falsified in place',
+    'old-value',
+    'the original keeps its pre-call value — no half decoration ever landed',
   );
   assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0', 'the clone carries the payload');
 });
@@ -3249,7 +3258,8 @@ test('a third-value accessor cannot skip the survival judgment: both decorators 
       undefined,
       'the third-value accessor is poisoned — the fold refuses',
     );
-    assert.ok(reads >= 2, 'the accessor was exercised');
+    // round 28/MUST 2：访问器立着预判——setter 与探针读都不再发生（预检登记拒绝在先）
+    assert.equal(reads, 0, 'the third-value accessor is never exercised — the pre-check refuses first');
     const cloneFold = transientExhaustionResult(out)!;
     assert.ok(cloneFold, 'the exhaustion clone folds (round 21 补全耗尽半边的完整信封断言)');
     assert.equal(cloneFold.code, 'HDKIT_GATEWAY_TIMEOUT');
@@ -4457,7 +4467,10 @@ function collectEngineErrorPrototypes(): Set<object> {
   };
   const scan = (container: object): void => {
     for (const key of Reflect.ownKeys(container)) {
-      const value = (container as Record<string | symbol, unknown>)[key];
+      // 经描述符读取（round 28/SHOULD 6 真正落地——round 26/27 两次宣称皆未
+      // 达盘）：钉自身不做被禁的读——直读会触发惰性 getter（localStorage）
+      const desc = Object.getOwnPropertyDescriptor(container, key);
+      const value = desc?.value;
       if (typeof value !== 'function') continue;
       const proto = (value as { prototype?: unknown }).prototype;
       if (typeof proto === 'object' && proto !== null && reaches(proto)) found.add(proto);
@@ -4765,27 +4778,18 @@ test('the per-call deny closes the post-load family, the lying [[Get]] view, and
     delete (globalThis as Record<string, unknown>).R26PostLoad;
   }
 
-  const realProto = Object.create(Error.prototype);
-  let served: unknown = { tag: 'scan-time lie' };
+  // r12 洗钱形态的 round-28 裁定：构造器自指是静态身份识别——手动把
+  // 函数的 .prototype 指向一个无自指 constructor 的对象（语言默认的家族原型恒自指）
+  // 是构造性洗钱包裹器：候选身份识别看不穿转发代理与无自指 constructor 的
+  // 手动赋值——已记录边界（需谁用方自己的函数对象配合，权限等价：直接传原型被自指拒绝）
+  const manualProto: object = Object.create(Error.prototype);
   function R26LyingTarget() {}
-  (globalThis as Record<string, unknown>).R26LyingFamily = new Proxy(R26LyingTarget, {
-    get(target, key, receiver) {
-      if (key === 'prototype') return served;
-      return Reflect.get(target, key, receiver);
-    },
-  });
-  try {
-    assert.equal(isErrorCarrier(realProto), true, 'before the swap the real prototype is a plain carrier');
-    served = realProto;
-    assert.equal(isErrorCarrier(realProto), false, 'the served runtime view denies the real family prototype');
-    assert.notEqual(
-      decorateExhaustedConnect(realProto, 2),
-      realProto,
-      'the lying escape cannot launder the family in place',
-    );
-  } finally {
-    delete (globalThis as Record<string, unknown>).R26LyingFamily;
-  }
+  R26LyingTarget.prototype = manualProto as never;
+  assert.equal(
+    isErrorCarrier(manualProto),
+    true,
+    'a constructor-less manually-assigned prototype is the recorded boundary — not a self-identified family',
+  );
 
   class R26RealFamily extends Error {}
   function R26PlainCtor() {}
@@ -4948,9 +4952,9 @@ test('the chain-read message fallbacks: a prototype-authored message rides both 
 // 设计默认。
 
 test('the deny survives a deleted, accessor-ified, and ownKeys-throwing WebAssembly binding', () => {
-  // r26-a1/a2/a4 形态：裸绑定在参数位求值——删除后每个结构化折叠变
-  // ReferenceError（相对 round 25 快照的回归）；访问器化/ownKeys 抛出的容
-  // 器不丢家族（fail-closed：加载快照兜底）
+  // r26-a1/a2/a4 形态、round 28 构造器自指后天然成立：绑定状态与裁决无关
+  // （构造器是载体自身的事实，不是全局状态）——删除/访问器化/ownKeys 抛出
+  // 各自的绑定失效形态下，家族原型照样被自指拒绝、装饰照样折叠
   const wasm = globalThis.WebAssembly;
   const binding = Object.getOwnPropertyDescriptor(globalThis, 'WebAssembly');
   try {
@@ -4995,10 +4999,10 @@ test('the deny survives a deleted, accessor-ified, and ownKeys-throwing WebAssem
   }
 });
 
-test('the per-call enumeration is bounded and fires zero accessor getters on the error path', () => {
-  // r26-d1/c4 形态：20 万键敌意容器每次错误事件 420ms（键数无界）；每个
-  // 访问器全局 [[Get]]（localStorage 警告按错误事件打印）。键数上界 4096 +
-  // 描述符取值——访问器 getter 零触发
+test('the constructor check is O(1) and fires zero accessor getters on the error path', () => {
+  // r26-d1/c4 形态建、round 28 枚举退役后收口：20 万键敌意容器不再被枚举
+  // （构造器自指是 O(1)——gOPD 两次），访问器全局零 [[Get]]（无枚举即无触
+  // 发面）。hostile 容器只测"它进不了任何路径"，键数与成本无关
   let accessorFires = 0;
   Object.defineProperty(globalThis, 'R27LazyAccessGlobal', {
     configurable: true,
@@ -5014,7 +5018,7 @@ test('the per-call enumeration is bounded and fires zero accessor getters on the
     ownKeys() {
       return bigKeys;
     },
-    getOwnPropertyDescriptor(target: object, key: string | symbol) {
+    getOwnPropertyDescriptor(_target: object, _key: string | symbol) {
       return { value: function () {}, writable: true, enumerable: true, configurable: true };
     },
   });
@@ -5026,10 +5030,8 @@ test('the per-call enumeration is bounded and fires zero accessor getters on the
     const out = decorateExhaustedConnect(carrier, 2);
     const elapsed = Date.now() - t0;
     assert.equal(out, carrier, 'the hostile 200k-key container never blocks the decoration');
-    // 界定口径：模块自身的逐键工作被 1024 键上界封顶（round 26 的模块工作随容器规模线性放大）；残余成本是
-    // V8 对敌意 ownKeys 陷阱返回值的不变式校验（O(n)，不受本模块控制——已记录残留）。上界按实测
-    // 留余量：装饰三次扫描 ~330ms + 裁差 < 900ms
-    assert.ok(elapsed < 900, `the module work is key-capped (measured ${elapsed}ms, was 672ms-per-event uncapped)`);
+    // O(1)：模块从不过ownKeys/枚举——敌意容器的键数与成本无关
+    assert.ok(elapsed < 50, `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms)`);
     assert.equal(accessorFires, 0, 'no accessor-served global is [[Get]]-ed on the error path');
   } finally {
     globalThis.WebAssembly = saved;
@@ -5058,11 +5060,12 @@ test('the pre-write re-check closes the payload and remediation TOCTOU windows',
   // /载体 remediation 的 [[Get]] 执行攻击者代码，窗口内把家族注册上
   // globalThis 即击败逐调用样本（写入落在共享原型上=全家族污染）。写前复
   // 检看见窗口内的注册
-  // 攻击形态：载体本身就是家族原型（函数的 .prototype 指向它）——
-  // 预检时家族尚未注册（合法载体），读窗内注册即变共享原型，写入即全家族污染
-  const carrier = Object.assign(new Error('payload window'), { code: 'HDKIT_VERSION_TOO_OLD' });
-  function R27Family() {}
-  R27Family.prototype = carrier;
+  // round-28/MUST 4 后形态更替：构造器自指是静态身份——真家族原型
+  // （语言默认自指 constructor）在任何阶段都被拒，TOCTOU 窗口对自指载体结构性不存在；手动
+  // .prototype 指向无自指对象的构造性包裹器是已记录边界（见 per-call 钉的 r12 行）。
+  // 载体使用真家族的真原型（自指）：预检直接拒绝——getter 注册与否都无关
+  class R27Family extends Error {}
+  const carrier = R27Family.prototype as unknown as HostileTarget & { clientVersion?: unknown };
   const register = (): void => {
     (globalThis as Record<string, unknown>).R27Family = R27Family;
   };
@@ -5080,16 +5083,16 @@ test('the pre-write re-check closes the payload and remediation TOCTOU windows',
       undefined,
       'the family prototype is unmutated',
     );
-    const freshFamilyMember = new (R27Family as unknown as new () => object)();
     assert.equal(
-      transientExhaustionResult(freshFamilyMember),
+      transientExhaustionResult(new R27Family('fresh')),
       undefined,
       'fresh family instances fold nothing — no pollution',
     );
 
-    const remediationCarrier = Object.assign(new Error('remediation window'), { code: 20 });
-    function R27ExhaustFamily() {}
-    R27ExhaustFamily.prototype = remediationCarrier;
+    class R27ExhaustFamily extends Error {}
+    const remediationCarrier = R27ExhaustFamily.prototype as unknown as HostileTarget & {
+      gatewayRetryExhausted?: unknown;
+    };
     Object.defineProperty(remediationCarrier, 'remediation', {
       configurable: true,
       enumerable: true,
@@ -5198,4 +5201,245 @@ test('the cross-kind fallbacks fall to designed defaults: each envelope keeps it
     'cross identity',
     'the exhaustion message is its own book copy — never the gate fallback message',
   );
+});
+
+// ── 构造器自指、import 零读、三阶段写入、种类分册收口（round 28）──
+// 共享原型拒绝改为构造器自指（O(1)、零容器枚举、零 import 绑定读）；写入
+// 路径三阶段化（读窗集中在读阶段，访问器立着预判不调 setter，写后复检）；
+// 耗尽折叠的落定记录先于任何拒绝种类；分册快照的清除带验证（清不动即拒
+// 绝落定）；不换码分支把亲署码/消息写入分册；链回退只适用于无拒绝史的
+// 载体。
+
+test('the import completes under deleted, accessorified, and throwing Error/WebAssembly/globalThis bindings', async () => {
+  // r28-MUST 1（r27-a1/e2/e6 形态）：快照的 Error.prototype 种子读、
+  // readWasmBinding 的 [[Get]]、scan(globalThis) 的裸绑定——删除/访问器
+  // 化/抛出各杀 import 或谎报"零 Get"。构造器自指后模块加载零容器读——
+  // 任何绑定状态都不中止加载，两个装饰器照常折叠
+  const errorDesc = Object.getOwnPropertyDescriptor(globalThis, 'Error');
+  const errorProto = Error.prototype;
+  const states: Array<[string, () => void]> = [
+    [
+      'deleted Error',
+      () => {
+        delete (globalThis as { Error?: unknown }).Error;
+      },
+    ],
+    [
+      'throwing Error getter',
+      () => {
+        Object.defineProperty(globalThis, 'Error', {
+          configurable: true,
+          get() {
+            throw new TypeError('Error binding detonates');
+          },
+        });
+      },
+    ],
+    [
+      'deleted WebAssembly',
+      () => {
+        delete (globalThis as { WebAssembly?: unknown }).WebAssembly;
+      },
+    ],
+    [
+      'throwing WebAssembly getter',
+      () => {
+        Object.defineProperty(globalThis, 'WebAssembly', {
+          configurable: true,
+          get() {
+            throw new TypeError('WebAssembly binding detonates');
+          },
+        });
+      },
+    ],
+  ];
+  const wasmDesc = Object.getOwnPropertyDescriptor(globalThis, 'WebAssembly');
+  try {
+    for (const [label, apply] of states) {
+      apply();
+      try {
+        const fresh = await import(
+          `../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts?r28state=${label}${Date.now()}`
+        );
+        const e1 = Object.create(errorProto) as Error & { code?: unknown };
+        e1.code = 'HDKIT_VERSION_TOO_OLD';
+        const gateOut = fresh.applyVersionGate(e1, { clientVersion: '2.0.0-next.0' });
+        const fold = fresh.versionGateResult(gateOut);
+        assert.equal(fold?.code, 'HDKIT_VERSION_TOO_OLD', `${label}: the gate envelope folds`);
+        const e2 = Object.create(errorProto) as Error & { code?: unknown };
+        e2.code = 20;
+        const exhaustOut = fresh.decorateExhaustedConnect(e2, 2);
+        assert.equal(
+          fresh.transientExhaustionResult(exhaustOut)?.code,
+          'HDKIT_GATEWAY_TIMEOUT',
+          `${label}: the exhaustion envelope folds`,
+        );
+      } finally {
+        Object.defineProperty(globalThis, 'Error', errorDesc as PropertyDescriptor);
+        Object.defineProperty(globalThis, 'WebAssembly', wasmDesc as PropertyDescriptor);
+      }
+    }
+  } finally {
+    Object.defineProperty(globalThis, 'Error', errorDesc as PropertyDescriptor);
+    Object.defineProperty(globalThis, 'WebAssembly', wasmDesc as PropertyDescriptor);
+  }
+});
+
+test('a write-time family registration never reaches the carrier: the accessor pre-check invokes no setter', () => {
+  // r28-MUST 2（r27-e9 形态）：载体 setter 在写入时把家族原型指回载体并
+  // 注册——写入本身执行攻击者代码，污染超过后续拒绝。访问器立着预判：快
+  // 照知其为访问器 → 登记拒绝，一个 setter 都不调用；构造器自指对真家族
+  // 静态拒绝（读窗对自指载体结构性不存在）
+  const carrier = Object.assign(new Error('setter window'), { code: 20 });
+  function R28SetterFamily() {}
+  let registeredAtWrite = false;
+  let setCalls = 0;
+  let stored: unknown;
+  Object.defineProperty(carrier, 'gatewayRetryExhausted', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return stored;
+    },
+    set(v: unknown) {
+      setCalls += 1;
+      if (!registeredAtWrite) {
+        registeredAtWrite = true;
+        R28SetterFamily.prototype = carrier;
+        (globalThis as Record<string, unknown>).R28SetterFamily = R28SetterFamily;
+      }
+      stored = v;
+    },
+  });
+  try {
+    const out = decorateExhaustedConnect(carrier, 2);
+    assert.notEqual(out, carrier, 'the accessor carrier routes to the clone');
+    assert.equal(setCalls, 0, 'the hostile setter is never invoked — no write-time attacker code');
+    assert.equal(registeredAtWrite, false, 'the family was never registered at write time');
+    assert.equal(
+      (carrier as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
+      undefined,
+      'the family prototype carries nothing',
+    );
+    const member = new (R28SetterFamily as unknown as new () => object)();
+    assert.equal(
+      transientExhaustionResult(member as unknown as Error),
+      undefined,
+      'fresh instances fold nothing — no pollution',
+    );
+    const honest = Object.assign(new Error('honest setter control'), { code: 20 });
+    assert.equal(decorateExhaustedConnect(honest, 2), honest, 'the honest control still lands');
+  } finally {
+    delete (globalThis as Record<string, unknown>).R28SetterFamily;
+  }
+});
+
+test('a same-kind exhaustion refusal renders the landed record at every exit: no exit divergence', () => {
+  // r28-MUST 3a（r27-e7/worker-4 R27-P 形态）：耗尽落定 → 同种类再装饰拒绝
+  // ——此前 handler 裸抛（refusal.kinds.has 先于 provenKindIs）而 voucher 渲
+  // 染（gateFoldPayload 的落定分支）；镜像门禁半边的排序后两出口一致
+  const carrier = Object.assign(new Error('exhaustion then same-kind refusal'), { code: 20 });
+  assert.equal(decorateExhaustedConnect(carrier, 1), carrier, 'the first exhaustion decoration lands');
+  standingAccessor(carrier, 'gatewayRetryExhausted');
+  const second = decorateExhaustedConnect(carrier, 5);
+  assert.notEqual(second, carrier, 'the standing marker accessor earns the same-kind refusal');
+  const handlerEnvelope = transientExhaustionResult(carrier)!;
+  assert.ok(handlerEnvelope, 'the handler exit folds the landed record — no raw rethrow');
+  assert.equal(handlerEnvelope.connectRetries, 1, 'the landed record renders its own count');
+  assert.equal(versionGateResult(carrier), undefined, 'the gate verdict stays off for an exhaustion carrier');
+});
+
+test('the module-scoped subclass prototype routes to a stamped carrier; the honest instance lands', () => {
+  // r28-MUST 4 的边界收窄（取代 r25/r27 的调用方作用域记录边界）：凡自指
+  // 原型一律拒绝——含模块作用域的用户子类原型；只有实例就地装填。1025 键
+  // 填充与 20 万键容器对 O(1) 构造器检查零成本
+  class R28ModScoped extends Error {}
+  assert.equal(isErrorCarrier(R28ModScoped.prototype), false, 'the module-scoped subclass prototype is denied');
+  const stamped = decorateExhaustedConnect(R28ModScoped.prototype, 2);
+  assert.notEqual(stamped, R28ModScoped.prototype, 'the prototype routes to a stamped carrier');
+  assert.ok(stamped instanceof Error);
+  assert.equal(
+    (R28ModScoped.prototype as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
+    undefined,
+    'the prototype carries nothing',
+  );
+  const instance = new R28ModScoped('instance');
+  assert.equal(isErrorCarrier(instance), true, 'the instance is a carrier');
+  assert.equal(decorateExhaustedConnect(instance, 2), instance, 'the instance lands in place');
+  assert.equal(transientExhaustionResult(instance)?.connectRetries, 2);
+
+  // O(1)：20 万键敌意容器不再进枚举（round 27 实测 203ms/次——现在是构造器
+  // gOPD 两次）
+  const wasm = globalThis.WebAssembly;
+  const bigKeys: string[] = [];
+  for (let i = 0; i < 200_000; i += 1) bigKeys.push(`k${i}`);
+  const hostile = new Proxy(wasm, {
+    ownKeys() {
+      return bigKeys;
+    },
+  });
+  (globalThis as Record<string, unknown>).WebAssembly = hostile;
+  try {
+    const t0 = Date.now();
+    assert.equal(isErrorCarrier(new Error('x')), true);
+    const elapsed = Date.now() - t0;
+    assert.ok(elapsed < 20, `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms)`);
+  } finally {
+    globalThis.WebAssembly = wasm;
+  }
+});
+
+test('a same-kind re-decoration with a blocked book clear refuses the landing: the clone carries the design', () => {
+  // r28-MUST 3b（r27-e7/worker-4 R27-P2 形态）：分册快照替换前清除上一分
+  // 册不再覆盖的键——被拒（不可配置键）或谎报的删除让前一轮的值残留，链
+  // 回退把它读回信封。清不动即拒绝落定（调用方走克隆）
+  const carrier = new Error('blocked clear') as Error & { code?: unknown };
+  carrier.code = 'HTTP_502';
+  assert.equal(decorateExhaustedConnect(carrier, 1), carrier, 'the first decoration lands');
+  // 第一轮把设计 remediation 写为自有属性；第二轮（亲署码视图）不覆盖
+  // remediation（rawRemediation 读到第一轮的值）——分册清除要删它，不可配
+  // 置的删除被拒 → 残留 → 清不动即拒绝落定
+  const remediationDesc = Object.getOwnPropertyDescriptor(carrier, 'remediation');
+  assert.ok(remediationDesc, 'the first decoration wrote the designed remediation');
+  Object.defineProperty(carrier, 'remediation', { ...remediationDesc, configurable: false });
+  const second = decorateExhaustedConnect(carrier, 2);
+  assert.notEqual(second, carrier, 'the blocked clear refuses the second landing');
+  const fold = transientExhaustionResult(second)!;
+  assert.equal(fold.connectRetries, 2, 'the clone renders the second response');
+  assert.equal(fold.code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone carries the designed envelope');
+});
+
+test('a refused middle decoration leaves no residue on the final landed envelope', () => {
+  // r28-MUST 3c（r27-e4 形态）：拒绝的中间层装饰（敌意 set 拒绝 connectRetries、
+  // 标记的中和写被拒）留下不在任何分册的写入——链回退此前把残留读回信封。
+  // 链回退只适用于无拒绝史的载体：任何拒绝在身即分册或设计默认（round 28）
+  const real = Object.assign(new Error('refused middle'), { code: 20 });
+  let hostile = false;
+  const refuseMiddle = (k: string | symbol): void => {
+    if (hostile && k === 'connectRetries') throw new TypeError('middle refuses');
+  };
+  const carrier = new Proxy(real, {
+    set(t: typeof real, k: string | symbol, v: unknown): boolean {
+      refuseMiddle(k);
+      (t as unknown as Record<string | symbol, unknown>)[k] = v;
+      return true;
+    },
+    defineProperty(t: typeof real, k: string | symbol, d: PropertyDescriptor): boolean {
+      refuseMiddle(k);
+      return Reflect.defineProperty(t, k, d);
+    },
+    getOwnPropertyDescriptor: (t: object, k: string | symbol) => Object.getOwnPropertyDescriptor(t, k) ?? undefined,
+  });
+  assert.equal(decorateExhaustedConnect(carrier, 1), carrier, 'the first exhaustion decoration lands');
+  hostile = true;
+  const refused = decorateExhaustedConnect(carrier, 5);
+  assert.notEqual(refused, carrier, 'the middle decoration refuses via the hostile set');
+  hostile = false;
+  const final = decorateExhaustedConnect(carrier, 2);
+  assert.equal(final, carrier, 'the final decoration lands once the trap turns honest');
+  const fold = transientExhaustionResult(final)!;
+  // 中间层的标记写入经回滚中和，残留的链回退被拒绝史门挡住——最终信封
+  // 只载分册与设计默认，不载中间层残留
+  assert.equal(fold.connectRetries, 2, 'the final book renders its own count');
+  assert.match(String(fold.message ?? ''), /refused middle/, 'the authored message rides via the book');
 });

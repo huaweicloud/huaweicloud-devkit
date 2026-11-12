@@ -10,6 +10,27 @@
 // - 瞬时耗尽的 connect 出口结构化折叠（dev 在此路径裸抛）
 
 /** 版本门禁（服务端 UPGRADE_MIN_VERSION 硬门禁）的唯一错误码 */
+// 错误家族工具的加载期捕获（round 28/MUST 1）：走查/盖戳/克隆不经全局绑定——删除/重绑
+// Error 后裸标识符变 ReferenceError（每个结构化折叠端到端断）。typeof 对已删除绑定不抛出；Error 缺席时降级到家族
+// 其余构造器（盖戳载体仍是错误家族实例，信封照常折叠；已记录降级）；全家族缺席的荒谬世界里模块照常加载
+function readErrorConstructor(): (new (message?: string) => Error) | undefined {
+  // 每读皆守卫（round 28/MUST 1）：删除/访问器化/抛出型绑定各自的红形态——typeof 与
+  // 裸标识符对访问器绑定都会引爆；家族降级链上每一员都在 try 内读，任一
+  // 可用即止；全缺席即 undefined（模块照常加载，已记录降级）
+  for (const read of [() => Error, () => TypeError, () => EvalError, () => RangeError] as Array<() => unknown>) {
+    try {
+      const ctor: unknown = read();
+      if (typeof ctor === 'function') return ctor as new (message?: string) => Error;
+    } catch {
+      // 该绑定不可用——试下一员
+    }
+  }
+  return undefined;
+}
+const ERROR_CONSTRUCTOR: (new (message?: string) => Error) | undefined = readErrorConstructor();
+const ERROR_PROTOTYPE: object | undefined =
+  ERROR_CONSTRUCTOR === undefined ? undefined : (ERROR_CONSTRUCTOR.prototype as object);
+
 export const VERSION_GATE_CODE = 'HDKIT_VERSION_TOO_OLD';
 
 /**
@@ -70,8 +91,8 @@ function snapshotProvenValue(value: unknown): unknown {
   }
 }
 
-function recordProvenLanding(target: object, fields: Array<[string, unknown]>, kind?: RefusalKind): void {
-  if (kind === undefined) return;
+function recordProvenLanding(target: object, fields: Array<[string, unknown]>, kind?: RefusalKind): boolean {
+  if (kind === undefined) return true;
   let record = provenLandings.get(target);
   if (record === undefined) {
     record = { kinds: new Set<RefusalKind>(), byKind: new Map<RefusalKind, Map<string, unknown>>() };
@@ -91,13 +112,24 @@ function recordProvenLanding(target: object, fields: Array<[string, unknown]>, k
       try {
         delete (target as Record<string, unknown>)[key];
       } catch {
-        // 尽力而为——冻结/不可配置键即残写（已记录边界）
+        // 尽力而为——继续验证
+      }
+      // 清除验证（round 28/MUST 3b）：被拒/谎报的删除让前一轮的值残留——链
+      // 回退会把它读回信封（#1 的消息缝到 #2 的版本上）。清不动即拒绝落定——
+      // 调用方走克隆（不返回带清不动分册的落定）；全陷阱谎者的幽灵 gOPD 仍是
+      // 记录边界
+      try {
+        const residue = Object.getOwnPropertyDescriptor(target, key);
+        if (residue !== undefined) return false;
+      } catch {
+        // 敌意 gOPD——按清除成功处理（幽灵边界）
       }
     }
   }
   const fieldsForKind = new Map<string, unknown>();
   for (const [key, value] of fields) fieldsForKind.set(key, snapshotProvenValue(value));
   record.byKind.set(kind, fieldsForKind);
+  return true;
 }
 
 function provenKindIs(error: unknown, kind: RefusalKind): boolean {
@@ -400,123 +432,35 @@ const UPGRADE_STEPS = [
 // 抛出（撤销代理）按非载体。谎报 null 原型（r3 形态）在链上看不到
 // Error.prototype → 换新载体——继承访问器对无从隐藏
 // 共享原型拒绝（round 24 名单 → round 25 加载快照 → round 26 逐调用 →
-// round 27 混合）：就地装填共享原型即进程级污染（该家族每个实例都折家族
-// 信封）。round 26 的纯逐调用枚举三缝实测：(a) 裸 WebAssembly 绑定在参数
-// 位置求值——delete globalThis.WebAssembly（可写可配置绑定，任何已加载脚
-// 本可动）后每个结构化折叠都变 ReferenceError（门禁与耗尽信封端到端断，
-// 相对 round 25 快照的回归）；(b) ownKeys 抛出的容器整个丢失（fail-open，
-// 共享 RuntimeError 原型照旧就地装填）；(c) 枚举无界且带副作用——20 万键
-// 敌意容器每次错误事件 420ms，且对每个访问器全局做 [[Get]]（localStorage
-// 的实验警告按错误事件打印——round 25 从加载期移除的惰性 getter 危害被
-// round 26 搬回折叠路径）。混合裁决：(1) 加载期恒等快照——模块加载时枚举
-// 一次引擎错误家族原型（容器值经描述符、.prototype 经 gOPD——零 [[Get]]，
-// import 期零陷阱触发；每读皆守卫，抛出跳过该家族、绝不中止加载），恒等
-// 入私有 Set，加载后的重绑定/删除动不了它（TypeError 重绑定洗不掉真家
-// 族；WebAssembly 绑定被删/抛出时快照仍拒绝其家族——fail-closed）；
-// (2) 逐调用补充枚举——只为加载后注册的用户家族：容器值经描述符（访问器
-// 条目跳过，记录边界：Node 的惰性访问器全局非错误家族，访问器暴露的自
-// 定义错误家族是刻意构造形态），键数上界 1024（跳数教义同款——敌意 20 万
-// 键容器有界），容器引用每次调用在守卫内取一次（删除/抛出按无补充枚
-// 举）；函数的 .prototype 经 gOPD 与 [[Get]] 双读（gOPD 过代理见目标诚实
-// 槽——可写槽谎报；[[Get]] 见运行时 served 视图——后注册/改写绑定，守卫
-// 内），任一视图命中即拒绝。模块作用域的用户子类原型不在枚举范围——保
-// 持记录边界（污染面仅调用方自己的类实例）。原生 instanceof 不作判据：
-// TypeError.prototype instanceof Error 实测为 true，且 OrdinaryHasInstance
-// 无界走查、只靠 V8 内部 RangeError 兜底——界不归本模块定
+// round 27 混合 → round 28 构造器自指）：就地装填共享原型即进程级污染（该家族每个实例都折家族
+// 信封）。round 27 混合的枚举面两缝实测：键数上界在 1025 键处 fail-open（塞 1024 个幽灵键即把
+// 家族藏到界外——塞键与注册同权，注册被抓而塞键不被，是洗钱路径非单纯上界）；
+// Reflect.ownKeys 先物化+校验完整陷阱数组才轮到本模块的迭代（20 万键 203ms、4M 键 8.1s，每次装饰
+// 两度）。round 28 构造器自指：载体自有 constructor 经 gOPD 读出函数，该函数自有
+// prototype 再经 gOPD 读出——与载体恒等即拒绝（它就是某函数的共享原型）。O(1)、零容器枚举
+// （零成本/零上界/零竞态/零访问器触发/零 import 绑定读），一个构造关扗所有形态：后注册家族
+// （原型上的 constructor 不依赖全局绑定）、塞键洗钱、预加载重绑（重绑的 TypeError 仍指真
+// 家族——constructor 是函数对象上的自有属性，绑定无关）。边界明确收窄（round 28 裁定）：
+// 凡自指原型一律拒绝——含模块作用域的用户子类原型（此前为记录边界，现为拒绝——
+// 只有实例就地装饰；合法流程从不把原型当载体传入，只有敌意夹具这么做）。实例的
+// constructor 为继承属性（非自有）——gOPD 看不见，不受影响。原生 instanceof 不作判据：
+// TypeError.prototype instanceof Error 实测为 true，且 OrdinaryHasInstance 无界走查、只靠 V8
+// 内部 RangeError 兜底——界不归本模块定
 
-const PROTOTYPE_ENUM_KEY_CAP = 1024;
-
-// 函数 .prototype 的 gOPD 视图（零 [[Get]]——import 期零陷阱；过代理见目
-// 标的诚实槽——可写槽谎报形态）；抛出/无定义/非对象按无视图
-function prototypeSlotView(fn: object): unknown {
-  try {
-    const proto: unknown = Object.getOwnPropertyDescriptor(fn, 'prototype')?.value;
-    return typeof proto === 'object' && proto !== null ? proto : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-// 函数 .prototype 的 [[Get]] served 视图（守卫内——抛出按无视图；运行时改
-// 写的绑定/后注册家族只有此视图可见）
-function prototypeServedView(fn: object): unknown {
-  try {
-    const proto: unknown = (fn as { prototype?: unknown }).prototype;
-    return typeof proto === 'object' && proto !== null ? proto : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-// WebAssembly 绑定的守卫读取（round 27/MUST 1a）：绑定可删除/可重绑——
-// 裸标识符在删除后变 ReferenceError（两个结构化折叠端到端断）。每次调用
-// 在守卫内经 globalThis 取一次；抛出/缺失按无补充枚举（加载快照兜底其家
-// 族——fail-closed）
-function readWasmBinding(): unknown {
-  try {
-    return (globalThis as { WebAssembly?: unknown }).WebAssembly;
-  } catch {
-    return undefined;
-  }
-}
-
-// 加载期引擎家族恒等快照：每读皆守卫（抛出跳过该家族、绝不中止加载），
-// 键数上界同逐调用
-const ENGINE_FAMILY_PROTOTYPES = collectEngineFamilyPrototypes();
-
-function collectEngineFamilyPrototypes(): Set<unknown> {
-  const found = new Set<unknown>([Error.prototype]);
-  forEachEnumerableFunction(globalThis, (fn) => {
-    const proto = prototypeSlotView(fn);
-    if (proto !== undefined) found.add(proto);
-  });
-  forEachEnumerableFunction(readWasmBinding(), (fn) => {
-    const proto = prototypeSlotView(fn);
-    if (proto !== undefined) found.add(proto);
-  });
-  return found;
-}
-
-// 容器的可枚举函数遍历（round 27/MUST 1 去重）：键数上界、每读皆守卫、
-// 值经描述符（访问器条目自然跳过）——加载快照与逐调用补充共用
-function forEachEnumerableFunction(container: unknown, visit: (fn: object) => void): void {
-  try {
-    if (typeof container !== 'object' || container === null) return;
-    let keys: Array<string | symbol>;
-    try {
-      keys = Reflect.ownKeys(container);
-    } catch {
-      return;
-    }
-    let scanned = 0;
-    for (const key of keys) {
-      if (++scanned > PROTOTYPE_ENUM_KEY_CAP) return;
-      let desc: PropertyDescriptor | undefined;
-      try {
-        desc = Object.getOwnPropertyDescriptor(container, key);
-      } catch {
-        continue;
-      }
-      const value: unknown = desc?.value;
-      if (typeof value !== 'function') continue;
-      visit(value);
-    }
-  } catch {
-    // 容器级守卫——按无枚举处理
-  }
-}
-// 抛出（撤销代理）按不可达
+// 构造器自指判定（round 28/MUST 4）：载体自有 constructor 为数据描述符且值为
+// 函数，该函数自有 prototype 为数据描述符且与载体恒等——访问器、非函数、非恒等、
+// 无自有定义一律不认（实例的 constructor 非自有）；每读皆守卫
+// 有界 Error.prototype 可达走查（round 25/MUST 1）：visted 环卫队 + 1024 跳上界，超深同环按不可达；走查抛出（撤销代理）按不可达
 function chainReachesErrorPrototype(start: object): boolean {
+  if (ERROR_PROTOTYPE === undefined) return false;
   try {
     let level: unknown = start;
     const visited = new Set<unknown>();
-    // 跳数上界（round 24/MUST 1）：visited 只拦再访——每次铸造新代理的
-    // getPrototypeOf 陷阱永不重复；1024 跳远超真实链深
     let hops = 0;
     while (level !== null && level !== undefined) {
       if (visited.has(level) || ++hops > 1024) return false;
       visited.add(level);
-      if (level === Error.prototype) return true;
+      if (level === ERROR_PROTOTYPE) return true;
       level = Object.getPrototypeOf(level);
     }
     return false;
@@ -525,33 +469,27 @@ function chainReachesErrorPrototype(start: object): boolean {
   }
 }
 
-function currentPrototypeSlots(): unknown[] {
-  // 逐调用补充枚举（round 27 收口）：只为加载后注册的用户家族（加载期恒等
-  // 已在快照里，重绑定洗不掉）；键数上界、守卫内容器引用、描述符取值
-  const slots: unknown[] = [];
-  for (const container of [globalThis, readWasmBinding()]) {
-    forEachEnumerableFunction(container, (fn) => {
-      for (const view of [prototypeSlotView(fn), prototypeServedView(fn)]) {
-        if (view !== undefined) slots.push(view);
-      }
-    });
+function isSelfPrototype(candidate: object): boolean {
+  try {
+    const ctorDesc = Object.getOwnPropertyDescriptor(candidate, 'constructor');
+    if (ctorDesc === undefined || ctorDesc.get !== undefined || ctorDesc.set !== undefined) return false;
+    const ctor: unknown = ctorDesc.value;
+    if (typeof ctor !== 'function') return false;
+    const protoDesc = Object.getOwnPropertyDescriptor(ctor, 'prototype');
+    if (protoDesc === undefined || protoDesc.get !== undefined || protoDesc.set !== undefined) return false;
+    return protoDesc.value === candidate;
+  } catch {
+    return false;
   }
-  return slots;
 }
 
 export function isErrorCarrier(error: unknown): boolean {
   if (error === null) return false;
   if (typeof error !== 'object') return false;
-  // 加载快照恒等先行（廉价、重绑定免疫）
-  if (ENGINE_FAMILY_PROTOTYPES.has(error)) return false;
-  // 链可达先行（廉价）：不可达即非载体，不进入逐调用枚举
+  // 链可达先行（廉价）：不可达即非载体
   if (!chainReachesErrorPrototype(error)) return false;
-  // 逐调用补充裁决（round 26 建、round 27 收口）：候选是任一当前枚举函数
-  // 的 .prototype（gOPD 或 served 视图）即拒绝——只为加载后注册的家族
-  for (const slot of currentPrototypeSlots()) {
-    if (slot === error) return false;
-  }
-  return true;
+  // 构造器自指裁决（round 28/MUST 4）：自指原型即共享原型——迎向盖戳载体
+  return !isSelfPrototype(error);
 }
 
 export function applyVersionGate(error: unknown, payload: VersionGatePayload): Error {
@@ -560,7 +498,8 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): E
   // 盖上家族码与兜底文案（decoratePlainCarrier 同款——无码新载体任何出口
   // 认不出门禁错误），再递归装填（新载体恒就地成功，不经拒绝/登记机制）
   if (!isErrorCarrier(error)) {
-    const plain = new Error(VERSION_GATE_FALLBACK_MESSAGE) as Error & { code?: unknown };
+    if (ERROR_CONSTRUCTOR === undefined) return error as Error;
+    const plain = new ERROR_CONSTRUCTOR(VERSION_GATE_FALLBACK_MESSAGE) as Error & { code?: unknown };
     plain.code = VERSION_GATE_CODE;
     return applyVersionGate(plain, payload);
   }
@@ -865,27 +804,14 @@ function decorateInPlace(
   fields: Array<[string, unknown]>,
   kind?: RefusalKind,
 ): boolean {
-  // 写前原子性复检（round 27/MUST 2）：预检与首次写入之间有读窗——payload 字段/载体
-  // remediation 的 [[Get]] 执行攻击者代码，窗口内把家族注册上 globalThis 即击败逐调用样本
-  // （写入落在共享原型上=全家族污染）。写前复检：读窗已过、写未落——
-  // 第二个样本看得见窗口内的注册；拒绝时返回 false，调用方走克隆（家族不变形）
-  if (!isErrorCarrier(target)) return false;
-  // 异种类拒绝的载体不做半提交（round 27/MUST 3b）：写前裁决——prior 拒绝存在
-  // 且 kinds 不含本装饰器（lift 窗口不可能开）→ 直接返回 false，字段不落原件。此前字段物理落地、
-  // 无落定记录、每个出口按 identity 拒绝原件——丢弃载体带着整套无出口渲染的装饰（round 10
-  // 半装饰教义）；同种类且 lift 可行的组合照旧写入（落定/解除的正常路径）
-  const priorRefusal = refusalOf(target);
-  if (priorRefusal !== undefined) {
-    const liftPossible = priorRefusal.kinds.size === 1 && kind !== undefined && priorRefusal.kinds.has(kind);
-    if (!liftPossible) return false;
-  }
-  const applied: Array<string> = [];
-  // 快照改走 own 描述符（round 16）：has/get 都过代理陷阱——撒谎的 has+get
-  // 视图让"恢复"变成重新种标记或用谎言覆盖原码（round-15 只关了被拒键，
-  // applied 键的快照读仍信敌意视图）。getOwnPropertyDescriptor 的默认陷阱
-  // 透出目标的真实自有属性状态，撒谎 has+get 家族污染不了快照；描述符读
-  // 抛出按无描述符处理（删除兜底）。残留边界：连 gOPD 陷阱一并撒谎的代理
-  // 能骗过任何客户端方案——导出面防御的记录边界
+  // 三阶段写入路径（round 28/MUST 2）：读阶段（所有 gOPD 快照——
+  // 敌意窗口全部集中于此）→ 裁决阶段（原子性复检 + 访问器立着预判——
+  // 决不为将被拒的键调用载体 setter，快照早已知其为访问器）→ 写阶段（写入+回读
+  // 验证，尾部再复检——写入本身执行载体 setter，写入时注册的家族使污染超过后续
+  // 拒绝——尾复检看得见并回滚）。round 28/MUST 4 后载体识别是构造器自指（静态、无 TOCTOU
+  // 窗）——真家族原型在任何阶段都被拒；代理洗钱形态（对共享原型的转发代理）
+  // 为记录边界（候选身份识别看不穿转发代理）
+  // —— 读阶段：对全部字段先行 gOPD 快照（每键一次，写入前的免空写判定也用它）
   const snapshots = new Map<string, PropertyDescriptor | undefined>();
   const writtenValues = new Map<string | symbol, unknown>();
   for (const [key, value] of fields) {
@@ -897,20 +823,50 @@ function decorateInPlace(
       prior = undefined;
     }
     snapshots.set(key, prior);
+  }
+  // —— 裁决阶段：原子性复检（读窗已过、写未落）——拒绝时返回 false，
+  // 调用方走克隆（家族不变形）
+  if (!isErrorCarrier(target)) return false;
+  // 异种类拒绝的载体不做半提交（round 27/MUST 3b）：写前裁决——prior 拒绝存在
+  // 且 kinds 不含本装饰器（lift 窗口不可能开）→ 直接返回 false，字段不落原件。此前字段物理落地、
+  // 无落定记录、每个出口按 identity 拒绝原件——丢弃载体带着整套无出口渲染的装饰（round 10
+  // 半装饰教义）；同种类且 lift 可行的组合照旧写入（落定/解除的正常路径）
+  const priorRefusal = refusalOf(target);
+  if (priorRefusal !== undefined) {
+    const liftPossible = priorRefusal.kinds.size === 1 && kind !== undefined && priorRefusal.kinds.has(kind);
+    if (!liftPossible) return false;
+  }
+  // 访问器立着预判（round 28/MUST 2）：字段键上自有访问器就按教义拒绝
+  // （round 21 立着判定）——此前要经写入调用其 setter 才能拒（写入时注册的污染超过拒绝）；
+  // 快照早已知其为访问器——直接登记+拒绝，一个 setter 都不调用。原型链上的
+  // 访问器对（round 22 形态）gOPD 看不见——仍由写阶段的落定证明与后续链判定处理
+  const ownAccessorKeys = new Set<string>();
+  for (const [key] of fields) {
+    const snap = snapshots.get(key);
+    if (snap !== undefined && (snap.get !== undefined || snap.set !== undefined)) ownAccessorKeys.add(key);
+  }
+  if (ownAccessorKeys.size > 0) {
+    if (kind !== undefined) registerRefusal(target, kind, ownAccessorKeys);
+    try {
+      target[DECORATION_REFUSED_FIELD] = true;
+    } catch {
+      // 诊断字段尽力而为——登记在模块态
+    }
+    return false;
+  }
+  const applied: Array<string> = [];
+  // —— 写阶段：逐键写入+回读验证（快照已在读阶段完成）
+  for (const [key, value] of fields) {
     // 免除空写（round 24/MUST 3a 配套）：装饰值与自有数据现状相等时跳过写
     // 入——装饰器有意的同值写（消息原样保留、请求层预写的 connectRetries）
     // 在"预存等值不算落定"下会整族拒绝诚实载体；跳过即视为落定（值已在位
     // 即本轮目标达成），且不触发 [[Set]]/[[Get]]（敌意面更小）。谎报 gOPD
     // 声称等值即在此跳过——写前快照对照不运行，此为全陷阱谎者的已记录边界
     // （与落定证明的幽灵数据描述符同类，round 25 措辞收口）
-    try {
-      const current = Object.getOwnPropertyDescriptor(target, key);
-      if (current !== undefined && current.get === undefined && current.set === undefined && current.value === value) {
-        applied.push(key);
-        continue;
-      }
-    } catch {
-      // 敌意 gOPD——按现状未知处理，走正常写入路径
+    const snap = snapshots.get(key);
+    if (snap !== undefined && snap.get === undefined && snap.set === undefined && snap.value === value) {
+      applied.push(key);
+      continue;
     }
     let wrote = false;
     try {
@@ -1133,7 +1089,8 @@ function decorateInPlace(
       // 尽力而为——被拒的字段不阻塞成功路径
     }
   }
-  recordProvenLanding(target, fields, kind);
+  // 分册清除失败即拒绝落定（round 28/MUST 3b）：调用方走克隆
+  if (!recordProvenLanding(target, fields, kind)) return false;
   return true;
 }
 
@@ -1182,7 +1139,10 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
   // message 同一卫队，快照防护之前不再引爆
   const rawCode = safeReadField(err, 'code');
   const rawMessage = safeMessageText(err);
-  const rawRemediation = safeReadField(err, 'remediation');
+  // remediation 预读改自有数据描述符（round 28/MUST 5，第五处 [[Get]] 读）：侍服
+  // 型访问器此前抑制设计写入并带活计于返回载体；访问器按缺失——
+  // 设计指引照常装填（访问器键会被访问器预判拒绝→克隆路径）
+  const rawRemediation = ownDataValue(err, 'remediation');
   // mint 判定用拼写口径（round 11）：内部与边缘的空白渲染字符一并剔除——
   // HTTP_5⁠02（词连接符藏码内）与垫码（HTTP_504+ZWSP）同为伪造拼写；
   // 服务端亲署业务码不含空白渲染字符，不受影响
@@ -1217,8 +1177,18 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
     const formFree = (text: string) => canonCode(text).replaceAll('_', '');
     const opensWithSpelling = spelling !== '' && formFree(cleaned).startsWith(formFree(spelling));
     fields.push(['message', cleaned === '' || opensWithSpelling ? designedCopy : cleaned]);
-  } else if (canonCode(effectiveCode) === 'HDKIT_GATEWAY_TIMEOUT' && !cleanMessage(rawMessage)) {
-    fields.push(['message', designedCopy]);
+  } else {
+    // 保留分册覆盖（round 28/MUST 3b）：不换码分支把亲署码与消息作为字段写入——
+    // 同种类再装饰时分册快照替换会清除前一轮的 code/message 键，亲署
+    // 值（被前一轮覆盖后仍在位的）不写入即被清除——第二轮失去它要保留的码与消息；写入即
+    // 分册覆盖（折叠为同值时无副作用），折叠口与预读一致
+    fields.push(['code', effectiveCode]);
+    const authoredCopy = cleanMessage(rawMessage);
+    if (canonCode(effectiveCode) === 'HDKIT_GATEWAY_TIMEOUT' && !authoredCopy) {
+      fields.push(['message', designedCopy]);
+    } else if (authoredCopy !== '') {
+      fields.push(['message', authoredCopy]);
+    }
   }
   if (!rawRemediation) {
     fields.push(['remediation', designedTransientRemediation(retries)]);
@@ -1231,7 +1201,12 @@ export function decorateExhaustedConnect(error: unknown, retries: number): unkno
 
 // 非对象载体的装填（round 11）：无字段可读——码/消息/remediation 全走设计值
 function decoratePlainCarrier(retries: number): Error {
-  const plain = new Error(`hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`);
+  if (ERROR_CONSTRUCTOR === undefined) {
+    // 全家族缺席的荒谬世界：无法盖戳新载体——原样返回（已记录降级）
+    const bare = Object.create(null) as Error;
+    return bare;
+  }
+  const plain = new ERROR_CONSTRUCTOR(`hdkitservice 连续遭遇网关 502/504 超时（已自动重试 ${retries} 次）`);
   const fields: Array<[string, unknown]> = [
     ['gatewayRetryExhausted', true],
     ['connectRetries', retries],
@@ -1256,7 +1231,8 @@ function cloneCarrier(
   // remediation/message/retryAfter/coreHours/clientVersion/minVersion 一律
   // 不从源种子（门禁克隆被延迟谎 code 误路由成升级指令、伪造 remediation 骑
   // 指令面）；家族码+设计文案由 designed 对按构造盖戳——克隆恒折叠设计信封
-  const clone = new Error(designed.message);
+  if (ERROR_CONSTRUCTOR === undefined) return err as unknown as Error;
+  const clone = new ERROR_CONSTRUCTOR(designed.message);
   const decoratedKeys = new Set<string | symbol>(fields.map(([key]) => key));
   try {
     for (const key of Reflect.ownKeys(err)) {
@@ -1329,8 +1305,15 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   // 蔽落定耗尽（round 26/MUST 2 对称收口）：落定记录是模块自身的裁决数据
   // ——门禁拒绝不得让已落定的耗尽折叠消失（与 B3 的门禁半边同规则）
   const refusal = refusalOf(error);
-  if (refusal !== undefined && (refusal.kinds.has('exhaustion') || !provenKindIs(error, 'exhaustion'))) {
-    return undefined;
+  if (refusal !== undefined) {
+    // 落定记录先于任何拒绝种类（round 28/MUST 3a，镜像门禁半边）：
+    // 同种类拒绝后抑制落定记录——此前 handler 裸抛、voucher 渲染（出口分歧的
+    // 耗尽半边）；无落定分册才按 identity 拒绝（round 19 教义）
+    if (provenKindIs(error, 'exhaustion')) {
+      // fall through to the proven branch
+    } else {
+      return undefined;
+    }
   }
   // 落定登记优先（round 24/MUST 3c）：经 [[Get]] 重读会翻供/删除——按记
   // 录的设计字段铸信封，零载体读
@@ -1355,7 +1338,9 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     const connectRetries =
       typeof rawRetries === 'number' && Number.isSafeInteger(rawRetries) && rawRetries >= 0 ? rawRetries : undefined;
     const rawMessage =
-      provenField(error, 'exhaustion', 'message') ?? (foreignGateLanded ? undefined : chainDataValue(error, 'message'));
+      provenField(error, 'exhaustion', 'message') ??
+      // 消息链读仅适用于无拒绝史的载体（round 28/MUST 3c/d）：任何拒绝在身即载体未装饰的陈述不可信——拒绝中间层的残写、异种拒绝写入的共享消息不得经回退骑上信封
+      (foreignGateLanded || refusal !== undefined ? undefined : chainDataValue(error, 'message'));
     return {
       ok: false,
       ...(typeof rawCode === 'string' ? { code: rawCode } : {}),
@@ -1372,8 +1357,10 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   // BigInt 等敌意值不骑信封（MCP 序列化边界，round-15 窄化漏了的最后一个折叠口）
   const gatewayRetryExhausted = safeReadField(error, 'gatewayRetryExhausted');
   if (gatewayRetryExhausted !== true) return undefined;
-  const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
-  const rawRetryAfter = safeReadField(error, 'retryAfter');
+  // 转向字段改自有数据描述符读（round 28/MUST 5，第四处也是最后一处 [[Get]]
+  // 转向读）：立着访问器注入 pay-here 文案
+  const coreHoursExhausted = ownDataValue(error, 'coreHoursExhausted');
+  const rawRetryAfter = ownDataValue(error, 'retryAfter');
   const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
   const rawCode = safeReadField(error, 'code');
   const code = typeof rawCode === 'string' ? rawCode : undefined;
