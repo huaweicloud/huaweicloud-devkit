@@ -13,7 +13,7 @@ process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
 // mcp-server.test.mjs / plugins-e2e.test.mjs).
 process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
-const { hdkitConnect, hdkitConnectWithRetry, hdkitVoucherStatus, hdkitVoucherClaim } =
+const { hdkitConnect, hdkitConnectWithRetry, hdkitShutdown, hdkitVoucherStatus, hdkitVoucherClaim } =
   await import('../plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs');
 const { clearRuntimeCredentials } = await import('../plugins/huaweicloud-core/src/auth/credentials.mjs');
 
@@ -416,4 +416,58 @@ test('core-hours exhausted upstream code surfaces friendly remediation', async (
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+// ── shutdown ──
+
+test('hdkitShutdown posts shutdown and returns server status', async () => {
+  const originalFetch = global.fetch;
+  let requestedUrl = null;
+  let requestBody = null;
+  global.fetch = async (url, opts) => {
+    requestedUrl = url;
+    requestBody = JSON.parse(opts.body);
+    return new Response(
+      JSON.stringify({
+        devStageId: 'ws1',
+        status: 'shutting_down',
+        message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  };
+  try {
+    const result = await hdkitShutdown('s1', null);
+    assert.match(String(requestedUrl), /\/shutdown$/);
+    assert.deepEqual(requestBody, { session_id: 's1' });
+    assert.equal(result.devStageId, 'ws1');
+    assert.equal(result.status, 'shutting_down');
+    assert.match(result.message, /正在关机/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitShutdown surfaces not-found code', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_SANDBOX_NOT_FOUND', message: '环境不存在或已被删除' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const err = await hdkitShutdown(null, 'ws1').then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_SANDBOX_NOT_FOUND');
+    assert.equal(err.status, 404);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitShutdown requires an id', async () => {
+  await assert.rejects(() => hdkitShutdown(), /session_id or dev_stage_id is required/);
 });

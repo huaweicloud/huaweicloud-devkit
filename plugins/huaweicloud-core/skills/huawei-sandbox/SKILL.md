@@ -1,6 +1,6 @@
 ---
 name: huawei-sandbox
-description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application, backend service, or full-stack workbench. Covers sandbox lifecycle (check-user, sign-agreement, connect, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, backend service, 工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
+description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application, backend service, or full-stack workbench. Covers sandbox lifecycle (check-user, sign-agreement, connect, shutdown, credentials), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, backend service, 工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
 version: 1
 ---
 
@@ -75,8 +75,9 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 - **429 三错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_TEMPLATE_QUOTA_EXCEEDED`（当前账号此类型沙箱运行中实例达上限，需关机/释放同类型实例后重试，无 `Retry-After`）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。`HDKIT_QUOTA_EXCEEDED` / `HDKIT_CAPACITY_INSUFFICIENT` 响应带 `Retry-After: 60`
 - **生命周期播报**：生命周期数值仅用于内部选池与诊断，不逐次播报。
   - **ephemeral**：交付 URL 时只给 URL。不要提隧道/沙箱有效期、自动续期、闲置关机或删除，也不要建议迁移到持久沙箱或 OBS。例外：隧道无法持久时按 tunnel-persistence 小节的失败路径提示开发者“隧道将在会话结束后失效，请勿分享”；这不属于常规有效期播报。
-  - **persistent**：只播报沙箱生命周期（闲置关机、数据盘保留、闲置回收上限），使用 `sandboxLifetime` / connect 的 `pool.ttl_hint` 口径；不要播报 devbridge 隧道有效期或自动续期。
+  - **persistent**：播报沙箱生命周期（闲置关机、数据盘保留、闲置回收上限），使用 `sandboxLifetime` / connect 的 `pool.ttl_hint` 口径；并提示“如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）”。不要播报 devbridge 隧道有效期或自动续期。
 - **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
+- **关机纪律**：仅当开发者明确要求关机时调用 `huaweicloud_sandbox_shutdown`；调用前确认一次，绝不自动关机。关机 ≠ 删除：只 close，不 delete，实例与 EVS 数据盘保留，下次 connect 自动唤醒。非持久化沙箱也可关机，但不主动提示；不要向开发者提“控制台关机”。
 - **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
 - 不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`
 - 完整口径、容量规划与 G 清单：[references/resource-pool.md](references/resource-pool.md)
@@ -112,6 +113,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `huaweicloud_sandbox_connect`     | Connect to sandbox (one instance per user per pool; `pool_type` selects ephemeral/persistent, default ephemeral) |
 | `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                                                                    |
+| `huaweicloud_sandbox_shutdown`    | Shut down a running sandbox (close only; instance/data disk retained; reconnect wakes it)                        |
 
 ### Tunnel Persistence (public URL lifetime)
 
@@ -146,6 +148,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | Deployment completeness check      | `deploy_check`                     | Verifies nginx, DevBridge, URL, QR before reporting success  |
 | Tunnel lifetime renewal            | `renew_tunnel`                     | Rolling-window renewal, same URL stays alive                 |
 | URL must outlive the session       | `keepalive_watchdog`               | Unattended host re-attach + daily renewal + health check     |
+| 暂不使用 / 节省核时                | `sandbox_shutdown`                 | 只关机不删除；数据盘保留，下次 connect 自动唤醒              |
 | Single file upload (<1MB)          | `upload_file`                      | Base64 chunked, reliable for small files                     |
 | Project directory upload (>1MB)    | `upload_project`                   | HTTP tunnel, much faster than base64 for multi-file projects |
 

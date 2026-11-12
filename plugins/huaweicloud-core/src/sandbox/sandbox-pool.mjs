@@ -19,6 +19,10 @@ export const DEFAULT_POOL_LIFECYCLE = {
   persistent: { idleShutdownMinutes: 60, idleDeleteMinutes: null, reclaimMinutes: 7 * 24 * 60 },
 };
 
+/** 持久化沙箱的核时节省提示：与生命周期提示同一时机播报；ephemeral 不播报 */
+export const PERSISTENT_CORE_HOURS_HINT =
+  '如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。';
+
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** workspaceId → { poolType, lifecycle, updatedAt }：connect 回显后缓存 */
@@ -196,7 +200,7 @@ export function poolContextFor(workspaceId) {
   return {
     poolMode: 'persistent',
     poolLifecycle: { poolType, ...lifecycle },
-    persistenceHint: `持久沙箱：闲置 ${shutdown}自动关机（数据盘保留）；闲置回收保留期最长 ${reclaim}`,
+    persistenceHint: `持久沙箱：闲置 ${shutdown}自动关机（数据盘保留）；闲置回收保留期最长 ${reclaim}。${PERSISTENT_CORE_HOURS_HINT}`,
   };
 }
 
@@ -213,7 +217,7 @@ function buildConnectTtlHint(poolType, lifecycle) {
   const reclaim = formatReclaim(lifecycle.reclaimMinutes, DEFAULT_POOL_LIFECYCLE.persistent.reclaimMinutes);
   return {
     lifecycle: `idle shutdown ${lifecycle.idleShutdownMinutes}min; EVS data disk retained; idle reclaim within ${lifecycle.reclaimMinutes}min max`,
-    ttl_hint: `持久沙箱：闲置 ${shutdown}自动关机（实例与数据盘保留，重新连接可继续使用）；闲置回收保留期最长 ${reclaim}，到期实例与数据将被删除，长期不用请自行导出。`,
+    ttl_hint: `持久沙箱：闲置 ${shutdown}自动关机（实例与数据盘保留，重新连接可继续使用）；闲置回收保留期最长 ${reclaim}，到期实例与数据将被删除，长期不用请自行导出。${PERSISTENT_CORE_HOURS_HINT}`,
   };
 }
 
@@ -277,7 +281,7 @@ export function buildExposeLifetimeNotice(poolContext, expiryHours) {
     urlLifetimeHint:
       `该公网地址随沙箱存亡：持久沙箱闲置 ${shutdown}自动关机（地址失效，但实例与数据盘保留，` +
       `重新连接沙箱后可重新暴露端口恢复访问）；闲置回收保留期最长 ${reclaim}，到期实例与数据将被删除。` +
-      `隧道有效期 ${tunnelHours} 小时不等于沙箱存活期；自动续期只保隧道，不能阻止沙箱关机。`,
+      `隧道有效期 ${tunnelHours} 小时不等于沙箱存活期；自动续期只保隧道，不能阻止沙箱关机。${PERSISTENT_CORE_HOURS_HINT}`,
     warning:
       `URL 存活期提示：持久沙箱闲置 ${shutdown}自动关机，此地址届时失效（实例与数据保留，` +
       `重新连接后可恢复）；闲置回收上限 ${reclaim}`,

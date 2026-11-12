@@ -151,6 +151,37 @@ test('callTool connect: template-quota-exceeded returns structured copy without 
   }
 });
 
+test('callTool shutdown: closes via hdkitservice and returns status', async () => {
+  const restore = withFetchResponse(
+    { devStageId: 'ws1', status: 'shutting_down', message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒' },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { dev_stage_id: 'ws1' });
+    assert.equal(result.ok, true);
+    assert.equal(result.devStageId, 'ws1');
+    assert.equal(result.status, 'shutting_down');
+    assert.equal(result.message, '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒');
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: not-found returns structured code', async () => {
+  const restore = withFetchResponse(
+    { code: 'HDKIT_SANDBOX_NOT_FOUND', message: '环境不存在或已被删除' },
+    { status: 404, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { dev_stage_id: 'ws1' });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_SANDBOX_NOT_FOUND');
+    assert.match(result.message, /环境不存在或已被删除/);
+  } finally {
+    restore();
+  }
+});
+
 test('callTool connect: version-too-old remediation survives the MCP boundary', async () => {
   const restore = withFetchResponse(
     {
