@@ -1,0 +1,23 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:37133/lockpkg 39ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:37133/lockpkg/-/lockpkg-1.0.0.tgz 21ms (cache miss)
+npm info run lockpkg@1.0.0 postinstall node_modules/lockpkg node run.js
+FATAL: build lock held by concurrent run
+npm http fetch GET 200 http://127.0.0.1:37133/lockpkg 43ms (cache updated)
+npm http fetch GET 200 http://127.0.0.1:37133/lockpkg/-/lockpkg-1.0.0.tgz 22ms (cache updated)
+npm info run lockpkg@1.0.0 postinstall node_modules/lockpkg node run.js
+npm info run lockpkg@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/cache
+npm error command failed
+npm error command sh -c node run.js
+npm error A complete log of this run can be found in: /home/op/sc-c5/cap-run1/npm-cache/_logs/2026-11-12T18_13_03_920Z-debug-0.log
+npm info run lockpkg@1.0.0 postinstall { code: 0, signal: null }
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   lockpkg@1.0.0 (postinstall: node run.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+npm info ok
