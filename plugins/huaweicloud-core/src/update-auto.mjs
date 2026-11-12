@@ -28,6 +28,7 @@ import {
   queryDistTagsFetch,
   readInstalledVersion,
   semverCompare,
+  upgradeEnv,
   VERSION_MANIFEST_RELS,
 } from './update-check.mjs';
 
@@ -127,25 +128,6 @@ export function autoUpgradeSuppressionReason({ env = process.env, gitCheckout = 
   if (ci && ci !== '0' && ci !== 'false') return 'ci';
   if (gitCheckout) return 'git_checkout';
   return null;
-}
-
-const UPGRADE_CREDENTIAL_ENV_KEYS = new Set([
-  'HW_ACCESS_KEY',
-  'HW_SECRET_KEY',
-  'HW_SECURITY_TOKEN',
-  'HUAWEICLOUD_ACCESS_KEY',
-  'HUAWEICLOUD_SECRET_KEY',
-  'HUAWEICLOUD_SECURITY_TOKEN',
-  'HUAWEICLOUD_SECRET_ACCESS_KEY',
-  'AWS_ACCESS_KEY_ID',
-  'AWS_SECRET_ACCESS_KEY',
-  'AWS_SESSION_TOKEN',
-]);
-
-export function upgradeEnv(env = process.env) {
-  const next = { ...env, npm_config_registry: env.HUAWEICLOUD_NPM_REGISTRY || 'https://registry.npmjs.org' };
-  for (const key of UPGRADE_CREDENTIAL_ENV_KEYS) delete next[key];
-  return next;
 }
 
 function isPidAlive(pid) {

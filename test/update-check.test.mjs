@@ -379,6 +379,48 @@ test('upgradePackage 成功路径: 目标版本/重启/文案/缓存失效', asy
   invalidateUpdateCache();
 });
 
+test('upgradePackage 隔离凭证环境变量: npx 子进程不继承任何云凭证 (#1118)', async () => {
+  let spawned = null;
+  const spawnFn = (cmd, args, opts) => {
+    spawned = { cmd, args, opts };
+    return { status: 0, stdout: '', stderr: '' };
+  };
+  const doQuery = async () => ({ latest: '1.1.1', next: null });
+  const env = {
+    PATH: process.env.PATH,
+    HUAWEICLOUD_HOME: '/tmp/hw-home',
+    HUAWEICLOUD_NPM_REGISTRY: 'https://registry.npmjs.test',
+    HW_ACCESS_KEY: 'ak',
+    HW_SECRET_KEY: 'sk',
+    HW_SECURITY_TOKEN: 'token',
+    HW_API_KEY: 'devbridge-key',
+    HUAWEICLOUD_SDK_AK: 'sdk-ak',
+    HUAWEICLOUD_SDK_SK: 'sdk-sk',
+    HUAWEICLOUD_SECRET_ACCESS_KEY: 'secret-access-key',
+    AWS_ACCESS_KEY_ID: 'aws-ak',
+    AWS_SECRET_ACCESS_KEY: 'aws-sk',
+    AWS_SESSION_TOKEN: 'aws-token',
+  };
+  const r = await upgradePackage({ target: 'opencode' }, { doQuery, spawnFn, currentVersion: '1.0.0', env });
+  assert.equal(r.success, true);
+  for (const key of [
+    'HW_ACCESS_KEY',
+    'HW_SECRET_KEY',
+    'HW_SECURITY_TOKEN',
+    'HW_API_KEY',
+    'HUAWEICLOUD_SDK_AK',
+    'HUAWEICLOUD_SDK_SK',
+    'HUAWEICLOUD_SECRET_ACCESS_KEY',
+    'AWS_ACCESS_KEY_ID',
+    'AWS_SECRET_ACCESS_KEY',
+    'AWS_SESSION_TOKEN',
+  ]) {
+    assert.equal(spawned.opts.env[key], undefined, `${key} must not reach the npx child`);
+  }
+  assert.equal(spawned.opts.env.HUAWEICLOUD_HOME, '/tmp/hw-home');
+  assert.equal(spawned.opts.env.npm_config_registry, 'https://registry.npmjs.test');
+});
+
 test('upgradePackage next 目标: 用 next tag', async () => {
   let spawned = null;
   const spawnFn = (cmd, args) => {
