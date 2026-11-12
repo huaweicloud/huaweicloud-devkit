@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.0-next.2 (2026-11-12)
+
+- fix(ux-report): close D-02/D-03/D-04 from the AX v1.1 x v2 report
+
 ## 2.0.0-next.1 (2026-11-11)
 
 - fix(agents): the opencode version probe omits spawn args under shell — the win32 fallback's args array was the last DEP0190 on Node 24 (traced on run 42991279809)
