@@ -1693,9 +1693,32 @@ test('upgradePackage 失败原因: bash 回显夹具下子进程的 command: 行
   assert.match(reason, /command: node-gyp rebuild/);
 });
 
-test('upgradePackage 升级子进程: npm 认证通道通过, GitHub 与 Docker 令牌被剥', async () => {
+test('upgradePackage 升级子进程: npm 认证通道通过, GitHub、Docker 与供应商令牌被剥', async () => {
   const passThrough = ['NPM_TOKEN', 'NODE_AUTH_TOKEN'];
-  const stripped = ['GITHUB_TOKEN', 'GH_TOKEN', 'DOCKER_PASSWORD'];
+  const stripped = [
+    'GITHUB_TOKEN',
+    'GH_TOKEN',
+    'DOCKER_PASSWORD',
+    'GITHUB_ENTERPRISE_TOKEN',
+    'GH_ENTERPRISE_TOKEN',
+    'GITLAB_TOKEN',
+    'GITLAB_CI_JOB_TOKEN',
+    'BITBUCKET_TOKEN',
+    'AZURE_DEVOPS_EXT_PAT',
+    'DOCKER_AUTH_CONFIG',
+    'NPM_AUTH_TOKEN',
+    'YARN_NPM_AUTH_TOKEN',
+    'NUGET_API_KEY',
+    'GOOGLE_APPLICATION_CREDENTIALS',
+    'VAULT_TOKEN',
+    'TERRAFORM_CLOUD_TOKEN',
+    'HEROKU_API_KEY',
+    'SLACK_TOKEN',
+    'PYPI_TOKEN',
+    'TWINE_PASSWORD',
+    'HUAWEI_DOMAIN_TOKEN',
+    'HUAWEI_SECURITY_TOKEN',
+  ];
   const keys = [...passThrough, ...stripped];
   const saved = new Map(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) process.env[key] = `fixture-${key}`;
@@ -1816,6 +1839,87 @@ test('upgradePackage 失败原因: 带 errno 的 [cause] 行仍降级', async ()
   const reason = await reasonFor(failureStderr('cause-errno-twist.err'), 1);
   assert.match(reason, /\[TypeError: fetch failed\]/);
   assert.doesNotMatch(reason, /\[cause\]|EACCES/);
+});
+
+test('upgradePackage 失败原因: 重复的 code 文本取失败步自己的那一段', async () => {
+  const reason = await reasonFor(failureStderr('dup-code-text.err'));
+  assert.match(reason, /code 1/);
+  assert.match(reason, /command sh -c node two\.js/);
+  assert.doesNotMatch(reason, /node one\.js/);
+});
+
+test('upgradePackage 失败原因: 真实重复 EACCES 块取后段 code 与失败回显', async () => {
+  const reason = await reasonFor(failureStderr('real-dup-code-recovered.err'), 7);
+  assert.match(reason, /code EACCES/);
+  assert.match(reason, /postinstall/);
+  assert.match(reason, /node post\.js/);
+});
+
+test('upgradePackage 失败原因: 重复诊断文本不给失败步扣恢复帽', async () => {
+  const reason = await reasonFor(failureStderr('dup-diag.err'));
+  assert.match(reason, /code EACCES/);
+  assert.match(reason, /EACCES: permission denied, mkdir '\/ro'/);
+  assert.doesNotMatch(reason, /node d\.js/);
+});
+
+test('upgradePackage 失败原因: 四块混合真实捕获取最后失败块', async () => {
+  const reason = await reasonFor(failureStderr('real-four-block-mixed.err'), 7);
+  assert.match(reason, /code EACCES/);
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /ENOENT/);
+});
+
+test('upgradePackage 失败原因: 同一步的 gyp ok 不触发恢复交换', async () => {
+  const reason = await reasonFor(failureStderr('rank2-sameturn-recover.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /postinstall output: cache locked/);
+  assert.doesNotMatch(reason, /command sh -c/);
+});
+
+test('upgradePackage 失败原因: rank-1 同一步形状同样不交换', async () => {
+  const reason = await reasonFor(failureStderr('rank1-sameturn-recover.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /postinstall output: build failed/);
+  assert.doesNotMatch(reason, /command sh -c/);
+});
+
+test('upgradePackage 失败原因: 默认 loglevel 的安装对取外层 code 与回显', async () => {
+  const reason = await reasonFor(failureStderr('real-install-default-loglevel.err'), 7);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /command sh -c node post\.js/);
+  assert.doesNotMatch(reason, /EACCES|root-owned/);
+});
+
+test('upgradePackage 失败原因: 默认 loglevel 的孤立嵌套块退回退出码', async () => {
+  const reason = await reasonFor(failureStderr('real-nested-default-loglevel.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 默认 loglevel 的块外垂死行成为原因', async () => {
+  const reason = await reasonFor(failureStderr('real-neutral-default-loglevel.err'), 7);
+  assert.equal(reason, 'runtime dependency refresh skipped');
+});
+
+test('upgradePackage 失败原因: 唯一的 [cause] 行仍作为原因', async () => {
+  const reason = await reasonFor(failureStderr('cause-plain.err'));
+  assert.equal(reason, '[cause]: Error: EACCES: permission denied');
+});
+
+test('upgradePackage 失败原因: 元数据块只回 code 行', async () => {
+  const reason = await reasonFor(failureStderr('metadata-only-block.err'));
+  assert.equal(reason, 'npm error code E404');
+});
+
+test('upgradePackage 失败原因: 恢复步的回显不抢元数据外层块', async () => {
+  const stderr = [
+    'npm error command sh -c node pre-recover.js',
+    '{ code: 0, signal: null }',
+    'npm error code 7',
+    'npm error path /home/op/final',
+    'npm error syscall open',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'npm error code 7');
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {

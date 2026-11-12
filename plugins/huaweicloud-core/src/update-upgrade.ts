@@ -29,6 +29,23 @@ const UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS = new Set([
   'GITHUB_TOKEN',
   'GH_TOKEN',
   'DOCKER_PASSWORD',
+  'DOCKER_AUTH_CONFIG',
+  'GITLAB_TOKEN',
+  'GITLAB_CI_JOB_TOKEN',
+  'BITBUCKET_TOKEN',
+  'AZURE_DEVOPS_EXT_PAT',
+  'NPM_AUTH_TOKEN',
+  'YARN_NPM_AUTH_TOKEN',
+  'NUGET_API_KEY',
+  'GOOGLE_APPLICATION_CREDENTIALS',
+  'VAULT_TOKEN',
+  'TERRAFORM_CLOUD_TOKEN',
+  'HEROKU_API_KEY',
+  'SLACK_TOKEN',
+  'PYPI_TOKEN',
+  'TWINE_PASSWORD',
+  'HUAWEI_DOMAIN_TOKEN',
+  'HUAWEI_SECURITY_TOKEN',
 ]);
 
 // The predicate's prefixes also cover the devkit's own configuration. These
@@ -462,18 +479,55 @@ function selectFailureLine(
   return undefined;
 }
 
+// Error blocks are npm's `code` lines plus the metadata and diagnostic lines
+// that follow each one, bounded by the next code line. An `npm error` block and
+// its code line are one unit: an errno-code block that a later block supersedes
+// is a nested or recovered step, not the failure.
+type ErrorBlock = { code: LineEntry; entries: LineEntry[] };
+
+function errorBlocks(codeEntries: LineEntry[], otherEntries: LineEntry[]): ErrorBlock[] {
+  return codeEntries.map((code, position) => {
+    const next = codeEntries[position + 1]?.index ?? Number.POSITIVE_INFINITY;
+    return {
+      code,
+      entries: otherEntries.filter((entry) => entry.index > code.index && entry.index < next),
+    };
+  });
+}
+
+function pickInBlock(block: ErrorBlock): { line: string; rank: number; index: number } | undefined {
+  for (const rank of [0, 1, 2, 3, 4]) {
+    const hit = block.entries.find((entry) => lineRank(entry.line) === rank);
+    if (hit) return { line: hit.line, rank, index: hit.index };
+  }
+  return undefined;
+}
+
+function isNumericCodeLine(line: string): boolean {
+  return /^-?\d+$/.test(npmPayload(line).replace(/^code\s+/, ''));
+}
+
+function isCauseLine(line: string): boolean {
+  const payload = npmPayload(line);
+  if (!/^\[cause\]:/.test(payload)) return false;
+  const rest = payload.replace(/^\[cause\]:\s*/, '');
+  if (ERROR_NAME.test(rest)) return true;
+  const token = /^([A-Z0-9_]+)(?=:|\s|$)/.exec(rest)?.[1];
+  return isErrnoToken(token);
+}
+
 function extractNpmFailureReason(execResult: SpawnResultLike): string {
-  const normalizedLines = String(execResult.stderr || '')
+  const rawLines = String(execResult.stderr || '')
     .split(/\r?\n/)
     .map((line) => normalizeNpmLine(line))
     .filter(Boolean);
   // A Node crash preamble carries three lines the per-line rules cannot judge:
   // the `file:line` header, the source snippet, and the caret under it.
   const crashPreamble = new Set<number>();
-  normalizedLines.forEach((line, index) => {
+  rawLines.forEach((line, index) => {
     const header = /^\S+:\d+$/.test(line);
-    const snippet = Boolean(normalizedLines[index + 1] && /[;=()]/.test(normalizedLines[index + 1]!));
-    const caret = /^\s*\^\s*$/.test(normalizedLines[index + 2] ?? '');
+    const snippet = Boolean(rawLines[index + 1] && /[;=()]/.test(rawLines[index + 1]!));
+    const caret = /^\s*\^\s*$/.test(rawLines[index + 2] ?? '');
     if (header && snippet && caret) {
       crashPreamble
         .add(index)
@@ -481,26 +535,94 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
         .add(index + 2);
     }
   });
-  const lines = normalizedLines.filter((line, index) => !crashPreamble.has(index) && !isNpmNoiseLine(line));
-  const codeLines = lines
+  // Every entry keeps its raw position: the code candidate, the block and the
+  // echo are compared against the success window in one index space, so a
+  // duplicate text line can never be re-resolved to its first occurrence.
+  const entries: LineEntry[] = rawLines
     .map((line, index) => ({ line, index }))
-    .filter((entry) => isNpmErrorLine(entry.line) && /^code \S+/.test(npmPayload(entry.line)));
-  const entries = lines.map((line, index) => ({ line, index }));
+    .filter((entry) => !crashPreamble.has(entry.index) && !isNpmNoiseLine(entry.line));
   const codeEntries = entries.filter((entry) => isNpmErrorLine(entry.line) && /^code \S+/.test(npmPayload(entry.line)));
   const otherEntries = entries.filter(
     (entry) => isNpmErrorLine(entry.line) && !codeEntries.some((code) => code.index === entry.index),
   );
   const codelessEntries = entries.filter((entry) => !isNpmErrorLine(entry.line));
-  let block = selectFailureLine(otherEntries, { positionLast: false });
-  let recoveredSwap = false;
   const codeFor = (target: { index: number } | undefined) =>
     (target ? codeEntries.filter((entry) => entry.index <= target.index).at(-1) : undefined)?.line ??
     codeEntries.at(-1)?.line;
-  let codeLine = codeFor(block);
+
+  const isSuccessAssertion = (line: string) =>
+    /^gyp info ok\b/i.test(line) ||
+    /^prebuilt binary installed\b/i.test(line) ||
+    (isNpmScriptResult(line) && !isFailingScriptResult(line));
+  const lastSuccessIndex = (before: number): number => {
+    let found = -1;
+    rawLines.forEach((line, index) => {
+      if (index < before && isSuccessAssertion(line)) found = index;
+    });
+    return found;
+  };
+
+  // The gate is a failing pair: a failure result line with its own echo. A
+  // successful script's echo pair, or a lone echo, proves nothing about the
+  // failing step.
+  const failing = lastFailingResult(codelessEntries);
+  // npm's echo of the failing script may be a bare shell line or the block's own
+  // `npm error command` line; the pair is the result line plus whichever echo
+  // sits before it. A result line whose echo landed after it (a dying step that
+  // printed `gyp info ok` then its result) is not a pair.
+  const failingPairEcho = failing ? lastEchoBefore(entries, failing.index) : undefined;
+  const hasFailingPair = Boolean(failing && failingPairEcho);
+  // A success assertion is recovery evidence only when it precedes the last
+  // failing pair: the failing step's own `gyp info ok`, printed after its dying
+  // words and before its own result line, is not a recovery.
+  const recoverySuccess = failingPairEcho ? lastSuccessIndex(failingPairEcho.index) : -1;
+
+  let block = selectFailureLine(otherEntries, { positionLast: false });
   let bare = selectFailureLine(codelessEntries, { positionLast: true });
+  let codeLine = codeFor(block);
+  let recoveredSwap = false;
+
+  // At npm's default loglevel lifecycle result lines do not exist, so a nested
+  // step's recovered block is the only visible error text while the failing
+  // step said nothing. With no failing pair, the last error block is the only
+  // attributable one; a sole nested block whose errno code cannot be tied to
+  // the exit falls to the honest exit status, and a child line outside it is
+  // the child's dying words.
+  if (!hasFailingPair && codeEntries.length) {
+    const blocks = errorBlocks(codeEntries, otherEntries);
+    const lastBlock = blocks.at(-1)!;
+    // A duplicate `code N` line (a harness prepend, a repeated metadata block)
+    // is one logical block, not a nested-then-failing pair: the override only
+    // applies when the last block's code differs from the block before it.
+    const previous = blocks.at(-2);
+    const distinctLastCode =
+      previous &&
+      npmPayload(previous.code.line).replace(/^code\s+/, '') !==
+        npmPayload(lastBlock.code.line).replace(/^code\s+/, '');
+    if (blocks.length > 1 && distinctLastCode) {
+      const picked = pickInBlock(lastBlock);
+      block = picked ?? { line: lastBlock.code.line, rank: 4, index: lastBlock.code.index };
+      codeLine = lastBlock.code.line;
+      // The child's earlier chatter belongs to a recovered step; the last
+      // block's own echo names the failing script.
+      if (bare && bare.index < lastBlock.code.index) bare = undefined;
+    } else {
+      const picked = pickInBlock(lastBlock);
+      if (picked?.rank === 2) {
+        const dying = codelessEntries
+          .filter((entry) => entry.index > lastBlock.code.index && lineRank(entry.line) <= 2)
+          .at(-1);
+        if (dying) return dying.line;
+        if (!isNumericCodeLine(lastBlock.code.line) && typeof execResult.status === 'number' && execResult.status > 1) {
+          block = undefined;
+          codeLine = undefined;
+        }
+      }
+    }
+  }
+
   // A loud successful script (or a gyp error it survived) is not the cause when
   // npm emitted a failing echo pair later: the echo names the failing script.
-  const failing = lastFailingResult(codelessEntries);
   const lastSuccess = codelessEntries
     .filter((entry) => isNpmScriptResult(entry.line) && !isFailingScriptResult(entry.line))
     .at(-1);
@@ -508,15 +630,10 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     const echo = lastEchoBefore(codelessEntries, failing.index);
     if (echo) bare = { line: echo.line, rank: 3, index: echo.index };
   }
-  // The gate is a failing pair: a failure result line with its own echo. A
-  // successful script's echo pair, or a lone echo, proves nothing about the
-  // failing step.
-  const failingEcho = failing ? lastEchoBefore(codelessEntries, failing.index) : undefined;
-  const hasFailingPair = Boolean(failing && failingEcho);
   // The outer shell names a signal death "Terminated" or "Killed"; when npm
   // emitted the failing echo pair, the named script is the better reason.
   if (bare?.rank === 2 && /^(?:Terminated|Killed)\b/i.test(bare.line) && hasFailingPair) {
-    bare = { line: failingEcho!.line, rank: 3, index: failingEcho!.index };
+    bare = { line: failingPairEcho!.line, rank: 3, index: failingPairEcho!.index };
   }
   // A spawn kill (timeout, buffer ceiling) or a plain nonzero status with no
   // failing pair and no error block leaves no line attributable to the failing
@@ -540,15 +657,13 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // qualifies: plain progress chatter does not distinguish itself, and a
   // filtered success assertion (a code-0 result, gyp's info channel) means the
   // survivor belongs to a script that did not fail.
-  const rawLines = String(execResult.stderr || '')
-    .split(/\r?\n/)
-    .map((line) => normalizeNpmLine(line))
-    .filter(Boolean);
-  const isSuccessAssertion = (line: string) =>
-    /^gyp info ok\b/i.test(line) ||
-    /^prebuilt binary installed\b/i.test(line) ||
-    (isNpmScriptResult(line) && !isFailingScriptResult(line));
-  const attributableSurvivors = lines.filter((line) => lineRank(line) <= 1);
+  const strongSurvivors = entries.filter((entry) => lineRank(entry.line) <= 1).map((entry) => entry.line);
+  // A demoted `[cause]:` line still rides when it is the only substantive text:
+  // the rank-4 demotion exists to keep it from outranking a header, not to
+  // silence a dump that has nothing else.
+  const attributableSurvivors = strongSurvivors.length
+    ? strongSurvivors
+    : entries.filter((entry) => isCauseLine(entry.line)).map((entry) => entry.line);
   if (
     !block &&
     !codeLine &&
@@ -558,7 +673,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   ) {
     const survivor = attributableSurvivors[0]!;
     const survivorIndex = rawLines.lastIndexOf(survivor);
-    const echoIndex = failingEcho ? rawLines.lastIndexOf(failingEcho.line) : -1;
+    const echoIndex = failingPairEcho ? rawLines.lastIndexOf(failingPairEcho.line) : -1;
     const successAfter = rawLines.some((line, index) => index >= survivorIndex && isSuccessAssertion(line));
     const laterFailingPair =
       hasFailingPair &&
@@ -566,60 +681,55 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
       rawLines.some((line, index) => index > survivorIndex && index < echoIndex && isSuccessAssertion(line));
     if (!laterFailingPair && (!successAfter || hasFailingPair)) return survivor;
   }
-  // A trailing success assertion after the chosen block line means that line
-  // belongs to a step that recovered; the block's code line plus its command
-  // echo is the honest reason instead.
-  if (block && block.rank <= 2) {
-    const blockIndex = rawLines.indexOf(block.line);
-    const recovered = blockIndex >= 0 && rawLines.some((line, index) => index > blockIndex && isSuccessAssertion(line));
-    if (recovered) {
-      // The echo must belong to the failing step: after the block line and
-      // after the last success assertion (a recovered step's own echo sits
-      // before its success result).
-      const lastSuccessRaw = rawLines
-        .map((line, index) => ({ line, index }))
-        .filter((entry) => isSuccessAssertion(entry.line))
-        .at(-1)?.index;
-      const echo = entries
-        .filter(
-          (entry) =>
-            lineRank(entry.line) === 3 &&
-            entry.index > block!.index &&
-            (lastSuccessRaw === undefined || rawLines.lastIndexOf(entry.line) > lastSuccessRaw),
-        )
-        .at(-1);
-      if (echo) {
-        block = { line: echo.line, rank: 3, index: echo.index };
-        // The code line must belong to the failing step's own block: anything
-        // at or before the last success assertion belongs to the recovered step.
-        codeLine = codeEntries.filter((entry) => rawLines.indexOf(entry.line) > (lastSuccessRaw ?? -1)).at(-1)?.line;
-        recoveredSwap = true;
-      }
+  // A recovered block's echo must name the failing step: the block line moved
+  // to a later echo only when the success that recovered it precedes the last
+  // failing pair, and the code line is re-derived from the failing step's own
+  // block (never re-resolved by duplicate text).
+  if (block && block.rank <= 2 && recoverySuccess > block.index) {
+    const echo = entries
+      .filter((entry) => lineRank(entry.line) === 3 && entry.index > block!.index && entry.index > recoverySuccess)
+      .at(-1);
+    if (echo) {
+      block = { line: echo.line, rank: 3, index: echo.index };
+      codeLine = codeEntries.filter((entry) => entry.index > recoverySuccess).at(-1)?.line;
+      recoveredSwap = true;
     }
   }
-  // A success assertion after the winning code-less line means that line came
-  // from a step that recovered; the block's code line plus its command echo is
-  // the honest reason instead.
-  if (bare && block && bare.rank <= 1) {
-    const bareIndex = rawLines.lastIndexOf(bare.line);
-    const recovered = bareIndex >= 0 && rawLines.some((line, index) => index > bareIndex && isSuccessAssertion(line));
+  // A success assertion after a rank-0/1 code-less line means that line came
+  // from a step that recovered and a later block names a different step; the
+  // block's code line and echo are the honest reason instead.
+  if (!hasFailingPair && bare && block && bare.rank <= 1) {
+    const laterCode = codeEntries.find((entry) => entry.index > bare!.index);
+    const boundary = laterCode?.index ?? block.index;
+    const recovered = rawLines.some(
+      (line, index) => index > bare!.index && index < boundary && isSuccessAssertion(line),
+    );
     if (recovered) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
   }
   // A failing pair after an earlier dying-words line, with a success assertion
   // between them, names a later failing step; prefer it. Without that gap the
   // pair belongs to the same script as the cause, and the cause stays.
-  const bareRawIndex = bare ? rawLines.lastIndexOf(bare.line) : -1;
-  const failingEchoRawIndex = failingEcho ? rawLines.lastIndexOf(failingEcho.line) : -1;
+  const bareRawIndex = bare ? bare.index : -1;
   if (
     hasFailingPair &&
-    failingEcho &&
+    failingPairEcho &&
     bare &&
     bareRawIndex >= 0 &&
-    bareRawIndex < failingEchoRawIndex &&
+    bareRawIndex < failingPairEcho.index &&
     bare.rank <= 1 &&
-    rawLines.some((line, index) => index > bareRawIndex && index < failingEchoRawIndex && isSuccessAssertion(line))
+    rawLines.some((line, index) => index > bareRawIndex && index < failingPairEcho.index && isSuccessAssertion(line))
   ) {
-    bare = { line: failingEcho.line, rank: 3, index: failingEcho.index };
+    bare = { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index };
+  }
+  // An echo that precedes the chosen block belongs to an earlier step; a
+  // metadata-only block must not inherit it.
+  if (bare && lineRank(bare.line) === 3 && block && bare.index < block.index) bare = undefined;
+  // A success assertion is never the reason: it names a step that recovered.
+  if (bare && isSuccessAssertion(bare.line)) bare = undefined;
+  // The same holds when the echo itself won the tier: npm's block echo follows
+  // its code line, so an echo above the last code line is an earlier step's.
+  if (block && lineRank(block.line) === 3 && codeEntries.length && block.index < codeEntries.at(-1)!.index) {
+    block = undefined;
   }
   // Both branches compete: an unprefixed crash line outranks a block echo, and
   // the block keeps its code prefix when the block wins or when only a weak

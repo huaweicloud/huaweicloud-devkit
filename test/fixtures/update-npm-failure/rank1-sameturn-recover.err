@@ -1,0 +1,6 @@
+npm error code 7
+npm error postinstall output: build failed, cache locked
+gyp info ok
+{ code: 7, signal: null }
+npm error command failed
+npm error command sh -c node two.js

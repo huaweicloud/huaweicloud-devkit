@@ -1,0 +1,45 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:14887/npm 24ms
+npm http fetch GET 404 http://127.0.0.1:14887/npm 3ms
+npm http fetch GET 200 http://127.0.0.1:14887/huaweicloud-devkit 18ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14887/huaweicloud-devkit 8ms (cache miss)
+npm http fetch POST 404 http://127.0.0.1:14887/-/npm/v1/security/advisories/bulk 8ms
+npm http fetch GET 200 http://127.0.0.1:14887/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 18ms (cache miss)
+npm info run huaweicloud-devkit@9.9.9 preinstall node_modules/huaweicloud-devkit node pre.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:14887/npm 31ms
+npm http fetch GET 404 http://127.0.0.1:14887/npm 5ms
+npm http fetch GET 200 http://127.0.0.1:14887/tiny-dep 12ms (cache miss)
+npm error code EACCES
+npm error syscall mkdir
+npm error path /home/op/ro-cache/_cacache
+npm error errno EACCES
+npm error
+npm error Your cache folder contains root-owned files, due to a bug in previous versions of npm which has since been addressed.
+npm error
+npm error To permanently fix this problem, please run:
+npm error   sudo chown -R 1002:1002 "/home/op/ro-cache"
+npm error Log files were not written due to an error writing to the directory: /home/op/ro-cache/_logs
+npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+[pre] inner npm exit 1 (swallowed, step recovers)
+npm info run huaweicloud-devkit@9.9.9 preinstall { code: 0, signal: null }
+npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node post.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:14887/npm 32ms
+npm http fetch GET 404 http://127.0.0.1:14887/npm 4ms
+npm http fetch GET 200 http://127.0.0.1:14887/tiny-dep 12ms (cache miss)
+npm error code EACCES
+npm error syscall mkdir
+npm error path /home/op/ro-cache/_cacache
+npm error errno EACCES
+npm error
+npm error Your cache folder contains root-owned files, due to a bug in previous versions of npm which has since been addressed.
+npm error
+npm error To permanently fix this problem, please run:
+npm error   sudo chown -R 1002:1002 "/home/op/ro-cache"
+npm error Log files were not written due to an error writing to the directory: /home/op/ro-cache/_logs
+npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+npm info run huaweicloud-devkit@9.9.9 postinstall { code: 7, signal: null }
