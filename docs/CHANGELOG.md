@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.14-next.3 (2026-11-12)
+
+- fix(install): gate update on the node floor
+- fix(install): raise the Node floor to 22.19
+- fix(install): support the Node 22.5 floor without top-level sqlite
+
 ## 1.1.14-next.2 (2026-11-10)
 
 - chore: set version override to 1.1.14 for next preview release
