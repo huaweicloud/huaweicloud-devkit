@@ -12,6 +12,13 @@
 /** 版本门禁（服务端 UPGRADE_MIN_VERSION 硬门禁）的唯一错误码 */
 export const VERSION_GATE_CODE = 'HDKIT_VERSION_TOO_OLD';
 
+/**
+ * 装填被拒的毒标（round 19）：中和三步（删除/赋值/defineProperty）后仍存活
+ * 的装饰值/访问器——延迟谎言与陷阱 defineProperty 一并覆盖——在丢弃载体上种
+ * 此标。折叠口读到即不折叠：丢弃载体上的任何陈述都不可信。
+ */
+export const DECORATION_REFUSED_FIELD = 'hdkitDecorationRefused';
+
 /** 连接重试表（dev e0c8700b 终态）：网关 502/504 各退避重试一次 */
 export const CONNECT_RETRY_DELAYS_MS: readonly number[] = [30000, 45000];
 
@@ -229,6 +236,15 @@ export interface GateFoldPayload {
  * 透传服务端 copy。versionGateResult / voucherFallback / relay 折叠共用此份。
  */
 export function gateFoldPayload(error: unknown): GateFoldPayload {
+  // 毒标（round 19）：装填被拒的丢弃载体——版本字段/消息/remediation 全不
+  // 信，铸未知版本信封（码仍是服务端亲署——门禁判定不受毒标影响）
+  if (safeReadField(error, DECORATION_REFUSED_FIELD) === true) {
+    return {
+      code: VERSION_GATE_CODE,
+      message: VERSION_GATE_FALLBACK_MESSAGE,
+      remediation: codelessGateFields().remediation,
+    };
+  }
   const rawCode = safeReadField(error, 'code');
   if (canonCode(rawCode) === VERSION_GATE_CODE) {
     // 字符串收窄恢复（round 13）：安全读只防抛出，非字符串值（数字/对象）
@@ -311,26 +327,37 @@ export function canonCode(code: unknown): string {
   return typeof code === 'string' ? blankCharsRemoved(code) : '';
 }
 
-// remediation 的深序列化验证（round 16 建、round 17 修上下文与快照）：
-// 窄化只看第一层——嵌套 BigInt/循环引用在 MCP 序列化边界照样炸，故按边界
-// 形态深验。round 17：① 验证必须在嵌套上下文——边界按信封键 'remediation'
-// 序列化，JSON.stringify 把属性键传给 toJSON，顶层验证时 toJSON 收到 ''——
-// 无状态判别器（toJSON 看 key 分叉）可在顶层过关并在真实边界引爆（实测经
-// 真实 registerTool 链端到端复现）；② 信封搭载的必须是验证过的字节，不是
-// 活引用——有状态 getter（验证读数良性、后续读数炸）无从换值。往返快照
-// 一次解决两类：stringify({ remediation: raw }) 即边界形态，JSON.parse 取
-// 回纯数据快照。折叠是错误路径上的一次调用，往返成本可忽略
+// remediation 的深序列化验证（round 16 建、round 17 修上下文与快照、
+// round 18 快照形态窄化、round 19 可用引导判定）：窄化只看第一层——嵌套
+// BigInt/循环引用在 MCP 序列化边界照样炸，故按边界形态深验。round 17：①
+// 验证必须在嵌套上下文——边界按信封键 'remediation' 序列化，JSON.stringify
+// 把属性键传给 toJSON，顶层验证时 toJSON 收到 ''——无状态判别器（toJSON
+// 看 key 分叉）可在顶层过关并在真实边界引爆（实测经真实 registerTool 链
+// 端到端复现）；② 信封搭载的必须是验证过的字节，不是活引用——有状态
+// getter（验证读数良性、后续读数炸）无从换值。往返快照一次解决两类：
+// stringify({ remediation: raw }) 即边界形态，JSON.parse 取回纯数据快照。
+// round 18：非对象/数组视图拒绝（toJSON 可在 remediation 键下呈现 0/''/
+// null/[]）。round 19：记录形态过关还需可用——hint 非空白字符串且 steps
+// 数组，{} 与字段敌意记录一律拒绝。折叠是错误路径上的一次调用，往返成本
+// 可忽略
 export function serializableRemediation(raw: unknown): { hint: string; steps: string[] } | undefined {
   if (raw === null || typeof raw !== 'object') return undefined;
   try {
     const verified = JSON.stringify({ remediation: raw });
     const snapshot = JSON.parse(verified) as { remediation?: unknown };
-    // 快照形态窄化（round 18）：toJSON 在 remediation 键下可呈现任意 JSON
-    // 值——非对象（0/''/null）与数组不是引导记录（无 hint 可读），按拒绝
-    // 处理，各出口的设计引导铸造兜底——信封指引不得少于空载体
+    // 快照形态与可用引导窄化（round 18 形态、round 19 可用性）：toJSON 在
+    // remediation 键下可呈现任意 JSON 值——非对象（0/''/null）与数组不是引导
+    // 记录（round 18）；记录形态过关还不够——{} 骑上即零引导、hint 为数字/
+    // steps 非数组同样不可用（round 19），比空载体的引导还少，正是铸造要
+    // 堵的洞。可用判定：hint 非空白字符串且 steps 是数组；其余一律拒绝，
+    // 各出口的设计引导铸造兜底
     const parsed = snapshot.remediation;
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
-    return parsed as { hint: string; steps: string[] };
+    const shaped = parsed as { hint?: unknown; steps?: unknown };
+    if (typeof shaped.hint !== 'string' || rendersBlank(shaped.hint) || !Array.isArray(shaped.steps)) {
+      return undefined;
+    }
+    return { hint: shaped.hint, steps: shaped.steps as string[] };
   } catch {
     return undefined;
   }
@@ -442,6 +469,7 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       // 配置的访问器整体替换为数据属性（恢复臂的同款能力）；再失败即
       // round-17 记录边界：全写路径封死的载体无客户端方案可移除，载体本
       // 被丢弃，台账记录。undefined 装饰值跳过——空值点不燃任何折叠触发
+      let poisoned = false;
       for (const done of [...applied, key]) {
         const written = writtenValues.get(done);
         if (written === undefined) continue;
@@ -469,7 +497,49 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
           try {
             Object.defineProperty(target, done, { value: neutral, writable: true, configurable: true });
           } catch {
-            // 全写路径封死——记录边界（见注释）
+            // 赋值与 defineProperty 双双被拒——交给下面的存活判定
+          }
+        }
+        // 存活判定（round 19）：不信任何单次读——延迟谎言在中和读回时奉上
+        // 中性值、事后重新呈现装饰值（读回被一次敌意读骗过）；陷阱
+        // defineProperty 报成功不落（升级臂此前 fire-and-forget）。读描述符
+        // 定夺：访问器仍存活（可随时翻供——无论读几次）或数据值仍是装饰值
+        // → 种毒标；无描述符时读一次（无落点可翻供）；gOPD 抛出从严种毒
+        let survives: boolean;
+        try {
+          const desc = Object.getOwnPropertyDescriptor(target, done);
+          if (desc && (desc.get !== undefined || desc.set !== undefined)) survives = true;
+          else if (desc && desc.value === written) survives = true;
+          else if (!desc) {
+            try {
+              survives = target[done] === written;
+            } catch {
+              survives = false;
+            }
+          } else {
+            survives = false;
+          }
+        } catch {
+          survives = true;
+        }
+        if (survives) {
+          poisoned = true;
+        }
+      }
+      if (poisoned) {
+        // 毒标写入亦尽力而为（round 19）：赋值 → defineProperty；双双被拒即
+        // round-17 记录边界——全写路径封死的载体无客户端方案可标记
+        try {
+          target[DECORATION_REFUSED_FIELD] = true;
+        } catch {
+          try {
+            Object.defineProperty(target, DECORATION_REFUSED_FIELD, {
+              value: true,
+              writable: true,
+              configurable: true,
+            });
+          } catch {
+            // 记录边界
           }
         }
       }
@@ -609,6 +679,9 @@ function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
  * 标记的错误转 ok:false 结构化返回，remediation 与尝试次数穿透 MCP 边界。
  */
 export function transientExhaustionResult(error: unknown): Record<string, unknown> | undefined {
+  // 毒标（round 19）：中和失败的丢弃载体——延迟谎言与陷阱 defineProperty 让
+  // 装饰值/访问器存活——不在此折叠，丢弃载体上的任何陈述都不可信
+  if (safeReadField(error, DECORATION_REFUSED_FIELD) === true) return undefined;
   // round 12：全部字段过安全读——抛出型 getter 按缺失，标记缺失即不折叠。
   // round 16：presence-gate 之上再窄化——code 窄到字符串、connectRetries 窄到
   // 数字、retryAfter 窄到字符串、remediation 深验（serializableRemediation），
@@ -621,9 +694,11 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   const rawCode = safeReadField(error, 'code');
   const code = typeof rawCode === 'string' ? rawCode : undefined;
   const rawRetries = safeReadField(error, 'connectRetries');
-  // 有限数窄化（round 18）：NaN 是 number 但不可作为次数——骑上信封序列化
-  // 成 null，进铸造文案渲染"重试 NaN 次"；缺省时铸造文案省略次数短句
-  const connectRetries = typeof rawRetries === 'number' && Number.isFinite(rawRetries) ? rawRetries : undefined;
+  // 非负整数窄化（round 18 有限数、round 19 细则）：NaN/Infinity 骑上信封
+  // 序列化成 null，负数/分数渲染"重试 -5 次/2.5 次"——均不是次数；缺省时
+  // 铸造文案省略次数短句
+  const connectRetries =
+    typeof rawRetries === 'number' && Number.isSafeInteger(rawRetries) && rawRetries >= 0 ? rawRetries : undefined;
   // remediation 深验拒绝即铸造（round 17 / MUST 4）：耗尽信封的指引不得少于
   // 空载体——丢弃敌意值换来"零引导"是倒退；设计瞬时文案统一铸造
   const remediation =

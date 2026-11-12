@@ -53,9 +53,13 @@ function getHdkitBaseUrl(): string {
 // 只在头读返回字符串时携带
 function safeRespStatus(resp: unknown): number | undefined {
   const status = safeReadField(resp, 'status');
-  // 有限数窄化（round 18）：NaN/Infinity 是 number 但不可序列化为合法
-  // 状态——携带会伪造 HTTP_NaN/HTTP_Infinity 伪码，也不可作瞬时判定输入
-  return typeof status === 'number' && Number.isFinite(status) ? status : undefined;
+  // 合法状态窄化（round 18 有限数、round 19 细则）：NaN/Infinity 之外，
+  // -1/-0/502.5 这类有限数也非服务器可签的状态——携带会伪造 HTTP_-1/
+  // HTTP_502.5 伪码；只有 100–599 的整数携带（其余按缺读：渲染"未知"、
+  // 无码可制造、不作瞬时判定输入）
+  return typeof status === 'number' && Number.isSafeInteger(status) && status >= 100 && status <= 599
+    ? status
+    : undefined;
 }
 
 function safeRespOk(resp: unknown): boolean {
@@ -82,7 +86,7 @@ function safeRetryAfterHeader(resp: unknown): string | undefined {
 // 抛出错误——空白/纯不可见原因落设计文案，真文本原样透传；原对象（含传输
 // 层自带的 code 属性，如 AbortError DOMException 的数值 20）不透传；
 // bodyUnreadable 标记供门禁折叠区分传输形态与服务端话术。
-// round 17 起来因形态也不可信：instanceof 在撤销代理上抛（[[GetPrototypeOf]]
+// round 15 起来因形态也不可信：instanceof 在撤销代理上抛（[[GetPrototypeOf]]
 // 陷阱），message 读在抛出型 getter 上抛——包装口全部的意义就是不信任来因。
 // 原型检查与消息读都带防护，任一被拒按缺失（兜底文案）
 function transportReason(error: unknown, fallback: string): Error {
@@ -155,16 +159,31 @@ async function hdkitRequest(
   // 不可见字符不存活到 MCP 边界，原对象（含传输层自带的 code 属性，如
   // DOMException 的 20）不透传；bodyUnreadable 标记供门禁折叠区分传输噪声
   // 与服务端话术。
+  // 体读取的有界化（round 19）：fetch 的 abort 定时器在其 finally 里、体读
+  // 取之前清除——永不结算的 text() 此前无模块侧上界，工具调用悬挂。第二个
+  // 定时器跨体读取持续武装（真 Response 流随 controller.abort 拒绝），并经
+  // Promise.race 兜住不理会 abort 的敌意体：非结算体在 timeoutMs 内落进设
+  // 计 transportReason 包装。已知边界（台账）：自转 thenable（then 里再 resolve
+  // 自身）把微任务队列永远排满，任何定时器都上不了 CPU——无客户端方案可
+  // 界定，与全陷阱谎言同族的记录边界
+  let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+  const bodyBound = new Promise<never>((_, reject) => {
+    bodyTimer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`hdkitservice response body read timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
   let text: string;
   try {
-    text = await resp.text();
+    const raw: unknown = await Promise.race([resp.text() as unknown, bodyBound]);
     // 敌意体收口（round 18）：text() 可 resolve 出任意值——非字符串先前在非
     // JSON catch 里裸做 text.slice，原始 TypeError 顶替设计信封（409 门禁折
     // 叠死、502 不再重试）。按不可读体处理：本 catch 的设计包装（清洗文案 +
     // bodyUnreadable + 安全读 status），与 text() 拒绝孪生同形
-    if (typeof text !== 'string') {
-      throw new TypeError(`hdkitservice response body is not text (typeof ${typeof text})`);
+    if (typeof raw !== 'string') {
+      throw new TypeError(`hdkitservice response body is not text (typeof ${typeof raw})`);
     }
+    text = raw;
   } catch (error) {
     // 状态读过安全卫队（round 16）：text() 拒绝 + 敌意 status getter 不得
     // 在包装口自己的 catch 里引爆——无状态即无网关信号（不重试），标记照带
@@ -172,6 +191,8 @@ async function hdkitRequest(
     const status = safeRespStatus(resp);
     if (status !== undefined) Object.assign(wrapped, { status });
     throw wrapped;
+  } finally {
+    if (bodyTimer !== undefined) clearTimeout(bodyTimer);
   }
   let data: Record<string, unknown> | unknown[];
   try {

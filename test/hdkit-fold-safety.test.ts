@@ -430,3 +430,76 @@ test('a non-finite status manufactures nothing: NaN and Infinity never become HT
     assert.equal(err.status, undefined, `status ${String(status)}: a non-finite status does not attach`);
   }
 });
+
+// ── 体读取的有界化与状态细则（round 19）──
+// fetch 的 abort 定时器在其 finally 里、体读取之前清除——永不结算的 text()
+// 无模块侧上界（自转 thenable 连微任务队列都饿死，任何定时器都排不上——
+// 记录边界）。第二个定时器在同一 controller 上跨体读取持续武装：非结算体
+// 落进设计 transportReason 包装。状态细则：-1/-0/502.5 是有限数但非法——
+// 与 NaN 同路（无伪造码、不携带）。
+
+test('a never-settling body lands in the designed wrap within the module bound — the call never hangs', async () => {
+  const realSetTimeout = setTimeout;
+  const originalFetch = global.fetch;
+  global.fetch = (async () => ({
+    status: 409,
+    ok: false,
+    text: (): Promise<string> => new Promise<string>(() => {}),
+  })) as unknown as typeof global.fetch;
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const pending = hdkitConnectWithRetry({}).then(
+      () => 'settled-ok',
+      (error: unknown) => error,
+    );
+    // 真定时器看门狗（在 mock 启用前捕获）：未修复时 3 秒后判 UNBOUNDED——
+    // 红阶段不悬挂测试
+    const watchdog = new Promise<string>((resolve) => {
+      realSetTimeout(() => resolve('UNBOUNDED'), 3000);
+    });
+    // 先让流程推进到体读取（fetch 桩的微任务链 drain 到 bodyTimer 的创建）
+    await new Promise((resolve) => setImmediate(resolve));
+    mock.timers.tick(300000);
+    const outcome = await Promise.race([pending, watchdog]);
+    assert.notEqual(outcome, 'UNBOUNDED', 'the body await is bounded — the module-side timer settles the read');
+    const err = outcome as Error & { bodyUnreadable?: boolean; status?: unknown };
+    assert.ok(!(err instanceof TypeError));
+    assert.equal(err.bodyUnreadable, true, 'the wrap marker rides');
+    assert.equal(err.status, 409, 'the honest status attaches');
+    const gate = versionGateResult(err);
+    assert.equal(gate?.code, 'HDKIT_VERSION_TOO_OLD', 'the wrap folds as the codeless gate');
+  } finally {
+    mock.timers.reset();
+    global.fetch = originalFetch;
+  }
+});
+
+test('the status letter: -1, -0, and 502.5 behave like the NaN twin — no HTTP_x, no attach, no retry', async () => {
+  for (const status of [-1, -0, 502.5] as const) {
+    let calls = 0;
+    const originalFetch = global.fetch;
+    global.fetch = (async () => {
+      calls += 1;
+      return {
+        status,
+        ok: false,
+        text: async () => JSON.stringify({ message: 'gateway busy' }),
+      };
+    }) as unknown as typeof global.fetch;
+    try {
+      const outcome = await hdkitConnectWithRetry({}).then(
+        () => null,
+        (error: unknown) => error,
+      );
+      assert.ok(outcome, `status ${String(status)}: expected rejection`);
+      const err = outcome as Error & { code?: unknown; status?: unknown };
+      assert.ok(!(err instanceof TypeError));
+      assert.equal(err.code, undefined, `status ${String(status)}: no HTTP_x manufactured code`);
+      assert.equal(err.status, undefined, `status ${String(status)}: an out-of-range integer does not attach`);
+      assert.match(err.message, /gateway busy/, `status ${String(status)}: the message carries`);
+      assert.equal(calls, 1, `status ${String(status)}: never transient — a single fetch`);
+    } finally {
+      global.fetch = originalFetch;
+    }
+  }
+});

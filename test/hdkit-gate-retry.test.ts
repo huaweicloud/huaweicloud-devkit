@@ -2738,12 +2738,7 @@ test('a lying-set marker accessor cannot survive the neutralization: the fold ne
     },
   });
   // 第二键双路封死，装饰在标记已装填后走回滚分支
-  Object.defineProperty(carrier, 'connectRetries', {
-    configurable: false,
-    writable: false,
-    value: 1,
-    enumerable: true,
-  });
+  sealedKey(carrier, 'connectRetries', 1);
   const out = decorateExhaustedConnect(carrier, 2);
   assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
   assert.equal(
@@ -2767,12 +2762,7 @@ test('applyVersionGate falsifies a lying-set half decoration on the discarded or
       storedClient = '2.0.0-next.0';
     },
   });
-  Object.defineProperty(carrier, 'minVersion', {
-    configurable: false,
-    writable: false,
-    value: '1.0.0',
-    enumerable: true,
-  });
+  sealedKey(carrier, 'minVersion', '1.0.0');
   const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
   assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
   assert.equal(
@@ -2798,4 +2788,224 @@ test('a non-finite connectRetries narrows away: the envelope carries no NaN and 
   assert.doesNotThrow(() => {
     JSON.stringify(fold);
   });
+});
+
+// ── 毒标构造、快照可用引导、有限数细则（round 19）──
+// 中和读回信一次敌意读——延迟谎言在读回时奉上中性值、事后重新呈现装饰值；
+// defineProperty 升级臂fire-and-forget——陷阱报成功不落。构造性收口：三步
+// 中和后仍存活的访问器/装饰值 → 种毒标，折叠口见毒标即不折叠，与读次数无
+// 关。快照形态过关还不够——{} 与字段敌意记录骑上即零引导，比空载体还少。
+
+test('an empty-record or fieldless JSON view never rides: the mint fires at both folds', () => {
+  for (const [label, view] of [
+    ['empty record', {}],
+    ['numeric hint', { hint: 123, steps: ['s'] }],
+    ['non-array steps', { hint: 'ok', steps: 'junk' }],
+    ['blank hint', { hint: '   ', steps: ['s'] }],
+  ] as const) {
+    const hostile = {
+      hint: 'hostile',
+      steps: ['s'],
+      toJSON() {
+        return view;
+      },
+    };
+    const gate = versionGateResult(
+      Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD', remediation: hostile }),
+    )!;
+    assert.match(
+      String((gate.remediation as { hint?: string }).hint ?? ''),
+      /当前 未知.*最新版/,
+      `${label}: the gate fold mints the unknown guidance`,
+    );
+    const exhausted = transientExhaustionResult(
+      Object.assign(new Error('exhausted'), {
+        gatewayRetryExhausted: true,
+        connectRetries: 2,
+        remediation: hostile,
+      }),
+    )!;
+    assert.match(
+      String((exhausted.remediation as { hint?: string }).hint ?? ''),
+      /连续遭遇网关 502\/504 超时/,
+      `${label}: the exhaustion fold mints the designed transient guidance`,
+    );
+  }
+});
+
+// 延迟谎言访问器（round 19 去重）：读 1-2 诚实（存量），读 3（中和读回）
+// 奉上中性值，读 4+ 重新呈现装饰值——两装饰器共用
+function delayedLieAccessor(carrier: HostileTarget, key: string, decoration: unknown): void {
+  let stored: unknown = undefined;
+  let reads = 0;
+  Object.defineProperty(carrier, key, {
+    configurable: true,
+    enumerable: true,
+    get() {
+      reads += 1;
+      if (reads <= 2) return stored;
+      if (reads === 3) return undefined;
+      return decoration;
+    },
+    set(v: unknown) {
+      stored = v;
+    },
+  });
+}
+
+// 双路封死键（round 19 去重）：非配置非写数据属性——触发回滚分支的第二键，
+// 四处夹具共用
+function sealedKey(carrier: object, key: string, value: unknown): void {
+  Object.defineProperty(carrier, key, {
+    configurable: false,
+    writable: false,
+    value,
+    enumerable: true,
+  });
+}
+
+// 谎言 defineProperty 陷阱代理（round 19 去重）：诚实 get/gOPD；中性写拒收、
+// 谎言删除、可选谎言 defineProperty——两装饰器共用，诚实对照走同厂
+function lyingEscalationProxy(opts: {
+  baseCode: unknown;
+  markerKey: string;
+  refuseKey: string;
+  lieOnDefineProperty: boolean;
+}): HostileTarget {
+  const real = { code: opts.baseCode } as unknown as HostileTarget;
+  return new Proxy(real, {
+    get(t: HostileTarget, k: string | symbol): unknown {
+      return t[k];
+    },
+    set(t: HostileTarget, k: string | symbol, v: unknown): boolean {
+      if (k === opts.refuseKey) throw new TypeError('set refused');
+      if (k === opts.markerKey && v === undefined) throw new TypeError('neutralize write refused');
+      t[k] = v;
+      return true;
+    },
+    deleteProperty(t: HostileTarget, k: string | symbol): boolean {
+      if (k === opts.markerKey) return true;
+      return Reflect.deleteProperty(t, k);
+    },
+    defineProperty(t: HostileTarget, k: string | symbol, d: PropertyDescriptor): boolean {
+      if (k === opts.refuseKey) throw new TypeError('defineProperty refused');
+      if (opts.lieOnDefineProperty) return true;
+      return Reflect.defineProperty(t, k, d);
+    },
+  });
+}
+
+test('a delayed-lie accessor cannot survive: the poison field kills the exhaustion fold on the discarded original', () => {
+  const carrier = hostileCarrier();
+  delayedLieAccessor(carrier, 'gatewayRetryExhausted', true);
+  // 第二键双路封死：装饰在标记已装填后走回滚分支
+  sealedKey(carrier, 'connectRetries', 1);
+  const out = decorateExhaustedConnect(carrier, 2);
+  assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  assert.equal(
+    (carrier as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused,
+    true,
+    'the surviving accessor poisons the discarded original',
+  );
+  assert.equal(
+    transientExhaustionResult(carrier),
+    undefined,
+    'the fold never fires on the poisoned discarded original — the delayed re-presentation is dead',
+  );
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone carries the decoration');
+});
+
+test('a lying defineProperty trap cannot survive: the poison field kills the fold', () => {
+  const proxy = lyingEscalationProxy({
+    baseCode: 20,
+    markerKey: 'gatewayRetryExhausted',
+    refuseKey: 'connectRetries',
+    lieOnDefineProperty: true,
+  });
+  const out = decorateExhaustedConnect(proxy, 2);
+  assert.notEqual(out, proxy, 'the refusing carrier falls to the clone');
+  const honestDesc = Object.getOwnPropertyDescriptor(proxy, 'gatewayRetryExhausted');
+  assert.ok(
+    honestDesc && honestDesc.value === true,
+    'the gOPD trap is honest — the marker physically sits on the target',
+  );
+  assert.equal(
+    (proxy as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused,
+    true,
+    'the surviving decoration value poisons the discarded original',
+  );
+  assert.equal(transientExhaustionResult(proxy), undefined, 'the fold never fires on the poisoned original');
+  assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
+
+  // 对照：诚实的 defineProperty 陷阱——替换成数据属性，无毒标也永不折叠
+  const controlProxy = lyingEscalationProxy({
+    baseCode: 20,
+    markerKey: 'gatewayRetryExhausted',
+    refuseKey: 'connectRetries',
+    lieOnDefineProperty: false,
+  });
+  const controlOut = decorateExhaustedConnect(controlProxy, 2);
+  assert.notEqual(controlOut, controlProxy);
+  assert.equal(
+    (controlProxy as { gatewayRetryExhausted?: unknown }).gatewayRetryExhausted,
+    undefined,
+    'the honest trap is replaced by the data property — the marker dies',
+  );
+  assert.equal((controlProxy as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused, undefined);
+  assert.equal(transientExhaustionResult(controlProxy), undefined, 'the control holds without poison');
+});
+
+test('applyVersionGate poisons a delayed-lie half decoration: the discarded original folds the unknown envelope', () => {
+  const carrier = new Error('gate') as unknown as HostileTarget;
+  Object.assign(carrier, { code: 'HDKIT_VERSION_TOO_OLD' });
+  delayedLieAccessor(carrier, 'clientVersion', '2.0.0-next.0');
+  sealedKey(carrier, 'minVersion', '1.0.0');
+  const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  assert.equal((carrier as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused, true);
+  const folded = versionGateResult(carrier)!;
+  assert.equal(folded.clientVersion, undefined, 'the poisoned clientVersion never rides the discarded original fold');
+  assert.match(String((folded.remediation as { hint?: string }).hint ?? ''), /当前 未知/);
+  assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0', 'the clone carries the payload');
+});
+
+test('applyVersionGate poisons a lying-defineProperty half decoration; the honest trap stays clean', () => {
+  const makeProxy = (lieOnDefineProperty: boolean) =>
+    lyingEscalationProxy({
+      baseCode: 'HDKIT_VERSION_TOO_OLD',
+      markerKey: 'clientVersion',
+      refuseKey: 'minVersion',
+      lieOnDefineProperty,
+    });
+  const proxy = makeProxy(true);
+  const out = applyVersionGate(proxy, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.notEqual(out, proxy, 'the refusing carrier falls to the clone');
+  assert.equal((proxy as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused, true, 'the lying trap poisons');
+  const folded = versionGateResult(proxy as unknown as Error)!;
+  assert.equal(folded.clientVersion, undefined, 'the poisoned half decoration never rides');
+  assert.match(String((folded.remediation as { hint?: string }).hint ?? ''), /当前 未知/);
+  assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+
+  const control = makeProxy(false);
+  const controlOut = applyVersionGate(control, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.notEqual(controlOut, control);
+  assert.equal((control as { clientVersion?: unknown }).clientVersion, undefined, 'the honest trap neutralizes');
+  assert.equal((control as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused, undefined, 'no poison needed');
+  assert.equal((controlOut as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+});
+
+test('the count letter: negative and fractional counts drop the field and the sentence', () => {
+  for (const count of [-5, -0.5, 2.5] as const) {
+    const carrier = Object.assign(new Error('exhausted'), {
+      gatewayRetryExhausted: true,
+      code: 'HDKIT_GATEWAY_TIMEOUT',
+      connectRetries: count,
+      remediation: 1n,
+    });
+    const fold = transientExhaustionResult(carrier)!;
+    assert.equal(fold.connectRetries, undefined, `count ${count}: a non-nonnegative-integer never rides the envelope`);
+    const hint = String((fold.remediation as { hint?: string }).hint ?? '');
+    assert.ok(!hint.includes('已自动重试'), `count ${count}: the mint omits the count sentence`);
+    assert.match(hint, /连续遭遇网关 502\/504 超时/);
+  }
 });
