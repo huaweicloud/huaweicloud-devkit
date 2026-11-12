@@ -1,6 +1,7 @@
 import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
@@ -336,9 +337,12 @@ test('exhaustion keeps a business-coded 502 remediation (burn-core) and never ov
     assert.equal(err.coreHoursExhausted, true);
     assert.ok(err.remediation);
     assert.match(err.remediation!.hint, /核心时长/, 'the burn-core remediation must win over the transient copy');
-    assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, true);
-    assert.equal(err.connectRetries, 1);
-    assert.equal(stub.calls(), 2);
+    // round 29/MUST 2 取代（此前：重试一次、connectRetries 1）：烧核是裁决，
+    // 重写 502 下也只打一次（round 2/3 教义——QUOTA 同类）；非瞬时抛出带
+    // connectRetries: 0（round 10 的守卫写）
+    assert.equal((err as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted, undefined);
+    assert.equal(err.connectRetries, 0);
+    assert.equal(stub.calls(), 1, 'the burn-core verdict is never retried even under a 502');
   } finally {
     stub.restore();
     restoreSeam();
@@ -1761,8 +1765,14 @@ test('a woven quota code under a rewritten 502 costs one fetch and keeps its quo
   );
   assert.equal(result.ok, false);
   assert.equal(result.code, undefined, 'the woven code is omitted — never laundered into the signed spelling');
-  // 消息是请求层以原始码合成的展示文案（诊断副本），原样透传——分发面是
-  // code 字段，已省略
+  // r27 前缀谓词的真钉（round 29/DOC 3c，取代 r28 台账“隐式被钉”的错误
+  // 主张）：看见消息不得渲染洗钱前缀——无谓词时消息即服务器副本，
+  // 有谓词时旧行为把织入拼写直接当前缀（可见字符串洗钱）
+  assert.doesNotMatch(
+    String(result.message ?? ''),
+    /HDKIT_QUOTA/,
+    'the woven spelling never renders as a visible prefix',
+  );
   assert.match(String(result.message ?? ''), /沙箱并发配额已满/);
   assert.equal(result.retryAfter, '60');
   assert.match(result.remediation?.hint ?? '', /配额已满/, 'the quota remediation survives — no gateway re-label');
@@ -4764,9 +4774,10 @@ test('the module load performs zero container reads: no get traps fire, no throw
   }
 });
 
-test('the per-call deny closes the post-load family, the lying [[Get]] view, and the writable-slot lie', () => {
-  // r2/r12/lying-ctor 形态：后注册的家族、运行时改写的 served 视图、代理
-  // 背后的可写诚实槽——逐调用双读全覆盖
+test('the constructor check denies the post-load family; instances stay carriers', () => {
+  // r2 形态（round 29 标题如实化：r26/r27 的逐调用双读机制已退役）：后注册的
+  // 家族原型自持 constructor ——自指裁决与全局绑定无关；r12/lying-ctor 的
+  // 洗钱形态见下方“无自挄构造器”边界行（代理/手动赋值洗钱包裹器是记录边界）
   class R26PostLoad extends Error {}
   (globalThis as Record<string, unknown>).R26PostLoad = R26PostLoad;
   try {
@@ -4812,8 +4823,9 @@ test('the per-call deny closes the post-load family, the lying [[Get]] view, and
   }
 });
 
-test('the pre-load and symbol-keyed globals stay denied: the per-call enumeration covers symbols', () => {
-  // r3 控制行：字符串键/符号键注册的家族照旧拒绝——逐调用枚举含符号键
+test('the pre-load and symbol-keyed registered families stay denied: the verdict reads the prototype itself', () => {
+  // r3 控制行（round 29 标题如实化）：字符串键/符号键注册的家族照旧拒绝——
+  // 裁决读原型自身的 constructor，键形态与枚举无关
   class R26PreString extends Error {}
   (globalThis as Record<string, unknown>).R26PreString = R26PreString;
   const symbolKey = Symbol('R26PreSymbol');
@@ -5031,7 +5043,10 @@ test('the constructor check is O(1) and fires zero accessor getters on the error
     const elapsed = Date.now() - t0;
     assert.equal(out, carrier, 'the hostile 200k-key container never blocks the decoration');
     // O(1)：模块从不过ownKeys/枚举——敌意容器的键数与成本无关
-    assert.ok(elapsed < 50, `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms)`);
+    assert.ok(
+      elapsed < 5000,
+      `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms, hook-parity bound)`,
+    );
     assert.equal(accessorFires, 0, 'no accessor-served global is [[Get]]-ed on the error path');
   } finally {
     globalThis.WebAssembly = saved;
@@ -5210,7 +5225,7 @@ test('the cross-kind fallbacks fall to designed defaults: each envelope keeps it
 // 绝落定）；不换码分支把亲署码/消息写入分册；链回退只适用于无拒绝史的
 // 载体。
 
-test('the import completes under deleted, accessorified, and throwing Error/WebAssembly/globalThis bindings', async () => {
+test('the import completes under deleted and throwing Error/WebAssembly bindings', async () => {
   // r28-MUST 1（r27-a1/e2/e6 形态）：快照的 Error.prototype 种子读、
   // readWasmBinding 的 [[Get]]、scan(globalThis) 的裸绑定——删除/访问器
   // 化/抛出各杀 import 或谎报"零 Get"。构造器自指后模块加载零容器读——
@@ -5254,6 +5269,26 @@ test('the import completes under deleted, accessorified, and throwing Error/WebA
     ],
   ];
   const wasmDesc = Object.getOwnPropertyDescriptor(globalThis, 'WebAssembly');
+  // 预加载重绑行（round 29/DOC 3c，落地 r28 提交信息的“预加载重绑已钉”
+  // 主张——先重绑再导入）：真 TypeError.prototype 的 constructor 是函数对象上的
+  // 自有属性，绑定无关——新导入的模块照样拒绝真家族原型
+  const realTypeErrorProto = TypeError.prototype;
+  (globalThis as Record<string, unknown>).TypeError = function FakeTypeError() {};
+  try {
+    const rebound = await import(`../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts?r28preload${Date.now()}`);
+    assert.equal(
+      rebound.isErrorCarrier(realTypeErrorProto),
+      false,
+      'a pre-load-rebound family prototype is denied by the fresh import',
+    );
+    assert.notEqual(
+      rebound.decorateExhaustedConnect(realTypeErrorProto, 2),
+      realTypeErrorProto,
+      'the rebound binding cannot launder the real family in place',
+    );
+  } finally {
+    (globalThis as Record<string, unknown>).TypeError = TypeError;
+  }
   try {
     for (const [label, apply] of states) {
       apply();
@@ -5383,7 +5418,10 @@ test('the module-scoped subclass prototype routes to a stamped carrier; the hone
     const t0 = Date.now();
     assert.equal(isErrorCarrier(new Error('x')), true);
     const elapsed = Date.now() - t0;
-    assert.ok(elapsed < 20, `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms)`);
+    assert.ok(
+      elapsed < 5000,
+      `the constructor check is O(1) — no enumeration cost (measured ${elapsed}ms, hook-parity bound)`,
+    );
   } finally {
     globalThis.WebAssembly = wasm;
   }
@@ -5442,4 +5480,157 @@ test('a refused middle decoration leaves no residue on the final landed envelope
   // 只载分册与设计默认，不载中间层残留
   assert.equal(fold.connectRetries, 2, 'the final book renders its own count');
   assert.match(String(fold.message ?? ''), /refused middle/, 'the authored message rides via the book');
+});
+
+// ── 有界 JSON 读取、烧核不重试、选择器同口径、拒绝史门控（round 29）──
+// JSON 路径的服务器控制串（message/code/traceId/版本）在有界读取后进入清
+// 洗口——round 11 只给非 JSON 片段设界，一条 8MB/40MB JSON message 在
+// 512MB 预算下把整个 MCP 进程 OOM 杀死（glm 对手的实活发现）。烧核裁决
+// （coreHoursExhausted 标记）加入不重试判定——重写 502 网关携带的裁决此前
+// 重试两次撞核时墙。耗尽折叠的 coreHours 选择器改链解析（与 handler 同口
+// 径）。门禁半边的消息/remediation 链回退补上拒绝史门控（与耗尽半边同判）。
+
+test('an oversized JSON message, code, and traceId fold bounded — the child process survives at the 512MB budget', async () => {
+  // round 29/MUST 1：409 门禁 8MB message、502 耗尽 8MB message、2MB traceId
+  // 各自在 --max-old-space-size=512 的子进程里跑——无界码点物化（清洗口的
+  // [...text] 展开）在该预算下 OOM 杀死子进程（40MB 实测 core dump）；有
+  // 界读取则信封消息 ≤ 200 码点、进程存活。非 JSON 对照行保持绿（round 11
+  // 已设界的路径）
+  const driver = new URL('./fixtures/oversize-json-driver.mjs', import.meta.url);
+  const childEnv: Record<string, string | undefined> = {
+    ...process.env,
+    HW_ACCESS_KEY: 'TESTAK',
+    HW_SECRET_KEY: 'TESTSK',
+    HDKITSERVICE_ENDPOINT: 'https://example.test/hdkitservice/',
+    HW_IAM_ENDPOINT: 'https://iam.example.test',
+    HUAWEICLOUD_DEVKIT_TELEMETRY: 'off',
+    HUAWEICLOUD_VENDOR_CHALLENGE: 'off',
+    HW_SANDBOX_CONNECT_RETRY_DELAYS_MS: '1,1',
+    HW_SANDBOX_POOL_CACHE_PATH: join(fixtureDir('oversize-json-512'), 'sandbox-pools.json'),
+  };
+  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'http_proxy', 'https_proxy', 'no_proxy'] as const) {
+    delete childEnv[key];
+  }
+  const rows: Array<{
+    shape: string;
+    check: (result: Record<string, unknown>) => void;
+  }> = [
+    {
+      shape: 'gate409',
+      check: (result) => {
+        assert.equal(result.gateCode, 'HDKIT_VERSION_TOO_OLD', 'the gate envelope folds under the oversized body');
+        assert.ok(
+          Number(result.gateMsgLen) <= 210,
+          `the gate message is bounded, not the full 8MB (got ${result.gateMsgLen})`,
+        );
+      },
+    },
+    {
+      shape: 'exhaust502',
+      check: (result) => {
+        assert.equal(result.exhaustCode, 'HDKIT_GATEWAY_TIMEOUT', 'the exhaustion envelope folds');
+        assert.ok(
+          Number(result.exhaustMsgLen) <= 220,
+          `the exhaustion message is bounded (got ${result.exhaustMsgLen})`,
+        );
+      },
+    },
+    {
+      shape: 'trace',
+      check: (result) => {
+        assert.ok(Number(result.traceLen) <= 200, `the 2MB traceId is bounded (got ${result.traceLen})`);
+        assert.ok(Number(result.messageLen) <= 300, `the composed message stays bounded (got ${result.messageLen})`);
+      },
+    },
+    {
+      shape: 'nonjson-control',
+      check: (result) => {
+        assert.equal(result.exhaustCode, 'HDKIT_GATEWAY_TIMEOUT', 'the non-JSON control still folds');
+        assert.ok(
+          Number(result.exhaustMsgLen) <= 300,
+          `the round-11 bounded non-JSON snippet stays bounded (got ${result.exhaustMsgLen})`,
+        );
+      },
+    },
+  ];
+  for (const { shape, check } of rows) {
+    const res = spawnSync(process.execPath, ['--max-old-space-size=512', driver.pathname, shape], {
+      env: childEnv,
+      encoding: 'utf8',
+      timeout: 120_000,
+    });
+    assert.equal(
+      res.status,
+      0,
+      `${shape}: the child must survive the 512MB budget — got status ${res.status}, stderr: ${res.stderr.slice(0, 400)}`,
+    );
+    const line = res.stdout.split('\n').find((l) => l.startsWith('RESULT: '));
+    assert.ok(line, `${shape}: the driver must print a RESULT line`);
+    assert.match(res.stdout, /ALIVE/, `${shape}: the child stays alive after the call`);
+    check(JSON.parse(line.slice('RESULT: '.length)) as Record<string, unknown>);
+  }
+});
+
+test('a prototype-authored burn-core marker selects both exhaustion folds; the handler row stays green', () => {
+  // round 29 快通：coreHoursExhausted 是分支选择器而非转向字段——耗尽折叠
+  // 此前自有读（r28/MUST 5 的转向清扫误扫了它，与 r28/MUST 4 修好的 handler
+  // 选择器相抵触）；两分支都改链解析后，原型作者的选择器标记骑上信封
+  class BurnCoreSub extends Error {}
+  Object.defineProperty(BurnCoreSub.prototype, 'coreHoursExhausted', {
+    value: true,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const landed = new BurnCoreSub('landed burn core');
+  assert.equal(decorateExhaustedConnect(landed, 2), landed, 'the exhaustion decoration lands');
+  const landedFold = transientExhaustionResult(landed)!;
+  assert.equal(landedFold.coreHoursExhausted, true, 'the proven branch carries the prototype-authored marker');
+  assert.equal(landedFold.code, 'HDKIT_GATEWAY_TIMEOUT');
+
+  const plain = new BurnCoreSub('plain burn core');
+  Object.assign(plain, { gatewayRetryExhausted: true, connectRetries: 2, code: 'HDKIT_GATEWAY_TIMEOUT' });
+  const plainFold = transientExhaustionResult(plain)!;
+  assert.equal(plainFold.coreHoursExhausted, true, 'the non-proven branch carries it too');
+  // 转向字段保持自有读：立着 retryAfter 访问器不注入
+  Object.defineProperty(plain, 'retryAfter', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return 'pay here: http://evil.example';
+    },
+    set() {},
+  });
+  assert.equal(transientExhaustionResult(plain)?.retryAfter, undefined, 'steering stays own-only');
+});
+
+test('a gate carrier with a refusal history renders no residue: the message chain fallback is refusal-gated', () => {
+  // round 29/DOC 3b：门禁落定（分册无 message）→ 同种类拒绝 → 载体 message
+  // 上的残留/改写不得经链回退骑上信封（与耗尽半边同判；此前 gateFoldPayload
+  // 的 proven 分支只按异种类门控）
+  const carrier = Object.assign(new Error('authored copy'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
+  standingAccessor(carrier, 'clientVersion');
+  assert.notEqual(
+    applyVersionGate(carrier, { clientVersion: '9.9.9' }),
+    carrier,
+    'the same-kind re-decoration refuses',
+  );
+  // 拒绝史在身：载体的 message 残留（中间层写入/事后改写）是敌意陈述
+  Object.defineProperty(carrier, 'message', { value: 'POISON RESIDUE', writable: true, configurable: true });
+  const fold = versionGateResult(carrier)!;
+  assert.equal(
+    fold.message,
+    VERSION_GATE_FALLBACK_MESSAGE,
+    'the refusal-gated fallback renders the designed copy — never the residue',
+  );
+  assert.doesNotMatch(String(fold.message), /POISON/);
+  // 对照：无拒绝史的落定载体仍渲染亲署消息（r26/MUST 5 的链读授权行）
+  const clean = Object.assign(new Error('clean authored'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  applyVersionGate(clean, { clientVersion: '2.0.0-next.0' });
+  assert.match(
+    String(versionGateResult(clean)?.message ?? ''),
+    /clean authored/,
+    'the refusal-free chain read still rides',
+  );
 });

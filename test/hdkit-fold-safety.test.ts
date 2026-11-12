@@ -291,8 +291,7 @@ test('a standing steering accessor injects nothing at the exhaustion fold, and a
   // 转向读——立着访问器把 pay-here 文案注入真实 connect 出口；装饰时
   // remediation 预读是第五处 [[Get]]——侍服型访问器此前抑制设计写入并把
   // 活计留在返回载体上
-  const { decorateExhaustedConnect, transientExhaustionResult } =
-    await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  const { decorateExhaustedConnect } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
   const steeringHostile = Object.assign(new Error('steering hostile'), {
     gatewayRetryExhausted: true,
     connectRetries: 2,

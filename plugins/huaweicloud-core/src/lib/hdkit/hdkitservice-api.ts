@@ -225,21 +225,35 @@ async function hdkitRequest(
 
   if (!safeRespOk(resp)) {
     const rec = asRecord(data);
+    // 服务器控制串的有界读取（round 29/MUST 1）：JSON 路径的 message/code/
+    // traceId/版本串在进入任何码点物化（cleanMessage/canonCode 的
+    // [...text] 展开）前先截断——round 11 只给非 JSON 片段设界，一条 40MB
+    // JSON message 在 512MB 预算下把整个 MCP 进程 OOM 杀死（8MB 即满载信封，
+    // 409 门禁 1.5s/耗尽 4.4s）。同 200 码点上界、同 round-11 手法：先按
+    // UTF-16 单元截头（slice 不物化全串），再按码点截断；信封恒携带有界副本
+    const boundedServerText = (raw: unknown): string | undefined => {
+      const text = asString(raw);
+      if (text === undefined) return undefined;
+      if (text.length <= 400) return text;
+      return [...text.slice(0, 400)].slice(0, 200).join('');
+    };
     const rawCode = rec.code;
     // 码字段与消息/版本字段同过清洗口（round 7——此前唯一未窄化的边界读）：
     // 纯空白/Cf 码视同缺失，409 走无码门禁折叠，其余状态照旧伪造 HTTP_x；
     // 409 且无码/门禁码即门禁，带其他服务端码的 409 按其自身码处理
-    const serverCode = typeof rawCode === 'string' ? cleanMessage(rawCode) : '';
+    const serverCode = cleanMessage(boundedServerText(rawCode));
     // 状态读过卫队（round 17）：缺读不制造 "HTTP_undefined" 伪码——无状态即
     // 无码，信封裸 message 兜底；409 语义照旧
     const respStatus = safeRespStatus(resp);
     const code =
       serverCode || (respStatus === 409 ? undefined : respStatus !== undefined ? `HTTP_${respStatus}` : undefined);
-    const trace = rec.traceId ? ` [trace: ${asText(rec.traceId)}]` : '';
+    const boundedTrace = boundedServerText(rec.traceId);
+    const trace = boundedTrace ? ` [trace: ${boundedTrace}]` : '';
     // 消息构建口（round 4 + round 5）：空白与纯不可见字符（零宽空格等
     // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'
     // 兜底在所有出口生效
-    const message = cleanMessage(asString(rec.message)) || 'hdkitservice error';
+    const rawBoundedMessage = boundedServerText(rec.message);
+    const message = cleanMessage(rawBoundedMessage) || 'hdkitservice error';
     // 前缀码只用亲署拼写（round 27/SHOULD 5）：canonCode 只作判等口径——原始拼写带
     // 空白渲染字符时，可见字符串渲染洗钱拼写（与 voucher/handler 的渲染谓词同判）；继
     // 入的编码带空白渲染字符即非亲署，前缀省略（消息本身照旧透传）
@@ -247,7 +261,7 @@ async function hdkitRequest(
     let err = new Error(prefixCode ? `${prefixCode}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
     err.code = code;
     if (respStatus !== undefined) err.status = respStatus;
-    err.traceId = rec.traceId;
+    err.traceId = boundedTrace;
     if (canonCode(code) === 'HDKIT_CRED_INVALID') {
       err.remediation = {
         hint: '已保存的凭证(S1)可能已失效。请执行以下操作之一：',
@@ -276,20 +290,31 @@ async function hdkitRequest(
       err.retryAfter = safeRetryAfterHeader(resp) || undefined;
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）。
       // cleanMessage 窄化（round 5）：undefined/空白/纯不可见字符均不覆盖——
-      // 保留构建口的代码前缀兜底
-      err.message = cleanMessage(asString(rec.message)) || err.message;
+      // 保留构建口的代码前缀兜底（message 已有界，round 29/MUST 1；缺失时
+      // 不引入 'hdkitservice error' 兜底——保持原有语义）
+      err.message = cleanMessage(rawBoundedMessage) || err.message;
     }
     // 版本硬门禁（409 HDKIT_VERSION_TOO_OLD）：结构化升级引导，remediation 才能
     // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性。
     // asString 窄化（不用 asText：asText(undefined) === 'undefined' 是真值，
     // `|| undefined` 兜底永不生效，字面量会流进用户可见文案）
+    // 无码 409 的版本搭载（round 29/DOC 3a）：409 即门禁——正文带版本时无论码可用
+    // 与否都把有界版本挂上（服务端确实发送了它们——connect 工具描述“服务端发送时
+    // 携带”的承诺在无码 409 下也成立）；无码门禁折叠据此渲染真实版本而非未知/
+    // 最新版兜底；带其他服务端码的 409 照其自身码处理（round 7 掚辞），挂上的版本不进任何门禁信封
+    if (respStatus === 409) {
+      const clientVersion = boundedServerText(rec.clientVersion);
+      const minVersion = boundedServerText(rec.minVersion);
+      if (clientVersion !== undefined) err.clientVersion = clientVersion;
+      if (minVersion !== undefined) err.minVersion = minVersion;
+    }
     if (canonCode(code) === VERSION_GATE_CODE) {
       // 返回值即生效载体（round 15）：请求层自建载体恒可写、就地装填返回原
       // 对象；拒绝装饰的载体（仅导出面可达）返回装填好的克隆
       err = applyVersionGate(err, {
-        clientVersion: asString(rec.clientVersion),
-        minVersion: asString(rec.minVersion),
-        message: asString(rec.message),
+        clientVersion: boundedServerText(rec.clientVersion),
+        minVersion: boundedServerText(rec.minVersion),
+        message: boundedServerText(rec.message),
       });
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经

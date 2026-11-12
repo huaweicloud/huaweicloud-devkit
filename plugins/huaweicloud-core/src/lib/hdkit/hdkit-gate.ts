@@ -353,6 +353,12 @@ const NON_RETRYABLE_CLIENT_CODES: ReadonlySet<string> = new Set([
 ]);
 
 export function isNonRetryableBusinessError(error: unknown): boolean {
+  // 烧核裁决不重试（round 29/MUST 2）：请求层在重试判定前落 coreHoursExhausted
+  // 标记——裁决永不重试（round 2/3 教义；QUOTA 同类已在码集内）。重写 502 网关携带的烧核
+  // 裁决此前重试两次（发版表 75s + 三次编排请求撞核时墙）；纯 HDKIT_UPSTREAM_ERROR
+  // （无标记）仍按状态裁决（dev 语义，round 2 记录）。标记读经链解析
+  // （chainDataValue——与分支选择器同口径，r28/MUST 4）：请求层恒自有数据
+  if (chainDataValue(error, 'coreHoursExhausted') === true) return true;
   return NON_RETRYABLE_CLIENT_CODES.has(canonCode(safeReadField(error, 'code')));
 }
 
@@ -438,7 +444,7 @@ const UPGRADE_STEPS = [
 // Reflect.ownKeys 先物化+校验完整陷阱数组才轮到本模块的迭代（20 万键 203ms、4M 键 8.1s，每次装饰
 // 两度）。round 28 构造器自指：载体自有 constructor 经 gOPD 读出函数，该函数自有
 // prototype 再经 gOPD 读出——与载体恒等即拒绝（它就是某函数的共享原型）。O(1)、零容器枚举
-// （零成本/零上界/零竞态/零访问器触发/零 import 绑定读），一个构造关扗所有形态：后注册家族
+// （零成本/零上界/零竞态/零访问器触发——裁决面零容器枚举；import 期工具捕获有一次守护内的绑定读链，见 下方错误家族工具注释），一个构造关闭所有形态：后注册家族
 // （原型上的 constructor 不依赖全局绑定）、塞键洗钱、预加载重绑（重绑的 TypeError 仍指真
 // 家族——constructor 是函数对象上的自有属性，绑定无关）。边界明确收窄（round 28 裁定）：
 // 凡自指原型一律拒绝——含模块作用域的用户子类原型（此前为记录边界，现为拒绝——
@@ -450,7 +456,7 @@ const UPGRADE_STEPS = [
 // 构造器自指判定（round 28/MUST 4）：载体自有 constructor 为数据描述符且值为
 // 函数，该函数自有 prototype 为数据描述符且与载体恒等——访问器、非函数、非恒等、
 // 无自有定义一律不认（实例的 constructor 非自有）；每读皆守卫
-// 有界 Error.prototype 可达走查（round 25/MUST 1）：visted 环卫队 + 1024 跳上界，超深同环按不可达；走查抛出（撤销代理）按不可达
+// 有界 Error.prototype 可达走查（round 25/MUST 1）：visited 环卫队 + 1024 跳上界，超深同环按不可达；走查抛出（撤销代理）按不可达
 function chainReachesErrorPrototype(start: object): boolean {
   if (ERROR_PROTOTYPE === undefined) return false;
   try {
@@ -604,10 +610,15 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const foreignExhaustionLanded = provenKindIs(error, 'exhaustion');
     const rawRem =
       provenField(error, 'gate', 'remediation') ??
-      (foreignExhaustionLanded ? undefined : ownDataValue(error, 'remediation'));
+      // 拒绝史门控（round 29/DOC 3b，镜像耗尽半边）：任何拒绝在身即载体未装饰的陈述不可信
+      // ——拒绝中间层的残写不得经回退驱信封（分册或设计兜底）
+      (foreignExhaustionLanded || refusalOf(error) !== undefined ? undefined : ownDataValue(error, 'remediation'));
     const remediation = serializableRemediation(rawRem);
     const rawMessage =
-      provenField(error, 'gate', 'message') ?? (foreignExhaustionLanded ? undefined : chainDataValue(error, 'message'));
+      // 消息链回退仅适用于无拒绝史的载体（round 29/DOC 3b，与耗尽半边
+      // 同判——台账句子如实落地）：拒绝史下的残留/改写不骑信封
+      provenField(error, 'gate', 'message') ??
+      (foreignExhaustionLanded || refusalOf(error) !== undefined ? undefined : chainDataValue(error, 'message'));
     const message = cleanMessage(typeof rawMessage === 'string' ? rawMessage : '') || VERSION_GATE_FALLBACK_MESSAGE;
     return {
       code: VERSION_GATE_CODE,
@@ -804,13 +815,12 @@ function decorateInPlace(
   fields: Array<[string, unknown]>,
   kind?: RefusalKind,
 ): boolean {
-  // 三阶段写入路径（round 28/MUST 2）：读阶段（所有 gOPD 快照——
-  // 敌意窗口全部集中于此）→ 裁决阶段（原子性复检 + 访问器立着预判——
-  // 决不为将被拒的键调用载体 setter，快照早已知其为访问器）→ 写阶段（写入+回读
-  // 验证，尾部再复检——写入本身执行载体 setter，写入时注册的家族使污染超过后续
-  // 拒绝——尾复检看得见并回滚）。round 28/MUST 4 后载体识别是构造器自指（静态、无 TOCTOU
-  // 窗）——真家族原型在任何阶段都被拒；代理洗钱形态（对共享原型的转发代理）
-  // 为记录边界（候选身份识别看不穿转发代理）
+  // 三阶段写入路径（round 28/MUST 2 建、round 29 措辞收口）：读阶段（所有
+  // gOPD 快照——敌意窗口全部集中于此）→ 裁决阶段（原子性复检 + 访问器立着
+  // 预判——决不为将被拒的键调用载体 setter，快照早已知其为访问器）→ 写阶段
+  // （写入+回读验证）。本模块不做写后复检（round 29 如实化：构造器自指是静态裁决，
+  // 真家族原型在任何阶段都被拒，写后无需再看一眼；代理洗钱形态——对共享原型的
+  // 转发代理——为记录边界：候选身份识别看不穿转发代理）
   // —— 读阶段：对全部字段先行 gOPD 快照（每键一次，写入前的免空写判定也用它）
   const snapshots = new Map<string, PropertyDescriptor | undefined>();
   const writtenValues = new Map<string | symbol, unknown>();
@@ -1304,17 +1314,11 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   // 不在此折叠——丢弃载体上的任何陈述都不可信，零读拒绝。异种拒绝不遮
   // 蔽落定耗尽（round 26/MUST 2 对称收口）：落定记录是模块自身的裁决数据
   // ——门禁拒绝不得让已落定的耗尽折叠消失（与 B3 的门禁半边同规则）
+  // 落定记录先于任何拒绝种类（round 28/MUST 3a，镜像门禁半边）：
+  // 同种类拒绝后抑制落定记录——此前 handler 裸抛、voucher 渲染（出口分歧的
+  // 耗尽半边）；无落定分册才按 identity 拒绝（round 19 教义）
   const refusal = refusalOf(error);
-  if (refusal !== undefined) {
-    // 落定记录先于任何拒绝种类（round 28/MUST 3a，镜像门禁半边）：
-    // 同种类拒绝后抑制落定记录——此前 handler 裸抛、voucher 渲染（出口分歧的
-    // 耗尽半边）；无落定分册才按 identity 拒绝（round 19 教义）
-    if (provenKindIs(error, 'exhaustion')) {
-      // fall through to the proven branch
-    } else {
-      return undefined;
-    }
-  }
+  if (refusal !== undefined && !provenKindIs(error, 'exhaustion')) return undefined;
   // 落定登记优先（round 24/MUST 3c）：经 [[Get]] 重读会翻供/删除——按记
   // 录的设计字段铸信封，零载体读
   if (provenKindIs(error, 'exhaustion')) {
@@ -1326,14 +1330,18 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     const rawCode = provenField(error, 'exhaustion', 'code') ?? chainDataValue(error, 'code');
     const rawRetries = provenField(error, 'exhaustion', 'connectRetries') ?? ownDataValue(error, 'connectRetries');
     const rawRetryAfter = provenField(error, 'exhaustion', 'retryAfter') ?? ownDataValue(error, 'retryAfter');
-    const rawCore = provenField(error, 'exhaustion', 'coreHoursExhausted') ?? ownDataValue(error, 'coreHoursExhausted');
+    // 烧核选择器同口径（round 29 快通：与 handler 分支同判，原型作者标记也骑信封；
+    // retryAfter 仍自有读——转向字段出现即敌意）
+    const rawCore =
+      provenField(error, 'exhaustion', 'coreHoursExhausted') ?? chainDataValue(error, 'coreHoursExhausted');
     // 跨种类回退落设计默认（round 27/MUST 3d）：记录未含的字段若属对方种类的装饰面（remediation/
     // message 两种类都装饰），共享对象上的值是对方的——耗尽信封配门禁 hint、门禁信封继承
     // 瞬时消息，混合身份；此时落默认（设计窄时文案/门禁兜底）
     const foreignGateLanded = provenKindIs(error, 'gate');
     const rawRemediation =
       provenField(error, 'exhaustion', 'remediation') ??
-      (foreignGateLanded ? undefined : ownDataValue(error, 'remediation'));
+      // 拒绝史门控对称（round 29）：remiediation 与消息同律——拒绝中间层的残写不骑
+      (foreignGateLanded || refusal !== undefined ? undefined : ownDataValue(error, 'remediation'));
     const remediation = serializableRemediation(rawRemediation);
     const connectRetries =
       typeof rawRetries === 'number' && Number.isSafeInteger(rawRetries) && rawRetries >= 0 ? rawRetries : undefined;
@@ -1357,9 +1365,10 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
   // BigInt 等敌意值不骑信封（MCP 序列化边界，round-15 窄化漏了的最后一个折叠口）
   const gatewayRetryExhausted = safeReadField(error, 'gatewayRetryExhausted');
   if (gatewayRetryExhausted !== true) return undefined;
-  // 转向字段改自有数据描述符读（round 28/MUST 5，第四处也是最后一处 [[Get]]
-  // 转向读）：立着访问器注入 pay-here 文案
-  const coreHoursExhausted = ownDataValue(error, 'coreHoursExhausted');
+  // 转向字段自有读（round 28/MUST 5）；coreHoursExhausted 是烧核分支选择器
+  // 而非转向字段——链解析（round 29 快通，与分支选择器/handler 同口径：
+  // 原型作者标记也骑信封；立着访问器不注入文案，下行窄化保持）
+  const coreHoursExhausted = chainDataValue(error, 'coreHoursExhausted');
   const rawRetryAfter = ownDataValue(error, 'retryAfter');
   const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
   const rawCode = safeReadField(error, 'code');
