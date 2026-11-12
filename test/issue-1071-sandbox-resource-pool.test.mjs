@@ -63,6 +63,14 @@ test('issue-1071: final-report lifetime wording', () => {
   assert.match(skill, /不要.*迁移到持久沙箱或 OBS/s);
   assert.match(skill, /persistent.*只播报沙箱生命周期/s);
   assert.match(skill, /隧道将在会话结束后失效，请勿分享/);
+  assert.match(skill, /例外：隧道无法持久/);
+
+  assert.doesNotMatch(resourcePool, /TTL 播报为补偿方案/);
+  assert.doesNotMatch(resourcePool, /生命周期数值是\*\*播报口径\*\*/);
+  assert.doesNotMatch(resourcePool, /生命周期提示只在两个时机播报/);
+  assert.doesNotMatch(resourcePool, /仍可播报/);
+  assert.match(resourcePool, /ephemeral 不播报/);
+  assert.match(resourcePool, /persistent 只播报沙箱生命周期/);
 
   const exposeDesc = tools.slice(tools.indexOf("'huaweicloud_sandbox_expose_tunnel'"));
   const exposeDescBlock = exposeDesc.slice(0, exposeDesc.indexOf('inputSchema'));

@@ -28,10 +28,10 @@
 | 持久闲置策略    | 闲置 1h 自动关机（实例与数据盘保留）           | 平台侧        |
 | 持久闲置回收    | 保留期上限 7 天（原 14 天口径作废）            | 平台侧        |
 | 活性检测        | 当前仅 connect 单信号（三信号为后续诉求 G2）   | 现状          |
-| 删除/关机前通知 | 不支持（G6 诉求中）→ 客户端 TTL 播报为补偿方案 | 现状          |
+| 删除/关机前通知 | 不支持（G6 诉求中）→ 不播报 TTL；仅内部可见 | 现状          |
 | 两池实际差异    | 仅 EVS 32GiB 数据盘（非持久池无 disks 字段）   | ✅ 已实证     |
 
-> 生命周期数值是**播报口径**，由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` / `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` / `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` / `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以**分钟**为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机/删除策略由平台资源池执行，hdkitservice 不控制。
+> 生命周期数值是**内部选池/诊断口径**，不向开发者播报：ephemeral 不播报；persistent 只播报沙箱生命周期，不播报隧道有效期/自动续期。由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` / `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` / `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` / `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以**分钟**为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机/删除策略由平台资源池执行，hdkitservice 不控制。
 
 ## 容量规划（原始申请口径）
 
@@ -60,8 +60,8 @@
 ## 客户端行为（本插件）
 
 - `sandbox_connect` 传 `pool_type`；非法值本地即报错（不发无效请求）；未传由服务端默认 ephemeral
-- 生命周期提示只在两个时机播报：connect（会话首次连接，或复用实例被唤醒 `started=true`）与 `expose_tunnel`（交付地址时，返回 `urlLifetimeHint` + `warnings`）；其余 exec/upload/deploy 工具不逐次播报
-- connect 返回值富化 `pool` 块（数值取服务端回显，缺失时用默认口径）；生命周期口径按 workspace 缓存到 `~/.config/huaweicloud/sandbox-pools.json`（0600，7 天过期），进程重启后仍可播报
+- 生命周期数据只在内部使用：connect（会话首次连接，或复用实例被唤醒 `started=true`）与 `expose_tunnel`（交付地址时）会返回 `sandboxLifetime` / `urlLifetimeHint` / `warnings` 供内部诊断；ephemeral 不向开发者播报，persistent 只播报沙箱生命周期（不含隧道有效期/自动续期）；其余 exec/upload/deploy 工具不逐次播报
+- connect 返回值富化 `pool` 块（数值取服务端回显，缺失时用默认口径）；生命周期口径按 workspace 缓存到 `~/.config/huaweicloud/sandbox-pools.json`（0600，7 天过期），仅内部使用（进程重启后仍可用于选池/诊断，不向开发者播报）
 - 429：配额满给 `remediation` 引导；容量不足只透传服务端最终文案 + `retryAfter`
 - 模板 ID 仅由服务端 `POOL_TEMPLATE_*` 权威维护；客户端不再支持 `HW_POOL_TEMPLATE_*` 钉扎或显式 template_id
 
