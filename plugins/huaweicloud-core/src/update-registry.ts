@@ -4,7 +4,7 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 
 import { fetchWithProxy } from './proxy/proxy-agent.ts';
 import { asText } from './lib/as-text.ts';
@@ -79,7 +79,9 @@ function resolveUserconfig(env: NodeJS.ProcessEnv = process.env): string | undef
     .at(-1);
   const raw = entry?.[1];
   if (raw === undefined || raw === '') return undefined;
-  return expandTilde(raw.trim());
+  // npm applies envReplace to every config value before path resolution, so a
+  // CI env block (`${CI_PROJECT_DIR}/.npmrc`) reaches the same file.
+  return expandTilde(envReplace(raw.trim(), env));
 }
 
 function expandTilde(value: string): string {
@@ -87,27 +89,68 @@ function expandTilde(value: string): string {
   return value.startsWith('~/') ? join(homedir(), value.slice(2)) : value;
 }
 
-function packageJsonHasWorkspaces(path: string): boolean {
+function workspaceGlobs(value: unknown): string[] {
+  const declared = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).packages)
+      ? ((value as Record<string, unknown>).packages as unknown[])
+      : [];
+  return declared.filter((entry): entry is string => typeof entry === 'string');
+}
+
+function packageJsonWorkspaces(path: string): string[] | undefined {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
-    const workspaces =
-      parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>).workspaces : undefined;
-    return Array.isArray(workspaces) || (Boolean(workspaces) && typeof workspaces === 'object');
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    const globs = workspaceGlobs((parsed as Record<string, unknown>).workspaces);
+    return globs.length ? globs : undefined;
   } catch {
-    return false;
+    return undefined;
   }
 }
 
+// A workspace glob (`packages/*`, `packages/**`, an exact relative path) as the
+// membership test npm's mapWorkspaces makes. `*` stays inside one segment.
+function workspaceGlobRegExp(glob: string): RegExp {
+  const source = glob
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*\/?/g, '.*')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]');
+  return new RegExp(`^${source}$`);
+}
+
+function isWorkspaceMember(root: string, member: string, globs: string[]): boolean {
+  const memberPath = relative(root, member).split(sep).join('/');
+  if (!memberPath || memberPath.startsWith('../') || memberPath === '..') return false;
+  let included = false;
+  for (const raw of globs) {
+    const negated = /^!/.test(raw);
+    const pattern = raw
+      .replace(/^!+/, '')
+      .replace(/^\.?\/+/, '')
+      .replace(/\/+$/, '');
+    if (!pattern) continue;
+    if (workspaceGlobRegExp(pattern).test(memberPath)) included = !negated;
+  }
+  return included;
+}
+
 function localPrefix(start: string = process.cwd()): string {
-  // npm's localPrefix follows the workspace root: the nearest package.json is
-  // the fallback, but an ancestor declaring `workspaces` wins.
+  // npm's localPrefix starts at the nearest package dir and moves to an
+  // ancestor only when that ancestor's workspace map actually contains the
+  // package dir (mapWorkspaces membership, not the mere presence of the field).
   let nearest: string | undefined;
   let current = start;
   for (;;) {
     const manifest = join(current, 'package.json');
     if (existsSync(manifest)) {
-      nearest ??= current;
-      if (packageJsonHasWorkspaces(manifest)) return current;
+      if (!nearest) {
+        nearest = current;
+      } else {
+        const globs = packageJsonWorkspaces(manifest);
+        if (globs && isWorkspaceMember(current, nearest, globs)) return current;
+      }
     }
     const parent = dirname(current);
     if (parent === current) return nearest ?? start;
@@ -116,13 +159,14 @@ function localPrefix(start: string = process.cwd()): string {
 }
 
 // Env spellings for npm's own config keys are case-insensitive; npm takes the
-// last one when both are exported.
+// last non-empty one when both are exported (an empty value is skipped, not
+// terminal).
 function envValue(env: NodeJS.ProcessEnv, name: string): string | undefined {
-  const entry = Object.entries(env)
+  const values = Object.entries(env)
     .filter(([key]) => key.toUpperCase() === name)
-    .at(-1);
-  const raw = entry?.[1];
-  return raw !== undefined ? raw.trim() : undefined;
+    .map(([, value]) => value?.trim())
+    .filter((value): value is string => Boolean(value));
+  return values.at(-1);
 }
 
 function globalconfigPath(env: NodeJS.ProcessEnv): string {
@@ -136,6 +180,30 @@ function stripIniQuotes(value: string): string {
   const trimmed = value.trim();
   const quoted = /^(['"])([\s\S]*)\1$/.exec(trimmed);
   return quoted ? quoted[2]! : trimmed;
+}
+
+// npm's ini value rule: a quoted value keeps its comment characters; an
+// unquoted value ends at the first unescaped `;` or `#` (with or without
+// whitespace) and backslash escapes those three characters.
+function parseIniValue(raw: string): string {
+  const trimmed = raw.trim();
+  if (/^(['"])[\s\S]*\1$/.test(trimmed)) return stripIniQuotes(trimmed);
+  let out = '';
+  let escaped = false;
+  for (const char of trimmed) {
+    if (escaped) {
+      out += ';#\\'.includes(char) ? char : `\\${char}`;
+      escaped = false;
+    } else if (char === ';' || char === '#') {
+      break;
+    } else if (char === '\\') {
+      escaped = true;
+    } else {
+      out += char;
+    }
+  }
+  if (escaped) out += '\\';
+  return out.trim();
 }
 
 // npm's env-replace: `\${...}` stays literal, `${VAR}` interpolates the exact
@@ -175,7 +243,7 @@ function parseNpmrc(text: string, env: NodeJS.ProcessEnv): Map<string, string> {
     if (!trimmed || trimmed.startsWith(';') || trimmed.startsWith('#')) continue;
     const match = /^([^=]+?)\s*=\s*(.*)$/.exec(trimmed);
     if (!match) continue;
-    const value = stripIniQuotes(match[2]!.replace(/\s;.*$/, ''));
+    const value = parseIniValue(match[2]!);
     entries.set(match[1]!.trim(), envReplace(value, env));
   }
   return entries;
@@ -219,9 +287,11 @@ function basicHeader(username: string | undefined, password: string | undefined)
 // The pre-flight auth header for a registry, resolved the way npm resolves it:
 // walk every nerf-dart path level through to the host root (both the slash and
 // slash-less keys), and take the first token/basic entry found across the
-// config cascade. An explicit empty token at a higher layer suppresses the
-// lower layers (npm's merged key is empty and sends nothing) and is reported as
-// `null` so the env-token fallback does not resurrect it.
+// config cascade. A falsy candidate is skipped, never terminal (npm's hasAuth
+// tests truthiness and keeps walking), while an explicitly empty key's layer
+// suppresses the lower layers; when the whole walk finds no auth and some level
+// named an empty auth key, `null` tells the caller not to resurrect the env
+// token.
 function npmrcAuthHeader(registry: string, env: NodeJS.ProcessEnv = process.env): string | undefined | null {
   let url: URL;
   try {
@@ -241,35 +311,37 @@ function npmrcAuthHeader(registry: string, env: NodeJS.ProcessEnv = process.env)
     current = next;
   }
   const layers = configLayers(env);
-  // `undefined` means no layer names the key; an empty string is an explicit
-  // suppression.
+  // `undefined` means no layer names the key; an empty string is that layer's
+  // explicit (falsy) value.
   const lookup = (key: string): string | undefined => {
     for (const layer of layers) {
       if (layer.has(key)) return layer.get(key);
     }
     return undefined;
   };
+  let sawExplicitEmpty = false;
   for (const level of levels) {
     const prefix = `${host}${level}`;
     const token = lookup(`${prefix}/:_authToken`) ?? lookup(`${prefix}:_authToken`);
-    if (token !== undefined) return token ? (token.startsWith('Bearer ') ? token : `Bearer ${token}`) : null;
+    if (token) return token.startsWith('Bearer ') ? token : `Bearer ${token}`;
+    if (token === '') sawExplicitEmpty = true;
     const auth = lookup(`${prefix}/:_auth`) ?? lookup(`${prefix}:_auth`);
-    if (auth !== undefined) return auth ? `Basic ${auth}` : null;
+    if (auth) return `Basic ${auth}`;
+    if (auth === '') sawExplicitEmpty = true;
     const username = lookup(`${prefix}/:username`);
     const password = lookup(`${prefix}/:_password`);
-    if (username !== undefined && password !== undefined) {
-      if (!username && !password) return null;
+    if (username && password) {
       const basic = basicHeader(username, password);
       if (basic) return basic;
     }
+    if (username !== undefined && password !== undefined && (!username || !password)) sawExplicitEmpty = true;
   }
-  return undefined;
+  return sawExplicitEmpty ? null : undefined;
 }
 
-// The pre-flight follows redirects the way npm re-authenticates them: the same
-// Authorization header travels to the redirect target (the configured mirror's
-// gateway is the realistic shape). This deliberately re-sends the bearer
-// cross-origin, matching npm's registry client.
+// The pre-flight follows redirects the way npm's registry client does: the same
+// Authorization header travels to a same-host target leg (port or scheme
+// changes re-authenticate), and a hostname change drops it.
 async function fetchFollowingAuth(url: string, init: RequestInit) {
   let current = url;
   const originalHost = new URL(url).hostname;
@@ -295,40 +367,42 @@ export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: nu
   // usable and a whitespace-only value is unset, so the pre-flight and the
   // child pin cannot disagree.
   let configured = resolveRegistryOverride();
-  // A registry override may carry URL credentials; npm sends them as Basic, so
-  // the pre-flight strips them from the request URL and attaches the header.
+  // A registry override may carry URL credentials; npm only falls back to them
+  // when the config cascade yields no header, and it sends the raw
+  // (percent-encoded) userinfo as Basic.
   let urlAuth: string | undefined;
   if (configured) {
     try {
       const parsed = new URL(configured);
       if (parsed.username || parsed.password) {
-        const username = decodeURIComponent(parsed.username);
-        const password = decodeURIComponent(parsed.password);
-        urlAuth = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
+        urlAuth = `Basic ${Buffer.from(`${parsed.username}:${parsed.password}`).toString('base64')}`;
         parsed.username = '';
         parsed.password = '';
-        configured = parsed.toString().replace(/\/+$/, '');
+        configured = parsed.toString();
       }
     } catch {
       // a malformed URL degrades like npm's own registry parse
     }
   }
   let registry = 'https://registry.npmjs.org';
-  if (configured) registry = configured;
+  // The request URL is built by appending `/-/package/…`, so a trailing slash
+  // on the override would produce a doubled path.
+  if (configured) registry = configured.replace(/\/+$/, '');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   // The pre-flight query needs the same mirror auth the child npm gets: a
   // token-guarded private mirror 401s the packument without it, aborting the
   // act before the spawn. The token is read for this request only; the env
   // shaping of the child is a separate concern.
-  // npm's own order: the userconfig's named channel first (an .npmrc value may
-  // interpolate NODE_AUTH_TOKEN even when a stale NPM_TOKEN is exported), then
-  // the env tokens, then no auth.
+  // npm's own order: the config cascade's named channel first (an .npmrc value
+  // may interpolate NODE_AUTH_TOKEN even when a stale NPM_TOKEN is exported),
+  // then the URL userinfo, then the env tokens, then no auth.
   const token = resolveNpmAuthToken();
   const configAuth = npmrcAuthHeader(registry);
-  // `null` is an explicit empty token at a higher config layer: no fallback.
-  const authorization =
-    urlAuth ?? (configAuth === null ? undefined : (configAuth ?? (token ? `Bearer ${token}` : undefined)));
+  // `null` is an explicitly empty config token: no env fallback (npm's merged
+  // value is empty and it sends nothing); URL userinfo still applies, as it
+  // does for npm when no Authorization header was set.
+  const authorization = configAuth ?? urlAuth ?? (configAuth === null || !token ? undefined : `Bearer ${token}`);
   const init: RequestInit = {
     signal: controller.signal,
     ...(authorization ? { headers: { authorization } } : {}),

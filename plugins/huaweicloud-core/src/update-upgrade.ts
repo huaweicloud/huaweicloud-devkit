@@ -553,22 +553,25 @@ function npmRunIdentity(line: string): string | undefined {
 
 // A line that *announces* a recovery is evidence the step succeeded, not a
 // dying word. A token at the sentence end is the canonical announcement
-// ("... failed once, recovered"); a continuation clause qualifies only when the
-// sentence before the token carries no failure marker, so "failed to recover
-// session keystore" and "could not recover, continuing" stay diagnostics.
+// ("... failed once, recovered"); the sentence's final clause wins over an
+// earlier failure mention ("first attempt failed, recovered, fine"), while a
+// governing verb/negation ("failed to recover", "could not yet recover")
+// keeps the line a diagnostic.
 const RECOVER_TOKEN = /\brecover(?:ed|ing|s|y|ies)?\b/i;
 const RECOVER_CONTINUATION =
   /^\s*(?:[.!?]?\s*$|,\s*(?:continuing\b|anyway\b|complete\b|succeeded\b|ok\b|fine\b).*|\s+(?:complete|completely|fully|succeeded|ok|fine)\b.*)$/i;
 // The governing verb/negation before the token turns a sentence into a failure
 // statement ("failed to recover", "not yet recovered", "no recovery"), even
-// when the recover token is the sentence's last word. Adverbs may sit between
-// the negation and the verb.
+// when the recover token is the sentence's last word. Adverbs may sit before or
+// after `to` ("failed to fully recover", "unable to completely recover").
 const RECOVER_GOVERNING =
-  /(?:failed|failure|refused|rejected|unable|could not|cannot|can't|not|never|no)\s+(?:(?:yet|still|even|ever|really|quite|fully|actually|entirely)\s+)*(?:to\s+)?$/i;
+  /(?:failed|failure|refused|rejected|unable|could not|cannot|can't|not|never|no)\s+(?:(?:yet|still|even|ever|really|quite|fully|actually|entirely|completely|eventually)\s+)*(?:to\s+(?:(?:yet|still|even|ever|really|quite|fully|actually|entirely|completely|eventually)\s+)*)?$/i;
 // A recovered step's continuation notices ("falling back to the bundled
-// toolchain", "retrying from snapshot") are announcements only in those full
-// forms; bare "retrying"/"falling back" may be a failing step's dying words.
-const CONTINUATION_ANNOUNCEMENT = /\b(?:falling back to|retrying from)\b/i;
+// toolchain", "retrying from snapshot", "using cached copy of previous build",
+// "best-effort rebuild only", "degraded mode active") are announcements only in
+// those full forms; bare "retrying"/"falling back" may be a failing step's
+// dying words.
+const CONTINUATION_ANNOUNCEMENT = /\b(?:falling back to|retrying from|using cached|best-effort|degraded)\b/i;
 function isRecoveryAnnouncement(line: string): boolean {
   const payload = npmPayload(line);
   // A command/echo line names a script, not prose: "sh -c node recover" is not
@@ -675,16 +678,20 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
       (entry) =>
         entry.index < failing.index && lineRank(entry.line) === 3 && npmRunIdentity(entry.line) === failingIdentity,
     );
-    // The pair's own echo is the one followed by its rank-0 dying words; under
-    // concurrency the other same-identity echo belongs to the sibling's run.
+    // The pair's own echo is the one followed by its failure-shaped rank-0
+    // dying words (a FATAL/Error header). An errno diagnostic follower (for
+    // example "EACCES: permission denied, using user cache instead") can be a
+    // successful sibling's recovered evidence, so it never reserves an echo;
+    // under concurrency the other same-identity echo belongs to the sibling's
+    // run.
     const strongWordEcho = identityEchoes
       .filter((echo) => {
         const next = codelessEntries.find((entry) => entry.index > echo.index && entry.index < failing.index);
         return Boolean(
           next &&
           lineRank(next.line) === 0 &&
+          ERROR_NAME.test(npmPayload(next.line)) &&
           !isNpmScriptResult(next.line) &&
-          lineRank(next.line) !== 3 &&
           !isRecoveryAnnouncement(next.line),
         );
       })

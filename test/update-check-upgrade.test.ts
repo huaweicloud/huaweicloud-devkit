@@ -258,7 +258,6 @@ function tokenServer(
   seen: Array<string | undefined>,
   requested: string[],
   latest: string,
-  host = '127.0.0.1',
 ): ReturnType<typeof createServer> {
   const accepted = new Set(acceptedHeaders);
   return createServer((req, res) => {
@@ -271,7 +270,6 @@ function tokenServer(
     }
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ latest, next: null }));
-    void host;
   });
 }
 
@@ -329,16 +327,16 @@ async function withTokenRegistry(
 }
 
 async function withRedirector(
-  options: { targetHost?: string; locationHost?: string },
+  options: { targetHost?: string },
   run: (stub: { registry: string; port: number; seen: Array<string | undefined> }) => Promise<void>,
 ): Promise<void> {
   const seen: Array<string | undefined> = [];
   const target = tokenServer(['Bearer fixture-registry-token'], seen, [], '9.9.9');
-  const targetPort = await listenEphemeral(target, options.targetHost ?? '127.0.0.1');
-  const locationHost = options.locationHost ?? options.targetHost ?? '127.0.0.1';
+  const targetHost = options.targetHost ?? '127.0.0.1';
+  const targetPort = await listenEphemeral(target, targetHost);
   const redirector = createServer((req, res) => {
     res.statusCode = 302;
-    res.setHeader('location', `http://${locationHost}:${targetPort}${req.url ?? ''}`);
+    res.setHeader('location', `http://${targetHost}:${targetPort}${req.url ?? ''}`);
     res.end();
   });
   const port = await listenEphemeral(redirector);
@@ -2750,7 +2748,14 @@ test('upgradePackage 失败原因: 裸 retrying/falling back 不再是公告', a
 });
 
 test('upgradePackage 失败原因: 否定与动词之间允许副词', async () => {
-  for (const line of ['not yet recovered', 'could not yet recover']) {
+  for (const line of [
+    'not yet recovered',
+    'could not yet recover',
+    'failed to fully recover',
+    'unable to completely recover',
+    'snapshot restore failed to fully recover',
+    'could not eventually recover',
+  ]) {
     const stderr = [
       'npm info run pkg@1.0.0 postinstall node_modules/pkg node post.js',
       line,
@@ -2759,6 +2764,81 @@ test('upgradePackage 失败原因: 否定与动词之间允许副词', async () 
     const reason = await reasonFor(stderr, 7);
     assert.equal(reason, line, line);
   }
+});
+
+test('upgradePackage 失败原因: cached/degraded 习语不再顶替真实失败', async () => {
+  // info: the idiom is a recovered step's fallback notice, not the dying words.
+  const infoPair = [
+    'npm info run pkg@1.0.0 postinstall node_modules/pkg node post.js',
+    'sh: 1: node-gyp: not found',
+    'Using cached copy of previous build',
+    'npm info run pkg@1.0.0 postinstall { code: 7, signal: null }',
+  ].join('\n');
+  assert.equal(await reasonFor(infoPair, 7), 'sh: 1: node-gyp: not found');
+
+  // default with a nested block: the block's echo, not the idiom glued to the code.
+  const nested = [
+    'npm error code 7',
+    'npm error path /home/op/proj/node_modules/pkg',
+    'npm error command failed',
+    'npm error command sh -c node post.js',
+    'npm error A complete log of this run can be found in: /home/op/logs/x-debug-0.log',
+    'Using cached copy of previous build',
+    'degraded mode active',
+  ].join('\n');
+  assert.equal(await reasonFor(nested, 7), 'npm error code 7 npm error command sh -c node post.js');
+
+  // the default-level sweep: a recovered step's failure-worded idiom loses, and
+  // the plain rank-2 form already loses without the announcement rule.
+  for (const line of [
+    'prebuilt binary download failed, using cached copy',
+    'download failed, using cached tarball',
+    'FATAL: cache read failed, best-effort rebuild only',
+    'registry degraded, best-effort build used',
+  ]) {
+    const stderr = [
+      'npm info run aa-step@1.0.0 postinstall node_modules/aa-step node run.js',
+      line,
+      'npm info run zz-fail@1.0.0 postinstall node_modules/zz-fail node run.js',
+      "cannot find module './build-config'",
+      'npm error code 1',
+      'npm error command failed',
+      'npm error command sh -c node run.js',
+    ].join('\n');
+    assert.equal(await reasonFor(stderr, 1), "cannot find module './build-config'", line);
+  }
+
+  // control: an idiom before the true failure never wins.
+  const before = [
+    'npm info run pkg@1.0.0 postinstall node_modules/pkg node post.js',
+    'Using cached copy of prebuilt binary from ~/.cache/node-gyp',
+    'best-effort native binding enabled',
+    'degraded mode: wasm fallback active',
+    'native build failed: gyp exited with code 1',
+    'npm info run pkg@1.0.0 postinstall { code: 7, signal: null }',
+  ].join('\n');
+  assert.equal(await reasonFor(before, 7), 'native build failed: gyp exited with code 1');
+});
+
+test('upgradePackage 失败原因: 三run 兄弟的诊断行不夺取失败对的回显', async () => {
+  const reason = await reasonFor(failureStderr('real-three-run-diagnostic-sibling.err'), 7);
+  assert.equal(reason, 'FATAL: build lock held by concurrent run');
+});
+
+test('upgradePackage 失败原因: 三run 兄弟的公告行不夺取失败对的回显', async () => {
+  const reason = await reasonFor(failureStderr('real-three-run-announcement-sibling.err'), 7);
+  assert.equal(reason, 'FATAL: build lock held by concurrent run');
+});
+
+test('upgradePackage 失败原因: 恢复窗口里的 echo 不冒充无词失败', async () => {
+  const stderr = [
+    'npm info run pkgA@1.0.0 postinstall node_modules/pkgA node ok.js',
+    'npm info run pkgX@1.0.0 postinstall node_modules/pkgX node x.js',
+    'npm info run pkgA@1.0.0 postinstall { code: 0, signal: null }',
+    'npm error code 7',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'npm error code 7');
 });
 
 test('upgradePackage 失败原因: 命令基线为 recover 的回显不被当作公告', async () => {
@@ -3061,7 +3141,7 @@ test('upgradePackage 升级子进程: npmrc 的插值/引号/斜杠省略/命名
 });
 
 test('upgradePackage 升级子进程: 跨主机名校验的重定向不再携带认证', async () => {
-  await withRedirector({ targetHost: '127.0.0.2', locationHost: '127.0.0.2' }, async ({ registry, port, seen }) => {
+  await withRedirector({ targetHost: '127.0.0.2' }, async ({ registry, port, seen }) => {
     await withTokenUserconfig(registry, port, 'devkit-npmrc-crosshost-', async () => {
       const spawnFn: UpgradeSpawnFn = () => ({ status: 0 });
       const result = await upgradePackage({ target: 'opencode' }, { spawnFn, currentVersion: '0.0.1' });
@@ -3077,9 +3157,11 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
   const accepted = new Set([
     'Bearer fixture-registry-token',
     `Basic ${Buffer.from('ci-user:fixture-registry-token').toString('base64')}`,
+    `Basic ${Buffer.from('ci-user:ci%40pass').toString('base64')}`,
   ]);
   const seen: Array<string | undefined> = [];
-  const server = tokenServer(accepted, seen, [], '9.9.9');
+  const requested: string[] = [];
+  const server = tokenServer(accepted, seen, requested, '9.9.9');
   const port = await listenEphemeral(server);
   const registry = `http://127.0.0.1:${port}`;
   const host = `//127.0.0.1:${port}`;
@@ -3108,6 +3190,7 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         'npm_config_globalconfig',
         'HOME',
         'CI_TOKEN',
+        'HOMEDIR',
         'NEXUS_TOKEN',
         'nexus_token',
         `npm_config_${host}/:_authToken`,
@@ -3268,12 +3351,108 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         delete process.env.NPM_CONFIG_PREFIX;
         rmSync(join(prefix, 'etc', 'npmrc'));
 
-        // Registry URL credentials become Basic auth.
-        process.env.HUAWEICLOUD_NPM_REGISTRY = `http://ci-user:fixture-registry-token@${registry.replace(/^https?:\/\//, '')}`;
+        // The config token outranks URL credentials (npm sets the Authorization
+        // header from config and only falls back to the URL userinfo).
+        const bareRegistry = registry.replace(/^https?:\/\//, '');
+        process.env.HUAWEICLOUD_NPM_REGISTRY = `http://ci-user:fixture-registry-token@${bareRegistry}`;
         process.env.NPM_CONFIG_USERCONFIG = userconfig;
-        assert.equal((await attempt()).result.success, true, 'registry URL credentials are sent as Basic');
-        assert.match(seen.at(-1) ?? '', /^Basic /);
+        assert.equal((await attempt()).result.success, true, 'the config token wins over URL credentials');
+        assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+
+        // With no config token the URL userinfo is npm's Basic fallback, sent raw.
+        writeFileSync(userconfig, `registry=${registry}/\n`);
+        process.env.HUAWEICLOUD_NPM_REGISTRY = `http://ci-user:ci%40pass@${bareRegistry}`;
+        assert.equal((await attempt()).result.success, true, 'the raw URL userinfo authenticates');
+        assert.equal(seen.at(-1), `Basic ${Buffer.from('ci-user:ci%40pass').toString('base64')}`);
+
+        // An empty deeper nerf level is skipped; the host-root token still serves.
+        const deepRegistry = `${registry}/a/b`;
+        process.env.HUAWEICLOUD_NPM_REGISTRY = deepRegistry;
+        writeFileSync(
+          userconfig,
+          `registry=${deepRegistry}/\n${host}/a/b/:_authToken=\n${host}/:_authToken=fixture-registry-token\n`,
+        );
+        assert.equal((await attempt()).result.success, true, 'an empty deeper token does not abort the walk');
+        assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+        writeFileSync(
+          userconfig,
+          `registry=${deepRegistry}/\n${host}/a/b:_auth=\n${host}/:_authToken=fixture-registry-token\n`,
+        );
+        assert.equal((await attempt()).result.success, true, 'an empty deeper _auth does not abort the walk');
+
+        // At one level an empty token skips to the Basic pair, not to suppression.
         process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
+        process.chdir(project);
+        writeFileSync(projectNpmrc, `registry=${registry}/\n${host}/:_authToken=\n`);
+        writeFileSync(
+          userconfig,
+          `registry=${registry}/\n${host}/:username=ci-user\n${host}/:_password=${Buffer.from('fixture-registry-token').toString('base64')}\n`,
+        );
+        assert.equal((await attempt()).result.success, true, 'an empty token beside username/password falls to Basic');
+        assert.match(seen.at(-1) ?? '', /^Basic /);
+        rmSync(projectNpmrc);
+        process.chdir(savedCwd);
+
+        // A non-member package dir keeps its own .npmrc; only mapped members move
+        // to the workspace root.
+        const nonMemberRoot = join(base, 'mono-nonmember');
+        const memberA = join(nonMemberRoot, 'packages', 'a');
+        const memberB = join(nonMemberRoot, 'packages', 'b');
+        mkdirSync(memberA, { recursive: true });
+        mkdirSync(memberB, { recursive: true });
+        writeFileSync(
+          join(nonMemberRoot, 'package.json'),
+          JSON.stringify({ name: 'root', workspaces: ['packages/a'] }),
+        );
+        writeFileSync(join(memberA, 'package.json'), JSON.stringify({ name: 'a' }));
+        writeFileSync(join(memberB, 'package.json'), JSON.stringify({ name: 'b' }));
+        writeFileSync(join(nonMemberRoot, '.npmrc'), `registry=${registry}/\n${host}/:_authToken=root-only-token\n`);
+        writeFileSync(join(memberB, '.npmrc'), line('${CI_TOKEN}'));
+        process.chdir(memberB);
+        assert.equal((await attempt()).result.success, true, 'a non-member package reads its own .npmrc');
+        assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+        rmSync(join(memberB, '.npmrc'));
+        writeFileSync(join(nonMemberRoot, 'package.json'), JSON.stringify({ name: 'root', workspaces: ['other'] }));
+        writeFileSync(join(memberB, '.npmrc'), line('${CI_TOKEN}'));
+        assert.equal((await attempt()).result.success, true, 'a workspace map with no member keeps the package dir');
+        process.chdir(savedCwd);
+        rmSync(nonMemberRoot, { recursive: true, force: true });
+
+        // A trailing slash on the override is stripped before the dist-tags path.
+        process.env.HUAWEICLOUD_NPM_REGISTRY = `${registry}/`;
+        writeFileSync(userconfig, line('${CI_TOKEN}'));
+        process.env.NPM_CONFIG_USERCONFIG = userconfig;
+        assert.equal((await attempt()).result.success, true, 'a trailing-slash registry is normalized');
+        assert.equal(requested.at(-1), '/-/package/huaweicloud-devkit/dist-tags');
+        process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
+
+        // npm's ini breaks at an unescaped `#` or `;`, with or without a space.
+        for (const suffix of [' # ci note', '#ci-note', ';ci-note']) {
+          writeFileSync(userconfig, `registry=${registry}/\n${host}/:_authToken=fixture-registry-token${suffix}\n`);
+          assert.equal((await attempt()).result.success, true, `an inline comment is stripped: ${suffix}`);
+          assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+        }
+
+        // envReplace applies to the userconfig path before resolution.
+        writeFileSync(homeNpmrc, line('${CI_TOKEN}'));
+        process.env.HOMEDIR = home;
+        process.env.NPM_CONFIG_USERCONFIG = '${HOMEDIR}/.npmrc';
+        assert.equal((await attempt()).result.success, true, '${VAR} in the userconfig path is expanded');
+        process.env.NPM_CONFIG_USERCONFIG = userconfig;
+
+        // An empty last spelling does not shadow a set sibling.
+        writeFileSync(join(prefix, 'etc', 'npmrc'), line('${CI_TOKEN}'));
+        process.env.npm_config_prefix = prefix;
+        process.env.NPM_CONFIG_PREFIX = '';
+        assert.equal((await attempt()).result.success, true, 'an empty last prefix spelling is skipped');
+
+        // The uppercase globalconfig channel is honored too.
+        process.env.NPM_CONFIG_GLOBALCONFIG = join(prefix, 'etc', 'npmrc');
+        delete process.env.npm_config_prefix;
+        delete process.env.NPM_CONFIG_PREFIX;
+        assert.equal((await attempt()).result.success, true, 'the uppercase globalconfig channel is honored');
+        delete process.env.NPM_CONFIG_GLOBALCONFIG;
+        rmSync(join(prefix, 'etc', 'npmrc'));
       },
     );
   } finally {
