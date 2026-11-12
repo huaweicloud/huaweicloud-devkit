@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.0-next.3 (2026-11-12)
+
+- feat(approval): `DEVKIT_APPROVAL_MODE=ask` — the harness client's permission prompt on `huaweicloud_run_approved_command` becomes the user's confirmation (no terminal approve trip, no token UUID in context); plan mints no token, run needs only `approvedByUser: true`, and the run tool declares `_meta` `anthropic/requiresUserInteraction` for Claude Code's per-call prompt. Token mode stays the default and the fallback; the stateless remote transport forces token mode.
+- feat(install): the OpenCode installer on opencode >= 2.0 writes the ASK pair — a `permissions` array entry with effect `ask` on `huaweicloud-devkit_huaweicloud_run_approved_command` plus `DEVKIT_APPROVAL_MODE=ask` in the mcp entry environment (neither half below 2.0); doctor fails every mixed state, including the "Allow always" rule that removes the gate; skills and docs teach both modes.
+
 ## 2.0.0-next.2 (2026-11-12)
 
 - fix(ux-report): close D-02/D-03/D-04 from the AX v1.1 x v2 report
