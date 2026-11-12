@@ -70,10 +70,36 @@ function resolveNpmAuthToken(env: NodeJS.ProcessEnv = process.env): string | und
   return resolveEnvSpelling(env, 'NPM_TOKEN') ?? resolveEnvSpelling(env, 'NODE_AUTH_TOKEN');
 }
 
+// npm reads the userconfig by a case-insensitive `npm_config_userconfig` key and
+// takes the value verbatim (a whitespace-only value is a literal path, not
+// "unset"); a padded key is not a name npm can see.
+function resolveUserconfig(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  // npm takes the last matching spelling when both cases are exported.
+  const entry = Object.entries(env)
+    .filter(([key]) => key.toUpperCase() === 'NPM_CONFIG_USERCONFIG')
+    .at(-1);
+  return entry?.[1];
+}
+
+function stripIniQuotes(value: string): string {
+  const trimmed = value.trim();
+  const quoted = /^(['"])([\s\S]*)\1$/.exec(trimmed);
+  return quoted ? quoted[2]! : trimmed;
+}
+
+// npm's documented envReplace: `${VAR}` in an .npmrc value reads the process
+// environment (an unset name keeps the literal, as the child npm then rejects).
+function envReplace(value: string, env: NodeJS.ProcessEnv): string {
+  return value.replace(/\$\{([^}]+)\}/g, (whole, name: string) => {
+    const resolved = env[name] ?? env[name.toLowerCase()] ?? env[name.toUpperCase()];
+    return resolved ?? whole;
+  });
+}
+
 // npm's mainstream auth channel is the userconfig `_authToken` for the registry
-// host (`npm login` writes it). The pre-flight reads it when the env channels are
-// unset, resolving the userconfig the way npm does; with no token anywhere the
-// query degrades as before.
+// host (`npm login` writes it). Values get npm's quote stripping and `${VAR}`
+// interpolation, both nerf-key forms are accepted, and the bare unscoped
+// `_authToken` is skipped because npm 11 rejects it.
 function npmrcAuthToken(registry: string): string | undefined {
   let url: URL;
   try {
@@ -81,7 +107,7 @@ function npmrcAuthToken(registry: string): string | undefined {
   } catch {
     return undefined;
   }
-  const userconfig = resolveEnvSpelling(process.env, 'NPM_CONFIG_USERCONFIG') || join(homedir(), '.npmrc');
+  const userconfig = resolveUserconfig() ?? join(homedir(), '.npmrc');
   let raw: string;
   try {
     raw = readFileSync(userconfig, 'utf8');
@@ -95,14 +121,11 @@ function npmrcAuthToken(registry: string): string | undefined {
   }
   const path = url.pathname.replace(/\/+$/, '');
   const host = `//${url.host}`;
-  const candidates = [`${host}${path}/:_authToken`, `${host}/:_authToken`];
+  const candidates = [`${host}${path}/:_authToken`, `${host}/:_authToken`, `${host}:_authToken`];
   for (const key of candidates) {
-    const value = entries.get(key)?.trim();
-    if (value) return value;
+    const value = entries.get(key);
+    if (value) return envReplace(stripIniQuotes(value), process.env).trim() || undefined;
   }
-  // A bare `_authToken` is not npm's channel: npm 11 rejects it with
-  // ERR_INVALID_AUTH rather than sending it, so the pre-flight must not forward
-  // a legacy token to an arbitrary override host.
   return undefined;
 }
 
@@ -121,7 +144,10 @@ export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: nu
   // token-guarded private mirror 401s the packument without it, aborting the
   // act before the spawn. The token is read for this request only; the env
   // shaping of the child is a separate concern.
-  const token = resolveNpmAuthToken() || npmrcAuthToken(registry);
+  // npm's own order: the userconfig's named channel first (an .npmrc value may
+  // interpolate NODE_AUTH_TOKEN even when a stale NPM_TOKEN is exported), then
+  // the env tokens, then no auth.
+  const token = npmrcAuthToken(registry) ?? resolveNpmAuthToken();
   const init: RequestInit = token ? { headers: { authorization: `Bearer ${token}` } } : {};
   try {
     const resp = await fetchWithProxy(`${registry}/-/package/huaweicloud-devkit/dist-tags`, init);

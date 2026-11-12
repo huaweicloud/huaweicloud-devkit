@@ -1,0 +1,31 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:37253/npm 35ms
+npm http fetch GET 404 http://127.0.0.1:37253/npm 8ms
+npm http fetch GET 200 http://127.0.0.1:37253/pkg-alpha 20ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:37253/pkg-gamma 7ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:37253/pkg-gamma/-/pkg-gamma-1.0.0.tgz 25ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:37253/pkg-alpha/-/pkg-alpha-1.0.0.tgz 24ms (cache miss)
+npm info run pkg-alpha@1.0.0 postinstall node_modules/pkg-alpha node a.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:37253/pkg-beta 51ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:37253/pkg-beta/-/pkg-beta-1.0.0.tgz 22ms (cache miss)
+npm info run pkg-beta@1.0.0 postinstall node_modules/pkg-beta node b.js
+pkg-alpha sidecar: transient build error, recovered
+npm info run pkg-alpha@1.0.0 postinstall { code: 0, signal: null }
+npm info run pkg-gamma@1.0.0 postinstall node_modules/pkg-gamma node g.js
+gamma postinstall: engine mismatch, aborting
+npm info run pkg-gamma@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/cap-F2/project/node_modules/pkg-gamma
+npm error command failed
+npm error command sh -c node g.js
+npm error A complete log of this run can be found in: /home/op/cap-F2/npm-cache/_logs/2026-11-12T16_07_09_053Z-debug-0.log
+outer probe failed hard, giving up
+npm info run pkg-beta@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/cap-F2/project/node_modules/pkg-alpha/node_modules/pkg-beta
+npm error command failed
+npm error command sh -c node b.js
+npm error A complete log of this run can be found in: /home/op/cap-F2/npm-cache/_logs/2026-11-12T16_07_09_673Z-debug-0.log
