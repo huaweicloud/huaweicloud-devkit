@@ -624,9 +624,8 @@ test('the relay detector is kind-symmetric: an exhaustion-registered carrier wit
   });
   const decorated = decorateExhaustedConnect(carrier, 2);
   assert.notEqual(decorated, carrier, 'the marker accessor earns the exhaustion registration');
-  // 门禁对照用的立着 clientVersion 访问器：门禁装饰的键挣得拒绝才并入
-  // gate 种类（成功落定只解除或走克隆、不加种类——round 22 教义）
-  standingAccessor(carrier, 'clientVersion');
+  // 读数口径（round 25/MUST 4 后）：装饰口 rawCode 读 + 中继配额分支一次安
+  // 全读（门禁先裁后，未登记的耗尽载体才落进配额比较）——检测器本身零读
   const readsAfterDecoration = codeReads;
   const f = await failingGateThrowing(carrier);
   assert.equal(f.error_code, undefined, 'the relay exit never mints the gate off an exhaustion registration');
@@ -636,23 +635,25 @@ test('the relay detector is kind-symmetric: an exhaustion-registered carrier wit
     'the credential path takes over — the misroute is dead',
   );
   assert.doesNotMatch(f.error ?? '', /插件版本过旧/, 'the gate fallback message never surfaces');
-  // 读数口径（round 25/MUST 4 后）：装饰口 rawCode 读 + 中继配额分支一次安
-  // 全读（门禁先裁后，未登记的耗尽载体才落进配额比较）——检测器本身零读
   assert.equal(
     codeReads,
     readsAfterDecoration + 1,
     'the detector itself reads no code — only the quota pre-check does',
   );
-  // 对照：门禁装饰经 clientVersion 立着访问器挣得拒绝——两登记并存
-  // （kinds 含 gate），检测器随即零读铸造
-  const gateDecorated = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
-  assert.notEqual(gateDecorated, carrier, 'the standing clientVersion accessor earns the gate registration');
-  const f2 = await failingGateThrowing(carrier);
-  assert.equal(f2.error_code, 'HDKIT_VERSION_TOO_OLD', 'the gate kind added — the registration alone decides');
+  // 门禁对照（round 27/MUST 3b 后形态更替）：异种类拒绝的载体在首次写入前就走克隆——
+  // 同一载体上的门禁装饰不再注册 gate 种类（拒绝+拒绝并存不可达）。对照换落定+拒绝形态：
+  // 耗尽落定后门禁装饰经立着访问器挣得拒绝——种类并入拒绝记录，检测器随即零读铸造
+  const twin = Object.assign(new Error('gate refusal twin'), { connectRetries: 1 });
+  assert.equal(decorateExhaustedConnect(twin, 2), twin, 'the twin exhaustion decoration lands in place');
+  standingAccessor(twin, 'clientVersion');
+  const gateDecorated = applyVersionGate(twin, { clientVersion: '2.0.0-next.0' });
+  assert.notEqual(gateDecorated, twin, 'the standing clientVersion accessor earns the gate registration');
+  const f2 = await failingGateThrowing(twin);
+  assert.equal(f2.error_code, 'HDKIT_VERSION_TOO_OLD', 'the gate kind on the twin — the registration alone decides');
   assert.equal(
     codeReads,
     readsAfterDecoration + 1,
-    'the registered verdict fires before the quota branch — no code read at all',
+    'the registered verdict fires before the quota branch — the twin adds no code read',
   );
 });
 

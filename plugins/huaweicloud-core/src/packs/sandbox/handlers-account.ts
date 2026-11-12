@@ -2,6 +2,7 @@ import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/sess
 import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../../lib/hdkit/hdkitservice-api.ts';
 import {
   canonCode,
+  chainDataValue,
   cleanMessage,
   ownDataValue,
   safeMessageText,
@@ -92,7 +93,7 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     // 转向字段改自有数据描述符读（round 26/MUST 3）：[[Get]] 读让立着访问
     // 器注入任意文案（pay-here URL）；与门禁/耗尽折叠的 ownDataValue 同标
     // 准（round 25 漏掉了本折叠）
-    const coreHoursExhausted = ownDataValue(error, 'coreHoursExhausted');
+    const coreHoursExhausted = chainDataValue(error, 'coreHoursExhausted');
     if (
       businessCode === 'HDKIT_QUOTA_EXCEEDED' ||
       businessCode === 'HDKIT_CAPACITY_INSUFFICIENT' ||
@@ -103,7 +104,7 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
       // 不骑信封（MCP 序列化边界，与门禁/耗尽折叠同口径）
       const rawRetryAfter = ownDataValue(error, 'retryAfter');
       const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
-      const remediation = serializableRemediation(safeReadField(error, 'remediation'));
+      const remediation = serializableRemediation(ownDataValue(error, 'remediation'));
       // 空白/缺失消息走构建口同款代码前缀兜底（round 20）：其余折叠口从不
       // 渲染空 message，此处对齐——纯不可见消息按缺失
       const fallbackMessage = renderCode ? `${renderCode}: hdkitservice error` : 'hdkitservice error';

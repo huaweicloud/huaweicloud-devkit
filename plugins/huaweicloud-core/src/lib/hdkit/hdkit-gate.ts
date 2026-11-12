@@ -78,7 +78,24 @@ function recordProvenLanding(target: object, fields: Array<[string, unknown]>, k
     provenLandings.set(target, record);
   }
   record.kinds.add(kind);
-  const fieldsForKind = record.byKind.get(kind) ?? new Map<string, unknown>();
+  // 本种类分册是本轮装饰的快照（round 27/MUST 3c）：同种类再装饰时整体替换而非合并——
+  // 合并会留下第一响应的字段，信封把装饰 #1 的消息缝到装饰 #2 的版本上（跨种类
+  // 混合的同种类形态）。替换前清除前一分册中本轮不再覆盖的键（尽力删除其
+  // 落盘写入——本轮未写的字段不应留下前一轮的残写；删除被拒/冻结即吞，与回滚
+  // 同律）
+  const priorBook = record.byKind.get(kind);
+  if (priorBook !== undefined) {
+    const covered = new Set(fields.map(([key]) => key));
+    for (const key of priorBook.keys()) {
+      if (covered.has(key)) continue;
+      try {
+        delete (target as Record<string, unknown>)[key];
+      } catch {
+        // 尽力而为——冻结/不可配置键即残写（已记录边界）
+      }
+    }
+  }
+  const fieldsForKind = new Map<string, unknown>();
   for (const [key, value] of fields) fieldsForKind.set(key, snapshotProvenValue(value));
   record.byKind.set(kind, fieldsForKind);
 }
@@ -113,7 +130,7 @@ export function ownDataValue(error: unknown, key: string): unknown {
 // 则按缺失（[[Get]] 零调用——翻供不波及）；全链无定义/超深/敌意走查按缺
 // 失。转向字段不适用此读（round 25/MUST 3：409 载体的 retryAfter 出现即
 // 敌意，只认自有数据）
-function chainDataValue(error: unknown, key: string): unknown {
+export function chainDataValue(error: unknown, key: string): unknown {
   if (typeof error !== 'object' || error === null) return undefined;
   try {
     let level: object | null = error;
@@ -382,24 +399,112 @@ const UPGRADE_STEPS = [
 // 安全（visited 集合——getPrototypeOf 陷阱的 2-环既不抛也不终止）；走查
 // 抛出（撤销代理）按非载体。谎报 null 原型（r3 形态）在链上看不到
 // Error.prototype → 换新载体——继承访问器对无从隐藏
-// 共享原型拒绝（round 24 建八名单、round 25 改结构化快照、round 26 改逐
-// 调用裁决）：就地装填共享原型即进程级污染（该家族每个实例都折家族信
-// 封）。加载期快照三缝实测：[[Get]] 读 .prototype 会触发/引爆/谎报（模块
-// 加载图上的敌意代码、抛出即拒绝启动、谎报让真家族溜出点名）；快照无法
-// 见后注册的家族；描述符-only 对访问器暴露的家族失明（Node 的惰性全局即
-// 访问器）。逐调用规则：候选载体若与任一"当前可从 globalThis/WebAssembly
-// 枚举到的函数"的 .prototype 恒等即拒绝——枚举与取值全在守卫内，值经描
-// 述符读（数据属性零 [[Get]]）或经 [[Get]]（访问器暴露的家族只有调用可
-// 见——只在装饰/拒绝路径上触发，惰性 getter 的实验警告不落在 boot 图），
-// 函数的 .prototype 经 gOPD 与 [[Get]] 双读（gOPD 过代理见目标的诚实槽——
-// 谎报陷阱的构造器形态；[[Get]] 见运行时视图——改写绑定/后注册的谎报形
-// 态），任一视图命中即拒绝。模块作用域的用户子类原型不在枚举范围——保
+// 共享原型拒绝（round 24 名单 → round 25 加载快照 → round 26 逐调用 →
+// round 27 混合）：就地装填共享原型即进程级污染（该家族每个实例都折家族
+// 信封）。round 26 的纯逐调用枚举三缝实测：(a) 裸 WebAssembly 绑定在参数
+// 位置求值——delete globalThis.WebAssembly（可写可配置绑定，任何已加载脚
+// 本可动）后每个结构化折叠都变 ReferenceError（门禁与耗尽信封端到端断，
+// 相对 round 25 快照的回归）；(b) ownKeys 抛出的容器整个丢失（fail-open，
+// 共享 RuntimeError 原型照旧就地装填）；(c) 枚举无界且带副作用——20 万键
+// 敌意容器每次错误事件 420ms，且对每个访问器全局做 [[Get]]（localStorage
+// 的实验警告按错误事件打印——round 25 从加载期移除的惰性 getter 危害被
+// round 26 搬回折叠路径）。混合裁决：(1) 加载期恒等快照——模块加载时枚举
+// 一次引擎错误家族原型（容器值经描述符、.prototype 经 gOPD——零 [[Get]]，
+// import 期零陷阱触发；每读皆守卫，抛出跳过该家族、绝不中止加载），恒等
+// 入私有 Set，加载后的重绑定/删除动不了它（TypeError 重绑定洗不掉真家
+// 族；WebAssembly 绑定被删/抛出时快照仍拒绝其家族——fail-closed）；
+// (2) 逐调用补充枚举——只为加载后注册的用户家族：容器值经描述符（访问器
+// 条目跳过，记录边界：Node 的惰性访问器全局非错误家族，访问器暴露的自
+// 定义错误家族是刻意构造形态），键数上界 1024（跳数教义同款——敌意 20 万
+// 键容器有界），容器引用每次调用在守卫内取一次（删除/抛出按无补充枚
+// 举）；函数的 .prototype 经 gOPD 与 [[Get]] 双读（gOPD 过代理见目标诚实
+// 槽——可写槽谎报；[[Get]] 见运行时 served 视图——后注册/改写绑定，守卫
+// 内），任一视图命中即拒绝。模块作用域的用户子类原型不在枚举范围——保
 // 持记录边界（污染面仅调用方自己的类实例）。原生 instanceof 不作判据：
 // TypeError.prototype instanceof Error 实测为 true，且 OrdinaryHasInstance
 // 无界走查、只靠 V8 内部 RangeError 兜底——界不归本模块定
 
-// 有界 Error.prototype 可达走查（round 25/MUST 1 去重）：共享原型判定与
-// isErrorCarrier 白名单共用——visited+1024 跳上界，超深同环按不可达；走查
+const PROTOTYPE_ENUM_KEY_CAP = 1024;
+
+// 函数 .prototype 的 gOPD 视图（零 [[Get]]——import 期零陷阱；过代理见目
+// 标的诚实槽——可写槽谎报形态）；抛出/无定义/非对象按无视图
+function prototypeSlotView(fn: object): unknown {
+  try {
+    const proto: unknown = Object.getOwnPropertyDescriptor(fn, 'prototype')?.value;
+    return typeof proto === 'object' && proto !== null ? proto : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// 函数 .prototype 的 [[Get]] served 视图（守卫内——抛出按无视图；运行时改
+// 写的绑定/后注册家族只有此视图可见）
+function prototypeServedView(fn: object): unknown {
+  try {
+    const proto: unknown = (fn as { prototype?: unknown }).prototype;
+    return typeof proto === 'object' && proto !== null ? proto : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// WebAssembly 绑定的守卫读取（round 27/MUST 1a）：绑定可删除/可重绑——
+// 裸标识符在删除后变 ReferenceError（两个结构化折叠端到端断）。每次调用
+// 在守卫内经 globalThis 取一次；抛出/缺失按无补充枚举（加载快照兜底其家
+// 族——fail-closed）
+function readWasmBinding(): unknown {
+  try {
+    return (globalThis as { WebAssembly?: unknown }).WebAssembly;
+  } catch {
+    return undefined;
+  }
+}
+
+// 加载期引擎家族恒等快照：每读皆守卫（抛出跳过该家族、绝不中止加载），
+// 键数上界同逐调用
+const ENGINE_FAMILY_PROTOTYPES = collectEngineFamilyPrototypes();
+
+function collectEngineFamilyPrototypes(): Set<unknown> {
+  const found = new Set<unknown>([Error.prototype]);
+  forEachEnumerableFunction(globalThis, (fn) => {
+    const proto = prototypeSlotView(fn);
+    if (proto !== undefined) found.add(proto);
+  });
+  forEachEnumerableFunction(readWasmBinding(), (fn) => {
+    const proto = prototypeSlotView(fn);
+    if (proto !== undefined) found.add(proto);
+  });
+  return found;
+}
+
+// 容器的可枚举函数遍历（round 27/MUST 1 去重）：键数上界、每读皆守卫、
+// 值经描述符（访问器条目自然跳过）——加载快照与逐调用补充共用
+function forEachEnumerableFunction(container: unknown, visit: (fn: object) => void): void {
+  try {
+    if (typeof container !== 'object' || container === null) return;
+    let keys: Array<string | symbol>;
+    try {
+      keys = Reflect.ownKeys(container);
+    } catch {
+      return;
+    }
+    let scanned = 0;
+    for (const key of keys) {
+      if (++scanned > PROTOTYPE_ENUM_KEY_CAP) return;
+      let desc: PropertyDescriptor | undefined;
+      try {
+        desc = Object.getOwnPropertyDescriptor(container, key);
+      } catch {
+        continue;
+      }
+      const value: unknown = desc?.value;
+      if (typeof value !== 'function') continue;
+      visit(value);
+    }
+  } catch {
+    // 容器级守卫——按无枚举处理
+  }
+}
 // 抛出（撤销代理）按不可达
 function chainReachesErrorPrototype(start: object): boolean {
   try {
@@ -421,65 +526,28 @@ function chainReachesErrorPrototype(start: object): boolean {
 }
 
 function currentPrototypeSlots(): unknown[] {
+  // 逐调用补充枚举（round 27 收口）：只为加载后注册的用户家族（加载期恒等
+  // 已在快照里，重绑定洗不掉）；键数上界、守卫内容器引用、描述符取值
   const slots: unknown[] = [];
-  const readPrototypeViews = (fn: object): void => {
-    for (const read of [
-      (): unknown => {
-        const desc = Object.getOwnPropertyDescriptor(fn, 'prototype');
-        return desc?.value;
-      },
-      (): unknown => (fn as { prototype?: unknown }).prototype,
-    ] as const) {
-      try {
-        const view = read();
+  for (const container of [globalThis, readWasmBinding()]) {
+    forEachEnumerableFunction(container, (fn) => {
+      for (const view of [prototypeSlotView(fn), prototypeServedView(fn)]) {
         if (view !== undefined) slots.push(view);
-      } catch {
-        // 抛出型视图——按不可见
       }
-    }
-  };
-  const scan = (container: unknown): void => {
-    try {
-      if (typeof container !== 'object' || container === null) return;
-      for (const key of Reflect.ownKeys(container)) {
-        let value: unknown;
-        let desc: PropertyDescriptor | undefined;
-        try {
-          desc = Object.getOwnPropertyDescriptor(container, key);
-        } catch {
-          continue;
-        }
-        if (desc === undefined) continue;
-        if (desc.get !== undefined || desc.set !== undefined) {
-          // 访问器暴露的全局：调用才可见（守卫内）——惰性实验 getter 的警
-          // 告只出现在装饰/拒绝路径
-          try {
-            value = (container as Record<string | symbol, unknown>)[key];
-          } catch {
-            continue;
-          }
-        } else {
-          value = desc.value;
-        }
-        if (typeof value !== 'function') continue;
-        readPrototypeViews(value);
-      }
-    } catch {
-      // 可替换绑定上的 ownKeys 抛出——按无枚举
-    }
-  };
-  scan(globalThis);
-  scan(WebAssembly);
+    });
+  }
   return slots;
 }
 
 export function isErrorCarrier(error: unknown): boolean {
   if (error === null) return false;
   if (typeof error !== 'object') return false;
-  // 链可达先行（廉价）：不可达即非载体，不进入枚举
+  // 加载快照恒等先行（廉价、重绑定免疫）
+  if (ENGINE_FAMILY_PROTOTYPES.has(error)) return false;
+  // 链可达先行（廉价）：不可达即非载体，不进入逐调用枚举
   if (!chainReachesErrorPrototype(error)) return false;
-  // 逐调用的共享原型裁决（round 26/MUST 1）：候选是任一枚举函数当前的
-  // .prototype 即拒绝（恒等比较，取值已在守卫内完成）
+  // 逐调用补充裁决（round 26 建、round 27 收口）：候选是任一当前枚举函数
+  // 的 .prototype（gOPD 或 served 视图）即拒绝——只为加载后注册的家族
   for (const slot of currentPrototypeSlots()) {
     if (slot === error) return false;
   }
@@ -592,9 +660,15 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const rawMv = provenField(error, 'gate', 'minVersion');
     const clientVersion = typeof rawCv === 'string' ? cleanMessage(rawCv) || undefined : undefined;
     const minVersion = typeof rawMv === 'string' ? cleanMessage(rawMv) || undefined : undefined;
-    const rawRem = provenField(error, 'gate', 'remediation') ?? ownDataValue(error, 'remediation');
+    // 跠种类同判（round 27/MUST 3d）：耗尽落定在身时，remediation/message 的共享值是耗尽的——门禁信封
+    // 落门禁自己的指引，继承瞬时消息即混合
+    const foreignExhaustionLanded = provenKindIs(error, 'exhaustion');
+    const rawRem =
+      provenField(error, 'gate', 'remediation') ??
+      (foreignExhaustionLanded ? undefined : ownDataValue(error, 'remediation'));
     const remediation = serializableRemediation(rawRem);
-    const rawMessage = provenField(error, 'gate', 'message') ?? chainDataValue(error, 'message');
+    const rawMessage =
+      provenField(error, 'gate', 'message') ?? (foreignExhaustionLanded ? undefined : chainDataValue(error, 'message'));
     const message = cleanMessage(typeof rawMessage === 'string' ? rawMessage : '') || VERSION_GATE_FALLBACK_MESSAGE;
     return {
       code: VERSION_GATE_CODE,
@@ -616,7 +690,9 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     // remediation 深验（round 16 建、round 17 修嵌套上下文+快照往返、
     // round 18 快照形态窄化）：嵌套 BigInt/循环引用/判别器/有状态换值/
     // 非对象 JSON 视图同样兜底，共用 serializableRemediation
-    const remediation = serializableRemediation(safeReadField(error, 'remediation'));
+    // remediation 改自有数据描述符读（round 27/SHOULD 5）：[[Get]] 让立着访问器注入
+    // 钓鱼指引（转向字段同口径的最后一处）；访问器按缺失，深验拒绝即铸造
+    const remediation = serializableRemediation(ownDataValue(error, 'remediation'));
     return {
       code: VERSION_GATE_CODE,
       message: versionGateMessage(error),
@@ -658,9 +734,10 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
   // 登记也铸门禁信封——错误标签的 remediation 混用
   const refusal = refusalOf(error);
   if (refusal !== undefined) {
-    if (refusal.kinds.has('gate')) return registeredGateEnvelope();
-    // 异种拒绝不遮蔽落定门禁（round 26/MUST 2 B3）：落定记录是模块自身的
-    // 裁决数据——继续走载荷路径；无落定门禁才按 identity 拒绝
+    // 落定记录先于任何拒绝种类（round 26/MUST 2 B3 建、round 27/MUST 3a
+    // 同种类半边）：落定记录是模块自身的裁决——同一载体在任何两个出口渲染同一信封。此前同种类拒绝后
+    // handler 铸未知版、voucher 铸落定版——两张矛盾信封（B3 为异种类修的出口分歧在同种类上复现）；
+    // 无落定分册才按拒绝种类（gate→未知版铸造；异种类→identity 拒绝）
     if (provenKindIs(error, 'gate')) {
       return {
         ok: false,
@@ -668,6 +745,7 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
         ...steeringOfGateCarrier(error),
       };
     }
+    if (refusal.kinds.has('gate')) return registeredGateEnvelope();
     return undefined;
   }
   if (!isVersionGateError(error)) return undefined;
@@ -787,6 +865,20 @@ function decorateInPlace(
   fields: Array<[string, unknown]>,
   kind?: RefusalKind,
 ): boolean {
+  // 写前原子性复检（round 27/MUST 2）：预检与首次写入之间有读窗——payload 字段/载体
+  // remediation 的 [[Get]] 执行攻击者代码，窗口内把家族注册上 globalThis 即击败逐调用样本
+  // （写入落在共享原型上=全家族污染）。写前复检：读窗已过、写未落——
+  // 第二个样本看得见窗口内的注册；拒绝时返回 false，调用方走克隆（家族不变形）
+  if (!isErrorCarrier(target)) return false;
+  // 异种类拒绝的载体不做半提交（round 27/MUST 3b）：写前裁决——prior 拒绝存在
+  // 且 kinds 不含本装饰器（lift 窗口不可能开）→ 直接返回 false，字段不落原件。此前字段物理落地、
+  // 无落定记录、每个出口按 identity 拒绝原件——丢弃载体带着整套无出口渲染的装饰（round 10
+  // 半装饰教义）；同种类且 lift 可行的组合照旧写入（落定/解除的正常路径）
+  const priorRefusal = refusalOf(target);
+  if (priorRefusal !== undefined) {
+    const liftPossible = priorRefusal.kinds.size === 1 && kind !== undefined && priorRefusal.kinds.has(kind);
+    if (!liftPossible) return false;
+  }
   const applied: Array<string> = [];
   // 快照改走 own 描述符（round 16）：has/get 都过代理陷阱——撒谎的 has+get
   // 视图让"恢复"变成重新种标记或用谎言覆盖原码（round-15 只关了被拒键，
@@ -1252,11 +1344,18 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     const rawRetries = provenField(error, 'exhaustion', 'connectRetries') ?? ownDataValue(error, 'connectRetries');
     const rawRetryAfter = provenField(error, 'exhaustion', 'retryAfter') ?? ownDataValue(error, 'retryAfter');
     const rawCore = provenField(error, 'exhaustion', 'coreHoursExhausted') ?? ownDataValue(error, 'coreHoursExhausted');
-    const rawRemediation = provenField(error, 'exhaustion', 'remediation') ?? ownDataValue(error, 'remediation');
+    // 跨种类回退落设计默认（round 27/MUST 3d）：记录未含的字段若属对方种类的装饰面（remediation/
+    // message 两种类都装饰），共享对象上的值是对方的——耗尽信封配门禁 hint、门禁信封继承
+    // 瞬时消息，混合身份；此时落默认（设计窄时文案/门禁兜底）
+    const foreignGateLanded = provenKindIs(error, 'gate');
+    const rawRemediation =
+      provenField(error, 'exhaustion', 'remediation') ??
+      (foreignGateLanded ? undefined : ownDataValue(error, 'remediation'));
     const remediation = serializableRemediation(rawRemediation);
     const connectRetries =
       typeof rawRetries === 'number' && Number.isSafeInteger(rawRetries) && rawRetries >= 0 ? rawRetries : undefined;
-    const rawMessage = provenField(error, 'exhaustion', 'message') ?? chainDataValue(error, 'message');
+    const rawMessage =
+      provenField(error, 'exhaustion', 'message') ?? (foreignGateLanded ? undefined : chainDataValue(error, 'message'));
     return {
       ok: false,
       ...(typeof rawCode === 'string' ? { code: rawCode } : {}),
@@ -1286,8 +1385,9 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     typeof rawRetries === 'number' && Number.isSafeInteger(rawRetries) && rawRetries >= 0 ? rawRetries : undefined;
   // remediation 深验拒绝即铸造（round 17 / MUST 4）：耗尽信封的指引不得少于
   // 空载体——丢弃敌意值换来"零引导"是倒退；设计瞬时文案统一铸造
+  // remediation 改自有数据描述符读（round 27/SHOULD 5）：立着访问器不再注入；按缺失即铸造设计文案
   const remediation =
-    serializableRemediation(safeReadField(error, 'remediation')) ?? designedTransientRemediation(connectRetries);
+    serializableRemediation(ownDataValue(error, 'remediation')) ?? designedTransientRemediation(connectRetries);
   return {
     ok: false,
     ...(code !== undefined ? { code } : {}),

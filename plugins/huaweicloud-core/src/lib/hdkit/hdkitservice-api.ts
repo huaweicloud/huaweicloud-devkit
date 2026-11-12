@@ -14,6 +14,7 @@ import {
   gateFoldPayload,
   isErrorCarrier,
   isGatewayTransient,
+  ownDataValue,
   isNonRetryableBusinessError,
   isVersionGateError,
   safeMessageText,
@@ -239,7 +240,11 @@ async function hdkitRequest(
     // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'
     // 兜底在所有出口生效
     const message = cleanMessage(asString(rec.message)) || 'hdkitservice error';
-    let err = new Error(code ? `${code}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
+    // 前缀码只用亲署拼写（round 27/SHOULD 5）：canonCode 只作判等口径——原始拼写带
+    // 空白渲染字符时，可见字符串渲染洗钱拼写（与 voucher/handler 的渲染谓词同判）；继
+    // 入的编码带空白渲染字符即非亲署，前缀省略（消息本身照旧透传）
+    const prefixCode = typeof code === 'string' && code !== '' && canonCode(code) === code ? code : undefined;
+    let err = new Error(prefixCode ? `${prefixCode}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
     err.code = code;
     if (respStatus !== undefined) err.status = respStatus;
     err.traceId = rec.traceId;
@@ -433,7 +438,8 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   const rawCode = safeReadField(error, 'code');
   const rawClientVersion = safeReadField(error, 'clientVersion');
   const rawMinVersion = safeReadField(error, 'minVersion');
-  const remediation = serializableRemediation(safeReadField(error, 'remediation'));
+  // remediation 改自有数据描述符读（round 27/SHOULD 5）：立着访问器不再注入钓鱼指引
+  const remediation = serializableRemediation(ownDataValue(error, 'remediation'));
   // 非门禁信封同过清洗口（round 24/SHOULD 6 建、round 25 收口洗钱缝）：纯
   // 空白/纯不可见版本字段视同缺失（round 6 出口信条）；码按拼写口径——服
   // 务端亲署码不含空白渲染字符，原始拼写带空白渲染字符即非亲署：渲染其清
