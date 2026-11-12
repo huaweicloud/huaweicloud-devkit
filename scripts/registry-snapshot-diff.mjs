@@ -114,6 +114,20 @@ const DELIBERATE_ADDITIONS = [
   },
 ];
 
+// Deliberate optionals: properties the legacy snapshot carries as REQUIRED
+// that a reviewed change made mode-conditional. Same reasoning as
+// DELIBERATE_ADDITIONS — the fixture is history, not a live render — but the
+// drift direction is required→optional, so an entry is consulted by the
+// missingRequired check only; every other check (types, enums, nested
+// shapes, newly-required keys) still applies to the property in full.
+const DELIBERATE_OPTIONALS = [
+  {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'approvalToken',
+    reason: 'DEVKIT_APPROVAL_MODE=ask makes the harness client the confirmation, so the token becomes mode-conditional',
+  },
+];
+
 function normalize(node) {
   if (Array.isArray(node)) return node.map((item) => normalize(item));
   if (node !== null && typeof node === 'object') {
@@ -164,7 +178,11 @@ for (const tool of TOOL_DEFINITIONS) {
 
   const legacyRequired = requiredSet(normLegacy);
   const renderedRequired = requiredSet(normRendered);
-  const missingRequired = [...legacyRequired].filter((k) => !renderedRequired.has(k));
+  const missingRequired = [...legacyRequired].filter(
+    (k) =>
+      !renderedRequired.has(k) &&
+      !DELIBERATE_OPTIONALS.some((optional) => optional.tool === tool.name && optional.property === k),
+  );
   if (missingRequired.length) {
     failures.push(`${tool.name}: required keys missing in zod render: ${missingRequired.join(', ')}`);
   }

@@ -28,7 +28,14 @@ import {
   removeIfExists,
   type DeployMode,
 } from '../install-payload.ts';
-import { removeOpenCodeConfig, updateOpenCodeConfig, openCodeSeamGate, openCodeSeamGlobs } from './opencode-config.ts';
+import {
+  removeOpenCodeConfig,
+  updateOpenCodeConfig,
+  openCodeSeamGate,
+  openCodeSeamGlobs,
+  openCodeAskGate,
+} from './opencode-config.ts';
+import { inspectAskPermissionRule } from '../lib/opencode-ask-rule.ts';
 import type { DoctorReporter } from '../doctor-report.ts';
 import { asRecord } from '../lib/as-record.ts';
 
@@ -44,6 +51,84 @@ export function opencodeDoctorMcpConfigured(): string | null {
     // corrupt OpenCode config skips this candidate — the probe continues
   }
   return null;
+}
+
+// Doctor: the ASK approval posture check — OpenCode installs only. The
+// posture is a PAIR: the client half (the permissions ask rule that makes
+// opencode itself prompt on huaweicloud_run_approved_command) and the
+// server half (DEVKIT_APPROVAL_MODE=ask in the mcp entry's env). A
+// gate-off opencode is a SKIP — token mode is that install's legitimate
+// posture — and so are configs the installer itself refuses to touch.
+// Every mixed state is a FAIL because each lies in a known direction:
+// the rule without the env double-gates (the client prompts AND the
+// server still demands a token), the env without the rule fail-opens
+// (the server trusts a prompt nobody shows), and an allow/deny rule
+// destroys the ask contract outright ("always allow" stops prompting;
+// deny bricks the write tool entirely).
+export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
+  if (openCodeAskGate() === 'off') {
+    ctx.skip('ASK approval posture (opencode not verifiably at or above 2.0)');
+    return;
+  }
+  let cfg: Record<string, unknown> | null;
+  try {
+    cfg = asRecord(JSON.parse(readFileSync(opencodeConfigFile(), 'utf8')));
+  } catch {
+    cfg = null;
+  }
+  const posture = cfg !== null ? inspectAskPermissionRule(cfg) : null;
+  if (cfg === null || posture === 'foreign') {
+    ctx.skip(
+      'ASK approval posture: opencode config unreadable or permissions not array-shaped — the installer keeps it untouched; add the ask rule and DEVKIT_APPROVAL_MODE manually (see README, Harness permission notes)',
+    );
+    return;
+  }
+  // The mcp entry carries the server half; a missing entry counts as no
+  // env, so the halves are judged independently of entry presence.
+  const env = asRecord(asRecord(asRecord(cfg.mcp)['huaweicloud-devkit']).environment);
+  const envAsk = env.DEVKIT_APPROVAL_MODE === 'ask';
+  const label = 'ASK approval posture (client prompt + server env)';
+  if (posture === 'ask') {
+    ctx.check(
+      label,
+      envAsk,
+      envAsk
+        ? ''
+        : 'DEVKIT_APPROVAL_MODE=ask missing from the mcp entry — the client prompts AND the server still demands a token (re-run: npx huaweicloud-devkit install --target opencode)',
+    );
+    return;
+  }
+  if (posture === 'allow') {
+    // FAIL, never a warn: with the env also ask this is fail-open (the
+    // always-allow rule suppresses the prompt the server trusts); without
+    // it the run degrades to the token gate. Either way the ask contract
+    // is silently gone.
+    ctx.check(
+      label,
+      false,
+      'the permissions rule for the run tool is "allow" (always allow) — writes no longer prompt: fail-open when DEVKIT_APPROVAL_MODE=ask, a plain token gate otherwise. Delete that rule or set its effect to "ask" (see README, Harness permission notes)',
+    );
+    return;
+  }
+  if (posture === 'deny') {
+    ctx.check(
+      label,
+      false,
+      'the permissions rule for the run tool is "deny" — the write tool is blocked entirely. Delete that rule or set its effect to "ask" (see README, Harness permission notes)',
+    );
+    return;
+  }
+  if (envAsk) {
+    // posture === 'absent': the fail-open direction.
+    ctx.check(
+      label,
+      false,
+      'DEVKIT_APPROVAL_MODE=ask is set but the permissions ask rule is missing — the server trusts a client prompt nobody shows (re-run: npx huaweicloud-devkit install --target opencode, or unset DEVKIT_APPROVAL_MODE in the mcp entry)',
+    );
+    return;
+  }
+  // Token mode is the legitimate default posture, not an error.
+  ctx.check('ASK approval posture (token mode)', true, '');
 }
 
 // Doctor: the skills-tree permission seam check — OpenCode installs only

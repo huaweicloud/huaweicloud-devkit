@@ -107,7 +107,9 @@ test('MCP server returns isError tool results for tools/call missing required pa
     assert.equal(multi.result.isError, true, 'missing required params must set isError');
     const text = multi.result.content.map((c) => c.text || '').join(' ');
     assert.match(text, /args/);
-    assert.match(text, /approvalToken/);
+    // approvalToken is mode-conditional (DEVKIT_APPROVAL_MODE=ask drops the
+    // token), so the required-params error names only the always-required
+    // pair; the token contract is pinned by hcloud-cli-approval.test.ts.
     assert.match(text, /approvedByUser/);
   } finally {
     client.close();
