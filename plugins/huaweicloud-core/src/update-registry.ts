@@ -71,14 +71,14 @@ function resolveNpmAuthToken(env: NodeJS.ProcessEnv = process.env): string | und
 }
 
 // npm reads the userconfig by a case-insensitive `npm_config_userconfig` key,
-// trims the value, and skips an empty value (falling back to ~/.npmrc). A
-// whitespace-only value trims to an empty path, which is not the fallback.
+// trims the value, and skips an empty value (falling back to ~/.npmrc). An
+// empty spelling is skipped rather than terminal, so a set sibling still wins;
+// a whitespace-only value trims to an empty path, which is not the fallback.
 function resolveUserconfig(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const entry = Object.entries(env)
-    .filter(([key]) => key.toUpperCase() === 'NPM_CONFIG_USERCONFIG')
-    .at(-1);
-  const raw = entry?.[1];
-  if (raw === undefined || raw === '') return undefined;
+  const raw = Object.entries(env)
+    .filter(([key, value]) => key.toUpperCase() === 'NPM_CONFIG_USERCONFIG' && value !== '')
+    .at(-1)?.[1];
+  if (raw === undefined) return undefined;
   // npm applies envReplace to every config value before path resolution, so a
   // CI env block (`${CI_PROJECT_DIR}/.npmrc`) reaches the same file.
   return expandTilde(envReplace(raw.trim(), env));
@@ -110,13 +110,34 @@ function packageJsonWorkspaces(path: string): string[] | undefined {
 }
 
 // A workspace glob (`packages/*`, `packages/**`, an exact relative path) as the
-// membership test npm's mapWorkspaces makes. `*` stays inside one segment.
+// membership test npm's mapWorkspaces makes. `*` stays inside one segment; `**`
+// matches zero or more whole segments (`packages/**/x` matches `packages/x` and
+// `packages/a/x`, never `packages/abx`). One pass, so the `**` expansion is not
+// rewritten by the single-star rule.
 function workspaceGlobRegExp(glob: string): RegExp {
-  const source = glob
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*\/?/g, '.*')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\?/g, '[^/]');
+  let source = '';
+  for (let index = 0; index < glob.length; index += 1) {
+    const char = glob[index]!;
+    if (char === '*') {
+      if (glob[index + 1] === '*') {
+        index += 1;
+        if (glob[index + 1] === '/') {
+          index += 1;
+          source += '(?:[^/]+/)*';
+        } else {
+          source += '(?:[^/]+(?:/[^/]+)*)?';
+        }
+      } else {
+        source += '[^/]*';
+      }
+      continue;
+    }
+    if (char === '?') {
+      source += '[^/]';
+      continue;
+    }
+    source += /[.+^${}()|[\]\\]/.test(char) ? `\\${char}` : char;
+  }
   return new RegExp(`^${source}$`);
 }
 

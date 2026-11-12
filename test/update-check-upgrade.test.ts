@@ -401,6 +401,16 @@ test('upgradePackage 失败原因: Node 弃用警告行同样不算原因', asyn
   assert.equal(r.error, 'exit 1');
 });
 
+test('upgradePackage 失败原因: Node 的非弃用警告尾部同样不算原因', async () => {
+  for (const fixture of ['real-typeless-package-info.err', 'real-typeless-package-default.err']) {
+    const reason = await reasonFor(failureStderr(fixture), 7);
+    assert.equal(reason, 'npm error code 7 npm error command sh -c node post.js', fixture);
+  }
+  // control: a real stderr diagnostic after the warning trio is still the reason.
+  const control = await reasonFor(failureStderr('real-typeless-package-control.err'), 7);
+  assert.equal(control, 'Error: native build failed: toolchain missing');
+});
+
 test('upgradePackage 失败原因: E404 保留 code 行与首条诊断, 丢掉日志指针', async () => {
   const reason = await reasonFor(failureStderr('e404.err'));
   assert.match(reason, /E404/);
@@ -3153,7 +3163,6 @@ test('upgradePackage 升级子进程: 跨主机名校验的重定向不再携带
 });
 
 test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', async () => {
-  const { createServer } = await import('node:http');
   const accepted = new Set([
     'Bearer fixture-registry-token',
     `Basic ${Buffer.from('ci-user:fixture-registry-token').toString('base64')}`,
@@ -3415,6 +3424,34 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         writeFileSync(join(nonMemberRoot, 'package.json'), JSON.stringify({ name: 'root', workspaces: ['other'] }));
         writeFileSync(join(memberB, '.npmrc'), line('${CI_TOKEN}'));
         assert.equal((await attempt()).result.success, true, 'a workspace map with no member keeps the package dir');
+
+        // `**` matches whole segments: a nested member is promoted to the root.
+        writeFileSync(userconfig, `registry=${registry}/\n`);
+        writeFileSync(
+          join(nonMemberRoot, 'package.json'),
+          JSON.stringify({ name: 'root', workspaces: ['packages/**'] }),
+        );
+        writeFileSync(join(nonMemberRoot, '.npmrc'), line('${CI_TOKEN}'));
+        const nested = join(nonMemberRoot, 'packages', 'group', 'nested');
+        mkdirSync(nested, { recursive: true });
+        writeFileSync(join(nested, 'package.json'), JSON.stringify({ name: 'nested' }));
+        process.chdir(nested);
+        assert.equal((await attempt()).result.success, true, 'a ** pattern promotes a nested member to the root');
+        assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
+
+        // `**/x` does not match a sibling that merely ends in `x`.
+        writeFileSync(
+          join(nonMemberRoot, 'package.json'),
+          JSON.stringify({ name: 'root', workspaces: ['packages/**/x'] }),
+        );
+        writeFileSync(join(nonMemberRoot, '.npmrc'), `registry=${registry}/\n${host}/:_authToken=root-only-token\n`);
+        const suffixOnly = join(nonMemberRoot, 'packages', 'abx');
+        mkdirSync(suffixOnly, { recursive: true });
+        writeFileSync(join(suffixOnly, 'package.json'), JSON.stringify({ name: 'abx' }));
+        writeFileSync(join(suffixOnly, '.npmrc'), line('${CI_TOKEN}'));
+        process.chdir(suffixOnly);
+        assert.equal((await attempt()).result.success, true, 'a **/x pattern does not promote an abx dir');
+        assert.equal(seen.at(-1), 'Bearer fixture-registry-token');
         process.chdir(savedCwd);
         rmSync(nonMemberRoot, { recursive: true, force: true });
 
@@ -3445,6 +3482,16 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         process.env.npm_config_prefix = prefix;
         process.env.NPM_CONFIG_PREFIX = '';
         assert.equal((await attempt()).result.success, true, 'an empty last prefix spelling is skipped');
+
+        // An empty last userconfig spelling does not shadow a set sibling.
+        const customConfig = join(base, 'custom-userconfig.npmrc');
+        writeFileSync(customConfig, line('${CI_TOKEN}'));
+        writeFileSync(homeNpmrc, `registry=${registry}/\n`);
+        process.env.npm_config_userconfig = customConfig;
+        process.env.NPM_CONFIG_USERCONFIG = '';
+        assert.equal((await attempt()).result.success, true, 'an empty last userconfig spelling is skipped');
+        delete process.env.npm_config_userconfig;
+        delete process.env.NPM_CONFIG_USERCONFIG;
 
         // The uppercase globalconfig channel is honored too.
         process.env.NPM_CONFIG_GLOBALCONFIG = join(prefix, 'etc', 'npmrc');

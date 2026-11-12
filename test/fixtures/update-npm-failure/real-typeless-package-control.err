@@ -1,0 +1,14 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm info run zz-cappkg@1.0.0 postinstall pkgdep node post.js
+(node:2023765) [MODULE_TYPELESS_PACKAGE_JSON] Warning: Module type of file:///home/op/project/pkgdep/post.js is not specified and it doesn't parse as CommonJS.
+Reparsing as ES module because module syntax was detected. This incurs a performance overhead.
+To eliminate this warning, add "type": "module" to /home/op/project/pkgdep/package.json.
+(Use `node --trace-warnings ...` to show where the warning was created)
+Error: native build failed: toolchain missing
+npm info run zz-cappkg@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/project/pkgdep
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

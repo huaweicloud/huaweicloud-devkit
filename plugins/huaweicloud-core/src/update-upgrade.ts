@@ -374,6 +374,13 @@ function isNpmNoiseLine(line: string): boolean {
   if (/^\s*throw err;\s*$/.test(line)) return true;
   if (!/[\p{L}\p{N}]/u.test(line)) return true;
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
+  // Node's non-deprecation warning footer: the `(node:…)` header is dropped
+  // above, but its continuation lines are boilerplate too (the
+  // MODULE_TYPELESS_PACKAGE_JSON / ExperimentalWarning family). Anchor on the
+  // emission shapes, not the word "warning", which can ride a real diagnostic.
+  if (/^\(Use `node --trace-warnings\b[^`]*` to show where the warning was created\)$/.test(line)) return true;
+  if (/^Reparsing as ES module because module syntax was detected\b/.test(line)) return true;
+  if (/^To eliminate this warning, add "type": "module" to\b/.test(line)) return true;
   // npm's log channels are not diagnostics: every `npm <channel>` prefix is
   // noise except the error channel and the `info run` echo of a script.
   if (
@@ -568,9 +575,12 @@ const RECOVER_GOVERNING =
   /(?:failed|failure|refused|rejected|unable|could not|cannot|can't|not|never|no)\s+(?:(?:yet|still|even|ever|really|quite|fully|actually|entirely|completely|eventually)\s+)*(?:to\s+(?:(?:yet|still|even|ever|really|quite|fully|actually|entirely|completely|eventually)\s+)*)?$/i;
 // A recovered step's continuation notices ("falling back to the bundled
 // toolchain", "retrying from snapshot", "using cached copy of previous build",
-// "best-effort rebuild only", "degraded mode active") are announcements only in
-// those full forms; bare "retrying"/"falling back" may be a failing step's
-// dying words.
+// "best-effort rebuild only", "degraded mode active"): "falling back" and
+// "retrying" are announcements only in their full forms, so a failing step's
+// bare dying words surface, while the cached/best-effort/degraded idiom tokens
+// mark an announcement wherever they appear. A dying line that merely contains
+// one of those fallback tokens is therefore treated as a recovered-step notice
+// (a ledgered trade).
 const CONTINUATION_ANNOUNCEMENT = /\b(?:falling back to|retrying from|using cached|best-effort|degraded)\b/i;
 function isRecoveryAnnouncement(line: string): boolean {
   const payload = npmPayload(line);
