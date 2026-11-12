@@ -54,6 +54,30 @@ test('issue-1071: lifecycle semantics (30min/1h ephemeral, 7-day persistent cap,
   }
 });
 
+// Acceptance 2b: final-report lifetime wording（ephemeral 不播报；persistent 只播报沙箱部分；
+// 异常兜底提示保留）
+test('issue-1071: final-report lifetime wording', () => {
+  assert.doesNotMatch(skill, /必须转述/);
+  assert.doesNotMatch(skill, /链接有效期 72 小时/);
+  assert.match(skill, /ephemeral.*只给 URL/s);
+  assert.match(skill, /不要.*迁移到持久沙箱或 OBS/s);
+  assert.match(skill, /persistent.*只播报沙箱生命周期/s);
+  assert.match(skill, /隧道将在会话结束后失效，请勿分享/);
+  assert.match(skill, /例外：隧道无法持久/);
+
+  assert.doesNotMatch(resourcePool, /TTL 播报为补偿方案/);
+  assert.doesNotMatch(resourcePool, /生命周期数值是\*\*播报口径\*\*/);
+  assert.doesNotMatch(resourcePool, /生命周期提示只在两个时机播报/);
+  assert.doesNotMatch(resourcePool, /仍可播报/);
+  assert.match(resourcePool, /ephemeral 不播报/);
+  assert.match(resourcePool, /persistent 只播报沙箱生命周期/);
+
+  const exposeDesc = tools.slice(tools.indexOf("'huaweicloud_sandbox_expose_tunnel'"));
+  const exposeDescBlock = exposeDesc.slice(0, exposeDesc.indexOf('inputSchema'));
+  assert.doesNotMatch(exposeDescBlock, /MUST be relayed/);
+  assert.match(exposeDescBlock, /internal diagnostics/);
+});
+
 // Acceptance 3: 429 + Retry-After dual error codes in tool descriptions
 test('issue-1071: 429 + Retry-After quota semantics present in tool descriptions', () => {
   const connectDesc = tools.slice(tools.indexOf("'huaweicloud_sandbox_connect'"));
@@ -64,8 +88,8 @@ test('issue-1071: 429 + Retry-After quota semantics present in tool descriptions
   assert.match(connectDescBlock, /HDKIT_CAPACITY_INSUFFICIENT/);
   assert.match(connectDescBlock, /1 instance per pool type/);
   assert.match(connectDescBlock, /pool_type/);
-  assert.match(connectDescBlock, /30min/);
-  assert.match(connectDescBlock, /7 days/);
+  assert.match(connectDescBlock, /Lifecycle numbers are internal/);
+  assert.match(connectDescBlock, /never surface ephemeral tunnel\/sandbox lifetime/);
   // close_session clarifies it does not delete the sandbox（v3：7 天口径）
   const closeDesc = tools.slice(tools.indexOf("'huaweicloud_sandbox_close_session'"));
   const closeDescBlock = closeDesc.slice(0, closeDesc.indexOf('inputSchema'));

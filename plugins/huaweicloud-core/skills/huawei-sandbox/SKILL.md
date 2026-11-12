@@ -53,6 +53,8 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 
 `huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**；客户端不再支持传 template_id/自定义模板）：
 
+> 下表生命周期数值仅用于内部选池与诊断：ephemeral 不向开发者播报；persistent 只播报沙箱生命周期，不播报隧道有效期/自动续期。
+
 | pool_type           | 语义               | 生命周期（平台策略）                                         | 适用                        |
 | ------------------- | ------------------ | ------------------------------------------------------------ | --------------------------- |
 | `ephemeral`（默认） | 非持久沙箱         | 闲置 30 分钟自动关机 + 闲置 1 小时自动删除（平台定时任务）   | 临时运行/预览，勿存重要数据 |
@@ -71,7 +73,9 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 
 - **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
 - **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`
-- **TTL 播报**：仅 connect（会话首次连接 / 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须转述 `urlLifetimeHint` / `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底
+- **生命周期播报**：生命周期数值仅用于内部选池与诊断，不逐次播报。
+  - **ephemeral**：交付 URL 时只给 URL。不要提隧道/沙箱有效期、自动续期、闲置关机或删除，也不要建议迁移到持久沙箱或 OBS。例外：隧道无法持久时按 tunnel-persistence 小节的失败路径提示开发者“隧道将在会话结束后失效，请勿分享”；这不属于常规有效期播报。
+  - **persistent**：只播报沙箱生命周期（闲置关机、数据盘保留、闲置回收上限），使用 `sandboxLifetime` / connect 的 `pool.ttl_hint` 口径；不要播报 devbridge 隧道有效期或自动续期。
 - **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
 - **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
 - 不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`
@@ -214,7 +218,7 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
 
 8. **Execute commands**: use `huaweicloud_sandbox_exec_with_session` for interactive work (cd, env setup), or `huaweicloud_sandbox_exec_one_shot` for long-running builds/installs. See [Tool Selection Guide](#tool-selection-guide).
 9. **Upload project** (if deploying local code): `huaweicloud_sandbox_upload_project` to transfer a local project directory into `/workspace/<name>` — uses HTTP tunnel, much faster than base64 for multi-file projects. Use `huaweicloud_sandbox_upload_file` for single files.
-10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer. **Every URL handoff MUST include the sandbox-lifetime notice from `urlLifetimeHint` (or `warnings`)**: the address dies when the sandbox idles out (ephemeral: shutdown/delete; persistent: shutdown, data retained), and the tunnel expiry is not the sandbox lifetime
+10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer. For **ephemeral** sandboxes, hand over the URL only: do not include tunnel/sandbox lifetime, auto-renewal, idle shutdown/delete, or migration suggestions. For **persistent** sandboxes, include only the sandbox lifecycle notice (idle shutdown, data retained, reclaim cap); do not include tunnel expiry or auto-renewal
 
 ## File Transfer (local → sandbox)
 
@@ -480,7 +484,7 @@ sleep 10 && cat /tmp/host.log
 This eliminates the most common deployment failure — historical tunnels from previous sessions accumulating past the max=10 quota.
 
 - The public URL has the form `https://<id>-<port>.devbridge-s2.hwtunnel.com` (from the `Tunnel URL:` line; 8-char lowercase base32 id). The pre-migration bridge domain `cn-north-4-bridge.myhuaweicloud.com` is dead — treat any URL on it as broken and never hand one to the developer.
-- **Start the host so it survives the exec session**: `setsid nohup ... < /dev/null & disown` (all three: setsid detaches the process group, `< /dev/null` drops the controlling tty, disown removes it from the shell's job table). On images without `setsid`, fall back to a bare `nohup ... &` launch (`if command -v setsid ...; else nohup ... ; fi`) and guard `disown` with `2>/dev/null || true` — a missing `setsid` must not leave the host unstarted. A bare `nohup ... &` (when `setsid` IS available) is reaped when the one-shot session ends — the tunnel dies right after a green in-session health check (the "200 but tunnel not found" trap). If the independent re-verify fails or answers 200 with a "tunnel not found" body, the URL is NOT persistent — always tell the developer 隧道将在会话结束后失效，请勿分享. `-e 72` sets the tunnel lifetime in **hours** — surface it to the developer with the URL ("链接有效期 72 小时").
+- **Start the host so it survives the exec session**: `setsid nohup ... < /dev/null & disown` (all three: setsid detaches the process group, `< /dev/null` drops the controlling tty, disown removes it from the shell's job table). On images without `setsid`, fall back to a bare `nohup ... &` launch (`if command -v setsid ...; else nohup ... ; fi`) and guard `disown` with `2>/dev/null || true` — a missing `setsid` must not leave the host unstarted. A bare `nohup ... &` (when `setsid` IS available) is reaped when the one-shot session ends — the tunnel dies right after a green in-session health check (the "200 but tunnel not found" trap). If the independent re-verify fails or answers 200 with a "tunnel not found" body, the URL is NOT persistent — always tell the developer 隧道将在会话结束后失效，请勿分享. `-e 72` sets the tunnel lifetime in **hours**; it is an internal setting and must not be surfaced to the developer.
 - **Return this URL to the developer as the deployment result link.** Keep the host process running (do not close the session before handing over the URL).
 - Tunnel `description` (`-d`) accepts only Chinese characters, letters, and digits (0-64). Symbols such as `-`/`_`/spaces are rejected (`Invalid tunnel description`).
 - Official docs: https://huaweicloud.github.io/devspace-devbridge/
