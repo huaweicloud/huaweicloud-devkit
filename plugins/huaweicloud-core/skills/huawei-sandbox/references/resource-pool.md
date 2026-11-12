@@ -48,8 +48,9 @@
 ## 配额与错误码
 
 - 每用户每类型 1 台（同类复用，ephemeral + persistent 可并存 1+1）；账号并发上限 5
-- 429 双错误码（均带 `Retry-After: 60`）：
+- 429 三错误码（`HDKIT_QUOTA_EXCEEDED` / `HDKIT_CAPACITY_INSUFFICIENT` 带 `Retry-After: 60`；`HDKIT_TEMPLATE_QUOTA_EXCEEDED` 不带）：
   - `HDKIT_QUOTA_EXCEEDED`：用户配额满（上游 `HD.98320022`）→ 重试无效，引导释放/复用已有实例
+  - `HDKIT_TEMPLATE_QUOTA_EXCEEDED`：当前账号此类型沙箱运行中实例达上限（上游 `HD.98320082`）→ 需关机/释放同类型实例后重试
   - `HDKIT_CAPACITY_INSUFFICIENT`：池容量不足（上游 `HD.99003001`/`HD.99008001`/`HD.98330021`）→ 服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端原样透传不再附加引导
 - 烧核：`HD.97520422` = 账号核心时长耗尽（沙箱运行消耗核时；客户端对含该码的错误输出友好播报）
 

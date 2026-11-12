@@ -231,6 +231,27 @@ test('HDKIT_TEMPLATE_QUOTA_EXCEEDED passes the final server copy through untouch
   }
 });
 
+test('HDKIT_TEMPLATE_QUOTA_EXCEEDED falls back to the final copy when server message is empty', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+    assert.equal(err.message, '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱');
+    assert.doesNotMatch(err.message, /^HDKIT_TEMPLATE_QUOTA_EXCEEDED:/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
 test('HDKIT_CAPACITY_INSUFFICIENT passes the final server copy through untouched', async () => {
   const originalFetch = global.fetch;
   const finalCopy = 'DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！';
