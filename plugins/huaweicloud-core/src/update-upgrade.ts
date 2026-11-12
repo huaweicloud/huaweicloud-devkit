@@ -24,8 +24,6 @@ const UPGRADE_EXTRA_CREDENTIAL_ENV_KEYS = new Set([
   'AWS_SESSION_TOKEN',
   'HUAWEI_ACCESS_KEY',
   'HUAWEI_SECRET_KEY',
-  'NPM_TOKEN',
-  'NODE_AUTH_TOKEN',
   'GITHUB_TOKEN',
   'GH_TOKEN',
   'DOCKER_PASSWORD',
@@ -347,7 +345,6 @@ function isStackFrame(payload: string): boolean {
 function isNpmNoiseLine(line: string): boolean {
   if (/^Node\.js v\d/.test(line) || /^\s*\^\s*$/.test(line)) return true;
   if (/^Require stack:/.test(line) || /^\s*-\s+[/~]\S*$/.test(line)) return true;
-  if (/^\[cause\]:/.test(line)) return true;
   if (/^\s*throw err;\s*$/.test(line)) return true;
   if (!/[\p{L}\p{N}]/u.test(line)) return true;
   if (/^(?:npm warn\b|npm notice\b|\(node:\d+\))/i.test(line)) return true;
@@ -419,6 +416,7 @@ function lineRank(line: string): number {
   if (!payload || /^(?:errno|syscall|path|code|command failed)\b/.test(payload)) return 4;
   if (/^\s*[A-Za-z_]\w*:\s*(?:'[^']*'|"[^"]*"|-?\d+|\[[^\]]*\])\s*,?\s*$/.test(payload)) return 4;
   if (/^\s*[A-Za-z_]\w*:\s*\[[^\]]*\]\s*,?\s*$/.test(payload)) return 4;
+  if (/^\[cause\]:/.test(payload)) return 4;
   if (/^\s*requireStack:\s*\[.*$/.test(payload) || /^\s*'[^']*',?\s*$/.test(payload)) return 4;
   if (isNpmScriptResult(payload)) return 4;
   // npm's echo of the failing script carries the child's words in quotes, so it
@@ -484,10 +482,17 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     }
   });
   const lines = normalizedLines.filter((line, index) => !crashPreamble.has(index) && !isNpmNoiseLine(line));
-  const codeLine = lines.find((line) => isNpmErrorLine(line) && /^code \S+/.test(npmPayload(line)));
-  const others = lines.filter((line) => isNpmErrorLine(line) && line !== codeLine);
+  const codeLines = lines
+    .map((line, index) => ({ line, index }))
+    .filter((entry) => isNpmErrorLine(entry.line) && /^code \S+/.test(npmPayload(entry.line)));
+  const others = lines.filter(
+    (line, index) => isNpmErrorLine(line) && !codeLines.some((entry) => entry.index === index),
+  );
   const codeless = lines.filter((line) => !isNpmErrorLine(line));
   let block = selectFailureLine(others, { positionLast: false });
+  const codeLine =
+    (block ? codeLines.filter((entry) => entry.index <= block!.index).at(-1) : undefined)?.line ??
+    codeLines.at(-1)?.line;
   let bare = selectFailureLine(codeless, { positionLast: true });
   // A loud successful script (or a gyp error it survived) is not the cause when
   // npm emitted a failing echo pair later: the echo names the failing script.
@@ -562,10 +567,26 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // belongs to a step that recovered; the block's code line plus its command
   // echo is the honest reason instead.
   if (block && block.rank <= 1) {
-    const blockIndex = rawLines.lastIndexOf(block.line);
+    const blockIndex = rawLines.indexOf(block.line);
     const recovered = blockIndex >= 0 && rawLines.some((line, index) => index > blockIndex && isSuccessAssertion(line));
     if (recovered) {
-      const echo = lastEchoBefore(others, Number.POSITIVE_INFINITY);
+      // The echo must belong to the failing step: after the block line and
+      // after the last success assertion (a recovered step's own echo sits
+      // before its success result).
+      const lastSuccessRaw = rawLines
+        .map((line, index) => ({ line, index }))
+        .filter((entry) => isSuccessAssertion(entry.line))
+        .at(-1)?.index;
+      const echo = lines
+        .map((line, index) => ({ line, index }))
+        .filter(
+          (entry) =>
+            isNpmErrorLine(entry.line) &&
+            lineRank(entry.line) === 3 &&
+            entry.index > block!.index &&
+            (lastSuccessRaw === undefined || rawLines.indexOf(entry.line) > lastSuccessRaw),
+        )
+        .at(-1);
       if (echo) block = { line: echo.line, rank: 3, index: echo.index };
     }
   }
@@ -580,13 +601,16 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // A failing pair after an earlier dying-words line, with a success assertion
   // between them, names a later failing step; prefer it. Without that gap the
   // pair belongs to the same script as the cause, and the cause stays.
+  const bareRawIndex = bare ? rawLines.lastIndexOf(bare.line) : -1;
+  const failingEchoRawIndex = failingEcho ? rawLines.lastIndexOf(failingEcho.line) : -1;
   if (
     hasFailingPair &&
     failingEcho &&
     bare &&
-    bare.index < failingEcho.index &&
+    bareRawIndex >= 0 &&
+    bareRawIndex < failingEchoRawIndex &&
     bare.rank <= 1 &&
-    rawLines.some((line, index) => index > bare!.index && index < failingEcho.index && isSuccessAssertion(line))
+    rawLines.some((line, index) => index > bareRawIndex && index < failingEchoRawIndex && isSuccessAssertion(line))
   ) {
     bare = { line: failingEcho.line, rank: 3, index: failingEcho.index };
   }
@@ -596,7 +620,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   if (bare && (!block || bare.rank < block.rank)) {
     return codeLine && bare.rank >= 2 ? `${codeLine} ${bare.line}` : bare.line;
   }
-  if (block) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
+  if (block && block.rank < 4) return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
   if (codeLine) return codeLine;
   if (bare) return bare.line;
   // A spawn artifact (timeout, ENOBUFS) names the kill for unattributable

@@ -1602,7 +1602,7 @@ test('upgradePackage 失败原因: 真实异步崩溃保留 TypeError', async ()
 });
 
 test('upgradePackage 失败原因: Require stack 条目不再阻塞原因', async () => {
-  const reason = await reasonFor(failureStderr('crash-require-stack.err'), 1);
+  const reason = await reasonFor(failureStderr('crash-loader.err'), 1);
   assert.match(reason, /Error: Cannot find module/);
   assert.doesNotMatch(reason, /Require stack|- \/home/);
 });
@@ -1693,19 +1693,91 @@ test('upgradePackage 失败原因: bash 回显夹具下子进程的 command: 行
   assert.match(reason, /command: node-gyp rebuild/);
 });
 
-test('upgradePackage 升级子进程: npm 与 GitHub 令牌族不进子环境', async () => {
-  const keys = ['NPM_TOKEN', 'NODE_AUTH_TOKEN', 'GITHUB_TOKEN', 'GH_TOKEN', 'DOCKER_PASSWORD'];
+test('upgradePackage 升级子进程: npm 认证通道通过, GitHub 与 Docker 令牌被剥', async () => {
+  const passThrough = ['NPM_TOKEN', 'NODE_AUTH_TOKEN'];
+  const stripped = ['GITHUB_TOKEN', 'GH_TOKEN', 'DOCKER_PASSWORD'];
+  const keys = [...passThrough, ...stripped];
   const saved = new Map(keys.map((key) => [key, process.env[key]]));
   for (const key of keys) process.env[key] = `fixture-${key}`;
   try {
     const env = await childEnv();
-    for (const key of keys) assert.equal(env[key], undefined, `${key} must not reach npx`);
+    for (const key of passThrough) assert.equal(env[key], `fixture-${key}`, `${key} passes through for the mirror`);
+    for (const key of stripped) assert.equal(env[key], undefined, `${key} must not reach npx`);
   } finally {
     for (const [key, value] of saved) {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
   }
+});
+
+test('upgradePackage 失败原因: 成功缺口里的后段失败对胜过早段原因', async () => {
+  const stderr = [
+    'native build failed: missing libfoo. rebuild aborted.',
+    'gyp info ok',
+    'npm info run pkg@1.0.0 postinstall node ./post.js',
+    'npm info run pkg@1.0.0 postinstall { code: 7, signal: null }',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /native build failed/);
+});
+
+test('upgradePackage 失败原因: 噪声行平移不影响成功缺口规则', async () => {
+  const stderr = [
+    'npm warn deprecated foo@1.0.0',
+    'native build failed: missing libfoo. rebuild aborted.',
+    'gyp info ok',
+    'npm info run pkg@1.0.0 postinstall node ./post.js',
+    'npm info run pkg@1.0.0 postinstall { code: 7, signal: null }',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.match(reason, /postinstall/);
+  assert.doesNotMatch(reason, /native build failed/);
+});
+
+test('upgradePackage 失败原因: 内层恢复块的 code 不粘到外层失败回显', async () => {
+  const stderr = [
+    'npm error code 1',
+    'npm error path /home/op/inner',
+    'npm error command failed',
+    'npm error command sh -c node one.js',
+    'npm error code 7',
+    'npm error path /home/op/outer',
+    'npm error command failed',
+    'npm error command sh -c node two.js',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code 7/);
+  assert.match(reason, /node two\.js/);
+  assert.doesNotMatch(reason, /code 1|one\.js/);
+});
+
+test('upgradePackage 失败原因: 恢复步的回显不冒充失败步的命令', async () => {
+  const stderr = [
+    'npm error code 1',
+    'npm error gyp ERR! stack Error: EACCES: permission denied',
+    'npm error gyp info ok',
+    'npm error command sh -c node one.js',
+    'npm error path /home/op/outer',
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code 1/);
+  assert.doesNotMatch(reason, /node one\.js/);
+});
+
+test('upgradePackage 失败原因: [cause] 行降级而非删除, TypeError 仍是原因', async () => {
+  const stderr = ['[TypeError: fetch failed] {', '  [cause]: Error: bad port', "  code: 'ERR_BAD_PORT'"].join('\n');
+  const reason = await reasonFor(stderr, 1);
+  assert.match(reason, /\[TypeError: fetch failed\]/);
+  assert.doesNotMatch(reason, /\[cause\]/);
+});
+
+test('upgradePackage 失败原因: 未闭合的 requireStack 数组保留元数据降级', async () => {
+  const stderr = ['npm error code 1', 'npm error requireStack: [', "npm error   '/home/op/x.js'"].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code 1/);
+  assert.doesNotMatch(reason, /requireStack|\/home\/op\/x\.js/);
 });
 
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
