@@ -554,3 +554,48 @@ test('the real relay path under a VS17-only or astral-padded gate code folds as 
     else process.env.HOME = realHome;
   }
 });
+
+// ── 中继检测器先查登记（round 23/MUST 6）──
+// 中继出口以 isVersionGateError 先于折叠裁决——登记过的门禁载体 code 视图
+// 变坏（抛出型 getter）时检测器返回 false，出口落向凭证误诊/吞门禁，而折
+// 叠本会铸造。检测器先查门禁登记：与折叠同一规则。
+
+test('the relay detector consults the registration first: a registered gate carrier with a throwing code getter folds the gate at the relay', async () => {
+  const { applyVersionGate } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  // 登记：自有 clientVersion 访问器（读谎）挣得门禁拒绝
+  const carrier = Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  let storedCv: unknown;
+  Object.defineProperty(carrier, 'clientVersion', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return storedCv;
+    },
+    set(v: unknown) {
+      storedCv = v;
+    },
+  });
+  applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
+  // code 视图变坏：抛出型 getter——检测器与折叠都不得读它
+  Object.defineProperty(carrier, 'code', {
+    get() {
+      throw new TypeError('code getter detonates');
+    },
+    configurable: true,
+  });
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw carrier;
+    },
+    listKeys: async () => [],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(
+    f.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the relay detector mints the gate — the registration decides, never the detonating code view',
+  );
+  assert.match(f.error ?? '', /插件版本过旧，请升级插件后重启会话/, 'the registered fallback message carries');
+  assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the unknown-version remediation mints');
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the credential misdiagnosis never fires');
+});
