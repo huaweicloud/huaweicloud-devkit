@@ -15,7 +15,6 @@ import { homedir, platform, tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { createRequire } from 'node:module';
 
 import { getAuthStatus, syncAuth } from './auth/service.mjs';
 import { resolveAndApplyProjectId } from './auth/project-id.mjs';
@@ -48,11 +47,10 @@ import {
 } from './mcp-config-merge.mjs';
 import { readAgentDelta, saveAgentDelta, takeAgentDelta, purgeBackup } from './mcp-config-backup.mjs';
 import { isUsableOfficeaceRoot, readOfficeaceRootMarker, writeOfficeaceRootMarker } from './officeace-paths.mjs';
+import { loadSqliteModule, sqliteSupport } from './node-runtime.mjs';
 import { queryDistTagsFetch, determineTarget, semverCompare } from './update-check.mjs';
 import { getKooCliVersion, compareVersion, kooCliDownloadBase, KOO_CLI_BASE } from './koocli-version.mjs';
 import { findHcloudBin, hcloudProbeNextStep, probeHcloud } from './hcloud-probe.mjs';
-
-const { DatabaseSync } = createRequire(import.meta.url)('node:sqlite');
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PLUGIN_ROOT = resolve(__dirname, '..');
@@ -250,11 +248,13 @@ function officeaceSqlitePath() {
 }
 
 function openOfficeaceDb() {
+  const { DatabaseSync } = loadSqliteModule();
   return new DatabaseSync(officeaceSqlitePath());
 }
 
 function officeaceGetOwnerUserId() {
   if (!existsSync(officeaceSqlitePath())) return null;
+  loadSqliteModule();
   try {
     const db = openOfficeaceDb();
     const row = db.prepare('SELECT owner_user_id FROM mcp_connectors WHERE owner_user_id IS NOT NULL LIMIT 1').get();
@@ -394,7 +394,11 @@ function removeOfficeaceMcpFromSqlite() {
         db.close();
       } catch {}
     }
-    console.log(`  \x1b[31mFailed to remove MCP config: ${error.message}\x1b[0m`);
+    if (error?.code === 'HCDEVKIT_SQLITE_UNAVAILABLE') {
+      console.log(`  \x1b[33mOfficeAce connector row not removed: ${error.message}\x1b[0m`);
+    } else {
+      console.log(`  \x1b[31mFailed to remove MCP config: ${error.message}\x1b[0m`);
+    }
   }
 }
 
@@ -505,9 +509,8 @@ function printSandboxWarning(reason) {
 }
 
 function checkNode() {
-  const v = process.versions.node.split('.').map(Number);
-  if (v[0] < 22) {
-    console.error(`\x1b[31mNode.js >= 22 required (current: ${process.version})\x1b[0m`);
+  if (sqliteSupport(process.versions.node) === 'unsupported') {
+    console.error(`\x1b[31mNode.js >= 22.5 required (current: ${process.version})\x1b[0m`);
     process.exit(1);
   }
   console.log(`  Node.js ${process.version} \x1b[32mOK\x1b[0m`);
@@ -2526,6 +2529,7 @@ async function installOfficeAce() {
       return;
     }
   }
+  if (existsSync(officeaceSqlitePath())) loadSqliteModule();
   const skillsSrc = join(PLUGIN_ROOT, 'skills');
   const srcDir = join(PLUGIN_ROOT, 'src');
   const safetyDir = join(PLUGIN_ROOT, 'safety');
@@ -2555,6 +2559,7 @@ async function installOfficeAce() {
 }
 
 async function updateOfficeAce() {
+  if (existsSync(officeaceSqlitePath())) loadSqliteModule();
   const skillsSrc = join(PLUGIN_ROOT, 'skills');
   const srcDir = join(PLUGIN_ROOT, 'src');
   const safetyDir = join(PLUGIN_ROOT, 'safety');
@@ -2637,8 +2642,12 @@ function officeaceStatus() {
       } else {
         console.log(`  MCP config: \x1b[31mNot configured\x1b[0m`);
       }
-    } catch {
-      console.log(`  MCP config: \x1b[31mInvalid\x1b[0m`);
+    } catch (error) {
+      if (error?.code === 'HCDEVKIT_SQLITE_UNAVAILABLE') {
+        console.log(`  MCP config: \x1b[33mUnavailable\x1b[0m — ${error.message}`);
+      } else {
+        console.log(`  MCP config: \x1b[31mInvalid\x1b[0m`);
+      }
     }
   } else {
     console.log(`  MCP config: \x1b[31mDatabase not found\x1b[0m`);
@@ -4010,7 +4019,7 @@ async function cmdDoctor() {
   }
 
   // Node.js
-  check('Node.js >= 22', process.versions.node.split('.')[0] >= 22, 'Run: nvm install 22 && nvm use 22');
+  check('Node.js >= 22.5', sqliteSupport(process.versions.node) !== 'unsupported', 'Install Node.js >= 22.5');
 
   // MCP server — check OpenCode, Codex Desktop, CodeArts, WorkBuddy, and DSH paths
   const opencodePluginDir = opencodePluginsDir();
