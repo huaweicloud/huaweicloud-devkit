@@ -21,6 +21,8 @@ import {
   uploadProjectWithSession,
   deployNginx,
   deployCheck,
+  shouldAutoRebind,
+  applyAutoRebind,
   exposeTunnel,
   renewTunnel,
   installKeepaliveWatchdog,
@@ -748,7 +750,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_deploy_check',
     description:
-      'Run a deployment completeness check on the sandbox. Verifies nginx is serving, output directory exists, DevBridge tunnel is active and accessible, and QR code exists (cross-platform). Returns a score, nextStep, and (when the DevBridge tunnel is missing) an executable "remediation" command string. Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
+      'Run a deployment completeness check on the sandbox. Verifies nginx is serving, output directory exists, DevBridge tunnel is active and accessible, and QR code exists (cross-platform). Returns a score, nextStep, and (when the DevBridge tunnel is missing) an executable "remediation" command string. Detects PORT DRIFT: nginx may listen on an auto-incremented port instead of the requested one — the result then carries portDrift {requested, actual, basis, message} + nginxListenPort, probes run against the actual port, and remediation names it. Use portDrift.actual instead of retrying the stale port. Port attribution fails open: when several nginx listeners exist and none matches this deployment root, portDrift is omitted rather than guessed. Read-only by default; set auto_rebind:true to opt into repairing a drifted, dead tunnel (it re-exposes on portDrift.actual with selective cleanup and re-runs the check, returning autoRebind {attempted, ok, from, to, publicUrl}). Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
     inputSchema: {
       type: 'object',
       required: ['port', 'project', 'output_dir'],
@@ -770,6 +772,11 @@ export const TOOL_DEFINITIONS = [
             'Workspace ID from huaweicloud_sandbox_connect return value. Required - must be passed explicitly when HW_WORKSPACE_ID is not set.',
         },
         username: { type: 'string', description: 'Login username (default: root)' },
+        auto_rebind: {
+          type: 'boolean',
+          description:
+            "Opt-in (default false). When port drift is detected AND the DevBridge tunnel is not serving the actual port, re-expose the tunnel on portDrift.actual (selective cleanup_mode=stale — other sessions' tunnels are never deleted) and re-run the check, returning autoRebind {attempted, ok, from, to, publicUrl}. This is a WRITE operation; leave it off unless the caller explicitly wants the URL repaired automatically.",
+        },
         timeout_ms: { type: 'number', description: 'Execution timeout in milliseconds (default: 30000)' },
       },
     },
@@ -1645,17 +1652,57 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser8 = args.username || 'root';
       const sandboxTimeout8 = args.timeout_ms || 30000;
-      return await deployCheck(
-        sandboxWsId8,
-        {
-          port: args.port,
-          project: args.project,
-          outputDir: args.output_dir,
-          frameworkType: args.framework_type,
-        },
-        sandboxUser8,
-        sandboxTimeout8,
-      );
+      const checkParams = {
+        port: args.port,
+        project: args.project,
+        outputDir: args.output_dir,
+        frameworkType: args.framework_type,
+      };
+      let deployCheckResult = await deployCheck(sandboxWsId8, checkParams, sandboxUser8, sandboxTimeout8);
+      // #981 review R1: auto_rebind is an explicit opt-in. Only a drifted port with a
+      // DEAD tunnel triggers it; otherwise the check stays read-only. The re-expose uses
+      // the same selective cleanup as expose_tunnel (never delete-all), so other
+      // sessions' tunnels survive, and the old-port tunnel is left untouched.
+      if (args.auto_rebind && shouldAutoRebind(deployCheckResult)) {
+        const actualPort = deployCheckResult.portDrift.actual;
+        const exposePoolCtx = poolContextFor(sandboxWsId8);
+        let exposeResult;
+        try {
+          exposeResult = await exposeTunnel(
+            sandboxWsId8,
+            {
+              port: actualPort,
+              cleanupMode: 'stale',
+              poolType: exposePoolCtx?.poolMode || 'ephemeral',
+              poolContext: exposePoolCtx,
+              ensureDevbridgeKey,
+              buildKeyringInjectScript,
+              listKeysForQuotaHint,
+            },
+            sandboxUser8,
+            90000,
+          );
+        } catch (error) {
+          exposeResult = { ok: false, error: error?.message || String(error) };
+        }
+        // A failed re-check must not discard a URL that was just verified: fall back
+        // to the original result and let autoRebind.publicUrl carry the URL.
+        let recheckResult = null;
+        if (exposeResult?.ok && exposeResult.publicUrl) {
+          try {
+            recheckResult = await deployCheck(
+              sandboxWsId8,
+              { ...checkParams, port: actualPort },
+              sandboxUser8,
+              sandboxTimeout8,
+            );
+          } catch {
+            recheckResult = null;
+          }
+        }
+        deployCheckResult = applyAutoRebind(deployCheckResult, exposeResult, recheckResult);
+      }
+      return deployCheckResult;
     }
     case 'huaweicloud_sandbox_expose_tunnel': {
       if (!args.port) {
