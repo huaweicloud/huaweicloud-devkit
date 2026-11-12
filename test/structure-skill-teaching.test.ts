@@ -603,16 +603,18 @@ test('the safety approvals reference exists and states its honest boundaries', (
   }
 });
 
-test('the cli-and-auth skill names the terminal confirm step in the approval chain', () => {
+test('the cli-and-auth skill names both approval-mode confirm steps in the approval chain', () => {
   const surfaces = [
     ['source', readSource(join('src', 'packs', 'core', 'skills', 'huaweicloud-cli-and-auth', 'SKILL.md'))],
     ['generated', readFileSync(join(pluginRoot, 'skills', 'huaweicloud-cli-and-auth', 'SKILL.md'), 'utf8')],
   ] as const;
   for (const [label, text] of surfaces) {
-    assert.match(text, /terminal confirmation contract/, `${label}: the contract is named in the safe flow`);
+    assert.match(text, /approval contract/, `${label}: the contract is named in the safe flow`);
     assert.match(text, /userConfirmation/, `${label}: the plan result field is named`);
     assert.match(text, /npx huaweicloud-devkit approve/, `${label}: the user's terminal confirm line is taught`);
     assert.match(text, /npx huaweicloud-devkit pin/, `${label}: first-use PIN enrollment is taught`);
     assert.match(text, /USER_CONFIRMATION_REQUIRED/, `${label}: the run-side refusal code is taught`);
+    assert.match(text, /userConfirmation\.mode.*ask/, `${label}: the ask-mode branch is named by its plan field`);
+    assert.match(text, /harness client prompts the user/, `${label}: the ask-mode confirmation channel is taught`);
   }
 });

@@ -97,10 +97,10 @@ curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/lat
    - Read-only: `List*`, `Show*`, `Get*`, `Describe*`.
    - Write: `Create*`, `Delete*`, `Update*`, `Resize*`, `Start*`, `Stop*`, `Authorize*`, and similar.
    - Secret: any operation returning secret string, binary secret, token, or password.
-9. For write operations, follow the terminal confirmation contract:
-   - Call `huaweicloud_plan_cli_command` and read `userConfirmation`. When `needed` is true, show the user the command echo and the `userConfirmation.command` line.
-   - The user runs `npx huaweicloud-devkit approve <approvalToken>` in their own terminal. Never run it yourself. First use: the user runs `npx huaweicloud-devkit pin` once in their own terminal to enroll the approvals PIN.
-   - Then call `huaweicloud_run_approved_command` with that token. An unconfirmed non-read command is rejected with `USER_CONFIRMATION_REQUIRED`; the token stays usable, so retry the same call after the user confirms.
+9. For write operations, follow the approval contract:
+   - Call `huaweicloud_plan_cli_command` and read `userConfirmation`. When `needed` is true, show the user the command echo.
+   - Token mode (the default): show the `userConfirmation.command` line; the user runs `npx huaweicloud-devkit approve <approvalToken>` in their own terminal. Never run it yourself. First use: the user runs `npx huaweicloud-devkit pin` once in their own terminal to enroll the approvals PIN. Then call `huaweicloud_run_approved_command` with that token; an unconfirmed non-read command is rejected with `USER_CONFIRMATION_REQUIRED`, and the token stays usable, so retry the same call after the user confirms.
+   - Ask mode (`userConfirmation.mode` is `ask`): no terminal line and no token — call `huaweicloud_run_approved_command` with the same args and `approvedByUser: true`; the harness client prompts the user on that call, and that prompt is the confirmation.
 
 ## KooCLI Syntax Notes
 

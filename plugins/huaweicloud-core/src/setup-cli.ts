@@ -119,6 +119,7 @@ import { deployDsh, dshStatus, uninstallDsh } from './agents/dsh.ts';
 import { dshDoctorMcpConfigured, dshPayloadDoctorSection } from './agents/dsh-patch.ts';
 import {
   deployOpenCode,
+  opencodeDoctorAskRule,
   opencodeDoctorMcpConfigured,
   opencodeDoctorSeam,
   opencodeStatus,
@@ -1047,10 +1048,13 @@ async function cmdDoctor(): Promise<void> {
     mcpCfgTarget ? `Found in ${mcpCfgTarget} config` : 'Run: npx huaweicloud-devkit install',
   );
 
-  // Skills-tree permission seam — OpenCode installs only (the section in
-  // agents/opencode.ts owns the per-glob kept/missing evaluation).
+  // OpenCode-only installer seams — the skills-tree permission check (the
+  // section in agents/opencode.ts owns the per-glob kept/missing
+  // evaluation) and the ASK approval posture check (the same file owns the
+  // client-rule/server-env pair evaluation).
   if (installedPayload?.id === 'opencode') {
     opencodeDoctorSeam(ctx);
+    opencodeDoctorAskRule(ctx);
   }
 
   // Hermes MCP Python SDK (only checked when Hermes config is found).

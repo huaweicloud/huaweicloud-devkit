@@ -45,6 +45,9 @@ export const STRIP_ENV_KEYS: readonly string[] = [
   // (the driver's probe gate already enforces >= the seam floor), so a
   // host-set value must never leak into a case session.
   'HUAWEICLOUD_OPENCODE_PERMISSION_SEAM',
+  // Same doctrine for the ask-rule gate: the runner's install relies on
+  // the natural probe deciding whether the ASK posture's pair is written.
+  'HUAWEICLOUD_OPENCODE_ASK_RULE',
 ];
 
 // Posture overrides applied last: telemetry off (no production POSTs from

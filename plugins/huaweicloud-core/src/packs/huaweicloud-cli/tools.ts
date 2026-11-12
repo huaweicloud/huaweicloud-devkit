@@ -7,10 +7,12 @@ import {
   firstPlaceholderSecretArg,
   pinViewArgs,
   type HcloudRunResult,
+  type HcloudRunOptions,
 } from '../../hcloud-cli.ts';
 import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud, type ProbeHcloudOptions } from '../../hcloud-probe.ts';
 import { redactSecrets } from '../../safety-policy.ts';
 import { asText } from '../../lib/as-text.ts';
+import { approvalModeFromEnv, type ApprovalMode } from '../../lib/approval-mode.ts';
 import { consumeApprovalToken, hashArgs, inspectApprovalToken } from '../../lib/approval-tokens.ts';
 import { booleanArg, numericArg, stringArrayArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
@@ -21,7 +23,11 @@ import { asRecord } from '../../lib/as-record.ts';
 // version/profile inspection, plan/read-only/approved command execution,
 // operation discovery, and region listing. The consent layer is imported
 // directly from src/lib/approval-tokens.ts (the CLI face's consent module),
-// not the hcloud-cli.ts re-export shim. The only allowWrites:true call site
+// not the hcloud-cli.ts re-export shim. The approval posture resolves from
+// DEVKIT_APPROVAL_MODE (src/lib/approval-mode.ts): 'token' (default) keeps
+// the out-of-band terminal gate; 'ask' makes the harness client's own
+// permission prompt the user's confirmation, so the plan mints nothing and
+// the run needs no token. The only allowWrites:true call site
 // in the codebase (runApprovedCommand) lives here, so trimming this pack
 // removes the CLI execution face and its approval tools together: a
 // configuration trimmed of this pack has no devkit-side hcloud CLI write
@@ -201,9 +207,67 @@ async function listOperations(service: string | undefined, options: { timeoutMs?
   };
 }
 
+// A placeholder-shaped secret VALUE at run time is never a real secret in
+// either approval mode: executing a literal `<redacted>`/`<password>` as
+// the password is always wrong. The guard is shared so the two modes can
+// never drift on detection; only the re-run wording is mode-aware — token
+// mode keeps the guidance followable on the SAME approval (the guard runs
+// before the token is consumed; loop round 3, seat-1 B3: the guidance used
+// to be a dead end because the rejection burned the only token), while
+// ask mode has no token to preserve and must not reference one.
+function assertNoPlaceholderSecret(args: string[], mode: ApprovalMode): void {
+  const placeholderArg = firstPlaceholderSecretArg(args);
+  if (!placeholderArg) return;
+  throw new Error(
+    `The argument "${placeholderArg}" still carries a placeholder secret value: replace <redacted> with the actual value the user approved, ` +
+      (mode === 'ask' ? 'then re-run.' : 'then re-run with the same approval token.'),
+  );
+}
+
+// The run options both approval modes execute under: allowWrites stays
+// scoped to this file's call sites (the only ones in the codebase), and
+// the pass-through fields keep their names verbatim.
+function approvedRunOptions(args: ToolArgs): HcloudRunOptions {
+  return {
+    allowWrites: true,
+    timeoutMs: args.timeoutMs,
+    maxRetries: args.maxRetries,
+    cwd: args.cwd,
+    stdin: args.stdin,
+  };
+}
+
+// Ask mode (DEVKIT_APPROVAL_MODE=ask): the harness client's permission
+// prompt on this very call is the user's confirmation, so there is no
+// token to inspect or consume. The safety floors are unchanged — the
+// placeholder-secret guard above, and runHcloud's assertAllowed
+// re-assertion of the strict classification (secret/credential/invalid
+// denies still throw; allowWrites:true stays scoped to this one call
+// site, the only one in the codebase).
+async function runApprovedCommandAskMode(args: ToolArgs): Promise<unknown> {
+  const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
+  // Same normalization as the token path: the strict plan and the executed
+  // argv must agree on the effective args.
+  const { args: effectiveArgs } = stripLeadingHcloudBinArgs(providedArgs);
+  assertNoPlaceholderSecret(effectiveArgs, 'ask');
+  const strictPlan = planHcloudCommand(effectiveArgs, {
+    allowWrites: false,
+    mintApprovalToken: false,
+    approvalMode: 'ask',
+  });
+  const result = await runHcloud(effectiveArgs, approvedRunOptions(args));
+  // Spread instead of in-place mutation, mirroring the token path: the
+  // HcloudRunResult shape stays owned by hcloud-cli.ts.
+  return { ...result, approved: true, plan: strictPlan };
+}
+
 async function runApprovedCommand(args: ToolArgs = {}) {
   if (args.approvedByUser !== true) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
+  }
+  const approvalMode = approvalModeFromEnv(process.env);
+  if (approvalMode === 'ask') {
+    return runApprovedCommandAskMode(args);
   }
   const token = String(args.approvalToken || '');
 
@@ -233,18 +297,9 @@ async function runApprovedCommand(args: ToolArgs = {}) {
   // burned the single-use token on a mismatch (2026-11-05 UX report #6, the
   // approval-trap probe).
   const { args: effectiveArgs } = stripLeadingHcloudBinArgs(providedArgs);
-  // A placeholder-shaped secret VALUE at run time is never a real secret:
-  // executing a literal `<redacted>`/`<password>` as the password is always
-  // wrong. This guard runs BEFORE the token is consumed, so its own guidance
-  // (replace the value, then re-run) stays followable on the same approval
-  // (loop round 3, seat-1 B3: the guidance used to be a dead end — the
-  // rejection burned the only token).
-  const placeholderArg = firstPlaceholderSecretArg(effectiveArgs);
-  if (placeholderArg) {
-    throw new Error(
-      `The argument "${placeholderArg}" still carries a placeholder secret value: replace <redacted> with the actual value the user approved, then re-run with the same approval token.`,
-    );
-  }
+  // Placeholder guard before the consume: the shared helper's token-mode
+  // wording keeps the guidance followable on the same approval.
+  assertNoPlaceholderSecret(effectiveArgs, 'token');
 
   // The strict plan is pure, so it is computed before the token is consumed:
   // its userConfirmation.needed decides whether the consume requires a grant,
@@ -306,13 +361,7 @@ async function runApprovedCommand(args: ToolArgs = {}) {
       );
     }
   }
-  const result = await runHcloud(effectiveArgs, {
-    allowWrites: true,
-    timeoutMs: args.timeoutMs,
-    maxRetries: args.maxRetries,
-    cwd: args.cwd,
-    stdin: args.stdin,
-  });
+  const result = await runHcloud(effectiveArgs, approvedRunOptions(args));
   // Spread instead of in-place mutation: identical serialized content, minus a
   // write to the HcloudRunResult shape owned by hcloud-cli.ts.
   return { ...result, approved: true, plan: strictPlan };
@@ -370,7 +419,10 @@ async function handleCheckCli(_args: ToolArgs = {}, _opts: CallToolOptions = {})
 }
 
 async function handlePlanCliCommand(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
-  return planHcloudCommand(args.args || [], { allowWrites: args.allowWrites === true });
+  return planHcloudCommand(args.args || [], {
+    allowWrites: args.allowWrites === true,
+    approvalMode: approvalModeFromEnv(process.env),
+  });
 }
 
 async function handleRunReadonlyCommand(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
@@ -419,7 +471,12 @@ const listOperationsSchema = z.looseObject({
 const runApprovedCommandSchema = z.looseObject({
   vendorConfirmed,
   args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
-  approvalToken: z.string().describe('The approvalToken returned by huaweicloud_plan_cli_command.'),
+  approvalToken: z
+    .string()
+    .optional()
+    .describe(
+      'Required in token-approval mode (from huaweicloud_plan_cli_command); omit in ask mode where the harness client confirms at run time.',
+    ),
   approvedByUser: booleanArg.describe('Must be true only after the user explicitly approves this exact command.'),
   timeoutMs: numericArg.optional().describe('Optional timeout in milliseconds. Defaults to 60000.'),
   maxRetries: numericArg.optional().describe('Optional retry count for transient network errors. Defaults to 1.'),
@@ -442,7 +499,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_plan_cli_command',
     description:
-      "Classify and plan a Huawei Cloud hcloud command without executing it. When the result's userConfirmation.needed is true, the USER must confirm in their own terminal by running the userConfirmation.command line (npx huaweicloud-devkit approve <approvalToken>) before huaweicloud_run_approved_command will accept the command. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
+      "Classify and plan a Huawei Cloud hcloud command without executing it. When the result's userConfirmation.needed is true, the command waits on user confirmation before huaweicloud_run_approved_command will accept it: in the default token mode the USER runs the userConfirmation.command line (npx huaweicloud-devkit approve <approvalToken>) in their own terminal, and under DEVKIT_APPROVAL_MODE=ask the harness client itself prompts the user on the run call — no token is needed. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
     schema: planCliCommandSchema,
     handler: handlePlanCliCommand,
   },
@@ -463,7 +520,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_run_approved_command',
     description:
-      'Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user, and after the user confirmed the plan token in their own terminal (npx huaweicloud-devkit approve <token>). A non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      "Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user. In the default token mode the user must also confirm the plan token in their own terminal (npx huaweicloud-devkit approve <token>) — a non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Under DEVKIT_APPROVAL_MODE=ask the harness client's permission prompt on this call is the confirmation: pass the same args with approvedByUser: true and no approvalToken. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
     schema: runApprovedCommandSchema,
     handler: handleRunApprovedCommand,
   },

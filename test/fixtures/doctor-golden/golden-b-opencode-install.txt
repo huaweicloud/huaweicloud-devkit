@@ -1,6 +1,6 @@
 
 ╔══════════════════════════════════════════════╗
-║     HuaweiCloud DevKit v2.0.0-next.2          ║
+║     HuaweiCloud DevKit v2.0.0-next.3          ║
 ║     https://github.com/huaweicloud   ║
 ╚══════════════════════════════════════════════╝
 
@@ -16,6 +16,7 @@ HuaweiCloud DevKit Doctor
   [PASS] Safety hook runtime (Node)
   [PASS] MCP configured
   [PASS] Skills-tree permission seam (allow + edit deny)
+  [SKIP] ASK approval posture (opencode not verifiably at or above 2.0)
   [PASS] hcloud CLI installed
     Version: <hcloud-version>
   [PASS] hcloud credentials configured

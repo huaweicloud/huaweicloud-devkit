@@ -162,7 +162,7 @@ Service skills may skip steps 1-2 when the correct service name and operation ar
 
 ## Safety Model
 
-Write-capable `hcloud` commands are blocked by default. The only write path for hcloud command I/O is `huaweicloud_run_approved_command` (owned by the `huaweicloud-cli` pack), which requires `args` + `approvalToken` + `approvedByUser: true`. Non-hcloud tools that mutate state by design (e.g., `huaweicloud_auth_init`, `huaweicloud_voucher_claim`, `huaweicloud_sandbox_connect`, `huaweicloud_upgrade`) do not require approval.
+Write-capable `hcloud` commands are blocked by default. The only write path for hcloud command I/O is `huaweicloud_run_approved_command` (owned by the `huaweicloud-cli` pack), which requires `args` + `approvalToken` + `approvedByUser: true`; under `DEVKIT_APPROVAL_MODE=ask` (operator opt-in, written by the OpenCode installer on opencode >= 2.0) the harness client's permission prompt on the run call is the confirmation — no token — and the token flow stays the default. Non-hcloud tools that mutate state by design (e.g., `huaweicloud_auth_init`, `huaweicloud_voucher_claim`, `huaweicloud_sandbox_connect`, `huaweicloud_upgrade`) do not require approval.
 
 Policy vocabulary lives in `plugins/huaweicloud-core/safety/policy.json`. Both `src/safety-policy.ts` and `hooks/huaweicloud-safety.py` read from it. If you add a blocked pattern, update the policy JSON, not just one enforcement layer.
 
