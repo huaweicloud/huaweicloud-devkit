@@ -166,4 +166,4 @@ If you changed a SKILL.md, add or update a guard in `test/structure.test.mjs` an
 - The auto-upgrade snapshot covers `src/`, `package.json`, and all `VERSION_MANIFEST_RELS` files; restore also removes manifests the failed update created. `verifyInstalled` compares a tracked-file fingerprint against the backup, not just the version number.
 - Codex plugin marketplace name is read from `.agents/plugins/marketplace.json`. `getMarketplaceName()` must match, never hardcode.
 - OpenCode integration lives in `integrations/opencode/` (separate from the plugin).
-- Node >= 22 required, ESM only.
+- Node >= 22.19 required (Node 23 requires 23.4+), ESM only.
