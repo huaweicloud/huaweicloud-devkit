@@ -2790,11 +2790,12 @@ test('a non-finite connectRetries narrows away: the envelope carries no NaN and 
   });
 });
 
-// ── 毒标构造、快照可用引导、有限数细则（round 19）──
+// ── 拒绝登记、快照可用引导、有限数细则（round 19 建、round 21 措辞对齐）──
 // 中和读回信一次敌意读——延迟谎言在读回时奉上中性值、事后重新呈现装饰值；
 // defineProperty 升级臂 fire-and-forget——陷阱报成功不落。构造性收口：三步
-// 中和后仍存活的访问器/装饰值 → 种毒标，折叠口见毒标即不折叠，与读次数无
-// 关。快照形态过关还不够——{} 与字段敌意记录骑上即零引导，比空载体还少。
+// 中和后仍存活的访问器/装饰值 → 登记（模块态）+ 落诊断字段，折叠口按身
+// 份拒绝，与读次数无关。快照形态过关还不够——{} 与字段敌意记录骑上即零引
+// 导，比空载体还少。
 
 test('an empty-record or fieldless JSON view never rides: the mint fires at both folds', () => {
   for (const [label, view] of [
@@ -2916,6 +2917,7 @@ function hostileRefusingProxy(opts: {
   refuseKey: string;
   markerKey: string;
   swallowWrites?: string;
+  throwSets?: string;
   hideReads?: string;
   lieDefines?: string;
   refuseDefines?: string;
@@ -2932,6 +2934,7 @@ function hostileRefusingProxy(opts: {
       if (opts.refuseMarkerNeutralize !== undefined && k === opts.refuseMarkerNeutralize && v === undefined) {
         throw new TypeError('neutralize refused');
       }
+      if (opts.throwSets !== undefined && k === opts.throwSets) throw new TypeError('set throws for the key');
       if (opts.swallowWrites !== undefined && k === opts.swallowWrites) return true;
       t[k] = v;
       return true;
@@ -2956,7 +2959,7 @@ test('a delayed-lie accessor cannot survive: the poison field kills the exhausti
   assert.equal(
     (carrier as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused,
     true,
-    'the surviving accessor poisons the discarded original',
+    "the surviving accessor registers the discarded original's refusal",
   );
   assert.equal(
     transientExhaustionResult(carrier),
@@ -2988,7 +2991,7 @@ test('a lying defineProperty trap cannot survive: the poison field kills the fol
   assert.equal(transientExhaustionResult(proxy), undefined, 'the fold never fires on the poisoned original');
   assert.equal((out as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
 
-  // 对照：诚实的 defineProperty 陷阱——替换成数据属性，无毒标也永不折叠
+  // 对照：诚实的 defineProperty 陷阱——替换成数据属性，无登记也永不折叠
   const controlProxy = lyingEscalationProxy({
     baseCode: 20,
     markerKey: 'gatewayRetryExhausted',
@@ -3057,15 +3060,15 @@ test('the count letter: negative and fractional counts drop the field and the se
   }
 });
 
-// ── 毒标归属、毒标裁决、第三值谎言、引导可用性细则（round 20）──
-// 毒标泄到克隆上——调用方必须抛出的有效载体生而带毒：耗尽克隆折叠
-// undefined、门禁克隆退化为未知版本。毒标写 fire-and-forget 且折叠口以单次
-// [[Get]] 读它——吞写与谎言 get 各自击穿。探针读把描述符判定挡在门外——
-// 第三值访问器一步跳过存活判定与毒标。steps 只查 Array.isArray——空数组、
-// 非字符串元素、全空白串照骑。
+// ── 拒绝归属、身份裁决、第三值谎言、引导可用性细则（round 20）──
+// 登记泄到克隆上——调用方必须抛出的有效载体生而带拒绝：耗尽克隆折叠
+// undefined、门禁克隆退化为未知版本。诊断字段的写 fire-and-forget 且折叠
+// 口曾以单次 [[Get]] 读它——吞写与谎言 get 各自击穿（现按身份拒绝）。探针
+// 读把描述符判定挡在门外——第三值访问器一步跳过存活判定与登记。steps 只
+// 查 Array.isArray——空数组、非字符串元素、全空白串照骑。
 
 test('the poison belongs to the discarded original: both decorators clones fold the full envelope', () => {
-  // 耗尽：延迟谎言载体 → 克隆必须携带完整结构化信封（毒标不得泄到克隆）
+  // 耗尽：延迟谎言载体 → 克隆必须携带完整结构化信封（拒绝不得泄到克隆）
   {
     const { carrier, out } = exhaustionDelayedLieFixture();
     assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
@@ -3079,7 +3082,7 @@ test('the poison belongs to the discarded original: both decorators clones fold 
     assert.equal(cloneFold.code, 'HDKIT_GATEWAY_TIMEOUT');
     assert.equal(cloneFold.connectRetries, 2, 'the clone carries the attempt count');
     assert.ok(cloneFold.remediation, 'the clone carries the designed guidance');
-    // 丢弃载体仍然拒绝（毒标生效在原对象上）
+    // 丢弃载体仍然拒绝（登记生效在原对象上）
     assert.equal(transientExhaustionResult(carrier), undefined, 'the discarded original still refuses');
   }
   // 门禁：applyVersionGate 的克隆携带诚实版本字段，丢弃载体折叠未知信封
@@ -3103,7 +3106,7 @@ test('the poison belongs to the discarded original: both decorators clones fold 
 
 test('a swallowed poison write still refuses: the decision lives in module state, not on the carrier', () => {
   // 吞写陷阱（round 20 判别式）：标记经延迟谎言访问器存活（触发登记），
-  // 而毒标字段的两条写路全被吞/谎报——字段永不落地；裁决不得依赖载体上的
+  // 而诊断字段的两条写路全被吞/谎报——字段永不落地；裁决不得依赖载体上的
   // 任何写入
   const { proxy, real } = hostileRefusingProxy({
     baseCode: 20,
@@ -3120,15 +3123,33 @@ test('a swallowed poison write still refuses: the decision lives in module state
   assert.equal(
     (real as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused,
     undefined,
-    'the poison field write was swallowed on both paths — the refusal lives in module state',
+    'the diagnostic field write was swallowed on both paths — the refusal lives in module state',
   );
   assert.equal(transientExhaustionResult(proxy), undefined, 'the fold refuses the carrier regardless');
   const cloneFold = transientExhaustionResult(out)!;
   assert.equal(cloneFold.code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone still folds the full envelope');
+  // 第二变体（round 21 补全未行使臂）：诊断赋值直接抛出 → defineProperty 升
+  // 级臂真的跑——同样谎报成功不落；两条写路都吞/谎，登记仍在模块态
+  const { proxy: throwingProxy } = hostileRefusingProxy({
+    baseCode: 20,
+    refuseKey: 'connectRetries',
+    markerKey: 'gatewayRetryExhausted',
+    throwSets: 'hdkitDecorationRefused',
+    lieDefines: 'hdkitDecorationRefused',
+  });
+  delayedLieAccessor(throwingProxy, 'gatewayRetryExhausted', true);
+  const throwingOut = decorateExhaustedConnect(throwingProxy, 2);
+  assert.notEqual(throwingOut, throwingProxy, 'the refusing carrier falls to the clone');
+  assert.equal(
+    transientExhaustionResult(throwingProxy),
+    undefined,
+    'the assignment-throws variant refuses too — the defineProperty escalation arm is exercised',
+  );
+  assert.equal((throwingOut as { code?: string }).code, 'HDKIT_GATEWAY_TIMEOUT');
 });
 
 test('a lying get cannot hide the refusal: the fold never learns the poison from a carrier read', () => {
-  // 谎言 get：毒标字段读被藏（gOPD 诚实——标记与毒标都物理在目标上）；
+  // 谎言 get：诊断字段读被藏（gOPD 诚实——标记与诊断字段都物理在目标上）；
   // 折叠口的裁决不得走任何 [[Get]]
   const { proxy, real } = hostileRefusingProxy({
     baseCode: 20,
@@ -3147,7 +3168,7 @@ test('a lying get cannot hide the refusal: the fold never learns the poison from
   assert.equal(
     (proxy as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused,
     undefined,
-    'the lying get hides the poison field from every property read',
+    'the lying get hides the diagnostic field from every property read',
   );
   assert.equal(
     transientExhaustionResult(proxy),
@@ -3186,7 +3207,10 @@ test('a third-value accessor cannot skip the survival judgment: both decorators 
     );
     assert.ok(reads >= 2, 'the accessor was exercised');
     const cloneFold = transientExhaustionResult(out)!;
-    assert.equal(cloneFold.code, 'HDKIT_GATEWAY_TIMEOUT', 'the clone still folds the full envelope');
+    assert.ok(cloneFold, 'the exhaustion clone folds (round 21 补全耗尽半边的完整信封断言)');
+    assert.equal(cloneFold.code, 'HDKIT_GATEWAY_TIMEOUT');
+    assert.equal(cloneFold.connectRetries, 2, 'the clone carries the attempt count');
+    assert.ok(cloneFold.remediation, 'the clone carries the designed guidance');
   }
   // 门禁孪生
   {
@@ -3222,7 +3246,7 @@ test('junk steps never ride: empty, non-string, and all-blank step arrays mint a
     ['non-string elements', [1, 2, 3]],
     ['all-blank strings', ['', '\u200b', '   ']],
   ] as const) {
-    assertBothFoldsMint({ hint: 'usable hint', steps, toJSON: undefined }, label);
+    assertBothFoldsMint({ hint: 'usable hint', steps }, label);
   }
 });
 
@@ -3262,4 +3286,178 @@ test('the clone snapshots accessor values: a post-decoration lie cannot ride thr
   assert.equal((out as { poolType?: unknown }).poolType, 'ephemeral', 'the snapshot value rides');
   poolType = 'flipped-after-decoration'; // 原对象翻供
   assert.equal((out as { poolType?: unknown }).poolType, 'ephemeral', 'the clone is immune to the flip');
+});
+
+// ── 登记边界、再装饰、落定访问器、拒绝信封收口（round 21）──
+// add(target) 无守卫——null/undefined 载体让 TypeError 顶替设计克隆；written
+// === undefined 短路判定——省略字段的存活访问器既不判定也不登记；一次拒绝
+// 永久生效——诚实再装饰的有效载体被自己的折叠按身份拒绝，结构化信封全失；
+// 落定键不判描述符——合作一次后翻供的访问器留在原地，信封自相矛盾。
+
+test('null and primitive carriers through applyVersionGate return decorated clones, never a TypeError', () => {
+  for (const [label, carrier] of [
+    ['null', null],
+    ['undefined', undefined],
+    ['string', 'plain string'],
+    ['number', 42],
+  ] as const) {
+    let out: unknown;
+    assert.doesNotThrow(() => {
+      out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+    }, `${label}: never a TypeError out of the exported seam`);
+    assert.ok(out instanceof Error, `${label}: a decorated Error returns`);
+    assert.equal((out as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+    assert.equal((out as { minVersion?: string }).minVersion, '2.0.0');
+  }
+});
+
+test('a surviving accessor on an undefined-valued key is judged and registered: the fold mints the unknown envelope', () => {
+  // 载体：服务端 payload 省略 minVersion（written === undefined），其上预置
+  // 吞写访问器——既不判定也不登记的键让丢弃载体折叠谎言
+  const carrier = new Error('gate') as unknown as HostileTarget;
+  Object.assign(carrier, { code: 'HDKIT_VERSION_TOO_OLD' });
+  Object.defineProperty(carrier, 'minVersion', {
+    configurable: false,
+    enumerable: true,
+    get() {
+      return '9.9.9-lie';
+    },
+    set() {
+      // 吞下一切写入
+    },
+  });
+  const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', message: 'upgrade' });
+  assert.notEqual(out, carrier, 'the refusing carrier falls to the clone');
+  const originalGate = versionGateResult(carrier)!;
+  assert.equal(
+    originalGate.minVersion,
+    undefined,
+    'the surviving accessor on the omitted key is registered — the lie never rides the discarded original fold',
+  );
+  assert.match(String((originalGate.remediation as { hint?: string }).hint ?? ''), /当前 未知/);
+  const cloneGate = versionGateResult(out)!;
+  assert.equal(cloneGate.clientVersion, '2.0.0-next.0', 'the effective clone folds its payload');
+  // 孪生：省略 clientVersion
+  const twin = new Error('gate') as unknown as HostileTarget;
+  Object.assign(twin, { code: 'HDKIT_VERSION_TOO_OLD' });
+  Object.defineProperty(twin, 'clientVersion', {
+    configurable: false,
+    enumerable: true,
+    get() {
+      return '8.8.8-lie';
+    },
+    set() {
+      // 吞下一切写入
+    },
+  });
+  const twinOut = applyVersionGate(twin, { minVersion: '2.0.0', message: 'upgrade' });
+  assert.notEqual(twinOut, twin);
+  assert.equal(versionGateResult(twin)?.clientVersion, undefined, 'the twin registers too');
+});
+
+test('a refused-then-redecorated carrier folds the full envelope: the registration lifts on verified success', () => {
+  // 状态ful载体：第一轮敌意（一次性读谎 + 拒中和），第二轮完全诚实——
+  // 每个写经回读验证、就地装填成功。登记按验证过的落定解除：验证过的落定
+  // 正是拒绝所求的证据，永久性买不到验证之外的任何东西
+  const real = Object.assign(new Error('the real diagnosis'), { code: 20 });
+  let getLies = 1;
+  let hostile = true;
+  const carrier = new Proxy(real, {
+    get(t: typeof real, k: string | symbol): unknown {
+      if (k === 'gatewayRetryExhausted' && getLies > 0) {
+        getLies -= 1;
+        return 'lie';
+      }
+      return (t as unknown as Record<string | symbol, unknown>)[k];
+    },
+    set(t: typeof real, k: string | symbol, v: unknown): boolean {
+      if (hostile && k === 'gatewayRetryExhausted' && v !== true) throw new TypeError('refuse neutralize');
+      (t as unknown as Record<string | symbol, unknown>)[k] = v;
+      return true;
+    },
+    deleteProperty(t: typeof real, k: string | symbol): boolean {
+      if (hostile && k === 'gatewayRetryExhausted') return true;
+      return Reflect.deleteProperty(t, k);
+    },
+  }) as unknown as HostileTarget;
+  const first = decorateExhaustedConnect(carrier, 2);
+  assert.notEqual(first, carrier, 'call 1: the hostile carrier falls to the clone');
+  assert.equal(transientExhaustionResult(carrier), undefined, 'call 1: the discarded original refuses');
+  hostile = false;
+  const second = decorateExhaustedConnect(carrier, 2);
+  assert.equal(second, carrier, 'call 2: the honest re-decoration lands in place — the module hands back the original');
+  const fold = transientExhaustionResult(second)!;
+  assert.ok(
+    fold,
+    'call 2: the effective carrier folds the full structured envelope — the registration lifted on verified success',
+  );
+  assert.equal(fold.code, 'HDKIT_GATEWAY_TIMEOUT');
+  assert.equal(fold.connectRetries, 2);
+  assert.ok(fold.remediation, 'the structured remediation rides');
+  assert.equal(
+    (second as { hdkitDecorationRefused?: unknown }).hdkitDecorationRefused,
+    undefined,
+    'the stale diagnostic field is removed on the in-place path',
+  );
+});
+
+test('a cooperating-then-flipping accessor routes to the clone: landed keys are descriptor-judged', () => {
+  // 访问器合作一次（回读通过、就地装填"成功"），折叠时翻供——落定键也要过
+  // 描述符判定；访问器仍立着 → 走克隆，克隆的设计值折叠
+  let flips = false;
+  const carrier = new Error('upgrade') as unknown as HostileTarget;
+  Object.assign(carrier, { code: 'HDKIT_VERSION_TOO_OLD' });
+  Object.defineProperty(carrier, 'clientVersion', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return flips ? '666.6.6-lie' : '2.0.0-next.0';
+    },
+    set(v: unknown) {
+      if (v === '2.0.0-next.0') return; // 第一次合作：接受且 get 读回同值
+      flips = true;
+    },
+  });
+  const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '3.0.0' });
+  assert.notEqual(out, carrier, 'the standing accessor routes to the clone even after a landed write');
+  const cloneGate = versionGateResult(out)!;
+  assert.equal(cloneGate.clientVersion, '2.0.0-next.0', "the clone's design values fold");
+  assert.match(String((cloneGate.remediation as { hint?: string }).hint ?? ''), /当前 2\.0\.0-next\.0/);
+  // 翻供后读取丢弃载体也安全：拒绝由身份决定
+  flips = true;
+  const originalGate = versionGateResult(carrier)!;
+  assert.equal(originalGate.clientVersion, undefined, 'the discarded original folds the unknown envelope');
+  // 孪生：耗尽装饰器的同型——折叠永不 undefined
+  let exhaustFlips = false;
+  const exhaustCarrier = new Error('the real diagnosis') as unknown as HostileTarget;
+  Object.assign(exhaustCarrier, { code: 20 });
+  Object.defineProperty(exhaustCarrier, 'gatewayRetryExhausted', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return exhaustFlips ? 'flipped' : true;
+    },
+    set(v: unknown) {
+      if (v !== true) return; // 装饰写合作，中和写吞下
+    },
+  });
+  const exhaustOut = decorateExhaustedConnect(exhaustCarrier, 2);
+  assert.notEqual(exhaustOut, exhaustCarrier, 'the standing marker accessor routes to the clone');
+  const exhaustFold = transientExhaustionResult(exhaustOut)!;
+  assert.ok(exhaustFold, 'the clone folds the full exhaustion envelope');
+  assert.equal(exhaustFold.code, 'HDKIT_GATEWAY_TIMEOUT');
+});
+
+test('the refused gate envelope reads nothing off the carrier: no retryAfter, no coreHours', () => {
+  // 已登记的拒绝载体（延迟谎言访问器存活 → 注册）：其上的任何陈述不可信，
+  // 拒绝信封不得读取 retryAfter/coreHours（敌意字段会把信封引向"等 999999 秒"）
+  const { carrier } = gateDelayedLieFixture();
+  // 事后在拒绝载体上种入的 retryAfter/coreHours 不得骑信封
+  (carrier as Record<string, unknown>).retryAfter = '999999';
+  (carrier as Record<string, unknown>).coreHoursExhausted = true;
+  const originalGate = versionGateResult(carrier)!;
+  assert.ok(originalGate, 'the gate fold fires on the registered refused carrier');
+  assert.equal(originalGate.retryAfter, undefined, 'the refused envelope reads no retryAfter off the carrier');
+  assert.equal(originalGate.coreHoursExhausted, undefined, 'the refused envelope reads no coreHours off the carrier');
+  assert.match(String((originalGate.remediation as { hint?: string }).hint ?? ''), /当前 未知/);
 });

@@ -172,6 +172,21 @@ const UPGRADE_STEPS = [
  * 空位，兜底（未知/最新版）照常生效。
  */
 export function applyVersionGate(error: unknown, payload: VersionGatePayload): Error {
+  // 非对象载体预检（round 21，同 decorateExhaustedConnect 的 round-11 守卫）：
+  // null/undefined 走到回滚判定会让登记的 WeakSet.add 抛 TypeError——原始
+  // 值/空值按无字段可读处理，换新可写载体递归（新载体恒就地装填成功，不经
+  // 拒绝/登记机制）
+  if (error === null || (typeof error !== 'object' && typeof error !== 'function')) {
+    // 空载体无诊断可给——构造消息是固定形态（此处非错误路径语义），错误类
+    // 名即自我描述；与 decoratePlainCarrier 的设计文案同族
+    return applyVersionGate(new Error('gate payload on a non-object carrier'), payload);
+  }
+  const err = error as {
+    clientVersion?: string;
+    minVersion?: string;
+    message?: string;
+    remediation?: { hint: string; steps: string[] };
+  };
   // round 6：版本字段与消息同过清洗口（cleanMessage）——纯不可见值视同缺失，
   // hint 不留不可见空位，兜底（未知/最新版）照常生效。
   // round 14：payload 读补齐 gateFoldPayload 的双卫队（round 12 回归类——
@@ -199,7 +214,7 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): E
   ];
   if (message) fields.push(['message', message]);
   if (decorateInPlace(error as Record<string, unknown>, fields)) return error as Error;
-  return cloneCarrier(error as object, fields);
+  return cloneCarrier(error, fields);
 }
 
 /**
@@ -287,6 +302,12 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
  */
 export function versionGateResult(error: unknown): Record<string, unknown> | undefined {
   if (!isVersionGateError(error)) return undefined;
+  // 拒绝载体零读（round 21/SHOULD 5）：retryAfter/coreHours 不得从丢弃载体
+  // 读取（敌意字段会把信封引向"等 999999 秒"）——拒绝分支经 gateFoldPayload
+  // 的登记分支铸未知信封，不经此处的字段读
+  if (refusedCarriers.has(error as object)) {
+    return { ok: false, ...gateFoldPayload(error) };
+  }
   // round 12：字段读安全化（抛出型 getter 按缺失）；retryAfter 窄化到字符串
   // （round 16）——BigInt 等非字符串值不骑信封（MCP 序列化边界）
   const rawRetryAfter = safeReadField(error, 'retryAfter');
@@ -335,7 +356,8 @@ export function canonCode(code: unknown): string {
 }
 
 // remediation 的深序列化验证（round 16 建、round 17 修上下文与快照、
-// round 18 快照形态窄化、round 19 可用引导判定）：窄化只看第一层——嵌套
+// round 18 快照形态窄化、round 19/20 可用引导判定、round 21 全字符串步骤）：
+// 窄化只看第一层——嵌套
 // BigInt/循环引用在 MCP 序列化边界照样炸，故按边界形态深验。round 17：①
 // 验证必须在嵌套上下文——边界按信封键 'remediation' 序列化，JSON.stringify
 // 把属性键传给 toJSON，顶层验证时 toJSON 收到 ''——无状态判别器（toJSON
@@ -352,13 +374,14 @@ export function serializableRemediation(raw: unknown): { hint: string; steps: st
   try {
     const verified = JSON.stringify({ remediation: raw });
     const snapshot = JSON.parse(verified) as { remediation?: unknown };
-    // 快照形态与可用引导窄化（round 18 形态、round 19/20 可用性）：toJSON 在
-    // remediation 键下可呈现任意 JSON 值——非对象（0/''/null）与数组不是引导
-    // 记录（round 18）；记录形态过关还不够——{} 骑上即零引导（round 19），
-    // steps 只查 Array.isArray 会让空数组、非字符串元素、全空白串照骑
-    // （round 20）。可用判定：hint 非空白字符串，steps 至少一个非空白字符
-    // 串步骤（设计铸造带三条，少于此不如铸造）；字段验证、整体原样随信封
-    // （round 17 的字节往返不变式：服务端多余键如 traceId 原样保留）。
+    // 快照形态与可用引导窄化（round 18 形态、round 19/20/21 可用性）：toJSON
+    // 在 remediation 键下可呈现任意 JSON 值——非对象（0/''/null）与数组不是
+    // 引导记录（round 18）；记录形态过关还不够——{} 骑上即零引导（round
+    // 19），steps 只查 Array.isArray 会让空数组、非字符串元素、全空白串照骑
+    // （round 20），非字符串元素在 string[] 断言下说谎（round 21）。可用判
+    // 定：hint 非空白字符串，steps 全字符串且至少一个非空白（设计铸造带三
+    // 条，少于此不如铸造）；字段验证、整体原样随信封（round 17 的字节往返
+    // 不变式：服务端多余键如 traceId 原样保留）。
     // 拒绝时门禁与耗尽两折叠口的设计引导铸造兜底——handler/voucher 信封
     // 有意省略（无设计引导可铸）
     const parsed = snapshot.remediation;
@@ -367,7 +390,8 @@ export function serializableRemediation(raw: unknown): { hint: string; steps: st
     if (typeof shaped.hint !== 'string' || rendersBlank(shaped.hint) || !Array.isArray(shaped.steps)) {
       return undefined;
     }
-    if (!shaped.steps.some((step) => typeof step === 'string' && !rendersBlank(step))) return undefined;
+    if (!shaped.steps.every((step) => typeof step === 'string')) return undefined;
+    if (!shaped.steps.some((step) => !rendersBlank(step))) return undefined;
     return parsed as { hint: string; steps: string[] };
   } catch {
     return undefined;
@@ -483,17 +507,16 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       let poisoned = false;
       for (const done of [...applied, key]) {
         const written = writtenValues.get(done);
-        if (written === undefined) continue;
-        // 存活判定（round 19 建、round 20 无条件化）：不信任何单次读——
-        // 此前的探针读（读数不等于装饰值即跳过整键）被第三值访问器一步骗
-        // 过：既非装饰值也非中性值的读数让判定/中和/登记全部短路。描述符是
-        // 理论通道，每个回滚键无条件先过判定：访问器仍存活（可随时翻供——
-        // 无论读几次）或数据值仍是装饰值即存活；无描述符时读一次（无落点
-        // 可翻供）；gOPD 抛出从严判存活
+        // 判定无条件跑（round 21/MUST 2）：written === undefined 的跳过让省
+        // 略字段的存活访问器既不判定也不登记——丢弃载体折叠谎言（minVersion:
+        // 9.9.9-lie）。存活语义按写入值细化：undefined 装饰下只有访问器算存活
+        // （数据值恒等 undefined 是写入本身，非谎言，无从翻供）；defined 装饰
+        // 下访问器或数据值仍是装饰值即存活。中和臂保持值门控（round 21 裁定）
         const survivesByDescriptor = (): boolean => {
           try {
             const desc = Object.getOwnPropertyDescriptor(target, done);
             if (desc && (desc.get !== undefined || desc.set !== undefined)) return true;
+            if (written === undefined) return false;
             if (desc && desc.value === written) return true;
             if (!desc) {
               try {
@@ -508,6 +531,12 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
           }
         };
         if (!survivesByDescriptor()) continue;
+        if (written === undefined) {
+          // undefined 装饰无值可中和——判定已跑、访问器存活即登记
+          poisoned = true;
+          refusedCarriers.add(target);
+          continue;
+        }
         const snap = snapshots.get(done);
         const neutral: unknown = snap && snap.value !== undefined ? snap.value : undefined;
         let neutralized = false;
@@ -555,6 +584,42 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       return false;
     }
     applied.push(key);
+  }
+  // 落定键的描述符判定（round 21/MUST 4）：合作一次的访问器（回读通过、就地
+  // 装填"成功"）折叠时翻供——落定键也要过判定，访问器仍立着 → 走克隆，
+  // 克隆的设计值折叠（信封不再自相矛盾：hint 一版、字段读谎言）。原对象同
+  // 时登记：立着的访问器随时可翻供，丢弃载体的任何陈述不可信——与拒绝路径
+  // 的存活登记同一doctrine
+  let landedAccessor = false;
+  for (const done of applied) {
+    try {
+      const desc = Object.getOwnPropertyDescriptor(target, done);
+      if (desc && (desc.get !== undefined || desc.set !== undefined)) {
+        landedAccessor = true;
+        break;
+      }
+    } catch {
+      landedAccessor = true;
+      break;
+    }
+  }
+  if (landedAccessor) {
+    refusedCarriers.add(target);
+    try {
+      target[DECORATION_REFUSED_FIELD] = true;
+    } catch {
+      // 诊断字段尽力而为——登记在模块态
+    }
+    return false;
+  }
+  // 验证过的落定解除登记（round 21/MUST 3）：一次拒绝永久生效会让诚实再装
+  // 饰的有效载体被自己的折叠按身份拒绝——结构化信封在 connect 出口全失。
+  // 验证过的落定正是拒绝所求的证据；顺手清掉陈旧诊断字段（不再骑有效载体）
+  refusedCarriers.delete(target);
+  try {
+    delete target[DECORATION_REFUSED_FIELD];
+  } catch {
+    // 尽力而为——被拒的字段不阻塞成功路径
   }
   return true;
 }
