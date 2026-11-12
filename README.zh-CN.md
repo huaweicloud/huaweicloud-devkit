@@ -14,9 +14,7 @@
 
 ## 前置条件
 
-- Node.js >= 22.5
-
-**说明**：在需要 `--experimental-sqlite` 的 Node 版本上，CLI 会为 OfficeAce 自动启用该 flag，无需手动设置。
+- Node.js >= 22.19（Node 23 请使用 23.4+）
 
 > **国内用户**：使用默认 npm 镜像时可能遇到下载缓慢或连接失败的问题，建议配置华为云 npm 镜像：
 >

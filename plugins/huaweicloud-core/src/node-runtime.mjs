@@ -1,26 +1,20 @@
 import { createRequire } from 'node:module';
 
-const NODE_FLOOR_MAJOR = 22;
-const NODE_FLOOR_MINOR = 5;
+const NODE_FLOORS = [
+  { major: 22, minor: 19 },
+  { major: 23, minor: 4 },
+];
 
 export function parseNodeVersion(version = process.versions.node) {
   const [major, minor] = String(version).replace(/^v/, '').split('.').map(Number);
   return { major, minor };
 }
 
-export function needsSqliteFlag(version = process.versions.node) {
+export function isSupportedNode(version = process.versions.node) {
   const { major, minor } = parseNodeVersion(version);
-  if (major === 22) return minor >= NODE_FLOOR_MINOR && minor < 13;
-  if (major === 23) return minor < 4;
-  return false;
-}
-
-export function sqliteSupport(version = process.versions.node) {
-  const { major, minor } = parseNodeVersion(version);
-  if (major < NODE_FLOOR_MAJOR || (major === NODE_FLOOR_MAJOR && minor < NODE_FLOOR_MINOR)) {
-    return 'unsupported';
-  }
-  return needsSqliteFlag(version) ? 'flag' : 'ok';
+  if (major > NODE_FLOORS[NODE_FLOORS.length - 1].major) return true;
+  const floor = NODE_FLOORS.find((entry) => entry.major === major);
+  return floor ? minor >= floor.minor : false;
 }
 
 function displayVersion(version) {
@@ -28,19 +22,11 @@ function displayVersion(version) {
 }
 
 export function sqliteGuidance(version = process.versions.node) {
-  const support = sqliteSupport(version);
-  if (support === 'unsupported') {
-    return `OfficeAce integration requires Node.js >= 22.5 (current: ${displayVersion(version)}).`;
+  const current = displayVersion(version);
+  if (!isSupportedNode(version)) {
+    return `Node.js >= 22.19 (or >= 23.4.0) is required for the OfficeAce integration (current: ${current}).`;
   }
-  if (support === 'flag') {
-    return (
-      'OfficeAce integration requires Node.js >= 22.5. ' +
-      `On Node ${displayVersion(version)} it also needs --experimental-sqlite. ` +
-      'The CLI enables it automatically; if setup-cli was invoked directly, set ' +
-      'NODE_OPTIONS=--experimental-sqlite and retry.'
-    );
-  }
-  return `node:sqlite failed to load on Node ${displayVersion(version)}. Please upgrade Node.js or report this issue.`;
+  return `node:sqlite failed to load on Node ${current}. Please upgrade Node.js or report this issue.`;
 }
 
 function sqliteUnavailable() {

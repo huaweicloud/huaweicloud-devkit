@@ -76,10 +76,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@v4
         with:
-          node-version: '22.11.0'
+          node-version: '22.19.0'
           cache: npm
       - run: npm ci
-      - run: node --test test/node-runtime.test.mjs test/node-floor-install.test.mjs
+      - run: node --test test/node-runtime.test.mjs test/node-floor-install.test.mjs test/undici-floor.test.mjs test/officeace-adaptation.test.mjs
+
+  node-floor-reject:
+    needs: [lint]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.11.0'
+          cache: npm
+      - run: npm ci --engine-strict=false
+      - run: node --test test/node-floor-reject.test.mjs
 
   integration:
     needs: [test]

@@ -47,7 +47,7 @@ import {
 } from './mcp-config-merge.mjs';
 import { readAgentDelta, saveAgentDelta, takeAgentDelta, purgeBackup } from './mcp-config-backup.mjs';
 import { isUsableOfficeaceRoot, readOfficeaceRootMarker, writeOfficeaceRootMarker } from './officeace-paths.mjs';
-import { loadSqliteModule, sqliteSupport } from './node-runtime.mjs';
+import { isSupportedNode, loadSqliteModule } from './node-runtime.mjs';
 import { queryDistTagsFetch, determineTarget, semverCompare } from './update-check.mjs';
 import { getKooCliVersion, compareVersion, kooCliDownloadBase, KOO_CLI_BASE } from './koocli-version.mjs';
 import { findHcloudBin, hcloudProbeNextStep, probeHcloud } from './hcloud-probe.mjs';
@@ -509,8 +509,8 @@ function printSandboxWarning(reason) {
 }
 
 function checkNode() {
-  if (sqliteSupport(process.versions.node) === 'unsupported') {
-    console.error(`\x1b[31mNode.js >= 22.5 required (current: ${process.version})\x1b[0m`);
+  if (!isSupportedNode(process.versions.node)) {
+    console.error(`\x1b[31mNode.js >= 22.19 required (Node 23 requires 23.4+) (current: ${process.version})\x1b[0m`);
     process.exit(1);
   }
   console.log(`  Node.js ${process.version} \x1b[32mOK\x1b[0m`);
@@ -4019,7 +4019,11 @@ async function cmdDoctor() {
   }
 
   // Node.js
-  check('Node.js >= 22.5', sqliteSupport(process.versions.node) !== 'unsupported', 'Install Node.js >= 22.5');
+  check(
+    'Node.js >= 22.19',
+    isSupportedNode(process.versions.node),
+    'Install Node.js >= 22.19 (Node 23 requires 23.4+)',
+  );
 
   // MCP server — check OpenCode, Codex Desktop, CodeArts, WorkBuddy, and DSH paths
   const opencodePluginDir = opencodePluginsDir();

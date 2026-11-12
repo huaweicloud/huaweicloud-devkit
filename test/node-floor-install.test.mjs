@@ -6,12 +6,12 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
-import { needsSqliteFlag } from '../plugins/huaweicloud-core/src/node-runtime.mjs';
+import { isSupportedNode } from '../plugins/huaweicloud-core/src/node-runtime.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
-const flagNode = needsSqliteFlag(process.versions.node);
-const skipWithoutFlagNode = flagNode ? false : 'node:sqlite is already available on this Node version';
+const supported = isSupportedNode(process.versions.node);
+const skipUnsupported = supported ? false : 'Node.js >= 22.19 required';
 
 function makeEnv(home) {
   const env = {
@@ -29,10 +29,10 @@ function makeEnv(home) {
   return env;
 }
 
-function runCli(home, cwd, args, overrides = {}) {
+function runCli(home, cwd, args) {
   return spawnSync(process.execPath, [setupCli, ...args], {
     cwd,
-    env: { ...makeEnv(home), ...overrides },
+    env: makeEnv(home),
     encoding: 'utf8',
     timeout: 600000,
   });
@@ -51,7 +51,7 @@ function createOfficeaceDb(home) {
     'db.prepare("INSERT INTO mcp_connectors (id, owner_user_id, type, name, normalized_name, transport, timeout_ms, command, args_json, env_json, enabled, status, created_at, updated_at, version, seeded) VALUES (?, ?, \'custom\', ?, ?, \'stdio\', 60000, \'node\', ?, \'[]\', 1, \'disconnected\', 0, 0, 1, 0)").run("seed-1", "oa-user-1", "huaweicloud-devkit", "huaweicloud-devkit", JSON.stringify(["/old/mcp-server.mjs"]));',
     'db.close();',
   ].join('\n');
-  const res = spawnSync(process.execPath, ['--experimental-sqlite', '-e', script], {
+  const res = spawnSync(process.execPath, ['-e', script], {
     encoding: 'utf8',
     env: { ...process.env, OA_HOME: home, NODE_OPTIONS: '' },
     timeout: 60000,
@@ -70,7 +70,7 @@ function removeDirs(...dirs) {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
-test('version runs on the declared node floor without a sqlite flag', () => {
+test('version runs on the declared node floor', () => {
   const home = mkdtempSync(join(tmpdir(), 'floor-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'floor-proj-'));
   try {
@@ -83,7 +83,7 @@ test('version runs on the declared node floor without a sqlite flag', () => {
   }
 });
 
-test('codearts install runs on the declared node floor without a sqlite flag', () => {
+test('codearts install runs on the declared node floor', { skip: skipUnsupported }, () => {
   const home = mkdtempSync(join(tmpdir(), 'floor-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'floor-proj-'));
   try {
@@ -99,54 +99,28 @@ test('codearts install runs on the declared node floor without a sqlite flag', (
   }
 });
 
-test(
-  'officeace install enables --experimental-sqlite automatically on the node floor',
-  { skip: skipWithoutFlagNode },
-  () => {
-    const home = mkdtempSync(join(tmpdir(), 'floor-home-'));
-    const cwd = mkdtempSync(join(tmpdir(), 'floor-proj-'));
-    try {
-      makeOfficeaceHome(home);
-      const res = runCli(home, cwd, ['install', '--target', 'officeace']);
-      assert.equal(res.status, 0, res.stderr);
-      assert.match(res.stdout, /\[OfficeAce\]/);
-      assert.match(res.stderr, /enabling --experimental-sqlite/i);
-      assert.doesNotMatch(res.stderr, /No such built-in module/);
-    } finally {
-      removeDirs(home, cwd);
-    }
-  },
-);
-
-test('officeace install without the flag or re-exec reports actionable guidance', { skip: skipWithoutFlagNode }, () => {
+test('officeace install runs on the declared node floor', { skip: skipUnsupported }, () => {
   const home = mkdtempSync(join(tmpdir(), 'floor-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'floor-proj-'));
   try {
     makeOfficeaceHome(home);
-    const res = runCli(home, cwd, ['install', '--target', 'officeace'], {
-      HCDEVKIT_SQLITE_REEXEC: '1',
-    });
-    assert.notEqual(res.status, 0);
-    const output = `${res.stdout}\n${res.stderr}`;
-    assert.match(output, /Node\.js >= 22\.5/);
-    assert.match(output, /--experimental-sqlite/);
-    assert.doesNotMatch(output, /No such built-in module/);
+    const res = runCli(home, cwd, ['install', '--target', 'officeace']);
+    assert.equal(res.status, 0, res.stderr);
+    assert.match(res.stdout, /\[OfficeAce\]/);
+    assert.doesNotMatch(res.stderr, /No such built-in module/);
   } finally {
     removeDirs(home, cwd);
   }
 });
 
-test('officeace status reports unavailable instead of crashing without the flag', { skip: skipWithoutFlagNode }, () => {
+test('officeace status runs on the declared node floor', { skip: skipUnsupported }, () => {
   const home = mkdtempSync(join(tmpdir(), 'floor-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'floor-proj-'));
   try {
     makeOfficeaceHome(home);
-    const res = runCli(home, cwd, ['status', '--target', 'officeace'], {
-      HCDEVKIT_SQLITE_REEXEC: '1',
-    });
+    const res = runCli(home, cwd, ['status', '--target', 'officeace']);
     assert.equal(res.status, 0, res.stderr);
-    assert.match(res.stdout, /Unavailable/);
-    assert.match(res.stdout, /--experimental-sqlite/);
+    assert.match(res.stdout, /MCP config:/);
     assert.doesNotMatch(res.stdout, /No such built-in module/);
   } finally {
     removeDirs(home, cwd);

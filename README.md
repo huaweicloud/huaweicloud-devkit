@@ -14,9 +14,7 @@ Supports OpenCode, Codex, CodeArts Agent, WorkBuddy, DeepSeek Harness (DSH), Off
 
 ## Prerequisites
 
-- Node.js >= 22.5
-
-**Note:** On Node versions where `node:sqlite` requires the experimental flag, the CLI enables it automatically for OfficeAce; no manual `NODE_OPTIONS` is needed.
+- Node.js >= 22.19 (Node 23 requires 23.4+)
 
 > **China mainland users**: If you experience slow downloads or connection issues with the default npm registry, configure the Huawei Cloud npm mirror:
 >
