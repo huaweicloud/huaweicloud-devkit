@@ -83,10 +83,11 @@ export function parseDistTagsOutput(stdout) {
     const text = String(stdout || '').trim();
     if (!text) return null; // 空输出视为 npm view 失败
     const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const obj = Array.isArray(parsed) ? parsed[0] : parsed;
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
     return {
-      latest: typeof parsed.latest === 'string' ? parsed.latest : null,
-      next: typeof parsed.next === 'string' ? parsed.next : null,
+      latest: typeof obj.latest === 'string' ? obj.latest : null,
+      next: typeof obj.next === 'string' ? obj.next : null,
     };
   } catch {
     return null;
