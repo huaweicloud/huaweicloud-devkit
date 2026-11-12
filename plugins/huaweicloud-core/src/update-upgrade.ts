@@ -8,7 +8,7 @@ import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.ts';
 import { isCredentialEnvVarName } from './lib/secret-vault/refs.ts';
 import { determineTarget, semverCompare, type DistTags } from './update-semver.ts';
 import { readInstalledVersion } from './update-installed.ts';
-import { queryDistTags, errorMessage, resolveRegistryOverride } from './update-registry.ts';
+import { queryDistTags, errorMessage, resolveRegistryOverride, resolveEnvSpelling } from './update-registry.ts';
 import { invalidateUpdateCache } from './update-cache.ts';
 
 const NPX_BIN = process.platform === 'win32' ? 'npx.cmd' : 'npx';
@@ -90,14 +90,9 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
     const upper = key.trim().toUpperCase();
     if (upper === 'HUAWEICLOUD_NPM_REGISTRY') continue;
     if (upper === 'NPM_CONFIG_REGISTRY') registrySpellings.push(key);
-    // npm's own auth channels reach the child trimmed AND under npm's exact
-    // name, matching the pre-flight query's bearer: a padded token key must
-    // authenticate both halves or neither.
-    if (upper === 'NPM_TOKEN' || upper === 'NODE_AUTH_TOKEN') {
-      const token = value?.trim();
-      if (token) next[upper] = token;
-      continue;
-    }
+    // npm's own auth channels are resolved after the loop through the shared
+    // spelling rule, matching the pre-flight query's bearer exactly.
+    if (upper === 'NPM_TOKEN' || upper === 'NODE_AUTH_TOKEN') continue;
     if (UPGRADE_PRESERVE_ENV_KEYS.has(upper)) {
       // A padded spelling cannot reach the child's exact-name lookup: forward
       // the trimmed name, letting an existing exact spelling win.
@@ -111,6 +106,11 @@ function upgradeEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   // One canonical channel through the shared resolver, so the child's own
   // devkit lookup, npm's pin, and the pre-flight query cannot disagree; empty
   // and whitespace count as unset everywhere, and an unset override never pins.
+  const authKeys = ['NPM_TOKEN', 'NODE_AUTH_TOKEN'] as const;
+  for (const name of authKeys) {
+    const token = resolveEnvSpelling(env, name);
+    if (token) next[name] = token;
+  }
   const registry = resolveRegistryOverride(env);
   if (registry) {
     next.HUAWEICLOUD_NPM_REGISTRY = registry;
@@ -507,12 +507,26 @@ function selectFailureLine(
 // is a nested or recovered step, not the failure.
 type ErrorBlock = { code: LineEntry; entries: LineEntry[] };
 
-function errorBlocks(codeEntries: LineEntry[], otherEntries: LineEntry[]): ErrorBlock[] {
+function errorBlocks(
+  codeEntries: LineEntry[],
+  otherEntries: LineEntry[],
+  codelessEntries: LineEntry[] = [],
+): ErrorBlock[] {
   return codeEntries.map((code, position) => {
     const next = codeEntries[position + 1]?.index ?? Number.POSITIVE_INFINITY;
+    // A lifecycle line (an info-run echo or a result) starts the next step:
+    // the block body (npm's error metadata) cannot own a later step's echo.
+    const bare =
+      codelessEntries.find(
+        (entry) =>
+          entry.index > code.index &&
+          entry.index < next &&
+          (/^npm info run\b/.test(entry.line) || isNpmScriptResult(entry.line)),
+      )?.index ?? next;
+    const boundary = Math.min(next, bare);
     return {
       code,
-      entries: otherEntries.filter((entry) => entry.index > code.index && entry.index < next),
+      entries: otherEntries.filter((entry) => entry.index > code.index && entry.index < boundary),
     };
   });
 }
@@ -531,6 +545,12 @@ function pickInBlock(block: ErrorBlock): { line: string; rank: number; index: nu
 
 function npmRunIdentity(line: string): string | undefined {
   return /^npm info run (\S+ \S+)\b/.exec(npmPayload(line))?.[1];
+}
+
+// A line that announces the step recovered is recovery evidence, not a dying
+// word: the canonical recovered-chatter idiom is never the failure's cause.
+function isRecoveryNotice(line: string): boolean {
+  return /\brecover(?:ed|ing|s)?\b/i.test(npmPayload(line));
 }
 
 function isCauseLine(line: string): boolean {
@@ -623,9 +643,17 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     if (echo) {
       claimedEchoes.add(echo.index);
       recoveredWindows.push({ start: echo.index, end: result.index });
+    } else {
+      // No unclaimed same-identity echo: the result is unattributable to an
+      // earlier run, so it claims only its own line; its chatter is not a
+      // recovered step's words and cannot stand in for the failure.
+      recoveredWindows.push({ start: result.index, end: result.index });
     }
   }
-  const startsRecoveredWindow = (index: number) => recoveredWindows.some((window) => window.start === index);
+  const inInclusiveWindow = (index: number) =>
+    recoveredWindows.some((window) => index >= window.start && index <= window.end);
+  const startsRecoveredWindow = (index: number) =>
+    recoveredWindows.some((window) => inInclusiveWindow(index) && window.start === index);
   // The failing pair's echo is the step's own: the nearest identity echo that
   // does not belong to a recovered window; a fallback echo that does belong to
   // one leaves the pair unattributable.
@@ -650,13 +678,17 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // survivors. Boundaries are inclusive: a window's own echo is not a reason.
   const insideFailingPair = (index: number) =>
     Boolean(failing && failingPairEcho && index > failingPairEcho.index && index < failing.index);
-  const inRecoveredWindow = (index: number) =>
+  // A candidate line is excluded when it is a recovery notice or sits in a
+  // nested window (one opening after the failing echo). A window opening before
+  // the failing echo can interleave with the failing step, so it blocks only its
+  // recovery notices; with no failing pair every window blocks its whole span.
+  const inNestedWindow = (index: number) =>
     recoveredWindows.some(
-      (window) =>
-        index >= window.start &&
-        index <= window.end &&
-        (window.start > (failingPairEcho?.index ?? -1) || !insideFailingPair(index)),
+      (window) => index >= window.start && index <= window.end && window.start > (failingPairEcho?.index ?? -1),
     );
+  const lineExcluded = (index: number) =>
+    isRecoveryNotice(codelessEntries.find((entry) => entry.index === index)?.line ?? '') ||
+    (hasFailingPair ? inNestedWindow(index) : inInclusiveWindow(index));
   // A success assertion is recovery evidence only when it precedes the last
   // failing pair: the failing step's own `gyp info ok`, printed after its dying
   // words and before its own result line, is not a recovery.
@@ -668,7 +700,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   let codeLine = codeFor(block);
   let recoveredSwap = false;
   let bodylessTwin = false;
-  const blocks = codeEntries.length ? errorBlocks(codeEntries, otherEntries) : [];
+  const blocks = codeEntries.length ? errorBlocks(codeEntries, otherEntries, codelessEntries) : [];
   const blockBodyEnd = (target: ErrorBlock) =>
     target.entries.reduce((max, entry) => Math.max(max, entry.index), target.code.index);
   const firstBlockCode = blocks[0]?.code.index ?? -1;
@@ -736,7 +768,14 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     // is the dying words; otherwise the exit status is honest. A top-level errno
     // failure exits 1 and keeps its code line, as do the numeric blocks above.
     if (unattributableNested) {
-      const dying = codelessEntries.filter((entry) => entry.index > blockEnd && lineRank(entry.line) <= 2).at(-1);
+      const dying = codelessEntries
+        .filter((entry) => entry.index > blockEnd && lineRank(entry.line) <= 2)
+        .filter(
+          (entry) =>
+            !isRecoveryNotice(entry.line) &&
+            !rawLines.some((line, index) => index > entry.index && isSuccessAssertion(line)),
+        )
+        .at(-1);
       if (dying) return dying.line;
       block = undefined;
       codeLine = undefined;
@@ -747,13 +786,27 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // step, and it owns the failure even when an earlier, recovered block carries
   // a higher-ranked diagnostic (the verbose/default asymmetry). Its code line
   // is the failing step's, so no recovered block's code can be the reason.
+  let trailingSwap = false;
   if (hasFailingPair) {
+    const tiesExit = (candidate: ErrorBlock) => {
+      const token = npmPayload(candidate.code.line).replace(/^code\s+/, '');
+      return /^-?\d+$/.test(token) && typeof execResult.status === 'number' && Number(token) === execResult.status;
+    };
     const trailing = blocks.filter((candidate) => candidate.code.index > failing!.index).at(-1);
-    if (trailing) {
-      block = pickInBlock(trailing) ?? { line: trailing.code.line, rank: 4, index: trailing.code.index };
-      codeLine = trailing.code.line;
+    const firstFailing = codelessEntries.find(
+      (entry) => isNpmScriptResult(entry.line) && isFailingScriptResult(entry.line),
+    );
+    const tyingTrailing =
+      firstFailing && !(trailing && tiesExit(trailing))
+        ? blocks.filter((candidate) => candidate.code.index > firstFailing.index && tiesExit(candidate)).at(-1)
+        : undefined;
+    const owner = trailing && tiesExit(trailing) ? trailing : (tyingTrailing ?? trailing);
+    if (owner) {
+      block = pickInBlock(owner) ?? { line: owner.code.line, rank: 4, index: owner.code.index };
+      codeLine = owner.code.line;
       // The child's earlier chatter belongs to the step that recovered.
-      if (bare && bare.index < trailing.code.index) bare = undefined;
+      if (bare && bare.index < owner.code.index) bare = undefined;
+      trailingSwap = true;
       recoveredSwap = true;
     }
   }
@@ -766,22 +819,25 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // earlier chatter belongs to a step that recovered (or another step). This is
   // the in-pair window: a code-0 success between the echo and the result does
   // not restore the earlier line.
+  let promotedInPair = false;
   if (failing && failingPairEcho) {
     const inside = codelessEntries
       .filter((entry) => entry.index > failingPairEcho.index && entry.index < failing.index)
       .filter((entry) => lineRank(entry.line) <= 2)
-      .filter((entry) => !inRecoveredWindow(entry.index))
+      .filter((entry) => !lineExcluded(entry.index))
       .at(-1);
     if (inside) {
       bare = { line: inside.line, rank: lineRank(inside.line), index: inside.index };
+      promotedInPair = true;
     } else if (!bare || !insideFailingPair(bare.index)) {
       bare = { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index };
     }
   }
   // Lines belonging to a step whose own result says it recovered are not this
   // failure's words: the failing pair's echo is the honest fallback, and with no
-  // attributable pair echo the floor is the exit status.
-  if (bare && inRecoveredWindow(bare.index)) {
+  // attributable pair echo the floor is the exit status. The in-pair promotion
+  // already filtered its own candidates.
+  if (!promotedInPair && bare && lineRank(bare.line) !== 3 && lineExcluded(bare.index)) {
     bare = failingPairEcho ? { line: failingPairEcho.line, rank: 3, index: failingPairEcho.index } : undefined;
   }
   // The outer shell names a signal death "Terminated" or "Killed"; when npm
@@ -813,10 +869,15 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // survivor belongs to a script that did not fail.
   const survivorEligible = (entry: LineEntry) =>
     !inBlockRange(entry.index) &&
-    !inRecoveredWindow(entry.index) &&
-    (insideFailingPair(entry.index) ||
-      entry.index > lastBlockBodyEnd ||
-      (blocks.length <= 1 && entry.index < firstBlockCode));
+    !lineExcluded(entry.index) &&
+    !(
+      hasFailingPair &&
+      failing &&
+      failingPairEcho &&
+      entry.index < failingPairEcho.index &&
+      rawLines.some((line, index) => index > entry.index && index < failing.index && isSuccessAssertion(line))
+    ) &&
+    (entry.index > lastBlockBodyEnd || (blocks.length <= 1 && entry.index < firstBlockCode));
   const strongSurvivors = codelessEntries.filter((entry) => lineRank(entry.line) <= 1 && survivorEligible(entry));
   // A demoted `[cause]:` line still rides when it is the only substantive text:
   // the rank-4 demotion exists to keep it from outranking a header, not to
@@ -892,6 +953,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // its code line, so an echo above the last code line is an earlier step's.
   if (
     !bodylessTwin &&
+    !trailingSwap &&
     block &&
     lineRank(block.line) === 3 &&
     codeEntries.length &&
@@ -903,6 +965,10 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // the block keeps its code prefix when the block wins or when only a weak
   // code-less line survives, because the code still identifies the failure.
   if (bare && (!block || bare.rank < block.rank)) {
+    if (trailingSwap && promotedInPair) return bare.line;
+    if (trailingSwap && block) {
+      return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
+    }
     if (recoveredSwap && block && bare.rank >= 2) {
       return [codeLine, block.line].filter((line): line is string => Boolean(line)).join(' ');
     }

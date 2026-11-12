@@ -49,28 +49,25 @@ function debugLog(message: string): void {
   }
 }
 
-// The devkit registry override resolves through ONE spelling rule for the
-// pre-flight and the child env: trimmed non-empty exact-case first, else the
-// first trimmed non-empty case/padding variant; whitespace counts as unset.
-export function resolveRegistryOverride(env: NodeJS.ProcessEnv = process.env): string | undefined {
+// One spelling rule serves every env channel for the pre-flight and the child:
+// trimmed non-empty exact-case first, else the first trimmed non-empty
+// case/padding variant; whitespace counts as unset.
+export function resolveEnvSpelling(env: NodeJS.ProcessEnv, canonical: string): string | undefined {
   const spellings = Object.entries(env)
-    .filter(([key, value]) => key.trim().toUpperCase() === 'HUAWEICLOUD_NPM_REGISTRY' && Boolean(value?.trim()))
+    .filter(([key, value]) => key.trim().toUpperCase() === canonical && Boolean(value?.trim()))
     .map(([key, value]) => [key, value!.trim()] as const);
-  const exact = spellings.find(([key]) => key === 'HUAWEICLOUD_NPM_REGISTRY');
+  const exact = spellings.find(([key]) => key === canonical);
   return (exact ?? spellings[0])?.[1];
 }
 
-// The npm auth channels resolve through the same padding/case normalization the
-// child env applies, so a padded key authenticates both halves.
+export function resolveRegistryOverride(env: NodeJS.ProcessEnv = process.env): string | undefined {
+  return resolveEnvSpelling(env, 'HUAWEICLOUD_NPM_REGISTRY');
+}
+
+// The npm auth channels resolve through the same exact-case-first collapse as
+// the child env, so duplicate/variant spellings cannot split the halves.
 function resolveNpmAuthToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
-  const candidates = Object.entries(env)
-    .filter(([key, value]) => {
-      const upper = key.trim().toUpperCase();
-      return (upper === 'NPM_TOKEN' || upper === 'NODE_AUTH_TOKEN') && Boolean(value?.trim());
-    })
-    .map(([key, value]) => [key.trim().toUpperCase(), value!.trim()] as const);
-  const npmToken = candidates.find(([key]) => key === 'NPM_TOKEN');
-  return (npmToken ?? candidates[0])?.[1];
+  return resolveEnvSpelling(env, 'NPM_TOKEN') ?? resolveEnvSpelling(env, 'NODE_AUTH_TOKEN');
 }
 
 // npm's mainstream auth channel is the userconfig `_authToken` for the registry
@@ -84,7 +81,7 @@ function npmrcAuthToken(registry: string): string | undefined {
   } catch {
     return undefined;
   }
-  const userconfig = process.env.NPM_CONFIG_USERCONFIG || join(homedir(), '.npmrc');
+  const userconfig = resolveEnvSpelling(process.env, 'NPM_CONFIG_USERCONFIG') || join(homedir(), '.npmrc');
   let raw: string;
   try {
     raw = readFileSync(userconfig, 'utf8');
@@ -103,7 +100,10 @@ function npmrcAuthToken(registry: string): string | undefined {
     const value = entries.get(key)?.trim();
     if (value) return value;
   }
-  return entries.get('_authToken')?.trim() || undefined;
+  // A bare `_authToken` is not npm's channel: npm 11 rejects it with
+  // ERR_INVALID_AUTH rather than sending it, so the pre-flight must not forward
+  // a legacy token to an arbitrary override host.
+  return undefined;
 }
 
 export async function queryDistTagsFetch({ timeoutMs = 15000 }: { timeoutMs?: number } = {}): Promise<DistTags | null> {
