@@ -8,6 +8,7 @@ import { createDevkitMcpServer } from './mcp-protocol.ts';
 import { DEFAULT_PORT, DEFAULT_HOST } from './mcp-server-remote.ts';
 import { getCachedUpdateInfo, readInstalledVersion } from './update-check.ts';
 import { maybePreinstallKooCli } from './preflight.ts';
+import { approvalModeFromEnv } from './lib/approval-mode.ts';
 
 const transportIdx = process.argv.indexOf('--transport');
 const transport = transportIdx > -1 && process.argv[transportIdx + 1] ? process.argv[transportIdx + 1] : 'stdio';
@@ -57,6 +58,18 @@ try {
 }
 
 if (transport === 'remote') {
+  // Ask mode is a stdio-harness posture: its confirmation evidence is the
+  // harness client's per-call permission prompt, and this stateless remote
+  // face serves plain HTTP callers with no trustworthy per-call prompt —
+  // so the env is forced back to the token gate, loudly, before any
+  // request handler resolves it. This is the only production entry to the
+  // remote surface.
+  if (approvalModeFromEnv(process.env) === 'ask') {
+    process.env.DEVKIT_APPROVAL_MODE = 'token';
+    process.stderr.write(
+      'DEVKIT_APPROVAL_MODE=ask is not supported on the remote transport (no per-call permission prompt to trust); falling back to token approval.\n',
+    );
+  }
   const { startRemoteServer } = await import('./mcp-server-remote.ts');
   startRemoteServer({ port: remotePort, host: remoteHost }).catch((error: unknown) => {
     process.stderr.write(

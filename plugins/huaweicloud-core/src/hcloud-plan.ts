@@ -4,10 +4,18 @@
 // classification, OBS/SG/parameter warnings, required-parameter
 // validation, and the approval token. The consent layer itself lives in
 // src/lib/approval-tokens.ts.
+//
+// The plan's approval posture is mode-dependent (HcloudPlanOptions.
+// approvalMode): 'ask' (DEVKIT_APPROVAL_MODE=ask) plans for the harness
+// client's own permission prompt as the user's confirmation, so no token
+// is minted and userConfirmation carries the ask note instead of a
+// terminal approve line; 'token' (the default) keeps the mint + approve
+// line contract above.
 
 import { classifyHcloudArgs, redactSecrets, stripExecutable, type ClassifyOptions } from './safety-policy.ts';
 import { isHcloudToken } from './safety/tokens.ts';
 import { createApprovalToken } from './lib/approval-tokens.ts';
+import type { ApprovalMode } from './lib/approval-mode.ts';
 import type { RiskDecision } from './risk-rule-engine.ts';
 import { obsWriteHint } from './hcloud-obs-redact.ts';
 import { applyPreflightFindings, preflightSecurityGroupCheck, type SgFinding } from './hcloud-sg-preflight.ts';
@@ -21,10 +29,15 @@ import { triageUnknownService } from './hcloud-triage.ts';
 
 // The plan's terminal-confirmation block: `needed` says the command waits
 // on a confirmation the user makes in their own terminal, `command` is the
-// exact line they run (present only on plans that minted a token).
+// exact line they run (present only on plans that minted a token). Ask
+// mode shifts the confirmation onto the harness client's permission
+// prompt: `mode` names that posture and `note` teaches the run call that
+// satisfies it — no `command` exists to name.
 export interface HcloudPlanUserConfirmation {
   needed: boolean;
   command?: string;
+  mode?: 'ask';
+  note?: string;
 }
 
 export interface HcloudPlan {
@@ -56,6 +69,12 @@ export interface HcloudPlanOptions extends ClassifyOptions {
   // False on run paths: only the plan face mints approval tokens. Defaults
   // true, so the plan tool face keeps its consent contract unchanged.
   mintApprovalToken?: boolean;
+  // The approval posture this plan reports: 'ask' suppresses token minting
+  // and describes the client-prompt confirmation in userConfirmation;
+  // 'token' (the default) keeps the terminal gate. The tool faces resolve
+  // it from DEVKIT_APPROVAL_MODE (lib/approval-mode.ts) — never a tool
+  // argument an agent could set.
+  approvalMode?: ApprovalMode;
 }
 
 // Does this command wait on the user's terminal confirmation? The verdict
@@ -349,8 +368,13 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
       warnings.push(`${triage.message} ${triage.nextStep}`);
     }
   }
+  const approvalMode = options.approvalMode ?? 'token';
+  // Ask mode never mints: the confirmation is the harness client's prompt
+  // on the run call, so there is no token to hand the model and nothing
+  // lands in the approvals store. Run paths keep mintApprovalToken:false
+  // in both modes.
   const approvalToken =
-    options.mintApprovalToken === false
+    approvalMode === 'ask' || options.mintApprovalToken === false
       ? undefined
       : createApprovalToken(normalizedArgs, {
           secretsSubstitutable: secretsSubstitutable(normalizedArgs),
@@ -372,11 +396,19 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
     ...(approvalToken !== undefined ? { approvalToken } : {}),
     // `command` exists only where a token was minted: a run-path plan stays
     // silent rather than name a line for a token the run cannot offer.
+    // Ask mode names the posture instead — the confirmation happens at the
+    // run call, and the note teaches exactly that.
     userConfirmation: needsConfirmation
-      ? {
-          needed: true,
-          ...(approvalToken !== undefined ? { command: `npx huaweicloud-devkit approve ${approvalToken}` } : {}),
-        }
+      ? approvalMode === 'ask'
+        ? {
+            needed: true,
+            mode: 'ask',
+            note: 'The harness client confirms this command with the user when huaweicloud_run_approved_command is called. Call it with the same args and approvedByUser: true. No terminal approval line or token is needed.',
+          }
+        : {
+            needed: true,
+            ...(approvalToken !== undefined ? { command: `npx huaweicloud-devkit approve ${approvalToken}` } : {}),
+          }
       : { needed: false },
     safeToRun: effectiveClassification.decision === 'allow',
   };

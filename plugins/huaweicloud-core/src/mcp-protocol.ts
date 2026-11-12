@@ -18,6 +18,7 @@ import { peekCachedUpdateInfo, applyUpdateHint, readInstalledVersion } from './u
 import { initTelemetry } from './telemetry/telemetry.ts';
 import { detectAgent } from './telemetry/agent-detect.ts';
 import { asRecord } from './lib/as-record.ts';
+import { approvalModeFromEnv } from './lib/approval-mode.ts';
 
 const pkgVersion = readInstalledVersion() || '0.0.0';
 
@@ -262,6 +263,11 @@ export function createDevkitMcpServer({
   remoteSurface = false,
 }: DevkitServerOptions = {}): McpServer {
   assertConstructedSchemas();
+  // The approval posture resolves once at construction: a bogus
+  // DEVKIT_APPROVAL_MODE throws here (boot fail-fast, the same doctrine
+  // DEVKIT_PACKS applies through syncDisclosure), and registerOne below is
+  // the one place the mode changes the wire surface.
+  const askMode = approvalModeFromEnv(process.env) === 'ask';
   // The contradictory construction is refused, not cautioned: a remote that
   // also carried runtime pack toggling would attach the onPacksChanged seam
   // to every callOpts, publishing the server host's absolute install path
@@ -327,7 +333,20 @@ export function createDevkitMcpServer({
       tool.name,
       server.registerTool(
         tool.name,
-        { description: tool.description, inputSchema: getToolSchema(tool.name) },
+        {
+          description: tool.description,
+          inputSchema: getToolSchema(tool.name),
+          // Ask mode only: Claude Code honors this flag by prompting the
+          // user on every call of this tool — even in acceptEdits/auto/
+          // bypassPermissions modes, with no "don't ask again" — and that
+          // client prompt IS the user's confirmation the mode trusts.
+          // Other clients ignore the flag. Declared only in ask mode so
+          // token-mode Claude Code users don't gain a second prompt on top
+          // of the terminal approve they already run.
+          ...(askMode && tool.name === 'huaweicloud_run_approved_command'
+            ? { _meta: { 'anthropic/requiresUserInteraction': true } }
+            : {}),
+        },
         async (args): Promise<CallToolResult> => {
           const callOpts: CallToolOptions = runtimePacks
             ? { sessionId, onPacksChanged: () => syncDisclosure() }

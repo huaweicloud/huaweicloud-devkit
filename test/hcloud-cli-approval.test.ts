@@ -110,6 +110,21 @@ async function withFakeHcloudBin<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+// The ask-mode battery's env seam: set DEVKIT_APPROVAL_MODE for the body
+// and restore the previous posture either way, so a token-mode default in
+// the ambient environment never leaks into (or out of) a test.
+async function withApprovalMode<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+  const previous = process.env.DEVKIT_APPROVAL_MODE;
+  if (value === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
+  else process.env.DEVKIT_APPROVAL_MODE = value;
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
+    else process.env.DEVKIT_APPROVAL_MODE = previous;
+  }
+}
+
 // The confirmation battery needs a deterministic custody tier: the fixed env
 // master key the sibling approval tests use, layered over the fresh per-test
 // home. The custody cache is cleared on both ends so a key swap inside one
@@ -289,6 +304,17 @@ function runWith(token: string, args: string[]): Promise<unknown> {
   return callTool('huaweicloud_run_approved_command', {
     args,
     approvalToken: token,
+    approvedByUser: true,
+    maxRetries: 0,
+    vendorConfirmed: 'test: vendor established by the harness',
+  });
+}
+
+// The ask-mode twin of runWith: no token, the attestation alone — the
+// harness prompt is the confirmation the token flow replaces.
+function runAsk(args: string[]): Promise<unknown> {
+  return callTool('huaweicloud_run_approved_command', {
+    args,
     approvedByUser: true,
     maxRetries: 0,
     vendorConfirmed: 'test: vendor established by the harness',
@@ -712,6 +738,115 @@ test('F2: a store entry swapped after confirm (victim hash, no grant) never exec
       writeApprovalsStore(home, restored);
       const executed = (await runWith(token, ['ECS', 'DeleteServer', '--server_id=i-123'])) as ApprovedRunResult;
       assert.equal(executed.approved, true, 'the genuine grant still executes after the refused swap');
+    });
+  });
+});
+
+// ── Ask mode (DEVKIT_APPROVAL_MODE=ask): the harness client's permission
+// prompt is the confirmation ──────────────────────────────────────────────
+// The plan mints nothing and the run needs no token; the safety floors
+// stay in force — the approvedByUser attestation, the placeholder-secret
+// guard, and the strict classification denies. Token mode (env unset) is
+// the battery above, unchanged.
+
+test('ask mode: plan mints no token, names no approve line, writes no approvals store', async () => {
+  await withTempAuthHome(async (home) => {
+    await withApprovalMode('ask', async () => {
+      const plan = (await callTool('huaweicloud_plan_cli_command', {
+        args: ['ECS', 'CreateServers', '--server.flavorRef=x'],
+        vendorConfirmed: 'test: vendor established by the harness',
+      })) as HcloudPlan;
+      assert.equal(plan.userConfirmation.needed, true, 'a write still waits on a confirmation');
+      assert.equal(plan.userConfirmation.mode, 'ask');
+      assert.ok(
+        plan.userConfirmation.note?.includes('huaweicloud_run_approved_command'),
+        'the note teaches the run call that satisfies the confirmation',
+      );
+      assert.equal(plan.userConfirmation.command, undefined, 'ask mode names no terminal approve line');
+      assert.equal('approvalToken' in plan, false, 'ask mode must not mint');
+      assert.equal(
+        existsSync(join(home, '.config', 'huaweicloud', 'approvals.json')),
+        false,
+        'ask mode must not write the approvals store at all',
+      );
+    });
+  });
+});
+
+test('ask mode: run executes a write with no token and reports the ask posture', async () => {
+  await withTempAuthHome(async () => {
+    await withApprovalMode('ask', async () => {
+      await withFakeHcloudBin(async () => {
+        const result = (await runAsk(['ECS', 'DeleteServer', '--server_id=i-123'])) as ApprovedRunResult;
+        assert.equal(result.approved, true, 'the client prompt is the confirmation: no token needed');
+        assert.equal(result.plan?.userConfirmation.mode, 'ask', 'the embedded plan reports the ask posture');
+      });
+    });
+  });
+});
+
+test('ask mode: run without the approvedByUser attestation still throws', async () => {
+  await withTempAuthHome(async () => {
+    await withApprovalMode('ask', async () => {
+      await withFakeHcloudBin(async () => {
+        await assert.rejects(
+          () =>
+            callTool('huaweicloud_run_approved_command', {
+              args: ['ECS', 'DeleteServer', '--server_id=i-123'],
+              maxRetries: 0,
+              vendorConfirmed: 'test: vendor established by the harness',
+            }),
+          /approvedByUser must be true/,
+        );
+      });
+    });
+  });
+});
+
+test('ask mode: a placeholder secret value rejects without referencing the token flow', async () => {
+  await withTempAuthHome(async () => {
+    await withApprovalMode('ask', async () => {
+      await withFakeHcloudBin(async () => {
+        await assert.rejects(
+          () => runAsk(['ECS', 'CreateServers', '--server.adminPass=<redacted>', '--server.flavorRef=x']),
+          (error: unknown) => {
+            const message = error instanceof Error ? error.message : String(error);
+            assert.match(message, /placeholder secret value/);
+            assert.ok(!message.includes('approval token'), 'ask-mode wording must not reference the token flow');
+            return true;
+          },
+        );
+      });
+    });
+  });
+});
+
+test('ask mode: a secret-classified command still denies through the strict classification', async () => {
+  await withTempAuthHome(async () => {
+    await withApprovalMode('ask', async () => {
+      await withFakeHcloudBin(async () => {
+        // The canonical secret-deny vector (safety-hcloud-args.test.ts):
+        // no approval posture can unlock a secret read.
+        await assert.rejects(
+          () => runAsk(['CSMS', 'ShowSecret', '--secret_name', 'prod/db']),
+          /Direct secret value reads are blocked/,
+        );
+      });
+    });
+  });
+});
+
+test('ask mode: a bogus DEVKIT_APPROVAL_MODE fails loud on the plan tool', async () => {
+  await withTempAuthHome(async () => {
+    await withApprovalMode('bogus', async () => {
+      await assert.rejects(
+        () =>
+          callTool('huaweicloud_plan_cli_command', {
+            args: ['ECS', 'ListServersDetails'],
+            vendorConfirmed: 'test: vendor established by the harness',
+          }),
+        /DEVKIT_APPROVAL_MODE must be "ask" or "token" \(got "bogus"\)/,
+      );
     });
   });
 });
