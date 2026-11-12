@@ -1969,12 +1969,116 @@ test('upgradePackage 失败原因: 默认 loglevel 的两块对照仍取外层�
   assert.doesNotMatch(reason, /E404|404 Not Found/);
 });
 
+test('upgradePackage 失败原因: 两个恢复的异码嵌套块不抢垂死行', async () => {
+  const reason = await reasonFor(failureStderr('real-two-nested-default.err'), 7);
+  assert.equal(reason, 'runtime dependency refresh skipped');
+});
+
+test('upgradePackage 失败原因: 一个恢复的嵌套块对照仍是垂死行', async () => {
+  const reason = await reasonFor(failureStderr('real-one-nested-default.err'), 7);
+  assert.equal(reason, 'runtime dependency refresh skipped');
+});
+
+test('upgradePackage 失败原因: 崩溃片段重复垂死行文本仍按自己的位置判定', async () => {
+  const reason = await reasonFor(failureStderr('seam-survivor-dup-text.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 崩溃片段不重复文本的对照同样退出码', async () => {
+  const reason = await reasonFor(failureStderr('seam-survivor-dup-text-control.err'), 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 对内的成功不夺走失败步的垂死行', async () => {
+  const reason = await reasonFor(failureStderr('seam-inpair-success.err'), 7);
+  assert.equal(reason, 'build failed hard, cache locked');
+});
+
+test('upgradePackage 失败原因: 真实 sameturn 形状仍取失败步的垂死行', async () => {
+  const reason = await reasonFor(failureStderr('seam-sameturn-inforun.err'), 7);
+  assert.equal(reason, 'build failed hard, cache locked');
+});
+
+test('upgradePackage 失败原因: 块内同层强标记取靠后行, 前置异码块不改变答案', async () => {
+  const stderr = [
+    'npm error code 9',
+    'npm error Error: earlier distinct failure',
+    'npm error command sh -c node earlier.js',
+    'npm error code 1',
+    'npm error Error: lockfile is corrupt, retrying with cache',
+    'npm error command sh -c node fail.js',
+    "npm error EACCES: permission denied, open '/home/op/.npm/_cacache'",
+  ].join('\n');
+  const reason = await reasonFor(stderr);
+  assert.match(reason, /code 1/);
+  assert.match(reason, /EACCES: permission denied/);
+  assert.doesNotMatch(reason, /lockfile is corrupt|earlier distinct/);
+});
+
+test('upgradePackage 失败原因: 块前回显不给元数据块当原因', async () => {
+  const stderr = ['sh -c one.js', 'npm error code 7', 'npm error path /home/op/pkg', 'npm error syscall open'].join(
+    '\n',
+  );
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'npm error code 7');
+});
+
+test('upgradePackage 失败原因: 末尾裸 code 块只回 code 行', async () => {
+  const stderr = ['npm error code 1', 'npm error syscall mkdir', 'npm error code 7'].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'npm error code 7');
+});
+
+test('upgradePackage 失败原因: 元数据孤块在非 1 退出时退回退出码', async () => {
+  const stderr = [
+    'npm error code EACCES',
+    'npm error syscall mkdir',
+    'npm error path /home/op/ro-cache/_cacache',
+    'npm error errno EACCES',
+  ].join('\n');
+  const reason = await reasonFor(stderr, 7);
+  assert.equal(reason, 'exit 7');
+});
+
+test('upgradePackage 失败原因: 元数据孤块在退出 1 时仍回 code 行', async () => {
+  const reason = await reasonFor(failureStderr('metadata-only-block.err'));
+  assert.equal(reason, 'npm error code E404');
+});
+
 test('upgradePackage 失败: 信号致死不报 exit null', async () => {
   const killed = { status: null, signal: 'SIGKILL', stdout: '', stderr: '' };
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: () => killed });
   assert.equal(r.success, false);
   assert.match(r.error ?? '', /SIGKILL/);
   assert.doesNotMatch(r.error ?? '', /exit null/);
+});
+
+test('upgradePackage 升级子进程: 键名空白按 vault 谓词的归一处理', async () => {
+  const padded = {
+    'GITHUB_TOKEN ': 'fixture-github',
+    'GITLAB_TOKEN  ': 'fixture-gitlab',
+    ' HUAWEICLOUD_DEVKIT_HOME': '/fixture/home',
+    ' HUAWEICLOUD_NPM_REGISTRY': 'http://devkit-mirror:4873',
+    npm_config_registry: 'http://operator-mirror:4873',
+  };
+  const saved = new Map(Object.keys(padded).map((key) => [key, process.env[key]]));
+  for (const [key, value] of Object.entries(padded)) process.env[key] = value;
+  try {
+    const env = await childEnv();
+    assert.equal(env['GITHUB_TOKEN '], undefined, 'the padded vendor spelling strips');
+    assert.equal(env['GITLAB_TOKEN  '], undefined, 'trailing spaces beyond one also strip');
+    assert.equal(env[' HUAWEICLOUD_DEVKIT_HOME'], '/fixture/home', 'the padded preserve spelling survives');
+    assert.equal(env.HUAWEICLOUD_DEVKIT_HOME, undefined, 'preserve keeps its own spelling only');
+    assert.equal(env.HUAWEICLOUD_NPM_REGISTRY, 'http://devkit-mirror:4873', 'the padded registry pin forms');
+    assert.equal(env[' HUAWEICLOUD_NPM_REGISTRY'], undefined, 'the padded registry spelling is not forwarded');
+    assert.equal(env.npm_config_registry, 'http://devkit-mirror:4873', 'the canonical pin wins');
+    assert.deepEqual(registrySpellings(env), ['npm_config_registry'], 'one registry spelling reaches npx');
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
 });
 
 test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配置与镜像 pin', async () => {
