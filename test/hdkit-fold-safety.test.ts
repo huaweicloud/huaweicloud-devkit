@@ -158,13 +158,15 @@ test('a throwing code getter through the handler fold rethrows the original, nev
   }
 });
 
-test('a quota code with a throwing message getter folds the business envelope with the message absent', async () => {
+test('a quota code with a throwing message getter folds the business envelope with the designed fallback', async () => {
+  // round 20 契约收窄：拒读/空白消息与缺失同路——代码前缀的设计兜底（其余
+  // 折叠口同款），不再渲染空 message
   const out = await foldViaHandler(
     fieldThrower('message', Object.assign(new Error('x'), { code: 'HDKIT_QUOTA_EXCEEDED' })),
   );
   assert.equal(out.ok, false);
   assert.equal(out.code, 'HDKIT_QUOTA_EXCEEDED');
-  assert.equal(out.message, '', 'a refusing message read is absent on the envelope');
+  assert.equal(out.message, 'HDKIT_QUOTA_EXCEEDED: hdkitservice error', 'the code-prefixed designed fallback carries');
 });
 
 // ── 信封窄化与 body-read 包装口（round 16）──
@@ -501,5 +503,26 @@ test('the status letter: -1, -0, and 502.5 behave like the NaN twin — no HTTP_
     } finally {
       global.fetch = originalFetch;
     }
+  }
+});
+
+// ── 业务折叠的空白消息兜底（round 20）──
+// 不可见-only 或缺失的消息在 handler 业务折叠里渲染成 ''——其他折叠口都用
+// 代码前缀的设计兜底（构建口同款），此处对齐。
+
+test('an invisible-only or missing message at the handler business fold surfaces the code-prefixed copy, never empty', async () => {
+  for (const [label, message] of [
+    ['invisible-only', '\u200b\u2060'],
+    ['empty (message-less carrier)', ''],
+  ] as const) {
+    const out = await foldViaHandler(Object.assign(new Error(message), { code: 'HDKIT_QUOTA_EXCEEDED' }));
+    assert.equal(out.ok, false);
+    assert.equal(out.code, 'HDKIT_QUOTA_EXCEEDED');
+    assert.notEqual(out.message, '', `${label}: never an empty message`);
+    assert.equal(
+      out.message,
+      'HDKIT_QUOTA_EXCEEDED: hdkitservice error',
+      `${label}: the code-prefixed designed fallback carries (the build seam's own copy)`,
+    );
   }
 });

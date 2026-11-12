@@ -13,11 +13,17 @@
 export const VERSION_GATE_CODE = 'HDKIT_VERSION_TOO_OLD';
 
 /**
- * 装填被拒的毒标（round 19）：中和三步（删除/赋值/defineProperty）后仍存活
- * 的装饰值/访问器——延迟谎言与陷阱 defineProperty 一并覆盖——在丢弃载体上种
- * 此标。折叠口读到即不折叠：丢弃载体上的任何陈述都不可信。
+ * 装填被拒的诊断字段（round 19 建、round 20 降级为诊断）：中和后仍存活的
+ * 装饰值/访问器——延迟谎言、陷阱 defineProperty、第三值访问器一并覆盖。
+ * 裁决不在此字段、也不在载体上的任何读数：折叠口查 refusedCarriers（模块
+ * 态 WeakSet，按对象身份，零载体读——吞写陷阱吞掉本字段、谎言 get 藏起本
+ * 字段都不影响折叠拒绝）。本字段仅尽力而为落盘供观测，写不落不影响裁决。
  */
 export const DECORATION_REFUSED_FIELD = 'hdkitDecorationRefused';
+
+// 装填被拒的载体登记（round 20）：裁决的权威在模块态。WeakSet 按对象身份
+// 查询——不触发任何代理陷阱，撤销代理/原始值/吞写载体一律安全
+const refusedCarriers = new WeakSet<object>();
 
 /** 连接重试表（dev e0c8700b 终态）：网关 502/504 各退避重试一次 */
 export const CONNECT_RETRY_DELAYS_MS: readonly number[] = [30000, 45000];
@@ -236,9 +242,10 @@ export interface GateFoldPayload {
  * 透传服务端 copy。versionGateResult / voucherFallback / relay 折叠共用此份。
  */
 export function gateFoldPayload(error: unknown): GateFoldPayload {
-  // 毒标（round 19）：装填被拒的丢弃载体——版本字段/消息/remediation 全不
-  // 信，铸未知版本信封（码仍是服务端亲署——门禁判定不受毒标影响）
-  if (safeReadField(error, DECORATION_REFUSED_FIELD) === true) {
+  // 装填被拒的载体（round 19 建、round 20 收口裁决）：模块态登记按身份拒绝，
+  // 版本字段/消息/remediation 全不信，铸未知版本信封（码仍是服务端亲署——
+  // 门禁判定不受拒绝影响）
+  if (refusedCarriers.has(error as object)) {
     return {
       code: VERSION_GATE_CODE,
       message: VERSION_GATE_FALLBACK_MESSAGE,
@@ -345,19 +352,23 @@ export function serializableRemediation(raw: unknown): { hint: string; steps: st
   try {
     const verified = JSON.stringify({ remediation: raw });
     const snapshot = JSON.parse(verified) as { remediation?: unknown };
-    // 快照形态与可用引导窄化（round 18 形态、round 19 可用性）：toJSON 在
+    // 快照形态与可用引导窄化（round 18 形态、round 19/20 可用性）：toJSON 在
     // remediation 键下可呈现任意 JSON 值——非对象（0/''/null）与数组不是引导
-    // 记录（round 18）；记录形态过关还不够——{} 骑上即零引导、hint 为数字/
-    // steps 非数组同样不可用（round 19），比空载体的引导还少，正是铸造要
-    // 堵的洞。可用判定：hint 非空白字符串且 steps 是数组；其余一律拒绝，
-    // 各出口的设计引导铸造兜底
+    // 记录（round 18）；记录形态过关还不够——{} 骑上即零引导（round 19），
+    // steps 只查 Array.isArray 会让空数组、非字符串元素、全空白串照骑
+    // （round 20）。可用判定：hint 非空白字符串，steps 至少一个非空白字符
+    // 串步骤（设计铸造带三条，少于此不如铸造）；字段验证、整体原样随信封
+    // （round 17 的字节往返不变式：服务端多余键如 traceId 原样保留）。
+    // 拒绝时门禁与耗尽两折叠口的设计引导铸造兜底——handler/voucher 信封
+    // 有意省略（无设计引导可铸）
     const parsed = snapshot.remediation;
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return undefined;
     const shaped = parsed as { hint?: unknown; steps?: unknown };
     if (typeof shaped.hint !== 'string' || rendersBlank(shaped.hint) || !Array.isArray(shaped.steps)) {
       return undefined;
     }
-    return { hint: shaped.hint, steps: shaped.steps as string[] };
+    if (!shaped.steps.some((step) => typeof step === 'string' && !rendersBlank(step))) return undefined;
+    return parsed as { hint: string; steps: string[] };
   } catch {
     return undefined;
   }
@@ -473,13 +484,30 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
       for (const done of [...applied, key]) {
         const written = writtenValues.get(done);
         if (written === undefined) continue;
-        let current: unknown;
-        try {
-          current = target[done];
-        } catch {
-          continue;
-        }
-        if (current !== written) continue;
+        // 存活判定（round 19 建、round 20 无条件化）：不信任何单次读——
+        // 此前的探针读（读数不等于装饰值即跳过整键）被第三值访问器一步骗
+        // 过：既非装饰值也非中性值的读数让判定/中和/登记全部短路。描述符是
+        // 理论通道，每个回滚键无条件先过判定：访问器仍存活（可随时翻供——
+        // 无论读几次）或数据值仍是装饰值即存活；无描述符时读一次（无落点
+        // 可翻供）；gOPD 抛出从严判存活
+        const survivesByDescriptor = (): boolean => {
+          try {
+            const desc = Object.getOwnPropertyDescriptor(target, done);
+            if (desc && (desc.get !== undefined || desc.set !== undefined)) return true;
+            if (desc && desc.value === written) return true;
+            if (!desc) {
+              try {
+                return target[done] === written;
+              } catch {
+                return false;
+              }
+            }
+            return false;
+          } catch {
+            return true;
+          }
+        };
+        if (!survivesByDescriptor()) continue;
         const snap = snapshots.get(done);
         const neutral: unknown = snap && snap.value !== undefined ? snap.value : undefined;
         let neutralized = false;
@@ -497,38 +525,19 @@ function decorateInPlace(target: Record<string, unknown>, fields: Array<[string,
           try {
             Object.defineProperty(target, done, { value: neutral, writable: true, configurable: true });
           } catch {
-            // 赋值与 defineProperty 双双被拒——交给下面的存活判定
+            // 赋值与 defineProperty 双双被拒——交给重判
           }
         }
-        // 存活判定（round 19）：不信任何单次读——延迟谎言在中和读回时奉上
-        // 中性值、事后重新呈现装饰值（读回被一次敌意读骗过）；陷阱
-        // defineProperty 报成功不落（升级臂此前 fire-and-forget）。读描述符
-        // 定夺：访问器仍存活（可随时翻供——无论读几次）或数据值仍是装饰值
-        // → 种毒标；无描述符时读一次（无落点可翻供）；gOPD 抛出从严种毒
-        let survives: boolean;
-        try {
-          const desc = Object.getOwnPropertyDescriptor(target, done);
-          if (desc && (desc.get !== undefined || desc.set !== undefined)) survives = true;
-          else if (desc && desc.value === written) survives = true;
-          else if (!desc) {
-            try {
-              survives = target[done] === written;
-            } catch {
-              survives = false;
-            }
-          } else {
-            survives = false;
-          }
-        } catch {
-          survives = true;
-        }
-        if (survives) {
+        // 中和尝试后再判（round 20）：延迟谎言在中和读回时奉上中性值、
+        // 陷阱 defineProperty 报成功不落——重判描述符定夺，读数不作数
+        if (survivesByDescriptor()) {
           poisoned = true;
+          refusedCarriers.add(target);
         }
       }
       if (poisoned) {
-        // 毒标写入亦尽力而为（round 19）：赋值 → defineProperty；双双被拒即
-        // round-17 记录边界——全写路径封死的载体无客户端方案可标记
+        // 诊断字段尽力而为（round 20 降级）：裁决已在模块态（refusedCarriers），
+        // 此写仅观测——吞写/谎报不影响折叠拒绝；双双被拒即 round-17 记录边界
         try {
           target[DECORATION_REFUSED_FIELD] = true;
         } catch {
@@ -662,10 +671,31 @@ function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
   try {
     for (const key of Reflect.ownKeys(err)) {
       // 字符串与符号键都按描述符复制（round 11：符号键是业务字段），message/
-      // stack 与被装饰键除外——装饰键由 fields 落值
+      // stack、被装饰键、毒标字段除外——装饰键由 fields 落值；毒标属于丢弃
+      // 载体（round 20）：有效载体是调用方要抛的，生而干净——泄过去即耗尽
+      // 克隆折叠 undefined、门禁克隆退化未知版本
       if (key === 'message' || key === 'stack' || decoratedKeys.has(key)) continue;
+      if (key === DECORATION_REFUSED_FIELD) continue;
       const desc = Object.getOwnPropertyDescriptor(err, key);
-      if (desc) Object.defineProperty(clone, key, desc);
+      if (!desc) continue;
+      // 访问器按复制时取值快照（round 20）：重发布丢弃载体的活访问器会让装
+      // 饰后的翻供骑过有效载体；读取抛出按缺失跳过
+      if (desc.get !== undefined || desc.set !== undefined) {
+        let snapshotValue: unknown;
+        try {
+          snapshotValue = (err as Record<string | symbol, unknown>)[key];
+        } catch {
+          continue;
+        }
+        Object.defineProperty(clone, key, {
+          value: snapshotValue,
+          writable: true,
+          enumerable: desc.enumerable,
+          configurable: true,
+        });
+        continue;
+      }
+      Object.defineProperty(clone, key, desc);
     }
   } catch {
     // 撤销/陷阱代理（round 12）：枚举即抛——按无携带字段处理，设计值兜底
@@ -679,9 +709,9 @@ function cloneCarrier(err: object, fields: Array<[string, unknown]>): Error {
  * 标记的错误转 ok:false 结构化返回，remediation 与尝试次数穿透 MCP 边界。
  */
 export function transientExhaustionResult(error: unknown): Record<string, unknown> | undefined {
-  // 毒标（round 19）：中和失败的丢弃载体——延迟谎言与陷阱 defineProperty 让
-  // 装饰值/访问器存活——不在此折叠，丢弃载体上的任何陈述都不可信
-  if (safeReadField(error, DECORATION_REFUSED_FIELD) === true) return undefined;
+  // 装填被拒的载体（round 19 建、round 20 收口裁决）：模块态登记按身份拒绝，
+  // 不读载体——吞写陷阱与谎言 get 骗不过身份查询
+  if (refusedCarriers.has(error as object)) return undefined;
   // round 12：全部字段过安全读——抛出型 getter 按缺失，标记缺失即不折叠。
   // round 16：presence-gate 之上再窄化——code 窄到字符串、connectRetries 窄到
   // 数字、retryAfter 窄到字符串、remediation 深验（serializableRemediation），

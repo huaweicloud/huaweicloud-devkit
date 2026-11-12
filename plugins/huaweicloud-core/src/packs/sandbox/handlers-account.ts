@@ -88,10 +88,13 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
       const rawRetryAfter = safeReadField(error, 'retryAfter');
       const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
       const remediation = serializableRemediation(safeReadField(error, 'remediation'));
+      // 空白/缺失消息走构建口同款代码前缀兜底（round 20）：其余折叠口从不
+      // 渲染空 message，此处对齐——纯不可见消息按缺失
+      const fallbackMessage = businessCode ? `${businessCode}: hdkitservice error` : 'hdkitservice error';
       return {
         ok: false,
         code: businessCode,
-        message: cleanMessage(safeMessageText(error)),
+        message: cleanMessage(safeMessageText(error)) || fallbackMessage,
         ...(retryAfter ? { retryAfter } : {}),
         ...(coreHoursExhausted ? { coreHoursExhausted: true } : {}),
         ...(remediation ? { remediation } : {}),
