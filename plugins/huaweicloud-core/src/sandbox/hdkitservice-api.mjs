@@ -93,6 +93,11 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
         ],
       };
     }
+    // 用户级模板 running 上限（HD.98320082）：服务端文案即最终展示内容
+    // （不带 "CODE: " 前缀、不附加旧的“每账号最多 5 台”引导）
+    if (code === 'HDKIT_TEMPLATE_QUOTA_EXCEEDED') {
+      err.message = data.message || err.message;
+    }
     if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
