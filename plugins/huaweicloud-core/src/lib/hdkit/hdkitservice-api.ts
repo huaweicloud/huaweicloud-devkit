@@ -12,6 +12,7 @@ import {
   connectRetryDelaysMs,
   decorateExhaustedConnect,
   gateFoldPayload,
+  isErrorCarrier,
   isGatewayTransient,
   isNonRetryableBusinessError,
   isVersionGateError,
@@ -92,7 +93,11 @@ function safeRetryAfterHeader(resp: unknown): string | undefined {
 function transportReason(error: unknown, fallback: string): Error {
   let reason = '';
   try {
-    if (error instanceof Error) {
+    // 有界 Error 判定（round 25/SHOULD 6）：instanceof 的 OrdinaryHasInstance
+    // 无界走查——本模块唯一未设跳数的链走（实测 V8 内部 RangeError 兜底
+    // 87ms/111MB，界不归本模块定）；换 isErrorCarrier（visited+1024 跳，
+    // 与门禁走查同界），铸造陷阱毫秒级返回
+    if (isErrorCarrier(error)) {
       const raw = (error as { message?: unknown }).message;
       if (typeof raw === 'string') reason = raw;
     } else if (typeof error === 'string') {
@@ -429,10 +434,14 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   const rawClientVersion = safeReadField(error, 'clientVersion');
   const rawMinVersion = safeReadField(error, 'minVersion');
   const remediation = serializableRemediation(safeReadField(error, 'remediation'));
-  // 非门禁信封同过清洗口（round 24/SHOULD 6）：纯空白/纯不可见版本字段视同
-  // 缺失（round 6 出口信条——不渲染空白文案）；码按拼写口径——纯空白视同
-  // 缺失，织入空白渲染字符的拼写渲染清洗形（不可见边缘不上信封）
-  const cleanedCode = typeof rawCode === 'string' && canonCode(rawCode) !== '' ? canonCode(rawCode) : undefined;
+  // 非门禁信封同过清洗口（round 24/SHOULD 6 建、round 25 收口洗钱缝）：纯
+  // 空白/纯不可见版本字段视同缺失（round 6 出口信条）；码按拼写口径——服
+  // 务端亲署码不含空白渲染字符，原始拼写带空白渲染字符即非亲署：渲染其清
+  // 洗形会让伪造码洗成亲署拼写的字节等价物（HDKIT_CRED_INVA\u200bLID 洗成
+  // HDKIT_CRED_INVALID）——一律省略（比较口径的 canonCode 只作判等，不作
+  // 渲染；round-24 的"渲染清洗形"预期按本条取代）
+  const cleanedCode =
+    typeof rawCode === 'string' && canonCode(rawCode) !== '' && canonCode(rawCode) === rawCode ? rawCode : undefined;
   const cleanedClientVersion =
     typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
   const cleanedMinVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;

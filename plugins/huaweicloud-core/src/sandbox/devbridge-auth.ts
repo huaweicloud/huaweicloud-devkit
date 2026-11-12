@@ -283,10 +283,12 @@ export async function gateExposeAuth(
           effectiveAuthMode = 'API_KEY_AUTO';
         }
       } catch (error) {
-        // 自动创建失败（含配额满 13002）→ 结构化降级
-        // 属性取值过安全卫队（round 14）：抛出型 getter/撤销代理按缺失——
-        // 缺失即非配额，落回泛化降级；此行在本 catch 的安全 isVersionGateError
-        // 之前求值，裸读会先引爆
+        // 门禁先裁（round 25/MUST 4）：配额比较此前先求值且自选分支——登记
+        // 过的载体 code 视图谎报配额码即被误路由进清 key 信封（配额 hint、空
+        // currentKeys、gateRemediation 丢失）。isVersionGateError 对登记载体零
+        // 读返回种类裁决（round 24），谎报视图无从介入；未登记载体照旧先经安
+        // 全读判配额——canonCode 读过卫队（round 14），抛出型 getter 按缺失
+        if (isVersionGateError(error)) return versionGateFailure(error, port, authMode, attempts);
         if (canonCode(safeReadField(error, 'code')) === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
           // 配额清单读取本身遭遇 409：门禁优先（清 key 引导拿不出 currentKeys）；
           // 其余读取失败仍降级为空清单
@@ -313,13 +315,8 @@ export async function gateExposeAuth(
             },
           };
         }
-        // 409 版本门禁按 relay 出口折叠（v2 扩展，台账记录）：被门禁的客户端不是
-        // 凭证问题——NO_CREDENTIAL 降级会把升级信号误诊成清 key/重注凭证引导，
-        // 升级引导必须穿透 expose 结果
-        if (isVersionGateError(error)) {
-          return versionGateFailure(error, port, authMode, attempts);
-        }
-        // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）
+        // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）；
+        // 门禁折叠已在本 catch 顶部先裁（round 25/MUST 4）
       }
     }
   }

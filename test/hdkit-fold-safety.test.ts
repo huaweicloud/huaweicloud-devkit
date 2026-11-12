@@ -39,6 +39,7 @@ mock.module(HWLINK_SPEC, {
   },
 } as unknown as Parameters<typeof mock.module>[1]);
 
+const { landedThenFlippedCarrier } = await import('./hdkit-gate-fixtures.ts');
 const { hdkitVoucherStatus, hdkitConnectWithRetry } = await import(API_SPEC);
 const { transientExhaustionResult, versionGateResult } =
   await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
@@ -71,8 +72,10 @@ test('a throwing message getter through the voucher envelope folds the unavailab
 });
 
 test('the voucher non-gate envelope never renders blank or invisible-laden fields', async () => {
-  // round 24/SHOULD 6：非门禁分支的 clientVersion/minVersion/code 此前裸透
-  // ——纯空白版本字段与织入 Cf 的码原样上信封（round-6 出口信条的漏网口）
+  // round 24/SHOULD 6 建、round 25 收口洗钱缝：非门禁分支的 clientVersion/
+  // minVersion/code 此前裸透——纯空白版本字段与织入 Cf 的码原样上信封；
+  // round-24 的"渲染清洗形"又让伪造码洗成亲署拼写的字节等价物——原始拼写
+  // 带空白渲染字符即非亲署，一律省略（canonCode 只作判等口径，不作渲染）
   credentialCarrier = Object.assign(new Error('real diagnosis'), {
     code: '\u200bHDKIT\u200bCRED_INVALID',
     clientVersion: '   ',
@@ -83,8 +86,31 @@ test('the voucher non-gate envelope never renders blank or invisible-laden field
     assert.equal(envelope.claimed, false);
     assert.equal(envelope.clientVersion, undefined, 'a whitespace-only clientVersion never rides');
     assert.equal(envelope.minVersion, undefined, 'an invisible-only minVersion never rides');
-    assert.equal(envelope.code, 'HDKITCRED_INVALID', 'the Cf-woven code renders its cleaned spelling');
-    assert.doesNotMatch(String(envelope.code ?? ''), /[\u200b\u00a0]/, 'no invisible edge survives on the code');
+    assert.equal(envelope.code, undefined, 'a woven code never rides — no laundering into the signed spelling');
+  } finally {
+    credentialCarrier = undefined;
+  }
+  // 对照：干净的亲署码照常透传
+  credentialCarrier = Object.assign(new Error('real diagnosis'), { code: 'HDKIT_CRED_INVALID' });
+  try {
+    const clean = (await hdkitVoucherStatus()) as Record<string, unknown>;
+    assert.equal(clean.code, 'HDKIT_CRED_INVALID', 'a clean authored code rides verbatim');
+  } finally {
+    credentialCarrier = undefined;
+  }
+});
+
+test('the voucher envelope folds the gate for a landed carrier whose code view flipped after landing', async () => {
+  // round 25/MUST 2 出口三（voucher）：落定后翻转的 code [[Get]] 谎言此前把
+  // 门禁载体留在非门禁信封——翻转码上信封、升级指引全失。isVersionGateError
+  // 先查落定登记，零 code 读
+  credentialCarrier = landedThenFlippedCarrier();
+  try {
+    const envelope = (await hdkitVoucherStatus()) as Record<string, unknown>;
+    assert.equal(envelope.claimed, false);
+    assert.equal(envelope.code, 'HDKIT_VERSION_TOO_OLD', 'the gate envelope folds — the flipped code never rides');
+    assert.equal(envelope.clientVersion, '2.0.0-next.0', 'the record payload carries');
+    assert.match(String((envelope.remediation as { hint?: string }).hint ?? ''), /当前 2\.0\.0-next\.0/);
   } finally {
     credentialCarrier = undefined;
   }
@@ -100,6 +126,38 @@ test('a revoked proxy through the voucher envelope folds the unavailable copy', 
     assert.equal(envelope.message, 'Incentive service unavailable, please try again later');
   } finally {
     credentialCarrier = undefined;
+  }
+});
+
+test('a mint-fresh getPrototypeOf rejection reason wraps bounded — no V8-guard spin', async () => {
+  // round 25/SHOULD 6：transportReason 的 instanceof 是本模块唯一未设跳数
+  // 的链走（实测 V8 RangeError 兜底 87ms/111MB——界不归本模块定）；换
+  // isErrorCarrier（1024 跳）后毫秒级，包装消息照旧兜底、reason 的消息不
+  // 被读（非 Error 判定下走 else-if 链）
+  const mint = (): object => new Proxy({}, { getPrototypeOf: () => mint() });
+  const reason = new Proxy(new Error('never read'), { getPrototypeOf: () => mint() });
+  const originalFetch = global.fetch;
+  try {
+    global.fetch = (async () => {
+      throw reason;
+    }) as typeof global.fetch;
+    const t0 = Date.now();
+    const outcome = await hdkitConnectWithRetry({}).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    const elapsed = Date.now() - t0;
+    assert.ok(outcome instanceof Error, 'the wrap returns — the mint chain terminates');
+    assert.ok(elapsed < 50, `bounded in milliseconds, not the 87ms/111MB V8-guard spin (measured ${elapsed}ms)`);
+    const err = outcome as Error & { bodyUnreadable?: boolean };
+    assert.equal(
+      err.message,
+      'hdkitservice request failed (no response)',
+      'the wrap copy carries — the reason message never read',
+    );
+    assert.equal(err.bodyUnreadable, true);
+  } finally {
+    global.fetch = originalFetch;
   }
 });
 

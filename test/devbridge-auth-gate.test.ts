@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
-import { standingAccessor } from './hdkit-gate-fixtures.ts';
+import { standingAccessor, landedThenFlippedCarrier } from './hdkit-gate-fixtures.ts';
 import {
   _setOneShotForTests,
   gateExposeAuth,
@@ -636,9 +636,8 @@ test('the relay detector is kind-symmetric: an exhaustion-registered carrier wit
     'the credential path takes over — the misroute is dead',
   );
   assert.doesNotMatch(f.error ?? '', /插件版本过旧/, 'the gate fallback message never surfaces');
-  // 读数口径：装饰口的 rawCode 读 + 中继配额分支的门禁检查前安全读各一
-  // （round 20 教义：配额判定先求值）——检测器本身零读；多于两读即检测器
-  // 又读了不可信视图
+  // 读数口径（round 25/MUST 4 后）：装饰口 rawCode 读 + 中继配额分支一次安
+  // 全读（门禁先裁后，未登记的耗尽载体才落进配额比较）——检测器本身零读
   assert.equal(
     codeReads,
     readsAfterDecoration + 1,
@@ -650,5 +649,42 @@ test('the relay detector is kind-symmetric: an exhaustion-registered carrier wit
   assert.notEqual(gateDecorated, carrier, 'the standing clientVersion accessor earns the gate registration');
   const f2 = await failingGateThrowing(carrier);
   assert.equal(f2.error_code, 'HDKIT_VERSION_TOO_OLD', 'the gate kind added — the registration alone decides');
-  assert.equal(codeReads, readsAfterDecoration + 2, 'still no detector read — one more quota pre-check only');
+  assert.equal(
+    codeReads,
+    readsAfterDecoration + 1,
+    'the registered verdict fires before the quota branch — no code read at all',
+  );
+});
+
+// ── 落定裁决与配额先裁（round 25）──
+
+test('the relay folds the gate for a landed carrier whose code view flipped after landing', async () => {
+  // MUST 2 出口二（relay）：applyVersionGate 就地落定不写 code——落定后翻
+  // 转的 code [[Get]] 谎言此前把中继推入 NO_CREDENTIAL 误诊（gateRemediation
+  // 丢失）。落定登记的 gate 种类先裁，零 code 读
+  const carrier = landedThenFlippedCarrier();
+  const f = await failingGateThrowing(carrier);
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'the proven record decides the relay verdict — zero code reads');
+  // 落定（未登记）载体走落定分支：亲署消息照载（登记铸兜底、落定载亲署）
+  assert.match(f.error ?? '', /landed then flipped/, 'the authored message carries — the flipped code never does');
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the credential misdiagnosis never fires');
+  assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the upgrade guidance rides the failure');
+});
+
+test('the relay auto-create catch checks the gate before the quota comparison: a lying quota view cannot misroute', async () => {
+  // MUST 4：配额比较此前先求值且自选分支——登记过的门禁载体 code 视图谎
+  // 报配额码即被误路由进清 key 信封（配额 hint、空 currentKeys、
+  // gateRemediation 丢失）。门禁先裁后，登记裁决零读先返回
+  const { applyVersionGate } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  const carrier = Object.assign(new Error('quota lie twin'), { code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED' });
+  standingAccessor(carrier, 'clientVersion');
+  applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
+  const f = await failingGateThrowing(carrier);
+  assert.equal(
+    f.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the gate registration decides — the lying quota view never selects the branch',
+  );
+  assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the upgrade guidance carries');
+  assert.doesNotMatch(f.hint ?? '', /API Key 数量已达上限/, 'the quota hint never fires for a gate carrier');
 });

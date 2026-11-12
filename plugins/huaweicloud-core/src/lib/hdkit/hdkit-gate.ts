@@ -81,6 +81,33 @@ function ownDataValue(error: unknown, key: string): unknown {
   return undefined;
 }
 
+// 链上首个自有数据值（round 25/MUST 5）：亲署码/消息可在子类原型上——
+// ownDataValue 只读自有会丢（436cad8e 经 [[Get]] 链读发出）。有界链走查
+// （visited+跳数上界），首个定义该键的层级是数据描述符则取值、是访问器
+// 则按缺失（[[Get]] 零调用——翻供不波及）；全链无定义/超深/敌意走查按缺
+// 失。转向字段不适用此读（round 25/MUST 3：409 载体的 retryAfter 出现即
+// 敌意，只认自有数据）
+function chainDataValue(error: unknown, key: string): unknown {
+  if (typeof error !== 'object' || error === null) return undefined;
+  try {
+    let level: object | null = error;
+    const visited = new Set<unknown>();
+    let hops = 0;
+    while (level !== null) {
+      if (visited.has(level) || ++hops > 1024) return undefined;
+      visited.add(level);
+      const desc = Object.getOwnPropertyDescriptor(level, key);
+      if (desc !== undefined) {
+        return desc.get === undefined && desc.set === undefined ? desc.value : undefined;
+      }
+      level = Object.getPrototypeOf(level) as object | null;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // 登记并入（round 23）：同种类合并键集，跨种类并入 kinds——首胜丢弃会让
 // 另一种类的立着访问器在单种类解除后裸露
 function registerRefusal(target: object, kind: RefusalKind, keys: ReadonlySet<string | symbol>): void {
@@ -278,6 +305,15 @@ export function isVersionGateError(error: unknown): boolean {
     // 信封而每个 handler 出口都拒绝同载体）。与 versionGateResult 同规则
     return refusal.kinds.has('gate');
   }
+  // 落定登记的裁决（round 25/MUST 2）：就地落定后 code 的 [[Get]] 读仍是
+  // 一次敌意读——applyVersionGate 就地路径从不写 code（只有克隆盖戳），落
+  // 定后翻转/删除 code 即在每个出口杀掉门禁信封（handler 裸抛、中继
+  // NO_CREDENTIAL 误诊、voucher 留翻转码），而耗尽孪生因自带码装填而存活
+  // ——不对称。记录种类先裁（与登记同规则）：gate 落定即门禁（零读）；
+  // exhaustion 落定不是门禁（亲署码不可越装饰的种类——502/504 载体装饰成
+  // 耗尽后，其亲署码不得再把门禁折叠引来）
+  if (provenKindIs(error, 'gate')) return true;
+  if (provenKindIs(error, 'exhaustion')) return false;
   return canonCode(safeReadField(error, 'code')) === VERSION_GATE_CODE || isCodelessGateStatus(error);
 }
 
@@ -314,35 +350,29 @@ const UPGRADE_STEPS = [
 // 安全（visited 集合——getPrototypeOf 陷阱的 2-环既不抛也不终止）；走查
 // 抛出（撤销代理）按非载体。谎报 null 原型（r3 形态）在链上看不到
 // Error.prototype → 换新载体——继承访问器对无从隐藏
-// 内建错误家族原型点名集（round 24/MUST 5）：Error.prototype/TypeError.
-// prototype 等共享原型自身走查可达 Error.prototype（Error.prototype 第一层
-// 即命中）——就地装填即进程级污染，此后每个 new Error() 都折家族信封。原生
-// instanceof 不作判据：TypeError.prototype instanceof Error 实测为 true（其
-// 原型即 Error.prototype，实例检查挡不住它），且 OrdinaryHasInstance 无界走
-// 查、只靠 V8 内部 RangeError 兜底——铸造新代理的 getPrototypeOf 陷阱
-// （MUST 1 的威胁类）的界不归本模块定。点名集是恒等比较零读零陷阱；用户子
-// 类原型（MyErr.prototype）仍可达 Error.prototype 而被就地装填——其污染面
-// 仅限调用方自己的类实例，非进程级，记录边界
-const BUILTIN_ERROR_PROTOTYPES = new Set<unknown>([
-  Error.prototype,
-  TypeError.prototype,
-  EvalError.prototype,
-  RangeError.prototype,
-  ReferenceError.prototype,
-  SyntaxError.prototype,
-  URIError.prototype,
-  AggregateError.prototype,
-]);
+// 内建错误家族原型的结构化点名（round 24 建八名单、round 25 改结构化）：
+// 名单挡不住引擎新家族——DOMException/SuppressedError/WebAssembly 三家实测
+// 溜过（原型链皆可达 Error.prototype，就地装填即进程级污染：此后该家族每
+// 个实例都折家族信封，AbortController 的 reason 读注入文案）。模块加载时
+// 遍历 globalThis 与 WebAssembly 的自有属性：函数且其 prototype 链有界可
+// 达 Error.prototype 的，prototype 一律点名（DOMException 以引擎 JS 源码
+// 形式呈现，无 [native code] 标记——链可达性是唯一判据；globalThis 上注
+// 册的用户 class 一并拒绝，严格更安全）。模块作用域的用户子类原型保持记
+// 录边界（不在 globalThis 上）。原生 instanceof 不作判据：TypeError.
+// prototype instanceof Error 实测为 true（实例检查挡不住共享原型），且
+// OrdinaryHasInstance 无界走查、只靠 V8 内部 RangeError 兜底——界不归本模
+// 块定。点名集是恒等比较零读零陷阱
+const BUILTIN_ERROR_PROTOTYPES = collectBuiltinErrorPrototypes();
 
-function isErrorCarrier(error: unknown): boolean {
-  if (error === null) return false;
-  if (typeof error !== 'object') return false;
-  if (BUILTIN_ERROR_PROTOTYPES.has(error)) return false;
+// 有界 Error.prototype 可达走查（round 25/MUST 1 去重）：点名集收集器与
+// isErrorCarrier 白名单共用——visited+1024 跳上界，超深同环按不可达；走查
+// 抛出（撤销代理）按不可达
+function chainReachesErrorPrototype(start: object): boolean {
   try {
-    let level: unknown = error;
+    let level: unknown = start;
     const visited = new Set<unknown>();
     // 跳数上界（round 24/MUST 1）：visited 只拦再访——每次铸造新代理的
-    // getPrototypeOf 陷阱永不重复；1024 跳远超真实链深，超深同环按非载体
+    // getPrototypeOf 陷阱永不重复；1024 跳远超真实链深
     let hops = 0;
     while (level !== null && level !== undefined) {
       if (visited.has(level) || ++hops > 1024) return false;
@@ -354,6 +384,45 @@ function isErrorCarrier(error: unknown): boolean {
   } catch {
     return false;
   }
+}
+
+function collectBuiltinErrorPrototypes(): Set<unknown> {
+  const found = new Set<unknown>([Error.prototype]);
+  const scan = (container: object): void => {
+    for (const key of Reflect.ownKeys(container)) {
+      // 经描述符读取（round 25）：直读容器属性会触发惰性 getter——
+      // globalThis.localStorage 即实验警告源（CLI 启动钉实测被污染：每次
+      // boot 打一行 ExperimentalWarning）。gOPD 不调 [[Get]]；内建构造器皆
+      // 数据属性，访问器属性（惰性实验面）自然跳过
+      let desc: PropertyDescriptor | undefined;
+      try {
+        desc = Object.getOwnPropertyDescriptor(container, key);
+      } catch {
+        continue;
+      }
+      const value: unknown = desc?.value;
+      // 原生判据不可用：DOMException 实测以引擎 JS 源码形式呈现（toString
+      // 无 [native code]，与用户 class 同形）——判据只剩链可达性本身：普通
+      // 函数的 .prototype 链不达 Error.prototype（走 Object.prototype），
+      // 只有错误家族构造器的原型可达；globalThis 上注册的用户 class 一并
+      // 拒绝（拒绝装饰严格更安全，无污染面）；模块作用域的用户子类原型保持
+      // 记录边界（不在 globalThis 上，枚举不可见）
+      if (typeof value !== 'function') continue;
+      const proto = (value as { prototype?: unknown }).prototype;
+      if (typeof proto !== 'object' || proto === null) continue;
+      if (chainReachesErrorPrototype(proto)) found.add(proto);
+    }
+  };
+  scan(globalThis);
+  scan(WebAssembly);
+  return found;
+}
+
+export function isErrorCarrier(error: unknown): boolean {
+  if (error === null) return false;
+  if (typeof error !== 'object') return false;
+  if (BUILTIN_ERROR_PROTOTYPES.has(error)) return false;
+  return chainReachesErrorPrototype(error);
 }
 
 export function applyVersionGate(error: unknown, payload: VersionGatePayload): Error {
@@ -462,7 +531,7 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const minVersion = typeof rawMv === 'string' ? cleanMessage(rawMv) || undefined : undefined;
     const rawRem = provenField(error, 'remediation') ?? ownDataValue(error, 'remediation');
     const remediation = serializableRemediation(rawRem);
-    const rawMessage = provenField(error, 'message') ?? ownDataValue(error, 'message');
+    const rawMessage = provenField(error, 'message') ?? chainDataValue(error, 'message');
     const message = cleanMessage(typeof rawMessage === 'string' ? rawMessage : '') || VERSION_GATE_FALLBACK_MESSAGE;
     return {
       code: VERSION_GATE_CODE,
@@ -516,11 +585,12 @@ export function versionGateResult(error: unknown): Record<string, unknown> | und
     return undefined;
   }
   if (!isVersionGateError(error)) return undefined;
-  // round 12：字段读安全化（抛出型 getter 按缺失）；retryAfter 窄化到字符串
-  // （round 16）——BigInt 等非字符串值不骑信封（MCP 序列化边界）
-  const rawRetryAfter = safeReadField(error, 'retryAfter');
+  // 转向字段改自有数据描述符读（round 25/MUST 3）：[[Get]] 读让立着访问器
+  // 注入任意文案（pay-here URL 骑上信封）；真实 409 门禁载体从不携带
+  // retryAfter——出现即敌意，与耗尽折叠的 ownDataValue 同标准
+  const rawRetryAfter = ownDataValue(error, 'retryAfter');
   const retryAfter = typeof rawRetryAfter === 'string' ? rawRetryAfter : undefined;
-  const coreHoursExhausted = safeReadField(error, 'coreHoursExhausted');
+  const coreHoursExhausted = ownDataValue(error, 'coreHoursExhausted');
   return {
     ok: false,
     ...gateFoldPayload(error),
@@ -659,8 +729,9 @@ function decorateInPlace(
     // 免除空写（round 24/MUST 3a 配套）：装饰值与自有数据现状相等时跳过写
     // 入——装饰器有意的同值写（消息原样保留、请求层预写的 connectRetries）
     // 在"预存等值不算落定"下会整族拒绝诚实载体；跳过即视为落定（值已在位
-    // 即本轮目标达成），且不触发 [[Set]]/[[Get]]（敌意面更小）。谎报 gOPD 的
-    // 幻影等值在落定证明的写前快照对照处仍有拦截（两读分歧即写未落）
+    // 即本轮目标达成），且不触发 [[Set]]/[[Get]]（敌意面更小）。谎报 gOPD
+    // 声称等值即在此跳过——写前快照对照不运行，此为全陷阱谎者的已记录边界
+    // （与落定证明的幽灵数据描述符同类，round 25 措辞收口）
     try {
       const current = Object.getOwnPropertyDescriptor(target, key);
       if (current !== undefined && current.get === undefined && current.set === undefined && current.value === value) {
@@ -1025,7 +1096,13 @@ function cloneCarrier(
         key === 'remediation' ||
         key === 'message' ||
         key === 'clientVersion' ||
-        key === 'minVersion'
+        key === 'minVersion' ||
+        // 异种折叠字段不随克隆（round 25/SHOULD 6）：门禁克隆此前可复制源上
+        // 的 gatewayRetryExhausted/connectRetries——耗尽折叠会在克隆上以源
+        // 亲署的计数开火（此前仅因各出口先问门禁折叠而惰性无害）；耗尽克隆
+        // 的这两键本就在装饰字段内，跳过无副作用
+        key === 'gatewayRetryExhausted' ||
+        key === 'connectRetries'
       ) {
         continue;
       }
@@ -1087,7 +1164,7 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     // 记录未含的字段（服务端亲署码/消息/转向字段不经装饰）回退到自有数据
     // 描述符读（ownDataValue）——亲署码与消息保留（round-24 授权行）；窄化
     // 与通用分支同口径（round 16/18/19）
-    const rawCode = provenField(error, 'code') ?? ownDataValue(error, 'code');
+    const rawCode = provenField(error, 'code') ?? chainDataValue(error, 'code');
     const rawRetries = provenField(error, 'connectRetries') ?? ownDataValue(error, 'connectRetries');
     const rawRetryAfter = provenField(error, 'retryAfter') ?? ownDataValue(error, 'retryAfter');
     const rawCore = provenField(error, 'coreHoursExhausted') ?? ownDataValue(error, 'coreHoursExhausted');
@@ -1095,7 +1172,7 @@ export function transientExhaustionResult(error: unknown): Record<string, unknow
     const remediation = serializableRemediation(rawRemediation);
     const connectRetries =
       typeof rawRetries === 'number' && Number.isSafeInteger(rawRetries) && rawRetries >= 0 ? rawRetries : undefined;
-    const rawMessage = provenField(error, 'message') ?? ownDataValue(error, 'message');
+    const rawMessage = provenField(error, 'message') ?? chainDataValue(error, 'message');
     return {
       ok: false,
       ...(typeof rawCode === 'string' ? { code: rawCode } : {}),

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
-import { standingAccessor, swallowOnceProxy } from './hdkit-gate-fixtures.ts';
+import { standingAccessor, swallowOnceProxy, landedThenFlippedCarrier } from './hdkit-gate-fixtures.ts';
 
 // 源树派生路径（round 5）：structure-helpers 的 pluginRoot 在模块加载时断言
 // 生成 skills 树，单文件 node --test 在未构建检出上会死于该断言；这里只读
@@ -39,6 +39,7 @@ const {
   decorateExhaustedConnect,
   isGatewayTransient,
   isNonRetryableBusinessError,
+  isVersionGateError,
   rendersBlank,
   cleanMessage,
   versionGateMessage,
@@ -3835,7 +3836,6 @@ test('a lying getPrototypeOf cannot hide the inherited accessor: both decorators
 test('a swallowed write with a lying read-back never lands: both decorators route to the clone', () => {
   // 吞写 + 单次读谎（round 13 的读回缝在落定读上重开）：读回通过而任何层级
   // 都没有该键的定义 → 写未落 → 克隆，折叠铸设计信封——不是载体的伪造信封
-  const pending = new Map<string | symbol, unknown>();
   const lies: Record<string, unknown> = {
     gatewayRetryExhausted: true,
     code: 'HDKIT_UPSTREAM_ERROR',
@@ -4318,7 +4318,6 @@ test('a get trap flipping after landing cannot lie into the envelope: folds read
 
 test('a swallowed write with a lying read-back never lands on the gate decorator either', () => {
   // 审计补钉：吞写钉（3804）此前只驱动耗尽装饰器——门禁半边同契约
-  const pending = new Map<string | symbol, unknown>();
   const lies: Record<string, unknown> = {
     clientVersion: '9.9.9-lie',
     minVersion: '8.8.8-lie',
@@ -4335,16 +4334,26 @@ test('a swallowed write with a lying read-back never lands on the gate decorator
   assert.doesNotMatch(String(fold.message ?? ''), /pay here/);
 });
 
-test('the shared error prototypes route to stamped carriers: zero process-wide mutation', () => {
-  // MUST 5：Error.prototype/TypeError.prototype 此前就地装填——进程级污染，
-  // 此后每个 new Error() 都折家族信封。TypeError.prototype instanceof Error
-  // 实测为 true（其原型即 Error.prototype）——实例检查挡不住它，点名集才行
-  for (const [label, proto] of [
-    ['Error.prototype', Error.prototype],
-    ['TypeError.prototype', TypeError.prototype],
-  ] as const) {
+test('every engine error-family prototype routes to stamped carriers: zero process-wide mutation', () => {
+  // round 24/MUST 5 建两行名单、round 25/MUST 1 改结构化：八名单挡不住引擎
+  // 新家族——DOMException/SuppressedError/WebAssembly 三家实测溜过（原型链
+  // 皆可达 Error.prototype，就地装填即进程级污染；f1c 形态：共享 message
+  // getter 被换掉，每个 AbortController reason 读注入文案）。钉侧独立结构化
+  // 枚举（globalThis+WebAssembly 的原生函数、原型链可达 Error.prototype），
+  // 逐一过两装饰器——实现侧点名集缺任何一家即红；未来引擎家族由枚举自动
+  // 覆盖，静默溜过不可能
+  const engineFamilies = collectEngineErrorPrototypes();
+  assert.ok(
+    engineFamilies.size >= 8,
+    `the engine carries at least the eight known families (found ${engineFamilies.size})`,
+  );
+  for (const known of [Error.prototype, TypeError.prototype, DOMException.prototype, SuppressedError.prototype]) {
+    assert.ok(engineFamilies.has(known), 'the known engine families are enumerated');
+  }
+  for (const proto of engineFamilies) {
+    const label = proto.constructor?.name ?? 'engine prototype';
     const exhaustionOut = decorateExhaustedConnect(proto, 2);
-    assert.notEqual(exhaustionOut, proto, `${label}: the exhaustion decorator never hands the shared prototype back`);
+    assert.notEqual(exhaustionOut, proto, `${label}: the exhaustion decorator never hands an engine prototype back`);
     assert.ok(exhaustionOut instanceof Error, `${label}: a stamped carrier returns`);
     assert.equal(
       transientExhaustionResult(exhaustionOut)?.code,
@@ -4352,24 +4361,24 @@ test('the shared error prototypes route to stamped carriers: zero process-wide m
       `${label}: the stamped envelope folds`,
     );
     const gateOut = applyVersionGate(proto, { clientVersion: '2.0.0-next.0' });
-    assert.notEqual(gateOut, proto, `${label}: the gate decorator never hands the shared prototype back`);
+    assert.notEqual(gateOut, proto, `${label}: the gate decorator never hands an engine prototype back`);
     assert.equal(
       versionGateResult(gateOut)?.code,
       'HDKIT_VERSION_TOO_OLD',
       `${label}: the stamped gate envelope folds`,
     );
   }
+  // AbortError 家族完好（f1a/f1c 形态）：新鲜 DOMException 保自己的消息、
+  // 折叠为空——共享 getter 从未被换
+  const fresh = new DOMException('aborted', 'AbortError');
+  assert.equal(fresh.message, 'aborted', 'the shared DOMException message getter is never replaced');
+  assert.equal(fresh.name, 'AbortError');
+  assert.equal(transientExhaustionResult(fresh), undefined, 'a fresh AbortError folds nothing');
+  assert.equal(versionGateResult(fresh), undefined);
   // 零全局突变：随后每个新错误都折叠为空——无标记、无家族码、无装填残留
   assert.equal(transientExhaustionResult(new Error('after pollution attempt')), undefined);
   assert.equal(versionGateResult(new TypeError('after pollution attempt')), undefined);
-  for (const field of [
-    'code',
-    'clientVersion',
-    'gatewayRetryExhausted',
-    'remediation',
-    'minVersion',
-    'connectRetries',
-  ]) {
+  for (const field of ['clientVersion', 'gatewayRetryExhausted', 'remediation', 'minVersion', 'connectRetries']) {
     assert.equal(
       Object.getOwnPropertyDescriptor(Error.prototype, field),
       undefined,
@@ -4380,8 +4389,52 @@ test('the shared error prototypes route to stamped carriers: zero process-wide m
       undefined,
       `TypeError.prototype never carries ${field} after the decorators ran`,
     );
+    assert.equal(
+      Object.getOwnPropertyDescriptor(DOMException.prototype, field),
+      undefined,
+      `DOMException.prototype never carries ${field} after the decorators ran`,
+    );
+    assert.equal(
+      Object.getOwnPropertyDescriptor(WebAssembly.RuntimeError.prototype, field),
+      undefined,
+      `WebAssembly.RuntimeError.prototype never carries ${field} after the decorators ran`,
+    );
+  }
+  // DOMException.prototype 的 code/message 是家族内建 getter（数字码 20 即
+  // AbortError 文档码）——就地装填会以 defineProperty 替换成数据属性；断言
+  // 仍是访问器即未被触碰
+  for (const builtin of ['code', 'message']) {
+    assert.notEqual(
+      Object.getOwnPropertyDescriptor(DOMException.prototype, builtin)?.get,
+      undefined,
+      `DOMException.prototype's builtin ${builtin} getter stays an accessor — never replaced`,
+    );
   }
 });
+
+// 钉侧引擎家族枚举（round 25/MUST 1）：与实现侧结构同法但独立实现——
+// globalThis/WebAssembly 上的函数且 prototype 链可达 Error.prototype（链可
+// 达性是唯一判据：DOMException 以引擎 JS 源码呈现，无 [native code]）
+function collectEngineErrorPrototypes(): Set<object> {
+  const found = new Set<object>([Error.prototype]);
+  const reaches = (candidate: object, depth = 0): boolean => {
+    if (candidate === Error.prototype) return true;
+    if (depth > 1024) return false;
+    const parent: unknown = Object.getPrototypeOf(candidate);
+    return typeof parent === 'object' && parent !== null ? reaches(parent, depth + 1) : false;
+  };
+  const scan = (container: object): void => {
+    for (const key of Reflect.ownKeys(container)) {
+      const value = (container as Record<string | symbol, unknown>)[key];
+      if (typeof value !== 'function') continue;
+      const proto = (value as { prototype?: unknown }).prototype;
+      if (typeof proto === 'object' && proto !== null && reaches(proto)) found.add(proto);
+    }
+  };
+  scan(globalThis);
+  scan(WebAssembly);
+  return found;
+}
 
 test('the refused clones carry the designed stamps: family code and designed copy are unconditional', () => {
   // SHOULD 7 补钉：家族码与设计文案的盖戳（round 24/MUST 2）此前无钉——两
@@ -4463,4 +4516,155 @@ test('a flip-during-walk trap is bounded on the surviving-key walk; the 2-cycle 
   assert.ok(Date.now() - cycleStart < 100, 'the 2-cycle control stays at milliseconds');
   assert.notEqual(cycleOut, cycleCarrier);
   assert.ok(cycleOut instanceof Error);
+});
+
+// ── 落定裁决、转向注入、亲署链读、异种克隆字段、配额先裁（round 25）──
+// 就地落定后 code 的 [[Get]] 读仍是敌意读：applyVersionGate 就地路径从不写
+// code（只有克隆盖戳），翻转/删除即在每个出口杀掉门禁信封——handler 裸抛、
+// 中继 NO_CREDENTIAL 误诊、voucher 留翻转码；耗尽孪生因自带码装填而存活
+// （不对称）。落定登记的种类先裁（零 code 读）。真实 409 门禁载体从不携带
+// retryAfter——出现即敌意，[[Get]] 读让立着访问器注入任意文案。亲署码/消
+// 息可在子类原型上——链上首个自有数据值读（chainDataValue）补齐 ownData-
+// Value 的自有盲区。门禁克隆不携带异种折叠字段（gatewayRetryExhausted/
+// connectRetries 此前可复制，耗尽折叠会在克隆上开火）。
+
+test('a landed gate carrier whose code view flips after landing still folds the gate at the handler exit', () => {
+  // MUST 2 出口一（handler 折叠即 versionGateResult）：落定登记的 gate 种
+  // 类先裁，零 code 读；删除孪生同判——code 键删除同样杀不死折叠
+  const handlerFold = versionGateResult(landedThenFlippedCarrier())!;
+  assert.ok(handlerFold, 'the fold fires off the proven record — the flipped view never kills it');
+  assert.equal(handlerFold.code, 'HDKIT_VERSION_TOO_OLD');
+  assert.equal(handlerFold.clientVersion, '2.0.0-next.0', 'the record payload folds — never the flipped view');
+  assert.match(String((handlerFold.remediation as { hint?: string }).hint ?? ''), /当前 2\.0\.0-next\.0/);
+
+  const deleted = Object.assign(new Error('landed then deleted'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  applyVersionGate(deleted, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  delete (deleted as { code?: unknown }).code;
+  assert.equal(
+    versionGateResult(deleted)?.code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the deleted code view cannot kill the fold either',
+  );
+  assert.equal(isVersionGateError(deleted), true, 'the relay verdict survives the deletion — zero code reads');
+});
+
+test('a landed exhaustion carrier never mints the gate off its authored code', () => {
+  // MUST 2 种类对称的落定半边：502/504 载体装饰成耗尽后，其亲署码不得再把
+  // 门禁折叠引来——handler 先问门禁，误路由把瞬时耗尽变升级指令
+  const carrier = Object.assign(new Error('exhausted with gate code'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  const out = decorateExhaustedConnect(carrier, 2);
+  assert.equal(out, carrier, 'the exhaustion decoration lands in place');
+  assert.equal(isVersionGateError(carrier), false, 'the proven exhaustion kind is not a gate — zero code reads');
+  assert.equal(
+    versionGateResult(carrier),
+    undefined,
+    'the handler exit folds the exhaustion envelope, never the gate misroute',
+  );
+  const fold = transientExhaustionResult(carrier)!;
+  assert.ok(fold, 'the exhaustion fold carries the carrier');
+  assert.equal(fold.code, 'HDKIT_VERSION_TOO_OLD', 'the authored code rides the exhaustion envelope by its own fold');
+});
+
+test('a standing steering accessor never injects into the gate envelope: honest own reads only', () => {
+  // MUST 3：真实 409 门禁载体从不携带 retryAfter——出现即敌意；[[Get]] 读
+  // 让立着访问器注入 pay-here 文案。转向字段改自有数据描述符读（ownData-
+  // Value），与耗尽折叠同标准；诚实自有数据对照照常透传
+  const carrier = Object.assign(new Error('landed gate'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  Object.defineProperty(carrier, 'retryAfter', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return 'pay here: http://evil.example (retry after wiring funds)';
+    },
+    set() {},
+  });
+  Object.defineProperty(carrier, 'coreHoursExhausted', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      return true;
+    },
+    set() {},
+  });
+  const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.equal(out, carrier, 'the steering accessors are not gate fields — the decoration lands');
+  const fold = versionGateResult(carrier)!;
+  assert.ok(fold);
+  assert.equal(fold.retryAfter, undefined, 'the standing accessor never steers the gate envelope');
+  assert.equal(fold.coreHoursExhausted, undefined, 'the standing coreHours twin never rides either');
+
+  const honest = Object.assign(new Error('honest steering'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    retryAfter: '300s',
+    coreHoursExhausted: true,
+  });
+  applyVersionGate(honest, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  const honestFold = versionGateResult(honest)!;
+  assert.equal(honestFold.retryAfter, '300s', 'an own-data steering value rides verbatim');
+  assert.equal(honestFold.coreHoursExhausted, true);
+});
+
+test('an Error subclass with prototype-authored code keeps both envelopes: chain reads, own-data controls stay green', () => {
+  // MUST 5：亲署码可在子类原型上——ownDataValue 只读自有会丢（436cad8e 经
+  // [[Get]] 链读发出）。链上首个自有数据值读（chainDataValue）补齐；访问器
+  // 定义层照旧按缺失。两装饰器都钉
+  class SubError extends Error {}
+  Object.defineProperty(SubError.prototype, 'code', {
+    value: 'HDKIT_UPSTREAM_ERROR',
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const carrier = new SubError('subclass authored');
+  const out = decorateExhaustedConnect(carrier, 2);
+  assert.equal(out, carrier, 'the subclass instance lands in place');
+  const fold = transientExhaustionResult(out)!;
+  assert.equal(
+    fold.code,
+    'HDKIT_UPSTREAM_ERROR',
+    'the prototype-authored business code rides — chain read, never dropped',
+  );
+  assert.match(String(fold.message ?? ''), /subclass authored/, 'the own message rides');
+
+  class GateSub extends Error {}
+  Object.defineProperty(GateSub.prototype, 'code', {
+    value: 'HDKIT_VERSION_TOO_OLD',
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+  const gateCarrier = new GateSub('subclass gate twin');
+  const gateOut = applyVersionGate(gateCarrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.equal(gateOut, gateCarrier, 'the gate twin lands in place');
+  const gateFold = versionGateResult(gateCarrier)!;
+  assert.equal(gateFold.code, 'HDKIT_VERSION_TOO_OLD');
+  assert.equal(gateFold.clientVersion, '2.0.0-next.0');
+  assert.match(String(gateFold.message ?? ''), /subclass gate twin/, 'the authored message rides the gate fold too');
+
+  // 诚实对照：无子类的自有数据码照常
+  const ownData = Object.assign(new Error('own data'), { code: 'HDKIT_UPSTREAM_ERROR' });
+  decorateExhaustedConnect(ownData, 2);
+  assert.equal(transientExhaustionResult(ownData)?.code, 'HDKIT_UPSTREAM_ERROR');
+});
+
+test('the gate clone never carries the foreign exhaustion fold fields', () => {
+  // round 25/SHOULD 6：门禁克隆此前可复制源上的 gatewayRetryExhausted/
+  // connectRetries——耗尽折叠会在克隆上以源亲署的计数开火（此前仅因各出口
+  // 先问门禁折叠而惰性无害）；异种折叠字段不随克隆
+  const carrier = Object.assign(new Error('foreign marker'), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    gatewayRetryExhausted: true,
+    connectRetries: 999,
+  });
+  sealedKey(carrier, 'minVersion', '1.0.0');
+  const out = applyVersionGate(carrier, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  assert.notEqual(out, carrier, 'the sealed key earns the refusal');
+  assert.equal(
+    (out as { gatewayRetryExhausted?: boolean }).gatewayRetryExhausted,
+    undefined,
+    'the foreign marker never rides the gate clone',
+  );
+  assert.equal((out as { connectRetries?: number }).connectRetries, undefined, 'the foreign count never rides either');
+  assert.equal(transientExhaustionResult(out), undefined, 'the exhaustion fold cannot fire on the gate clone');
+  assert.ok(versionGateResult(out), 'the gate clone folds the designed gate envelope');
 });
