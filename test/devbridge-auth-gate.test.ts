@@ -695,7 +695,9 @@ test('the relay auto-create catch checks the gate before the quota comparison: a
 test('the relay renders the attached versions for a codeless 409 (the round-30 relay half)', async () => {
   // round 30/MUST 1 的 relay 半边：无码 409 载体带挂载版本——relay 的
   // versionGateFailure 经 gateFoldPayload 的无码分支渲染真实版本而非
-  // 未知/最新版兜底
+  // 未知/最新版兜底。round 31/MUST 1 的 relay 半边即本行：修复后的请求层
+  // 对超界码 409 造的载体正是这个形状（status 409、码缺失、版本挂载）——
+  // relay 折无码门禁带版本；relay 不经 hdkitservice 路径，填充码信封不可达
   const carrier = Object.assign(new Error('relay codeless gate'), {
     status: 409,
     clientVersion: '2.0.0-next.0',

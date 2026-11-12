@@ -5258,6 +5258,11 @@ test('the import completes under deleted and throwing Error bindings', async () 
   // 主张——先重绑再导入）：真 TypeError.prototype 的 constructor 是函数对象上的
   // 自有属性，绑定无关——新导入的模块照样拒绝真家族原型
   const realTypeErrorProto = TypeError.prototype;
+  // 重绑前先存真绑定（round 31 修，r30 结构钉暴露）：原 finally 写的是
+  // `= TypeError`——右边读的是已被污染的全局绑定（FakeTypeError 自赋自），
+  // 真 TypeError 从此丢失，本文件进程内所有后续行的 TypeError.prototype 都
+  // 是普通函数原型（链只到 Object.prototype）。同 :5061 行的 saved 模式
+  const savedTypeErrorBinding = globalThis.TypeError;
   (globalThis as Record<string, unknown>).TypeError = function FakeTypeError() {};
   try {
     const rebound = await import(`../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts?r28preload${Date.now()}`);
@@ -5272,7 +5277,7 @@ test('the import completes under deleted and throwing Error bindings', async () 
       'the rebound binding cannot launder the real family in place',
     );
   } finally {
-    (globalThis as Record<string, unknown>).TypeError = TypeError;
+    (globalThis as Record<string, unknown>).TypeError = savedTypeErrorBinding;
   }
   try {
     for (const [label, apply] of states) {
@@ -5756,60 +5761,292 @@ test('a codeless burn-core 502/504 renders no manufactured HTTP_x in code or mes
 });
 
 test('the 200-code-point cap applies unconditionally: the 201-400 band folds at 200', async () => {
-  // round 30/MUST 4
-  for (const cp of [250, 400]) {
-    const stub = stubConnectSequence([() => jsonEnvelope({ message: 'B'.repeat(cp) }, { status: 500 })]);
+  // round 30/MUST 4；r31/MUST 2b 后组成前缀不再制造、MUST 4 精度改恰等——
+  // 可见消息即服务器串本体（去重：两排共用同一捕获口）
+  const thrown500Message = async (body: Record<string, unknown>): Promise<string> => {
+    const stub = stubConnectSequence([() => jsonEnvelope(body, { status: 500 })]);
     try {
       const envelope = (await captureConnectRejection({})) as ExhaustedResult & { message?: string };
-      const msg = String(envelope.message ?? '');
-      assert.ok(msg.length <= 220, `cp=${cp}: the message folds at 200 (got ${msg.length})`);
-      assert.notEqual(msg.length, cp, `cp=${cp}: the fast path no longer rides the whole string`);
+      return String(envelope.message ?? '');
+    } finally {
+      stub.restore();
+    }
+  };
+  for (const cp of [250, 400]) {
+    const msg = await thrown500Message({ message: 'B'.repeat(cp) });
+    assert.equal(msg.length, 200, `cp=${cp}: the message folds at exactly 200 (got ${msg.length})`);
+    assert.notEqual(msg.length, cp, `cp=${cp}: the fast path no longer rides the whole string`);
+  }
+  {
+    const msg = await thrown500Message({ message: '𝕊'.repeat(201) });
+    // 星面区串恰折 200 码点，切头不产孤立代理
+    assert.equal([...msg].length, 200, `the astral server string folds at 200 (got ${[...msg].length})`);
+    for (const ch of msg) {
+      const code = ch.codePointAt(0)!;
+      assert.ok(!(code >= 0xd800 && code <= 0xdfff), 'no lone surrogate rides the cut');
+    }
+  }
+});
+
+test('the deny verdict never enumerates the candidate: the structural no-enumeration pin', () => {
+  // round 30/DOC 5 建、round 31/DOC 4 改判别性（审计 finding 2）：r30 形态代
+  // 理的是 globalThis.WebAssembly——src/lib/hdkit 从不读的容器（审计在
+  // isErrorCarrier 顶部加 Reflect.ownKeys(error) 后该行照样过——空转钉）。
+  // 判别形态：敌意代理套在"裁决真正读取的候选"上——ownKeys 抛出（枚举即
+  // 引爆，守卫吞掉也已被计数器抓到：陷阱先计数再抛出），gOPD 抛出（自指
+  // 裁决的合法读必须守卫降级、裁决照常完成）
+  let ownKeysFires = 0;
+  const hostile = new Proxy(TypeError.prototype, {
+    ownKeys() {
+      ownKeysFires += 1;
+      throw new TypeError('never enumerated');
+    },
+    getOwnPropertyDescriptor() {
+      throw new TypeError('descriptor reads are guarded, never enumerated');
+    },
+  });
+  assert.equal(isErrorCarrier(new Error('x')), true, 'an honest instance is a carrier');
+  assert.equal(isErrorCarrier(TypeError.prototype), false, 'the family prototype is denied');
+  assert.equal(
+    isErrorCarrier(hostile),
+    true,
+    'the guarded descriptor throw degrades the self-identity verdict, the verdict completes',
+  );
+  assert.equal(ownKeysFires, 0, 'no candidate ownKeys trap fires — the verdict never enumerates');
+});
+// ── 截断码规则、伪造码残面、Retry-After 界（round 31）──
+// 码是身份不是内容（MUST 1，adversary-2 F1）：r30 的无条件下 200 码点上界把
+// 码字段切半——201-220 码点带内真码（前置 180-199 个不可见填充）被截成假拼
+// 写（HDKIT_VERS…）逃过每个折叠（裸抛零指引），或纯填充头把码全推出界外
+// （洗成空、409 误折）。超界视同缺失：界内保身份、界外无码——409 折无码门
+// 禁（带挂载版本），非 409 照旧制造 HTTP_x 而非发布假拼写。伪造码的最后两个
+// 表面（MUST 2，adversary-2 F2 + 审计 finding 1）：voucher 非门禁臂与四条裸
+// 抛出口。Retry-After 头同过 200 码点界（SHOULD 3）。
+
+test('a padded code folds by the identity budget: within 200 code points identity survives, past it the 409 folds codeless', async () => {
+  const ZW = '\u200b';
+  const run = async (tool: ToolName, extra: Record<string, unknown> = {}): Promise<GateResult> =>
+    (await callTool(tool, { vendorConfirmed: VENDOR, ...extra })) as GateResult;
+
+  // 界内控制行（pad 179 + 21 字符门禁码 = 200 码点）：码可验证，码化门禁折叠带版本
+  {
+    const stub = stubConnectSequence([
+      () =>
+        jsonEnvelope(
+          { code: `${ZW.repeat(179)}HDKIT_VERSION_TOO_OLD`, clientVersion: '1.0.0', minVersion: '2.0.0' },
+          { status: 409 },
+        ),
+    ]);
+    try {
+      const gate = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(gate.code, 'HDKIT_VERSION_TOO_OLD', 'pad 179: within the budget the gate code survives');
+      assert.equal(gate.clientVersion, '1.0.0');
+      assert.equal(gate.minVersion, '2.0.0');
     } finally {
       stub.restore();
     }
   }
-  {
-    const astral = '𝕊'.repeat(201);
-    const stub = stubConnectSequence([() => jsonEnvelope({ message: astral }, { status: 500 })]);
+
+  // 填充码 409 的共用驱动（round 31 去重）：桩罩住整个驱动块（connect /
+  // check_user / voucher 共用循环桩），按码分带断言
+  const underPadded409 = async <T>(code: string, drive: () => Promise<T>): Promise<T> => {
+    const stub = stubConnectSequence([
+      () => jsonEnvelope({ code, clientVersion: '1.0.0', minVersion: '2.0.0' }, { status: 409 }),
+    ]);
     try {
-      const envelope = (await captureConnectRejection({})) as ExhaustedResult & { message?: string };
-      const msg = String(envelope.message ?? '');
-      // 组成前缀（"HTTP_500: "）叠加码点——上界对服务器串计：200 码点 + 前缀
-      assert.ok([...msg].length <= 220, `the astral server string folds at 200 (got ${[...msg].length})`);
-      for (const ch of msg) {
-        const code = ch.codePointAt(0)!;
-        assert.ok(!(code >= 0xd800 && code <= 0xdfff), 'no lone surrogate rides the cut');
-      }
+      return await drive();
+    } finally {
+      stub.restore();
+    }
+  };
+
+  // 201-220 码点带（pad 180/190/199）：截断把码切半——假拼写视同缺失，409 折
+  // 无码门禁、带挂载版本，每个出口（connect / check_user / voucher）
+  for (const pad of [180, 190, 199]) {
+    await underPadded409(`${ZW.repeat(pad)}HDKIT_VERSION_TOO_OLD`, async () => {
+      const connect = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(connect.code, 'HDKIT_VERSION_TOO_OLD', `pad=${pad}: the codeless gate envelope`);
+      assert.equal(connect.clientVersion, '1.0.0', `pad=${pad}: the attached versions ride the codeless fold`);
+      assert.equal(connect.minVersion, '2.0.0');
+      assert.match(
+        String((connect.remediation as { hint?: string }).hint ?? ''),
+        /当前 1\.0\.0，需升级至正式版 2\.0\.0 及以上/,
+        `pad=${pad}: the hint renders the attached versions`,
+      );
+      const check = await run('huaweicloud_sandbox_check_user');
+      assert.equal(check.code, 'HDKIT_VERSION_TOO_OLD', `pad=${pad}: check_user folds the codeless gate`);
+      assert.equal(check.clientVersion, '1.0.0', `pad=${pad}: check_user renders the versions`);
+      const voucher = (await run('huaweicloud_voucher_status')) as GateResult & { claimed?: boolean };
+      assert.equal(voucher.claimed, false, `pad=${pad}: the voucher keeps the claimed:false gate envelope`);
+      assert.equal(voucher.code, 'HDKIT_VERSION_TOO_OLD', `pad=${pad}: the voucher folds the codeless gate`);
+      assert.equal(voucher.clientVersion, '1.0.0', `pad=${pad}: the voucher renders the versions`);
+    });
+  }
+
+  // 界内的填充 CRED（pad 182 + 18 字符 = 200 码点）：保自己的码与指引，无版本
+  {
+    const stub = stubConnectSequence([
+      () =>
+        jsonEnvelope(
+          { code: `${ZW.repeat(182)}HDKIT_CRED_INVALID`, clientVersion: '1.0.0', minVersion: '2.0.0' },
+          { status: 409 },
+        ),
+    ]);
+    try {
+      const connect = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(connect.code, 'HDKIT_CRED_INVALID', 'pad 182: within the budget the padded CRED keeps its identity');
+      assert.equal(connect.clientVersion, undefined, 'a non-gate 409 carries no version fields');
+      assert.equal(connect.minVersion, undefined);
+      assert.match(
+        String((connect.remediation as { hint?: string }).hint ?? ''),
+        /凭证\(S1\)/,
+        'the credential remediation keeps',
+      );
+    } finally {
+      stub.restore();
+    }
+  }
+
+  // 带内填充 CRED（pad 190，208 码点）与纯填充头 CRED（pad 200，218 码点——
+  // 审计 a10 形态）：码不可验证——操作员裁定"界外即无码"，409 折无码门禁带版
+  // 本（误折方向是裁定出口，记录在台账）
+  for (const pad of [190, 200]) {
+    await underPadded409(`${ZW.repeat(pad)}HDKIT_CRED_INVALID`, async () => {
+      const connect = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(
+        connect.code,
+        'HDKIT_VERSION_TOO_OLD',
+        `pad=${pad}: past the budget the code is absent — the 409 folds codeless`,
+      );
+      assert.equal(connect.clientVersion, '1.0.0', `pad=${pad}: the codeless fold carries the attached versions`);
+      assert.match(String((connect.remediation as { hint?: string }).hint ?? ''), /插件版本过旧/);
+    });
+  }
+
+  // ≥221 全填充（无真码）：照旧无码门禁（P27 远带控制行）
+  {
+    const stub = stubConnectSequence([() => jsonEnvelope({ code: ZW.repeat(221) }, { status: 409 })]);
+    try {
+      const gate = await run('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+      assert.equal(gate.code, 'HDKIT_VERSION_TOO_OLD', 'the all-padding shape stays codeless');
+    } finally {
+      stub.restore();
+    }
+  }
+
+  // 非 409 带内（500 + 填充 CRED）：界外即无码——照旧制造 HTTP_500（分类拼
+  // 写），不发布假拼写；可见消息不带组成前缀（MUST 2b）
+  {
+    const stub = stubConnectSequence([
+      () => jsonEnvelope({ code: `${ZW.repeat(190)}HDKIT_CRED_INVALID`, message: 'x' }, { status: 500 }),
+    ]);
+    try {
+      const thrown = await callTool('huaweicloud_sandbox_connect', {
+        vendorConfirmed: VENDOR,
+        pool_type: 'ephemeral',
+      }).then(
+        () => null,
+        (error: unknown) => error as Error,
+      );
+      assert.ok(thrown, 'a codeless 500 rethrows');
+      assert.equal(String(thrown!.message), 'x', 'the false spelling and the composed prefix are both gone');
     } finally {
       stub.restore();
     }
   }
 });
 
-test('the deny verdict never enumerates a container: the structural no-enumeration pin', () => {
-  // round 30/DOC 5: the 5000ms wall-clock assertions stopped discriminating —
-  // the structural claim: the verdict reads the candidate's own descriptors
-  // only; no container trap fires
-  let ownKeysFires = 0;
-  let gopdFires = 0;
-  const hostile = new Proxy(globalThis.WebAssembly, {
-    ownKeys() {
-      ownKeysFires += 1;
-      throw new TypeError('never enumerated');
-    },
-    getOwnPropertyDescriptor() {
-      gopdFires += 1;
-      throw new TypeError('never enumerated');
-    },
-  });
-  const wasm = globalThis.WebAssembly;
-  (globalThis as Record<string, unknown>).WebAssembly = hostile;
-  try {
-    assert.equal(isErrorCarrier(new Error('x')), true, 'an honest instance is a carrier');
-    assert.equal(isErrorCarrier(TypeError.prototype), false, 'the family prototype is denied');
-    assert.equal(ownKeysFires, 0, 'no container ownKeys trap fires');
-    assert.equal(gopdFires, 0, 'no container descriptor trap fires');
-  } finally {
-    globalThis.WebAssembly = wasm;
+test('the voucher and the throw paths render no manufactured HTTP_x (the round-8 doctrine at the last two surfaces)', async () => {
+  // round 31/MUST 2（adversary-2 F2 + 审计 finding 1）：voucher 非门禁臂此前
+  // 渲染 code:"HTTP_502" 与 "HTTP_502: " 前缀；四条裸抛出口（check_user/
+  // sign_agreement/connect/credentials）把同一前缀放进 MCP 错误消息——台账
+  // "the last fold" 句子此前不实。修复：请求层不为制造家族组前缀（一处构建
+  // 口），voucher 臂与业务折叠同判（码字段省略 + 前缀循环剥除）
+  const voucherUnder = async (respond: () => Response): Promise<GateResult & { claimed?: boolean }> => {
+    const stub = stubConnectSequence([respond]);
+    try {
+      return (await callTool('huaweicloud_voucher_status', { vendorConfirmed: VENDOR })) as GateResult & {
+        claimed?: boolean;
+      };
+    } finally {
+      stub.restore();
+    }
+  };
+  for (const status of [502, 504, 500] as const) {
+    const out = await voucherUnder(() => jsonEnvelope({ message: 'gateway page body' }, { status }));
+    assert.equal(out.claimed, false, `status ${status}: the voucher keeps the claimed:false envelope`);
+    assert.equal(out.code, undefined, `status ${status}: no manufactured family in the voucher code field`);
+    assert.doesNotMatch(
+      String(out.message ?? ''),
+      /HTTP_?\d/,
+      `status ${status}: the voucher message carries no manufactured spelling or prefix`,
+    );
+    assert.equal(String(out.message ?? ''), 'gateway page body', `status ${status}: the server copy rides verbatim`);
+  }
+
+  // 裸抛出口：check_user 与 sign_agreement 的 MCP 错误消息不带制造前缀
+  for (const [tool, status] of [
+    ['huaweicloud_sandbox_check_user', 500],
+    ['huaweicloud_sandbox_sign_agreement', 504],
+  ] as const) {
+    const stub = stubConnectSequence([() => jsonEnvelope({ message: 'boom page' }, { status })]);
+    try {
+      const thrown = await callTool(tool, { vendorConfirmed: VENDOR }).then(
+        () => null,
+        (error: unknown) => error as Error,
+      );
+      assert.ok(thrown, `${tool}: a codeless ${status} rethrows`);
+      assert.equal(
+        String(thrown!.message),
+        'boom page',
+        `${tool}: the thrown message is the server copy — no manufactured prefix`,
+      );
+      assert.doesNotMatch(String(thrown!.message), /HTTP_?\d/, `${tool}: no HTTP_x on any surface`);
+    } finally {
+      stub.restore();
+    }
+  }
+});
+
+test('the Retry-After header folds at the same 200-code-point cap', async () => {
+  // round 31/SHOULD 3（adversary-2 F3）：头字符串是服务器控制串——"every
+  // server-controlled string" 口径收口，8000 码点头不再整段骑载（内容字段：
+  // 截断而非缺失）；'60' 短值照常全量
+  {
+    const stub = stubConnectSequence([
+      () =>
+        jsonEnvelope(
+          { code: 'HDKIT_QUOTA_EXCEEDED', message: 'quota full' },
+          { status: 429, headers: { 'Retry-After': 'R'.repeat(8000) } },
+        ),
+    ]);
+    try {
+      const result = (await callTool('huaweicloud_sandbox_connect', {
+        vendorConfirmed: VENDOR,
+        pool_type: 'ephemeral',
+      })) as ExhaustedResult;
+      assert.equal(result.code, 'HDKIT_QUOTA_EXCEEDED');
+      assert.equal([...String(result.retryAfter ?? '')].length, 200, 'the 8000-cp header folds at 200');
+    } finally {
+      stub.restore();
+    }
+  }
+  {
+    const stub = stubConnectSequence([
+      () =>
+        jsonEnvelope(
+          { code: 'HDKIT_QUOTA_EXCEEDED', message: 'quota full' },
+          { status: 429, headers: { 'Retry-After': '60' } },
+        ),
+    ]);
+    try {
+      const result = (await callTool('huaweicloud_sandbox_connect', {
+        vendorConfirmed: VENDOR,
+        pool_type: 'ephemeral',
+      })) as ExhaustedResult;
+      assert.equal(result.retryAfter, '60', 'the short header rides whole');
+    } finally {
+      stub.restore();
+    }
   }
 });

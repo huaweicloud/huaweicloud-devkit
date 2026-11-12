@@ -5,7 +5,9 @@ import { readInstalledVersion } from '../../update-check.ts';
 import { getCredentials } from './hwlink-api.ts';
 import { pinnedTemplateFor } from './sandbox-pool.ts';
 import {
+  MANUFACTURED_FAMILY,
   VERSION_GATE_CODE,
+  manufacturedPrefixPattern,
   applyVersionGate,
   canonCode,
   cleanMessage,
@@ -75,13 +77,41 @@ function safeRetryAfterHeader(resp: unknown): string | undefined {
       const read = safeReadField(headers, 'get');
       if (typeof read === 'function') {
         const value = (read as (name: string) => unknown).call(headers, 'Retry-After');
-        return typeof value === 'string' ? value : undefined;
+        // Retry-After 同过 200 码点上界（round 31/SHOULD 3）：头字符串是服务
+        // 器控制串——"every server-controlled string" 口径收口，8000 码点头不
+        // 再整段骑载（内容字段：截断而非缺失）
+        return typeof value === 'string' ? boundedServerText(value) : undefined;
       }
     }
   } catch {
     // 敌意头对象按缺失
   }
   return undefined;
+}
+
+// 服务器控制串的有界读取（round 29/MUST 1 建、round 31 升为模块级）：200 码
+// 点上界——先按 UTF-16 单元截头（slice 不物化全串），再按码点截断；星面区
+// 字符永不被切成孤立代理
+function boundedServerText(raw: unknown): string | undefined {
+  const text = asString(raw);
+  if (text === undefined) return undefined;
+  return [...text.slice(0, 400)].slice(0, 200).join('');
+}
+
+// 码字段的身份口径（round 31/MUST 1，adversary-2 F1）：截断的码即伪拼写——
+// 201-220 码点带内真码被切半（HDKIT_VERS…），要么逃过每个折叠（裸抛零指
+// 引）、要么纯填充头把码全推出界外（cleanMessage 洗成空——409 误折无码门
+// 禁）。超界视同缺失：界内（≤200 码点）可验证即保身份；界外即无码——409
+// 折无码门禁（操作员裁定：界内保身份、界外无码），非 409 照旧制造 HTTP_x
+// 而非发布假拼写。检测不物化全串：≤200 UTF-16 单元必 ≤200 码点（每码点至
+// 少 1 单元）全量返回；超 200 单元时取首 402 单元（≥402 单位即 ≥201 码点，
+// 必超界）码点计数判界
+function boundedServerCode(raw: unknown): string | undefined {
+  const text = asString(raw);
+  if (text === undefined) return undefined;
+  if (text.length <= 200) return text;
+  const head = [...text.slice(0, 402)];
+  return head.length <= 200 ? head.join('') : undefined;
 }
 
 // 传输层拒绝的统一包装（round 7 响应体 + round 8 fetch 层）：从清洗值构建
@@ -231,20 +261,14 @@ async function hdkitRequest(
     // JSON message 在 512MB 预算下把整个 MCP 进程 OOM 杀死（8MB 即满载信封，
     // 409 门禁 1.5s/耗尽 4.4s）。同 200 码点上界、同 round-11 手法：先按
     // UTF-16 单元截头（slice 不物化全串），再按码点截断；信封恒携带有界副本
-    const boundedServerText = (raw: unknown): string | undefined => {
-      const text = asString(raw);
-      if (text === undefined) return undefined;
-      // 200-code-point cap applies unconditionally (round 30/MUST 4, the
-      // 400-unit fast path dropped: 201-400-code-point server strings rode
-      // whole against the stated contract); UTF-16 head slice first, then
-      // the code-point cut — an astral character is never split
-      return [...text.slice(0, 400)].slice(0, 200).join('');
-    };
+    // （round 31：助手升为模块级——Retry-After 头同界（SHOULD 3），码字段
+    // 改用身份口径 boundedServerCode（MUST 1），消息/traceId/版本照截断——
+    // 它们是内容不是身份）
     const rawCode = rec.code;
     // 码字段与消息/版本字段同过清洗口（round 7——此前唯一未窄化的边界读）：
     // 纯空白/Cf 码视同缺失，409 走无码门禁折叠，其余状态照旧伪造 HTTP_x；
     // 409 且无码/门禁码即门禁，带其他服务端码的 409 按其自身码处理
-    const serverCode = cleanMessage(boundedServerText(rawCode));
+    const serverCode = cleanMessage(boundedServerCode(rawCode));
     // 状态读过卫队（round 17）：缺读不制造 "HTTP_undefined" 伪码——无状态即
     // 无码，信封裸 message 兜底；409 语义照旧
     const respStatus = safeRespStatus(resp);
@@ -257,10 +281,16 @@ async function hdkitRequest(
     // 兜底在所有出口生效
     const rawBoundedMessage = boundedServerText(rec.message);
     const message = cleanMessage(rawBoundedMessage) || 'hdkitservice error';
-    // 前缀码只用亲署拼写（round 27/SHOULD 5）：canonCode 只作判等口径——原始拼写带
-    // 空白渲染字符时，可见字符串渲染洗钱拼写（与 voucher/handler 的渲染谓词同判）；继
-    // 入的编码带空白渲染字符即非亲署，前缀省略（消息本身照旧透传）
-    const prefixCode = typeof code === 'string' && code !== '' && canonCode(code) === code ? code : undefined;
+    // 前缀码只用亲署拼写（round 27/SHOULD 5）且非制造家族（round 31/MUST 2b）：
+    // canonCode 只作判等口径——原始拼写带空白渲染字符时，可见字符串渲染洗钱拼写
+    // （与 voucher/handler 的渲染谓词同判）；HTTP_x 是客户端为分类制造的拼写
+    // （round 8 教义），不得进入任何可见消息——此前四条裸抛出口（check_user/
+    // sign_agreement/connect/credentials）把 "HTTP_500: " 前缀直接放进 MCP 错
+    // 误消息；制造家族在此不组前缀，裸抛消息即净
+    const prefixCode =
+      typeof code === 'string' && code !== '' && canonCode(code) === code && !MANUFACTURED_FAMILY.test(code)
+        ? code
+        : undefined;
     let err = new Error(prefixCode ? `${prefixCode}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
     err.code = code;
     if (respStatus !== undefined) err.status = respStatus;
@@ -480,13 +510,29 @@ function voucherFallback(error: unknown, unavailableMessage: string): Record<str
   // HDKIT_CRED_INVALID）——一律省略（比较口径的 canonCode 只作判等，不作
   // 渲染；round-24 的"渲染清洗形"预期按本条取代）
   const canonicalCode = typeof rawCode === 'string' ? canonCode(rawCode) : '';
-  const cleanedCode = canonicalCode !== '' && canonicalCode === rawCode ? rawCode : undefined;
+  // 伪造码不渲染（round 31/MUST 2a，round 8 教义在 voucher 半边落地）：无码
+  // 502/504/500 的 HTTP_x 是客户端制造的分类拼写——此前 voucher 的非门禁
+  // 臂把它渲染进 code 字段与可见消息前缀（adversary-2 F2：信封 code:"HTTP_502"
+  // 加 "HTTP_502: " 前缀）；与业务折叠同判：码字段省略、组成前缀循环剥除
+  // （页面消息可翻倍），服务器消息本体照透
+  const cleanedCode =
+    canonicalCode !== '' && canonicalCode === rawCode && !MANUFACTURED_FAMILY.test(canonicalCode) ? rawCode : undefined;
   const cleanedClientVersion =
     typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
   const cleanedMinVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
+  let voucherMessage = cleanMessage(safeMessageText(error)) || '';
+  if (canonicalCode !== '' && MANUFACTURED_FAMILY.test(canonicalCode)) {
+    const stripPattern = manufacturedPrefixPattern(canonicalCode);
+    while (stripPattern) {
+      const hit = stripPattern.exec(voucherMessage);
+      if (!hit) break;
+      voucherMessage = voucherMessage.slice(hit[0].length);
+    }
+    voucherMessage = cleanMessage(voucherMessage);
+  }
   return {
     claimed: false,
-    message: cleanMessage(safeMessageText(error)) || unavailableMessage,
+    message: voucherMessage || unavailableMessage,
     // dev voucherErrorResult 语义：非门禁错误自带的指引字段（如 CRED_INVALID
     // 的 S1 修复引导）清洗后透传
     ...(cleanedCode !== undefined ? { code: cleanedCode } : {}),

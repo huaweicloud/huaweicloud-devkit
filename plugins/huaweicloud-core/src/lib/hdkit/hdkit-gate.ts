@@ -529,7 +529,7 @@ export function applyVersionGate(error: unknown, payload: VersionGatePayload): E
     [
       'remediation',
       {
-        hint: `插件版本过旧（当前 ${clientVersion || '未知'}，需升级至正式版 ${minVersion || '最新版'} 及以上）：`,
+        hint: upgradeHintFor(clientVersion, minVersion),
         steps: [...UPGRADE_STEPS],
       },
     ],
@@ -558,10 +558,16 @@ export function versionGateMessage(error: unknown): string {
  * 无码 409 的未知版本兜底（round 5 v2 扩展）：body 不可读（读取中断/非 JSON）
  * 或可读但无服务端码的 409，其 remediation 就地铸出。
  */
+// 升级指引 hint 的唯一模板（round 31/DOC 4 去重：r30 前两处 + r30 无码分支
+// 共三份逐字拷贝）：缺失/空白版本落 未知/最新版 兜底
+function upgradeHintFor(clientVersion: string | undefined, minVersion: string | undefined): string {
+  return `插件版本过旧（当前 ${clientVersion || '未知'}，需升级至正式版 ${minVersion || '最新版'} 及以上）：`;
+}
+
 export function codelessGateFields(): { remediation: { hint: string; steps: string[] } } {
   return {
     remediation: {
-      hint: '插件版本过旧（当前 未知，需升级至正式版 最新版 及以上）：',
+      hint: upgradeHintFor(undefined, undefined),
       steps: [...UPGRADE_STEPS],
     },
   };
@@ -611,11 +617,14 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     const rawRem =
       provenField(error, 'gate', 'remediation') ??
       // 拒绝史门控（round 29/DOC 3b，镜像耗尽半边）：任何拒绝在身即载体未装饰的陈述不可信
-      // ——拒绝中间层的残写不得经回退驱信封（分册或设计兜底）。如实化（round 30/DOC 5，
-      // 审计 finding 6）：本门在 remediation 半边不可达——applyVersionGate 恒把 remediation
-      // 写进分册，provenField 恒有值，?? 右支只剩 foreignExhaustionLanded 一个入口；可达的
-      // 只有消息半边（与耗尽孪生不同——耗尽装饰只在烧核时写 remediation，其门是真的）。
-      // 保留对称写法：不删防御性条件，但台账不再声称两半都活
+      // ——拒绝中间层的残写不得经回退驱信封（分册或设计兜底）。如实化（round 30/DOC 5、
+      // round 31 纠正审计 finding 3 的反写从句）：本门在 remediation 半边不可达——
+      // applyVersionGate 恒把 remediation 写进分册，provenField 恒有值，?? 右支只剩
+      // foreignExhaustionLanded 一个入口；可达的只有消息半边。耗尽孪生的 remediation
+      // 门为真，但原因与 r30 所写相反：耗尽装饰按自有描述符预读条件写 remediation——
+      // 载体自身已带指引（如烧核分支在请求层铸的指引）即不写、分册为空、?? 右支可达；
+      // 载体无指引时设计 remediation 入册、右支不可达（非"只在烧核分支写"）。
+      // 保留对称写法：不删防御性条件，台账按此从句记账
       (foreignExhaustionLanded || refusalOf(error) !== undefined ? undefined : ownDataValue(error, 'remediation'));
     const remediation = serializableRemediation(rawRem);
     const rawMessage =
@@ -668,7 +677,7 @@ export function gateFoldPayload(error: unknown): GateFoldPayload {
     code: VERSION_GATE_CODE,
     message: bodyUnreadable === true ? VERSION_GATE_FALLBACK_MESSAGE : versionGateMessage(error),
     remediation: {
-      hint: `插件版本过旧（当前 ${codelessCv ?? '未知'}，需升级至正式版 ${codelessMv ?? '最新版'} 及以上）：`,
+      hint: upgradeHintFor(codelessCv, codelessMv),
       steps: [...UPGRADE_STEPS],
     },
     ...(codelessCv ? { clientVersion: codelessCv } : {}),
