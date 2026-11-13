@@ -101,14 +101,25 @@ function expandBraceRange(body: string, limit: number): string[] | undefined {
 const BRACE_EXPANSION_LIMIT = 100_000;
 // npm also bounds the total expanded characters (EXPANSION_MAX_LENGTH).
 const BRACE_CHARACTER_LIMIT = 4_000_000;
+type BraceBudget = { left: number; chars: number };
+// INVARIANT (budget first-to-bind): every expansion node checks BOTH budgets;
+// the walk returns the accumulated output the moment EITHER is spent, so the
+// entry order and the character order are both bounded by the same guard. A
+// rejected leaf poisons the character budget (chars = -1) so the loop's single
+// early return fires instead of walking the remaining paths.
+const budgetSpent = (budget: BraceBudget) => budget.left <= 0 || budget.chars < 0;
 
 function expandBraces(
   pattern: string,
-  budget = { left: BRACE_EXPANSION_LIMIT, chars: BRACE_CHARACTER_LIMIT },
+  budget: BraceBudget = { left: BRACE_EXPANSION_LIMIT, chars: BRACE_CHARACTER_LIMIT },
 ): string[] {
   const brace = findBrace(pattern);
   if (!brace) {
-    if (budget.left <= 0 || budget.chars < pattern.length) return [];
+    if (budgetSpent(budget)) return [];
+    if (budget.chars < pattern.length) {
+      budget.chars = -1;
+      return [];
+    }
     budget.left -= 1;
     budget.chars -= pattern.length;
     return [pattern];
@@ -121,16 +132,16 @@ function expandBraces(
     const out: string[] = [];
     for (const alt of alternatives) {
       out.push(...expandBraces(prefix + alt + suffix, budget));
-      // A spent budget bounds the traversal too: without this the remaining
-      // 2^N paths are still walked after the output cap is reached.
-      if (budget.left <= 0 || budget.chars < 0) return out;
+      // The single early return for both budget orders: the remaining 2^N
+      // paths are never walked once either cap is spent.
+      if (budgetSpent(budget)) return out;
     }
     return out;
   }
   // A brace without a top-level comma or range is not an expansion point, but
   // braces nested inside it may still expand (npm's `{a{b,c}}` → `{ab}`,`{ac}`).
   const inner = expandBraces(body, budget);
-  if (budget.left <= 0) return [];
+  if (budgetSpent(budget)) return [];
   if (inner.length === 1 && inner[0] === body) return [pattern];
   return inner.map((alt) => `${prefix}{${alt}}${suffix}`);
 }

@@ -234,6 +234,11 @@ async function errorForSpawn(result: {
   return r.error ?? '';
 }
 
+async function assertFixtureReasons(cases: Array<[string, number, string]>): Promise<void> {
+  const reasons = await Promise.all(cases.map(async ([fixture, status]) => reasonFor(failureStderr(fixture), status)));
+  cases.forEach(([fixture, , expected], index) => assert.equal(reasons[index], expected, fixture));
+}
+
 async function reasonsForFixtures(fixtures: string[], status: number): Promise<Map<string, string>> {
   const reasons = new Map<string, string>();
   for (const fixture of fixtures) reasons.set(fixture, await reasonFor(failureStderr(fixture), status));
@@ -448,8 +453,7 @@ test('upgradePackage 失败原因: 第二个警告与追踪模式同样按结构
     ['real-typeless-plus-deprecation.err', 7, 'Error: cannot resolve the build manifest'],
     ['real-footerless-warning-diagnostic.err', 7, 'node-gyp failure: native build failed: toolchain missing'],
   ];
-  const reasons = await Promise.all(cases.map(async ([fixture, status]) => reasonFor(failureStderr(fixture), status)));
-  cases.forEach(([fixture, , expected], index) => assert.equal(reasons[index], expected, fixture));
+  await assertFixtureReasons(cases);
 });
 
 test('upgradePackage 失败原因: 警告块按各结构关闭符终止', async () => {
@@ -475,11 +479,18 @@ test('upgradePackage 失败原因: 警告块按各结构关闭符终止', async 
   cases.forEach(([fixture, expected]) => assert.equal(reasons.get(fixture), expected, fixture));
 });
 
-test('upgradePackage 失败原因: gyp 横幅先于 stack 原因时取原因', async () => {
-  const expected = 'gyp ERR! stack Error: `make` failed with exit code: 2';
-  for (const fixture of ['real-gyp-build-banner-first.err', 'real-gyp-build-stack-first.err']) {
-    assert.equal(await reasonFor(failureStderr(fixture), 1), expected, fixture);
-  }
+test('upgradePackage 失败原因: gyp 优先级只在同族内配对', async () => {
+  const stack = 'gyp ERR! stack Error: `make` failed with exit code: 2';
+  // The paired rule: banner -> stack, and compiler diagnostics are never displaced.
+  const cases: Array<[string, number, string]> = [
+    ['real-gyp-build-banner-first.err', 1, stack],
+    ['real-gyp-build-stack-first.err', 1, stack],
+    ['real-gyp-cxx-compiler-first.err', 1, "../good.cc:2:3: error: invalid use of 'this' in non-member function"],
+    ['real-gyp-build-verbose-pair.err', 1, stack],
+    ['real-gyp-dying-words-pair.err', 7, stack],
+    ['real-gyp-in-block-pair.err', 1, `npm error code 1 npm error ${stack}`],
+  ];
+  await assertFixtureReasons(cases);
 });
 
 test('upgradePackage 失败原因: E404 保留 code 行与首条诊断, 丢掉日志指针', async () => {
@@ -3574,6 +3585,25 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         await workspaceRow('node-modules-final', ['**'], 'packages/node_modules', 'member');
         await workspaceRow('mixed-config', ['packages/*', 42], 'packages/a', 'member');
 
+        // The same hostile declaration through the real pre-flight: the
+        // synchronous ancestor walk must finish inside the query's budget.
+        const hostileRoot = join(base, 'hostile-walk');
+        const hostileMember = join(hostileRoot, 'm');
+        mkdirSync(hostileMember, { recursive: true });
+        writeFileSync(
+          join(hostileRoot, 'package.json'),
+          JSON.stringify({ name: 'root', workspaces: [`${'{a,b}'.repeat(24)}${'x'.repeat(17)}`] }),
+        );
+        writeFileSync(join(hostileMember, 'package.json'), JSON.stringify({ name: 'm' }));
+        writeFileSync(join(hostileRoot, '.npmrc'), line('${CI_TOKEN}'));
+        process.chdir(hostileMember);
+        const hostileStart = Date.now();
+        await attempt();
+        const hostileMs = Date.now() - hostileStart;
+        process.chdir(savedCwd);
+        assert.ok(hostileMs < 12000, `the hostile ancestor walk completes inside the query budget (${hostileMs} ms)`);
+        rmSync(hostileRoot, { recursive: true, force: true });
+
         // A trailing slash on the override is stripped before the dist-tags path.
         process.env.HUAWEICLOUD_NPM_REGISTRY = `${registry}/`;
         writeFileSync(userconfig, line('${CI_TOKEN}'));
@@ -3732,10 +3762,26 @@ test('workspace 匹配对敌意声明有界退化', async () => {
   const beyondCap = `packages/${Array.from({ length: 17 }, () => 'b').join('/')}`;
   assert.equal(workspaceMemberMatch(firstMember, [bomb]), true, 'a member inside the 100k truncation matches');
   assert.equal(workspaceMemberMatch(beyondCap, [bomb]), false, 'a member beyond the 100k truncation does not');
-  const chained = `packages/${'{a,b}'.repeat(24)}`;
+  // INVARIANT (budget first-to-bind): both cap orders stop the walk. The bound
+  // is generous for 8-way suite contention (the old 4 s pin measured 7.5-9.5 s
+  // loaded); the unbounded entry order takes >15 s and the character order
+  // >49 s, so the pin still reds a lost guard.
+  const shortLeaf = `packages/${'{a,b}'.repeat(24)}`;
   const chainStart = Date.now();
-  assert.equal(workspaceMemberMatch('packages/zzz', [chained]), false, 'a chained brace bomb is a non-member');
-  assert.ok(Date.now() - chainStart < 4000, 'the spent budget bounds the traversal (unbounded takes seconds)');
+  assert.equal(workspaceMemberMatch('packages/zzz', [shortLeaf]), false, 'a chained brace bomb is a non-member');
+  assert.ok(Date.now() - chainStart < 12000, 'the entry-order walk is bounded');
+  for (const [groups, suffix] of [
+    [24, 17],
+    [26, 28],
+  ]) {
+    const longLeaf = `packages/${'{a,b}'.repeat(groups)}${'x'.repeat(suffix)}`;
+    const leafStart = Date.now();
+    assert.equal(workspaceMemberMatch('packages/zzz', [longLeaf]), false, 'a long-leaf bomb is a non-member');
+    assert.ok(
+      Date.now() - leafStart < 12000,
+      `the character-order walk is bounded at ${groups}x leaf ${groups + suffix}`,
+    );
+  }
   const stacked = `packages/${Array.from({ length: 9 }, () => '**').join('/')}/nomatch`;
   const stackStart = Date.now();
   assert.equal(

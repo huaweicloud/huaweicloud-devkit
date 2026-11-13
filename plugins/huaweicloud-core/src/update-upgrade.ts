@@ -469,12 +469,29 @@ function lastFailingResult(entries: LineEntry[]): LineEntry | undefined {
   return entries.filter((entry) => isNpmScriptResult(entry.line) && isFailingScriptResult(entry.line)).at(-1);
 }
 
-// node-gyp prints its banner (`gyp ERR! build error`) before the real cause
-// (`gyp ERR! stack Error: ...`); both are rank 1, and the tier's usual
-// earlier-wins order would drop the cause. Within the gyp family the stack
-// line wins.
-function preferGypCause(hits: LineEntry[]): LineEntry {
-  return hits.find((entry) => /^gyp ERR! stack Error\b/.test(npmPayload(entry.line))) ?? hits[0]!;
+// INVARIANT (gyp preference): the preference is PAIRED, never tier-wide. A gyp
+// banner (`gyp ERR! build/configure error`) is demoted only in favor of a gyp
+// `stack Error:` line in the same rank-1 tier; a non-gyp rank-1 line (a
+// compiler diagnostic, a make line, any child text) is NEVER displaced by a
+// gyp line. The selector's usual earlier-wins order stands everywhere else.
+// Every site that selects from the rank-1 tier routes through this helper.
+const GYP_BANNER = /^gyp ERR! (?:build|configure) error\b/;
+const GYP_STACK_CAUSE = /^gyp ERR! stack Error\b/;
+function pickRankOneLine(hits: LineEntry[]): LineEntry {
+  const first = hits[0]!;
+  if (!GYP_BANNER.test(npmPayload(first.line))) return first;
+  return hits.find((entry) => GYP_STACK_CAUSE.test(npmPayload(entry.line))) ?? first;
+}
+
+// The promoted-dying-words sites see a rank-<=2 window, not a single tier;
+// they follow the selector's tier order (rank 0 later, rank 1 through the
+// paired helper, otherwise the last line).
+function pickPromotedLine(entries: LineEntry[]): LineEntry | undefined {
+  const rankZero = entries.filter((entry) => lineRank(entry.line) === 0);
+  if (rankZero.length) return rankZero.at(-1);
+  const rankOne = entries.filter((entry) => lineRank(entry.line) === 1);
+  if (rankOne.length) return pickRankOneLine(rankOne);
+  return entries.at(-1);
 }
 
 function lastEchoBefore(entries: LineEntry[], index: number): LineEntry | undefined {
@@ -514,7 +531,7 @@ function selectFailureLine(
       return { line: chosen.line, rank, index: chosen.index };
     }
     const later = rank === 0 || (rank === 2 && positionLast);
-    const chosen = later ? hits.at(-1)! : rank === 1 ? preferGypCause(hits) : hits[0]!;
+    const chosen = later ? hits.at(-1)! : rank === 1 ? pickRankOneLine(hits) : hits[0]!;
     return { line: chosen.line, rank, index: chosen.index };
   }
   return undefined;
@@ -557,7 +574,7 @@ function pickInBlock(block: ErrorBlock): { line: string; rank: number; index: nu
     if (!hits.length) continue;
     // The in-block pick mirrors the selector it overrides: the strongest tier
     // takes its later line (a fatal line follows a retry marker).
-    const hit = rank === 0 ? hits.at(-1)! : rank === 1 ? preferGypCause(hits) : hits[0]!;
+    const hit = rank === 0 ? hits.at(-1)! : rank === 1 ? pickRankOneLine(hits) : hits[0]!;
     return { line: hit.line, rank, index: hit.index };
   }
   return undefined;
@@ -913,14 +930,15 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     // is the dying words; otherwise the exit status is honest. A top-level errno
     // failure exits 1 and keeps its code line, as do the numeric blocks above.
     if (unattributableNested) {
-      const dying = codelessEntries
-        .filter((entry) => entry.index > blockEnd && lineRank(entry.line) <= 2)
-        .filter(
-          (entry) =>
-            !isRecoveryAnnouncement(entry.line) &&
-            !rawLines.some((line, index) => index > entry.index && isSuccessAssertion(line)),
-        )
-        .at(-1);
+      const dying = pickPromotedLine(
+        codelessEntries
+          .filter((entry) => entry.index > blockEnd && lineRank(entry.line) <= 2)
+          .filter(
+            (entry) =>
+              !isRecoveryAnnouncement(entry.line) &&
+              !rawLines.some((line, index) => index > entry.index && isSuccessAssertion(line)),
+          ),
+      );
       if (dying) return dying.line;
       block = undefined;
       codeLine = undefined;
@@ -975,11 +993,12 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   // not restore the earlier line.
   let promotedInPair = false;
   if (failing && failingPairEcho) {
-    const inside = codelessEntries
-      .filter((entry) => entry.index > failingPairEcho.index && entry.index < failing.index)
-      .filter((entry) => lineRank(entry.line) <= 2)
-      .filter((entry) => !lineExcluded(entry.index))
-      .at(-1);
+    const inside = pickPromotedLine(
+      codelessEntries
+        .filter((entry) => entry.index > failingPairEcho.index && entry.index < failing.index)
+        .filter((entry) => lineRank(entry.line) <= 2)
+        .filter((entry) => !lineExcluded(entry.index)),
+    );
     if (inside) {
       bare = { line: inside.line, rank: lineRank(inside.line), index: inside.index };
       promotedInPair = true;

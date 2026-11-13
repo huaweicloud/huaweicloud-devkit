@@ -1,0 +1,19 @@
+../good.cc: In function 'int boom()':
+../good.cc:2:3: error: invalid use of 'this' in non-member function
+    2 |   this is not valid C++;
+      |   ^~~~
+make: *** [native.target.mk:106: Release/obj.target/native/good.o] Error 1
+gyp ERR! build error 
+gyp ERR! stack Error: `make` failed with exit code: 2
+gyp ERR! stack     at ChildProcess.<anonymous> (/home/op/node_modules/node-gyp/lib/build.js:219:23)
+gyp ERR! System Linux 6.8.0-106-generic
+gyp ERR! command "/usr/bin/node" "/home/op/node_modules/.bin/node-gyp" "rebuild"
+gyp ERR! cwd /home/op/native
+gyp ERR! node -v v26.13.0
+gyp ERR! node-gyp -v v12.4.0
+gyp ERR! not ok 
+npm error code 1
+npm error path /home/op/native
+npm error command failed
+npm error command sh -c node-gyp rebuild
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log
