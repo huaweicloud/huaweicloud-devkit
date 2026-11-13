@@ -462,6 +462,9 @@ test('upgradePackage 失败原因: 警告块按各结构关闭符终止', async 
     ],
     ['real-warning-blank-close.err', 'child cause failed'],
     ['real-warning-diagnostic-close.err', 'FATAL: build configuration is invalid'],
+    ['real-nested-npm-warning-block.err', 'gyp ERR! stack Error: cannot find the toolchain for host'],
+    ['real-crash-header-diagnostic.err', 'npm error code 7 /home/op/dep/x.js:3'],
+    ['real-footer-close-pin.err', 'the child stage failed while unpacking'],
   ];
   const reasons = await reasonsForFixtures(
     cases.map(([fixture]) => fixture),
@@ -3662,6 +3665,10 @@ test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async (
     [['packages/*', '!packages\\private-*'], 'packages/private-a', true],
     [['packages/{-03..-01}'], 'packages/-02', true],
     [['packages/{-03..-01}'], 'packages/02', false],
+    [['packages/{-01..01}'], 'packages/000', true],
+    [['packages/{-01..01}'], 'packages/00', false],
+    [['packages/{01..-3}'], 'packages/-1', true],
+    [['packages/{01..-3}'], 'packages/-01', false],
     [['packages/[[:alpha:]]'], 'packages/a]', false],
     // character classes
     [['packages/[ab]'], 'packages/a', true],
@@ -3709,10 +3716,33 @@ test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async (
 test('workspace 匹配对敌意声明有界退化', async () => {
   const { workspaceMemberMatch } = await import('../plugins/huaweicloud-core/src/lib/workspace-glob.ts');
   const bomb = `packages/${'{a,b}/'.repeat(17).slice(0, -1)}`;
-  const deepMember = `packages/${Array.from({ length: 17 }, () => 'a').join('/')}`;
-  assert.equal(workspaceMemberMatch(deepMember, [bomb]), false, 'the brace cap refuses a 131k expansion');
-  const stacked = `packages/${['**', '**', '**', '**', '**', '**', '**', '**'].join('/')}/nomatch`;
-  assert.equal(workspaceMemberMatch('packages/a/b/c/d/e/f/g/h', [stacked]), false, 'stacked ** is memoized');
+  const firstMember = `packages/${Array.from({ length: 17 }, () => 'a').join('/')}`;
+  const beyondCap = `packages/${Array.from({ length: 17 }, () => 'b').join('/')}`;
+  assert.equal(workspaceMemberMatch(firstMember, [bomb]), true, 'a member inside the 100k truncation matches');
+  assert.equal(workspaceMemberMatch(beyondCap, [bomb]), false, 'a member beyond the 100k truncation does not');
+  const stacked = `packages/${Array.from({ length: 9 }, () => '**').join('/')}/nomatch`;
+  const stackStart = Date.now();
+  assert.equal(
+    workspaceMemberMatch(`packages/${Array.from({ length: 18 }, () => 'a').join('/')}`, [stacked]),
+    false,
+    'stacked ** is a non-member',
+  );
+  assert.ok(Date.now() - stackStart < 1000, 'stacked ** is memoized (uncapped backtracking takes seconds)');
+  assert.equal(
+    workspaceMemberMatch('packages/100000', ['packages/{1..100000}']),
+    true,
+    'the 100k boundary matches like npm truncation',
+  );
+  assert.equal(
+    workspaceMemberMatch('packages/100001', ['packages/{1..100001}']),
+    false,
+    'a member beyond the truncation does not match',
+  );
+  assert.equal(
+    workspaceMemberMatch('packages/9999999', ['packages/{1..2000000}']),
+    false,
+    'a range past the cap is truncated, not materialized unbounded',
+  );
 });
 
 test('upgradePackage 升级子进程: 302 重定向的目标腿保留认证', async () => {

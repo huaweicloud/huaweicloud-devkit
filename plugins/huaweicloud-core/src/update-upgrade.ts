@@ -636,57 +636,52 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
         .add(index + 2);
     }
   });
-  // Node's warning continuation lines are boilerplate whatever their wording,
-  // and the emission's extent has several structural closers: the `(Use …)`
-  // footer (first warning only), a traced stack-frame run, the next warning
-  // header, an `npm error` block start, and a blank line. A crash or diagnostic
-  // header always closes the region and is itself kept. For the npm-block close
-  // the last line before the block is kept as the child's possible diagnostic
-  // (a warning whose only continuation is that last line remains the ledgered
-  // ambiguity).
+  // Node's warning continuation lines are boilerplate whatever their wording.
+  // The region ends at the FIRST structural closer met scanning forward from
+  // the header — a traced stack-frame run (its last frame), an `npm error`
+  // block start (the last line before it is kept as the child's possible
+  // diagnostic), a blank line, the `(Use …)` footer, or a crash/diagnostic
+  // header (the lines before it are excluded, the header itself is kept). A
+  // later closer never re-extends a region an earlier one already closed: the
+  // outer loop re-scans from every warning header, which covers adjacent
+  // warnings without a separate header clause.
   const WARNING_FOOTER =
     /^\(Use `node --trace-(?:warnings|deprecation)\b[^`]*` to show where the warning was created\)$/;
   const WARNING_HEADER = /^\(node:\d+\)/;
-  const npmBlockStart = (line: string) => /^npm error\b/.test(line);
   const frameLine = (raw: string) => /^\s+at\s/.test(raw);
   const crashHeader = (line: string) => /^\S+:\d+$/.test(line);
   const diagnosticHeader = (line: string) => /^(?:\[?[A-Za-z]*Error\b|[Ff][Aa][Tt][Aa][Ll]\b|Uncaught\b)/.test(line);
   const warningContinuation = new Set<number>();
   for (let index = 0; index < rawLines.length; index += 1) {
     if (!WARNING_HEADER.test(rawLines[index]!)) continue;
-    let footerAt = -1;
-    let nextHeaderAt = -1;
-    let npmAt = -1;
-    let blankAt = -1;
-    let frameTo = -1;
+    let end = -1;
+    let frameSeen = false;
     for (let cursor = index + 1; cursor < rawLines.length; cursor += 1) {
       const raw = sourceLines[cursor] ?? '';
       const line = rawLines[cursor]!;
+      if (frameLine(raw)) {
+        frameSeen = true;
+        end = cursor;
+        continue;
+      }
+      if (frameSeen) break;
       if (!raw.trim()) {
-        blankAt = cursor;
+        end = cursor - 1;
         break;
       }
-      if (WARNING_HEADER.test(line)) {
-        nextHeaderAt = cursor;
-        break;
-      }
-      if (npmBlockStart(line)) {
-        npmAt = cursor;
+      if (isNpmErrorLine(line)) {
+        end = cursor - 2;
         break;
       }
       if (WARNING_FOOTER.test(line)) {
-        footerAt = cursor;
+        end = cursor;
         break;
       }
-      if (crashHeader(line) || diagnosticHeader(line)) break;
-      if (frameLine(raw)) frameTo = cursor;
+      if (crashHeader(line) || diagnosticHeader(line)) {
+        end = cursor - 1;
+        break;
+      }
     }
-    let end = -1;
-    if (footerAt >= 0) end = footerAt;
-    else if (nextHeaderAt >= 0) end = nextHeaderAt - 1;
-    else if (blankAt >= 0) end = blankAt - 1;
-    else if (npmAt >= 0) end = npmAt - 2;
-    else if (frameTo >= 0) end = frameTo;
     for (let cursor = index + 1; cursor <= end; cursor += 1) warningContinuation.add(cursor);
   }
   // Every entry keeps its raw position: the code candidate, the block and the

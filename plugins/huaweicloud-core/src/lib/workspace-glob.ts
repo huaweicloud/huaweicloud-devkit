@@ -63,7 +63,7 @@ function splitBraceAlternatives(body: string): string[] | undefined {
   return parts;
 }
 
-function expandBraceRange(body: string): string[] | undefined {
+function expandBraceRange(body: string, limit: number): string[] | undefined {
   const match = /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])(?:\.\.(-?\d+))?$/.exec(body);
   if (!match) return undefined;
   const [, fromRaw, toRaw, stepRaw] = match;
@@ -71,17 +71,22 @@ function expandBraceRange(body: string): string[] | undefined {
   const from = numeric ? Number(fromRaw) : (fromRaw!.codePointAt(0) ?? 0);
   const to = numeric ? Number(toRaw) : (toRaw!.codePointAt(0) ?? 0);
   const step = Math.abs(Number(stepRaw ?? 1)) || 1;
-  const fromDigits = numeric ? fromRaw!.replace(/^-/, '') : '';
-  const toDigits = numeric ? toRaw!.replace(/^-/, '') : '';
-  const padded = numeric && (/^0\d/.test(fromDigits) || /^0\d/.test(toDigits));
-  const pad = padded ? Math.max(fromDigits.length, toDigits.length) : 0;
+  // npm formats at the width of the raw endpoints (sign included), padding a
+  // negative after its sign, and truncates the sequence at the expansion cap.
+  const width = Math.max(fromRaw!.length, toRaw!.length);
+  const padded = numeric && (/^-?0\d/.test(fromRaw!) || /^-?0\d/.test(toRaw!));
   const out: string[] = [];
   const direction = from <= to ? 1 : -1;
   for (let value = from; direction > 0 ? value <= to : value >= to; value += direction * step) {
+    if (out.length >= limit) break;
     if (numeric) {
-      const text = String(Math.abs(value));
-      const sign = value < 0 ? '-' : '';
-      out.push(sign + (pad ? text.padStart(pad, '0') : text));
+      let text = String(value);
+      const need = width - text.length;
+      if (padded && need > 0) {
+        const zeros = '0'.repeat(need);
+        text = value < 0 ? `-${zeros}${text.slice(1)}` : `${zeros}${text}`;
+      }
+      out.push(text);
     } else {
       out.push(String.fromCodePoint(value));
     }
@@ -103,13 +108,10 @@ function expandBraces(pattern: string, budget = { left: BRACE_EXPANSION_LIMIT })
   const body = pattern.slice(brace.start + 1, brace.end);
   const prefix = pattern.slice(0, brace.start);
   const suffix = pattern.slice(brace.end + 1);
-  const alternatives = splitBraceAlternatives(body) ?? expandBraceRange(body);
+  const alternatives = splitBraceAlternatives(body) ?? expandBraceRange(body, Math.max(0, budget.left));
   if (alternatives) {
     const out: string[] = [];
-    for (const alt of alternatives) {
-      out.push(...expandBraces(prefix + alt + suffix, budget));
-      if (budget.left <= 0) return [];
-    }
+    for (const alt of alternatives) out.push(...expandBraces(prefix + alt + suffix, budget));
     return out;
   }
   // A brace without a top-level comma or range is not an expansion point, but
@@ -379,9 +381,10 @@ export function workspaceMemberMatch(memberPath: string, globs: readonly string[
     if (negated.some((blocked) => matchDirectory(memberPath, blocked))) return false;
     return patterns.some((pattern) => matchDirectory(memberPath, pattern));
   } catch {
-    // Belt-and-braces: the only known thrower is the per-segment regex compile
-    // (caught above); this keeps a future syntax defect from aborting the
-    // pre-flight and degrades it to a non-member.
+    // Load-bearing: a pathological declaration can overflow the brace
+    // recursion (RangeError) or hit another unexpected syntax error; the
+    // per-segment regex compile is caught earlier. Degrading here keeps any
+    // such declaration a non-member instead of aborting the pre-flight.
     return false;
   }
 }
