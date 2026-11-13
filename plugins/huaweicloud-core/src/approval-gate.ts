@@ -74,8 +74,25 @@ function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
 //       for files the child never sees and are gone. Tilde and $HOME
 //       spellings are expanded against the real and devkit home roots
 //       before resolution — expanding a path's own spelling is not a base.
-//       URI-scheme leaves (obs://, http://, …) are never local paths:
-//       skipped before resolution and before matching, always.
+//
+//   (a2) SCHEME-SPELLING, precise (interrogate round 4). obs:// is the one
+//       documented cloud-object key an hcloud operand carries — those stay
+//       skipped. Every OTHER scheme-shaped leaf is ALSO resolved as a
+//       potential local path: obsutil treats any non-obs:// operand as a
+//       LOCAL file, and POSIX collapses the double slash, so s3://x IS the
+//       relative path ./s3:/x — the real KooCLI normalized s3://k to
+//       childdir/s3:/k and read the credential file (round 4's live
+//       dry-run). A scheme spelling that resolves to an existing local
+//       file is a local operand and hits the floor; one that resolves to
+//       nothing stays clean.
+//
+//   (a3) '='-EMBEDDED VALUES (interrogate round 4). The child dereferences
+//       the VALUE half of an =-shaped leaf — KooCLI's own --param=value
+//       syntax; -config=<alias> and --cli-jsonInput=<relative path> read
+//       the file the bare spelling of the same value refuses. Every
+//       =-shaped leaf contributes its post-'=' value as a second spelling,
+//       resolved with the same rules; a value that resolves to no existing
+//       file stays clean (--server.id=i-123 keeps executing).
 //
 //   (b) MATCHING, path-semantic. Patterns apply to RESOLVED PATHS only,
 //       segment-anchored — the policy regexes are substring-shaped for the
@@ -90,7 +107,9 @@ function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
 // target that does not exist yet at call time, or a path only reachable
 // from a child cwd the gate cannot know (args.cwd unset and a wrapper
 // changing the child's directory), stays uncovered.
-const URI_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+// obs:// (case-insensitive) is the documented cloud-object key scheme;
+// any other scheme-shaped spelling flows into local-path resolution.
+const OBS_URI_RE = /^obs:\/\//i;
 
 // Segment rules, one per policy credentialFilePattern (each rule's comment
 // names the pattern it operationalizes):
@@ -145,7 +164,10 @@ function homeRootsForSpelling(): ReadonlyArray<string> {
 }
 
 function resolvedLeafCandidates(leaf: string, cwdBases: ReadonlyArray<string>): string[] {
-  if (URI_SCHEME_RE.test(leaf)) return []; // a URI is never a local path
+  if (OBS_URI_RE.test(leaf)) return []; // a cloud object key, never a local path
+  // Any other scheme-shaped leaf still resolves below as a potential LOCAL
+  // relative path: POSIX collapses the double slash, so join(base, 's3://k')
+  // is base/s3:/k — exactly the local file the child opens.
   // Edge-quote strip: the child's shell would have removed them; the round-1
   // vectors carry them.
   const stripped = leaf.replace(/^['"]|['"]$/g, '');
@@ -180,8 +202,14 @@ function resolvedLeafCandidates(leaf: string, cwdBases: ReadonlyArray<string>): 
 
 function firstCredentialPathIn(value: unknown, cwdBases: ReadonlyArray<string>): string | null {
   if (typeof value === 'string') {
-    for (const resolved of resolvedLeafCandidates(value, cwdBases)) {
-      if (isCredentialResolvedPath(resolved)) return resolved;
+    // The whole leaf, plus the VALUE half of an =-shaped leaf (rule a3):
+    // the child splits on the first '=' and dereferences the value.
+    const eq = value.indexOf('=');
+    const spellings = eq >= 0 ? [value, value.slice(eq + 1)] : [value];
+    for (const spelling of spellings) {
+      for (const resolved of resolvedLeafCandidates(spelling, cwdBases)) {
+        if (isCredentialResolvedPath(resolved)) return resolved;
+      }
     }
     return null;
   }

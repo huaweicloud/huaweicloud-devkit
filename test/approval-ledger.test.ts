@@ -84,6 +84,28 @@ if (process.env.LEDGER_WORKER) {
   process.exit(0);
 }
 
+// Slow-holder mode for the liveness test (round-4 finding 1): hold the
+// ledger lock through a 2500ms section — far past the 1000ms takeover
+// window — with the heartbeat on, exactly as the real lock configures it,
+// then append one tagged event from inside the section and exit. The
+// blocked main thread (spawnSync sleep) is the point: only the
+// worker-thread heartbeat can keep the claim fresh while the holder is
+// stuck in a long section.
+if (process.env.LEDGER_SLOW_HOLDER) {
+  const { withDepLock } = await import('../plugins/huaweicloud-core/src/dep/receipts.ts');
+  const lockDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approval-consents-lock');
+  withDepLock(
+    () => {
+      spawnSync('sleep', ['2.5']); // a live, productive, OVER-WINDOW section
+      appendConsentEvent(baseEvent({ sessionId: 'holder-event', argsHash: 'h-holder' }));
+    },
+    lockDir,
+    1000,
+    200,
+  );
+  process.exit(0);
+}
+
 test(
   'consent events round-trip through the state tree with the evidence tier intact',
   withLedgerHome(async (home) => {
@@ -262,6 +284,91 @@ test(
       ['ses-new'],
       'the new store starts fresh',
     );
+  }),
+);
+
+test(
+  'a live over-window section is never stolen: the heartbeat keeps the claim fresh (round-4 finding 1)',
+  withLedgerHome(async (home) => {
+    // Round 4's verified race: the 1s window stole a LIVE writer's lock
+    // mid-section (sections are O(store) and unbounded), both writers ran
+    // from one snapshot, and the holder's committed event was silently
+    // erased. The fix is liveness, not window sizing: the ledger's lock
+    // claims a worker-thread heartbeat that refreshes the claim's mtime
+    // while the section runs, so a beating holder is waited out however
+    // long its section. The child below holds the lock for 2500ms with a
+    // BLOCKED main thread; the parent contends below while the holder is
+    // LIVE inside its section — it must wait the section out, not steal
+    // it, and both committed events must survive.
+    const { spawn } = await import('node:child_process');
+    const { existsSync: fsExists } = await import('node:fs');
+    const child = spawn(process.execPath, ['--experimental-strip-types', 'test/approval-ledger.test.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        LEDGER_SLOW_HOLDER: '1',
+        HUAWEICLOUD_HOME: home,
+        NODE_TEST_CONTEXT: undefined,
+        NODE_TEST_WORKER_ID: undefined,
+      },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    try {
+      // Wait for the holder to be LIVE inside its section: the claim pid
+      // file exists and the child has not exited. withDepLock claims
+      // <root>/lock (LOCK_DIR_NAME) with the pid inside it.
+      const pidFile = join(home, '.config', 'huaweicloud', 'approval-consents-lock', 'lock', 'pid');
+      const deadline = Date.now() + 30_000;
+      while (!fsExists(pidFile)) {
+        assert.ok(Date.now() < deadline, 'the slow holder never claimed the lock');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 300)); // mid-section
+      const started = Date.now();
+      appendConsentEvent(baseEvent({ sessionId: 'parent-event', argsHash: 'h-parent' }));
+      const waited = Date.now() - started;
+      // A steal returns in ~the window (≤1.2s): the parent must have waited
+      // out the live 2.5s section instead.
+      assert.ok(waited > 1500, `the parent must wait out the live section, not steal it (waited ${waited}ms)`);
+      await new Promise<void>((resolve, reject) => {
+        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`holder exit ${code}`))));
+        child.on('error', reject);
+      });
+      const ids = readConsentEvents()
+        .map((event) => event.sessionId)
+        .sort((a, b) => a.localeCompare(b));
+      assert.deepEqual(
+        ids,
+        ['holder-event', 'parent-event'],
+        'both the live section’s event and the waiter’s event survived — no steal, no erase',
+      );
+    } finally {
+      child.kill();
+    }
+  }),
+);
+
+test(
+  'a ledger-internal failure never fails the approved call: a relative state dir degrades to a no-op (round-4 finding 4)',
+  withLedgerHome(async () => {
+    // devkitStateBase() THROWS on a relative HUAWEICLOUD_STATE_DIR — inside
+    // the lock, on the data path. The ledger's contract (and trunk's
+    // behavior: trunk recorded no consent at all) is that an internal
+    // failure degrades to a no-op, never a raw error to the call the user
+    // just approved. Both entry points must simply return.
+    const previous = process.env.HUAWEICLOUD_STATE_DIR;
+    process.env.HUAWEICLOUD_STATE_DIR = 'relative-state';
+    try {
+      recordAskModeConsent({ sessionId: 'ses-x', tool: 't', argsHash: 'h', outcome: 'granted' });
+      appendConsentEvent(baseEvent({ sessionId: 'ses-y' }));
+    } finally {
+      if (previous === undefined) delete process.env.HUAWEICLOUD_STATE_DIR;
+      else process.env.HUAWEICLOUD_STATE_DIR = previous;
+    }
+    // Reaching here is the assertion: neither call threw. The store the
+    // valid HUAWEICLOUD_HOME would host is untouched by the no-op (the
+    // throwing state dir shadows it).
+    assert.deepEqual(readConsentEvents(), [], 'the degraded append recorded nothing — trunk parity');
   }),
 );
 

@@ -31,26 +31,27 @@ test('the approval roster only names real tools and the classified list is a sub
 });
 
 test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
-  // Interrogate rounds 1-3: typing the roster as a plain
+  // Interrogate rounds 1-4: typing the roster as a plain
   // ReadonlyArray<string> widens ApprovalRosterName to string and
   // silently inerts the registry's satisfies Record<ApprovalRosterName,
   // ApprovalSpec> — the adversary added a roster entry with no spec and
   // typecheck stayed green. The const tuple is what makes the compile-time
-  // coupling real. A text regex proved too weak twice: `as const` with a
-  // single element cast to string widened the tuple while still matching
-  // the spelling pin, and a comment inside the array made a naive split
-  // see the comment text as an element and false-fail valid code. The pin
-  // now PARSES the declaration with comments stripped first: `as const`
-  // must close it, and every element must be a bare quoted literal — no
-  // annotation, no cast, no concatenation — so the element type stays a
-  // string literal union and a commented element parses cleanly.
+  // coupling real. A text regex proved too weak three times: `as const`
+  // with a single element cast to string widened the tuple while still
+  // matching the spelling pin; a comment inside the array made a naive
+  // split see the comment text as an element; and round 4's shape — a
+  // '// ] as const;' comment INSIDE the array — terminated the non-greedy
+  // capture early, so the widened element after the comment was invisible
+  // to both the capture and the element check. The pin therefore strips
+  // comments BEFORE extracting the array body, then requires every
+  // element to be a bare quoted literal — no annotation, no cast, no
+  // concatenation — so the element type stays a string literal union.
   const parseRosterTuple = (roster: string): string[] => {
-    const match = roster.match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
+    const withoutComments = roster.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    const match = withoutComments.match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
     if (!match) return [];
-    const withoutComments = match[1]!.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    return withoutComments
-      .replace(/^\[/, '')
-      .replace(/\]$/, '')
+    const body = match[1]!.replace(/^\[/, '').replace(/\]$/, '');
+    return body
       .split(',')
       .map((element) => element.trim())
       .filter((element) => element.length > 0);
@@ -84,6 +85,16 @@ test('the approval roster stays a const tuple so the registry closure cannot be 
     parseRosterTuple("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];"),
     [],
     'a type annotation must fail the as-const requirement',
+  );
+  // Round 4's adversarial shape: a '// ] as const;' comment inside the
+  // array used to terminate the non-greedy capture before the widened
+  // element. Comment-first stripping must expose it to the element check.
+  const commentHiddenWidening = parseRosterTuple(
+    "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // ] as const;\n  'huaweicloud_sandbox_connect' as string,\n] as const;",
+  );
+  assert.ok(
+    commentHiddenWidening.some((element) => !/^'[a-z0-9_]+'$/.test(element)),
+    'a widening hidden behind an in-array "// ] as const;" comment must fail the element check',
   );
   assert.match(roster, /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/);
 });

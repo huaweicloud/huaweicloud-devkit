@@ -1,6 +1,17 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 import { DEPENDENCIES, type DependencyId } from '../lib/dependency-model.ts';
 import type { ResolvedDependency } from '../lib/dep-resolve.ts';
@@ -199,7 +210,13 @@ const LOCK_POLL_MS = 50;
 // window is taken over anyway — the guard must never block forever. The
 // window must exceed the longest critical section (the tier uninstall's
 // 60s spawnSync) plus resolution margin, or a legitimate holder still
-// inside its section gets its lock taken over mid-flight.
+// inside its section gets its lock taken over mid-flight. A holder whose
+// claim goes stale while its pid is STILL alive is judged wedged by this
+// same window — correct for the installer's bounded sections, wrong for
+// a caller whose section cost is unbounded: such callers pass the
+// heartbeatMs option (below), which refreshes the claim's mtime for the
+// duration of the section so a live productive holder never goes stale
+// however long its section runs.
 const LOCK_TAKEOVER_MS = 90_000;
 
 const lockDepth = new Map<string, number>();
@@ -440,7 +457,40 @@ function installExitCleanup(): void {
   });
 }
 
-export function withDepLock<T>(fn: () => T, dir: string = receiptDir(), takeoverMs: number = LOCK_TAKEOVER_MS): T {
+// The opt-in claim heartbeat (interrogate round 4): a worker thread that
+// refreshes the claim pid file's mtime every intervalMs for the duration
+// of the section. The acquire loop judges liveness by that mtime, so a
+// beating holder never goes stale however long its section runs — the
+// worker's timer fires on its own OS thread while the holder's main
+// thread is blocked in a multi-second parse/write, which no in-section
+// refresh could cover. Opt-in only: the dep installer's call sites pass
+// no heartbeat and keep exactly today's semantics (bounded sections,
+// window-sized takeover). A worker that fails to spawn degrades to the
+// no-heartbeat behavior — the documented residual for that path.
+function startClaimHeartbeat(lock: string, heartbeatMs: number): Worker | undefined {
+  try {
+    return new Worker(
+      [
+        "const { utimesSync } = require('node:fs');",
+        "const { workerData } = require('node:worker_threads');",
+        'setInterval(() => {',
+        '  const now = Date.now() / 1000;',
+        '  try { utimesSync(workerData.pidFile, now, now); } catch {}',
+        '}, workerData.intervalMs);',
+      ].join('\n'),
+      { eval: true, workerData: { pidFile: join(lock, LOCK_PID_FILE), intervalMs: heartbeatMs } },
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export function withDepLock<T>(
+  fn: () => T,
+  dir: string = receiptDir(),
+  takeoverMs: number = LOCK_TAKEOVER_MS,
+  heartbeatMs: number = 0,
+): T {
   const depth = lockDepth.get(dir) ?? 0;
   if (depth > 0) {
     lockDepth.set(dir, depth + 1);
@@ -454,9 +504,11 @@ export function withDepLock<T>(fn: () => T, dir: string = receiptDir(), takeover
   installExitCleanup();
   heldDirs.add(dir);
   lockDepth.set(dir, 1);
+  const heartbeat = heartbeatMs > 0 ? startClaimHeartbeat(lockDirPath(dir), heartbeatMs) : undefined;
   try {
     return fn();
   } finally {
+    if (heartbeat) heartbeat.terminate().catch(() => {});
     lockDepth.set(dir, 0);
     releaseLock(dir);
     heldDirs.delete(dir);
