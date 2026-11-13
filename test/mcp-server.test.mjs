@@ -113,6 +113,7 @@ test('MCP server initializes, lists tools, and plans CLI commands', async () => 
     assert.ok(toolNames.has('huaweicloud_auth_sync'));
     assert.ok(toolNames.has('huaweicloud_sandbox_check_user'));
     assert.ok(toolNames.has('huaweicloud_sandbox_connect'));
+    assert.ok(toolNames.has('huaweicloud_sandbox_shutdown'));
 
     const runReadonly = listed.result.tools.find((tool) => tool.name === 'huaweicloud_run_readonly_command');
     assert.ok(Object.hasOwn(runReadonly.inputSchema.properties, 'timeoutMs'));

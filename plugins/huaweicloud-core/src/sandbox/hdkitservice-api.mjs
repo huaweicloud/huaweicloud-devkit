@@ -240,6 +240,18 @@ export async function hdkitCredentials(sessionId, devStageId, enableSts = true) 
   return await hdkitRequest('POST', 'credentials', body);
 }
 
+export async function hdkitShutdown(sessionId, devStageId) {
+  const body = {};
+  if (sessionId) body.session_id = sessionId;
+  if (devStageId) body.dev_stage_id = devStageId;
+
+  if (!sessionId && !devStageId) {
+    throw new Error('session_id or dev_stage_id is required');
+  }
+
+  return await hdkitRequest('POST', 'shutdown', body, 120000);
+}
+
 // ── DevBridge API Key relay 代理（经 hdkitservice 透传 DevStation relay 接口）──
 // 凭证由 hdkitRequest 内部 getCredentials() 统一解析，调用方无需传
 

@@ -78,6 +78,18 @@ test('issue-1071: final-report lifetime wording', () => {
   assert.match(exposeDescBlock, /internal diagnostics/);
 });
 
+// Acceptance 2c: persistent 核时提示与主动关机纪律
+test('issue-1071: persistent core-hours hint and shutdown discipline', () => {
+  assert.match(skill, /关机纪律/);
+  assert.match(skill, /huaweicloud_sandbox_shutdown/);
+  assert.match(skill, /尽快关机/);
+  assert.match(skill, /避免持续消耗核时/);
+  assert.match(skill, /非持久化沙箱也可关机，但不主动提示/);
+  assert.match(resourcePool, /sandbox_shutdown/);
+  assert.match(resourcePool, /尽快关机/);
+  assert.match(resourcePool, /避免持续消耗核时/);
+});
+
 // Acceptance 3: 429 + Retry-After dual error codes in tool descriptions
 test('issue-1071: 429 + Retry-After quota semantics present in tool descriptions', () => {
   const connectDesc = tools.slice(tools.indexOf("'huaweicloud_sandbox_connect'"));

@@ -42,6 +42,7 @@ import {
   hdkitSignAgreement,
   hdkitConnectWithRetry,
   hdkitCredentials,
+  hdkitShutdown,
   hdkitVoucherStatus,
   hdkitVoucherClaim,
   hdkitCompetitionVoucherClaim,
@@ -944,6 +945,20 @@ export const TOOL_DEFINITIONS = [
           description:
             'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
         },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_sandbox_shutdown',
+    description:
+      'Shut down a running sandbox via hdkitservice to stop core-hour consumption. This calls DevStation close, NOT delete: the instance is retained; for persistent sandboxes the EVS data disk is also retained. A later huaweicloud_sandbox_connect wakes it. Works for both ephemeral and persistent sandboxes. Only call when the developer explicitly asks to shut down; never auto-shutdown. Returns devStageId, status (stopped/shutting_down/already_stopped/close_requested) and message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Session ID from huaweicloud_sandbox_connect (optional)' },
+        dev_stage_id: { type: 'string', description: 'DevStation environment ID (alternative to session_id)' },
+        workspace_id: { type: 'string', description: 'Workspace ID; defaults to the current workspace' },
+        username: { type: 'string', description: 'Login username for the terminal session (default: root)' },
       },
     },
   },
@@ -1907,6 +1922,29 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       if (validation.warning) result.warning = validation.warning;
       if (validation.skipped) result.warning = validation.error;
       return result;
+    }
+    case 'huaweicloud_sandbox_shutdown': {
+      const sessionId = args.session_id;
+      const workspaceId = args.dev_stage_id || args.workspace_id || getCurrentWorkspaceId();
+      const devStageId = args.dev_stage_id || args.workspace_id || (sessionId ? undefined : workspaceId);
+      const id = sessionId || devStageId;
+      if (!id) {
+        return {
+          ok: false,
+          code: 'HDKIT_INVALID_REQUEST',
+          message:
+            'session_id or dev_stage_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, or pass workspace_id.',
+        };
+      }
+      try {
+        const shutdown = await hdkitShutdown(sessionId, devStageId);
+        try {
+          await closeSession(shutdown.devStageId || workspaceId || sessionId, args.username || 'root');
+        } catch {}
+        return { ok: true, ...shutdown };
+      } catch (error) {
+        return toVersionGateResult(error);
+      }
     }
     case 'huaweicloud_voucher_status':
       return await hdkitVoucherStatus(args.domain_id);
