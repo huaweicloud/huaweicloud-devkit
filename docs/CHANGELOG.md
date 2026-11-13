@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.1.14-next.5 (2026-11-13)
+
+- feat(sandbox): 增加沙箱池选型门禁
+- fix(sandbox): 修复仅 session_id 时终端会话未关闭
+- feat(sandbox): 新增关机工具与持久化核时提示
+- fix(sandbox): 补齐模板配额错误码结构化出口与三码口径
+- fix(sandbox): 透传 HDKIT_TEMPLATE_QUOTA_EXCEEDED 提示
+
 ## 1.1.14-next.4 (2026-11-12)
 
 - style(sandbox): format resource-pool table
