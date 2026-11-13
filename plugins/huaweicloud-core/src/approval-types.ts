@@ -91,7 +91,12 @@ export interface ApprovalSpec {
 // The consent event the ledger stores (approval-ledger.ts). Ask-mode
 // arrivals write one; token mode keeps its existing semantics (single use,
 // tombstone, five-minute TTL) and records nothing — its evidence is the
-// custody-HMAC grant inside approvals.json.
+// custody-HMAC grant inside approvals.json. The event's subject is the
+// CONSENT, not the execution: it records that the user allowed this exact
+// call (the arrival ApprovalCoreConsent models as the human yes), and
+// `outcome` is the consent's outcome — 'granted' when the call was
+// allowed, 'denied' when the popup was declined — never the handler's
+// execution result, which is a different fact the event does not claim.
 export interface ConsentEvent {
   sessionId: string;
   tool: string;

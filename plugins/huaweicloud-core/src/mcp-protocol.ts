@@ -20,6 +20,10 @@ import { detectAgent } from './telemetry/agent-detect.ts';
 import { asRecord } from './lib/as-record.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { APPROVAL_TOOLS } from './approval-roster.ts';
+// The roster is a const tuple for the registry's compile-time closure; the
+// includes check here widens it once to the plain string set the ToolName
+// side needs.
+const ROSTER_TOOLS: ReadonlyArray<string> = APPROVAL_TOOLS;
 
 const pkgVersion = readInstalledVersion() || '0.0.0';
 
@@ -364,7 +368,7 @@ export function createDevkitMcpServer({
           // of the terminal approve they already run. Roster-driven: every
           // tool the approval gate covers gets the flag, and PR-3's
           // registrations join by landing in the roster.
-          ...(askMode && APPROVAL_TOOLS.includes(tool.name)
+          ...(askMode && ROSTER_TOOLS.includes(tool.name)
             ? { _meta: { 'anthropic/requiresUserInteraction': true } }
             : {}),
         },

@@ -127,13 +127,15 @@ export function isPackToolName(name: ToolName): name is PackToolName {
 
 // The per-pack approval specs merged once, keyed exactly by the roster
 // (approval-roster.ts). The satisfies check closes the loop at compile
-// time: a roster entry without a spec — or a spec for a name the roster
-// does not carry — fails the build instead of silently ungating or
-// double-gating a tool. The dispatch-layer gate (src/approval-gate.ts,
-// called from tools.ts after the vendor gate) resolves each call's spec
-// from this table; the roster itself stays plain string arrays so the
-// .mjs hook and PR-2's opencode writer can import it without the registry
-// graph.
+// time — for real, because the roster is a const tuple: a roster entry
+// without a spec fails the Record's required keys, a spec the roster does
+// not carry fails the excess-property check, and neither can regress to an
+// inert string-keyed check without widening the tuple (the const shape is
+// pinned by test/structure.test.ts). The dispatch-layer gate
+// (src/approval-gate.ts, called from tools.ts after the vendor gate)
+// resolves each call's spec from this table; the roster itself stays a
+// plain string tuple so the .mjs hook and PR-2's opencode writer can
+// import it without the registry graph.
 export type ApprovalRosterName = (typeof APPROVAL_TOOLS)[number];
 
 export const APPROVAL_SPECS = {

@@ -1,11 +1,13 @@
 // The approval-gate roster: which tools the dispatch-layer approval gate
-// covers. Plain string arrays, zod-free, import-free — the .mjs hook twin
+// covers. A const string tuple, zod-free, import-free — the .mjs hook twin
 // and the opencode ask-rule writer both import this shape from the compiled
 // tree, and neither may pull the SDK/zod graph (the hook runs before dist
 // exists in a raw checkout; the writer lives in the unbundled setup-cli
-// graph). The gate (approval-gate.ts) resolves specs from
-// packs/registry.ts's APPROVAL_SPECS merge, which type-checks each entry
-// against these names.
+// graph). The gate (approval-gate.ts) resolves specs from packs/registry.ts's
+// APPROVAL_SPECS merge, whose satisfies check is keyed by THIS tuple's
+// literal union — that coupling is the reason for `as const`: a
+// ReadonlyArray<string> widens the key type to string and silently inerts
+// the compile-time closure (an interrogate-round-1 finding).
 //
 // PR-1 populates the roster with the hcloud pair's run face only; the pack
 // registrations land in PR-3. Two lists, not one, because the two flavors
@@ -14,6 +16,6 @@
 // (pinned by structure.test.ts: every APPROVAL_CLASSIFIED_TOOLS entry must
 // provide one).
 
-export const APPROVAL_TOOLS: ReadonlyArray<string> = ['huaweicloud_run_approved_command'];
+export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;
 
-export const APPROVAL_CLASSIFIED_TOOLS: ReadonlyArray<string> = [];
+export const APPROVAL_CLASSIFIED_TOOLS: readonly never[] = [];

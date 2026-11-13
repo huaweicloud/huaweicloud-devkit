@@ -24,6 +24,7 @@ import type { ToolName } from './tool-definitions.ts';
 import type { ToolArgs, CallToolOptions } from './tools.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
+import { isCredentialFilePath } from './safety-policy.ts';
 import { recordAskModeConsent } from './approval-ledger.ts';
 import type { ApprovalSpec } from './approval-types.ts';
 
@@ -41,6 +42,48 @@ const GRANT_REQUIRED_NEXT_STEP =
 
 function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
   return spec.normalizeArgs ? spec.normalizeArgs(args) : args;
+}
+
+// The credential-file hard floor (interrogate round 1, finding 2): the
+// hook exemption bets "the server gate is strictly stronger" for the
+// classes it skips, and for the write class that bet holds (token + grant
+// + pin-view binding). It did NOT hold for credential-file reads: the
+// argv classifier never consults credentialFilePatterns, so an approved
+// OBS cp of ~/.config/huaweicloud/secrets/.master-key or
+// /proc/self/environ executed where the hook used to deny. The floor
+// walks the binding value's string leaves with the same
+// isCredentialFilePath the vault's file channel uses, in BOTH modes,
+// before any mint, consume, or consent record — so the refusal burns
+// nothing and the exfil refuses even where no hook exists at all (the
+// remote face, hook-less harnesses, direct callTool). Credential denies
+// are never unlockable by any confirmation, the same doctrine the strict
+// plan applies to secret and invalid denies.
+function firstCredentialPathIn(value: unknown): string | null {
+  if (typeof value === 'string') return isCredentialFilePath(value) ? value : null;
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = firstCredentialPathIn(item);
+      if (hit !== null) return hit;
+    }
+    return null;
+  }
+  if (value !== null && typeof value === 'object') {
+    for (const leaf of Object.values(value)) {
+      const hit = firstCredentialPathIn(leaf);
+      if (hit !== null) return hit;
+    }
+  }
+  return null;
+}
+
+function assertNoCredentialPath(value: unknown): void {
+  const hit = firstCredentialPathIn(value);
+  if (hit !== null) {
+    throw new Error(
+      `Reading Huawei Cloud credential or profile files is blocked (argument "${hit.slice(0, 120)}"). ` +
+        'Use redacted profile inspection tools instead.',
+    );
+  }
 }
 
 // A spec-provided classify is the grant requirement: the plan-face hcloud
@@ -83,9 +126,16 @@ export async function runApprovalGate(
   const approvalMode = approvalModeFromEnv(process.env);
   if (approvalMode === 'ask') {
     // The harness client's permission prompt on this very call is the
-    // user's confirmation: route to the handler with no token, after the
-    // execution-readiness floor and the consent record (posture tier — a
-    // PR-3a memo-reuse event inherits this tier verbatim, never upgraded).
+    // user's confirmation: run the execution floors, record the arrival,
+    // then route to the handler with no token. The consent event's
+    // subject is the ARRIVAL, not the execution: the consent fact ("the
+    // user allowed this exact call") is fully known here, while the
+    // handler's outcome is a different fact the event does not claim —
+    // outcome below is the consent's outcome (a call that reached the gate
+    // with the attestation was allowed, hence 'granted'), the same
+    // arrival semantics ApprovalCoreConsent models as the human yes.
+    // Floors first, so a refused call is not a consent arrival.
+    assertNoCredentialPath(value);
     spec.assertArgsExecutable?.(value, 'ask');
     recordAskModeConsent({
       sessionId: opts.sessionId ?? 'default',
@@ -106,6 +156,10 @@ export async function runApprovalGate(
     }
     // Gate-source mint face (PR-3 registrations; ApprovalCoreMint's
     // classify-before-mint already ran above for the classified flavor).
+    // The credential floor sits before the mint for the same reason
+    // classify does: never mint a token for a call the gate would refuse
+    // (NoDoomedToken's posture, one class wider).
+    assertNoCredentialPath(value);
     // The token binds the effective args and the entry carries the pin
     // view the verify side compares, so the approve→run cycle completes
     // on the same binding the plan-face pair uses.
@@ -143,8 +197,10 @@ export async function runApprovalGate(
     return { envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' } };
   }
 
-  // Execution-readiness floor before the consume: a rejection here burns
-  // nothing, so the guidance stays followable on the same approval.
+  // Credential floor before the consume, so the refusal burns nothing and
+  // the guidance stays followable on the same token; the execution floor
+  // (placeholder secrets) rides the same placement for the same reason.
+  assertNoCredentialPath(value);
   spec.assertArgsExecutable?.(value, 'token');
 
   // One snapshot: the confirmation gate, the args-hash binding, the pinView

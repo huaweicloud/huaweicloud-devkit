@@ -12,11 +12,12 @@ import type { JscpdBaseline, JscpdConfig, JscpdReport, PackageJson, PackageLock 
 import { readJson, readSource, root } from './structure-helpers.ts';
 
 test('the approval roster only names real tools and the classified list is a subset of it', () => {
-  // The roster is plain string arrays by contract (the .mjs hook and PR-2's
-  // opencode writer import it without the registry graph), so nothing at
-  // compile time forces its entries to be tool names — this runtime pin
-  // does. A roster entry that names no tool silently gates nothing; a
-  // classified entry that is not on the roster silently bypasses the gate.
+  // The roster is a const string tuple by contract (the .mjs hook and
+  // PR-2's opencode writer import it without the registry graph), so
+  // nothing at compile time forces its entries to be tool names — this
+  // runtime pin does. A roster entry that names no tool silently gates
+  // nothing; a classified entry that is not on the roster silently
+  // bypasses the gate.
   const known = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));
   for (const name of APPROVAL_TOOLS) {
     assert.ok(known.has(name as (typeof TOOL_DEFINITIONS)[number]['name']), `roster names unknown tool ${name}`);
@@ -27,6 +28,19 @@ test('the approval roster only names real tools and the classified list is a sub
       `classified tool ${name} must also be on the approval roster`,
     );
   }
+});
+
+test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
+  // Interrogate round 1, review note A: typing the roster as a plain
+  // ReadonlyArray<string> widens ApprovalRosterName to string and
+  // silently inerts the registry's satisfies Record<ApprovalRosterName,
+  // ApprovalSpec> — the adversary added a roster entry with no spec and
+  // typecheck stayed green. The const tuple is what makes the compile-time
+  // coupling real; this pin keeps a future "cleanup" from widening it
+  // back.
+  const roster = readSource(join('src', 'approval-roster.ts'));
+  assert.match(roster, /export const APPROVAL_TOOLS = \[[^\]]*\] as const;/);
+  assert.match(roster, /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/);
 });
 
 test('every registered classified tool provides a classify', () => {

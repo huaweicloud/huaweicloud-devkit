@@ -97,16 +97,32 @@ function readStdin() {
   }
 }
 
-// The roster exemption (the approval-chain core PR): an MCP call to a
-// roster tool skips hook text classification, because the dispatch-layer
-// approval gate is strictly stronger — it binds the token, the grant, and
-// the pin view before anything executes. Matched on the tool_name the
-// harness reports: the raw name or any server-prefixed form
-// (mcp__huaweicloud-devkit_huaweicloud_run_approved_command). Bash-face
-// calls and unregistered MCP calls keep full classification.
-function isRosterToolCall(toolName) {
+// The roster exemption (the approval-chain core PR): a call attributable
+// to the devkit server's roster tool skips ONLY the deny classes the
+// dispatch-layer approval gate owns (write/execution — it binds a token,
+// a human grant, and a pin view before anything executes). Every other
+// deny — credential-file reads, secret reveals, invalid input — stays in
+// force for roster calls too, because the server gate does not replicate
+// them (interrogate round 1, finding 2: the argv classifier never consults
+// credentialFilePatterns, and the exemption would have lifted the hook's
+// only defense).
+//
+// Attribution is shape-scoped, not suffix-scoped (interrogate round 1,
+// finding 1): a bare tool name equals the roster entry, or the harness's
+// server-prefixed form must carry the roster tool's input shape — an args
+// array and no Bash-shaped command/cmd/script string. The shape test keeps
+// a user-renamed devkit server exempt while a foreign server's
+// colliding tool name carrying a command string falls through to full
+// classification (trunk's verdict). The residual: a foreign tool that
+// copies both the name and the shape is indistinguishable from the devkit
+// at the hook layer; a hostile MCP server was always outside the hook's
+// trust boundary (it can dodge the harness matcher by its name alone).
+function isRosterToolCall(toolName, toolInput) {
   if (typeof toolName !== 'string' || !Array.isArray(rosterApprovalTools)) return false;
-  return rosterApprovalTools.some((tool) => toolName === tool || toolName.endsWith('_' + tool));
+  const args = (toolInput ?? {}) || {};
+  const rosterShaped =
+    Array.isArray(args.args) && args.command === undefined && args.cmd === undefined && args.script === undefined;
+  return rosterApprovalTools.some((tool) => toolName === tool || (rosterShaped && toolName.endsWith('_' + tool)));
 }
 
 function main() {
@@ -117,8 +133,6 @@ function main() {
   } catch {
     return;
   }
-
-  if (isRosterToolCall(data.tool_name)) return;
 
   const text = commandText(data.tool_input ?? {});
   // Classify-time failure is the same contract as load-time (interrogate
@@ -133,7 +147,14 @@ function main() {
     deny(CLASSIFY_FAILED_REASON);
     return;
   }
-  if (result.decision === 'deny') deny(result.reason);
+  if (result.decision !== 'deny') return;
+  // The exemption skips only the approval-gated classes (write/execution)
+  // for attributable roster calls; every other deny stands, and nothing is
+  // skipped before the classifier has produced a verdict.
+  if (isRosterToolCall(data.tool_name, data.tool_input) && (result.risk === 'write' || result.risk === 'execution')) {
+    return;
+  }
+  deny(result.reason);
 }
 
 main();
