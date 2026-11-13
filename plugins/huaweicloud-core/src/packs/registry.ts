@@ -16,8 +16,10 @@ import { OBS_TOOL_HANDLERS } from './obs/tools.ts';
 import { VOUCHER_TOOL_HANDLERS } from './voucher/tools.ts';
 import { DISCOVERY_TOOL_HANDLERS } from './discovery/tools.ts';
 import { HUAWEICLOUD_OPEN_MCP_TOOL_HANDLERS } from './huaweicloud-open-mcp/tools.ts';
-import { HUAWEICLOUD_CLI_TOOL_HANDLERS } from './huaweicloud-cli/tools.ts';
+import { HUAWEICLOUD_CLI_TOOL_HANDLERS, HUAWEICLOUD_CLI_APPROVAL_SPECS } from './huaweicloud-cli/tools.ts';
 import { SECRETS_TOOL_HANDLERS } from './secrets/tools.ts';
+import type { ApprovalSpec } from '../approval-types.ts';
+import { APPROVAL_TOOLS } from '../approval-roster.ts';
 
 // PackId and the Pack interface live in src/lib/pack-types.ts alongside
 // PackToolDefinition, so packs and the registry share one vocabulary module.
@@ -122,6 +124,21 @@ export const PACK_TOOL_HANDLERS = {
 export function isPackToolName(name: ToolName): name is PackToolName {
   return Object.hasOwn(PACK_TOOL_HANDLERS, name);
 }
+
+// The per-pack approval specs merged once, keyed exactly by the roster
+// (approval-roster.ts). The satisfies check closes the loop at compile
+// time: a roster entry without a spec — or a spec for a name the roster
+// does not carry — fails the build instead of silently ungating or
+// double-gating a tool. The dispatch-layer gate (src/approval-gate.ts,
+// called from tools.ts after the vendor gate) resolves each call's spec
+// from this table; the roster itself stays plain string arrays so the
+// .mjs hook and PR-2's opencode writer can import it without the registry
+// graph.
+export type ApprovalRosterName = (typeof APPROVAL_TOOLS)[number];
+
+export const APPROVAL_SPECS = {
+  ...HUAWEICLOUD_CLI_APPROVAL_SPECS,
+} satisfies Record<ApprovalRosterName, ApprovalSpec>;
 
 // Per-pack tool lists invert PACK_OF instead of hand-writing name lists, so a
 // pack can never claim an unassigned or non-existent tool.

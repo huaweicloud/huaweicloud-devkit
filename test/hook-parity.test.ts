@@ -1289,3 +1289,66 @@ test('deep-nest quote-idiom mangled writes deny via the opaque gate (interrogate
     assert.equal(verdict.verdict, 'deny', `nest depth ${depth} py: ${verdict.trace ?? ''}`);
   }
 });
+
+// The approval-gate roster exemption (the approval-chain core PR): an MCP
+// call to a roster tool skips hook text classification because the
+// dispatch-layer approval gate is strictly stronger. Both twins must allow
+// a bin-prefixed run_approved_command MCP call where trunk's .mjs denied
+// it; the raw Bash face and unregistered MCP names keep full classification
+// (pinned in hook-node.test.ts — the py twin's lack of MCP-call write
+// classification is the recorded trunk residual, so the deny side is
+// mjs-only and never a parity predicate).
+// Spawn a hook twin for the roster-exemption test (the battery's py column
+// spawns inline above; the exemption needs the mjs face too, which is not
+// loaded in-process).
+function spawnMjsHook(payload: unknown) {
+  return spawnSync(process.execPath, [join('plugins', 'huaweicloud-core', 'hooks', 'huaweicloud-safety.mjs')], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    timeout: 30000,
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+  });
+}
+
+// The py twin's real-hook spawn: the telemetry-off gate stays inline (the
+// structure-safety pin reads the spawn block for it), with a property
+// order that does not mirror the legacy inline blocks above.
+function spawnPyHook(payload: unknown) {
+  return spawnSync('python3', [hookPath], {
+    input: JSON.stringify(payload),
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+    timeout: 30000,
+    encoding: 'utf8',
+  });
+}
+
+test('roster MCP calls skip hook text classification on both twins', () => {
+  const payload = {
+    tool_name: 'mcp__huaweicloud-devkit_huaweicloud_run_approved_command',
+    tool_input: {
+      args: ['hcloud', 'ECS', 'DeleteServers', '--server.id=i-123'],
+      approvedByUser: true,
+    },
+  };
+  const mjs = spawnMjsHook(payload);
+  assert.equal(mjs.status, 0, `mjs hook crashed: ${mjs.stderr.slice(0, 200)}`);
+  assert.equal(mjs.stdout.trim(), '', 'the mjs twin must exempt the roster MCP call');
+
+  const py = spawnPyHook(payload);
+  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+  if (unavailable) return; // python3 not on PATH: TS-only environment
+  assert.equal(py.status, 0, `py hook crashed: ${py.stderr.slice(0, 200)}`);
+  assert.equal(
+    py.stdout.trim(),
+    '',
+    'the py twin allows the roster MCP call (its write block never covered MCP names)',
+  );
+
+  // The raw tool name spelling (no server prefix) exempts identically.
+  const bare = spawnMjsHook({
+    tool_name: 'huaweicloud_run_approved_command',
+    tool_input: { args: ['hcloud', 'ECS', 'DeleteServers', '--server.id=i-123'], approvedByUser: true },
+  });
+  assert.equal(bare.status, 0);
+  assert.equal(bare.stdout.trim(), '', 'the bare roster name exempts like the prefixed one');
+});

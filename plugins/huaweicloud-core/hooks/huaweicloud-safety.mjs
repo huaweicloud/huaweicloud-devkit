@@ -60,11 +60,21 @@ function deny(reason) {
 // (The deny() placement above is cosmetic, not semantic: function
 // declarations hoist, so the import could sit anywhere; it reads best here.)
 let classifyTextCommand;
+// The approval-gate roster, imported from the same place the policy came
+// from (compiled dist/ preferred, TypeScript source fallback — the roster
+// is a pure string-array module, so the fallback needs no build). A
+// load failure takes the deny-fail-closed path below together with the
+// policy: an exemption the hook cannot resolve must not silently widen.
+let rosterApprovalTools;
 try {
   const policyModule = existsSync(join(__dirname, '..', 'dist', 'safety-policy.js'))
     ? await import('../dist/safety-policy.js')
     : await import('../src/safety-policy.ts');
   ({ classifyTextCommand } = policyModule);
+  const rosterModule = existsSync(join(__dirname, '..', 'dist', 'approval-roster.js'))
+    ? await import('../dist/approval-roster.js')
+    : await import('../src/approval-roster.ts');
+  ({ APPROVAL_TOOLS: rosterApprovalTools } = rosterModule);
 } catch {
   writeSync(
     1,
@@ -87,6 +97,18 @@ function readStdin() {
   }
 }
 
+// The roster exemption (the approval-chain core PR): an MCP call to a
+// roster tool skips hook text classification, because the dispatch-layer
+// approval gate is strictly stronger — it binds the token, the grant, and
+// the pin view before anything executes. Matched on the tool_name the
+// harness reports: the raw name or any server-prefixed form
+// (mcp__huaweicloud-devkit_huaweicloud_run_approved_command). Bash-face
+// calls and unregistered MCP calls keep full classification.
+function isRosterToolCall(toolName) {
+  if (typeof toolName !== 'string' || !Array.isArray(rosterApprovalTools)) return false;
+  return rosterApprovalTools.some((tool) => toolName === tool || toolName.endsWith('_' + tool));
+}
+
 function main() {
   const input = readStdin();
   let data;
@@ -95,6 +117,8 @@ function main() {
   } catch {
     return;
   }
+
+  if (isRosterToolCall(data.tool_name)) return;
 
   const text = commandText(data.tool_input ?? {});
   // Classify-time failure is the same contract as load-time (interrogate

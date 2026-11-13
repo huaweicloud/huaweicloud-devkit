@@ -5,8 +5,45 @@ import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
+import { APPROVAL_TOOLS, APPROVAL_CLASSIFIED_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
+import { APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/registry.ts';
+import { TOOL_DEFINITIONS } from '../plugins/huaweicloud-core/src/tools.ts';
 import type { JscpdBaseline, JscpdConfig, JscpdReport, PackageJson, PackageLock } from './structure-helpers.ts';
 import { readJson, readSource, root } from './structure-helpers.ts';
+
+test('the approval roster only names real tools and the classified list is a subset of it', () => {
+  // The roster is plain string arrays by contract (the .mjs hook and PR-2's
+  // opencode writer import it without the registry graph), so nothing at
+  // compile time forces its entries to be tool names — this runtime pin
+  // does. A roster entry that names no tool silently gates nothing; a
+  // classified entry that is not on the roster silently bypasses the gate.
+  const known = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));
+  for (const name of APPROVAL_TOOLS) {
+    assert.ok(known.has(name as (typeof TOOL_DEFINITIONS)[number]['name']), `roster names unknown tool ${name}`);
+  }
+  for (const name of APPROVAL_CLASSIFIED_TOOLS) {
+    assert.ok(
+      (APPROVAL_TOOLS as ReadonlyArray<string>).includes(name),
+      `classified tool ${name} must also be on the approval roster`,
+    );
+  }
+});
+
+test('every registered classified tool provides a classify', () => {
+  // ApprovalCoreMint pins classification before the mint: a classified
+  // registration without a classify function cannot decide engagement, so
+  // it would fail open. The registry satisfies check pins the spec's
+  // existence; this pins the classified flavor's function.
+  for (const name of APPROVAL_CLASSIFIED_TOOLS) {
+    const spec = APPROVAL_SPECS[name as keyof typeof APPROVAL_SPECS];
+    assert.ok(spec, `classified tool ${name} has no ApprovalSpec`);
+    assert.equal(
+      typeof spec.classify,
+      'function',
+      `classified tool ${name} must register a pure classify (classify-before-mint)`,
+    );
+  }
+});
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {
   // Since the sandbox pack's family split the handlers live in

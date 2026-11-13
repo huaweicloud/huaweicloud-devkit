@@ -9,7 +9,9 @@ const hookPath = join(process.cwd(), 'plugins', 'huaweicloud-core', 'hooks', 'hu
 
 interface HookPayload {
   tool_name: string;
-  tool_input: { command: string };
+  // The roster exemption's payload carries the MCP tool's arguments array,
+  // not a Bash command string — both shapes reach the hook.
+  tool_input: { command?: string; args?: string[]; approvedByUser?: boolean };
 }
 
 function runHook(payload: HookPayload) {
@@ -239,4 +241,38 @@ test('node hook denies Windows-script-wrapped hcloud writes (#731/#760)', () => 
     assert.equal(result.status, 0, `${command}: ${result.stderr}`);
     assert.equal(result.stdout.trim(), '', command);
   }
+});
+
+// The roster exemption is roster-scoped (the approval-chain core PR): the
+// exemption moves MCP-call text classification off the hook for roster
+// tools on the bet that the server gate is strictly stronger, and nothing
+// else. An unregistered MCP tool carrying hcloud write text in a command
+// key keeps its full classification, and the raw Bash face is untouched.
+// The py twin's lack of MCP-call write classification is the recorded
+// trunk residual (Appendix C of the approval-chain plan), so the deny
+// side is pinned here on the mjs twin only.
+test('node hook exempts the roster MCP call but still denies an unregistered MCP write', () => {
+  const rosterPayload = {
+    tool_name: 'mcp__huaweicloud-devkit_huaweicloud_run_approved_command',
+    tool_input: { args: ['hcloud', 'ECS', 'DeleteServers', '--server.id=i-123'], approvedByUser: true },
+  };
+  const exempted = runHook(rosterPayload);
+  assert.equal(exempted.status, 0, exempted.stderr);
+  assert.equal(exempted.stdout.trim(), '', 'the roster tool reaches the server gate, not the hook deny');
+
+  const unregisteredPayload = {
+    tool_name: 'mcp__huaweicloud-devkit_huaweicloud_plan_cli_command',
+    tool_input: { command: 'hcloud ECS DeleteServers --server.id=i-123' },
+  };
+  const denied = runHook(unregisteredPayload);
+  assert.equal(denied.status, 0, denied.stderr);
+  const output = JSON.parse(denied.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, /write|plan|approv/i);
+
+  const bashPayload = { tool_name: 'Bash', tool_input: { command: 'hcloud ECS DeleteServers --server.id=i-123' } };
+  const bashDenied = runHook(bashPayload);
+  assert.equal(bashDenied.status, 0, bashDenied.stderr);
+  const bashOutput = JSON.parse(bashDenied.stdout);
+  assert.equal(bashOutput.hookSpecificOutput.permissionDecision, 'deny', 'the Bash face keeps full classification');
 });

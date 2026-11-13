@@ -6,6 +6,7 @@ import {
   stripLeadingHcloudBinArgs,
   firstPlaceholderSecretArg,
   pinViewArgs,
+  needsUserConfirmation,
   type HcloudRunResult,
   type HcloudRunOptions,
 } from '../../hcloud-cli.ts';
@@ -13,22 +14,33 @@ import { hcloudProbeNextStep, hcloudProbeRaw, probeHcloud, type ProbeHcloudOptio
 import { redactSecrets } from '../../safety-policy.ts';
 import { asText } from '../../lib/as-text.ts';
 import { approvalModeFromEnv, type ApprovalMode } from '../../lib/approval-mode.ts';
-import { consumeApprovalToken, hashArgs, inspectApprovalToken } from '../../lib/approval-tokens.ts';
-import { booleanArg, numericArg, stringArrayArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
+import { hashArgs } from '../../lib/approval-tokens.ts';
+import {
+  approvalTokenArg,
+  approvedByUserArg,
+  booleanArg,
+  numericArg,
+  stringArrayArg,
+  vendorConfirmed,
+} from '../../lib/tool-schema-parts.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { asRecord } from '../../lib/as-record.ts';
+import type { ApprovalSpec } from '../../approval-types.ts';
 
 // The seven KooCLI-coupled execution tools sunk from core (src/tools.ts):
-// version/profile inspection, plan/read-only/approved command execution,
-// operation discovery, and region listing. The consent layer is imported
-// directly from src/lib/approval-tokens.ts (the CLI face's consent module),
-// not the hcloud-cli.ts re-export shim. The approval posture resolves from
-// DEVKIT_APPROVAL_MODE (src/lib/approval-mode.ts): 'token' (default) keeps
-// the out-of-band terminal gate; 'ask' makes the harness client's own
-// permission prompt the user's confirmation, so the plan mints nothing and
-// the run needs no token. The only allowWrites:true call site
-// in the codebase (runApprovedCommand) lives here, so trimming this pack
+// version/profile inspection, plan/readonly/approved command execution,
+// operation discovery, and region listing. The consent layer lives in the
+// dispatch-layer approval gate (src/approval-gate.ts) plus the token store
+// (src/lib/approval-tokens.ts): the gate, driven by this pack's
+// HUAWEICLOUD_CLI_APPROVAL_SPECS entry, owns the attestation check, the
+// token lifecycle envelopes, the placeholder floor, and the args binding;
+// the handler keeps the pure runHcloud execution. The approval posture
+// resolves from DEVKIT_APPROVAL_MODE (src/lib/approval-mode.ts): 'token'
+// (default) keeps the out-of-band terminal gate; 'ask' makes the harness
+// client's own permission prompt the user's confirmation, so the plan
+// mints nothing and the run needs no token. The only allowWrites:true call
+// sites in the codebase (the approved-run execution) live here, so trimming this pack
 // removes the CLI execution face and its approval tools together: a
 // configuration trimmed of this pack has no devkit-side hcloud CLI write
 // path, and the gateway face, when enabled, is a separate delegated write
@@ -237,134 +249,41 @@ function approvedRunOptions(args: ToolArgs): HcloudRunOptions {
   };
 }
 
-// Ask mode (DEVKIT_APPROVAL_MODE=ask): the harness client's permission
-// prompt on this very call is the user's confirmation, so there is no
-// token to inspect or consume. The safety floors are unchanged — the
-// placeholder-secret guard above, and runHcloud's assertAllowed
-// re-assertion of the strict classification (secret/credential/invalid
-// denies still throw; allowWrites:true stays scoped to this one call
-// site, the only one in the codebase).
-async function runApprovedCommandAskMode(args: ToolArgs): Promise<unknown> {
-  const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
-  // Same normalization as the token path: the strict plan and the executed
-  // argv must agree on the effective args.
-  const { args: effectiveArgs } = stripLeadingHcloudBinArgs(providedArgs);
-  assertNoPlaceholderSecret(effectiveArgs, 'ask');
+// The wire form of the args the approval binds and the engine executes:
+// hcloud ARGUMENTS ("excluding the hcloud executable" per the schema),
+// which agents routinely paste anyway — one derivation shared by the
+// handler and the pack's approval spec.
+function providedStringArgs(args: ToolArgs): string[] {
+  return Array.isArray(args.args) ? args.args.map(String) : [];
+}
+
+// Both approval modes end in the same execution: derive the effective
+// args, plan strictly (never minting — ask mode has no token face, and in
+// token mode the gate has already consumed it), execute, and embed the
+// plan. The dispatch-layer approval gate (src/approval-gate.ts) owns
+// everything consent-shaped ahead of this point; runHcloud's assertAllowed
+// re-assertion of the strict classification stays the execution floor
+// (secret/credential/invalid denies still throw; allowWrites:true stays
+// scoped to the approved-run call sites, the only ones in the codebase).
+async function executeApproved(args: ToolArgs): Promise<unknown> {
+  const { args: effectiveArgs } = stripLeadingHcloudBinArgs(providedStringArgs(args));
   const strictPlan = planHcloudCommand(effectiveArgs, {
     allowWrites: false,
     mintApprovalToken: false,
-    approvalMode: 'ask',
+    approvalMode: approvalModeFromEnv(process.env),
   });
   const result = await runHcloud(effectiveArgs, approvedRunOptions(args));
-  // Spread instead of in-place mutation, mirroring the token path: the
-  // HcloudRunResult shape stays owned by hcloud-cli.ts.
+  // Spread instead of in-place mutation: the HcloudRunResult shape stays
+  // owned by hcloud-cli.ts.
   return { ...result, approved: true, plan: strictPlan };
 }
 
 async function runApprovedCommand(args: ToolArgs = {}) {
-  if (args.approvedByUser !== true) {
-    throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
-  }
-  const approvalMode = approvalModeFromEnv(process.env);
-  if (approvalMode === 'ask') {
-    return runApprovedCommandAskMode(args);
-  }
-  const token = String(args.approvalToken || '');
-
-  // D4-24 precise JSON contract (#745): expired and already-consumed tokens
-  // return a structured result instead of throwing a generic Error string, so
-  // clients can machine-assert the two non-success states.
-  const inspection = inspectApprovalToken(token);
-  if (inspection.state === 'already_consumed') {
-    return { status: 'ok', outcome: 'already_processed' };
-  }
-  if (inspection.state === 'expired') {
-    return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
-  }
-  if (inspection.state === 'not_found') {
-    // A token that was never created (typo / unknown / pruned beyond the
-    // tombstone window) is still a rejection, but carries no expired/already
-    // semantics — surface a distinct code so clients can tell the cases apart.
-    return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
-  }
-
-  const providedArgs = Array.isArray(args.args) ? args.args.map(String) : [];
-  // The token binds the plan's EFFECTIVE args (the plan strips a leading bin
-  // token before minting), so the verify side normalizes the same way: a run
-  // call that echoes the plan verbatim and one that sends the cleaned args
-  // both hash to the stored value, while any real argument change still
-  // rejects. Without this, a prefixed plan followed by a self-corrected run
-  // burned the single-use token on a mismatch (2026-11-05 UX report #6, the
-  // approval-trap probe).
-  const { args: effectiveArgs } = stripLeadingHcloudBinArgs(providedArgs);
-  // Placeholder guard before the consume: the shared helper's token-mode
-  // wording keeps the guidance followable on the same approval.
-  assertNoPlaceholderSecret(effectiveArgs, 'token');
-
-  // The strict plan is pure, so it is computed before the token is consumed:
-  // its userConfirmation.needed decides whether the consume requires a grant,
-  // and the result still embeds it.
-  const strictPlan = planHcloudCommand(effectiveArgs, { allowWrites: false, mintApprovalToken: false });
-
-  // One snapshot: the confirmation gate, the args-hash binding, the pinView
-  // fallback, and the single-use claim all read the SAME entry — the one
-  // consumeApprovalToken returns. The pre-consume inspect-gate this replaces
-  // verified the grant on one read while execution consumed another, which
-  // a same-user store swap between the two reads laundered (the review's
-  // TOCTOU repro).
-  const consumed = consumeApprovalToken(token, { requireGrant: strictPlan.userConfirmation.needed });
-  if (consumed.status === 'grant_required') {
-    return {
-      status: 'rejected',
-      code: 'USER_CONFIRMATION_REQUIRED',
-      nextStep:
-        'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.',
-    };
-  }
-  if (consumed.status === 'gone') {
-    // Defensive: inspectApprovalToken said 'valid' but consume returned gone.
-    // The paths are the O_EXCL claim losing a race (another consumer is
-    // spending this exact token right now) or a store swap removing the
-    // entry between the two reads — classify via re-inspect, never a
-    // misleading success and never a false not_found.
-    const recheck = inspectApprovalToken(token);
-    if (recheck.state === 'expired') return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
-    return { status: 'ok', outcome: 'already_processed' };
-  }
-  const stored = consumed.entry;
-  if (hashArgs(effectiveArgs) !== stored.argsHash) {
-    // The pin view is the canonical fold for the substitution comparison
-    // (loop round 4, seat-1 B2): it folds the two-token/glued secret forms
-    // the redactor never did, so following the placeholder guidance on a
-    // two-token plan no longer dead-ends in a mismatch. Pre-schema entries
-    // (no argsPinView) fall back to the redactor comparison.
-    const storedView = JSON.stringify(stored.argsPinView ?? stored.argsRedacted);
-    const providedView = JSON.stringify(pinViewArgs(effectiveArgs));
-    if (storedView !== providedView) {
-      throw new Error(
-        'Provided args do not match the approved plan. Use the exact args from the plan. ' +
-          'If the plan shows <redacted> for passwords or secrets, replace <redacted> with the actual values.',
-      );
-    }
-    // Views equal means ONLY secret values differ. The plan carried real
-    // (non-placeholder) secrets → they are pinned: a different real secret
-    // rejects (loop round 2, the seat-2 A3 probe — a changed password used
-    // to execute). A placeholder-bearing plan (secretsSubstitutable) keeps
-    // the documented substitution flow.
-    if (stored.secretsSubstitutable !== true) {
-      // The message deliberately does not assert WHY the plan pinned: the
-      // detector is key-shape heuristic, so the plan may have carried real
-      // secrets, placeholder-adjacent values, or JSON-body forms where the
-      // substitution contract is not reliable (loop round 9, seat-1 B1/B2).
-      throw new Error(
-        'Secret values are pinned to the approved plan: re-run huaweicloud_plan_cli_command with the final values and re-approve.',
-      );
-    }
-  }
-  const result = await runHcloud(effectiveArgs, approvedRunOptions(args));
-  // Spread instead of in-place mutation: identical serialized content, minus a
-  // write to the HcloudRunResult shape owned by hcloud-cli.ts.
-  return { ...result, approved: true, plan: strictPlan };
+  // The gate has already verified the approvedByUser attestation,
+  // classified the token lifecycle (an ask-mode call routes here with no
+  // token), enforced the placeholder-secret floor before any consume, and
+  // bound the provided args to the consumed entry's hash and pin view.
+  return executeApproved(args);
 }
 
 async function listRegions() {
@@ -471,13 +390,10 @@ const listOperationsSchema = z.looseObject({
 const runApprovedCommandSchema = z.looseObject({
   vendorConfirmed,
   args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
-  approvalToken: z
-    .string()
-    .optional()
-    .describe(
-      'Required in token-approval mode (from huaweicloud_plan_cli_command); omit in ask mode where the harness client confirms at run time.',
-    ),
-  approvedByUser: booleanArg.describe('Must be true only after the user explicitly approves this exact command.'),
+  approvalToken: approvalTokenArg.describe(
+    'Required in token-approval mode (from huaweicloud_plan_cli_command); omit in ask mode where the harness client confirms at run time.',
+  ),
+  approvedByUser: approvedByUserArg,
   timeoutMs: numericArg.optional().describe('Optional timeout in milliseconds. Defaults to 60000.'),
   maxRetries: numericArg.optional().describe('Optional retry count for transient network errors. Defaults to 1.'),
   cwd: z.string().optional().describe('Optional working directory for the hcloud process.'),
@@ -487,6 +403,34 @@ const showProfileRedactedSchema = z.looseObject({
   profile: z.string().optional().describe('Optional KooCLI profile name.'),
 });
 const listRegionsSchema = z.looseObject({ vendorConfirmed });
+
+// The pack's approval registration: the run face is plan-face tokenSource
+// (the plan tool mints, the gate never does). normalizeArgs returns the
+// binding value — the effective args after the leading-bin strip — so the
+// gate's hash, pin view, and ledger record equal what the plan minted
+// over. classify answers the consume's grant requirement with the same
+// pure strict view the trunk's embedded plan computed (a read-classified
+// command still executes on an unconfirmed token). The summarize view
+// never leaks raw args: the plan face redacts, and the summary names the
+// tool plus the redacted command echo.
+export const HUAWEICLOUD_CLI_APPROVAL_SPECS: Readonly<Record<'huaweicloud_run_approved_command', ApprovalSpec>> = {
+  huaweicloud_run_approved_command: {
+    domain: 'cli',
+    flavor: 'always',
+    tokenSource: 'plan-face',
+    normalizeArgs: (args) => stripLeadingHcloudBinArgs(providedStringArgs(args)).args,
+    classify: (bindingValue) => (needsUserConfirmation(bindingValue as string[]) ? 'required' : 'none'),
+    assertArgsExecutable: (bindingValue, mode) => assertNoPlaceholderSecret(bindingValue as string[], mode),
+    summarize: (bindingValue) => {
+      const effective = bindingValue as string[];
+      return {
+        summary: `huaweicloud_run_approved_command: ${['hcloud', ...effective].join(' ').slice(0, 200)}`,
+        argsHash: hashArgs(effective),
+        pinView: pinViewArgs(effective),
+      };
+    },
+  },
+};
 
 export const HUAWEICLOUD_CLI_TOOLS = [
   {
