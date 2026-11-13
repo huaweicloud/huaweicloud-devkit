@@ -74,7 +74,9 @@ function expandBraceRange(body: string, limit: number): string[] | undefined {
   // npm formats at the width of the raw endpoints (sign included), padding a
   // negative after its sign, and truncates the sequence at the expansion cap.
   const width = Math.max(fromRaw!.length, toRaw!.length);
-  const padded = numeric && (/^-?0\d/.test(fromRaw!) || /^-?0\d/.test(toRaw!));
+  const paddedParts = stepRaw === undefined ? [fromRaw!, toRaw!] : [fromRaw!, toRaw!, stepRaw];
+  // npm's isPadded tests every sequence part, the step included.
+  const padded = numeric && paddedParts.some((part) => /^-?0\d/.test(part));
   const out: string[] = [];
   const direction = from <= to ? 1 : -1;
   for (let value = from; direction > 0 ? value <= to : value >= to; value += direction * step) {
@@ -97,12 +99,18 @@ function expandBraceRange(body: string, limit: number): string[] | undefined {
 // npm's brace-expansion refuses beyond 100k entries; the same budget keeps a
 // hostile declaration bounded instead of exhausting memory.
 const BRACE_EXPANSION_LIMIT = 100_000;
+// npm also bounds the total expanded characters (EXPANSION_MAX_LENGTH).
+const BRACE_CHARACTER_LIMIT = 4_000_000;
 
-function expandBraces(pattern: string, budget = { left: BRACE_EXPANSION_LIMIT }): string[] {
+function expandBraces(
+  pattern: string,
+  budget = { left: BRACE_EXPANSION_LIMIT, chars: BRACE_CHARACTER_LIMIT },
+): string[] {
   const brace = findBrace(pattern);
   if (!brace) {
-    if (budget.left <= 0) return [];
+    if (budget.left <= 0 || budget.chars < pattern.length) return [];
     budget.left -= 1;
+    budget.chars -= pattern.length;
     return [pattern];
   }
   const body = pattern.slice(brace.start + 1, brace.end);
@@ -111,7 +119,12 @@ function expandBraces(pattern: string, budget = { left: BRACE_EXPANSION_LIMIT })
   const alternatives = splitBraceAlternatives(body) ?? expandBraceRange(body, Math.max(0, budget.left));
   if (alternatives) {
     const out: string[] = [];
-    for (const alt of alternatives) out.push(...expandBraces(prefix + alt + suffix, budget));
+    for (const alt of alternatives) {
+      out.push(...expandBraces(prefix + alt + suffix, budget));
+      // A spent budget bounds the traversal too: without this the remaining
+      // 2^N paths are still walked after the output cap is reached.
+      if (budget.left <= 0 || budget.chars < 0) return out;
+    }
     return out;
   }
   // A brace without a top-level comma or range is not an expansion point, but

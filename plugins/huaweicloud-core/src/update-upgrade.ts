@@ -379,6 +379,7 @@ function isNpmNoiseLine(line: string): boolean {
   // MODULE_TYPELESS_PACKAGE_JSON / ExperimentalWarning family). Anchor on the
   // emission shapes, not the word "warning", which can ride a real diagnostic.
   if (/^\(Use `node --trace-warnings\b[^`]*` to show where the warning was created\)$/.test(line)) return true;
+  if (/^\(Use `node --trace-uncaught\b[^`]*` to show where the exception was thrown\)$/.test(line)) return true;
   if (/^Reparsing as ES module because module syntax was detected\b/.test(line)) return true;
   if (/^To eliminate this warning, add "type": "module" to\b/.test(line)) return true;
   // npm's log channels are not diagnostics: every `npm <channel>` prefix is
@@ -468,6 +469,14 @@ function lastFailingResult(entries: LineEntry[]): LineEntry | undefined {
   return entries.filter((entry) => isNpmScriptResult(entry.line) && isFailingScriptResult(entry.line)).at(-1);
 }
 
+// node-gyp prints its banner (`gyp ERR! build error`) before the real cause
+// (`gyp ERR! stack Error: ...`); both are rank 1, and the tier's usual
+// earlier-wins order would drop the cause. Within the gyp family the stack
+// line wins.
+function preferGypCause(hits: LineEntry[]): LineEntry {
+  return hits.find((entry) => /^gyp ERR! stack Error\b/.test(npmPayload(entry.line))) ?? hits[0]!;
+}
+
 function lastEchoBefore(entries: LineEntry[], index: number): LineEntry | undefined {
   return entries.filter((entry) => entry.index < index && lineRank(entry.line) === 3).at(-1);
 }
@@ -505,7 +514,7 @@ function selectFailureLine(
       return { line: chosen.line, rank, index: chosen.index };
     }
     const later = rank === 0 || (rank === 2 && positionLast);
-    const chosen = later ? hits.at(-1)! : hits[0]!;
+    const chosen = later ? hits.at(-1)! : rank === 1 ? preferGypCause(hits) : hits[0]!;
     return { line: chosen.line, rank, index: chosen.index };
   }
   return undefined;
@@ -548,7 +557,7 @@ function pickInBlock(block: ErrorBlock): { line: string; rank: number; index: nu
     if (!hits.length) continue;
     // The in-block pick mirrors the selector it overrides: the strongest tier
     // takes its later line (a fatal line follows a retry marker).
-    const hit = rank === 0 ? hits.at(-1)! : hits[0]!;
+    const hit = rank === 0 ? hits.at(-1)! : rank === 1 ? preferGypCause(hits) : hits[0]!;
     return { line: hit.line, rank, index: hit.index };
   }
   return undefined;

@@ -465,12 +465,21 @@ test('upgradePackage 失败原因: 警告块按各结构关闭符终止', async 
     ['real-nested-npm-warning-block.err', 'gyp ERR! stack Error: cannot find the toolchain for host'],
     ['real-crash-header-diagnostic.err', 'npm error code 7 /home/op/dep/x.js:3'],
     ['real-footer-close-pin.err', 'the child stage failed while unpacking'],
+    ['real-crash-header-close-pin.err', 'child cause failed line'],
+    ['real-trace-uncaught-footer.err', 'npm error code 7 boom'],
   ];
   const reasons = await reasonsForFixtures(
     cases.map(([fixture]) => fixture),
     7,
   );
   cases.forEach(([fixture, expected]) => assert.equal(reasons.get(fixture), expected, fixture));
+});
+
+test('upgradePackage 失败原因: gyp 横幅先于 stack 原因时取原因', async () => {
+  const expected = 'gyp ERR! stack Error: `make` failed with exit code: 2';
+  for (const fixture of ['real-gyp-build-banner-first.err', 'real-gyp-build-stack-first.err']) {
+    assert.equal(await reasonFor(failureStderr(fixture), 1), expected, fixture);
+  }
 });
 
 test('upgradePackage 失败原因: E404 保留 code 行与首条诊断, 丢掉日志指针', async () => {
@@ -3651,6 +3660,9 @@ test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async (
     [['packages/{a..c}'], 'packages/b', true],
     [['packages/{1..03}'], 'packages/02', true],
     [['packages/{1..03}'], 'packages/2', false],
+    [['packages/{1..10..02}'], 'packages/03', true],
+    [['packages/{1..10..02}'], 'packages/3', false],
+    [['packages/{1..8..03}'], 'packages/4', true],
     [['packages/{01..3}'], 'packages/02', true],
     [['packages\\*'], 'packages/a', true],
     [['packages/*/.'], 'packages/a', true],
@@ -3720,6 +3732,10 @@ test('workspace 匹配对敌意声明有界退化', async () => {
   const beyondCap = `packages/${Array.from({ length: 17 }, () => 'b').join('/')}`;
   assert.equal(workspaceMemberMatch(firstMember, [bomb]), true, 'a member inside the 100k truncation matches');
   assert.equal(workspaceMemberMatch(beyondCap, [bomb]), false, 'a member beyond the 100k truncation does not');
+  const chained = `packages/${'{a,b}'.repeat(24)}`;
+  const chainStart = Date.now();
+  assert.equal(workspaceMemberMatch('packages/zzz', [chained]), false, 'a chained brace bomb is a non-member');
+  assert.ok(Date.now() - chainStart < 4000, 'the spent budget bounds the traversal (unbounded takes seconds)');
   const stacked = `packages/${Array.from({ length: 9 }, () => '**').join('/')}/nomatch`;
   const stackStart = Date.now();
   assert.equal(
