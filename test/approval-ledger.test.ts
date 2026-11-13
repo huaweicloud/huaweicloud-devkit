@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -29,6 +30,22 @@ function stageStore(home: string, contents: string): string {
   return file;
 }
 
+// Quarantine the store once: stage raw bytes, make them unreadable, append
+// (which must quarantine rather than overwrite), and return the fresh
+// sidecar's name with its readability restored for the caller's byte check.
+function quarantineOnce(home: string, rawBytes: string, alreadySeen: string[] = []): string {
+  const dir = join(home, '.config', 'huaweicloud');
+  stageStore(home, rawBytes);
+  const file = join(dir, 'approval-consents.json');
+  chmodSync(file, 0o000); // unreadable in-process
+  recordAskModeConsent({ sessionId: 'ses-new', tool: 't', argsHash: 'h', outcome: 'granted' });
+  const names = readdirSync(dir);
+  const sidecar = names.find((name) => name.includes('.corrupt-') && !alreadySeen.includes(name));
+  assert.ok(sidecar, `a fresh quarantine sidecar must exist, got: ${names.join(', ')}`);
+  chmodSync(join(dir, sidecar), 0o600);
+  return sidecar;
+}
+
 function withLedgerHome(fn: (home: string) => Promise<void> | void): () => Promise<void> {
   return async () => {
     const home = fixtureDir('approval-ledger-');
@@ -53,6 +70,19 @@ const baseEvent = (overrides: Partial<ConsentEvent> = {}): ConsentEvent => ({
   evidence: 'posture',
   ...overrides,
 });
+
+// Worker mode for the concurrency test: append N tagged events through the
+// real appendConsentEvent into the parent's HUAWEICLOUD_HOME, then exit
+// before any test registers — a worker runs ONLY its appends (no nested
+// worker spawning, no suite re-run).
+if (process.env.LEDGER_WORKER) {
+  const worker = process.env.LEDGER_WORKER!;
+  const perWorker = Number(process.env.LEDGER_PER_WORKER || 10);
+  for (let i = 0; i < perWorker; i += 1) {
+    appendConsentEvent(baseEvent({ sessionId: `worker-${worker}-${i}`, argsHash: `h-${worker}-${i}` }));
+  }
+  process.exit(0);
+}
 
 test(
   'consent events round-trip through the state tree with the evidence tier intact',
@@ -221,16 +251,10 @@ test(
     // original bytes move to a .corrupt- sidecar before the fresh store
     // is written; the append never destroys evidence it failed to read.
     const dir = join(home, '.config', 'huaweicloud');
-    const file = stageStore(home, JSON.stringify([{ sessionId: 'keep-me' }, { sessionId: 'keep-me-2' }]));
+    const rawBytes = JSON.stringify([{ sessionId: 'keep-me' }, { sessionId: 'keep-me-2' }]);
+    const file = stageStore(home, rawBytes);
     const original = readFileSync(file, 'utf8');
-    chmodSync(file, 0o000); // unreadable in-process
-
-    recordAskModeConsent({ sessionId: 'ses-new', tool: 't', argsHash: 'h', outcome: 'granted' });
-
-    const names = readdirSync(dir);
-    const sidecar = names.find((name) => name.includes('.corrupt-'));
-    assert.ok(sidecar, `the unreadable store must be quarantined, got: ${names.join(', ')}`);
-    chmodSync(join(dir, sidecar), 0o600);
+    const sidecar = quarantineOnce(home, rawBytes);
     assert.equal(readFileSync(join(dir, sidecar), 'utf8'), original, 'the sidecar holds the original bytes');
     const fresh = JSON.parse(readFileSync(file, 'utf8')) as Array<Record<string, unknown>>;
     assert.deepEqual(
@@ -238,6 +262,68 @@ test(
       ['ses-new'],
       'the new store starts fresh',
     );
+  }),
+);
+
+test(
+  'concurrent appends serialize: every committed event survives (round-2 finding 3)',
+  withLedgerHome(async () => {
+    // The append is a cross-process read-modify-write; before the per-store
+    // lock, concurrent writers both appended to the same snapshot and each
+    // erased the other's committed events. Workers re-exec this test file
+    // (the hook-parity spawn pattern) and append through the REAL
+    // appendConsentEvent; the store must hold every event.
+    const WORKERS = 3;
+    const PER_WORKER = 10;
+    for (let worker = 0; worker < WORKERS; worker += 1) {
+      const run = spawnSync(process.execPath, ['--experimental-strip-types', 'test/approval-ledger.test.ts'], {
+        cwd: process.cwd(),
+        encoding: 'utf8',
+        timeout: 120_000,
+        env: {
+          ...process.env,
+          LEDGER_WORKER: String(worker),
+          LEDGER_PER_WORKER: String(PER_WORKER),
+          HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
+          // The suite's own runner context must not leak into the worker:
+          // NODE_TEST_CONTEXT makes `node --test` skip the file as a
+          // recursive run, silently appending nothing. The worker runs the
+          // file as a plain module — its worker block exits before any test
+          // registers.
+          NODE_TEST_CONTEXT: undefined,
+          NODE_TEST_WORKER_ID: undefined,
+        },
+      });
+      assert.equal(run.status, 0, `worker ${worker} failed: ${(run.stderr || '').slice(0, 400)}`);
+    }
+    const expected: Array<string> = [];
+    for (let worker = 0; worker < WORKERS; worker += 1) {
+      for (let i = 0; i < PER_WORKER; i += 1) expected.push(`worker-${worker}-${i}`);
+    }
+    const stored = readConsentEvents().map((event) => event.sessionId);
+    assert.deepEqual(
+      [...stored].sort((a, b) => a.localeCompare(b)),
+      [...expected].sort((a, b) => a.localeCompare(b)),
+      'every append from every worker survived the concurrent run',
+    );
+  }),
+);
+
+test(
+  'same-millisecond quarantines never overwrite each other (round-2 finding 4)',
+  withLedgerHome(async (home) => {
+    // The sidecar name carries pid + a process-lifetime counter, so two
+    // quarantines in the same millisecond keep distinct files and the
+    // FIRST one always preserves the original bytes it quarantined.
+    const dir = join(home, '.config', 'huaweicloud');
+    const originals = ['{"first":"corrupt"}', '{"second":"corrupt"}'];
+    const quarantined: string[] = [];
+    for (const original of originals) {
+      const sidecar = quarantineOnce(home, original, quarantined);
+      quarantined.push(sidecar);
+      assert.equal(readFileSync(join(dir, sidecar), 'utf8'), original, 'each quarantine keeps its own bytes');
+    }
+    assert.equal(quarantined.length, new Set(quarantined).size, 'the two quarantines produced distinct sidecars');
   }),
 );
 

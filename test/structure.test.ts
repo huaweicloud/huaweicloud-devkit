@@ -31,15 +31,34 @@ test('the approval roster only names real tools and the classified list is a sub
 });
 
 test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
-  // Interrogate round 1, review note A: typing the roster as a plain
+  // Interrogate rounds 1-2: typing the roster as a plain
   // ReadonlyArray<string> widens ApprovalRosterName to string and
   // silently inerts the registry's satisfies Record<ApprovalRosterName,
   // ApprovalSpec> — the adversary added a roster entry with no spec and
   // typecheck stayed green. The const tuple is what makes the compile-time
-  // coupling real; this pin keeps a future "cleanup" from widening it
-  // back.
+  // coupling real. A text regex proved too weak: `as const` with a single
+  // element cast to string ('name' as string) widened the tuple's element
+  // type while still matching the spelling pin. The pin now PARSES the
+  // declaration: `as const` must close it, and every element must be a
+  // bare quoted literal — no annotation, no cast, no concatenation — so
+  // the element type stays a string literal union.
   const roster = readSource(join('src', 'approval-roster.ts'));
-  assert.match(roster, /export const APPROVAL_TOOLS = \[[^\]]*\] as const;/);
+  const match = roster.match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
+  assert.ok(match, 'APPROVAL_TOOLS must be a literal array closed with `as const` (no type annotation)');
+  const elements = match[1]!
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .split(',')
+    .map((element) => element.trim())
+    .filter((element) => element.length > 0);
+  assert.ok(elements.length > 0, 'the tuple must not be empty (core gate registrations)');
+  for (const element of elements) {
+    assert.match(
+      element,
+      /^'[a-z0-9_]+'$/,
+      `roster element ${element} must be a bare quoted literal — annotations or \`as\` casts widen the tuple's element type and inert the registry closure`,
+    );
+  }
   assert.match(roster, /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/);
 });
 

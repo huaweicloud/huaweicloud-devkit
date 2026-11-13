@@ -20,11 +20,16 @@
 // single-use claim, grant verification, hash and pin-view binding — and
 // the registered handler keeps only the pure execution it owns, so the
 // one-snapshot TOCTOU contract stays inside consumeApprovalToken.
+import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+
 import type { ToolName } from './tool-definitions.ts';
 import type { ToolArgs, CallToolOptions } from './tools.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
 import { isCredentialFilePath } from './safety-policy.ts';
+import { huaweiConfigBase } from './lib/state-dir.ts';
 import { recordAskModeConsent } from './approval-ledger.ts';
 import type { ApprovalSpec } from './approval-types.ts';
 
@@ -44,40 +49,94 @@ function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
   return spec.normalizeArgs ? spec.normalizeArgs(args) : args;
 }
 
-// The credential-file hard floor (interrogate round 1, finding 2): the
-// hook exemption bets "the server gate is strictly stronger" for the
-// classes it skips, and for the write class that bet holds (token + grant
-// + pin-view binding). It did NOT hold for credential-file reads: the
-// argv classifier never consults credentialFilePatterns, so an approved
-// OBS cp of ~/.config/huaweicloud/secrets/.master-key or
-// /proc/self/environ executed where the hook used to deny. The floor
-// walks the binding value's string leaves with the same
-// isCredentialFilePath the vault's file channel uses, in BOTH modes,
-// before any mint, consume, or consent record — so the refusal burns
-// nothing and the exfil refuses even where no hook exists at all (the
-// remote face, hook-less harnesses, direct callTool). Credential denies
-// are never unlockable by any confirmation, the same doctrine the strict
-// plan applies to secret and invalid denies.
-function firstCredentialPathIn(value: unknown): string | null {
-  if (typeof value === 'string') return isCredentialFilePath(value) ? value : null;
+// The credential-file hard floor (interrogate rounds 1-2): the hook
+// exemption bets "the server gate is strictly stronger" for the classes it
+// skips, and for the write class that bet holds (token + grant + pin-view
+// binding). It did NOT hold for credential-file reads: the argv classifier
+// never consults credentialFilePatterns, so an approved OBS cp of
+// ~/.config/huaweicloud/secrets/.master-key or /proc/self/environ executed
+// where the hook used to deny. The floor walks the binding value's string
+// leaves with the same isCredentialFilePath the vault's file channel uses,
+// in BOTH modes, before any mint, consume, or consent record — so the
+// refusal burns nothing and the exfil refuses even where no hook exists at
+// all (the remote face, hook-less harnesses, direct callTool). Credential
+// denies are never unlockable by any confirmation, the same doctrine the
+// strict plan applies to secret and invalid denies.
+//
+// Round 2 extended the literal match with alias resolution: a SYMLINK named
+// innocuously shipped the vault master key through the literal-only floor.
+// Every path-shaped leaf is now also resolved through realpathSync —
+// directly for absolute paths, and against each base the executed child or
+// the config tree could interpret it from (the call's cwd, the server's
+// cwd, the user's home, the devkit config home) for relative ones — and
+// every resolution is pattern-checked too. A refusal still requires a
+// resolved path that EXISTS and matches a credential pattern, so
+// speculative names cannot false-deny. Honest residual, recorded: aliases
+// that resolve from none of those bases stay uncovered — a path that does
+// not exist yet at call time, or one whose target is only reachable from
+// a working directory the gate cannot know.
+function resolvableCredentialTarget(leaf: string, bases: ReadonlyArray<string>): string | null {
+  if (isCredentialFilePath(leaf)) return leaf;
+  if (!leaf.includes('/')) return null; // a bare word is not a path to resolve
+  const candidates: string[] = [];
+  try {
+    candidates.push(realpathSync(leaf));
+  } catch {
+    // not an existing path from this process's cwd — the bases below get
+    // their chance
+  }
+  for (const base of bases) {
+    if (base === process.cwd()) continue; // realpathSync(leaf) already tried it
+    try {
+      candidates.push(realpathSync(join(base, leaf)));
+    } catch {
+      // that interpretation does not exist either
+    }
+  }
+  for (const resolved of candidates) {
+    if (isCredentialFilePath(resolved)) return resolved;
+  }
+  return null;
+}
+
+function firstCredentialPathIn(value: unknown, bases: ReadonlyArray<string>): string | null {
+  if (typeof value === 'string') return resolvableCredentialTarget(value, bases);
   if (Array.isArray(value)) {
     for (const item of value) {
-      const hit = firstCredentialPathIn(item);
+      const hit = firstCredentialPathIn(item, bases);
       if (hit !== null) return hit;
     }
     return null;
   }
   if (value !== null && typeof value === 'object') {
     for (const leaf of Object.values(value)) {
-      const hit = firstCredentialPathIn(leaf);
+      const hit = firstCredentialPathIn(leaf, bases);
       if (hit !== null) return hit;
     }
   }
   return null;
 }
 
-function assertNoCredentialPath(value: unknown): void {
-  const hit = firstCredentialPathIn(value);
+// The resolution bases for relative path leaves, in the order the executed
+// child or the config tree could interpret them: the call's own cwd, the
+// server process's cwd, the user's home, the devkit config home (where the
+// credential files themselves live), and the home root the config tree
+// sits under (HUAWEICLOUD_HOME or the real home — a relative leaf like
+// '../name' is how a shell user names a sibling of their home directory).
+function credentialBases(args: ToolArgs): ReadonlyArray<string> {
+  const configBase = huaweiConfigBase();
+  const bases = [
+    typeof args.cwd === 'string' ? args.cwd : '',
+    process.cwd(),
+    homedir(),
+    configBase,
+    resolve(configBase, '..', '..'),
+  ];
+  return [...new Set(bases.filter((base): base is string => base !== ''))];
+}
+
+function assertNoCredentialPath(value: unknown, args: ToolArgs): void {
+  const hit = firstCredentialPathIn(value, credentialBases(args));
   if (hit !== null) {
     throw new Error(
       `Reading Huawei Cloud credential or profile files is blocked (argument "${hit.slice(0, 120)}"). ` +
@@ -118,10 +177,12 @@ export async function runApprovalGate(
   const value = bindingValue(spec, args);
 
   // Classified flavor engages on content: a classify that says 'none'
-  // needs no consent, so no mint, no ledger entry, no gate.
-  if (spec.flavor === 'classified' && spec.classify && spec.classify(value, opts) === 'none') {
-    return 'pass';
-  }
+  // needs no consent, so no mint, no ledger entry, no gate. The verdict is
+  // computed once here and consulted per-branch below, and the floors run
+  // BEFORE it (interrogate round 2, finding 5): a credential path in the
+  // binding refuses regardless of the flavor outcome — the pass-through
+  // skips consent machinery, never safety floors.
+  const classifiedPass = spec.flavor === 'classified' && spec.classify?.(value, opts) === 'none';
 
   const approvalMode = approvalModeFromEnv(process.env);
   if (approvalMode === 'ask') {
@@ -134,9 +195,12 @@ export async function runApprovalGate(
     // outcome below is the consent's outcome (a call that reached the gate
     // with the attestation was allowed, hence 'granted'), the same
     // arrival semantics ApprovalCoreConsent models as the human yes.
-    // Floors first, so a refused call is not a consent arrival.
-    assertNoCredentialPath(value);
+    // Floors first, so a refused call is not a consent arrival; a
+    // classified pass-through sits after the floors and skips only the
+    // consent record.
+    assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'ask');
+    if (classifiedPass) return 'pass';
     recordAskModeConsent({
       sessionId: opts.sessionId ?? 'default',
       tool: name,
@@ -150,19 +214,19 @@ export async function runApprovalGate(
   if (!token) {
     // plan-face keeps the trunk contract: the plan face is the only
     // minter, so a no-token run call is a not-found rejection and the
-    // gate mints nothing.
+    // gate mints nothing. The floors do not preempt this envelope — trunk
+    // classified nothing on a tokenless call, and the plan face's own hook
+    // deny already covers the credential class at plan time.
     if (spec.tokenSource === 'plan-face') {
       return { envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' } };
     }
     // Gate-source mint face (PR-3 registrations; ApprovalCoreMint's
-    // classify-before-mint already ran above for the classified flavor).
-    // The credential floor sits before the mint for the same reason
-    // classify does: never mint a token for a call the gate would refuse
-    // (NoDoomedToken's posture, one class wider).
-    assertNoCredentialPath(value);
-    // The token binds the effective args and the entry carries the pin
-    // view the verify side compares, so the approve→run cycle completes
-    // on the same binding the plan-face pair uses.
+    // classify-before-mint). The credential floor sits before the mint for
+    // the same reason classify does: never mint a token for a call the gate
+    // would refuse (NoDoomedToken's posture, one class wider), and a
+    // classified pass-through skips the mint, never the floor.
+    assertNoCredentialPath(value, args);
+    if (classifiedPass) return 'pass';
     const view = spec.summarize(value);
     const minted = createApprovalToken(value, { secretsSubstitutable: false, argsPinView: view.pinView });
     return {
@@ -200,7 +264,7 @@ export async function runApprovalGate(
   // Credential floor before the consume, so the refusal burns nothing and
   // the guidance stays followable on the same token; the execution floor
   // (placeholder secrets) rides the same placement for the same reason.
-  assertNoCredentialPath(value);
+  assertNoCredentialPath(value, args);
   spec.assertArgsExecutable?.(value, 'token');
 
   // One snapshot: the confirmation gate, the args-hash binding, the pinView

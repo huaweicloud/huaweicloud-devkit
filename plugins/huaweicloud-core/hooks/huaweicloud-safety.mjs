@@ -103,26 +103,29 @@ function readStdin() {
 // a human grant, and a pin view before anything executes). Every other
 // deny — credential-file reads, secret reveals, invalid input — stays in
 // force for roster calls too, because the server gate does not replicate
-// them (interrogate round 1, finding 2: the argv classifier never consults
-// credentialFilePatterns, and the exemption would have lifted the hook's
-// only defense).
+// them at the hook's breadth (interrogate round 1: the argv classifier
+// never consults credentialFilePatterns).
 //
-// Attribution is shape-scoped, not suffix-scoped (interrogate round 1,
-// finding 1): a bare tool name equals the roster entry, or the harness's
-// server-prefixed form must carry the roster tool's input shape — an args
-// array and no Bash-shaped command/cmd/script string. The shape test keeps
-// a user-renamed devkit server exempt while a foreign server's
-// colliding tool name carrying a command string falls through to full
-// classification (trunk's verdict). The residual: a foreign tool that
-// copies both the name and the shape is indistinguishable from the devkit
-// at the hook layer; a hostile MCP server was always outside the hook's
-// trust boundary (it can dodge the harness matcher by its name alone).
+// Attribution is shape-scoped (interrogate rounds 1-2): a roster tool's
+// tool_input carries exactly its args ARRAY — none of the other keys
+// commandText() classifies (command, cmd, script, arguments) may be
+// present, not even with a null or empty value, because a payload with a
+// write in any of THOSE keys is exactly the Bash-shaped text this
+// exemption must never cover. The SAME shape test applies to the bare
+// exact-name arm (round 2, finding 1b): the devkit's own calls always
+// carry the roster shape, so nothing legitimate loses the exemption,
+// while a colliding foreign name loses it in every spelling. The residual
+// is unchanged: a foreign tool that copies both the name and the shape
+// is indistinguishable from the devkit at the hook layer; a hostile MCP
+// server was always outside the hook's trust boundary.
+const TEXT_KEYS_COMMAND_TEXT_READS = ['command', 'cmd', 'script', 'arguments'];
+
 function isRosterToolCall(toolName, toolInput) {
   if (typeof toolName !== 'string' || !Array.isArray(rosterApprovalTools)) return false;
   const args = (toolInput ?? {}) || {};
-  const rosterShaped =
-    Array.isArray(args.args) && args.command === undefined && args.cmd === undefined && args.script === undefined;
-  return rosterApprovalTools.some((tool) => toolName === tool || (rosterShaped && toolName.endsWith('_' + tool)));
+  const rosterShaped = Array.isArray(args.args) && TEXT_KEYS_COMMAND_TEXT_READS.every((key) => args[key] === undefined);
+  if (!rosterShaped) return false;
+  return rosterApprovalTools.some((tool) => toolName === tool || toolName.endsWith('_' + tool));
 }
 
 function main() {

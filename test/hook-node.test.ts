@@ -325,6 +325,90 @@ test('node hook exemption is shape-scoped: a foreign server suffix with a Bash-s
   assert.equal(nearMissOutput.hookSpecificOutput.permissionDecision, 'deny', 'a near-miss name stays classified');
 });
 
+test('node hook exemption covers every key commandText classifies (round-2 finding 1)', () => {
+  // The shape guard must mirror commandText()'s full key list — the
+  // round-1 guard checked command/cmd/script but NOT arguments, so a
+  // foreign colliding name carrying its write text in 'arguments' passed
+  // the shape test and lost the deny. The exact-match arm must apply the
+  // SAME shape test: a bare roster name with a Bash-shaped command string
+  // is not a devkit call. Trunk denied every row here; head must too.
+  const WRITE = 'hcloud ECS DeleteServers --server.id=i-123 --cli-region=cn-north-4';
+  const mustDeny = [
+    {
+      label: 'bare roster name + command string',
+      payload: { tool_name: 'huaweicloud_run_approved_command', tool_input: { command: WRITE } },
+    },
+    {
+      label: 'prefixed roster name + write text in the arguments key',
+      payload: {
+        tool_name: 'mcp__attacker-server_huaweicloud_run_approved_command',
+        tool_input: { args: ['hcloud', 'ECS', 'ListServers'], arguments: WRITE, approvedByUser: true },
+      },
+    },
+    {
+      label: 'prefixed devkit name + write text in the arguments key',
+      payload: {
+        tool_name: 'mcp__huaweicloud-devkit_huaweicloud_run_approved_command',
+        tool_input: { args: ['hcloud', 'ECS', 'ListServers'], arguments: WRITE, approvedByUser: true },
+      },
+    },
+    {
+      label: 'bare roster name + args array + arguments string',
+      payload: {
+        tool_name: 'huaweicloud_run_approved_command',
+        tool_input: { args: ['hcloud', 'ECS', 'ListServers'], arguments: WRITE, approvedByUser: true },
+      },
+    },
+    {
+      label: 'prefixed roster name + cmd key beside the args array',
+      payload: {
+        tool_name: 'mcp__attacker-server_huaweicloud_run_approved_command',
+        tool_input: { args: ['hcloud', 'ECS'], cmd: WRITE, approvedByUser: true },
+      },
+    },
+    {
+      label: 'prefixed roster name + script key beside the args array',
+      payload: {
+        tool_name: 'mcp__attacker-server_huaweicloud_run_approved_command',
+        tool_input: { args: ['hcloud', 'ECS'], script: WRITE, approvedByUser: true },
+      },
+    },
+    {
+      label: 'prefixed roster name + command key beside the args array',
+      payload: {
+        tool_name: 'mcp__attacker-server_huaweicloud_run_approved_command',
+        tool_input: { args: ['hcloud', 'ECS'], command: WRITE, approvedByUser: true },
+      },
+    },
+    {
+      label: 'bare roster name + args as a string',
+      payload: { tool_name: 'huaweicloud_run_approved_command', tool_input: { args: WRITE, approvedByUser: true } },
+    },
+  ];
+  for (const { label, payload } of mustDeny) {
+    const denied = runHook(payload as HookPayload);
+    assert.equal(denied.status, 0, `${label}: ${denied.stderr}`);
+    const output = JSON.parse(denied.stdout);
+    assert.equal(
+      output.hookSpecificOutput.permissionDecision,
+      'deny',
+      `${label}: a payload with write text outside the roster shape keeps full classification`,
+    );
+  }
+  // The exemption itself stays intact for the roster shape, both spellings.
+  for (const tool_name of [
+    'huaweicloud_run_approved_command',
+    'mcp__huaweicloud-devkit_huaweicloud_run_approved_command',
+  ]) {
+    const exempted = runHook({
+      tool_name,
+      tool_input: { args: ['hcloud', 'ECS', 'DeleteServers', '--server.id=i-123'], approvedByUser: true },
+    });
+    assert.equal(exempted.status, 0, exempted.stderr);
+    assert.equal(exempted.stdout.trim(), '', `${tool_name}: the roster shape stays exempt`);
+  }
+});
+
 test('node hook keeps the credential-file hard deny for attributable roster calls (finding 2)', () => {
   // The exemption skips only the approval-gated classes (write/execution);
   // the credential-file deny is not one of them, and the server's own

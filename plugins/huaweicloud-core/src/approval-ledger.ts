@@ -14,22 +14,37 @@
 // caller's evidence parameter is consulted only when no prior event
 // exists.
 //
-// Write discipline (interrogate round 1, finding 3): an append ADDS, it
-// never rewrites. The write path appends to the raw parsed store, so
-// entries the filtered reader cannot see (a hand-edited tier, an
-// unmodeled field) and malformed-but-array entries survive verbatim; a
-// store that exists but does not parse is quarantined (renamed aside with
-// its bytes intact) before a fresh store starts, and when even the
-// quarantine fails the append refuses to write at all — evidence is
-// preserved at the cost of the append, never the other way around.
+// Write discipline (interrogate rounds 1-2): an append ADDS, it never
+// rewrites, and every committed append SURVIVES. The write path appends
+// to the raw parsed store, so entries the filtered reader cannot see (a
+// hand-edited tier, an unmodeled field) and malformed-but-array entries
+// survive verbatim; the whole read-modify-write runs inside the repo's
+// per-store file lock (withDepLock, the dep receipts' mkdir-claim lock
+// with takeover and exit cleanup), so concurrent writers — separate MCP
+// server processes on one machine — serialize instead of erasing each
+// other's committed events. A store that exists but does not parse is
+// quarantined (renamed aside with its bytes intact, under a pid+counter
+// name so same-millisecond quarantines cannot overwrite each other)
+// before a fresh store starts, and when even the quarantine fails the
+// append refuses to write at all — evidence is preserved at the cost of
+// the append, never the other way around.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { devkitStateBase } from './lib/state-dir.ts';
+import { withDepLock } from './dep/receipts.ts';
 import type { ConsentEvent, ConsentEvidence } from './approval-types.ts';
 
 function ledgerFilePath(): string {
   return join(devkitStateBase(), 'approval-consents.json');
+}
+
+// The lock directory beside the store: withDepLock claims <dir>/lock with
+// mkdir (O_EXCL semantics), so every process appending to this store
+// serializes on one path. The lock lives in the state tree with the store
+// it guards — same ownership, same relocation via HUAWEICLOUD_HOME.
+function ledgerLockDir(): string {
+  return join(devkitStateBase(), 'approval-consents-lock');
 }
 
 // The filtered view consumers read: every entry that parses to the
@@ -81,13 +96,19 @@ function readRawConsents(): unknown[] | undefined {
   }
 }
 
-// Best-effort append, same failure posture as the approvals store: an
-// in-file failure degrades the audit trail but never fails the call the
-// user just approved — with one carve-out: a store that exists but cannot
-// be read is never overwritten. It is quarantined with its bytes intact
-// first; if even the quarantine fails, the append is dropped so the
-// original evidence survives.
-export function appendConsentEvent(event: ConsentEvent): void {
+// Quarantine sidecar naming: pid plus a process-lifetime counter, so two
+// quarantines in the same millisecond of the same process (and any
+// same-name collision across processes) never overwrite each other — the
+// first quarantine always keeps the original bytes (interrogate round 2,
+// finding 4).
+let quarantineCounter = 0;
+
+// The locked append core: read the raw store, quarantine an unreadable
+// one, write existing-plus-events. Runs ONLY inside a withDepLock hold —
+// the public functions acquire it (and re-entrancy makes a nested call
+// from inside another hold safe, so the tier resolution in
+// recordAskModeConsent and the append share ONE serialized section).
+function lockedAppend(events: ConsentEvent[]): void {
   const path = ledgerFilePath();
   let existing: unknown[];
   const raw = readRawConsents();
@@ -98,7 +119,7 @@ export function appendConsentEvent(event: ConsentEvent): void {
     // rename is atomic on POSIX, so the bytes land in the quarantine file
     // before the new store is ever written.
     try {
-      renameSync(path, `${path}.corrupt-${Date.now()}`);
+      renameSync(path, `${path}.corrupt-${process.pid}-${quarantineCounter++}`);
     } catch {
       return; // cannot preserve → refuse to overwrite
     }
@@ -109,11 +130,40 @@ export function appendConsentEvent(event: ConsentEvent): void {
   try {
     mkdirSync(dirname(path), { recursive: true });
     const tmp = `${path}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify([...existing, event]), { encoding: 'utf8', mode: 0o600 });
+    writeFileSync(tmp, JSON.stringify([...existing, ...events]), { encoding: 'utf8', mode: 0o600 });
     renameSync(tmp, path);
   } catch {
     // same degradation contract as writeApprovals in approval-tokens.ts
   }
+}
+
+// Acquire the ledger lock for one append body — with the same degradation
+// posture as the store writes: a state tree that cannot host the lock
+// directory cannot host racing writers either, so the append proceeds
+// unlocked instead of failing the call the user just approved. Any other
+// lock failure propagates: with a writable tree it is a bug to surface,
+// not a degradation to hide.
+function withLedgerLock(fn: () => void): void {
+  try {
+    mkdirSync(ledgerLockDir(), { recursive: true });
+  } catch {
+    fn();
+    return;
+  }
+  withDepLock(fn, ledgerLockDir());
+}
+
+// Best-effort append, same failure posture as the approvals store: an
+// in-file failure degrades the audit trail but never fails the call the
+// user just approved — with one carve-out: a store that exists but cannot
+// be read is never overwritten (it is quarantined with its bytes intact
+// first, and the append is dropped when even that fails). The whole
+// read-modify-write runs inside the per-store lock, so concurrent
+// appenders — separate MCP server processes on one machine — serialize:
+// each reads the store the previous one wrote, instead of both writing
+// from the same snapshot and erasing committed events.
+export function appendConsentEvent(event: ConsentEvent): void {
+  withLedgerLock(() => lockedAppend([event]));
 }
 
 // The most recent GRANTED event on this consent key: the original a
@@ -147,16 +197,20 @@ export function recordAskModeConsent(params: {
   // stays posture when the caller asks for terminal) and never downgraded
   // (terminal stays terminal) — and only a FRESH key takes the caller's
   // evidence (posture for ask arrivals, terminal for approve-CLI
-  // confirmations in the later PRs).
-  const original = latestGrantedFor(params.sessionId, params.tool, params.argsHash);
-  const evidence = original ? original.evidence : (params.evidence ?? 'posture');
-  appendConsentEvent({
-    sessionId: params.sessionId,
-    tool: params.tool,
-    argsHash: params.argsHash,
-    outcome: params.outcome,
-    grantedAt: Date.now(),
-    scope: 'once',
-    evidence,
+  // confirmations in the later PRs). The resolution and the append share
+  // ONE lock hold (appendConsentEvent re-enters it), so two racing
+  // arrivals on the same key both resolve against the store the other
+  // left, not a stale snapshot.
+  withLedgerLock(() => {
+    const original = latestGrantedFor(params.sessionId, params.tool, params.argsHash);
+    appendConsentEvent({
+      sessionId: params.sessionId,
+      tool: params.tool,
+      argsHash: params.argsHash,
+      outcome: params.outcome,
+      grantedAt: Date.now(),
+      scope: 'once',
+      evidence: original ? original.evidence : (params.evidence ?? 'posture'),
+    });
   });
 }
