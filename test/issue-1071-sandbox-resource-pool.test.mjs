@@ -24,7 +24,15 @@ test('issue-1071: resource pool routing table covers both sandbox types and sele
   // 口径基调声明（#1076 修正 #7：两文档章节头均需注明"以实测为准"）
   assert.match(skill, /以实测为准/);
   // scenario rows（意图选池表）
-  for (const kw of ['预览', '一次性任务', '敏感内容', '开发工作台', '带数据库项目', '跨日']) {
+  for (const kw of [
+    '预览',
+    '一次性任务',
+    '敏感内容',
+    '开发工作台',
+    '带数据库但只是预览',
+    '带数据库且需要跨会话保留数据',
+    '跨日',
+  ]) {
     assert.match(skill, new RegExp(kw));
   }
   // selection rules: agent auto-select + user override + per-type quota (1+1, same-type reuse)
