@@ -6,11 +6,13 @@
 // `dot: false`, `!!` parity, the per-pattern negation cancellation order, and
 // the trailing-`**` parent directory. It stays dependency-free so the update
 // graph can carry it into both the unbundled setup CLI and the bundled server.
-// Two edges stay outside the port: POSIX bracket classes (`[[:alpha:]]`) are
-// not expanded, and an explicit dot segment after `**` (`packages/**/.*`) is a
-// member here where map-workspaces' partial post-filter drops it (ledgered).
-// An extglob alternative containing `/` is literalized; both sides match
-// nothing there.
+// Edges outside the port: a POSIX bracket class (`[[:alpha:]]`) is refused
+// (never-matching) instead of expanded; an explicit dot segment after `**`
+// (`packages/**/.*`) is a member here where map-workspaces' partial post-filter
+// drops it; and a `..` immediately after `**` is not pre-resolved the way glob
+// does. An extglob alternative containing `/` is literalized; both sides match
+// nothing there. Brace expansion is capped like npm's 100k-entry limit, and
+// segment matching is memoized so stacked `**` cannot backtrack exponentially.
 
 const GLOBSTAR = '\u0000globstar';
 
@@ -69,8 +71,10 @@ function expandBraceRange(body: string): string[] | undefined {
   const from = numeric ? Number(fromRaw) : (fromRaw!.codePointAt(0) ?? 0);
   const to = numeric ? Number(toRaw) : (toRaw!.codePointAt(0) ?? 0);
   const step = Math.abs(Number(stepRaw ?? 1)) || 1;
-  const padded = numeric && (/^-?0\d/.test(fromRaw!) || /^-?0\d/.test(toRaw!));
-  const pad = padded ? Math.max(fromRaw!.length, toRaw!.length) : 0;
+  const fromDigits = numeric ? fromRaw!.replace(/^-/, '') : '';
+  const toDigits = numeric ? toRaw!.replace(/^-/, '') : '';
+  const padded = numeric && (/^0\d/.test(fromDigits) || /^0\d/.test(toDigits));
+  const pad = padded ? Math.max(fromDigits.length, toDigits.length) : 0;
   const out: string[] = [];
   const direction = from <= to ? 1 : -1;
   for (let value = from; direction > 0 ? value <= to : value >= to; value += direction * step) {
@@ -85,17 +89,33 @@ function expandBraceRange(body: string): string[] | undefined {
   return out;
 }
 
-function expandBraces(pattern: string): string[] {
+// npm's brace-expansion refuses beyond 100k entries; the same budget keeps a
+// hostile declaration bounded instead of exhausting memory.
+const BRACE_EXPANSION_LIMIT = 100_000;
+
+function expandBraces(pattern: string, budget = { left: BRACE_EXPANSION_LIMIT }): string[] {
   const brace = findBrace(pattern);
-  if (!brace) return [pattern];
+  if (!brace) {
+    if (budget.left <= 0) return [];
+    budget.left -= 1;
+    return [pattern];
+  }
   const body = pattern.slice(brace.start + 1, brace.end);
   const prefix = pattern.slice(0, brace.start);
   const suffix = pattern.slice(brace.end + 1);
   const alternatives = splitBraceAlternatives(body) ?? expandBraceRange(body);
-  if (alternatives) return alternatives.flatMap((alt) => expandBraces(prefix + alt + suffix));
+  if (alternatives) {
+    const out: string[] = [];
+    for (const alt of alternatives) {
+      out.push(...expandBraces(prefix + alt + suffix, budget));
+      if (budget.left <= 0) return [];
+    }
+    return out;
+  }
   // A brace without a top-level comma or range is not an expansion point, but
   // braces nested inside it may still expand (npm's `{a{b,c}}` → `{ab}`,`{ac}`).
-  const inner = expandBraces(body);
+  const inner = expandBraces(body, budget);
+  if (budget.left <= 0) return [];
   if (inner.length === 1 && inner[0] === body) return [pattern];
   return inner.map((alt) => `${prefix}{${alt}}${suffix}`);
 }
@@ -119,6 +139,10 @@ function parseCharClass(pattern: string, start: number): CharClass | undefined {
     index += 1;
   }
   if (pattern[index] !== ']') return undefined;
+  // POSIX bracket classes are outside the ported subset: the first `]` of
+  // `[[:alpha:]]` would otherwise close the class early and match a bogus
+  // two-character name. Never-match instead of a false positive.
+  if (content.includes('[:')) return { source: '(?!)', end: index + 1, dotOnly: false };
   let body = '';
   for (const char of content) {
     if (char === '\\' || char === ']' || char === '^') body += `\\${char}`;
@@ -243,19 +267,35 @@ function matchSegment(part: string, segment: string): boolean {
   }
 }
 
-function matchSegments(path: readonly string[], pattern: readonly string[], patternIndex = 0, pathIndex = 0): boolean {
-  if (patternIndex === pattern.length) return pathIndex === path.length;
-  const segment = pattern[patternIndex]!;
-  if (segment === GLOBSTAR) {
-    if (matchSegments(path, pattern, patternIndex + 1, pathIndex)) return true;
-    if (pathIndex >= path.length) return false;
-    const part = path[pathIndex]!;
-    if (part === '.' || part === '..' || part.startsWith('.')) return false;
-    return matchSegments(path, pattern, patternIndex, pathIndex + 1);
-  }
-  if (pathIndex >= path.length) return false;
-  if (!matchSegment(path[pathIndex]!, segment)) return false;
-  return matchSegments(path, pattern, patternIndex + 1, pathIndex + 1);
+function matchSegments(path: readonly string[], pattern: readonly string[]): boolean {
+  // Memoize (pattern index, path index): stacked `**` patterns otherwise
+  // backtrack exponentially, a stall npm never exhibits.
+  const memo = new Map<string, boolean>();
+  const walk = (patternIndex: number, pathIndex: number): boolean => {
+    const key = `${patternIndex}:${pathIndex}`;
+    const cached = memo.get(key);
+    if (cached !== undefined) return cached;
+    let result: boolean;
+    if (patternIndex === pattern.length) {
+      result = pathIndex === path.length;
+    } else {
+      const segment = pattern[patternIndex]!;
+      if (segment === GLOBSTAR) {
+        result = walk(patternIndex + 1, pathIndex);
+        if (!result && pathIndex < path.length) {
+          const part = path[pathIndex]!;
+          if (part !== '.' && part !== '..' && !part.startsWith('.')) result = walk(patternIndex, pathIndex + 1);
+        }
+      } else if (pathIndex >= path.length) {
+        result = false;
+      } else {
+        result = matchSegment(path[pathIndex]!, segment) && walk(patternIndex + 1, pathIndex + 1);
+      }
+    }
+    memo.set(key, result);
+    return result;
+  };
+  return walk(0, 0);
 }
 
 function splitPath(value: string): string[] {
@@ -267,7 +307,6 @@ function splitPath(value: string): string[] {
 function patternSegments(pattern: string): string[] {
   const normalized: string[] = [];
   for (const segment of splitPath(pattern)) {
-    if (segment === '.') continue;
     if (segment === '..') {
       const previous = normalized.at(-1);
       if (previous !== undefined && previous !== '..' && previous !== GLOBSTAR) normalized.pop();
@@ -276,6 +315,9 @@ function patternSegments(pattern: string): string[] {
     }
     normalized.push(segment === '**' ? GLOBSTAR : segment);
   }
+  // glob drops a `.` only when it is the trailing segment; an interior `.` is
+  // a literal directory name npm never matches.
+  if (normalized.at(-1) === '.') normalized.pop();
   return normalized;
 }
 
@@ -298,8 +340,10 @@ function orderPatterns(globs: readonly string[]): { patterns: string[]; negated:
   for (const raw of globs) {
     const excl = /^!+/.exec(raw);
     let pattern = excl ? raw.slice(excl[0].length) : raw;
-    pattern = pattern.replace(/^\.?\/+/, '').replace(/\\/g, '/');
+    pattern = pattern.replace(/^\.?\/+/, '');
     const negate = Boolean(excl && excl[0].length % 2 === 1);
+    // npm's getGlobPattern normalizes backslashes for positive globs only.
+    if (!negate) pattern = pattern.replace(/\\/g, '/');
     if (negate) {
       negated.push(pattern);
       continue;
@@ -335,7 +379,9 @@ export function workspaceMemberMatch(memberPath: string, globs: readonly string[
     if (negated.some((blocked) => matchDirectory(memberPath, blocked))) return false;
     return patterns.some((pattern) => matchDirectory(memberPath, pattern));
   } catch {
-    // Any unexpected glob syntax degrades to a non-member, never a throw.
+    // Belt-and-braces: the only known thrower is the per-segment regex compile
+    // (caught above); this keeps a future syntax defect from aborting the
+    // pre-flight and degrades it to a non-member.
     return false;
   }
 }

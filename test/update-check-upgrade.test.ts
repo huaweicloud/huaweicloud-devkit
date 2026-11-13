@@ -452,6 +452,24 @@ test('upgradePackage 失败原因: 第二个警告与追踪模式同样按结构
   cases.forEach(([fixture, , expected], index) => assert.equal(reasons[index], expected, fixture));
 });
 
+test('upgradePackage 失败原因: 警告块按各结构关闭符终止', async () => {
+  const cases: Array<[string, string]> = [
+    ['real-trace-multiline-warning.err', 'exit 7'],
+    ['real-three-warning-multiline.err', 'exit 7'],
+    [
+      'real-footerless-warning-before-block.err',
+      'npm error code 7 node-gyp: toolchain file for this host was not found in the registry',
+    ],
+    ['real-warning-blank-close.err', 'child cause failed'],
+    ['real-warning-diagnostic-close.err', 'FATAL: build configuration is invalid'],
+  ];
+  const reasons = await reasonsForFixtures(
+    cases.map(([fixture]) => fixture),
+    7,
+  );
+  cases.forEach(([fixture, expected]) => assert.equal(reasons.get(fixture), expected, fixture));
+});
+
 test('upgradePackage 失败原因: E404 保留 code 行与首条诊断, 丢掉日志指针', async () => {
   const reason = await reasonFor(failureStderr('e404.err'));
   assert.match(reason, /E404/);
@@ -3636,6 +3654,15 @@ test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async (
     [['packages/*/..'], 'packages', true],
     [['packages/*/../*'], 'packages/a', true],
     [['packages/*/../*'], 'packages/a/b', false],
+    [['packages/./*'], 'packages/a', false],
+    [['packages/./a'], 'packages/a', false],
+    [['packages/a/./b'], 'packages/a/b', false],
+    [['packages/*/.'], 'packages/a', true],
+    [['packages/a/.'], 'packages/a', true],
+    [['packages/*', '!packages\\private-*'], 'packages/private-a', true],
+    [['packages/{-03..-01}'], 'packages/-02', true],
+    [['packages/{-03..-01}'], 'packages/02', false],
+    [['packages/[[:alpha:]]'], 'packages/a]', false],
     // character classes
     [['packages/[ab]'], 'packages/a', true],
     [['packages/[ab]'], 'packages/c', false],
@@ -3677,6 +3704,15 @@ test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async (
   for (const [globs, member, expected] of rows) {
     assert.equal(workspaceMemberMatch(member, globs), expected, `${JSON.stringify(globs)} ${member}`);
   }
+});
+
+test('workspace 匹配对敌意声明有界退化', async () => {
+  const { workspaceMemberMatch } = await import('../plugins/huaweicloud-core/src/lib/workspace-glob.ts');
+  const bomb = `packages/${'{a,b}/'.repeat(17).slice(0, -1)}`;
+  const deepMember = `packages/${Array.from({ length: 17 }, () => 'a').join('/')}`;
+  assert.equal(workspaceMemberMatch(deepMember, [bomb]), false, 'the brace cap refuses a 131k expansion');
+  const stacked = `packages/${['**', '**', '**', '**', '**', '**', '**', '**'].join('/')}/nomatch`;
+  assert.equal(workspaceMemberMatch('packages/a/b/c/d/e/f/g/h', [stacked]), false, 'stacked ** is memoized');
 });
 
 test('upgradePackage 升级子进程: 302 重定向的目标腿保留认证', async () => {

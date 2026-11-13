@@ -618,10 +618,10 @@ function isCauseLine(line: string): boolean {
 }
 
 function extractNpmFailureReason(execResult: SpawnResultLike): string {
-  const rawLines = String(execResult.stderr || '')
-    .split(/\r?\n/)
-    .map((line) => normalizeNpmLine(line))
-    .filter(Boolean);
+  // Keep the untrimmed source beside the normalized lines: the blank-line and
+  // stack-frame shapes the warning scan needs survive only in the raw text.
+  const sourceLines = String(execResult.stderr || '').split(/\r?\n/);
+  const rawLines = sourceLines.map((line) => normalizeNpmLine(line));
   // A Node crash preamble carries three lines the per-line rules cannot judge:
   // the `file:line` header, the source snippet, and the caret under it.
   const crashPreamble = new Set<number>();
@@ -636,38 +636,57 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
         .add(index + 2);
     }
   });
-  // Node's warning continuation lines are boilerplate whatever their wording.
-  // The emission's extent is decided the way Node prints it: a first warning
-  // carries a `(Use …)` footer, a traced warning carries a stack run, and a
-  // later warning (Node dedups the footer) is a single header line unless it
-  // is traced. So the block is the header plus the lines up to the footer, or
-  // the header plus its stack frames; a crash header or a diagnostic header
-  // always closes it. An unprefixed warning message continuation is only
-  // identifiable while the footer is present (Node prints no other delimiter),
-  // so a footerless multiline warning is the ledgered ambiguity.
+  // Node's warning continuation lines are boilerplate whatever their wording,
+  // and the emission's extent has several structural closers: the `(Use …)`
+  // footer (first warning only), a traced stack-frame run, the next warning
+  // header, an `npm error` block start, and a blank line. A crash or diagnostic
+  // header always closes the region and is itself kept. For the npm-block close
+  // the last line before the block is kept as the child's possible diagnostic
+  // (a warning whose only continuation is that last line remains the ledgered
+  // ambiguity).
   const WARNING_FOOTER =
     /^\(Use `node --trace-(?:warnings|deprecation)\b[^`]*` to show where the warning was created\)$/;
   const WARNING_HEADER = /^\(node:\d+\)/;
-  const frameLine = (line: string | undefined) => Boolean(line && /^\s+at\s/.test(line));
+  const npmBlockStart = (line: string) => /^npm error\b/.test(line);
+  const frameLine = (raw: string) => /^\s+at\s/.test(raw);
   const crashHeader = (line: string) => /^\S+:\d+$/.test(line);
   const diagnosticHeader = (line: string) => /^(?:\[?[A-Za-z]*Error\b|[Ff][Aa][Tt][Aa][Ll]\b|Uncaught\b)/.test(line);
   const warningContinuation = new Set<number>();
   for (let index = 0; index < rawLines.length; index += 1) {
     if (!WARNING_HEADER.test(rawLines[index]!)) continue;
     let footerAt = -1;
-    let frameFrom = -1;
+    let nextHeaderAt = -1;
+    let npmAt = -1;
+    let blankAt = -1;
     let frameTo = -1;
     for (let cursor = index + 1; cursor < rawLines.length; cursor += 1) {
+      const raw = sourceLines[cursor] ?? '';
       const line = rawLines[cursor]!;
-      if (!line.trim() || WARNING_HEADER.test(line) || crashHeader(line) || diagnosticHeader(line)) break;
+      if (!raw.trim()) {
+        blankAt = cursor;
+        break;
+      }
+      if (WARNING_HEADER.test(line)) {
+        nextHeaderAt = cursor;
+        break;
+      }
+      if (npmBlockStart(line)) {
+        npmAt = cursor;
+        break;
+      }
       if (WARNING_FOOTER.test(line)) {
         footerAt = cursor;
         break;
       }
-      if (frameFrom < 0 && frameLine(line)) frameFrom = cursor;
-      if (frameFrom >= 0 && frameLine(line)) frameTo = cursor;
+      if (crashHeader(line) || diagnosticHeader(line)) break;
+      if (frameLine(raw)) frameTo = cursor;
     }
-    const end = footerAt >= 0 ? footerAt : frameTo;
+    let end = -1;
+    if (footerAt >= 0) end = footerAt;
+    else if (nextHeaderAt >= 0) end = nextHeaderAt - 1;
+    else if (blankAt >= 0) end = blankAt - 1;
+    else if (npmAt >= 0) end = npmAt - 2;
+    else if (frameTo >= 0) end = frameTo;
     for (let cursor = index + 1; cursor <= end; cursor += 1) warningContinuation.add(cursor);
   }
   // Every entry keeps its raw position: the code candidate, the block and the
@@ -677,7 +696,10 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
     .map((line, index) => ({ line, index }))
     .filter(
       (entry) =>
-        !crashPreamble.has(entry.index) && !warningContinuation.has(entry.index) && !isNpmNoiseLine(entry.line),
+        Boolean(entry.line) &&
+        !crashPreamble.has(entry.index) &&
+        !warningContinuation.has(entry.index) &&
+        !isNpmNoiseLine(entry.line),
     );
   const codeEntries = entries.filter((entry) => isNpmErrorLine(entry.line) && /^code \S+/.test(npmPayload(entry.line)));
   const otherEntries = entries.filter(

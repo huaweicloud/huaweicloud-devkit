@@ -1,0 +1,10 @@
+(node:2565843) Warning: first warning gets the footer
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2565843) Warning: maintenance notice follows
+the previous build failed and the fallback toolchain is experimental
+node-gyp: toolchain file for this host was not found in the registry
+npm error code 7
+npm error path /home/op/project/pkgdep
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log
