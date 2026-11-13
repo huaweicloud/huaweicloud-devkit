@@ -441,6 +441,17 @@ test('upgradePackage 失败原因: 警告块的多行续行按结构排除', asy
   assert.equal(control, 'Error: native build failed: toolchain missing');
 });
 
+test('upgradePackage 失败原因: 第二个警告与追踪模式同样按结构终止', async () => {
+  const cases: Array<[string, number, string]> = [
+    ['real-two-warning-fatal.err', 3, 'FATAL: build configuration is invalid'],
+    ['real-trace-warning-crash.err', 1, 'Error: boom: the dependency cannot self-install'],
+    ['real-typeless-plus-deprecation.err', 7, 'Error: cannot resolve the build manifest'],
+    ['real-footerless-warning-diagnostic.err', 7, 'node-gyp failure: native build failed: toolchain missing'],
+  ];
+  const reasons = await Promise.all(cases.map(async ([fixture, status]) => reasonFor(failureStderr(fixture), status)));
+  cases.forEach(([fixture, , expected], index) => assert.equal(reasons[index], expected, fixture));
+});
+
 test('upgradePackage 失败原因: E404 保留 code 行与首条诊断, 丢掉日志指针', async () => {
   const reason = await reasonFor(failureStderr('e404.err'));
   assert.match(reason, /E404/);
@@ -3530,6 +3541,8 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         await workspaceRow('extglob', ['packages/+(a|b)'], 'packages/a', 'root');
         await workspaceRow('glued-dstar', ['packages/**b'], 'packages/a/xb', 'member');
         await workspaceRow('node-modules', ['**'], 'a/node_modules/dep', 'member');
+        await workspaceRow('node-modules-final', ['**'], 'packages/node_modules', 'member');
+        await workspaceRow('mixed-config', ['packages/*', 42], 'packages/a', 'member');
 
         // A trailing slash on the override is stripped before the dist-tags path.
         process.env.HUAWEICLOUD_NPM_REGISTRY = `${registry}/`;
@@ -3615,6 +3628,14 @@ test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async (
     [['packages/{1..3}'], 'packages/2', true],
     [['packages/{01..03}'], 'packages/02', true],
     [['packages/{a..c}'], 'packages/b', true],
+    [['packages/{1..03}'], 'packages/02', true],
+    [['packages/{1..03}'], 'packages/2', false],
+    [['packages/{01..3}'], 'packages/02', true],
+    [['packages\\*'], 'packages/a', true],
+    [['packages/*/.'], 'packages/a', true],
+    [['packages/*/..'], 'packages', true],
+    [['packages/*/../*'], 'packages/a', true],
+    [['packages/*/../*'], 'packages/a/b', false],
     // character classes
     [['packages/[ab]'], 'packages/a', true],
     [['packages/[ab]'], 'packages/c', false],
@@ -3644,6 +3665,11 @@ test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async (
     [['**'], 'node_modules/dep/pkg', false],
     [['**'], 'a/node_modules/dep', false],
     [['packages/**'], 'packages2/x', false],
+    [['**'], 'packages/node_modules', false],
+    [['**'], 'packages/node_modules/dep', false],
+    [['packages/*'], 'packages/node_modules', false],
+    [['packages/[z-a]'], 'packages/a', false],
+    [['packages/[z-a]', 'packages/*'], 'packages/a', true],
     [['packages//*'], 'packages/a', true],
     [['**/y'], 'deep/x/y', true],
     [['**/y'], 'dy', false],

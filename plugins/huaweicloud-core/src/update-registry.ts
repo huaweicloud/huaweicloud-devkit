@@ -96,7 +96,10 @@ function workspaceGlobs(value: unknown): string[] {
     : value && typeof value === 'object' && Array.isArray((value as Record<string, unknown>).packages)
       ? ((value as Record<string, unknown>).packages as unknown[])
       : [];
-  return declared.filter((entry): entry is string => typeof entry === 'string');
+  // npm rejects a non-string entry (EWORKSPACESCONFIG / a .match TypeError), so
+  // the declaration yields no members instead of promoting where npm crashes.
+  if (declared.some((entry) => typeof entry !== 'string')) return [];
+  return declared as string[];
 }
 
 function packageJsonWorkspaces(path: string): string[] | undefined {

@@ -636,30 +636,40 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
         .add(index + 2);
     }
   });
-  // Node's warning continuation lines are boilerplate whatever their wording:
-  // after a `(node:…)` header, every line up to the `(Use …)` footer is the
-  // warning message's continuation (the emission corpus shows them unprefixed,
-  // not indented). A real diagnostic follows the footer, so this block never
-  // swallows it.
+  // Node's warning continuation lines are boilerplate whatever their wording.
+  // The emission's extent is decided the way Node prints it: a first warning
+  // carries a `(Use …)` footer, a traced warning carries a stack run, and a
+  // later warning (Node dedups the footer) is a single header line unless it
+  // is traced. So the block is the header plus the lines up to the footer, or
+  // the header plus its stack frames; a crash header or a diagnostic header
+  // always closes it. An unprefixed warning message continuation is only
+  // identifiable while the footer is present (Node prints no other delimiter),
+  // so a footerless multiline warning is the ledgered ambiguity.
+  const WARNING_FOOTER =
+    /^\(Use `node --trace-(?:warnings|deprecation)\b[^`]*` to show where the warning was created\)$/;
+  const WARNING_HEADER = /^\(node:\d+\)/;
+  const frameLine = (line: string | undefined) => Boolean(line && /^\s+at\s/.test(line));
+  const crashHeader = (line: string) => /^\S+:\d+$/.test(line);
+  const diagnosticHeader = (line: string) => /^(?:\[?[A-Za-z]*Error\b|[Ff][Aa][Tt][Aa][Ll]\b|Uncaught\b)/.test(line);
   const warningContinuation = new Set<number>();
-  let warningBlock = false;
-  rawLines.forEach((line, index) => {
-    if (/^\(node:\d+\)/.test(line)) {
-      warningBlock = true;
-      return;
+  for (let index = 0; index < rawLines.length; index += 1) {
+    if (!WARNING_HEADER.test(rawLines[index]!)) continue;
+    let footerAt = -1;
+    let frameFrom = -1;
+    let frameTo = -1;
+    for (let cursor = index + 1; cursor < rawLines.length; cursor += 1) {
+      const line = rawLines[cursor]!;
+      if (!line.trim() || WARNING_HEADER.test(line) || crashHeader(line) || diagnosticHeader(line)) break;
+      if (WARNING_FOOTER.test(line)) {
+        footerAt = cursor;
+        break;
+      }
+      if (frameFrom < 0 && frameLine(line)) frameFrom = cursor;
+      if (frameFrom >= 0 && frameLine(line)) frameTo = cursor;
     }
-    if (!warningBlock) return;
-    if (/^\(Use `node --trace-(?:warnings|deprecation)\b[^`]*` to show where the warning was created\)$/.test(line)) {
-      warningContinuation.add(index);
-      warningBlock = false;
-      return;
-    }
-    if (/^(?:npm\s|node:)/.test(line)) {
-      warningBlock = false;
-      return;
-    }
-    warningContinuation.add(index);
-  });
+    const end = footerAt >= 0 ? footerAt : frameTo;
+    for (let cursor = index + 1; cursor <= end; cursor += 1) warningContinuation.add(cursor);
+  }
   // Every entry keeps its raw position: the code candidate, the block and the
   // echo are compared against the success window in one index space, so a
   // duplicate text line can never be re-resolved to its first occurrence.

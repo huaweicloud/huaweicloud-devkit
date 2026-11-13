@@ -6,9 +6,11 @@
 // `dot: false`, `!!` parity, the per-pattern negation cancellation order, and
 // the trailing-`**` parent directory. It stays dependency-free so the update
 // graph can carry it into both the unbundled setup CLI and the bundled server.
-// Two edges stay outside the port: an extglob alternative containing `/` is
-// literalized, and an explicit dot segment after `**` (`packages/**/.*`) is a
+// Two edges stay outside the port: POSIX bracket classes (`[[:alpha:]]`) are
+// not expanded, and an explicit dot segment after `**` (`packages/**/.*`) is a
 // member here where map-workspaces' partial post-filter drops it (ledgered).
+// An extglob alternative containing `/` is literalized; both sides match
+// nothing there.
 
 const GLOBSTAR = '\u0000globstar';
 
@@ -67,7 +69,8 @@ function expandBraceRange(body: string): string[] | undefined {
   const from = numeric ? Number(fromRaw) : (fromRaw!.codePointAt(0) ?? 0);
   const to = numeric ? Number(toRaw) : (toRaw!.codePointAt(0) ?? 0);
   const step = Math.abs(Number(stepRaw ?? 1)) || 1;
-  const pad = numeric && /^-?0\d/.test(fromRaw!) ? Math.max(fromRaw!.length, toRaw!.length) : 0;
+  const padded = numeric && (/^-?0\d/.test(fromRaw!) || /^-?0\d/.test(toRaw!));
+  const pad = padded ? Math.max(fromRaw!.length, toRaw!.length) : 0;
   const out: string[] = [];
   const direction = from <= to ? 1 : -1;
   for (let value = from; direction > 0 ? value <= to : value >= to; value += direction * step) {
@@ -231,7 +234,13 @@ function matchSegment(part: string, segment: string): boolean {
   if (segment === '') return part === '';
   if (part === '') return false;
   if (part.startsWith('.') && !segmentAllowsDot(segment)) return false;
-  return new RegExp(`^${segmentSource(segment)}$`).test(part);
+  try {
+    return new RegExp(`^${segmentSource(segment)}$`).test(part);
+  } catch {
+    // npm/minimatch silently match nothing for an invalid class (a reversed
+    // range); a hostile declaration is input, never a crash source.
+    return false;
+  }
 }
 
 function matchSegments(path: readonly string[], pattern: readonly string[], patternIndex = 0, pathIndex = 0): boolean {
@@ -256,7 +265,18 @@ function splitPath(value: string): string[] {
 }
 
 function patternSegments(pattern: string): string[] {
-  return splitPath(pattern).map((segment) => (segment === '**' ? GLOBSTAR : segment));
+  const normalized: string[] = [];
+  for (const segment of splitPath(pattern)) {
+    if (segment === '.') continue;
+    if (segment === '..') {
+      const previous = normalized.at(-1);
+      if (previous !== undefined && previous !== '..' && previous !== GLOBSTAR) normalized.pop();
+      else normalized.push(segment);
+      continue;
+    }
+    normalized.push(segment === '**' ? GLOBSTAR : segment);
+  }
+  return normalized;
 }
 
 // A directory's membership: the path is matched as a directory (map-workspaces
@@ -278,7 +298,7 @@ function orderPatterns(globs: readonly string[]): { patterns: string[]; negated:
   for (const raw of globs) {
     const excl = /^!+/.exec(raw);
     let pattern = excl ? raw.slice(excl[0].length) : raw;
-    pattern = pattern.replace(/^\.?\/+/, '');
+    pattern = pattern.replace(/^\.?\/+/, '').replace(/\\/g, '/');
     const negate = Boolean(excl && excl[0].length % 2 === 1);
     if (negate) {
       negated.push(pattern);
@@ -304,11 +324,18 @@ function orderPatterns(globs: readonly string[]): { patterns: string[]; negated:
  * the given declaration, matching `@npmcli/map-workspaces` semantics.
  */
 export function workspaceMemberMatch(memberPath: string, globs: readonly string[]): boolean {
-  if (!memberPath || memberPath === '..' || memberPath.startsWith('../')) return false;
-  const segments = memberPath.split('/');
-  // map-workspaces ignores `**/node_modules/**` before the pattern list applies.
-  if (segments.slice(0, -1).includes('node_modules')) return false;
-  const { patterns, negated } = orderPatterns(globs);
-  if (negated.some((blocked) => matchDirectory(memberPath, blocked))) return false;
-  return patterns.some((pattern) => matchDirectory(memberPath, pattern));
+  try {
+    if (!memberPath || memberPath === '..' || memberPath.startsWith('../')) return false;
+    const segments = memberPath.split('/');
+    // map-workspaces ignores `**/node_modules/**` before the pattern list
+    // applies; glob's directory candidates end in `/`, so the node_modules
+    // directory itself is covered too.
+    if (segments.includes('node_modules')) return false;
+    const { patterns, negated } = orderPatterns(globs);
+    if (negated.some((blocked) => matchDirectory(memberPath, blocked))) return false;
+    return patterns.some((pattern) => matchDirectory(memberPath, pattern));
+  } catch {
+    // Any unexpected glob syntax degrades to a non-member, never a throw.
+    return false;
+  }
 }
