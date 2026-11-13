@@ -951,7 +951,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_shutdown',
     description:
-      'Shut down a running sandbox via hdkitservice to stop core-hour consumption. This calls DevStation close, NOT delete: the instance and EVS data disk are retained, and a later huaweicloud_sandbox_connect wakes it. Works for both ephemeral and persistent sandboxes. Only call when the developer explicitly asks to shut down; never auto-shutdown. Returns devStageId, status (stopped/shutting_down/already_stopped/close_requested) and message.',
+      'Shut down a running sandbox via hdkitservice to stop core-hour consumption. This calls DevStation close, NOT delete: the instance is retained; for persistent sandboxes the EVS data disk is also retained. A later huaweicloud_sandbox_connect wakes it. Works for both ephemeral and persistent sandboxes. Only call when the developer explicitly asks to shut down; never auto-shutdown. Returns devStageId, status (stopped/shutting_down/already_stopped/close_requested) and message.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -1925,7 +1925,8 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     }
     case 'huaweicloud_sandbox_shutdown': {
       const sessionId = args.session_id;
-      const devStageId = args.dev_stage_id || args.workspace_id || (sessionId ? undefined : getCurrentWorkspaceId());
+      const workspaceId = args.dev_stage_id || args.workspace_id || getCurrentWorkspaceId();
+      const devStageId = args.dev_stage_id || args.workspace_id || (sessionId ? undefined : workspaceId);
       const id = sessionId || devStageId;
       if (!id) {
         return {
@@ -1938,7 +1939,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       try {
         const shutdown = await hdkitShutdown(sessionId, devStageId);
         try {
-          await closeSession(devStageId || sessionId, args.username || 'root');
+          await closeSession(shutdown.devStageId || workspaceId || sessionId, args.username || 'root');
         } catch {}
         return { ok: true, ...shutdown };
       } catch (error) {

@@ -14,6 +14,7 @@ process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
 let currentWs = null;
 const execLog = [];
+const closeLog = [];
 
 // 模块 mock 必须先于 tools.mjs 导入注册（按解析后 URL 拦截嵌套 import）
 mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', {
@@ -26,7 +27,10 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', {
       execLog.push(cmd);
       return { stdout: 'STUB', exitCode: 0 };
     },
-    closeSession: async () => true,
+    closeSession: async (ws, username) => {
+      closeLog.push({ ws, username });
+      return true;
+    },
     uploadFileWithSession: async () => ({ ok: true, remote_path: 'stub' }),
     uploadProjectWithSession: async () => ({ ok: true }),
     deployNginx: async () => ({ ok: true, port: 8080 }),
@@ -179,6 +183,50 @@ test('callTool shutdown: not-found returns structured code', async () => {
     assert.match(result.message, /环境不存在或已被删除/);
   } finally {
     restore();
+  }
+});
+
+test('callTool shutdown: session_id-only closes the returned workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = 'current-ws';
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-session',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { session_id: 'sess-1' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-session', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: workspace_id-only closes that workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = null;
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-fallback',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { workspace_id: 'ws-fallback' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-fallback', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
   }
 });
 
