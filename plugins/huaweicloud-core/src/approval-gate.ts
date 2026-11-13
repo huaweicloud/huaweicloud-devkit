@@ -28,7 +28,6 @@ import type { ToolName } from './tool-definitions.ts';
 import type { ToolArgs, CallToolOptions } from './tools.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
-import { isCredentialFilePath } from './safety-policy.ts';
 import { huaweiConfigBase } from './lib/state-dir.ts';
 import { recordAskModeConsent } from './approval-ledger.ts';
 import type { ApprovalSpec } from './approval-types.ts';
@@ -49,89 +48,164 @@ function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
   return spec.normalizeArgs ? spec.normalizeArgs(args) : args;
 }
 
-// The credential-file hard floor (interrogate rounds 1-2): the hook
+// The credential-file hard floor (interrogate rounds 1-3): the hook
 // exemption bets "the server gate is strictly stronger" for the classes it
 // skips, and for the write class that bet holds (token + grant + pin-view
 // binding). It did NOT hold for credential-file reads: the argv classifier
-// never consults credentialFilePatterns, so an approved OBS cp of
-// ~/.config/huaweicloud/secrets/.master-key or /proc/self/environ executed
-// where the hook used to deny. The floor walks the binding value's string
-// leaves with the same isCredentialFilePath the vault's file channel uses,
-// in BOTH modes, before any mint, consume, or consent record — so the
-// refusal burns nothing and the exfil refuses even where no hook exists at
-// all (the remote face, hook-less harnesses, direct callTool). Credential
-// denies are never unlockable by any confirmation, the same doctrine the
-// strict plan applies to secret and invalid denies.
+// never consults credentialFilePatterns, so an approved OBS cp of the vault
+// master key or /proc/self/environ executed where the hook used to deny.
+// The floor walks the binding value's string leaves, in BOTH modes, before
+// any mint, consume, or consent record — so the refusal burns nothing and
+// the exfil refuses even where no hook exists at all (the remote face,
+// hook-less harnesses, direct callTool). Credential denies are never
+// unlockable by any confirmation, the same doctrine the strict plan applies
+// to secret and invalid denies.
 //
-// Round 2 extended the literal match with alias resolution: a SYMLINK named
-// innocuously shipped the vault master key through the literal-only floor.
-// Every path-shaped leaf is now also resolved through realpathSync —
-// directly for absolute paths, and against each base the executed child or
-// the config tree could interpret it from (the call's cwd, the server's
-// cwd, the user's home, the devkit config home) for relative ones — and
-// every resolution is pattern-checked too. A refusal still requires a
-// resolved path that EXISTS and matches a credential pattern, so
-// speculative names cannot false-deny. Honest residual, recorded: aliases
-// that resolve from none of those bases stay uncovered — a path that does
-// not exist yet at call time, or one whose target is only reachable from
-// a working directory the gate cannot know.
-function resolvableCredentialTarget(leaf: string, bases: ReadonlyArray<string>): string | null {
-  if (isCredentialFilePath(leaf)) return leaf;
-  if (!leaf.includes('/')) return null; // a bare word is not a path to resolve
-  const candidates: string[] = [];
-  try {
-    candidates.push(realpathSync(leaf));
-  } catch {
-    // not an existing path from this process's cwd — the bases below get
-    // their chance
-  }
-  for (const base of bases) {
-    if (base === process.cwd()) continue; // realpathSync(leaf) already tried it
-    try {
-      candidates.push(realpathSync(join(base, leaf)));
-    } catch {
-      // that interpretation does not exist either
+// Round 2 added alias resolution; round 3 reworked both halves for trunk
+// parity on benign operations:
+//
+//   (a) RESOLUTION, child-faithful. Every leaf that can name a local file —
+//       absolute, relative, or BARE (the child resolves a bare name against
+//       its cwd; skipping bare names let an innocuous symlink named 'blob'
+//       ship the master key) — is resolved through realpathSync against
+//       only the bases the spawned child can actually apply: the call's
+//       own cwd, else the server process's cwd (spawn's default). The
+//       round-2 extra bases (user home, config home) manufactured refusals
+//       for files the child never sees and are gone. Tilde and $HOME
+//       spellings are expanded against the real and devkit home roots
+//       before resolution — expanding a path's own spelling is not a base.
+//       URI-scheme leaves (obs://, http://, …) are never local paths:
+//       skipped before resolution and before matching, always.
+//
+//   (b) MATCHING, path-semantic. Patterns apply to RESOLVED PATHS only,
+//       segment-anchored — the policy regexes are substring-shaped for the
+//       hook's text posture, and raw-substring matching denied a plain
+//       note file (notes.huaweicloud.md), an obs:// key containing
+//       huaweicloud/secrets, and a project's deploy/huaweicloud/config.yaml.
+//       The segment rules below operationalize each credentialFilePattern
+//       as a path reading; the hook keeps its own layer unchanged.
+//
+// A refusal requires a resolved path that EXISTS and hits a segment rule,
+// so speculative names cannot false-deny. Honest residual, recorded: a
+// target that does not exist yet at call time, or a path only reachable
+// from a child cwd the gate cannot know (args.cwd unset and a wrapper
+// changing the child's directory), stays uncovered.
+const URI_SCHEME_RE = /^[A-Za-z][A-Za-z0-9+.-]*:\/\//;
+
+// Segment rules, one per policy credentialFilePattern (each rule's comment
+// names the pattern it operationalizes):
+//   \.hcloud, \.huaweicloud       → a path segment STARTING with the
+//                                      dot-directory spelling (.hcloud,
+//                                      .huaweicloud, .hcloud-backup)
+//   \.master-key                    → the vault key file itself
+//   creds-import\.json              → the import file, exact name
+//   /proc/(self|[0-9]+)/environ      → three consecutive segments
+//   huaweicloud[/\]secrets          → a 'huaweicloud' segment directly
+//                                      above a 'secrets' segment
+//   hcloud[/\](config|credentials), → a 'hcloud' or 'huaweicloud' segment
+//   huaweicloud[/\](config|          directly above the config/credentials
+//     credentials|creds-import)      file names — suffixed names like
+//                                      config.yaml are NOT the config file,
+//                                      so deploy/huaweicloud/config.yaml
+//                                      executes as trunk did
+const CREDS_FILE_NAMES = new Set(['config', 'credentials', 'config.json', 'credentials.json', 'creds-import.json']);
+
+function isCredentialResolvedPath(resolvedPath: string): boolean {
+  const segments = resolvedPath.split('/').filter((segment) => segment.length > 0);
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i]!;
+    if (segment.startsWith('.hcloud') || segment.startsWith('.huaweicloud')) return true;
+    if (segment === '.master-key' || segment === 'creds-import.json') return true;
+    if (segment === 'proc' && i + 2 < segments.length) {
+      const owner = segments[i + 1]!;
+      const file = segments[i + 2]!;
+      if ((owner === 'self' || /^\d+$/.test(owner)) && file === 'environ') return true;
+    }
+    const next = i + 1 < segments.length ? segments[i + 1]! : null;
+    if (
+      next &&
+      (segment === 'huaweicloud' || segment === 'hcloud') &&
+      (CREDS_FILE_NAMES.has(next) || (segment === 'huaweicloud' && next === 'secrets'))
+    ) {
+      return true;
     }
   }
-  for (const resolved of candidates) {
-    if (isCredentialFilePath(resolved)) return resolved;
-  }
-  return null;
+  return false;
 }
 
-function firstCredentialPathIn(value: unknown, bases: ReadonlyArray<string>): string | null {
-  if (typeof value === 'string') return resolvableCredentialTarget(value, bases);
+// The home roots a tilde or $HOME spelling can mean: the real home, the
+// process's HOME if set, and the devkit's home root (HUAWEICLOUD_HOME —
+// the config tree, and therefore the credential files, relocate with it).
+function homeRootsForSpelling(): ReadonlyArray<string> {
+  const configBase = huaweiConfigBase();
+  const roots = [homedir(), resolve(configBase, '..', '..')];
+  const envHome = process.env.HOME;
+  if (typeof envHome === 'string' && envHome !== '') roots.push(envHome);
+  return [...new Set(roots)];
+}
+
+function resolvedLeafCandidates(leaf: string, cwdBases: ReadonlyArray<string>): string[] {
+  if (URI_SCHEME_RE.test(leaf)) return []; // a URI is never a local path
+  // Edge-quote strip: the child's shell would have removed them; the round-1
+  // vectors carry them.
+  const stripped = leaf.replace(/^['"]|['"]$/g, '');
+  const expanded: string[] = [stripped];
+  if (stripped.startsWith('~')) {
+    const tail = stripped.slice(1);
+    for (const root of homeRootsForSpelling()) expanded.push(join(root, tail));
+  } else if (/^\$\{?HOME\}?([/\\].*)?$/.test(stripped)) {
+    const tail = stripped.replace(/^\$\{?HOME\}?[/\\]?/, '');
+    for (const root of homeRootsForSpelling()) expanded.push(join(root, tail));
+  }
+  const candidates: string[] = [];
+  const tryResolve = (candidate: string): void => {
+    try {
+      candidates.push(realpathSync(candidate));
+    } catch {
+      // not an existing path from this base — the next candidate speaks
+    }
+  };
+  // Absolute spellings resolve on their own; relative and bare spellings
+  // against the child's bases only.
+  for (const candidate of expanded) {
+    if (candidate.startsWith('/') || /^[A-Za-z]:[\\/]/.test(candidate)) tryResolve(candidate);
+  }
+  for (const base of cwdBases) {
+    for (const candidate of expanded) {
+      if (!candidate.startsWith('/') && !/^[A-Za-z]:[\\/]/.test(candidate)) tryResolve(join(base, candidate));
+    }
+  }
+  return candidates;
+}
+
+function firstCredentialPathIn(value: unknown, cwdBases: ReadonlyArray<string>): string | null {
+  if (typeof value === 'string') {
+    for (const resolved of resolvedLeafCandidates(value, cwdBases)) {
+      if (isCredentialResolvedPath(resolved)) return resolved;
+    }
+    return null;
+  }
   if (Array.isArray(value)) {
     for (const item of value) {
-      const hit = firstCredentialPathIn(item, bases);
+      const hit = firstCredentialPathIn(item, cwdBases);
       if (hit !== null) return hit;
     }
     return null;
   }
   if (value !== null && typeof value === 'object') {
     for (const leaf of Object.values(value)) {
-      const hit = firstCredentialPathIn(leaf, bases);
+      const hit = firstCredentialPathIn(leaf, cwdBases);
       if (hit !== null) return hit;
     }
   }
   return null;
 }
 
-// The resolution bases for relative path leaves, in the order the executed
-// child or the config tree could interpret them: the call's own cwd, the
-// server process's cwd, the user's home, the devkit config home (where the
-// credential files themselves live), and the home root the config tree
-// sits under (HUAWEICLOUD_HOME or the real home — a relative leaf like
-// '../name' is how a shell user names a sibling of their home directory).
+// The child's working directories, in spawn order: the call's own cwd when
+// set, else the server process's cwd (spawn's default) — nothing else. Any
+// wider base manufactured refusals for files the child cannot see.
 function credentialBases(args: ToolArgs): ReadonlyArray<string> {
-  const configBase = huaweiConfigBase();
-  const bases = [
-    typeof args.cwd === 'string' ? args.cwd : '',
-    process.cwd(),
-    homedir(),
-    configBase,
-    resolve(configBase, '..', '..'),
-  ];
+  const bases = [typeof args.cwd === 'string' ? args.cwd : '', process.cwd()];
   return [...new Set(bases.filter((base): base is string => base !== ''))];
 }
 
@@ -221,11 +295,14 @@ export async function runApprovalGate(
       return { envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' } };
     }
     // Gate-source mint face (PR-3 registrations; ApprovalCoreMint's
-    // classify-before-mint). The credential floor sits before the mint for
-    // the same reason classify does: never mint a token for a call the gate
-    // would refuse (NoDoomedToken's posture, one class wider), and a
-    // classified pass-through skips the mint, never the floor.
+    // classify-before-mint). BOTH floors sit before the mint for the same
+    // reason classify does: never mint a token for a call the gate would
+    // refuse (NoDoomedToken's posture, one class wider) — the round-2
+    // token-mode branch ran only the credential floor, minting a token for
+    // content the spec's execution floor refuses. A classified
+    // pass-through skips the mint and the floors never.
     assertNoCredentialPath(value, args);
+    spec.assertArgsExecutable?.(value, 'token');
     if (classifiedPass) return 'pass';
     const view = spec.summarize(value);
     const minted = createApprovalToken(value, { secretsSubstitutable: false, argsPinView: view.pinView });

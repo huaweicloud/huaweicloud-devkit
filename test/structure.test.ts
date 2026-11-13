@@ -31,26 +31,32 @@ test('the approval roster only names real tools and the classified list is a sub
 });
 
 test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
-  // Interrogate rounds 1-2: typing the roster as a plain
+  // Interrogate rounds 1-3: typing the roster as a plain
   // ReadonlyArray<string> widens ApprovalRosterName to string and
   // silently inerts the registry's satisfies Record<ApprovalRosterName,
   // ApprovalSpec> — the adversary added a roster entry with no spec and
   // typecheck stayed green. The const tuple is what makes the compile-time
-  // coupling real. A text regex proved too weak: `as const` with a single
-  // element cast to string ('name' as string) widened the tuple's element
-  // type while still matching the spelling pin. The pin now PARSES the
-  // declaration: `as const` must close it, and every element must be a
-  // bare quoted literal — no annotation, no cast, no concatenation — so
-  // the element type stays a string literal union.
+  // coupling real. A text regex proved too weak twice: `as const` with a
+  // single element cast to string widened the tuple while still matching
+  // the spelling pin, and a comment inside the array made a naive split
+  // see the comment text as an element and false-fail valid code. The pin
+  // now PARSES the declaration with comments stripped first: `as const`
+  // must close it, and every element must be a bare quoted literal — no
+  // annotation, no cast, no concatenation — so the element type stays a
+  // string literal union and a commented element parses cleanly.
+  const parseRosterTuple = (roster: string): string[] => {
+    const match = roster.match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
+    if (!match) return [];
+    const withoutComments = match[1]!.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+    return withoutComments
+      .replace(/^\[/, '')
+      .replace(/\]$/, '')
+      .split(',')
+      .map((element) => element.trim())
+      .filter((element) => element.length > 0);
+  };
   const roster = readSource(join('src', 'approval-roster.ts'));
-  const match = roster.match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
-  assert.ok(match, 'APPROVAL_TOOLS must be a literal array closed with `as const` (no type annotation)');
-  const elements = match[1]!
-    .replace(/^\[/, '')
-    .replace(/\]$/, '')
-    .split(',')
-    .map((element) => element.trim())
-    .filter((element) => element.length > 0);
+  const elements = parseRosterTuple(roster);
   assert.ok(elements.length > 0, 'the tuple must not be empty (core gate registrations)');
   for (const element of elements) {
     assert.match(
@@ -59,6 +65,26 @@ test('the approval roster stays a const tuple so the registry closure cannot be 
       `roster element ${element} must be a bare quoted literal — annotations or \`as\` casts widen the tuple's element type and inert the registry closure`,
     );
   }
+  // The parser itself is pinned: a commented element parses as an element,
+  // and the widened spellings the adversary demonstrated still fail.
+  const commented = parseRosterTuple(
+    "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // the run face\n  /* PR-3a */ 'huaweicloud_sandbox_connect',\n] as const;",
+  );
+  assert.deepEqual(commented, ["'huaweicloud_run_approved_command'", "'huaweicloud_sandbox_connect'"]);
+  assert.equal(
+    parseRosterTuple("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;").length >
+      0 &&
+      parseRosterTuple("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;").every(
+        (element) => /^'[a-z0-9_]+'$/.test(element),
+      ),
+    false,
+    'an element-level cast must fail the element check',
+  );
+  assert.deepEqual(
+    parseRosterTuple("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];"),
+    [],
+    'a type annotation must fail the as-const requirement',
+  );
   assert.match(roster, /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/);
 });
 

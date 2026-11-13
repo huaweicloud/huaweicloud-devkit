@@ -29,6 +29,7 @@
 // append refuses to write at all — evidence is preserved at the cost of
 // the append, never the other way around.
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 import { devkitStateBase } from './lib/state-dir.ts';
@@ -46,6 +47,17 @@ function ledgerFilePath(): string {
 function ledgerLockDir(): string {
   return join(devkitStateBase(), 'approval-consents-lock');
 }
+
+// The takeover window, sized to THIS critical section (interrogate round 3,
+// finding 3): the dep receipts' 90s default is sized for a 60s installer
+// spawn, but the ledger's read-modify-write is a millisecond operation
+// sitting in front of an already-approved call — a stale holder (a crash
+// between mkdir and the pid write leaves an empty lock dir that is never
+// stolen before the deadline) froze the approved call the full 90s. One
+// second is three orders of magnitude past the section's own cost and
+// rides out any scheduler starvation, while an empty stale dir is reclaimed
+// in well under the 5s the probe demands.
+const LEDGER_LOCK_TAKEOVER_MS = 1_000;
 
 // The filtered view consumers read: every entry that parses to the
 // ConsentEvent shape. Malformed entries read as absent — read tolerance is
@@ -96,18 +108,26 @@ function readRawConsents(): unknown[] | undefined {
   }
 }
 
-// Quarantine sidecar naming: pid plus a process-lifetime counter, so two
-// quarantines in the same millisecond of the same process (and any
-// same-name collision across processes) never overwrite each other — the
-// first quarantine always keeps the original bytes (interrogate round 2,
-// finding 4).
-let quarantineCounter = 0;
+// Quarantine sidecar naming (interrogate rounds 2-3): pid plus a random
+// UUID suffix — never a per-process counter, which resets and lets a
+// pid-reincarnated process rename onto the dead incarnation's sidecar and
+// silently replace the preserved bytes. With a UUID the name is unique per
+// quarantine by construction; the pre-existing sidecar always wins its
+// bytes.
+function quarantineSidecarName(path: string): string {
+  return `${path}.corrupt-${process.pid}-${randomUUID()}`;
+}
 
 // The locked append core: read the raw store, quarantine an unreadable
 // one, write existing-plus-events. Runs ONLY inside a withDepLock hold —
 // the public functions acquire it (and re-entrancy makes a nested call
 // from inside another hold safe, so the tier resolution in
-// recordAskModeConsent and the append share ONE serialized section).
+// recordAskModeConsent and the append share ONE serialized section). Every
+// fs failure degrades internally (the write's mkdir/tmp/rename is
+// try/catch-hardened, the quarantine rename returns on failure), so
+// lockedAppend itself CANNOT throw — that invariant is what lets
+// withLedgerLock treat any exception from withDepLock as an acquisition
+// failure rather than a data-path error.
 function lockedAppend(events: ConsentEvent[]): void {
   const path = ledgerFilePath();
   let existing: unknown[];
@@ -119,7 +139,7 @@ function lockedAppend(events: ConsentEvent[]): void {
     // rename is atomic on POSIX, so the bytes land in the quarantine file
     // before the new store is ever written.
     try {
-      renameSync(path, `${path}.corrupt-${process.pid}-${quarantineCounter++}`);
+      renameSync(path, quarantineSidecarName(path));
     } catch {
       return; // cannot preserve → refuse to overwrite
     }
@@ -137,20 +157,22 @@ function lockedAppend(events: ConsentEvent[]): void {
   }
 }
 
-// Acquire the ledger lock for one append body — with the same degradation
-// posture as the store writes: a state tree that cannot host the lock
-// directory cannot host racing writers either, so the append proceeds
-// unlocked instead of failing the call the user just approved. Any other
-// lock failure propagates: with a writable tree it is a bug to surface,
-// not a degradation to hide.
+// Acquire the ledger lock for one append body. The degradation covers the
+// WHOLE acquisition attempt, not just the lock root's creation (interrogate
+// round 3, finding 4): once the root exists — the first append creates it
+// and it is never removed — a read-only tree makes the CLAIM mkdir's
+// EACCES the caller's problem, and an approved call failed. A tree that
+// cannot host the lock cannot host racing writers, warm or fresh, so ANY
+// acquisition failure (root mkdir, stale-stash sweep, claim mkdir, poll
+// error) proceeds unlocked instead of surfacing. Safe by the
+// lockedAppend-cannot-throw invariant above: an exception here is an
+// acquisition failure by construction, never a swallowed data error.
 function withLedgerLock(fn: () => void): void {
   try {
-    mkdirSync(ledgerLockDir(), { recursive: true });
+    withDepLock(fn, ledgerLockDir(), LEDGER_LOCK_TAKEOVER_MS);
   } catch {
     fn();
-    return;
   }
-  withDepLock(fn, ledgerLockDir());
 }
 
 // Best-effort append, same failure posture as the approvals store: an
