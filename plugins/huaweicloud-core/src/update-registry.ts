@@ -8,6 +8,7 @@ import { dirname, join, relative, sep } from 'node:path';
 
 import { fetchWithProxy } from './proxy/proxy-agent.ts';
 import { asText } from './lib/as-text.ts';
+import { workspaceMemberMatch } from './lib/workspace-glob.ts';
 import type { DistTags } from './update-semver.ts';
 
 const NPM_BIN = process.platform === 'win32' ? 'npm.cmd' : 'npm';
@@ -109,52 +110,8 @@ function packageJsonWorkspaces(path: string): string[] | undefined {
   }
 }
 
-// A workspace glob (`packages/*`, `packages/**`, an exact relative path) as the
-// membership test npm's mapWorkspaces makes. `*` stays inside one segment; `**`
-// matches zero or more whole segments (`packages/**/x` matches `packages/x` and
-// `packages/a/x`, never `packages/abx`). One pass, so the `**` expansion is not
-// rewritten by the single-star rule.
-function workspaceGlobRegExp(glob: string): RegExp {
-  let source = '';
-  for (let index = 0; index < glob.length; index += 1) {
-    const char = glob[index]!;
-    if (char === '*') {
-      if (glob[index + 1] === '*') {
-        index += 1;
-        if (glob[index + 1] === '/') {
-          index += 1;
-          source += '(?:[^/]+/)*';
-        } else {
-          source += '(?:[^/]+(?:/[^/]+)*)?';
-        }
-      } else {
-        source += '[^/]*';
-      }
-      continue;
-    }
-    if (char === '?') {
-      source += '[^/]';
-      continue;
-    }
-    source += /[.+^${}()|[\]\\]/.test(char) ? `\\${char}` : char;
-  }
-  return new RegExp(`^${source}$`);
-}
-
 function isWorkspaceMember(root: string, member: string, globs: string[]): boolean {
-  const memberPath = relative(root, member).split(sep).join('/');
-  if (!memberPath || memberPath.startsWith('../') || memberPath === '..') return false;
-  let included = false;
-  for (const raw of globs) {
-    const negated = /^!/.test(raw);
-    const pattern = raw
-      .replace(/^!+/, '')
-      .replace(/^\.?\/+/, '')
-      .replace(/\/+$/, '');
-    if (!pattern) continue;
-    if (workspaceGlobRegExp(pattern).test(memberPath)) included = !negated;
-  }
-  return included;
+  return workspaceMemberMatch(relative(root, member).split(sep).join('/'), globs);
 }
 
 function localPrefix(start: string = process.cwd()): string {

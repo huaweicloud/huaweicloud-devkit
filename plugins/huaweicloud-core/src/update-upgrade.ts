@@ -628,7 +628,7 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
   rawLines.forEach((line, index) => {
     const header = /^\S+:\d+$/.test(line);
     const snippet = Boolean(rawLines[index + 1] && /[;=()]/.test(rawLines[index + 1]!));
-    const caret = /^\s*\^\s*$/.test(rawLines[index + 2] ?? '');
+    const caret = /^\s*\^+\s*$/.test(rawLines[index + 2] ?? '');
     if (header && snippet && caret) {
       crashPreamble
         .add(index)
@@ -636,12 +636,39 @@ function extractNpmFailureReason(execResult: SpawnResultLike): string {
         .add(index + 2);
     }
   });
+  // Node's warning continuation lines are boilerplate whatever their wording:
+  // after a `(node:…)` header, every line up to the `(Use …)` footer is the
+  // warning message's continuation (the emission corpus shows them unprefixed,
+  // not indented). A real diagnostic follows the footer, so this block never
+  // swallows it.
+  const warningContinuation = new Set<number>();
+  let warningBlock = false;
+  rawLines.forEach((line, index) => {
+    if (/^\(node:\d+\)/.test(line)) {
+      warningBlock = true;
+      return;
+    }
+    if (!warningBlock) return;
+    if (/^\(Use `node --trace-(?:warnings|deprecation)\b[^`]*` to show where the warning was created\)$/.test(line)) {
+      warningContinuation.add(index);
+      warningBlock = false;
+      return;
+    }
+    if (/^(?:npm\s|node:)/.test(line)) {
+      warningBlock = false;
+      return;
+    }
+    warningContinuation.add(index);
+  });
   // Every entry keeps its raw position: the code candidate, the block and the
   // echo are compared against the success window in one index space, so a
   // duplicate text line can never be re-resolved to its first occurrence.
   const entries: LineEntry[] = rawLines
     .map((line, index) => ({ line, index }))
-    .filter((entry) => !crashPreamble.has(entry.index) && !isNpmNoiseLine(entry.line));
+    .filter(
+      (entry) =>
+        !crashPreamble.has(entry.index) && !warningContinuation.has(entry.index) && !isNpmNoiseLine(entry.line),
+    );
   const codeEntries = entries.filter((entry) => isNpmErrorLine(entry.line) && /^code \S+/.test(npmPayload(entry.line)));
   const otherEntries = entries.filter(
     (entry) => isNpmErrorLine(entry.line) && !codeEntries.some((code) => code.index === entry.index),

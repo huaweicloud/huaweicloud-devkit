@@ -234,6 +234,12 @@ async function errorForSpawn(result: {
   return r.error ?? '';
 }
 
+async function reasonsForFixtures(fixtures: string[], status: number): Promise<Map<string, string>> {
+  const reasons = new Map<string, string>();
+  for (const fixture of fixtures) reasons.set(fixture, await reasonFor(failureStderr(fixture), status));
+  return reasons;
+}
+
 async function childEnv(): Promise<NodeJS.ProcessEnv> {
   let captured: NodeJS.ProcessEnv | null = null;
   const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
@@ -407,6 +413,30 @@ test('upgradePackage 失败原因: Node 的非弃用警告尾部同样不算原�
     assert.equal(reason, 'npm error code 7 npm error command sh -c node post.js', fixture);
   }
   // control: a real stderr diagnostic after the warning trio is still the reason.
+  const control = await reasonFor(failureStderr('real-typeless-package-control.err'), 7);
+  assert.equal(control, 'Error: native build failed: toolchain missing');
+});
+
+test('upgradePackage 失败原因: 多字符 caret 的崩溃前导同样识别', async () => {
+  for (const [fixture, reason] of await reasonsForFixtures(
+    ['real-crash-bin-multi.err', 'real-crash-bin-nofail.err'],
+    1,
+  )) {
+    assert.match(reason, /^SyntaxError: Unexpected identifier/, fixture);
+  }
+  // control: the single-caret capture keeps its error name.
+  const single = await reasonFor(failureStderr('real-crash-bin-single.err'), 1);
+  assert.equal(single, 'ReferenceError: error is not defined');
+});
+
+test('upgradePackage 失败原因: 警告块的多行续行按结构排除', async () => {
+  for (const [fixture, reason] of await reasonsForFixtures(
+    ['real-multiline-warning-failure.err', 'real-multiline-warning-prose.err', 'real-multiline-deprecation.err'],
+    7,
+  )) {
+    assert.equal(reason, 'npm error code 7 npm error command sh -c node post.js', fixture);
+  }
+  // a real diagnostic after the warning block still wins.
   const control = await reasonFor(failureStderr('real-typeless-package-control.err'), 7);
   assert.equal(control, 'Error: native build failed: toolchain missing');
 });
@@ -3455,6 +3485,52 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         process.chdir(savedCwd);
         rmSync(nonMemberRoot, { recursive: true, force: true });
 
+        // The glob language npm's map-workspaces accepts, end to end: the layer
+        // that answers proves which directory npm's localPrefix would pick.
+        const workspaceRow = async (
+          label: string,
+          workspaces: unknown[],
+          memberRel: string,
+          expected: 'root' | 'member',
+        ) => {
+          const rootDir = join(base, `ws-${label}`);
+          const memberDir = join(rootDir, ...memberRel.split('/'));
+          mkdirSync(memberDir, { recursive: true });
+          writeFileSync(join(rootDir, 'package.json'), JSON.stringify({ name: 'root', workspaces }));
+          writeFileSync(join(memberDir, 'package.json'), JSON.stringify({ name: label }));
+          writeFileSync(
+            join(rootDir, '.npmrc'),
+            `registry=${registry}/\n${host}/:_authToken=${expected === 'root' ? 'fixture-registry-token' : 'root-only-token'}\n`,
+          );
+          writeFileSync(
+            join(memberDir, '.npmrc'),
+            `registry=${registry}/\n${host}/:_authToken=${expected === 'member' ? 'fixture-registry-token' : 'member-only-token'}\n`,
+          );
+          writeFileSync(userconfig, `registry=${registry}/\n`);
+          process.env.NPM_CONFIG_USERCONFIG = userconfig;
+          process.chdir(memberDir);
+          const result = await attempt();
+          process.chdir(savedCwd);
+          rmSync(rootDir, { recursive: true, force: true });
+          assert.equal(result.result.success, true, `${label}: the ${expected} layer authenticates`);
+          assert.equal(seen.at(-1), 'Bearer fixture-registry-token', `${label}: the ${expected} layer is read`);
+        };
+        await workspaceRow('dstar-parent', ['packages/**'], 'packages', 'root');
+        await workspaceRow('brace', ['{packages,apps}/*'], 'packages/br', 'root');
+        await workspaceRow('charclass', ['packages/[xy]*'], 'packages/x1', 'root');
+        await workspaceRow('dot-star', ['packages/*'], 'packages/.hidden', 'member');
+        await workspaceRow('dot-dstar', ['packages/**'], 'packages/.hidden/pkg', 'member');
+        await workspaceRow('double-bang', ['packages/*', '!!packages/secret-a'], 'packages/secret-a', 'root');
+        await workspaceRow(
+          'negation-cancel',
+          ['packages/**', '!packages/b/**', 'packages/b/a'],
+          'packages/b/c',
+          'root',
+        );
+        await workspaceRow('extglob', ['packages/+(a|b)'], 'packages/a', 'root');
+        await workspaceRow('glued-dstar', ['packages/**b'], 'packages/a/xb', 'member');
+        await workspaceRow('node-modules', ['**'], 'a/node_modules/dep', 'member');
+
         // A trailing slash on the override is stripped before the dist-tags path.
         process.env.HUAWEICLOUD_NPM_REGISTRY = `${registry}/`;
         writeFileSync(userconfig, line('${CI_TOKEN}'));
@@ -3506,6 +3582,74 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
     process.chdir(savedCwd);
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
+test('workspace 成员匹配与 @npmcli/map-workspaces 的语义一致', async () => {
+  const { workspaceMemberMatch } = await import('../plugins/huaweicloud-core/src/lib/workspace-glob.ts');
+  const rows: Array<[string[], string, boolean]> = [
+    // trailing `**` covers the glob's own parent
+    [['packages/**'], 'packages', true],
+    [['packages/**'], 'packages/group/nested', true],
+    [['packages/*'], 'packages/group/nested', false],
+    [['packages/**/x'], 'packages/x', true],
+    [['packages/**/x'], 'packages/abx', false],
+    // `**` glued to a literal stays in one segment
+    [['packages/**b'], 'packages/xb', true],
+    [['packages/**b'], 'packages/a/xb', false],
+    [['**b'], 'packages/a/xb', false],
+    // dot:false
+    [['packages/*'], 'packages/.hidden', false],
+    [['packages/**'], 'packages/.hidden/a', false],
+    [['packages/.*'], 'packages/.hidden', true],
+    [['packages/[.]x'], 'packages/.x', true],
+    [['packages/[.a]x'], 'packages/.x', false],
+    [['packages/@(.x|a)'], 'packages/.x', true],
+    [['packages/@(a|*)'], 'packages/.x', false],
+    // braces and ranges
+    [['packages/{a,b}'], 'packages/a', true],
+    [['packages/{a,b}'], 'packages/c', false],
+    [['{a,packages}/*'], 'packages/br', true],
+    [['packages/{apps,libs}/*'], 'packages/apps/web', true],
+    [['packages/{apps,libs}/*'], 'packages/other/web', false],
+    [['packages/{1..3}'], 'packages/2', true],
+    [['packages/{01..03}'], 'packages/02', true],
+    [['packages/{a..c}'], 'packages/b', true],
+    // character classes
+    [['packages/[ab]'], 'packages/a', true],
+    [['packages/[ab]'], 'packages/c', false],
+    [['packages/pkg-[0-9]'], 'packages/pkg-7', true],
+    [['packages/pkg-[0-9]'], 'packages/pkg-x', false],
+    [['packages/[!a]'], 'packages/b', true],
+    [['packages/[!a]'], 'packages/a', false],
+    [['packages/[xy]*'], 'packages/x1', true],
+    [['packages/[xy]*'], 'packages/z1', false],
+    // extglob
+    [['packages/@(a|b)'], 'packages/a', true],
+    [['packages/+(a|b)'], 'packages/ab', true],
+    [['packages/+(a|b)'], 'packages/c', false],
+    [['packages/?(a|b)'], 'packages/a', true],
+    [['packages/?(a|b)'], 'packages/c', false],
+    [['packages/x?(y)'], 'packages/x', true],
+    [['packages/x?(y)'], 'packages/xz', false],
+    [['packages/!(a)'], 'packages/b', true],
+    [['packages/!(a)'], 'packages/a', false],
+    // negation parity and cancellation order
+    [['packages/*', '!packages/private-*'], 'packages/private-a', false],
+    [['packages/*', '!!packages/secret-a'], 'packages/secret-a', true],
+    [['packages/**', '!packages/b/**'], 'packages/b/c', false],
+    [['packages/**', '!packages/b/**', 'packages/b/a'], 'packages/b/c', true],
+    [['!packages/legacy', 'packages/*'], 'packages/legacy', false],
+    // node_modules is ignored under `**`, and repeated slashes coalesce
+    [['**'], 'node_modules/dep/pkg', false],
+    [['**'], 'a/node_modules/dep', false],
+    [['packages/**'], 'packages2/x', false],
+    [['packages//*'], 'packages/a', true],
+    [['**/y'], 'deep/x/y', true],
+    [['**/y'], 'dy', false],
+  ];
+  for (const [globs, member, expected] of rows) {
+    assert.equal(workspaceMemberMatch(member, globs), expected, `${JSON.stringify(globs)} ${member}`);
   }
 });
 
