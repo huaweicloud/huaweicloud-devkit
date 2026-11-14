@@ -539,46 +539,110 @@ export function recordApprovalDispatchOutcome(
 // void handler, the async-start receipt {started:'uncertain'}: an
 // accepted start is a delivered dispatch, and the async completion is
 // the poll call's own result).
-// The benign-message content test (round 14, finding 3; negation window
-// round 15, finding 3, both seats): the failure vocabulary the real
-// handlers' message channels use, both languages — small and honest, not a
-// heuristic. A message carrying any of these is an error-ish report, not a
-// benign remark — UNLESS the marker is NEGATED: a benign no-op message
-// that mentions a failure word in a negated sense ('No error occurred',
-// '未发生错误', 'Nothing was denied') is benign by content, and the r14
-// substring test recorded it failed (the permissive direction the memo
-// keys on: a delivered no-op recorded failed buys the next identical call
-// a popup-free reuse). The window is pragmatic: a marker preceded within
-// a few words (≤ 16 chars — the seats' benign phrasings measure 1-16) by
-// an English negation word or a Chinese negation character is not a
-// marker hit. The window is deliberately narrow: the real failure
-// envelope '无法确认最新版本（registry 查询失败）' keeps its hit (the 无
-// sits 20 chars before 失败, outside the window), and that envelope carries
-// an `error` field anyway, so the carve-out never sees it.
-const MESSAGE_FAILURE_MARKERS = ['failed', 'error', 'exception', 'denied', 'rejected', 'is not', '失败', '错误'];
+// The benign-message content test (round 14, finding 3; rounds 15-16,
+// findings 3/4 — both seats both rounds): the failure vocabulary the real
+// handlers' message channels use, both languages — small and honest, not
+// a heuristic. Round 15 added a 16-char negation proximity window; round
+// 16 falsified it in BOTH directions: a REAL failure behind a verb-
+// negation read delivered (无法确认，查询失败 / 无法完成提交，操作失败 —
+// 无法 and 未通过 negate the VERB, not the failure noun that follows, so
+// six genuine error reports recorded delivered), and genuinely benign
+// absence phrasings read failed (error-free / 0 errors / cannot be any
+// error / 错误未发生). Proximity cannot decide polarity in either
+// language, so the window is GONE: the test now runs on an explicit
+// absence vocabulary. A message whose failure markers are all covered by
+// an explicit absence phrase (the marker negated by construction: "no
+// error", "0 errors", "error-free", 未发生错误, 无 error, nothing to do,
+// 已是最新, 无需升级) is benign by CONTENT — the absence phrases are
+// stripped before the scan, so a failure marker OUTSIDE them always
+// wins, whatever negation characters surround it: 查询失败 and "failed to
+// write config" record failed regardless of the 无 in 无法 or a leading
+// "no error in cleanup" clause, and the real failure envelope
+// 无法确认最新版本（registry 查询失败） keeps its hit. The ZH markers get
+// NO character-level negation logic at all (round 16's explicit call):
+// 无/未/没有 are not negation morphemes for the failure nouns, only the
+// enumerated phrases are.
+const MESSAGE_FAILURE_MARKERS = [
+  'failed',
+  'error',
+  'exception',
+  'denied',
+  'rejected',
+  'is not',
+  '失败',
+  '错误',
+  '未通过',
+];
 
-const NEGATION_WINDOW_CHARS = 16;
-const ENGLISH_NEGATION_RE = /\b(no|not|nothing|without)\b/;
-// Chinese negation: the characters that negate by themselves, plus the
-// 没有 pair — bare 有 is NOT a negation ('有错误' = "there IS an error",
-// positive, must keep its hit).
-const CHINESE_NEGATION_RE = /(未|无|没有)/;
-
-function markerIsNegated(lower: string, at: number): boolean {
-  const window = lower.slice(Math.max(0, at - NEGATION_WINDOW_CHARS), at);
-  return ENGLISH_NEGATION_RE.test(window) || CHINESE_NEGATION_RE.test(window);
-}
+// The explicit absence/no-op vocabulary, both languages. Every phrase that
+// NEGATES a failure marker must cover the marker word itself (the phrase
+// is stripped from the message before the marker scan), so "no error"
+// strips the "error" it contains and "nothing was denied" strips the
+// "denied". A phrase that merely asserts success without covering a
+// marker (完成 alone — it sits inside 无法完成) stays OUT: the carve-out
+// keys on the marker's absence, not on a success word's presence.
+const BENIGN_ABSENCE_PHRASES = [
+  // EN: the marker word explicitly negated, excluded, or counted at zero.
+  'no error',
+  'no errors',
+  'no failure',
+  'no failures',
+  'no exception',
+  'no exceptions',
+  'no denial',
+  'not denied',
+  'nothing was denied',
+  '0 errors',
+  'zero errors',
+  'zero failures',
+  'error-free',
+  'failure-free',
+  'exception-free',
+  'without error',
+  'without errors',
+  'without failures',
+  'without any error',
+  'not any error',
+  'cannot be any error',
+  'error was not detected',
+  'errors were not detected',
+  'error did not occur',
+  'errors did not occur',
+  // EN: the no-op/OK assertion vocabulary (the marker-free companions).
+  'nothing to do',
+  'no change',
+  'nothing failed',
+  'did not fail',
+  'unchanged',
+  // ZH: the error word explicitly negated (the enumerated forms; 无/未/没有
+  // by themselves are NOT negations of 错误/失败).
+  '未发生错误',
+  '错误未发生',
+  '没有发生错误',
+  '未出现错误',
+  '错误未出现',
+  '无错误',
+  '没有错误',
+  '无任何错误',
+  '无 error',
+  '没有 error',
+  // ZH: the no-op/OK assertion vocabulary (the real up-to-date envelope).
+  '已是最新',
+  '无需升级',
+  '无需操作',
+  '无需',
+];
 
 function messageCarriesFailure(message: string): boolean {
-  const lower = message.toLowerCase();
-  for (const marker of MESSAGE_FAILURE_MARKERS) {
-    let at = lower.indexOf(marker);
-    while (at !== -1) {
-      if (!markerIsNegated(lower, at)) return true;
-      at = lower.indexOf(marker, at + marker.length);
-    }
+  let rest = message.toLowerCase();
+  // Strip every explicit absence phrase FIRST: a marker covered by an
+  // absence phrase is benign by content; a marker outside them is a real
+  // failure report and survives the strip with its polarity untouched.
+  for (const phrase of BENIGN_ABSENCE_PHRASES) {
+    if (!rest.includes(phrase)) continue;
+    rest = rest.split(phrase).join('\u0000');
   }
-  return false;
+  return MESSAGE_FAILURE_MARKERS.some((marker) => rest.includes(marker));
 }
 
 function handlerResultCarriesFailure(handlerResult: unknown): boolean {

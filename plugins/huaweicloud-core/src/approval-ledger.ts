@@ -121,15 +121,17 @@ function ledgerLockDir(): string {
 // duplicated seqs (the r14 zero-duplicates invariant falsified at a
 // poisoned floor), and the grantedAt fallback re-opened the r13 fabricated
 // upgrade end-to-end; an Infinity row serialized arrivalSeq:null and the
-// consent vanished from every reader. The assignable space is now integers
-// in [0, SEQ_MAX_VALID]; any row or file value outside it is UNREADABLE —
-// a row normalizes to the sentinel at read (visible, sorts newest, never
-// invisible, never an original: unknown chronology cannot name one), the
-// counter seeds from the max of VALID seqs only, and the sentinel itself is
-// never assignable (a determinable row gets max+1 clamped below the
-// sentinel; the clamp can duplicate a row staged exactly at SEQ_MAX_VALID —
-// the recorded top-edge residual, reachable only by corruption, since
-// organic growth is one per append).
+// consent vanished from every reader. The assignable space is bounded
+// (below the exclusive SEQ_CEILING); any row or file value outside it is
+// UNREADABLE — a row normalizes to the sentinel at read (visible, sorts
+// newest, never invisible, never an original: unknown chronology cannot
+// name one), the counter seeds from the max of VALID seqs only, and the
+// ceiling band is never assignable. Round 16, finding 1 (both seats)
+// closed the top edge the r15 clamp left: the boundary value itself
+// floored every later append at the top and the clamp re-issued it —
+// saturation is now a STATE (nextSeqFromFloor): no room left means the
+// row is marked chronology-UNKNOWN, never a duplicate of an existing
+// row's seq, and the file stays at the last assignable value.
 //
 // Round 15, finding 4 (both seats) made the floor CHEAP: the r14 fix ran
 // the full merged-view scan on EVERY append (the file "optimization"
@@ -156,21 +158,44 @@ function ledgerSeqPath(): string {
 
 // The unknown-seq sentinel: sorts AFTER every real seq, so a row the
 // counter could not number is never mistaken for the earliest arrival —
-// and (round 15) never an original: the tier resolution skips sentinel
+// and (rounds 15-16) never an original: the tier resolution skips sentinel
 // rows, because unknown chronology cannot name one.
 const SEQ_UNKNOWN = Number.MAX_SAFE_INTEGER;
 
-// The top of the assignable space: the largest seq a row or the file may
-// legitimately carry. Two values of headroom sit deliberately OUTSIDE the
-// space below the sentinel — SEQ_UNKNOWN-1 (the seats' poison value) and
-// SEQ_UNKNOWN itself — so a corrupted value there can never seed the floor
-// (the r15 probes poison at exactly SEQ_UNKNOWN-1 and would otherwise walk
-// the counter onto the sentinel).
-const SEQ_MAX_VALID = Number.MAX_SAFE_INTEGER - 2;
+// The EXCLUSIVE ceiling of the assignable space: integers in [0, SEQ_CEILING)
+// are assignable; the three values below the sentinel — SEQ_CEILING itself,
+// SEQ_UNKNOWN-1, and SEQ_UNKNOWN — are never assigned and never readable.
+// Round 15 bounded the space with two values of headroom; round 16, finding 1
+// (both seats) found the boundary itself was the poison: a value at the old
+// ceiling floored every later append at the top, and clampNextSeq re-issued
+// it — the same value an existing row owned — forever, on both paths, with
+// no repair (four appends, one seq; the r14 zero-duplicate invariant
+// falsified; and the grantedAt fallback re-opened the r13 fabricated
+// upgrade). Saturation is now a STATE, not a value: when the floor leaves
+// no assignable value above it, new rows take the SENTINEL (chronology
+// unknown, sorts newest, never an original), the ceiling band reads as the
+// sentinel at the raw-store guard and the filtered view alike, and the seq
+// file stays at the last assignable value (the brief's "left at the
+// ceiling" form: the append path checks saturation explicitly and never
+// re-issues). A row or file staged INSIDE the ceiling band is unreadable —
+// the counter repairs the file from the parsed floor and never floors on
+// the row, so a saturated tree is sticky by construction and a corrupted
+// one recovers monotonically.
+const SEQ_CEILING = Number.MAX_SAFE_INTEGER - 2;
 
-// A seq is readable iff it is an integer inside the assignable space.
+// A seq is readable iff it is an integer inside the assignable space
+// (below the exclusive ceiling; safe by construction).
 function isValidArrivalSeq(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= SEQ_MAX_VALID;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value < SEQ_CEILING;
+}
+
+// The next assignable seq from a known floor — or the sentinel when the
+// space is exhausted (round 16, finding 1: "no room left" is never
+// "re-issue the top"; a new arrival must never duplicate an existing
+// row's seq, so an unassignable increment marks the row chronology-UNKNOWN
+// instead of guessing).
+function nextSeqFromFloor(floor: number): number {
+  return floor + 1 < SEQ_CEILING ? floor + 1 : SEQ_UNKNOWN;
 }
 
 // The highest valid seq among parsed store/spool entries — the locked
@@ -230,57 +255,98 @@ function writeSeqFileMonotonic(next: number): void {
   }
 }
 
-// The next assignable seq from a known floor, clamped below the sentinel.
-// The clamp can duplicate a row staged exactly at SEQ_MAX_VALID — the
-// recorded top-edge residual (organic growth is one per append; only
-// corruption reaches the top).
-function clampNextSeq(floor: number): number {
-  const next = floor + 1;
-  return next > SEQ_MAX_VALID ? SEQ_MAX_VALID : next;
+// The .taken-* sidecar seq scan (round 16, finding 2, both seats): the
+// reader folds every .taken-* file's rows, so the floor must consult them
+// too — a committed sidecar row whose fold fails this cycle (round 7
+// finding 3's documented transient class, kept on disk for the mandated
+// retry) was invisible to every r15 floor source, so the next append
+// re-issued its seq and the mandated read recovery exposed a duplicate
+// pair whose chronology fell back to grantedAt — the clock dependence the
+// counter was built to remove, driven organically cross-process by both
+// seats. The scan reads ONLY seq fields (cheap: normally zero sidecars —
+// one readdir), and it is SUPERSET-honest: a sidecar that cannot be READ
+// is a BLINDED source — its rows are committed and own seqs we cannot
+// see, so the space above the known max is not provably free and the
+// append takes the sentinel rather than risk a duplicate. When the read
+// recovers the counter continues from the sidecar's real seqs.
+function scanTakenSidecarSeqs(): { max: number; blinded: boolean } {
+  let max = -1;
+  let blinded = false;
+  for (const file of takenSpoolFiles()) {
+    let text: string;
+    try {
+      text = readFileSync(file, 'utf8');
+    } catch {
+      blinded = true; // committed rows behind an unreadable file: unknown owners
+      continue;
+    }
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim();
+      if (trimmed.length === 0) continue;
+      try {
+        const parsed: unknown = JSON.parse(trimmed);
+        if (!parsed || typeof parsed !== 'object') continue;
+        const seq = (parsed as Record<string, unknown>).arrivalSeq;
+        if (isValidArrivalSeq(seq) && seq > max) max = seq;
+      } catch {
+        // a malformed line: the reader's raw-preservation doctrine applies
+      }
+    }
+  }
+  return { max, blinded };
 }
 
 // Assign seqs to the events of a LOCKED append, floored by everything the
-// section already parsed (the store rows, the taken spool events), the
-// seq file, and this process's last assignment. Runs inside the ledger
-// lock's hold — no merged-view read, no extra parse (round 15, finding 4).
+// section already parses (the store rows, the taken spool events), the
+// .taken-* sidecar scan (round 16, finding 2), the seq file, and this
+// process's last assignment. Runs inside the ledger lock's hold — no
+// merged-view read, no extra parse (round 15, finding 4). Saturation and
+// a blinded sidecar both mark the row chronology-UNKNOWN (round 16,
+// finding 1): the counter never re-issues a value an existing row owns.
 function assignSeqsLocked(events: ConsentEvent[], storeEntries: unknown[], spoolEntries: unknown[]): void {
+  const takenScan = scanTakenSidecarSeqs();
   const floor = Math.max(
     maxValidSeqAmong(storeEntries),
     maxValidSeqAmong(spoolEntries),
+    takenScan.max,
     readSeqFile() ?? -1,
     lastAssignedSeq ?? -1,
   );
-  let next = clampNextSeq(floor);
+  let next = floor;
   for (const event of events) {
+    next = takenScan.blinded ? SEQ_UNKNOWN : nextSeqFromFloor(next);
     event.arrivalSeq = next;
-    lastAssignedSeq = next;
-    next = clampNextSeq(next);
+    if (next !== SEQ_UNKNOWN) lastAssignedSeq = next;
   }
-  writeSeqFileMonotonic(lastAssignedSeq ?? clampNextSeq(floor));
+  // The high-water file keeps the last ASSIGNABLE value (or the known floor
+  // when this append marked unknown): a sentinel never reaches the file —
+  // it would read as a poisoned file and rewind the counter.
+  writeSeqFileMonotonic(lastAssignedSeq !== undefined && lastAssignedSeq > floor ? lastAssignedSeq : floor);
 }
 
-// Assign a seq on the DEGRADED path (no lock, nothing parsed): the file
-// and this process's last assignment are the fast floor; when the file is
-// invalid the merged-view scan is the repair leg. The unlocked file
-// read-write races under concurrent degraded arrivals — the recorded
-// duplicate residual.
+// Assign a seq on the DEGRADED path (no lock, nothing parsed): the
+// merged-view scan is UNCONDITIONAL again (round 16, finding 3, both
+// seats — a REGRESSION inside r15: the cost fix made the repair scan
+// conditional on an INVALID file, so a VALID-but-rewound file
+// short-circuited the only repair leg on the one path that has nothing
+// parsed, and the r14 guarantee "a rewound file can never re-issue"
+// failed there; the degraded path is the rare path, and the cost fix's
+// purpose was the LOCKED common case). The .taken-* scan (finding 2)
+// covers what the merged view cannot read, and a blinded sidecar or
+// saturation marks the row unknown, never a duplicate. The unlocked file
+// read-write still races under concurrent degraded arrivals — the
+// recorded duplicate residual.
 function assignSeqDegraded(event: ConsentEvent): void {
-  let floor: number;
-  const fileValue = readSeqFile();
-  if (fileValue === undefined) {
-    try {
-      floor = Math.max(maxArrivalSeqInStore(), lastAssignedSeq ?? -1);
-    } catch {
-      event.arrivalSeq = SEQ_UNKNOWN; // the store read itself failed: unknown
-      return;
-    }
-  } else {
-    floor = Math.max(fileValue, lastAssignedSeq ?? -1);
+  try {
+    const takenScan = scanTakenSidecarSeqs();
+    const floor = Math.max(maxArrivalSeqInStore(), takenScan.max, readSeqFile() ?? -1, lastAssignedSeq ?? -1);
+    const next = takenScan.blinded ? SEQ_UNKNOWN : nextSeqFromFloor(floor);
+    event.arrivalSeq = next;
+    if (next !== SEQ_UNKNOWN) lastAssignedSeq = next;
+    writeSeqFileMonotonic(lastAssignedSeq !== undefined && lastAssignedSeq > floor ? lastAssignedSeq : floor);
+  } catch {
+    event.arrivalSeq = SEQ_UNKNOWN; // the store read itself failed: unknown
   }
-  const next = clampNextSeq(floor);
-  event.arrivalSeq = next;
-  lastAssignedSeq = next;
-  writeSeqFileMonotonic(next);
 }
 
 // The takeover window, sized to THIS critical section (interrogate rounds
@@ -1183,26 +1249,37 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
 // internal execution.
 //
 // Ownership is proven by IDENTITY, never by position or absence (rounds
-// 12 and 15): the annotate proceeds only when the store holds the granted
-// row with EXACTLY the arrival's (stamp, seq). Round 15, finding 2 (both
-// seats) closed the positional hole: the capture used to scan for the
-// last store row at key+stamp, so a same-ms degraded twin compacted in
-// behind the dispatch's own row before its annotate ran received the line
-// — the degraded row carrying a delivery outcome the annotate's own guard
-// refuses to write, and the dispatch's row losing it. The threaded seq
-// now names the exact row; a direct call with no threaded seq binds only
-// a UNIQUE key+stamp match (ambiguity skips — never positional); an
-// arrival whose append was silently dropped (lockedAppend's best-effort
-// catch — ENOSPC/EIO/EACCES, the clamp shapes) leaves no row anywhere, so
-// the identity matches nothing and the annotate is a no-op: the earlier
-// call's row on the same key keeps its own datum. An arrival that
-// degraded to the spool or a taken sidecar fails the same test (its row
-// is not store-resident), which also enforces the r10/r11 posture —
-// degraded arrivals carry no delivery outcome — and the outside-store
-// guard (round 11, finding 1) still skips when any granted row on the
-// key outside the store carries a stamp at or beyond this arrival's
-// (this call's arrival degraded, a newer arrival lives outside the
-// store, or an equal-stamp ambiguity).
+// 12, 15, and 16): the annotate proceeds only when the store holds
+// EXACTLY ONE granted row with the arrival's (stamp, seq). Round 15,
+// finding 2 (both seats) closed the positional hole: the capture used to
+// scan for the last store row at key+stamp, so a same-ms degraded twin
+// compacted in behind the dispatch's own row before its annotate ran
+// received the line — the degraded row carrying a delivery outcome the
+// annotate's own guard refuses to write, and the dispatch's row losing
+// it. Round 16, finding 6 hardened the guard both ways: the threaded seq
+// must be INSIDE the assignable space (a dropped or saturated arrival's
+// identity IS the sentinel, and a sentinel identity binds nothing —
+// ownership is not provable at an unknown chronology), each candidate
+// row's seq is range-normalized before the comparison (a corrupted
+// ceiling-band or sentinel-valued row never matches), and a full
+// (key, stamp, seq) identity collision — two rows, one identity — is
+// COUNTED and skipped, never bound by array position. The direct call
+// with no threaded identity binds only a UNIQUE key+stamp match (round
+// 16, finding 5: a unique match on a row without a valid seq binds too —
+// the line carries no arrivalSeq and the legacy fold rule applies; the
+// r15 conjunct had silently narrowed the stated contract and left the
+// legacy fold unreachable by any writer); ambiguity skips — never
+// positional. An arrival whose append was silently dropped
+// (lockedAppend's best-effort catch — ENOSPC/EIO/EACCES, the clamp
+// shapes) leaves no row anywhere, so the identity matches nothing and
+// the annotate is a no-op: the earlier call's row on the same key keeps
+// its own datum. An arrival that degraded to the spool or a taken sidecar
+// fails the same test (its row is not store-resident), which also
+// enforces the r10/r11 posture — degraded arrivals carry no delivery
+// outcome — and the outside-store guard (round 11, finding 1) still skips
+// when any granted row on the key outside the store carries a stamp at
+// or beyond this arrival's (this call's arrival degraded, a newer arrival
+// lives outside the store, or an equal-stamp ambiguity).
 //
 // Best-effort in every direction: lockless (it writes only the additive
 // side channel, so there is nothing to serialize and no holder to
@@ -1254,30 +1331,66 @@ export function annotateDispatchOutcome(params: {
         ? record
         : undefined;
     };
-    if (typeof params.arrivalSeq === 'number') {
-      arrivalSeq = params.arrivalSeq;
-      for (const entry of raw) {
-        const record = rowAtKeyAndStamp(entry);
-        if (record !== undefined && record.arrivalSeq === params.arrivalSeq) {
-          arrivalPresent = true;
-          break;
+    if (params.arrivalSeq !== undefined) {
+      // The threaded face (rounds 15-16). Round 16, finding 6 (both legs):
+      // (a) the raw guard used to compare arrivalSeq by === with no range
+      // normalization — a sentinel-valued row (the exact shape-only class
+      // round 15 named) bound a sentinel identity, and a row staged in the
+      // ceiling band matched a threaded ceiling value. The comparison now
+      // requires the threaded identity to be INSIDE the assignable space
+      // and normalizes each candidate row the same way — an unknown or
+      // unreadable seq never matches, so a dropped/saturated arrival
+      // (whose identity IS the sentinel) binds NOTHING: ownership is not
+      // provable at an unknown chronology, and an invalid threaded
+      // identity never falls through to the positional fallback.
+      // (b) At a full (key, stamp, seq) identity collision — two rows,
+      // one identity, the intersection of finding 2's duplicate with the
+      // same-ms racing residual — the guard used to bind array-last,
+      // positional; indistinguishable pairs are COUNTED and skipped
+      // instead, never bound by position.
+      if (isValidArrivalSeq(params.arrivalSeq)) {
+        let matches = 0;
+        for (const entry of raw) {
+          const record = rowAtKeyAndStamp(entry);
+          if (record !== undefined && isValidArrivalSeq(record.arrivalSeq) && record.arrivalSeq === params.arrivalSeq) {
+            matches += 1;
+          }
         }
+        if (matches === 1) {
+          arrivalSeq = params.arrivalSeq;
+          arrivalPresent = true;
+        }
+        // matches === 0: no row with the identity; > 1: an indistinguishable
+        // pair — skip, never positional.
       }
+      // An invalid threaded identity (the sentinel a dropped, saturated, or
+      // blinded append returned): binds nothing — the annotate skips.
     } else {
       // The direct-call fallback (no threaded identity): the store row at
       // key+stamp is bound ONLY when it is UNIQUE — ambiguity (the twin
       // shape) skips, so a legacy/probe call can never bind the wrong row.
-      // The unique row's own seq becomes the line's key, exact as above.
+      // Round 16, finding 5: a unique match on a row WITHOUT a seq field
+      // binds too (the r15 conjunct silently narrowed the stated contract
+      // and left the legacy-line fold unreachable by any writer) — the
+      // line then carries no arrivalSeq and the legacy fold rule applies.
+      // Round 16, finding 6(a) applies here as well: a row whose seq is
+      // PRESENT but out of space is UNREADABLE — not a legacy row, never
+      // a candidate; only an ABSENT seq (the pre-field legacy shape) or a
+      // VALID seq counts.
       let matches = 0;
       let uniqueSeq: number | undefined;
       for (const entry of raw) {
         const record = rowAtKeyAndStamp(entry);
-        if (record !== undefined) {
-          matches += 1;
-          if (typeof record.arrivalSeq === 'number') uniqueSeq = record.arrivalSeq;
+        if (record === undefined) continue;
+        if (record.arrivalSeq === undefined || record.arrivalSeq === null) {
+          matches += 1; // the legacy shape: no seq field at all
+          continue;
         }
+        if (!isValidArrivalSeq(record.arrivalSeq)) continue; // unreadable: never a candidate
+        matches += 1;
+        uniqueSeq = record.arrivalSeq;
       }
-      if (matches === 1 && uniqueSeq !== undefined) {
+      if (matches === 1) {
         arrivalSeq = uniqueSeq;
         arrivalPresent = true;
       }

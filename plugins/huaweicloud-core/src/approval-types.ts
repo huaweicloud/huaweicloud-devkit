@@ -123,18 +123,25 @@ export interface ConsentEvent {
   // sorts as the original whatever the wall clock did. grantedAt stays
   // for display and the annotate's stamp-keyed join.
   //
-  // The assignable space is integers in [0, MAX_SAFE_INTEGER - 2]; the
-  // sentinel (MAX_SAFE_INTEGER) and the value below it are never assigned
-  // and never valid (round 15, finding 1: a corrupted row or file near
-  // 2^53 used to walk the counter onto the sentinel and past the safe
-  // range, permanently duplicating locked writers' seqs and re-opening the
-  // r13 upgrade). A row whose seq is absent, null, fractional, negative,
-  // Infinite, or otherwise outside the space reads as the SENTINEL: the
-  // row stays VISIBLE, sorts newest, and can never be an original — never
-  // invisible (the pre-r15 fix lost an Infinity-serialized row entirely
-  // when it round-tripped as arrivalSeq:null). Ledger-written rows always
-  // carry a valid seq; the normalization covers corruption and pre-field
-  // rows.
+  // The assignable space is integers in [0, SEQ_CEILING) — MAX_SAFE_INTEGER-2
+  // is the EXCLUSIVE ceiling, so the three values below the sentinel (the
+  // ceiling band, the seats' poison value, and the sentinel itself) are
+  // never assigned and never valid. Round 15 bounded the space (a corrupted
+  // row or file near 2^53 used to walk the counter onto the sentinel and
+  // past the safe range, permanently duplicating locked writers' seqs and
+  // re-opening the r13 upgrade); round 16, finding 1 made SATURATION a
+  // state: the r15 clamp treated "no room left" as "re-issue the top", so
+  // one value at the boundary duplicated every later append forever with no
+  // repair — when the floor leaves no assignable value above it, the new
+  // row takes the SENTINEL instead (chronology-unknown, sorts newest,
+  // never an original), and the seq file stays at the last assignable
+  // value. A row whose seq is absent, null, fractional, negative,
+  // Infinite, or at/beyond the ceiling reads as the SENTINEL: the row stays
+  // VISIBLE, sorts newest, and can never be an original — never invisible
+  // (the pre-r15 fix lost an Infinity-serialized row entirely when it
+  // round-tripped as arrivalSeq:null). Ledger-written rows always carry a
+  // valid seq until the space is exhausted, and then the sentinel; the
+  // normalization covers corruption, pre-field rows, and the ceiling band.
   arrivalSeq: number;
   // The dispatch outcome of the call this consent authorized (round 10,
   // finding 4 — PR-3a's memo datum). Absent on every row written before

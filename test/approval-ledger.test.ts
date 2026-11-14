@@ -64,6 +64,37 @@ function compactTwinInBehind(paths: { spool: string }, key: string, T: number): 
   appendConsentEvent(baseEvent({ sessionId: 'ses-c', argsHash: 'other', grantedAt: T + 1 }));
 }
 
+// The raw row-JSON staging the bounded-space pins share (rounds 15-16):
+// a granted consent row with an explicit seq, or no seq field at all when
+// arrivalSeq is null.
+function stagedRowJson(
+  evidence: ConsentEvidence,
+  grantedAt: number,
+  arrivalSeq: number | null,
+  argsHash: string,
+): string {
+  return JSON.stringify({
+    sessionId: 'ses',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash,
+    outcome: 'granted',
+    grantedAt,
+    scope: 'once',
+    evidence,
+    ...(arrivalSeq !== null ? { arrivalSeq } : {}),
+  });
+}
+
+// The counter-scratch wipe the round-16 pins share: the active spool, every
+// .taken-* sidecar, and the seq file — the store is re-staged by the caller.
+function wipeCounterScratch(paths: { dir: string; spool: string }): void {
+  rmSync(paths.spool, { force: true });
+  for (const name of readdirSync(paths.dir)) {
+    if (name.includes('.taken-')) rmSync(join(paths.dir, name), { force: true });
+  }
+  rmSync(join(paths.dir, 'approval-consents.seq'), { force: true });
+}
+
 // The shared skew-leg of the chronology pins (rounds 13-14): stage a
 // two-row store — the posture original at seq 0 under a fast clock, a
 // failure-born terminal copy at seq 1 written later after the clock
@@ -1593,16 +1624,7 @@ test(
     const spool = join(dir, 'approval-consents.json.spool.jsonl');
     const key = 'h-r15-bound';
     const row = (evidence: ConsentEvidence, grantedAt: number, arrivalSeq: number | null, k = key): string =>
-      JSON.stringify({
-        sessionId: 'ses',
-        tool: 'huaweicloud_run_approved_command',
-        argsHash: k,
-        outcome: 'granted',
-        grantedAt,
-        scope: 'once',
-        evidence,
-        ...(arrivalSeq !== null ? { arrivalSeq } : {}),
-      });
+      stagedRowJson(evidence, grantedAt, arrivalSeq, k);
     const MAX_SAFE = Number.MAX_SAFE_INTEGER;
 
     // Cell 1 — the seats' poison shape (both seats, independent staging):
@@ -1841,6 +1863,327 @@ test(
     const [degradedReads, degradedSeq] = probeResult();
     assert.equal(degradedReads, 2, 'the degraded repair pays the merged-view scan exactly once (tier read + scan)');
     assert.equal(degradedSeq, 4, 'the degraded repair floors from the merged view (store max 3 + 1), never rewinds');
+  }),
+);
+
+test(
+  'saturation is a state, not a value: the ceiling never re-issues and the ceiling band is unreadable (round-16 finding 1)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const seqFile = join(paths.dir, 'approval-consents.seq');
+    const CEILING = Number.MAX_SAFE_INTEGER - 2; // SEQ_CEILING: exclusive
+    const SENTINEL = Number.MAX_SAFE_INTEGER;
+    const key = 'h-r16-sat';
+    const row = (evidence: ConsentEvidence, grantedAt: number, arrivalSeq: number | null, k = key): string =>
+      stagedRowJson(evidence, grantedAt, arrivalSeq, k);
+    const reset = (): void => wipeCounterScratch(paths);
+
+    // Cell 1 — the r16 F1a shape: a seq FILE at the ceiling band (in no
+    // row anywhere) is invalid, so the counter repairs from the parsed
+    // floor: strictly increasing small seqs, no duplicate lane.
+    reset();
+    stageStore(home, '[]');
+    writeFileSync(seqFile, `${CEILING}\n`);
+    const seqs1: number[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      const { arrivalSeq } = recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: `h-r16-f${i}`,
+        outcome: 'granted',
+      });
+      seqs1.push(arrivalSeq);
+    }
+    assert.ok(
+      seqs1[0]! < seqs1[1]! && seqs1[1]! < seqs1[2]! && seqs1.every((s) => s < 1_000),
+      `cell 1: the ceiling-band file was repaired — strictly increasing small seqs (got ${JSON.stringify(seqs1)})`,
+    );
+
+    // Cell 2 — the r16 F1b shape: a STORE row staged at the ceiling band
+    // reads as the sentinel (unreadable) and never floors the counter.
+    reset();
+    stageStore(home, `[${row('posture', 100, CEILING, 'h-r16-band')}]`);
+    const bandRow = readConsentEvents().find((e) => e.argsHash === 'h-r16-band');
+    assert.equal(bandRow!.arrivalSeq, SENTINEL, 'cell 2: a ceiling-band row reads as the sentinel');
+    const { arrivalSeq: bandSeq } = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    assert.ok(bandSeq < 1_000, `cell 2: the counter stayed on the small lane (got ${bandSeq})`);
+
+    // Cell 3 — the r16 F1c C2S shape: a duplicate pair staged in the
+    // ceiling band is unreadable on BOTH rows, so neither names an
+    // original and the reuse records the caller's posture — no upgrade.
+    reset();
+    stageStore(home, `[${row('posture', 5000, CEILING, 'h-r16-c2s')},${row('terminal', 4000, CEILING, 'h-r16-c2s')}]`);
+    const c2s = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r16-c2s',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    const c2sRows = readConsentEvents().filter((e) => e.argsHash === 'h-r16-c2s' && e.grantedAt === c2s.grantedAt);
+    assert.equal(c2sRows[0]!.evidence, 'posture', 'cell 3: the C2S pair records no upgrade at the top edge');
+
+    // Cell 4 — GENUINE saturation: the store's last assignable seq is
+    // CEILING-1; the next append takes the SENTINEL (never a re-issue of
+    // CEILING-1, never a value in the band), the file stays at the last
+    // assignable value, and the reuse still inherits the original's tier.
+    reset();
+    const lastAssignable = CEILING - 1;
+    stageStore(home, `[${row('terminal', 100, lastAssignable, 'h-r16-top')}]`);
+    const sat1 = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r16-top',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    assert.equal(sat1.arrivalSeq, SENTINEL, 'cell 4: saturation marks the row chronology-unknown, never re-issues');
+    assert.equal(
+      Number.parseInt(readFileSync(seqFile, 'utf8').trim(), 10),
+      lastAssignable,
+      'cell 4: the file honestly stays at the last assignable value',
+    );
+    const sat2 = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r16-top',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    assert.equal(sat2.arrivalSeq, SENTINEL, 'cell 4: saturation is sticky — no repair that re-issues');
+    const topRows = readConsentEvents().filter((e) => e.argsHash === 'h-r16-top');
+    assert.equal(
+      topRows.filter((e) => e.evidence === 'terminal' && e.arrivalSeq === lastAssignable).length,
+      1,
+      'cell 4: the original row keeps its own seq',
+    );
+    assert.ok(
+      topRows
+        .filter((e) => e.grantedAt === sat1.grantedAt || e.grantedAt === sat2.grantedAt)
+        .every((e) => e.evidence === 'terminal'),
+      "cell 4: the reuses inherit the saturated original's tier (the sentinel rows are never the original)",
+    );
+  }),
+);
+
+test(
+  'the floor consults every source the reader folds: taken sidecars floor the counter, and a blinded one marks unknown (round-16 finding 2)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const seqFile = join(paths.dir, 'approval-consents.seq');
+    const key = 'h-r16-taken';
+    const base = {
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      outcome: 'granted',
+      scope: 'once',
+    };
+    const reset = (): void => wipeCounterScratch(paths);
+
+    // Cell 1 — a READABLE .taken sidecar whose fold has not happened yet:
+    // its committed row (seq 5) floors the next append (floor 5 -> seq 6),
+    // never a re-issue of 5.
+    reset();
+    stageStore(
+      home,
+      JSON.stringify([
+        { ...base, sessionId: 'ses-o', argsHash: 'h-r16-other', grantedAt: 900, evidence: 'posture', arrivalSeq: 4 },
+      ]),
+    );
+    const readableTaken = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r16-1');
+    writeFileSync(
+      readableTaken,
+      JSON.stringify({ ...base, argsHash: key, grantedAt: 5000, evidence: 'terminal', arrivalSeq: 5 }) + '\n',
+    );
+    const c1 = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    assert.ok(
+      c1.arrivalSeq > 5,
+      `cell 1: the readable sidecar's seq floored the append above 5 (got ${c1.arrivalSeq})`,
+    );
+    const c1rows = readConsentEvents().filter((e) => e.arrivalSeq === 5);
+    assert.equal(c1rows.length, 1, 'cell 1: seq 5 is owned by the sidecar row alone — no duplicate');
+
+    // Cell 2 — a BLINDED .taken sidecar (the round-7 transient read
+    // failure): its rows are committed and own seqs the floor cannot see,
+    // so the append marks the row chronology-UNKNOWN rather than risk a
+    // duplicate; after the read recovers the counter continues from the
+    // sidecar's real seq.
+    reset();
+    stageStore(
+      home,
+      JSON.stringify([
+        { ...base, sessionId: 'ses-o', argsHash: 'h-r16-other', grantedAt: 900, evidence: 'posture', arrivalSeq: 4 },
+      ]),
+    );
+    const blindedTaken = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r16-2');
+    writeFileSync(
+      blindedTaken,
+      JSON.stringify({ ...base, argsHash: 'h-r16-blind', grantedAt: 5000, evidence: 'terminal', arrivalSeq: 5 }) + '\n',
+    );
+    chmodSync(blindedTaken, 0o000);
+    const c2 = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r16-blind',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    assert.equal(
+      c2.arrivalSeq,
+      Number.MAX_SAFE_INTEGER,
+      'cell 2: a blinded sidecar marks the row unknown — never a duplicate of the seqs it hides',
+    );
+    chmodSync(blindedTaken, 0o600);
+    const c3 = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r16-blind',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    assert.ok(
+      c3.arrivalSeq > 5 && c3.arrivalSeq < 1_000,
+      `cell 3: after recovery the counter continues past the sidecar's seq (got ${c3.arrivalSeq})`,
+    );
+  }),
+);
+
+test(
+  'the degraded path never trusts a valid-but-rewound seq file: the merged view floors it (round-16 finding 3)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const seqFile = join(paths.dir, 'approval-consents.seq');
+    // A store whose rows own seqs 0..3, the seq file rewound to a VALID 1
+    // (the r14 threat: a stale restore / partial write), the lock root
+    // blocked — the append degrades. Pre-r16 the valid file short-circuited
+    // the repair and the spooled row duplicated seq 2.
+    const rows = [0, 1, 2, 3].map((i) =>
+      JSON.stringify({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: `h-r16-rw-${i}`,
+        outcome: 'granted',
+        grantedAt: 1000 + i,
+        scope: 'once',
+        evidence: 'posture',
+        arrivalSeq: i,
+      }),
+    );
+    stageStore(home, `[${rows.join(',')}]`);
+    writeFileSync(seqFile, '1\n');
+    rmSync(paths.lockRoot, { recursive: true, force: true });
+    writeFileSync(paths.lockRoot, 'not-a-directory');
+    const degraded = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r16-rw-new',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    rmSync(paths.lockRoot, { force: true });
+    assert.ok(
+      degraded.arrivalSeq > 3,
+      `the degraded append floors from the merged view, not the rewound file (got ${degraded.arrivalSeq})`,
+    );
+    const dupes = readConsentEvents().filter((e) => e.arrivalSeq === degraded.arrivalSeq);
+    assert.equal(dupes.length, 1, "no row owned the new arrival's seq — the r14 guarantee holds on the degraded path");
+    assert.equal(
+      Number.parseInt(readFileSync(seqFile, 'utf8').trim(), 10),
+      degraded.arrivalSeq,
+      'the file was restored monotonically',
+    );
+  }),
+);
+
+test(
+  'the annotate guard counts the full identity, skips unreadable rows, and binds the seq-less legacy shape (round-16 findings 5 and 6)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const T = 1_700_000_000_000;
+    const SENTINEL = Number.MAX_SAFE_INTEGER;
+    const CEILING = Number.MAX_SAFE_INTEGER - 2;
+    const annotate = (
+      argsHash: string,
+      arrivalSeq: number | undefined,
+      detail: 'failed' | 'delivered' = 'failed',
+    ): void => {
+      annotateDispatchOutcome({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash,
+        arrivalStamp: T,
+        arrivalSeq,
+        outcomeDetail: detail,
+      });
+    };
+    const wipeOutcomeLines = (): void => {
+      rmSync(join(paths.dir, 'approval-consents.json.outcomes.jsonl'), { force: true });
+      rmSync(paths.spool, { force: true });
+    };
+
+    // B3 — a full (key, stamp, seq) identity collision: two rows, one
+    // identity. The guard counts and skips — no row receives the line.
+    wipeOutcomeLines();
+    stageStore(
+      home,
+      JSON.stringify([
+        baseEvent({ sessionId: 'ses', argsHash: 'h-r16-b3', grantedAt: T, arrivalSeq: 20 }),
+        baseEvent({ sessionId: 'ses', argsHash: 'h-r16-b3', grantedAt: T, arrivalSeq: 20 }),
+      ]),
+    );
+    annotate('h-r16-b3', 20);
+    let rows = readConsentEvents().filter((e) => e.argsHash === 'h-r16-b3');
+    assert.equal(rows[0]!.outcomeDetail, undefined, 'B3: an indistinguishable identity pair binds nothing (row 0)');
+    assert.equal(rows[1]!.outcomeDetail, undefined, 'B3: an indistinguishable identity pair binds nothing (row 1)');
+
+    // B4 — a UNIQUE key+stamp match on a row with NO seq field binds: the
+    // line carries no arrivalSeq (legacy-keyed) and the legacy fold
+    // applies it — the r15 conjunct had left this shape unbindable and the
+    // legacy fold unreachable by any writer.
+    wipeOutcomeLines();
+    const { arrivalSeq: legacySeq, ...legacyRow } = baseEvent({ sessionId: 'ses', argsHash: 'h-r16-b4', grantedAt: T });
+    void legacySeq;
+    stageStore(home, JSON.stringify([legacyRow]));
+    annotate('h-r16-b4', undefined);
+    rows = readConsentEvents().filter((e) => e.argsHash === 'h-r16-b4');
+    assert.equal(rows[0]!.outcomeDetail, 'failed', 'B4: a unique seq-less legacy row binds through the fallback');
+
+    // Cell 4 — an unreadable row never matches: a sentinel-valued row at
+    // key+stamp does not bind a threaded sentinel identity (the dropped/
+    // saturated shape), and a ceiling-band row does not bind a threaded
+    // ceiling value — the guard range-normalizes both sides.
+    wipeOutcomeLines();
+    stageStore(
+      home,
+      JSON.stringify([
+        baseEvent({ sessionId: 'ses', argsHash: 'h-r16-c4a', grantedAt: T, arrivalSeq: SENTINEL }),
+        baseEvent({ sessionId: 'ses', argsHash: 'h-r16-c4b', grantedAt: T, arrivalSeq: CEILING }),
+      ]),
+    );
+    annotate('h-r16-c4a', SENTINEL);
+    annotate('h-r16-c4b', CEILING);
+    rows = readConsentEvents();
+    assert.equal(
+      rows.find((e) => e.argsHash === 'h-r16-c4a')!.outcomeDetail,
+      undefined,
+      'cell 4a: a sentinel identity binds nothing — ownership is unprovable at unknown chronology',
+    );
+    assert.equal(
+      rows.find((e) => e.argsHash === 'h-r16-c4b')!.outcomeDetail,
+      undefined,
+      'cell 4b: a ceiling-band row never matches a threaded band value',
+    );
   }),
 );
 

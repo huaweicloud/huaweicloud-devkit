@@ -526,6 +526,96 @@ test('the delivery classification reads every failure-mark shape the handler fam
         'failed',
         'the real failure wording stays failed (the 无 sits outside the window)',
       );
+      // Round 16, finding 4 (both seats): the negation WINDOW was
+      // polarity-blind in BOTH directions — a REAL failure behind a verb
+      // negation read delivered (无法/未通过 negate the verb, not the
+      // failure noun that follows), and genuinely benign absence phrasings
+      // read failed (error-free / 0 errors / 错误未发生). The window is
+      // gone; the classifier now runs on an explicit absence vocabulary —
+      // the phrases below are BOTH seats' full row sets.
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: '无法确认，查询失败' }),
+        'failed',
+        'r16: a real ZH failure behind a verb-negation reads failed',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: '无法完成提交，操作失败' }),
+        'failed',
+        'r16: 失败 cannot be pardoned by the 无 in 无法',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: '无法连接，发生错误' }),
+        'failed',
+        'r16: a bilingual failure report reads failed',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: '检查未通过: 发生错误' }),
+        'failed',
+        'r16: 未通过 negates the verb, not the failure noun',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: 'not confirmed: error from registry' }),
+        'failed',
+        'r16: EN negation-before-marker is not a pardon',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: 'cannot check version: error' }),
+        'failed',
+        'r16: cannot is not a negation word',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: '无法确认最新版本（查询失败）。' }),
+        'failed',
+        'r16: the registry-failure envelope minus incidental padding still fails',
+      );
+      assert.equal(
+        await classify({
+          success: false,
+          requiresRestart: true,
+          message: 'no error in cleanup, but failed to write config',
+        }),
+        'failed',
+        'r16: a benign clause does not pardon a real failed marker',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: 'without auth: rejected' }),
+        'failed',
+        'r16: without negates the verb, not the rejection',
+      );
+      assert.equal(
+        await classify({
+          success: false,
+          requiresRestart: false,
+          message: 'An error was not detected; nothing to do.',
+        }),
+        'delivered',
+        'r16: an explicit EN absence phrasing reads delivered',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: 'Completed with 0 errors.' }),
+        'delivered',
+        'r16: a zero count of errors reads delivered',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: 'The update check was error-free.' }),
+        'delivered',
+        'r16: the error-free compound reads delivered',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: 'There cannot be any error in this run.' }),
+        'delivered',
+        'r16: a forward EN negation of the error noun reads delivered',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: '错误未发生，操作完成。' }),
+        'delivered',
+        'r16: a forward ZH negation of the error noun reads delivered',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: '检查完成，无 error，继续。' }),
+        'delivered',
+        'r16: the adjacent mixed-language absence reads delivered',
+      );
       assert.equal(
         await classify({ success: false, requiresRestart: true }),
         'failed',
