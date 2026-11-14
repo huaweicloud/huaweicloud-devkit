@@ -10,6 +10,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { npmCacheEnv } from './npm-cache.ts';
+
 // Deterministic-tier seam: disable the once-per-session first-assertion
 // vendor challenge (HUAWEICLOUD_VENDOR_CHALLENGE=off, the installer-override
 // pattern) so cold-attested calls in this file dispatch without the
@@ -33,6 +35,7 @@ export function makeEnv(home: string, _cwd: string): NodeJS.ProcessEnv {
     // writes into the fake HOME's cold .npm — racing the test's rmSync
     // teardown into ENOTEMPTY flakes. The skip switch kills the warmup.
     HUAWEICLOUD_DEVKIT_SKIP_UPDATE: '1',
+    ...npmCacheEnv(),
   };
   // cleanupNativeDirs() runs inside every install and reconciles EVERY
   // target's native dir (not just the installed one), each resolved from

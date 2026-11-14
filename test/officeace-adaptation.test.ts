@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 
+import { npmCacheEnv } from './npm-cache.ts';
+
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require('node:sqlite');
 
@@ -27,6 +29,7 @@ function makeEnv(home: string, officeaceConfigRoot: string): Record<string, stri
     // backup) — pin it to the fake home or an ambient export redirects
     // those writes into real state.
     HUAWEICLOUD_HOME: home,
+    ...npmCacheEnv(),
   };
   // cleanupNativeDirs() runs inside every install and reconciles EVERY
   // target's native dir (not just officeace), each resolved from its own

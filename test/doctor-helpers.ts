@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
 import { PACKS } from '../plugins/huaweicloud-core/src/packs/registry.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 export const root = fileURLToPath(new URL('..', import.meta.url));
 export const setupCli = join(root, 'bin', 'setup.cjs');
@@ -35,6 +36,7 @@ export function doctorEnv(home: string, extra: Record<string, string> = {}): Nod
     HOMEPATH: home.slice(2),
     // keep OfficeAce detection hermetic in automated environments (#654)
     HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT: '1',
+    ...npmCacheEnv(),
     ...extra,
   };
   delete env.ATOMCODE_HOME;

@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
+import { npmCacheEnv } from './npm-cache.ts';
+
 // Install-time pack selection (--packs) through the real installer
 // (bin/setup.cjs): the flag must land DEVKIT_PACKS in the OpenCode MCP config
 // env layer, --packs all must remove it, bogus ids must fail before any file
@@ -24,6 +26,7 @@ function makeEnv(home: string) {
     HERMES_HOME: join(home, '.hermes'),
     // Fail the installer's own update check instantly against a closed port.
     HUAWEICLOUD_NPM_REGISTRY: 'http://127.0.0.1:9',
+    ...npmCacheEnv(),
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
   // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);

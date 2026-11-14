@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
@@ -18,13 +19,6 @@ const setupCli = join(root, 'bin', 'setup.cjs');
 // uninstall. The install/update pair unification in setup-cli.ts must keep
 // every one of these green without edits.
 
-// One warm npm cache shared by the lifecycle tests: every install spawns
-// installRuntimeDeps (npm install undici), and a cold per-fixture cache
-// puts ~10 registry fetches on the suite's critical path (AGENTS.md
-// documents 79s on a bad registry day). npm's cache is content-addressed;
-// sharing it across fixtures is safe.
-const sharedNpmCache = fixtureDir('tl-npm-cache-');
-
 function makeEnv(home: string) {
   const env: Record<string, string | undefined> = {
     ...process.env,
@@ -35,7 +29,10 @@ function makeEnv(home: string) {
     HERMES_HOME: join(home, '.hermes'),
     HUAWEICLOUD_HOME: home,
     HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT: '1',
-    npm_config_cache: sharedNpmCache,
+    // Shared warm npm cache: every install spawns installRuntimeDeps (npm
+    // install undici), and the shared cache keeps that off the critical
+    // path (fixture-dir.ts's npmCacheEnv, shared across the whole suite).
+    ...npmCacheEnv(),
   };
   for (const key of [
     'ATOMCODE_HOME',

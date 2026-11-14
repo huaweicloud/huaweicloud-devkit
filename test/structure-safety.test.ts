@@ -450,15 +450,21 @@ test('real-hook spawns gate the shared spool writes (the #1040 windows-CI flood)
   // splices only BATCH_SIZE=100 — the #1040 flush pin's tool event
   // (enqueued last) missed its round on the windows CI legs twice
   // (2026-10-29, runs 40841747815 / 40849117055; reproduced red-first on
-  // Linux with a staged 120-line spool). Every REAL-hook spawn (the
-  // [hookPath] argument — copies like [hookCopy] redirect their writes
-  // into their own fixtures and need no gate) must carry the
-  // HUAWEICLOUD_DEVKIT_TELEMETRY=off gate. A new ungated spawn site
+  // Linux with a staged 120-line spool). Every REAL-hook spawn must carry
+  // the HUAWEICLOUD_DEVKIT_TELEMETRY=off gate, in BOTH shapes: the direct
+  // form (the [hookPath] argument) and the batched battery driver (the
+  // PY_BATTERY_DRIVER importlib load — the 2026-11-14 interrogate round
+  // proved an ungated batch floods 252 spool rows while a [hookPath]-only
+  // pin stays green, so the marker list below covers both). Hook COPIES
+  // (hookCopy, isolatedHook, staged dir variants) redirect their writes
+  // into their own fixtures and need no gate. A new ungated spawn site
   // re-opens the class — this pin makes it a named failure.
   for (const file of ['hook-parity.test.ts', 'hook-python.test.ts']) {
     const body = readFileSync(join(root, 'test', file), 'utf8');
     const spawnBlocks = body.split('spawnSync(').slice(1);
-    const realHookBlocks = spawnBlocks.filter((block) => block.includes('[hookPath]'));
+    const realHookBlocks = spawnBlocks.filter(
+      (block) => block.includes('[hookPath]') || block.includes('PY_BATTERY_DRIVER'),
+    );
     assert.ok(realHookBlocks.length > 0, `${file} lost its real-hook spawns — stale pin?`);
     for (const block of realHookBlocks) {
       assert.ok(

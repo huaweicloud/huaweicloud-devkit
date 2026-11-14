@@ -12,6 +12,7 @@ import {
   skillTreePermissionGlobs,
 } from '../plugins/huaweicloud-core/src/lib/opencode-permission-seam.ts';
 import { fixtureDir } from './fixture-dir.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 // ── Part A: pure seam logic (lib/opencode-permission-seam.ts) ──
 // The ownership contract is add-only-if-absent on write and value-exact on
@@ -179,6 +180,7 @@ function makeEnv(home: string, seam: 'on' | 'off'): NodeJS.ProcessEnv {
     HUAWEICLOUD_NPM_REGISTRY: 'http://127.0.0.1:9',
     // Deterministic gate: no dependence on whether opencode is on PATH.
     HUAWEICLOUD_OPENCODE_PERMISSION_SEAM: seam,
+    ...npmCacheEnv(),
   };
   for (const key of [
     'ATOMCODE_HOME',

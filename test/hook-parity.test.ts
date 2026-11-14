@@ -977,40 +977,124 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['hcloud --', 'allow'],
 ];
 
+// One python3 process runs the whole battery in-process through the real
+// hook (importlib load, per-case sys.stdin/stdout swap, SystemExit
+// captured as the verdict). The per-case spawn loop this replaces spent
+// ~70s of pure process-start + policy-load overhead (630 spawns at
+// ~110ms each, measured 2026-11-14); the batched driver reproduces every
+// verdict — adversarially diffed against the per-spawn implementation
+// (0 differences across the full battery, stable in reverse order and on
+// a repeat run) before adoption.
+const PY_BATTERY_DRIVER = [
+  'import importlib.util, io, json, sys, traceback',
+  'payload = json.load(sys.stdin)',
+  'spec = importlib.util.spec_from_file_location("hws", payload["hook"])',
+  'm = importlib.util.module_from_spec(spec)',
+  'spec.loader.exec_module(m)',
+  'results = []',
+  'for case in payload["cases"]:',
+  '    entry = {}',
+  '    old_stdin, old_stdout = sys.stdin, sys.stdout',
+  '    buf = io.StringIO()',
+  '    sys.stdout = buf',
+  '    sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": case}}))',
+  '    try:',
+  '        m.main()',
+  '    except SystemExit as e:',
+  '        if e.code not in (0, None):',
+  '            entry["verdict"] = "crashed"',
+  '            entry["trace"] = "exit code " + str(e.code)',
+  '        else:',
+  '            entry["verdict"] = "deny" if buf.getvalue().strip() else "allow"',
+  '    except BaseException:',
+  '        entry["verdict"] = "crashed"',
+  '        entry["trace"] = traceback.format_exc()[:300]',
+  '    else:',
+  '        entry["verdict"] = "deny" if buf.getvalue().strip() else "allow"',
+  '    finally:',
+  '        sys.stdin, sys.stdout = old_stdin, old_stdout',
+  '    results.append(entry)',
+  'print(json.dumps(results))',
+].join('\n');
+
+interface PyVerdict {
+  verdict: 'deny' | 'allow' | 'crashed';
+  trace?: string;
+}
+
+// The per-case spawn shape the battery ran before batching: one gated
+// spawn per case with its own 30s bound. The batch falls back to it
+// whenever its single overall result is unusable, so a timeout-class
+// regression still names the offending case instead of discarding every
+// verdict at once (the 2026-11-14 interrogate round's mixed-battery probe:
+// an overall-timeout batch returned a bare SIGTERM with no case named).
+function pyVerdictPerCase(command: string): PyVerdict | 'unavailable' {
+  const py = spawnSync('python3', [hookPath], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+    encoding: 'utf8',
+    timeout: 30000,
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+  });
+  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+  if (unavailable) return 'unavailable';
+  if (py.status !== 0 || py.stderr) {
+    return { verdict: 'crashed', trace: `status ${py.status}: ${py.stderr.slice(0, 200)}` };
+  }
+  return { verdict: py.stdout.trim().length > 0 ? 'deny' : 'allow' };
+}
+
+function runPyBattery(): Array<PyVerdict | 'unavailable'> | 'unavailable' {
+  const cases = BATTERY.map((row) => row[0]);
+  // The battery drives the REAL hook (no copy, no redirect), so its
+  // record_cli_event side effect would append to the SHARED agent-dir
+  // spool (plugins/huaweicloud-core/telemetry/hook-events.jsonl — the
+  // path derives from the hook file's own location, immune to every test
+  // HOME isolation). ~490 hcloud rows per run then flood any later test
+  // whose telemetry ingest reads that file: enqueueTrackedEvent ingests
+  // the spool on EVERY enqueue, and one awaited flush splices only
+  // BATCH_SIZE=100 — the #1040 flush pin's tool event (enqueued last)
+  // missed its round on the windows CI legs twice (runs 40841747815 /
+  // 40849117055; reproduced red-first on Linux by staging a 120-line
+  // spool). The battery tests classification, not telemetry — the spool
+  // write is an untested side effect, gated off here (the #1040 pin in
+  // structure-safety.test.ts enforces this gate on every real-hook spawn
+  // site, this batch driver included).
+  const py = spawnSync('python3', ['-c', PY_BATTERY_DRIVER], {
+    input: JSON.stringify({ hook: hookPath, cases }),
+    encoding: 'utf8',
+    timeout: 60000,
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+  });
+  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+  if (unavailable) return 'unavailable'; // python3 not on PATH: TS-only environment
+  if (py.status === 0 && !py.stderr) {
+    try {
+      const parsed = JSON.parse(py.stdout) as PyVerdict[];
+      if (parsed.length === cases.length) return parsed;
+    } catch {
+      // unparseable batch output falls through to the per-case rerun
+    }
+  }
+  return cases.map((command) => pyVerdictPerCase(command));
+}
+
 test('TS classifier and python hook agree on the shared adversarial battery', () => {
   const mismatches: string[] = [];
-  for (const [command, expected] of BATTERY) {
+  const py = runPyBattery();
+  for (const [i, [command, expected]] of BATTERY.entries()) {
     const ts = classifyTextCommand(command).decision;
     if (ts !== expected) mismatches.push(`TS: want ${expected}, got ${ts}: ${command}`);
-    // The battery spawns the REAL hook (no copy, no redirect), so its
-    // record_cli_event side effect would append to the SHARED agent-dir
-    // spool (plugins/huaweicloud-core/telemetry/hook-events.jsonl — the
-    // path derives from the hook file's own location, immune to every test
-    // HOME isolation). ~490 hcloud rows per run then flood any later test
-    // whose telemetry ingest reads that file: enqueueTrackedEvent ingests
-    // the spool on EVERY enqueue, and one awaited flush splices only
-    // BATCH_SIZE=100 — the #1040 flush pin's tool event (enqueued last)
-    // missed its round on the windows CI legs twice (runs 40841747815 /
-    // 40849117055; reproduced red-first on Linux by staging a 120-line
-    // spool). The battery tests classification, not telemetry — the spool
-    // write is an untested side effect, gated off here.
-    const py = spawnSync('python3', [hookPath], {
-      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
-      encoding: 'utf8',
-      timeout: 30000,
-      env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
-    });
-    const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-    if (unavailable) continue; // python3 not on PATH: TS-only environment
+    if (py === 'unavailable') continue; // python3 not on PATH: TS-only environment
+    const entry = py[i];
+    if (entry === 'unavailable') continue;
     // A crashed hook must fail loudly, not read as "allow" through empty
     // stdout — an allow-expected entry that crashes would otherwise pass
     // silently (the exact shape that hid a TypeError during development).
-    if (py.status !== 0 || py.stderr) {
-      mismatches.push(`PY: crashed (status ${py.status}): ${command}: ${py.stderr.slice(0, 200)}`);
+    if (entry.verdict === 'crashed') {
+      mismatches.push(`PY: crashed: ${command}: ${entry.trace ?? ''}`);
       continue;
     }
-    const pyVerdict = py.stdout.trim().length > 0 ? 'deny' : 'allow';
-    if (pyVerdict !== expected) mismatches.push(`PY: want ${expected}, got ${pyVerdict}: ${command}`);
+    if (entry.verdict !== expected) mismatches.push(`PY: want ${expected}, got ${entry.verdict}: ${command}`);
   }
   assert.deepEqual(mismatches, [], 'layer drift detected');
 });
@@ -1023,9 +1107,9 @@ test('the env-dump flag chain stays linear on the -u/-- adversarial shape (ReDoS
   // pre-fix regex: 14.3s at 26 repetitions of ' -u -- ', >120s at 28. The
   // (?!u\s) lookahead on the long-flag branch makes each token's parse
   // unique; 5000 repetitions must classify in bounded time on BOTH layers
-  // (the python twin shares the structure; its spawnSync timeout of 30s is
-  // the python-side bound — an exponential regression kills the process
-  // there and fails the status assertion below).
+  // (the python twin shares the structure; pyVerdictPerCase's 30s spawnSync
+  // timeout is the python-side bound — an exponential regression kills the
+  // process there and fails the verdict assertion below).
   const payload = `env${' -u -- '.repeat(5000)}plainword`;
   const tsStart = Date.now();
   assert.equal(classifyTextCommand(payload).decision, 'allow');
@@ -1039,16 +1123,9 @@ test('the env-dump flag chain stays linear on the -u/-- adversarial shape (ReDoS
   // python twin keeps its own independent 30s spawnSync bound.
   assert.ok(Date.now() - tsStart < 5000, 'TS classifier spent exponential time on the -u/-- chain');
 
-  const py = spawnSync('python3', [hookPath], {
-    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: payload } }),
-    encoding: 'utf8',
-    timeout: 30000,
-    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
-  });
-  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-  if (unavailable) return; // python3 not on PATH: TS-only environment
-  assert.equal(py.status, 0, `python hook crashed on the -u/-- chain: ${py.stderr.slice(0, 200)}`);
-  assert.equal(py.stdout.trim().length > 0 ? 'deny' : 'allow', 'allow');
+  const verdict = pyVerdictPerCase(payload);
+  if (verdict === 'unavailable') return; // python3 not on PATH: TS-only environment
+  assert.equal(verdict.verdict, 'allow', `python hook crashed on the -u/-- chain: ${verdict.trace ?? ''}`);
 });
 
 // port-v2defects (interrogate round 4): the ANSI-C decoders are TWINS —
@@ -1207,15 +1284,8 @@ test('deep-nest quote-idiom mangled writes deny via the opaque gate (interrogate
   };
   for (const depth of [5, 8, 9, 10]) {
     assert.equal(classifyTextCommand(nest(depth)).decision, 'deny', `nest depth ${depth}`);
-    const py = spawnSync('python3', [hookPath], {
-      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: nest(depth) } }),
-      encoding: 'utf8',
-      timeout: 30000,
-      env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
-    });
-    const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-    if (unavailable) continue;
-    assert.equal(py.status, 0, `nest ${depth} py crashed: ${py.stderr.slice(0, 200)}`);
-    assert.equal(py.stdout.trim().length > 0 ? 'deny' : 'allow', 'deny', `nest depth ${depth} py`);
+    const verdict = pyVerdictPerCase(nest(depth));
+    if (verdict === 'unavailable') break; // python3 not on PATH: TS-only environment
+    assert.equal(verdict.verdict, 'deny', `nest depth ${depth} py: ${verdict.trace ?? ''}`);
   }
 });

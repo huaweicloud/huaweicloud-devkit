@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { parseCoreSkillNames } from '../plugins/huaweicloud-core/src/lib/skill-manifest.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
@@ -19,6 +20,7 @@ function makeEnv(home: string): Record<string, string | undefined> {
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
     HUAWEICLOUD_HOME: home,
+    ...npmCacheEnv(),
     // `uninstall --target all` dispatches uninstallOfficeAce, which probes
     // the real Windows registry / Program Files without this skip (#654) —
     // on a dev machine with a real OfficeAce it would uninstall it.
