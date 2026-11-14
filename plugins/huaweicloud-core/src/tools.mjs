@@ -2343,6 +2343,17 @@ async function runApprovedCommand(args = {}) {
     }
   }
   const strictPlan = planHcloudCommand(providedArgs, { allowWrites: false });
+  // D4-19 (#1133): the confirm flow must honour risk-rule deny decisions, not
+  // only the write/read gate. The token is already consumed above (single-use
+  // semantics preserved), but a risk-denied command must never execute.
+  if (strictPlan.blockedByRiskRule === true && strictPlan.classification?.decision === 'deny') {
+    return {
+      status: 'rejected',
+      code: 'CONFIRM_BLOCKED_BY_RISK_RULE',
+      reason: strictPlan.classification.reason,
+      findings: strictPlan.findings || strictPlan.classification.findings || [],
+    };
+  }
   const result = await runHcloud(providedArgs, {
     allowWrites: true,
     timeoutMs: args.timeoutMs,
