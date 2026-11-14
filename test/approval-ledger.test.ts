@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { contendOneAppend, spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness.ts';
 import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -118,6 +119,27 @@ if (process.env.LEDGER_WEDGED_HOLDER) {
     () => {
       spawnSync('sleep', ['120']);
       process.exit(0);
+    },
+    lockDir,
+    1000,
+    200,
+  );
+  process.exit(0);
+}
+
+// Over-cap healthy holder mode (round-6 finding 2): claim the ledger lock
+// with the ledger's exact parameters and run a REAL section longer than
+// the wait cap (a healthy slow write — the big-store/slow-home shape),
+// then append one tagged event from inside the hold. The holder is alive,
+// productive, and heartbeat-fresh the whole time; the appended event lands
+// through the locked path.
+if (process.env.LEDGER_OVERCAP_HOLDER) {
+  const { withDepLock } = await import('../plugins/huaweicloud-core/src/dep/receipts.ts');
+  const lockDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approval-consents-lock');
+  withDepLock(
+    () => {
+      spawnSync('sleep', ['4.5']); // a healthy section past the 3s cap
+      appendConsentEvent(baseEvent({ sessionId: 'holder-event', argsHash: 'h-holder' }));
     },
     lockDir,
     1000,
@@ -376,31 +398,13 @@ test(
     // a synchronous poll on the caller's main thread — blocked for the
     // wedge's whole duration (measured 59.7s on a 60s wedge; unbounded
     // past that). The cap now bounds the total wait: past it the append
-    // degrades to the documented unlocked posture instead of stalling the
-    // approved call. The holder below claims with the ledger's exact
-    // parameters and blocks for 120s; the append must return within the
-    // cap (plus poll slack) and land its event.
-    const { spawn } = await import('node:child_process');
-    const child = spawn(process.execPath, ['--experimental-strip-types', 'test/approval-ledger.test.ts'], {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        LEDGER_WEDGED_HOLDER: '1',
-        HUAWEICLOUD_HOME: home,
-        NODE_TEST_CONTEXT: undefined,
-        NODE_TEST_WORKER_ID: undefined,
-      },
-      stdio: ['ignore', 'ignore', 'inherit'],
-    });
+    // degrades to the additive spool instead of stalling the approved
+    // call. The holder below claims with the ledger's exact parameters
+    // and blocks for 120s; the append must return within the cap (plus
+    // poll slack) and land its event.
+    const child = spawnLedgerWorker(home, { LEDGER_WEDGED_HOLDER: '1' });
     try {
-      // Wait for the holder to be LIVE inside its section (its claim pid).
-      const { existsSync: fsExists } = await import('node:fs');
-      const pidFile = join(home, '.config', 'huaweicloud', 'approval-consents-lock', 'lock', 'pid');
-      const deadline = Date.now() + 30_000;
-      while (!fsExists(pidFile)) {
-        assert.ok(Date.now() < deadline, 'the wedged holder never claimed the lock');
-        await new Promise((resolve) => setTimeout(resolve, 20));
-      }
+      await waitForLedgerClaim(home, 'wedged holder');
       await new Promise((resolve) => setTimeout(resolve, 500)); // mid-section, heartbeat live
       const started = Date.now();
       appendConsentEvent(baseEvent({ sessionId: 'contender-event', argsHash: 'h-contender' }));
@@ -411,9 +415,104 @@ test(
         `the append must degrade within the cap plus poll slack, never stall (waited ${waited}ms)`,
       );
       const ids = readConsentEvents().map((event) => event.sessionId);
-      assert.ok(ids.includes('contender-event'), 'the degraded unlocked append landed the contender event');
+      assert.ok(ids.includes('contender-event'), 'the degraded append landed the contender event');
     } finally {
       child.kill();
+    }
+  }),
+);
+
+test(
+  'a wedged holder never stalls the record path or an over-cap section erases no evidence (round-6 findings 1 and 2)',
+  withLedgerHome(async (home) => {
+    // Round 6, finding 1: recordAskModeConsent's section calls
+    // appendConsentEvent; pre-fix, the degraded outer attempt let the
+    // inner call acquire the lock AGAIN and pay the wait cap a second
+    // time — the gate's ask path measured 6.05-6.09s on a wedged holder,
+    // 2x the 5s bar. The degraded section is now re-entrant: ONE cap,
+    // and the nested append routes to the additive spool.
+    const wedged = spawnLedgerWorker(home, { LEDGER_WEDGED_HOLDER: '1' });
+    try {
+      await waitForLedgerClaim(home, 'wedged holder');
+      await new Promise((resolve) => setTimeout(resolve, 300)); // mid-section
+      const started = Date.now();
+      recordAskModeConsent({
+        sessionId: 'record-event',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-record',
+        outcome: 'granted',
+      });
+      const waited = Date.now() - started;
+      assert.ok(
+        waited >= 3000,
+        `the record path must first exhaust the wait cap, not return early (waited ${waited}ms)`,
+      );
+      assert.ok(waited < 5000, `the record path pays the cap ONCE — no nested re-acquisition (waited ${waited}ms)`);
+      const ids = readConsentEvents().map((event) => event.sessionId);
+      assert.ok(ids.includes('record-event'), 'the degraded record path landed its event (additive spool)');
+
+      // Round 6, finding 2 — a healthy section PAST the cap plus one
+      // contender: the erasure shape. The contender degrades and its
+      // event must not be erased by the holder's whole-file write — the
+      // degraded append is additive (spool), and the holder's locked
+      // append compacts it. ALL events survive: the seed, the holder's,
+      // the contender's.
+      const seed = baseEvent({ sessionId: 'seed-event', argsHash: 'h-seed' });
+      appendConsentEvent(seed);
+      const holder = spawnLedgerWorker(home, { LEDGER_OVERCAP_HOLDER: '1' });
+      try {
+        await waitForLedgerClaim(home, 'over-cap holder');
+        await new Promise((resolve) => setTimeout(resolve, 300)); // mid-section, heartbeat live
+        const contendedAt = Date.now();
+        recordAskModeConsent({
+          sessionId: 'contender-event',
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: 'h-contender',
+          outcome: 'granted',
+        });
+        assert.ok(Date.now() - contendedAt < 5000, 'the contender degrades within the cap');
+        await new Promise<void>((resolve, reject) => {
+          holder.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`holder exit ${code}`))));
+          holder.on('error', reject);
+        });
+        const ids = readConsentEvents().map((event) => event.sessionId);
+        for (const expected of ['seed-event', 'holder-event', 'contender-event']) {
+          assert.ok(
+            ids.includes(expected),
+            `${expected} must survive the over-cap race (store+spool view: ${JSON.stringify(ids)})`,
+          );
+        }
+      } finally {
+        holder.kill();
+      }
+    } finally {
+      wedged.kill();
+    }
+  }),
+);
+
+test(
+  'two degraded contenders on one wedged holder both keep their consent (round-6 finding 2)',
+  withLedgerHome(async (home) => {
+    // The 120k-store shape from the round: a single wedged holder makes
+    // EVERY concurrent contender degrade; pre-fix, two degraded
+    // whole-file writes raced each other and one committed consent was
+    // silently erased. Both contenders now append additively to the spool
+    // and both consents survive.
+    const wedged = spawnLedgerWorker(home, { LEDGER_WEDGED_HOLDER: '1' });
+    try {
+      await waitForLedgerClaim(home, 'wedged holder');
+      await Promise.all([contendOneAppend(home, 'degraded-a'), contendOneAppend(home, 'degraded-b')]);
+      const ids = readConsentEvents()
+        .map((event) => event.sessionId)
+        .sort((a, b) => a.localeCompare(b));
+      assert.deepEqual(
+        ids,
+        ['worker-degraded-a-0', 'worker-degraded-b-0'],
+        'both degraded consents survive the concurrent spool appends',
+      );
+    } finally {
+      wedged.kill();
     }
   }),
 );

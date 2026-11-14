@@ -20,6 +20,7 @@ import { runApprovalGate, NO_SESSION_SEAM_ERROR } from '../plugins/huaweicloud-c
 import type { ApprovalSpec } from '../plugins/huaweicloud-core/src/approval-types.ts';
 import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
+import { spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness.ts';
 
 // The generalized approval gate's unit battery: the envelope for each mode,
 // the roster-driven _meta, and the packs_configure seam-ordering rule. The
@@ -1113,6 +1114,50 @@ test('empty =-values and bare empty leaves never manufacture refusals (round-5 f
         assert.equal(result.approved, true, `${JSON.stringify(args.at(-1))} executes: no file is dereferenced`);
       }
     });
+  });
+});
+
+test('a wedged ledger holder never stalls the approved ask-mode call past the cap (round-6 finding 1)', async () => {
+  // The path every approved ask call takes: callTool -> the gate's ask
+  // branch -> recordAskModeConsent, whose section nests appendConsentEvent.
+  // Pre-fix the degraded outer attempt let the inner append re-acquire the
+  // lock and pay the 3s cap a SECOND time — the approved call measured
+  // 6.09s on a wedged holder, past the 5s bar the cap was sized for. The
+  // degraded section is re-entrant now: one cap, and the nested append
+  // routes to the additive spool.
+  await withTempAuthHome(async (home) => {
+    const fake = fakeHcloudExecutable('console.log(JSON.stringify({ ok: true }));');
+    const prevBin = process.env.HCLOUD_BIN;
+    process.env.HCLOUD_BIN = fake;
+    try {
+      const wedged = spawnLedgerWorker(home, { LEDGER_WEDGED_HOLDER: '1' });
+      try {
+        await waitForLedgerClaim(home, 'wedged holder');
+        await new Promise((resolve) => setTimeout(resolve, 300)); // mid-section
+        await withApprovalMode('ask', async () => {
+          const started = Date.now();
+          const result = (await callTool('huaweicloud_run_approved_command', {
+            args: ['ECS', 'ListServersDetails'],
+            approvedByUser: true,
+            maxRetries: 0,
+            vendorConfirmed: VENDOR,
+          })) as ApprovedRunResult;
+          const waited = Date.now() - started;
+          assert.equal(result.approved, true, 'the approved call executes despite the wedged holder');
+          assert.ok(
+            waited < 5000,
+            `the gate's ask path pays the cap ONCE through recordAskModeConsent (waited ${waited}ms)`,
+          );
+          const ids = readConsentEvents().map((event) => event.sessionId);
+          assert.ok(ids.length > 0, 'the consent landed (degraded, additive spool)');
+        });
+      } finally {
+        wedged.kill();
+      }
+    } finally {
+      if (prevBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = prevBin;
+    }
   });
 });
 

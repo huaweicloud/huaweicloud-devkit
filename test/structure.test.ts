@@ -48,99 +48,145 @@ test('the approval roster stays a const tuple so the registry closure cannot be 
   // The parser therefore runs ONE left-to-right scan that masks string
   // literal CONTENTS (quote kept, every inner char becomes 'S') and
   // removes comments as it goes: a decoy inside a string is invisible to
-  // the pattern, a comment cannot smuggle text, and what remains can only
-  // be a real declaration. Elements are then checked as masked shapes —
-  // every element must be exactly a masked string literal, so an `as`
-  // cast, a concatenation, a template literal, or any other element-level
-  // widening fails — and the element COUNT is pinned to the imported
-  // runtime tuple, so the parsed declaration is the real one. Spelling
-  // validity (what a masked element cannot show) stays with the sibling
-  // test that checks the runtime values against TOOL_DEFINITIONS.
+  // the pattern, a comment cannot smuggle text. Round 6 closed the last
+  // extraction hole: a REGEX LITERAL is neither a string nor a comment,
+  // passes the skeleton verbatim, and first-match extraction read the
+  // decoy's clean tuple while the real declaration was widened (verified
+  // end to end: the attacked tree passed every static guard while a
+  // roster member ran with no spec, no gate, no attestation). The pin now
+  // requires EVERY occurrence of the declaration pattern in the skeleton
+  // to be a clean masked tuple of exactly the runtime arity: a decoy
+  // regex carrying a clean shape is itself an occurrence and must satisfy
+  // the rules, and the widened real declaration beside it fails them —
+  // there is no "first" match to hide behind. Spelling validity (what a
+  // masked element cannot show) stays with the sibling test that checks
+  // the runtime values against TOOL_DEFINITIONS.
   const skeletonOf = (text: string): string =>
     text.replace(
       /(['"`])((?:\\[\s\S]|(?!\1)[\s\S])*?)\1|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
       (match, quote: string, body: string) => (quote ? quote + body.replace(/[\s\S]/g, 'S') + quote : ''),
     );
-  const parseRosterTuple = (roster: string): string[] => {
-    const match = skeletonOf(roster).match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
-    if (!match) return [];
-    const body = match[1]!.replace(/^\[/, '').replace(/\]$/, '');
+  const tupleElementsOf = (occurrence: string): string[] => {
+    const body = occurrence.replace(/^.*?=\s*(\[[\s\S]*?\]) as const;[\s\S]*$/, '$1');
     return body
+      .replace(/^\[/, '')
+      .replace(/\]$/, '')
       .split(',')
       .map((element) => element.trim())
       .filter((element) => element.length > 0);
   };
+  const parseAllRosterTuples = (roster: string): Array<string[]> => {
+    const skeleton = skeletonOf(roster);
+    const occurrences = [...skeleton.matchAll(/export const APPROVAL_TOOLS = \[[\s\S]*?\] as const;/g)].map(
+      (match) => match[0],
+    );
+    return occurrences.map((occurrence) => tupleElementsOf(occurrence));
+  };
   const cleanElements = (elements: string[]): boolean =>
     elements.length > 0 && elements.every((element) => /^'S+'$/.test(element));
+  // allTuplesClean: at least one declaration-shaped occurrence exists, and
+  // every one is a clean masked tuple (no widening anywhere — zero
+  // occurrences fails closed). allTuplesSafe additionally pins every
+  // occurrence to the runtime arity — the strict form the real file must
+  // satisfy: the real declaration cannot be dirty, no decoy can hide it,
+  // and a clean decoy of any other arity is rejected outright (fail-closed;
+  // the current tree carries exactly one occurrence).
+  const allTuplesClean = (text: string): boolean => {
+    const all = parseAllRosterTuples(text);
+    return all.length > 0 && all.every((elements) => cleanElements(elements));
+  };
+  const allTuplesSafe = (text: string): boolean => {
+    const all = parseAllRosterTuples(text);
+    return (
+      all.length > 0 && all.every((elements) => cleanElements(elements) && elements.length === APPROVAL_TOOLS.length)
+    );
+  };
   const roster = readSource(join('src', 'approval-roster.ts'));
-  const elements = parseRosterTuple(roster);
-  assert.ok(cleanElements(elements), 'the roster tuple must parse as masked bare string literals only');
-  assert.equal(
-    elements.length,
-    APPROVAL_TOOLS.length,
-    'the parsed tuple must be the real declaration (element count equals the runtime roster)',
+  const tuples = parseAllRosterTuples(roster);
+  assert.ok(tuples.length > 0, 'the roster declaration must be present outside strings and comments');
+  assert.ok(
+    allTuplesSafe(roster),
+    'every declaration-shaped occurrence must be a clean masked tuple of the runtime arity',
   );
   // The parser itself is pinned against every adversarial shape the rounds
-  // demonstrated. Clean shapes stay green; every widening goes red.
-  const clean = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";
-  assert.ok(cleanElements(parseRosterTuple(clean)), 'the current spelling parses clean');
-  const multiline =
-    "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // the run face\n  /* PR-3a */ 'huaweicloud_sandbox_connect',\n] as const;";
-  assert.ok(cleanElements(parseRosterTuple(multiline)), 'commented elements parse clean');
-  assert.equal(
-    cleanElements(
-      parseRosterTuple("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;"),
+  // demonstrated. Clean shapes stay green; every widening goes red — and
+  // round 6's decoy shapes must fail through EVERY occurrence being clean.
+  assert.ok(allTuplesClean("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;"));
+  assert.ok(
+    allTuplesClean(
+      "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // the run face\n  /* PR-3a */ 'huaweicloud_sandbox_connect',\n] as const;",
     ),
+    'commented elements parse clean',
+  );
+  assert.equal(
+    allTuplesClean("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;"),
     false,
     'an element-level cast must fail the element check',
   );
   assert.equal(
-    cleanElements(parseRosterTuple("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];")),
+    allTuplesClean("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];"),
     false,
     'a type annotation must fail the as-const requirement',
   );
   assert.equal(
-    cleanElements(
-      parseRosterTuple(
-        "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // ] as const;\n  'huaweicloud_sandbox_connect' as string,\n] as const;",
-      ),
+    allTuplesClean(
+      "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // ] as const;\n  'huaweicloud_sandbox_connect' as string,\n] as const;",
     ),
     false,
     'a widening hidden behind an in-array "// ] as const;" comment must fail the element check',
   );
-  // Round 5's decoy shapes: a string literal earlier in the file carrying a
-  // clean spelling is MASKED, so the pin can only see the real declaration.
-  const decoyBeforeWidenedReal = `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";
-export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_check_cli' as string] as const;`;
+  // Round 5's string-literal decoy: masked, so only the real declaration
+  // is an occurrence.
   assert.equal(
-    cleanElements(parseRosterTuple(decoyBeforeWidenedReal)),
+    allTuplesClean(
+      `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_check_cli' as string] as const;`,
+    ),
     false,
     'a decoy string before a widened real declaration must fail — the pin sees the real tuple',
   );
-  const decoyBeforeCleanReal = `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";
-export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`;
   assert.ok(
-    cleanElements(parseRosterTuple(decoyBeforeCleanReal)),
+    allTuplesClean(
+      `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`,
+    ),
     'a decoy before a CLEAN real declaration stays green — the real tuple is clean',
   );
+  // Round 6's regex-literal decoy (the attacked shapes verified end to
+  // end): the regex passes the skeleton VERBATIM, so it is itself an
+  // occurrence — clean, but the widened real declaration beside it fails.
+  const regexDecoyBeforeWidenedReal = `// eslint-disable-next-line no-unused-vars\nconst pinSightDecoyRegex = /export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_secret_set'] as const;/;\n\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_secret_set' as string] as const;`;
   assert.equal(
-    cleanElements(parseRosterTuple('export const APPROVAL_TOOLS = [`x`] as const;')),
+    allTuplesClean(regexDecoyBeforeWidenedReal),
+    false,
+    'a regex-literal decoy before a widened real declaration must fail — every occurrence is checked',
+  );
+  const regexDecoyBeforeCleanReal = `const pinSightDecoyRegex = /export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;/;\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`;
+  assert.ok(
+    allTuplesClean(regexDecoyBeforeCleanReal),
+    'a regex decoy beside a CLEAN real declaration stays green — both occurrences are clean',
+  );
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [`x`] as const;'),
     false,
     'a template-literal element is a widened shape',
   );
   assert.equal(
-    cleanElements(parseRosterTuple("export const APPROVAL_TOOLS = ['x' + 'y'] as const;")),
+    allTuplesClean("export const APPROVAL_TOOLS = ['x' + 'y'] as const;"),
     false,
     'a concatenated element is a widened shape',
   );
   assert.equal(
-    cleanElements(parseRosterTuple('export const APPROVAL_TOOLS = [] as const;')),
+    allTuplesClean('export const APPROVAL_TOOLS = [] as const;'),
     false,
     'an empty tuple must fail (core gate registrations)',
   );
-  // The classified-list sibling pin reads the SAME skeleton (round 5, seat
-  // 2): a decoy comment cannot satisfy it while the real declaration is
-  // widened.
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [...([] as string[])] as const;'),
+    false,
+    'a spread element is a widened shape',
+  );
+  // A same-length runtime-element swap is a clean shape by this pin; the
+  // sibling value-level test (roster names real tools) is the guard for
+  // that class.
   assert.match(
     skeletonOf(roster),
     /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/,
