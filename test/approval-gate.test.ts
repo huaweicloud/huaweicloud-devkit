@@ -250,7 +250,15 @@ test('ask mode: the dispatch layer records what became of the approved call — 
         // The throw leg's classification: the handler threw, so the call's
         // completion is unknowable — the datum the memo treats as
         // retryable. Driven through the gate's recorder directly (the real
-        // run handler reports child failures as results, never throws).
+        // run handler reports child failures as results, never throws),
+        // with the arrival stamp the gate's ask branch returns — the
+        // round-12 ownership requirement (no stamp, no annotate).
+        const arrivalStamp = recordAskModeConsent({
+          sessionId: 'default',
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: hashArgs(args),
+          outcome: 'granted',
+        });
         recordApprovalDispatchOutcome(
           'huaweicloud_run_approved_command',
           HUAWEICLOUD_CLI_APPROVAL_SPECS.huaweicloud_run_approved_command,
@@ -258,9 +266,11 @@ test('ask mode: the dispatch layer records what became of the approved call — 
           {},
           undefined,
           new Error('handler crashed mid-dispatch'),
+          arrivalStamp,
         );
         events = readConsentEvents();
-        assert.equal(events[1]!.outcomeDetail, 'uncertain', 'a thrown handler records uncertain');
+        assert.equal(events.length, 3, 'the throw leg records its own arrival first');
+        assert.equal(events[2]!.outcomeDetail, 'uncertain', 'a thrown handler records uncertain');
       });
     } finally {
       if (prevBin === undefined) delete process.env.HCLOUD_BIN;
@@ -290,7 +300,10 @@ test('the delivery classification reads every failure-mark shape the handler fam
     await withApprovalMode('ask', async () => {
       const classify = async (handlerResult: unknown, handlerThrew?: unknown): Promise<string | undefined> => {
         const args = [`ECS`, `ListServersDetails`, `--case=${Math.random().toString(36).slice(2)}`];
-        recordAskModeConsent({
+        // The arrival stamp the gate's ask branch returns — the round-12
+        // ownership requirement: the recorder keys the annotate to exactly
+        // the row this arrival wrote (no stamp, no annotate).
+        const arrivalStamp = recordAskModeConsent({
           sessionId: 'default',
           tool: 'huaweicloud_run_approved_command',
           argsHash: hashArgs(args),
@@ -303,6 +316,7 @@ test('the delivery classification reads every failure-mark shape the handler fam
           {},
           handlerResult,
           handlerThrew,
+          arrivalStamp,
         );
         return readConsentEvents().find((event) => event.argsHash === hashArgs(args))?.outcomeDetail;
       };
@@ -340,6 +354,111 @@ test('the delivery classification reads every failure-mark shape the handler fam
         'uncertain',
         'the thrown leg stays the only uncertain',
       );
+      // Round 12, finding 1 (both seats, complementary shapes): explicit
+      // SUCCESS signals win before every failure mark. The run engine's
+      // own ok gate returns ok:true with a NONZERO exitCode for OBS
+      // success (obsutil exits nonzero on success text — repo-pinned
+      // #921), and the PR-3c handler successes carry benign message
+      // fields; an unconditional exitCode/message mark recorded them all
+      // failed — permissive in the worst direction, since the memo reuses
+      // prior consent exactly on failed/uncertain.
+      assert.equal(
+        await classify({ ok: true, exitCode: 3, stdout: 'Copy successfully, 1 objects uploaded\n', stderr: '' }),
+        'delivered',
+        'the #921 OBS success: ok:true outranks the nonzero exitCode',
+      );
+      assert.equal(
+        await classify({ status: 'ok', exitCode: 0, message: 'completed' }),
+        'delivered',
+        "a benign message on a success status ('ok') reads delivered",
+      );
+      // The REAL PR-3c handler success shapes (verbatim from the handler
+      // sources: obs/tools.ts:201-208 and :310-318, update-upgrade.ts
+      // success and up-to-date) — all carry benign message fields.
+      assert.equal(
+        await classify({
+          ok: true,
+          status: 200,
+          websiteUrl: 'http://mybucket.obs-website.cn-north-4.myhuaweicloud.com',
+          message:
+            'Static website hosting configured. Website URL: http://mybucket.obs-website.cn-north-4.myhuaweicloud.com (may take ~1 min to propagate)',
+        }),
+        'delivered',
+        'REAL obs_set_website_config SUCCESS classifies delivered',
+      );
+      assert.equal(
+        await classify({
+          ok: true,
+          status: 200,
+          message: 'CORS configured for mybucket (2 rule(s)).',
+          errorDetail: undefined,
+        }),
+        'delivered',
+        'REAL obs_set_cors SUCCESS classifies delivered',
+      );
+      assert.equal(
+        await classify({ success: true, message: 'huaweicloud-devkit upgraded from v0.0.0 to v9.9.9.' }),
+        'delivered',
+        'REAL huaweicloud_upgrade SUCCESS classifies delivered',
+      );
+      assert.equal(
+        await classify({ success: true, message: 'Already at the latest version.', latest: '9.9.9', current: '9.9.9' }),
+        'delivered',
+        'the upgrade up-to-date no-op is not a failure',
+      );
+      assert.equal(
+        await classify({ success: false, error: 'upgrade failed: registry unreachable' }),
+        'failed',
+        'the upgrade FAILURE shape (success:false + error) still reads failed',
+      );
+    });
+  });
+});
+
+test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-tool registration records its outcome (round-12 finding 3)', async () => {
+  // The recorder used to wrap only the PACK dispatch leg; the core switch
+  // (where the PR-3c packs_configure registration — a CORE tool — will
+  // dispatch) had no recorder call, so a core-tool registration would
+  // record its consent arrival but structurally never the delivery
+  // outcome the memo keys on. The recorder now sits at the common
+  // dispatch boundary: both legs, one wrapper. Staged exactly the way
+  // the r12 seat's probe staged it and the way PR-3c lands it — a spec
+  // entry on the registry merge — and driven through the real callTool.
+  await withTempAuthHome(async (home) => {
+    await withApprovalMode('ask', async () => {
+      const name = 'huaweicloud_packs_configure' as Parameters<typeof callTool>[0];
+      // Staged the way PR-3c lands it: an entry on the registry merge (a
+      // runtime-added spec — the r12 F2 invariant in structure.test.ts is a
+      // different process, and the entry is deleted in the finally below).
+      const registration = {
+        domain: 'packs',
+        flavor: 'always',
+        tokenSource: 'gate',
+        requiresSessionSeam: true,
+        summarize: (v: unknown) => ({
+          summary: 'huaweicloud_packs_configure: enable core',
+          argsHash: hashArgs(v),
+          pinView: [],
+        }),
+      };
+      const registry = APPROVAL_SPECS as Partial<Record<Parameters<typeof callTool>[0], unknown>>;
+      registry[name] = registration;
+      try {
+        const cfgArgs = { enable: ['core'], approvedByUser: true };
+        const seam = { onPacksChanged: () => Promise.resolve() };
+        const result = (await callTool(name, cfgArgs, { sessionId: 's-core', ...seam })) as { ok: boolean };
+        assert.equal(result.ok, true, 'the packs_configure handler runs through the seam');
+        const coreKey = hashArgs(cfgArgs);
+        const rows = readConsentEvents().filter((row) => row.tool === name && row.argsHash === coreKey);
+        assert.equal(rows.length, 1, "the gate recorded the core tool's arrival");
+        assert.equal(
+          rows[0]!.outcomeDetail,
+          'delivered',
+          "the dispatch layer recorded the CORE leg's delivery outcome",
+        );
+      } finally {
+        delete registry[name];
+      }
     });
   });
 });
@@ -395,7 +514,7 @@ test('a gate-source spec mints on the first no-token call and returns the confir
       { approvedByUser: true, args: ['ECS', 'ListServersDetails'] },
       {},
     );
-    assert.equal(benign, 'pass', 'classified content the classifier passes needs no consent');
+    assert.ok('pass' in benign, 'classified content the classifier passes needs no consent');
 
     const gated = (await runApprovalGate(
       'huaweicloud_list_regions',
@@ -429,7 +548,7 @@ test('a gate-source spec mints on the first no-token call and returns the confir
       { approvedByUser: true, args: ['ECS', 'DeleteServer', '--server_id=i-1'], approvalToken: token },
       {},
     );
-    assert.equal(consumed, 'pass', 'a confirmed, byte-identical retry spends its token at the gate');
+    assert.ok('pass' in consumed, 'a confirmed, byte-identical retry spends its token at the gate');
     assert.equal(inspectApprovalToken(token).state, 'already_consumed');
   });
 });
@@ -469,7 +588,7 @@ test('a plan-face gate-source mix: the hcloud spec classifies the grant requirem
       { approvedByUser: true, args: ['ECS', 'ListServersDetails'], approvalToken: readToken },
       {},
     );
-    assert.equal(consumed, 'pass', 'a read needs no grant');
+    assert.ok('pass' in consumed, 'a read needs no grant');
 
     const writeToken = createApprovalToken(['ECS', 'DeleteServer', '--server_id=i-1']);
     const refused = (await runApprovalGate(
@@ -948,7 +1067,7 @@ test('the credential floor runs before the classified pass-through (round-2 find
       { approvedByUser: true, args: ['OBS', 'ls', 'obs://b'] },
       {},
     );
-    assert.equal(pass, 'pass');
+    assert.ok('pass' in pass);
   });
 });
 

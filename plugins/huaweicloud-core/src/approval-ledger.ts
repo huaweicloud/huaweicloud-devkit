@@ -148,13 +148,6 @@ const LEDGER_HEARTBEAT_MS = 200;
 // for whatever runs past it.
 const LEDGER_MAX_WAIT_MS = 3_000;
 
-// The delivery-annotation budget (round 10, finding 4): the follow-up is
-// best-effort by contract, so it never pays the arrival cap — a wedged
-// holder must not tax the approved call's tail a second time. Past this
-// short budget the annotation skips and the row keeps its arrival shape
-// (an absent outcomeDetail reads as unknown to PR-3a's memo).
-const LEDGER_ANNOTATE_MAX_WAIT_MS = 250;
-
 // Degraded-section re-entrancy (round 6, finding 1): when >0, this process
 // is inside a degraded (unlocked) ledger section. Nested ledger calls
 // skip acquisition entirely — a second withDepLock attempt would pay the
@@ -207,6 +200,9 @@ export function readConsentEvents(): ConsentEvent[] {
   const out = filterEvents(readRawConsents() ?? []);
   foldIntoView(sampledSpool, out);
   foldIntoView(sampledTaken, out);
+  // The delivery-outcome side channel (round 12, finding 4): attaches the
+  // annotate's lines to the rows they name, after every source is folded.
+  applyOutcomeLines(out);
   return out;
 }
 
@@ -324,36 +320,19 @@ function quarantineSidecarName(path: string): string {
   return `${path}.corrupt-${process.pid}-${randomUUID()}`;
 }
 
-// The degraded append (round 6, finding 2): strictly additive. One JSON
-// line per event, append mode — the whole-file O_APPEND protocol cannot
-// erase anything, because it never reads or rewrites the store. Concurrent
-// degraded writers interleave lines; the kernel serializes the
+// The additive line-append primitive (rounds 6-7, generalized round 12):
+// one JSON line through one O_APPEND fd the writer first inspects —
+// open, read the byte at the end, write a '\n' terminator when that byte
+// is not a newline, then write the line. Never a rewrite of existing
+// bytes; strictly additive; the whole-file O_APPEND protocol cannot
+// erase anything because it never reads or rewrites the file it appends
+// to. Concurrent appenders interleave lines; the kernel serializes the
 // size-update+write per open descriptor, and each line is a single small
-// write.
-//
-// Round 7, finding 1: a previous append can leave the spool WITHOUT a
-// trailing newline — a disk-full clamp mid-line (measured: the write
-// clamps at RLIMIT_FSIZE, retries, throws EFBIG, and spoolAppend swallows
-// the throw by contract), a crash mid-append, a short write that dropped
-// exactly the last byte. Appending blindly then GLUES the new committed
-// line onto the fragment: the merged line parses as nothing, and (the
-// lost-newline variant) a previously-VISIBLE complete line is
-// retroactively hidden with it. So the append writes through ONE fd that
-// it first inspects: open with O_APPEND, read the byte at the end, and
-// write a '\n' terminator when that byte is not a newline — never a
-// rewrite of existing bytes, strictly additive. A concurrent complete line
-// landing between the read and the write costs at worst an EMPTY line
-// (skipped by the reader and the fold); the one residual window is a
-// concurrent TORN write landing in that gap, gluing this one line — a
-// single event, bounded: the glued blob ends with this line's own '\n',
-// so no later append compounds the damage. The torn line's OWN event
-// stays lost when its write is cut — the documented best-effort posture
-// of a swallowed write failure — but a torn tail can no longer eat the
-// next committed append.
-function spoolAppend(events: ConsentEvent[]): void {
-  const line = events.map((event) => JSON.stringify(event)).join('\n') + '\n';
+// write. The tail inspection is the round-7 discipline: a torn tail (a
+// disk-full clamp, a crash mid-append, a short write) must not GLUE the
+// next committed line onto the fragment — the terminator isolates it.
+function appendLineAdditively(path: string, line: string): void {
   try {
-    const path = ledgerSpoolPath();
     mkdirSync(dirname(path), { recursive: true });
     const fd = openSync(path, 'a+', 0o600);
     try {
@@ -367,6 +346,19 @@ function spoolAppend(events: ConsentEvent[]): void {
     } finally {
       closeSync(fd);
     }
+  } catch {
+    // same degradation contract as the locked write: never fail the call
+  }
+}
+
+// The degraded append (round 6, finding 2): strictly additive. One JSON
+// line per event to the spool — no read, no rewrite of the store. The
+// path resolution stays INSIDE the degradation catch (a relative
+// HUAWEICLOUD_STATE_DIR makes it throw — the round-4 posture: a
+// ledger-internal failure never fails the approved call).
+function spoolAppend(events: ConsentEvent[]): void {
+  try {
+    appendLineAdditively(ledgerSpoolPath(), events.map((event) => JSON.stringify(event)).join('\n') + '\n');
   } catch {
     // same degradation contract as the locked write: never fail the call
   }
@@ -682,13 +674,19 @@ function originalGrantedFor(sessionId: string, tool: string, argsHash: string): 
   return original;
 }
 
+// Returns the arrival's grantedAt stamp — the identity the dispatch layer
+// hands to annotateDispatchOutcome so the delivery outcome can be keyed to
+// EXACTLY the row this arrival wrote (round 12, finding 2: ownership is
+// proven by the stamp, never by absence — an append the best-effort catch
+// drops leaves a stamp no row matches, and the annotate then no-ops
+// instead of stamping an earlier call's row).
 export function recordAskModeConsent(params: {
   sessionId: string;
   tool: string;
   argsHash: string;
   outcome: 'granted' | 'denied';
   evidence?: ConsentEvidence;
-}): void {
+}): number {
   // Tier resolution is the ledger's rule, not the caller's: a reuse
   // inherits the original event's tier verbatim — never upgraded (posture
   // stays posture when the caller asks for terminal); the one sanctioned
@@ -712,6 +710,7 @@ export function recordAskModeConsent(params: {
   // validation throw) degrades to the caller's tier so the append still
   // lands — the same best-effort posture as the append itself
   // (interrogate round 4).
+  const grantedAt = Date.now();
   withLedgerLock(() => {
     let evidence = params.evidence ?? 'posture';
     try {
@@ -725,11 +724,12 @@ export function recordAskModeConsent(params: {
       tool: params.tool,
       argsHash: params.argsHash,
       outcome: params.outcome,
-      grantedAt: Date.now(),
+      grantedAt,
       scope: 'once',
       evidence,
     });
   });
+  return grantedAt;
 }
 
 // The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
@@ -806,70 +806,158 @@ function newestGrantedStampOutsideStore(params: { sessionId: string; tool: strin
   return newest;
 }
 
+// The delivery-outcome side channel (round 12, finding 4): one JSON line
+// per annotate, keyed by the arrival's stamp —
+// {sessionId, tool, argsHash, grantedAt, outcomeDetail}. Additive in both
+// directions: the append can erase nothing (the same O_APPEND discipline
+// as the spool), and the reader attaches a line only to the consent row
+// whose stamp it names. The annotate that writes here never touches the
+// main store at all, which is the whole point: rounds 10-11's annotate
+// was a third whole-file writer, and a heartbeat-less holder legitimately
+// deposed past the 1s takeover window could commit its lockedAppend
+// INSIDE the annotate's read→rename window — the annotate's stale-snapshot
+// rename then erased the holder's committed event (measured: gone from
+// every source, both writers rc=0), the round-6 erasure class reopened
+// through the writer that landed after the round-6 fix. The annotate is
+// now LOCKLESS as well as additive: it neither writes the store nor
+// needs serialization, so it can neither race a store commit nor depose
+// a live holder. Growth is append-only (one small line per annotated
+// dispatch — slower than the spool, which carries a full row per
+// arrival); a compaction that folds lines into store rows is honest
+// future work, not PR-1.
+function ledgerOutcomePath(): string {
+  return `${ledgerFilePath()}.outcomes.jsonl`;
+}
+
+interface OutcomeLine {
+  sessionId: string;
+  tool: string;
+  argsHash: string;
+  grantedAt: number;
+  outcomeDetail: ConsentDeliveryOutcome;
+}
+
+// Attach the outcome lines to the merged view (round 12, finding 4): each
+// line names the consent row it annotates by the arrival's stamp, and the
+// LAST view row matching (sessionId, tool, argsHash, grantedAt) carries
+// it — the later index is the same same-millisecond tie rule the r11
+// annotate used (the newest row the fold placed at that stamp). A line
+// whose row does not exist (the arrival's append was dropped, or the
+// arrival degraded and the annotate correctly skipped writing nothing) is
+// inert. A line overrides an in-row outcomeDetail: the line was appended
+// after the row was written, so it is the newer fact.
+function applyOutcomeLines(out: ConsentEvent[]): void {
+  let lines: string[];
+  try {
+    const path = ledgerOutcomePath();
+    if (!existsSync(path)) return;
+    lines = readFileSync(path, 'utf8')
+      .split('\n')
+      .filter((line) => line.trim().length > 0);
+  } catch {
+    return; // unreadable side channel: the rows keep their arrival shape
+  }
+  for (const line of lines) {
+    const parsed = parseSpoolLine(line);
+    if (parsed === undefined) continue;
+    const record = parsed.parsed;
+    if (!record || typeof record !== 'object') continue;
+    const row = record as Partial<OutcomeLine>;
+    if (
+      typeof row.sessionId !== 'string' ||
+      typeof row.tool !== 'string' ||
+      typeof row.argsHash !== 'string' ||
+      typeof row.grantedAt !== 'number' ||
+      (row.outcomeDetail !== 'delivered' && row.outcomeDetail !== 'uncertain' && row.outcomeDetail !== 'failed')
+    ) {
+      continue;
+    }
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const event = out[i]!;
+      if (
+        event.sessionId === row.sessionId &&
+        event.tool === row.tool &&
+        event.argsHash === row.argsHash &&
+        event.grantedAt === row.grantedAt
+      ) {
+        event.outcomeDetail = row.outcomeDetail;
+        break; // the LAST matching row — the same-ms tie rule
+      }
+    }
+  }
+}
+
+// The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
+// PR-3a's memo datum): record what became of the call a consent
+// authorized, on the consent row that arrival created. The gate records
+// the ARRIVAL (recordAskModeConsent, which returns the stamp it wrote);
+// the dispatch layer — the only place that ever sees the handler's return
+// or throw — hands that stamp here with the delivery class. The ledger's
+// subject is the CONSENT's lifecycle (arrival + what became of the call
+// it authorized), never the handler's internal execution.
+//
+// Ownership is proven by the STAMP, never by absence (round 12, finding 2,
+// both seats' shape): the annotate proceeds only when a granted row on
+// the key with EXACTLY the arrival's stamp exists in the main store. An
+// arrival whose append was silently dropped (lockedAppend's best-effort
+// catch — ENOSPC/EIO/EACCES, the clamp shapes) leaves no row anywhere, so
+// the stamp matches nothing and the annotate is a no-op: the earlier
+// call's row on the same key keeps its own datum. An arrival that
+// degraded to the spool or a taken sidecar fails the same test (its row
+// is not store-resident), which also enforces the r10/r11 posture —
+// degraded arrivals carry no delivery outcome — and the outside-store
+// guard (round 11, finding 1) still skips when any granted row on the
+// key outside the store carries a stamp at or beyond this arrival's
+// (this call's arrival degraded, a newer arrival lives outside the
+// store, or an equal-stamp ambiguity).
+//
+// Best-effort in every direction: lockless (it writes only the additive
+// side channel, so there is nothing to serialize and no holder to
+// depose), skip on any failure, never throw, and never write the main
+// store — the annotate may skip, never erase. A skipped or dropped
+// annotation leaves the row as the arrival wrote it; the memo treats an
+// absent outcomeDetail as unknown. The recorded residual is the RACING
+// same-key shape alone (concurrent arrivals interleaving between arrival
+// and annotate — PR-3a's keyed join lands with the approvedVia carrier,
+// the recorded G2 note), plus the same-millisecond ambiguity the
+// last-row rule resolves deterministically but not provably.
 export function annotateDispatchOutcome(params: {
   sessionId: string;
   tool: string;
   argsHash: string;
+  arrivalStamp?: number;
   outcomeDetail: ConsentDeliveryOutcome;
 }): void {
   try {
-    withDepLock(
-      () => {
-        const path = ledgerFilePath();
-        const raw = readRawConsents();
-        if (raw === undefined) return; // absent or unreadable store: nothing to annotate
-        let targetIndex = -1;
-        let targetStamp = Number.NEGATIVE_INFINITY;
-        for (let i = 0; i < raw.length; i += 1) {
-          const entry = raw[i];
-          if (!entry || typeof entry !== 'object') continue;
-          const record = entry as Record<string, unknown>;
-          if (
-            record.sessionId !== params.sessionId ||
-            record.tool !== params.tool ||
-            record.argsHash !== params.argsHash ||
-            record.outcome !== 'granted' ||
-            typeof record.grantedAt !== 'number'
-          ) {
-            continue;
-          }
-          // The most recent granted row on the key; ties take the later
-          // index (the last row the fold placed at that stamp).
-          if (record.grantedAt >= targetStamp) {
-            targetStamp = record.grantedAt;
-            targetIndex = i;
-          }
-        }
-        if (targetIndex === -1) return; // no store row on the key: nothing annotatable
-        // Round 11, finding 1 (both seats): the store-only scan used to
-        // stamp this call's outcome over an EARLIER arrival's committed
-        // row whenever THIS dispatch's own arrival degraded to the spool
-        // (or any newer granted row on the key lived in the spool or a
-        // taken sidecar) — sequentially, deterministically, in the exact
-        // ~3.0-3.25s healthy-section band the round-6 cap was sized for:
-        // a delivered row rewritten to failed while the failed call's
-        // own row carried no datum at all, falsifying the "left alone"
-        // promise this function's header made. The guard: resolve the
-        // newest granted row on the key through the MERGED world (store +
-        // spool + taken) before writing. If any granted row on the key
-        // outside the store carries a stamp at or beyond the store
-        // target's, the newest committed row is not the store row — this
-        // call's arrival degraded, or a newer arrival lives outside the
-        // store — so the annotate SKIPS entirely: degraded arrivals carry
-        // no delivery outcome in PR-1, enforced now instead of promised,
-        // and a row that is not the arrival this dispatch created is
-        // never annotated. Ties skip too: an equal stamp cannot prove the
-        // store row is THIS dispatch's arrival.
-        if (newestGrantedStampOutsideStore(params) >= targetStamp) return;
-        (raw[targetIndex] as Record<string, unknown>).outcomeDetail = params.outcomeDetail;
-        const tmp = `${path}.${process.pid}.annotate.tmp`;
-        writeFileSync(tmp, JSON.stringify(raw), { encoding: 'utf8', mode: 0o600 });
-        renameSync(tmp, path);
-      },
-      ledgerLockDir(),
-      LEDGER_LOCK_TAKEOVER_MS,
-      LEDGER_HEARTBEAT_MS,
-      LEDGER_ANNOTATE_MAX_WAIT_MS,
+    if (typeof params.arrivalStamp !== 'number') return; // no stamp: never annotate
+    const raw = readRawConsents();
+    if (raw === undefined) return; // absent or unreadable store: nothing to annotate
+    let arrivalPresent = false;
+    for (const entry of raw) {
+      if (!entry || typeof entry !== 'object') continue;
+      const record = entry as Record<string, unknown>;
+      if (
+        record.sessionId === params.sessionId &&
+        record.tool === params.tool &&
+        record.argsHash === params.argsHash &&
+        record.outcome === 'granted' &&
+        record.grantedAt === params.arrivalStamp
+      ) {
+        arrivalPresent = true;
+        break;
+      }
+    }
+    if (!arrivalPresent) return; // dropped append or degraded arrival: no row is provably this dispatch's
+    if (newestGrantedStampOutsideStore(params) >= params.arrivalStamp) return; // the r11 guard
+    appendLineAdditively(
+      ledgerOutcomePath(),
+      JSON.stringify({
+        sessionId: params.sessionId,
+        tool: params.tool,
+        argsHash: params.argsHash,
+        grantedAt: params.arrivalStamp,
+        outcomeDetail: params.outcomeDetail,
+      }) + '\n',
     );
   } catch {
     // best-effort by contract: a recording failure never fails the call

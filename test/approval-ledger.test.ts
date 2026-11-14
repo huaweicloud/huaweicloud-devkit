@@ -929,11 +929,15 @@ test(
     // arrival wrote. Never another arrival's row; ties skip (an equal
     // stamp cannot prove ownership).
     const takenFile = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-12390000-0000-4000-8000-000000000000');
-    const annotateKey = (hash: string): void => {
+    // The arrival stamp the gate's ask branch returns (round 12, finding 2):
+    // ownership is proven by the stamp — the row this dispatch's own arrival
+    // wrote — never by absence.
+    const annotateKey = (hash: string, arrivalStamp?: number): void => {
       annotateDispatchOutcome({
         sessionId: 'ses-annotate',
         tool: 'huaweicloud_run_approved_command',
         argsHash: hash,
+        arrivalStamp,
         outcomeDetail: 'failed',
       });
     };
@@ -958,7 +962,7 @@ test(
     stageKey('h-an-taken');
     stageStore(home, JSON.stringify([{ ...JSON.parse(line('h-an-taken', 1_000)), outcomeDetail: 'delivered' }]));
     writeFileSync(takenFile, line('h-an-taken', 2_000));
-    annotateKey('h-an-taken');
+    annotateKey('h-an-taken', 2_000);
     assert.equal(
       detailOf('h-an-taken', 1_000),
       'delivered',
@@ -971,7 +975,7 @@ test(
     stageKey('h-an-spool');
     stageStore(home, JSON.stringify([{ ...JSON.parse(line('h-an-spool', 1_000)), outcomeDetail: 'delivered' }]));
     writeFileSync(paths.spool, line('h-an-spool', 2_000));
-    annotateKey('h-an-spool');
+    annotateKey('h-an-spool', 2_000);
     assert.equal(
       detailOf('h-an-spool', 1_000),
       'delivered',
@@ -986,7 +990,7 @@ test(
     stageKey('h-an-normal');
     writeFileSync(paths.spool, line('h-an-normal', 900));
     stageStore(home, JSON.stringify([JSON.parse(line('h-an-normal', 1_000))]));
-    annotateKey('h-an-normal');
+    annotateKey('h-an-normal', 1_000);
     assert.equal(
       detailOf('h-an-normal', 1_000),
       'failed',
@@ -1000,8 +1004,101 @@ test(
     stageKey('h-an-tie');
     stageStore(home, JSON.stringify([{ ...JSON.parse(line('h-an-tie', 1_000)), outcomeDetail: 'delivered' }]));
     writeFileSync(takenFile, line('h-an-tie', 1_000));
-    annotateKey('h-an-tie');
+    annotateKey('h-an-tie', 1_000);
     assert.equal(detailOf('h-an-tie', 1_000), 'delivered', 'tie cell: an ambiguous newest row is left alone');
+  }),
+);
+
+test(
+  'a dropped arrival append is never annotated over an earlier row, and the annotate never writes the store (round-12 findings 2 and 4)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const store = join(paths.dir, 'approval-consents.json');
+    const key = 'h-r12-dropped';
+    const annotate = (arrivalStamp?: number): void => {
+      annotateDispatchOutcome({
+        sessionId: 'ses-r12',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: key,
+        arrivalStamp,
+        outcomeDetail: 'failed',
+      });
+    };
+    const rawBytes = (): string => readFileSync(store, 'utf8');
+
+    // An earlier identical call on the key: it DELIVERED, and its row is
+    // committed in the store.
+    const earlierStamp = 1_700_000_000_000;
+    // The earlier row is on THIS key — same session, tool, and argsHash the
+    // annotate targets (the pin's first draft staged orderLine's ses-order
+    // session id, which never matched the annotate's key and made the pin
+    // vacuous — the round-12 mutation check caught it).
+    stageStore(
+      home,
+      JSON.stringify([
+        {
+          sessionId: 'ses-r12',
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: key,
+          outcome: 'granted',
+          grantedAt: earlierStamp,
+          scope: 'once',
+          evidence: 'posture',
+          outcomeDetail: 'delivered',
+        },
+      ]),
+    );
+    const before = rawBytes();
+
+    // This dispatch's arrival append dies in lockedAppend's best-effort
+    // catch (its tmp path is a directory; the production shapes are
+    // ENOSPC/EIO/EACCES in the same catch): the stamp recordAskModeConsent
+    // returns matches no row anywhere. Pre-fix (round 12, finding 2, both
+    // seats' shape), the store-only "newest granted row" target then
+    // rewrote the EARLIER call's delivered row with this call's failed —
+    // absence proved ownership. Now: no row with the arrival's stamp, no
+    // annotate, ever.
+    mkdirSync(`${store}.${process.pid}.tmp`, { recursive: true });
+    const arrivalStamp = recordAskModeConsent({
+      sessionId: 'ses-r12',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    rmSync(`${store}.${process.pid}.tmp`, { recursive: true, force: true });
+    annotate(arrivalStamp);
+    assert.equal(
+      rawBytes(),
+      before,
+      'the dropped arrival leaves the earlier row byte-identical — the annotate rewrote nothing',
+    );
+    let rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(rows.length, 1, 'the dropped arrival contributes no visible row');
+    assert.equal(rows[0]!.outcomeDetail, 'delivered', 'the earlier row keeps its own delivered datum');
+    // And a recorder call with NO stamp at all is a no-op by contract.
+    annotate(undefined);
+    assert.equal(rawBytes(), before, 'a stamp-less annotate writes nothing anywhere');
+
+    // The annotate's write is the additive outcome side channel, never the
+    // store (round 12, finding 4): a normal annotate that LANDS must leave
+    // the store bytes untouched too — a heartbeat-less holder deposed past
+    // the 1s takeover window commits its lockedAppend rename mid-annotate,
+    // and the pre-fix whole-file annotate erased that commit (the round-6
+    // erasure class through the r10 writer). A lockless additive annotate
+    // cannot erase anything, structurally.
+    const secondStamp = recordAskModeConsent({
+      sessionId: 'ses-r12',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    const beforeLanding = rawBytes();
+    annotate(secondStamp);
+    assert.equal(rawBytes(), beforeLanding, 'a LANDING annotate still writes only the side channel, never the store');
+    rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(rows.length, 2, 'the second arrival is its own row');
+    assert.equal(rows[1]!.outcomeDetail, 'failed', 'the side channel carries the datum into the merged view');
+    assert.equal(rows[0]!.outcomeDetail, 'delivered', 'the earlier row is untouched');
   }),
 );
 

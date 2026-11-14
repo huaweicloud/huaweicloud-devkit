@@ -32,11 +32,16 @@ import { huaweiConfigBase } from './lib/state-dir.ts';
 import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
 import type { ApprovalSpec, ConsentDeliveryOutcome } from './approval-types.ts';
 
-// The gate result: 'pass' lets dispatch continue; an envelope object is
-// returned to the caller INSTEAD of the handler's value. Approval-shaped
-// refusals are results, not throws, so callTool's caller (and the trace
-// seam) see the same JSON shapes the pack handler returns for them.
-export type ApprovalGateOutcome = 'pass' | { envelope: Record<string, unknown> };
+// The gate result: a structured pass carries the arrival's identity (the
+// consent stamp the ask branch just wrote) to the dispatch layer, which
+// hands it to the delivery recorder — the round-12 finding-2 requirement
+// (ownership by stamp, never by absence) and the precursor of the
+// approvedVia carrier the recorded PR-3a note schedules; an envelope
+// object is returned to the caller INSTEAD of the handler's value.
+// Approval-shaped refusals are results, not throws, so callTool's caller
+// (and the trace seam) see the same JSON shapes the pack handler returns
+// for them.
+export type ApprovalGateOutcome = { pass: { arrivalStamp?: number } } | { envelope: Record<string, unknown> };
 
 export const NO_SESSION_SEAM_ERROR =
   'Runtime pack configuration is available in stdio agent sessions only; this surface carries no session state.';
@@ -322,14 +327,14 @@ export async function runApprovalGate(
     // consent record.
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'ask');
-    if (classifiedPass) return 'pass';
-    recordAskModeConsent({
+    if (classifiedPass) return { pass: {} };
+    const arrivalStamp = recordAskModeConsent({
       sessionId: opts.sessionId ?? 'default',
       tool: name,
       argsHash: hashArgs(value),
       outcome: 'granted',
     });
-    return 'pass';
+    return { pass: { arrivalStamp } };
   }
 
   const token = typeof args.approvalToken === 'string' ? args.approvalToken : '';
@@ -351,7 +356,7 @@ export async function runApprovalGate(
     // pass-through skips the mint and the floors never.
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'token');
-    if (classifiedPass) return 'pass';
+    if (classifiedPass) return { pass: {} };
     const view = spec.summarize(value);
     const minted = createApprovalToken(value, { secretsSubstitutable: false, argsPinView: view.pinView });
     return {
@@ -435,35 +440,38 @@ export async function runApprovalGate(
 
   // The token spent and the binding verified: the registered handler runs
   // the pure execution it owns.
-  return 'pass';
+  return { pass: {} };
 }
 
 // The dispatch-result follow-up (round 10, finding 4, PR-3a's memo
 // datum): after the pack handler the gate's caller dispatched returns —
 // or throws — callTool hands the result here, and this records what
 // became of the call the gate approved, on the gate's behalf. The gate
-// itself returns 'pass' before dispatch (its contract is unchanged —
-// the structured approvedVia carrier is the recorded PR-3a note, not a
-// PR-1 change); the dispatch layer is the only place that ever sees the
-// handler's return or throw, so it is the only place the delivery class
-// can be observed.
+// itself returns a structured pass before dispatch (its ask branch carries
+// the arrival's stamp — the recorded PR-3a approvedVia precursor); the
+// dispatch layer is the only place that ever sees the handler's return or
+// throw, so it is the only place the delivery class can be observed.
 //
 // The classes, from the handler's return or throw: 'delivered' when the
 // returned result carries no failure marks, 'failed' when the child
-// ANSWERED with a failure — ok:false, a nonzero exitCode (the sandbox
-// exec faces' shape, which carries no ok), a rejected/error status, an
-// error-truthy error/message value, or a returned Error instance (an
-// answer, not an uncertainty — round 11, finding 2), 'uncertain' when
-// the handler threw and whether the call completed is unknowable.
-// PR-3a's S1 memo reuses a prior consent exactly on 'uncertain' or
-// 'failed' (ApprovalCoreConsent's result-conditioned scope).
+// ANSWERED with a failure, 'uncertain' when the handler threw and whether
+// the call completed is unknowable. PR-3a's S1 memo reuses a prior
+// consent exactly on 'uncertain' or 'failed' (ApprovalCoreConsent's
+// result-conditioned scope).
+//
+// Ownership by stamp (round 12, finding 2, both seats' shape): the
+// arrival stamp the gate returned MUST reach the annotate — no stamp
+// (a recorder call without one, token mode where no arrival was
+// recorded, any failure) means no annotate, ever, because absence never
+// proves which row this dispatch created. The annotate then requires a
+// row with EXACTLY that stamp in the main store, so a dropped or degraded
+// arrival's outcome lands nowhere at all.
 //
 // Best-effort in every direction: ask mode only (token mode records no
 // arrival, so there is no row to annotate — and the check keeps the
 // default-mode dispatch path free of any ledger work), no-ops without a
 // spec, and never throws — a recording failure must never fail the call
-// it is recording. The ledger's annotateDispatchOutcome enforces the
-// short wait budget and the skip-on-any-failure posture.
+// it is recording.
 export function recordApprovalDispatchOutcome(
   name: ToolName,
   spec: ApprovalSpec | undefined,
@@ -471,6 +479,7 @@ export function recordApprovalDispatchOutcome(
   opts: CallToolOptions,
   handlerResult: unknown,
   handlerThrew?: unknown,
+  arrivalStamp?: number,
 ): void {
   try {
     if (!spec) return;
@@ -481,6 +490,7 @@ export function recordApprovalDispatchOutcome(
       sessionId: opts.sessionId ?? 'default',
       tool: name,
       argsHash: hashArgs(bindingValue(spec, args)),
+      arrivalStamp,
       outcomeDetail,
     });
   } catch {
@@ -490,30 +500,45 @@ export function recordApprovalDispatchOutcome(
 }
 
 // The failure-mark reader for the three-valued delivery classification
-// (round 11, finding 2): a returned result is 'failed' when the child
-// ANSWERED with a failure — by any of the shapes the handler families
-// report it in. The run face carries `ok: boolean` on every path (its
-// failure paths set ok:false, which the first mark catches), but the
-// sandbox exec faces — PR-3a's first registrations, the same wave this
-// datum exists for — return {stdout, exitCode} with NO ok field, so a
-// nonzero exitCode must read as the intent's own example of 'failed'
-// ("the child answered with a failure"); approval-shaped envelopes
-// report {status:'rejected'|'error'}; error-shaped results carry an
-// error/message value; a truthy-string 'false' in the ok slot (a
-// loose-typed handler) reads as failure too. A RETURNED Error instance
-// is judged failed, recorded honestly: a returned error is an ANSWER
-// (the handler decided the call failed), not an uncertainty — the
-// thrown leg above stays the only 'uncertain'. An async-start receipt
-// ({started:'uncertain'}, no marks) classifies delivered: the dispatch
-// was accepted, and the async completion is the poll call's own result,
-// not this dispatch's. Every other returned shape — no failure marks
-// present — is 'delivered'.
+// (rounds 11-12): a returned result is 'failed' when the child ANSWERED
+// with a failure — by any of the shapes the handler families report it
+// in. Round 12, finding 1 (both seats, complementary shapes) fixed the
+// reading ORDER: an EXPLICIT success signal wins before every failure
+// mark. The run engine's own ok gate returns ok:true with a NONZERO
+// exitCode for OBS success (obsutil exits nonzero on success text —
+// repo-pinned #921), so an unconditional exitCode mark recorded a
+// delivered OBS write as failed; the PR-3c handler successes carry
+// benign human-facing message fields, so an unconditional message mark
+// recorded every successful signed PUT and upgrade as failed. The
+// permissive direction makes it worse than cosmetic: PR-3a's memo
+// reuses prior consent exactly on failed/uncertain, so a delivered call
+// recorded failed grants the next identical call a popup-free reuse.
+//
+// The order: (1) explicit success — ok === true, success === true, or
+// status === 'ok' — short-circuits to delivered, whatever failure-shaped
+// fields ride along; (2) an ok field that is not success is the explicit
+// verdict (false or the loose string 'false' → failed); (3) exitCode
+// marks ONLY when the shape carries no ok field at all (the sandbox exec
+// faces' {stdout, exitCode} — the r11 shapes exitCode:1 stays failed,
+// exitCode:0 delivered); (4) a rejected/error status; (5) an
+// error-truthy error/errorMessage/message value. A RETURNED Error
+// instance is judged failed, recorded honestly: a returned error is an
+// ANSWER (the handler decided the call failed), not an uncertainty —
+// the thrown leg above stays the only 'uncertain'. Every other returned
+// shape — no success signal, no failure marks — is 'delivered' (the
+// void handler, the async-start receipt {started:'uncertain'}: an
+// accepted start is a delivered dispatch, and the async completion is
+// the poll call's own result).
 function handlerResultCarriesFailure(handlerResult: unknown): boolean {
   if (handlerResult instanceof Error) return true; // returned, not thrown: an answer
   if (typeof handlerResult !== 'object' || handlerResult === null) return false;
   const record = handlerResult as Record<string, unknown>;
+  // (1) An explicit success signal wins before every failure mark.
+  if (record.ok === true || record.success === true || record.status === 'ok') return false;
+  // (2) An ok field that is not success is the explicit verdict.
   if (record.ok === false || record.ok === 'false') return true;
-  if (typeof record.exitCode === 'number' && record.exitCode !== 0) return true;
+  // (3) exitCode marks only shapes with no ok field (the exec faces).
+  if (!('ok' in record) && typeof record.exitCode === 'number' && record.exitCode !== 0) return true;
   if (record.status === 'rejected' || record.status === 'error') return true;
   const failure = record.error ?? record.errorMessage ?? record.message;
   return failure !== undefined && failure !== null && failure !== '';

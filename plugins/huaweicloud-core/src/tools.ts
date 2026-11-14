@@ -288,33 +288,44 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
   // Envelopes are results, not throws, so a gated refusal reaches the
   // caller as the same JSON the handler would have returned.
   const approvalSpec = (APPROVAL_SPECS as Partial<Record<ToolName, ApprovalSpec>>)[name];
+  let arrivalStamp: number | undefined;
   if (approvalSpec) {
     const gated = await runApprovalGate(name, approvalSpec, args, opts);
-    if (gated !== 'pass') return gated.envelope;
+    if (!('pass' in gated)) return gated.envelope;
+    arrivalStamp = gated.pass.arrivalStamp;
   }
-  // Pack tools (every non-core name) dispatch through the central handler
-  // map in packs/registry.ts before the switch; the type guard narrows
-  // `name` to the core remainder, which is what the switch below and its
-  // never-guard are exhaustive over. opts rides through verbatim: every pack
-  // handler takes (args, opts), and the update pack's doQuery/sessionId
-  // seams keep reaching their handlers exactly as before the migration.
-  // The dispatch wrapper also hands the gate's approval spec the handler's
-  // delivery outcome (round 10, finding 4): the gate records the consent
-  // ARRIVAL before dispatch, and this leg — the only place that sees the
-  // handler's return or throw — records what became of the approved call,
-  // best-effort, for PR-3a's retry memo. Non-gated pack tools dispatch
-  // through unchanged (the recorder no-ops without a spec).
-  if (isPackToolName(name)) {
-    try {
-      const result = await PACK_TOOL_HANDLERS[name](args, opts);
-      recordApprovalDispatchOutcome(name, approvalSpec, args, opts, result);
-      return result;
-    } catch (error) {
-      recordApprovalDispatchOutcome(name, approvalSpec, args, opts, undefined, error);
-      throw error;
-    }
+  // The delivery-outcome recorder sits at the COMMON dispatch boundary
+  // (round 12, finding 3): the gate covers every roster member — pack
+  // tools and core tools alike (PR-3c's packs_configure registration is
+  // a CORE-tool dispatch through the switch below) — so the recorder must
+  // wrap BOTH dispatch legs, or a core-tool registration records its
+  // consent arrival but structurally never the delivery outcome the memo
+  // keys on. The wrapper hands the gate's spec and the arrival's stamp to
+  // the recorder; non-gated tools pay one no-op (the recorder returns
+  // without a spec) and dispatch through unchanged.
+  try {
+    const result = isPackToolName(name)
+      ? await PACK_TOOL_HANDLERS[name](args, opts)
+      : await dispatchCoreTool(name, args, opts);
+    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, result, undefined, arrivalStamp);
+    return result;
+  } catch (error) {
+    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, undefined, error, arrivalStamp);
+    throw error;
   }
+}
 
+// The core-tool dispatch leg: the switch over the core remainder, after
+// the pack guard — extracted so the delivery-outcome wrapper above can
+// cover both dispatch paths from one boundary. The compile-time
+// exhaustiveness never-guard moves with it: `name` is narrowed to
+// Exclude<ToolName, PackToolName> by the call site's isPackToolName
+// branch above.
+async function dispatchCoreTool(
+  name: Exclude<ToolName, PackToolName>,
+  args: ToolArgs,
+  opts: CallToolOptions,
+): Promise<unknown> {
   switch (name) {
     case 'huaweicloud_hook_check_command':
       return hookResult(withUnknownOperationWarn(String(args.command || ''), evaluateCommandRisk(args.command || '')));
