@@ -105,6 +105,39 @@ function wipeCounterScratch(paths: { dir: string; spool: string }): void {
   rmSync(join(paths.dir, 'approval-consents.seq'), { force: true });
 }
 
+// The memo pins' padded sidecar row (rounds 18-19): a fixed 400-byte
+// SAME-LENGTH row for any seq — the operator-remediation replacement
+// class preserves byte length — staged over the whole-read seam so the
+// stream is the only opener.
+function memoPaddedRowJson(argsHash: string, seq: number): string {
+  const row = JSON.stringify({
+    sessionId: 'ses',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash,
+    outcome: 'granted',
+    grantedAt: 5_000,
+    scope: 'once',
+    evidence: 'posture',
+    arrivalSeq: seq,
+  });
+  return row + '\n' + 'x'.repeat(400 - row.length - 1);
+}
+
+// The memo pins' posture-grade arrival on a fresh key.
+function memoPinAsk(key: string) {
+  return recordAskModeConsent({
+    sessionId: 'ses',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash: key,
+    outcome: 'granted',
+    evidence: 'posture',
+  });
+}
+
+// The memo pins' frozen operator stamp: a ms-precision instant the
+// replacement restores with utimesSync.
+const MEMO_PIN_FROZEN = new Date(1_700_000_000.123);
+
 // The shared skew-leg of the chronology pins (rounds 13-14): stage a
 // two-row store — the posture original at seq 0 under a fast clock, a
 // failure-born terminal copy at seq 1 written later after the clock
@@ -274,6 +307,42 @@ if (process.env.LEDGER_NONREGULAR_PROBE) {
     sessionId: 'ses-nonregular',
     tool: 'huaweicloud_run_approved_command',
     argsHash: 'h-nonregular',
+    outcome: 'granted',
+  });
+  writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'probe-ok'), '1');
+  process.exit(0);
+}
+
+// The r19 store/outcomes modes (round 19, finding 1): a FIFO parked at the
+// MAIN STORE or the OUTCOMES side channel — the two read seams the r18
+// fix left unguarded. The child parks the FIFO, runs ONE ask-mode arrival,
+// and writes the marker: a wedge reads as the parent's kill bound.
+if (process.env.LEDGER_NONREGULAR_STORE) {
+  const probeDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud');
+  mkdirSync(probeDir, { recursive: true });
+  const mkstore = spawnSync('mkfifo', [join(probeDir, 'approval-consents.json')]);
+  if (mkstore.error !== undefined || mkstore.status !== 0)
+    rmSync(join(probeDir, 'approval-consents.json'), { force: true });
+  recordAskModeConsent({
+    sessionId: 'ses-nonregular',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash: 'h-nonregular-store',
+    outcome: 'granted',
+  });
+  writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'probe-ok'), '1');
+  process.exit(0);
+}
+
+if (process.env.LEDGER_NONREGULAR_OUTCOMES) {
+  const probeDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud');
+  mkdirSync(probeDir, { recursive: true });
+  const mkout = spawnSync('mkfifo', [join(probeDir, 'approval-consents.json.outcomes.jsonl')]);
+  if (mkout.error !== undefined || mkout.status !== 0)
+    rmSync(join(probeDir, 'approval-consents.json.outcomes.jsonl'), { force: true });
+  recordAskModeConsent({
+    sessionId: 'ses-nonregular',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash: 'h-nonregular-outcomes',
     outcome: 'granted',
   });
   writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'probe-ok'), '1');
@@ -1789,9 +1858,22 @@ test(
 const FS_COUNT_HOOK_SOURCE = [
   "const fs = require('node:fs');",
   'const real = fs.readFileSync;',
+  'const realOpen = fs.openSync;',
   'globalThis.__outcomesReads = 0;',
+  // Round 19: the ledger's read seams open through the guarded O_NONBLOCK
+  // open and read from the FD, so the hook maps fds to their open paths
+  // and counts both spellings (the path form from the pre-r19 era and the
+  // fd form the ledger now uses).
+  'const fdPaths = new Map();',
+  'fs.openSync = function patchedOpenSync(path, ...rest) {',
+  '  const fd = realOpen.call(fs, path, ...rest);',
+  '  try { fdPaths.set(fd, String(path)); } catch {}',
+  '  return fd;',
+  '};',
   'fs.readFileSync = function patchedReadFileSync(path, ...rest) {',
-  "  if (String(path).endsWith('.outcomes.jsonl')) globalThis.__outcomesReads += 1;",
+  '  let p = String(path);',
+  '  if (typeof path === "number" && fdPaths.get(path) !== undefined) p = String(fdPaths.get(path));',
+  "  if (p.endsWith('.outcomes.jsonl')) globalThis.__outcomesReads += 1;",
   '  return real.call(fs, path, ...rest);',
   '};',
 ].join('\n');
@@ -2579,33 +2661,13 @@ test(
     const sidecar = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r18-memo');
     const prevLimit = process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
     process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = '64'; // the seam: the whole-read paths skip it, the stream is the only floor source
-    const rowPadded = (seq: number): string => {
-      const row = JSON.stringify({
-        sessionId: 'ses',
-        tool: 'huaweicloud_run_approved_command',
-        argsHash: 'h-r18-K',
-        outcome: 'granted',
-        grantedAt: 5_000,
-        scope: 'once',
-        evidence: 'posture',
-        arrivalSeq: seq,
-      });
-      return row + '\n' + 'x'.repeat(400 - row.length - 1); // same byte length for both contents
-    };
-    const ask = (key: string) =>
-      recordAskModeConsent({
-        sessionId: 'ses',
-        tool: 'huaweicloud_run_approved_command',
-        argsHash: key,
-        outcome: 'granted',
-        evidence: 'posture',
-      });
+    const rowPadded = (seq: number): string => memoPaddedRowJson('h-r18-K', seq);
+    const ask = memoPinAsk;
     try {
       // Stage: the sidecar owns seq 5, its mtime frozen to a ms-precision
       // instant (the operator's preserved stamp).
       writeFileSync(sidecar, rowPadded(5));
-      const frozen = new Date(1_700_000_000.123);
-      utimesSync(sidecar, frozen, frozen);
+      utimesSync(sidecar, MEMO_PIN_FROZEN, MEMO_PIN_FROZEN);
       const first = ask('h-r18-first');
       assert.ok(
         first.arrivalSeq > 5,
@@ -2618,7 +2680,7 @@ test(
       // collide the r17 key. Only the kernel-maintained ctime moves (bumped by
       // the write AND by the utimes call itself).
       writeFileSync(sidecar, rowPadded(7));
-      utimesSync(sidecar, frozen, frozen);
+      utimesSync(sidecar, MEMO_PIN_FROZEN, MEMO_PIN_FROZEN);
 
       // Post-fix: the memo key sees the ctime change -> re-stream -> the
       // replacement's real max (7) floors the append -> 8, never a re-issue
@@ -2723,6 +2785,140 @@ test(
         reject(error);
       });
     });
+  }),
+);
+
+test(
+  'a non-regular entry at the store and outcomes paths blinds the read seams, never wedges the append (round-19 finding 1)',
+  withLedgerHome((home) => {
+    // Both cells run in spawned children with kill bounds — a blocking
+    // open kills the event loop, so no in-process timeout can fire and a
+    // wedge reads as the bound (the r18 pin's probe discipline). The r18
+    // fix guarded the spool-shaped seams only; a FIFO at the STORE path
+    // (readRawConsents: the tier resolution, the append, the real callTool
+    // face, cross-process — the degraded path re-entering the same read
+    // past its 3s cap) or at the OUTCOMES path (applyOutcomeLines: every
+    // readConsentEvents) wedged unboundedly inside the lock's hold.
+    const cell = (mode: string, label: string): Promise<void> =>
+      new Promise<void>((resolve, reject) => {
+        const child = spawnLedgerWorker(home, { [mode]: '1' });
+        const bound = setTimeout(() => {
+          child.kill('SIGKILL');
+          reject(new Error(`${label}: the append wedged on a non-regular entry (killed at the 15s bound)`));
+        }, 15_000);
+        child.on('exit', (code) => {
+          clearTimeout(bound);
+          if (code !== 0) {
+            reject(new Error(`${label}: the probe child exited ${code}`));
+            return;
+          }
+          assert.ok(existsSync(join(home, 'probe-ok')), `${label}: the child completed its append`);
+          rmSync(join(home, 'probe-ok'), { force: true });
+          resolve();
+        });
+        child.on('error', (error) => {
+          clearTimeout(bound);
+          reject(error);
+        });
+      });
+    return cell('LEDGER_NONREGULAR_STORE', 'the store path').then(() =>
+      cell('LEDGER_NONREGULAR_OUTCOMES', 'the outcomes path'),
+    );
+  }),
+);
+
+test(
+  'the memo hit validates content anchors: a replaced sidecar re-scans, whatever the metadata clock did (round-19 finding 2)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const sidecar = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r19-anchors');
+    const prevLimit = process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+    process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = '64'; // the seam: the stream is the only opener
+    const rowPadded = (seq: number): string => memoPaddedRowJson('h-r19-K', seq);
+    const ask = memoPinAsk;
+    try {
+      // Stage: the sidecar owns seq 5 (memoized by the first append); the
+      // operator's IN-PLACE replacement owns 7 — same path, same inode,
+      // same byte length, the mtime restored with utimesSync. The r18 key
+      // catches it when the ctime tick moved; the r19 same-tick forge
+      // collides every metadata field — the CONTENT anchors (the first
+      // and last seq values the scan extracted) decide: the replacement
+      // changes them, the hit re-reads them, any mismatch re-scans.
+      writeFileSync(sidecar, rowPadded(5));
+      utimesSync(sidecar, MEMO_PIN_FROZEN, MEMO_PIN_FROZEN);
+      const first = ask('h-r19-first');
+      assert.ok(
+        first.arrivalSeq > 5,
+        `the sidecar's committed seq floored the first append above 5 (got ${first.arrivalSeq})`,
+      );
+
+      writeFileSync(sidecar, rowPadded(7));
+      utimesSync(sidecar, MEMO_PIN_FROZEN, MEMO_PIN_FROZEN);
+
+      const second = ask('h-r19-second');
+      assert.ok(
+        second.arrivalSeq > 7,
+        `the replacement's rows floored the second append above 7 — the content anchors decided (got ${second.arrivalSeq})`,
+      );
+
+      // The anchors re-validate a memo hit on UNTOUCHED content too: the
+      // third append memo-hits (the anchors match) and floors correctly.
+      const third = ask('h-r19-third');
+      assert.ok(third.arrivalSeq > second.arrivalSeq, 'an untouched memo hit still floors correctly');
+    } finally {
+      if (prevLimit === undefined) delete process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+      else process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = prevLimit;
+    }
+  }),
+);
+
+test(
+  'a needle-lost wide-gap row blinds the source, never a silent miss: the dead-span posture (round-19 finding 3)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const sidecar = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r19-deadspan');
+    const prevLimit = process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+    process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = '64'; // the seam: the scan is the only opener
+    const CH = 1 << 20; // SEQ_SCAN_CHUNK_BYTES
+    try {
+      // The needle-lost shape (both seats): the straddle row's seq is 3 —
+      // exactly what the pre-fix counter assigned next (the floor sees the
+      // in-chunk control at 2), so the miss WAS the immediate duplicate.
+      // The needle starts 321 bytes before the 1MB boundary (outside the
+      // 320-byte carry) with the number past it: the pass ends inside the
+      // open span, the needle falls out of the carry, and the span can
+      // never complete — the r19 detector marks the source BLINDED (the
+      // chronology-unknown sentinel), never a silent miss.
+      stageStore(home, '[]');
+      const control =
+        '{"sessionId":"ses","tool":"huaweicloud_run_approved_command","argsHash":"ctl","outcome":"granted","grantedAt":1,"scope":"once","evidence":"posture","arrivalSeq":2}\n';
+      const rowPrefix =
+        '{"sessionId":"ses","tool":"huaweicloud_run_approved_command","argsHash":"dead","outcome":"granted","grantedAt":1,"scope":"once","evidence":"posture",';
+      const spanStart = CH - 321;
+      // The needle must land at CH-321 ABSOLUTE — the control row precedes
+      // the head, so its bytes count toward the placement.
+      const head = 'x'.repeat(spanStart - control.length - rowPrefix.length) + rowPrefix;
+      const span = '"arrivalSeq"' + ' '.repeat(399) + ':' + '3';
+      const tail = 'y'.repeat(300) + '\n'; // past the boundary: the boundary is interior, the file continues
+      writeFileSync(sidecar, control + head + span + '}\n' + tail);
+
+      const arrival = recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r19-dead',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      assert.equal(
+        arrival.arrivalSeq,
+        Number.MAX_SAFE_INTEGER,
+        `the needle-lost span blinds the source — the sentinel, never a silent miss (got ${arrival.arrivalSeq})`,
+      );
+      assert.notEqual(arrival.arrivalSeq, 3, "the missed row's committed seq 3 is never assigned — no duplicate");
+    } finally {
+      if (prevLimit === undefined) delete process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+      else process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = prevLimit;
+    }
   }),
 );
 

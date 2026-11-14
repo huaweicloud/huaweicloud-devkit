@@ -69,6 +69,7 @@
 // retry).
 import {
   closeSync,
+  constants,
   existsSync,
   fstatSync,
   mkdirSync,
@@ -280,66 +281,132 @@ function writeSeqFileMonotonic(next: number): void {
 // unknowable seqs, so the caller must mark the arrival chronology-unknown
 // rather than risk a duplicate.
 const SEQ_SCAN_CHUNK_BYTES = 1 << 20;
-// Round 18, finding 2 (A1; A2's O1): the r17 carry was 64 bytes on the claim
-// "> the needle + the longest numeric literal" — false for the regex it
-// runs, whose needle-to-number gap (\s*:\s*) is UNBOUNDED: a committed,
-// JSON-valid row whose gap exceeded the carry and straddled the chunk
-// boundary lost its needle between passes and its seq was NEVER extracted —
-// a false NEGATIVE on a valid row, the duplicate-producing direction (T4:
-// the counter re-issued 301; the in-chunk control took 302). The carry now
-// covers the needle-to-number span for gaps up to ~290 bytes: a needle
-// whose number lies past the chunk end must have started within the last
-// CARRY bytes to be carried whole into the next haystack, so any gap up to
-// CARRY - needle(12) - literal headroom is extracted across the boundary.
-// A WIDER gap is a documented miss (the hand-formatted class: no JSON
-// producer — JSON.stringify or any formatter — emits more than one space
-// after a colon, so writer-produced rows always extract; the truncated
-// number a boundary DOES see still floors at or below the real value — a
-// gap, never a duplicate).
+// Round 18, finding 2 (A1; A2's O1) set the carry at 320 bytes; round 19,
+// finding 3 (both seats) falsified the miss claim that accompanied it.
+// The extraction geometry: a needle whose number lies past the chunk end
+// is carried whole into the next haystack iff its start is within the
+// last CARRY bytes — so a needle at ≥ (boundary - CARRY) extracts across
+// the boundary at ANY gap width (the carry+chunk concatenation makes the
+// span contiguous; measured: 4000-5000-space gaps extract), and the
+// boundary of the whole story is the NEEDLE's distance from the edge
+// (320/321), not the gap. What the r18 comment got WRONG: it called a
+// needle lost past the carry "a documented miss ... a gap, never a
+// duplicate" — both directions falsified: a lost-needle row's seq is
+// invisible to every floor source (the file is past the whole-read limit,
+// so the fold cannot read it either), and the next append assigns the
+// missed row's committed seq (A2: a 501MiB sidecar at the DEFAULT limit,
+// assignments [6,7,8,9] with the missed row owning 9; after the operator
+// split the equal-seq pair falls to grantedAt and the reuse inherited
+// terminal — the fabricated upgrade); the truncated-prefix shape was
+// worse: the prefix floors at-or-below only for the NEXT assignment, and
+// the counter MARCHES INTO the row's committed seq a few appends later
+// (A1: six appends walked [301..306] into the row's 305). The r19 fix
+// is the dead-span detector in streamMaxValidSeq: a pass that ends
+// inside an open-or-truncated needle-to-literal span whose needle falls
+// outside the carry marks the source BLINDED — the chronology-unknown
+// doctrine, the sentinel — never a silent miss. The extractor's reach
+// stays: gaps of ANY width extract while the needle is within the
+// carry; the detector governs only the needle-lost shapes.
 const SEQ_SCAN_CARRY_BYTES = 320;
 
-function streamMaxValidSeq(path: string): { max: number; blinded: boolean } {
+// The streamed scan's shape: the max plus the CONTENT ANCHORS the memo
+// validates (round 19, finding 2) — headSeq is the first seq value in the
+// FIRST haystack (the file's first chunk), tailSeq the last in the final
+// haystack (its last chunk+carry) — window-scoped so a bounded re-read of
+// the same windows re-extracts exactly these values.
+type StreamSeqScan = { max: number; blinded: boolean; headSeq: number | undefined; tailSeq: number | undefined };
+
+function streamMaxValidSeq(path: string): StreamSeqScan {
   let fd: number | undefined;
   try {
-    // Round 18, finding 3 (A2): the scan's only failure class was THROWN
-    // errors — a FIFO entry with the reserved .taken-* name BLOCKED the
-    // open, and a symlink to /dev/zero never reached EOF, wedging the
-    // append path unboundedly inside the ledger lock's hold (the heartbeat
-    // kept the claim fresh, so takeover never fired and every other
-    // process's contender degraded only to re-enter the same scan). A
-    // non-regular entry is a BLINDED source, never opened: the stat is
-    // non-blocking, and no devkit writer creates such files, so the
-    // posture for hand-staged entries is bounded-blindness, the same class
-    // as the unreadable file.
-    const entryStat = statSync(path);
-    if (!entryStat.isFile()) return { max: -1, blinded: true }; // FIFO/device/directory: never open it
-    fd = openSync(path, 'r');
+    // Rounds 18-19, findings 3/1/4: the scan's only failure class was
+    // THROWN errors — a FIFO entry with the reserved .taken-* name BLOCKED
+    // the open, a symlink to /dev/zero never reached EOF, and a rename
+    // landing between the r18 stat and the open wedged the append inside
+    // the ledger lock's hold (the heartbeat kept the claim fresh, so
+    // takeover never fired). The open is atomic-by-construction now:
+    // O_NONBLOCK (a no-op on regular files) + the FD's own fstat — a
+    // non-regular entry is a BLINDED source, never read, whatever the
+    // path held at any instant.
+    fd = openRegularForRead(path);
+    if (fd === undefined) return { max: -1, blinded: true, headSeq: undefined, tailSeq: undefined };
     const chunk = Buffer.alloc(SEQ_SCAN_CHUNK_BYTES);
     // A number cut by a chunk boundary matches TRUNCATED in this pass and
-    // whole in the next (the carry re-presents it): truncation only drops
-    // trailing digits, so the truncated value is never ABOVE the real one,
-    // and the full value follows — the max converges. A number ending at
-    // EOF is matched by its own final chunk's pass, terminator or not.
+    // whole in the next when the NEEDLE is carried (the carry re-presents
+    // it): truncation only drops trailing digits, so the truncated value
+    // is never ABOVE the real one, and the full value follows — the max
+    // converges. A number ending at EOF is matched by its own final
+    // chunk's pass, terminator or not.
     const seqFieldRe = /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/g;
+    // Round 19, finding 3 (both seats): the dead-span detector. A pass
+    // whose text ENDS inside a needle-to-literal span is the shape the
+    // r18 comment called "a gap, never a duplicate" — falsified: when the
+    // NEEDLE also falls outside the carry window, the span can never
+    // complete in a later pass (the next haystack starts mid-gap with no
+    // needle), the row's real seq is invisible to every floor source, and
+    // the next append assigned the missed row's committed seq — the
+    // duplicate direction (A2: a 501MiB sidecar, [6,7,8,9] with the
+    // missed row owning 9; A1: the truncated-prefix shape let the counter
+    // MARCH INTO the row's seq across six appends; both ran to the
+    // fabricated-upgrade chain). The detector: the text ends with an
+    // open-or-partial needle-to-number span (the regex allows an empty or
+    // truncated literal at the very end) AND the span's needle starts
+    // before the carry window (it will not be carried) — a DEAD span. The
+    // safe posture the doctrine already uses for a blinded file: mark the
+    // source BLINDED (chronology-unknown, the sentinel), never a silent
+    // miss. A needle INSIDE the carry completes next pass and never trips
+    // the detector (the r18 extraction pin); at true EOF an open span is
+    // a torn tail — an UNCOMMITTED row (the r17 doctrine, its gap
+    // semantics measured safe) — so the flag is cleared when the next
+    // read returns empty. The needle position compares in BYTES (the carry
+    // window is bytes; a multibyte tail would otherwise skew the boundary).
+    // The colon is OPTIONAL: a span whose colon lies past the chunk boundary
+    // ends the pass as needle+whitespace with no colon yet — the same dead
+    // shape (the needle outside the carry can never be re-presented).
+    const openSpanRe = /"arrivalSeq"\s*:?\s*(-?[\d.eE+]*)$/;
     let carry = Buffer.alloc(0);
     let max = -1;
+    let headSeq: number | undefined;
+    let tailSeq: number | undefined;
+    // The dead-span verdict is PER BOUNDARY: a pass whose text ends inside
+    // an open span with the needle outside the carry leaves that span dead
+    // forever — but ONLY when a following chunk exists (an interior
+    // boundary). The LAST data pass's boundary is the file's true EOF,
+    // where an open span is a torn tail — an uncommitted row, the r17
+    // doctrine: its partial value only ever floors at-or-below real, and
+    // no duplicate can form from a row no reader will ever see whole. So
+    // each pass's verdict is held PENDING until the next read proves a
+    // following chunk exists; the EOF read discards the pending verdict,
+    // and every earlier boundary's verdict stands (a multi-chunk file can
+    // carry its dead span at the FIRST boundary with clean text after).
+    let deadAccum = false;
+    let pendingDead = false;
+    let firstPass = true;
     for (;;) {
       const read = readSync(fd, chunk, 0, chunk.length, null);
-      if (read === 0) break;
+      if (read === 0) break; // the pending verdict was the EOF boundary's: discard it (torn tail)
       const data = chunk.subarray(0, read);
       const haystack = carry.length > 0 ? Buffer.concat([carry, data]) : data;
       const text = haystack.toString('utf8');
       let match: RegExpExecArray | null;
       while ((match = seqFieldRe.exec(text)) !== null) {
-        const value = Number(match[1]);
+        const value = Number(match[1]!);
+        if (firstPass && headSeq === undefined) headSeq = value;
+        tailSeq = value;
         if (isValidArrivalSeq(value) && value > max) max = value;
       }
+      deadAccum = deadAccum || pendingDead; // the previous pass's boundary had a following chunk: it stands
+      const span = openSpanRe.exec(text);
+      pendingDead =
+        span !== null && Buffer.byteLength(text.slice(0, span.index), 'utf8') < haystack.length - SEQ_SCAN_CARRY_BYTES;
+      firstPass = false;
       const keep = Math.min(SEQ_SCAN_CARRY_BYTES, haystack.length);
       carry = Buffer.from(haystack.subarray(haystack.length - keep)); // copy: the chunk is reused
     }
-    return { max, blinded: false };
+    if (deadAccum) return { max: -1, blinded: true, headSeq, tailSeq };
+    return { max, blinded: false, headSeq, tailSeq };
   } catch {
-    return { max: -1, blinded: true }; // unreadable: committed rows behind it own unknowable seqs
+    return { max: -1, blinded: true, headSeq: undefined, tailSeq: undefined }; // unreadable: unknown owners
   } finally {
     if (fd !== undefined) {
       try {
@@ -351,33 +418,89 @@ function streamMaxValidSeq(path: string): { max: number; blinded: boolean } {
   }
 }
 
-// The sidecar scan memo (round 17, finding 3; key discipline round 18,
-// finding 1, both seats): a successful scan's result is memoized so the
-// SECOND append pays nothing. The key is ENFORCED, not assumed: r17 keyed
-// by path+mtime+size on the "append-only-immutable once taken" claim, and
-// both r18 seats falsified the claim with the operator-remediation class —
-// a timestamp-preserving replacement (cp -p, a restore, or an in-place
-// rewrite with utimesSync restoring the mtime) collides all three fields
-// and the memo decided the floor from bytes that no longer existed,
-// re-issuing the replacement's committed seq (A1's harm cell ran the full
-// chain: operator split -> visible duplicate -> the reuse inherited the
-// stronger tier). The key now includes the identity the kernel maintains
-// and userland tools cannot forge: dev+ino (a cp -p or rename-replacement
-// is a different inode) and ctimeMs — POSIX status-change time, bumped by
-// EVERY write AND by the utimesSync call itself, so restoring the mtime
-// restores nothing about it (verified: an in-place writeFileSync plus
-// utimesSync back to the frozen mtime leaves mtime and ino identical and
-// ctime moved). The stored key is also READ-VALIDATED: the file is stat'ed
-// before the stream and again after it, and the memo is written only when
-// the two stats agree — bytes that changed while the scan was in flight
-// are never cached under the new content's key. What remains outside the
-// key is deliberate inode-level forgery (debugfs-class) — an adversary
-// with that access can hand-stage any content directly, the documented
-// trust boundary for staged state. Failures are NEVER memoized: a
-// chmod-blocked file's recovery (the r16 pin) must rescan.
+// Re-extract the content anchors over the same windows the scan saw
+// (round 19, finding 2): two positioned reads — the first chunk, and the
+// final chunk+carry — no O(file) pass. The values compare exactly against
+// the memoized anchors; the windows are the scan's own first and last
+// haystacks, so an unchanged file re-extracts identical anchors whatever
+// the metadata clock did.
+function readAnchorSeqs(path: string): { headSeq: number | undefined; tailSeq: number | undefined } | undefined {
+  const fd = openRegularForRead(path);
+  if (fd === undefined) return undefined; // blinded/absent now: force the full rescan (it re-blinds)
+  try {
+    const size = fstatSync(fd).size;
+    let headSeq: number | undefined;
+    let tailSeq: number | undefined;
+    if (size > 0) {
+      const headRe = /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/;
+      const headLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES);
+      const headBuf = Buffer.alloc(headLen);
+      const got = readSync(fd, headBuf, 0, headLen, 0);
+      const headMatch = headRe.exec(headBuf.toString('utf8', 0, got));
+      if (headMatch !== null) headSeq = Number(headMatch[1]!);
+      const tailRe = /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/g;
+      const tailLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES + SEQ_SCAN_CARRY_BYTES);
+      const tailBuf = Buffer.alloc(tailLen);
+      const tailGot = readSync(fd, tailBuf, 0, tailLen, Math.max(0, size - tailLen));
+      const tailText = tailBuf.toString('utf8', 0, tailGot);
+      let tailMatch: RegExpExecArray | null;
+      while ((tailMatch = tailRe.exec(tailText)) !== null) tailSeq = Number(tailMatch[1]!);
+    }
+    return { headSeq, tailSeq };
+  } catch {
+    return undefined;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+// The sidecar scan memo (round 17, finding 3; key discipline rounds 18-19):
+// a successful scan's result is memoized so the SECOND append pays
+// nothing. The key is ENFORCED, not assumed — twice falsified now: r18
+// keyed by path+mtime+size on the "append-only-immutable once taken"
+// claim, and both seats falsified it with the operator-remediation class
+// (a timestamp-preserving replacement collided all three fields); the r18
+// fix added dev+ino+ctimeMs on the "userland cannot forge ctime" claim —
+// and r19 (A1) falsified THAT against the kernel's COARSE clock (~1ms
+// ticks): a touch loop holds the sidecar's ctime at the current tick
+// through append1's scan, the rewrite fires in the SAME tick, all five
+// fields collide, and the stale memo re-issued the replacement's
+// committed seq — the full r18 harm chain, 14/100 on tmpfs (ext4 0/400,
+// the filesystem-latency dependence the unconditional claim hid). The
+// hit is now CONTENT-VALIDATED, not metadata-validated: the memo stores
+// the CONTENT ANCHORS the scan itself extracted — headSeq/tailSeq, the
+// first and last seq values in the scan's first and final haystack
+// windows — and every hit re-reads those two windows (two positioned
+// reads, O(1) at the 588MB scale) and compares: any mismatch rescans.
+// The anchors describe the bytes the memoized max was computed FROM, so
+// a replaced file shows different anchors whatever the metadata clock
+// did — the same-tick forge's replacement changes the whole file, both
+// windows included. The metadata fields stay as a cheap first gate (a
+// post-decision replacement still rescans at the stat without paying the
+// anchor reads); the read-validate (stat before and after the scan)
+// stays as the in-flight guard on the WRITE side. What remains outside
+// the anchors, disclosed honestly: a rewrite confined to the MIDDLE of a
+// >2MB sidecar that preserves both end windows byte-for-byte — bounded
+// content validation cannot see middle bytes, and the complete closure
+// is a per-append full rescan (the exact r17 finding-3 cost the memo
+// exists to avoid). Failures are NEVER memoized: a chmod-blocked file's
+// recovery (the r16 pin) must rescan.
 const takenSeqScanMemo = new Map<
   string,
-  { dev: number; ino: number; mtimeMs: number; ctimeMs: number; size: number; max: number }
+  {
+    dev: number;
+    ino: number;
+    mtimeMs: number;
+    ctimeMs: number;
+    size: number;
+    max: number;
+    headSeq: number | undefined;
+    tailSeq: number | undefined;
+  }
 >();
 
 // The .taken-* sidecar seq scan (round 16, finding 2, both seats; streamed
@@ -419,8 +542,19 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
         memo.dev === statBefore.dev &&
         memo.ino === statBefore.ino
       ) {
-        if (memo.max > max) max = memo.max;
-        memoized = true;
+        // Round 19, finding 2: the metadata fields can all collide under
+        // the kernel's coarse ctime clock (the same-tick in-flight
+        // rewrite), so the hit is decided by CONTENT: re-read the anchor
+        // windows and compare against the values the scan extracted.
+        // The anchors match -> the bytes the max was computed from are
+        // still the bytes at both ends -> trust the memoized max. Any
+        // mismatch (or an anchor read that now blinds) falls through to
+        // the full rescan.
+        const anchors = readAnchorSeqs(file);
+        if (anchors !== undefined && anchors.headSeq === memo.headSeq && anchors.tailSeq === memo.tailSeq) {
+          if (memo.max > max) max = memo.max;
+          memoized = true;
+        }
       }
     } catch {
       // the stat failed: fall through to the stream (which will blind)
@@ -448,6 +582,8 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
           ctimeMs: statAfter.ctimeMs,
           size: statAfter.size,
           max: scanned.max,
+          headSeq: scanned.headSeq,
+          tailSeq: scanned.tailSeq,
         });
       }
     } catch {
@@ -693,7 +829,15 @@ function readRawConsents(): unknown[] | undefined {
   try {
     const path = ledgerFilePath();
     if (!existsSync(path)) return undefined;
-    const parsed: unknown = JSON.parse(readFileSync(path, 'utf8'));
+    // Round 19, finding 1: the main store read runs through the guarded
+    // open — a FIFO parked at the store path wedged every arrival (the
+    // tier resolution, the append, the real callTool face, cross-process).
+    // A non-regular entry reads as absent-or-unreadable, the callers'
+    // existing degraded postures (lockedAppend quarantines it — the
+    // rename preserves the entry's bytes and the tree unblocks).
+    const text = readWholeTextViaFd(path, false);
+    if (text === undefined) return undefined;
+    const parsed: unknown = JSON.parse(text);
     return Array.isArray(parsed) ? parsed : undefined;
   } catch {
     return undefined;
@@ -719,23 +863,75 @@ function wholeReadLimitBytes(): number {
   return Number.isSafeInteger(override) && override > 0 ? override : WHOLE_FILE_STRING_LIMIT_BYTES;
 }
 
-function readSpoolTextWhole(path: string): string | undefined {
+// Open a ledger data file for reading WITHOUT the blocking hazard, with
+// the FD's own identity — not the path's — deciding (rounds 18-19): the
+// open carries O_NONBLOCK, so a FIFO's open returns immediately instead
+// of waiting for a writer (a regular file ignores the flag entirely), and
+// the fstatSync validates THE INODE THE OPEN LANDED ON — a FIFO, device,
+// socket, or directory renamed over the path after any stat is caught AT
+// the open, killing the stat→open TOCTOU by construction (round 19,
+// finding 4, both seats: a rename storm swapped a FIFO in between the
+// r18 stat and the open and wedged the append inside the lock's hold,
+// the heartbeat keeping the claim fresh so takeover never fired). A
+// non-regular entry is a BLINDED source, never read; an absent or
+// unopenable path reads the same (undefined) — one posture for every
+// failure, bounded by construction.
+function openRegularForRead(path: string): number | undefined {
+  let fd: number | undefined;
   try {
-    const stat = statSync(path);
-    // Round 18, finding 3: a non-regular entry (a FIFO, a device) is
-    // skipped without opening — a FIFO's readFileSync BLOCKS forever (the
-    // merged view and the take's fold both read through this seam, and the
-    // tier resolution reaches it before the scan does).
-    if (!stat.isFile()) return undefined; // blinded: no lines, the file kept
-    if (stat.size > wholeReadLimitBytes()) return undefined; // would throw late: skip
+    fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK);
+    if (!fstatSync(fd).isFile()) {
+      closeSync(fd);
+      return undefined; // FIFO/device/directory/socket: blinded, never read
+    }
+    return fd;
   } catch {
-    return undefined; // unstatable or absent: the read would fail anyway
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // best-effort: a leaked descriptor is the least harm here
+      }
+    }
+    return undefined; // absent or unopenable: the same blinded posture
   }
+}
+
+// Whole-file text read through the guarded open (round 19, finding 1):
+// EVERY ledger read seam — the main store, the outcomes side channel, the
+// spool and its .taken-* sidecars — opens through openRegularForRead, so
+// a non-regular entry anywhere on the read path blinds in bounded time
+// instead of wedging the append (the r18 fix guarded the spool-shaped
+// seams only; a FIFO parked at the STORE or OUTCOMES path wedged the tier
+// resolution, the append, the real callTool face, and cross-process — the
+// degraded path re-entered the same blocking read past its 3s cap, S5).
+// `limitCheck` applies the whole-read size guard (the spool-shaped files:
+// line-oriented append-only sidecars); the store and the outcomes channel
+// read through whatever fits V8's string (a 500-512MB legal file keeps
+// parsing — the >512MB shape throws and degrades exactly as before, now
+// without the read ever blocking).
+function readWholeTextViaFd(path: string, limitCheck: boolean): string | undefined {
+  const fd = openRegularForRead(path);
+  if (fd === undefined) return undefined; // absent, unopenable, or non-regular
   try {
-    return readFileSync(path, 'utf8');
+    if (limitCheck && fstatSync(fd).size > wholeReadLimitBytes()) return undefined; // would throw late: skip
+    return readFileSync(fd, 'utf8');
   } catch {
     return undefined;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // best-effort: the read is complete or failed regardless
+    }
   }
+}
+
+// The spool-shaped whole read: the size guard applies (the sidecars are
+// line-oriented append-only files; a past-limit one reads as no lines at
+// O(1) while the streaming scan still floors from its seq fields).
+function readSpoolTextWhole(path: string): string | undefined {
+  return readWholeTextViaFd(path, true);
 }
 
 // The spool's raw lines, best-effort: every non-empty line as text. A line
@@ -811,7 +1007,16 @@ function appendLineAdditively(path: string, line: string): void {
     mkdirSync(dirname(path), { recursive: true });
     const fd = openSync(path, 'a+', 0o600);
     try {
-      const start = fstatSync(fd).size;
+      const stat = fstatSync(fd);
+      // Round 19: the additive write seams take the same non-regular
+      // posture as the reads — a FIFO at the spool or outcomes path opens
+      // ('a+' is O_RDWR: a FIFO is its own reader) and accepts writes
+      // into its pipe buffer until the buffer fills, then BLOCKS forever
+      // on the approved call's tail. The fd's own identity decides: a
+      // non-regular entry is never written (the best-effort skip — the
+      // same posture as a failed write).
+      if (!stat.isFile()) return;
+      const start = stat.size;
       if (start > 0) {
         const tail = new Uint8Array(1);
         const read = readSync(fd, tail, 0, 1, start - 1);
@@ -1403,9 +1608,14 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
   try {
     const path = ledgerOutcomePath();
     if (!existsSync(path)) return;
-    lines = readFileSync(path, 'utf8')
-      .split('\n')
-      .filter((line) => line.trim().length > 0);
+    // Round 19, finding 1: the outcomes channel's read runs through the
+    // guarded open (a FIFO at this path wedged every readConsentEvents —
+    // the tier resolution reaches it on the way IN of every arrival);
+    // unreadable-or-non-regular reads as no lines: the rows keep their
+    // arrival shape, the documented side-channel tolerance.
+    const text = readWholeTextViaFd(path, false);
+    if (text === undefined) return;
+    lines = text.split('\n').filter((line) => line.trim().length > 0);
   } catch {
     return; // unreadable side channel: the rows keep their arrival shape
   }
