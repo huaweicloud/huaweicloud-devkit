@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { contendOneAppend, spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness.ts';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -514,6 +514,153 @@ test(
     } finally {
       wedged.kill();
     }
+  }),
+);
+
+test(
+  'a torn spool tail never eats the next committed append, and a lost trailing newline never hides the last complete line (round-7 finding 1)',
+  withLedgerHome(async (home) => {
+    const dir = join(home, '.config', 'huaweicloud');
+    const spool = join(dir, 'approval-consents.json.spool.jsonl');
+    const lockRoot = join(dir, 'approval-consents-lock');
+    mkdirSync(dir, { recursive: true });
+    // Deterministic degradation (the round-3 unhostable-tree shape): a
+    // regular FILE where the lock root belongs makes every acquisition
+    // throw, so the append takes the additive-spool path with no wedge
+    // and no timing.
+    const degrade = (): void => writeFileSync(lockRoot, 'not-a-directory');
+    const restore = (): void => rmSync(lockRoot, { force: true });
+
+    // The torn tail: one good line, then a mid-JSON fragment with no
+    // trailing newline (what a disk-full clamp or a crash mid-append
+    // leaves). Pre-fix, the next degraded append glued onto the fragment
+    // and the committed event was invisible before AND after every
+    // compaction (the seats' organic EFBIG chain).
+    writeFileSync(
+      spool,
+      JSON.stringify(baseEvent({ sessionId: 'pre-torn', argsHash: 'h-pre' })) + '\n{"sessionId":"torn-frag',
+    );
+    degrade();
+    appendConsentEvent(baseEvent({ sessionId: 'after-torn', argsHash: 'h-after' }));
+    restore();
+    let ids = readConsentEvents().map((event) => event.sessionId);
+    assert.ok(ids.includes('pre-torn'), 'the pre-torn lines stay visible');
+    assert.ok(ids.includes('after-torn'), 'the new committed line is visible — it did not glue onto the fragment');
+
+    // The lost-newline tail: a COMPLETE line whose trailing newline was
+    // the byte a short write dropped. Pre-fix, the next append glued BOTH
+    // events into one unparseable line — retroactively hiding the
+    // previously-visible one. The fragment line above stays in the file
+    // so the compaction leg also proves its raw preservation.
+    writeFileSync(
+      spool,
+      '{"sessionId":"torn-frag"\n' + JSON.stringify(baseEvent({ sessionId: 'complete-line', argsHash: 'h-complete' })),
+    );
+    degrade();
+    appendConsentEvent(baseEvent({ sessionId: 'next-line', argsHash: 'h-next' }));
+    restore();
+    ids = readConsentEvents().map((event) => event.sessionId);
+    assert.ok(ids.includes('complete-line'), 'the previously-visible complete line stays visible');
+    assert.ok(ids.includes('next-line'), 'the new committed line is visible');
+
+    // The compaction keeps every committed line visible and preserves the
+    // fragment raw.
+    appendConsentEvent(baseEvent({ sessionId: 'compactor', argsHash: 'h-comp' }));
+    ids = readConsentEvents().map((event) => event.sessionId);
+    assert.ok(
+      ids.includes('complete-line') && ids.includes('next-line') && ids.includes('compactor'),
+      'the folded view keeps every committed line visible',
+    );
+    const store = JSON.parse(readFileSync(join(dir, 'approval-consents.json'), 'utf8')) as unknown[];
+    assert.ok(
+      store.some((entry) => typeof entry === 'string' && entry.includes('torn-frag')),
+      'the torn fragment is preserved raw in the store',
+    );
+  }),
+);
+
+test(
+  'a taken compaction sidecar is visible to the merged reader and carries tier inheritance (round-7 finding 2)',
+  withLedgerHome(async (home) => {
+    const dir = join(home, '.config', 'huaweicloud');
+    stageStore(home, JSON.stringify([baseEvent({ sessionId: 'store-seed', argsHash: 'h-store' })]));
+    // The window both seats measured: takeSpool has renamed the spool away
+    // and the main write has failed or crashed — the ONLY copy of the
+    // original lives in the .taken-* sidecar. Pre-fix the reader saw the
+    // store + the spool path only, so the committed event was invisible
+    // for the window's whole duration (seconds-wide on a big store), and
+    // a degraded tier-inheritance reuse re-recorded a terminal original as
+    // posture — permanently.
+    writeFileSync(
+      join(dir, 'approval-consents.json.spool.jsonl.taken-12340000-0000-4000-8000-000000000000'),
+      JSON.stringify(baseEvent({ sessionId: 'ses-window', argsHash: 'h-win', evidence: 'terminal' })) + '\n',
+    );
+    const view = readConsentEvents();
+    assert.ok(
+      view.some((event) => event.sessionId === 'ses-window' && event.evidence === 'terminal'),
+      'a taken-resident event is visible to the merged reader',
+    );
+
+    // The graded consequence: a degraded reuse of the taken-resident
+    // original must inherit its tier, not record a fresh posture.
+    writeFileSync(join(dir, 'approval-consents-lock'), 'not-a-directory');
+    recordAskModeConsent({
+      sessionId: 'ses-window',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-win',
+      outcome: 'granted',
+    });
+    rmSync(join(dir, 'approval-consents-lock'), { force: true });
+    const rows = readConsentEvents()
+      .filter((event) => event.sessionId === 'ses-window')
+      .map((event) => event.evidence);
+    assert.deepEqual(
+      rows.sort((a, b) => a.localeCompare(b)),
+      ['terminal', 'terminal'],
+      'the reuse inherited the taken-resident original tier — no posture downgrade',
+    );
+  }),
+);
+
+test(
+  'a taken file the compaction cannot read is never deleted: the fold failure keeps its bytes (round-7 finding 3)',
+  withLedgerHome(async (home) => {
+    const dir = join(home, '.config', 'huaweicloud');
+    const unreadableTaken = join(dir, 'approval-consents.json.spool.jsonl.taken-12350000-0000-4000-8000-000000000000');
+    const spool = join(dir, 'approval-consents.json.spool.jsonl');
+    mkdirSync(dir, { recursive: true });
+    // A read failure the fold will hit: a taken file with its read bits
+    // stripped — readFileSync throws EACCES, the same catch path as EMFILE,
+    // EIO, and the measured ERR_STRING_TOO_LONG on a >512MiB spool, while
+    // rmSync CAN still delete it (unlink needs the directory's write bit,
+    // not the file's) — exactly the pre-fix shape, where the compaction
+    // removed every taken file after its main write and silently dropped
+    // every consent line it carried.
+    writeFileSync(unreadableTaken, JSON.stringify(baseEvent({ sessionId: 'taken-kept', argsHash: 'h-taken' })) + '\n', {
+      mode: 0o600,
+    });
+    chmodSync(unreadableTaken, 0o000);
+    writeFileSync(spool, JSON.stringify(baseEvent({ sessionId: 'spool-kept', argsHash: 'h-sp' })) + '\n');
+
+    // A real locked append: the readable spool must fold and land, the
+    // unreadable taken file must survive the compaction with its bytes.
+    appendConsentEvent(baseEvent({ sessionId: 'compactor', argsHash: 'h-comp' }));
+    const landed = new Set(readConsentEvents().map((event) => event.sessionId));
+    assert.ok(landed.has('spool-kept'), 'the readable spool folded into the store');
+    assert.ok(
+      landed.has('compactor'),
+      "the compaction's own event landed — the fold failure did not hold the main write hostage",
+    );
+    assert.ok(
+      existsSync(unreadableTaken),
+      'the unreadable taken file survived with its bytes — evidence is never deleted on a read failure',
+    );
+    assert.ok(!existsSync(spool), 'the successfully folded spool was still removed');
+    // The bytes are intact under the 000 mode: restore readability and
+    // confirm the line is still exactly what was staged.
+    chmodSync(unreadableTaken, 0o600);
+    const salvaged = readFileSync(unreadableTaken, 'utf8');
+    assert.ok(salvaged.includes('taken-kept'), 'the kept file still carries its consent line verbatim');
   }),
 );
 

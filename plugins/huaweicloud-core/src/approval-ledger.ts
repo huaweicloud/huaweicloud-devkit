@@ -14,7 +14,7 @@
 // caller's evidence parameter is consulted only when no prior event
 // exists.
 //
-// Write discipline (interrogate rounds 1-6): an append ADDS, it never
+// Write discipline (interrogate rounds 1-7): an append ADDS, it never
 // rewrites, and every committed append SURVIVES. The locked write path
 // appends to the raw parsed store, so entries the filtered reader cannot
 // see (a hand-edited tier, an unmodeled field) and malformed-but-array
@@ -39,15 +39,30 @@
 // the reader merges spool lines into the filtered view, and the next
 // LOCKED append compacts the spool into the main store under the lock.
 // The degradation may cost latency, never evidence.
+//
+// Round 7 hardened the same surface at three points the seats measured:
+// the spool append inspects and terminates a torn tail before adding its
+// line (a partial write must not glue — and thereby hide — the next
+// committed event); the reader folds the .taken-* compaction sidecars into
+// the view (an event is committed the moment its line is on disk, not the
+// moment a compaction lands it in the store — a tier-inheritance lookup
+// during the take-write window resolved against a store that did not
+// carry the original); and a compaction never deletes a taken file it
+// failed to read (the bytes survive on disk for the next compaction to
+// retry).
 import {
-  appendFileSync,
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   renameSync,
   rmSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
@@ -126,16 +141,44 @@ const LEDGER_MAX_WAIT_MS = 3_000;
 let degradedDepth = 0;
 
 // The filtered view consumers read: every entry that parses to the
-// ConsentEvent shape, from the main store AND the degraded spool (round 6:
-// a spooled event is a committed event — the reader must see it). Malformed
-// entries read as absent — read tolerance is fine; the WRITE path never
-// uses this view (it preserves raw entries).
+// ConsentEvent shape, from the main store, the degraded spool, AND every
+// .taken-* file beside it. The taken fold (round 7, finding 2) closes the
+// compaction's reader-blind window: takeSpool renames the spool away
+// BEFORE the main write, and when that write fails or crashes the taken
+// file deliberately survives — without the fold, a tier-inheritance reuse
+// in that window resolved against a store that did not yet carry the
+// original and mis-recorded the tier (measured: a terminal original
+// re-recorded as posture, permanently).
+//
+// The three sources are read at three different instants, so the SAMPLING
+// order and the ARRAY order are chosen separately, and each for a distinct
+// reason. Sampling order: spool, then taken, then store. An event moves
+// spool → taken → (store + removal) as a compaction proceeds; a pass that
+// samples the slow store FIRST can read the pre-write store and then, a
+// read later, find the taken file already removed — assembling a view from
+// a state gap no single instant had (measured: one absent sample through
+// a real 400k compaction). Sampling the small spool and taken files first
+// closes every gap: by the time the slow store read opens, the event is
+// either still in the taken file or already in the store it reads. Array
+// order: store, then spool, then taken — a spooled or taken-resident event
+// is chronologically newer than the store's rows, and the tier lookup's
+// backwards scan must meet the newest-class events first. A taken file the
+// reader cannot read (a fold failure leaves it on disk, round 7 finding 3)
+// is skipped here the same way the fold skips it — the file survives with
+// its bytes. Malformed entries read as absent — read tolerance is fine;
+// the WRITE path never uses this view (it preserves raw entries).
 export function readConsentEvents(): ConsentEvent[] {
+  const sampledSpool = spoolLines();
+  const sampledTaken = takenSpoolFiles().flatMap((file) => spoolLinesOf(file));
+  const foldIntoView = (lines: string[], out: ConsentEvent[]): void => {
+    for (const line of lines) {
+      const parsed = parseSpoolLine(line);
+      if (parsed !== undefined) out.push(...filterEvents([parsed.parsed]));
+    }
+  };
   const out = filterEvents(readRawConsents() ?? []);
-  for (const line of spoolLines()) {
-    const parsed = parseSpoolLine(line);
-    if (parsed !== undefined) out.push(...filterEvents([parsed.parsed]));
-  }
+  foldIntoView(sampledSpool, out);
+  foldIntoView(sampledTaken, out);
   return out;
 }
 
@@ -187,12 +230,38 @@ function readRawConsents(): unknown[] | undefined {
 // that does not parse degrades to skipped in the filtered view and is
 // preserved verbatim at compaction (the raw-preservation doctrine).
 function spoolLines(): string[] {
+  return spoolLinesOf(ledgerSpoolPath());
+}
+
+// The same best-effort line extraction over any spool-shaped file: the
+// spool itself, or a .taken-* compaction sidecar. An absent or unreadable
+// file reads as no lines (round 7, finding 3: the fold keeps unreadable
+// taken files on disk — the reader skipping them is what keeps a
+// mid-fold-failure compaction from losing the main write).
+function spoolLinesOf(path: string): string[] {
   try {
-    const path = ledgerSpoolPath();
     if (!existsSync(path)) return [];
     return readFileSync(path, 'utf8')
       .split('\n')
       .filter((line) => line.trim().length > 0);
+  } catch {
+    return [];
+  }
+}
+
+// Every .taken-* file beside the spool, sorted for a deterministic view.
+// These are compaction sidecars: the in-flight take of the current spool,
+// or the deliberate survivors of a failed or crashed compaction (kept for
+// the next compaction's stale-taken sweep) — the same name shape the
+// sweep matches.
+function takenSpoolFiles(): string[] {
+  try {
+    const spool = ledgerSpoolPath();
+    const dir = dirname(spool);
+    return readdirSync(dir)
+      .filter((entry) => entry.includes('.spool.jsonl.taken-'))
+      .sort((a, b) => a.localeCompare(b))
+      .map((entry) => join(dir, entry));
   } catch {
     return [];
   }
@@ -222,14 +291,43 @@ function quarantineSidecarName(path: string): string {
 // degraded writers interleave lines; the kernel serializes the
 // size-update+write per open descriptor, and each line is a single small
 // write.
+//
+// Round 7, finding 1: a previous append can leave the spool WITHOUT a
+// trailing newline — a disk-full clamp mid-line (measured: the write
+// clamps at RLIMIT_FSIZE, retries, throws EFBIG, and spoolAppend swallows
+// the throw by contract), a crash mid-append, a short write that dropped
+// exactly the last byte. Appending blindly then GLUES the new committed
+// line onto the fragment: the merged line parses as nothing, and (the
+// lost-newline variant) a previously-VISIBLE complete line is
+// retroactively hidden with it. So the append writes through ONE fd that
+// it first inspects: open with O_APPEND, read the byte at the end, and
+// write a '\n' terminator when that byte is not a newline — never a
+// rewrite of existing bytes, strictly additive. A concurrent complete line
+// landing between the read and the write costs at worst an EMPTY line
+// (skipped by the reader and the fold); the one residual window is a
+// concurrent TORN write landing in that gap, gluing this one line — a
+// single event, bounded: the glued blob ends with this line's own '\n',
+// so no later append compounds the damage. The torn line's OWN event
+// stays lost when its write is cut — the documented best-effort posture
+// of a swallowed write failure — but a torn tail can no longer eat the
+// next committed append.
 function spoolAppend(events: ConsentEvent[]): void {
+  const line = events.map((event) => JSON.stringify(event)).join('\n') + '\n';
   try {
     const path = ledgerSpoolPath();
     mkdirSync(dirname(path), { recursive: true });
-    appendFileSync(path, events.map((event) => JSON.stringify(event)).join('\n') + '\n', {
-      encoding: 'utf8',
-      mode: 0o600,
-    });
+    const fd = openSync(path, 'a+', 0o600);
+    try {
+      const start = fstatSync(fd).size;
+      if (start > 0) {
+        const tail = new Uint8Array(1);
+        const read = readSync(fd, tail, 0, 1, start - 1);
+        if (read === 1 && tail[0] !== 0x0a) writeSync(fd, '\n');
+      }
+      writeSync(fd, line);
+    } finally {
+      closeSync(fd);
+    }
   } catch {
     // same degradation contract as the locked write: never fail the call
   }
@@ -241,10 +339,16 @@ function spoolAppend(events: ConsentEvent[]): void {
 // waits for the next compaction. Returns the taken files' raw contents —
 // parseable events plus any unparseable line preserved verbatim as a
 // string element (the raw-preservation doctrine: the compaction may
-// reorder, never erase).
-function takeSpool(): { events: unknown[]; taken: string[] } {
+// reorder, never erase) — plus the list of files that folded SUCCESSFULLY,
+// the only ones the caller may remove. A file whose read fails (round 7,
+// finding 3: a spool past V8's max string length throws
+// ERR_STRING_TOO_LONG on readFileSync; EMFILE and EIO are the same class)
+// is kept in place with its bytes — "leave it for the next compaction" is
+// now literally true — and the next compaction's stale-taken sweep
+// retries it. The main write is not held hostage to the failure.
+function takeSpool(): { events: unknown[]; folded: string[] } {
   const spool = ledgerSpoolPath();
-  const taken: string[] = [];
+  const folded: string[] = [];
   const events: unknown[] = [];
   const fold = (file: string): void => {
     try {
@@ -256,15 +360,16 @@ function takeSpool(): { events: unknown[]; taken: string[] } {
         if (parsed === undefined) events.push(line);
         else events.push(parsed.parsed);
       }
+      folded.push(file);
     } catch {
-      // unreadable taken file: leave it for the next compaction
+      // read failure: keep the file in place, bytes intact — evidence is
+      // never deleted on a read failure; the next compaction retries
     }
   };
   try {
     if (existsSync(spool)) {
       const takenFile = `${spool}.taken-${process.pid}-${randomUUID()}`;
       renameSync(spool, takenFile);
-      taken.push(takenFile);
       fold(takenFile);
     }
   } catch {
@@ -274,21 +379,14 @@ function takeSpool(): { events: unknown[]; taken: string[] } {
   // Stale taken files from a compaction that crashed after its main write
   // (its events are already in the store): folding them again duplicates
   // those lines — the safe direction, documented residual; a crash BEFORE
-  // the write is why they must be folded at all.
-  try {
-    for (const entry of readdirSync(dirname(spool))) {
-      if (entry.includes('.spool.jsonl.taken-')) {
-        const stale = join(dirname(spool), entry);
-        if (!taken.includes(stale)) {
-          taken.push(stale);
-          fold(stale);
-        }
-      }
-    }
-  } catch {
-    // unreadable directory: the next compaction retries
+  // the write is why they must be folded at all. Unreadable ones stay and
+  // are retried here every compaction until they fold or an operator
+  // looks at them (documented residual: a spool past V8's string limit
+  // never folds through this path).
+  for (const file of takenSpoolFiles()) {
+    if (!folded.includes(file)) fold(file);
   }
-  return { events, taken };
+  return { events, folded };
 }
 
 // The locked append core: read the raw store, quarantine an unreadable
@@ -338,10 +436,13 @@ function lockedAppend(events: ConsentEvent[]): void {
       // same degradation contract as writeApprovals in approval-tokens.ts
       return; // the main write failed: keep the taken files for the next compaction
     }
-    // The taken spool files are removed only after the main write landed.
-    // A crash between write and removal duplicates their lines at the next
+    // The taken spool files are removed only after the main write landed,
+    // and only the ones that folded successfully (round 7, finding 3) — an
+    // unfolded file is evidence the store does not carry, so removing it
+    // would silently drop every consent line it holds. A crash between
+    // write and removal duplicates the folded lines at the next
     // compaction — the safe direction (additive), documented residual.
-    for (const file of spool.taken) {
+    for (const file of spool.folded) {
       try {
         rmSync(file, { force: true });
       } catch {
