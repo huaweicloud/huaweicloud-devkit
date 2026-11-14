@@ -3,14 +3,18 @@ import { spawnSync } from 'node:child_process';
 import { contendOneAppend, spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness.ts';
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  ftruncateSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   rmSync,
   symlinkSync,
   utimesSync,
   writeFileSync,
+  writeSync,
 } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -2915,6 +2919,206 @@ test(
         `the needle-lost span blinds the source — the sentinel, never a silent miss (got ${arrival.arrivalSeq})`,
       );
       assert.notEqual(arrival.arrivalSeq, 3, "the missed row's committed seq 3 is never assigned — no duplicate");
+    } finally {
+      if (prevLimit === undefined) delete process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+      else process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = prevLimit;
+    }
+  }),
+);
+
+test(
+  'a sparse giant entry blinds in bounded time at every read seam, never an O(size) stall (round-20 finding 1)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const GIB = 1024 ** 3;
+    const ask = (key: string) =>
+      recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: key,
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+
+    // Cell 1 — a sparse .taken-* sidecar declaring 8GiB (one truncate,
+    // ~8KiB of disk): the r19 doctrine bounded the OPEN; pre-r20 the
+    // STREAM read O(declared size) — ~26s at 8GiB, ~7-15 hours at the
+    // ext4 maximum — inside the lock hold, the heartbeat suppressing
+    // takeover. The declared-size cap blinds it in O(1).
+    const sidecar = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r20-sparse');
+    const fd = openSync(sidecar, 'w', 0o600);
+    writeSync(fd, JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: 'h-sparse', arrivalSeq: 3 })) + '\n');
+    ftruncateSync(fd, 8 * GIB);
+    closeSync(fd);
+    let t0 = Date.now();
+    const s1 = ask('h-r20-sparse-1');
+    const sidecarMs = Date.now() - t0;
+    assert.equal(s1.arrivalSeq, Number.MAX_SAFE_INTEGER, 'cell 1: the over-cap sparse sidecar blinds (the sentinel)');
+    assert.ok(sidecarMs < 10_000, `cell 1: the blind is O(1), not O(declared size) — took ${sidecarMs}ms at 8GiB`);
+
+    // Cell 2 — a sparse 8GiB STORE: pre-r20 the whole-read decoded the
+    // full declared extent before the late ERR_STRING_TOO_LONG (~23s
+    // measured); the cap reads it as over-limit in O(1) (absent -> the
+    // append's existing degraded posture, the tree unblocked).
+    const storePath = stageStore(home, '[]');
+    const sfd = openSync(storePath, 'w', 0o600);
+    writeSync(sfd, '[]');
+    ftruncateSync(sfd, 8 * GIB);
+    closeSync(sfd);
+    t0 = Date.now();
+    ask('h-r20-sparse-2');
+    const storeMs = Date.now() - t0;
+    assert.ok(storeMs < 10_000, `cell 2: the over-cap sparse store blinds in O(1) — took ${storeMs}ms at 8GiB`);
+  }),
+);
+
+test(
+  "a middle insert into a memoized sidecar never re-issues the inserted row's seq (round-20 finding 2)",
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const sidecar = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r20-mid');
+    // Three EXACT-LENGTH rows: the first/last rows stay byte-identical and
+    // only the MIDDLE row is rewritten (the r20 both-seat shape: the r19
+    // anchors were the first/last seq VALUES — two scalars — so this
+    // rewrite collided them and the stale memo re-issued the planted seq;
+    // the r20 anchors are window BYTES + the window seq count, and the
+    // head window covers this whole file, so the insert changes both).
+    const ROW_LEN = 400;
+    const mkRow = (argsHash: string, seq: number): string => {
+      const core = `{"sessionId":"ses","tool":"huaweicloud_run_approved_command","argsHash":"${argsHash}","outcome":"granted","grantedAt":5000,"scope":"once","evidence":"posture","arrivalSeq":${seq},"pad":"`;
+      return core + 'x'.repeat(ROW_LEN - core.length - 2) + '"}';
+    };
+    const rowA = mkRow('h-r20-mid', 5);
+    const rowMid = mkRow('h-r20-mid-mid', 6);
+    const rowTail = mkRow('h-r20-mid-tail', 5);
+    assert.ok(
+      rowA.length === ROW_LEN && rowMid.length === ROW_LEN && rowTail.length === ROW_LEN,
+      'staging: uniform row length',
+    );
+    writeFileSync(sidecar, [rowA, rowMid, rowTail].join('\n') + '\n');
+    const ask = (key: string) =>
+      recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: key,
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+    const first = ask('h-r20-mid-first');
+    assert.ok(
+      first.arrivalSeq > 6,
+      `the sidecar's committed seqs floored the first append above 6 (got ${first.arrivalSeq})`,
+    );
+
+    // The operator's in-place middle rewrite: the middle row now owns 9,
+    // same byte length, the first/last rows untouched, the mtime restored.
+    const inserted = mkRow('h-r20-mid-mid', 9);
+    writeFileSync(sidecar, [rowA, inserted, rowTail].join('\n') + '\n');
+
+    const second = ask('h-r20-mid-second');
+    assert.ok(
+      second.arrivalSeq > 9,
+      `the middle insert rescans — the counter never re-issues the inserted row's committed seq 9 (got ${second.arrivalSeq})`,
+    );
+  }),
+);
+
+test(
+  'a literal completing exactly at a chunk boundary extracts; a needle-lost span with a multibyte prefix still blinds (round-20 findings 3 and the skew)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const prevLimit = process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+    process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = '200'; // the seam: the whole-read paths skip, the stream reads (its own 500MB cap)
+    const CH = 1 << 20; // SEQ_SCAN_CHUNK_BYTES
+    const rowPrefix =
+      '{"sessionId":"ses","tool":"huaweicloud_run_approved_command","argsHash":"b","outcome":"granted","grantedAt":1,"scope":"once","evidence":"posture",';
+    try {
+      // Cell 1 (F3): the number's last digit lands exactly at the 1MiB
+      // boundary with the needle outside the carry. The r19 detector fired
+      // (the open-span regex matched the completed literal) and blinded —
+      // discarding a value it had fully extracted, then re-paying the
+      // scan on EVERY append (never memoized, ~1s each at 200MB). The
+      // one-byte lookahead sees the next chunk's first byte is a
+      // terminator: the literal completed — extract, no blind.
+      stageStore(home, '[]');
+      const boundarySidecar = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r20-precise');
+      // needle at CH-400 (outside the 320B carry); gap 386; the literal
+      // '777' ends exactly at CH.
+      const spanStart = CH - 400;
+      const head = 'x'.repeat(spanStart - rowPrefix.length) + rowPrefix;
+      const span = '"arrivalSeq"' + ' '.repeat(386) + ':777';
+      // span length: 12 + 386 + 4 = 402 → the last digit at CH-1... align:
+      // 12+386+1(colon)+3 digits = 402 → ends at CH+2. Recompute below
+      // precisely instead of trusting the constants:
+      const spanLen = span.length;
+      const adjustedHead = 'x'.repeat(Math.max(0, CH - spanLen - rowPrefix.length - 2)) + rowPrefix;
+      const needleAt = adjustedHead.length; // span starts here
+      const wantLastDigitAt = CH - 1; // the last digit is the final byte of chunk 1
+      const neededStart = wantLastDigitAt - spanLen + 1;
+      const alignedHead = 'x'.repeat(Math.max(0, neededStart - rowPrefix.length)) + rowPrefix;
+      assert.equal(alignedHead.length + spanLen, CH, 'staging: the literal completes exactly at the boundary');
+      writeFileSync(boundarySidecar, alignedHead + span + '}\n' + 'y'.repeat(300) + '\n');
+      const precise = recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r20-precise',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      assert.notEqual(
+        precise.arrivalSeq,
+        Number.MAX_SAFE_INTEGER,
+        'cell 1: the boundary-completing literal extracted — the false-positive blind is gone (got the sentinel)',
+      );
+      assert.ok(
+        precise.arrivalSeq > 777,
+        `cell 1: the extraction floors above the completed literal (got ${precise.arrivalSeq})`,
+      );
+      void head;
+      void spanStart;
+      void adjustedHead;
+      void needleAt;
+
+      // Cell 2 (the skew): one invalid byte (0x80) BEFORE the needle. The
+      // r19 detector decoded the text (each invalid byte -> U+FFFD,
+      // inflating the computed offset 2 bytes each) and the 320/321
+      // boundary became a SILENT MISS — the counter re-issued the row's
+      // seq. The byte-level detector takes the needle offset from the
+      // buffer: the blind band is exact whatever the multibyte content.
+      rmSync(boundarySidecar, { force: true });
+      stageStore(home, '[]');
+      const skewSidecar = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r20-skew');
+      const rawPrefix = Buffer.from(rowPrefix, 'utf8');
+      const badByte = Buffer.from([0x80]);
+      const needleBuf = Buffer.from('"arrivalSeq"', 'utf8');
+      const gapBuf = Buffer.from(' '.repeat(399) + ':', 'utf8');
+      const litBuf = Buffer.from('3', 'utf8');
+      // needle at CH-321 exactly (bytes): prefix = badByte + x-padding
+      const prefixLen = CH - 321 - rowPrefix.length - 1;
+      const headBuf = Buffer.concat([badByte, Buffer.alloc(prefixLen, 0x78), rawPrefix]);
+      assert.equal(headBuf.length, CH - 321, 'staging: the needle starts at CH-321 (bytes)');
+      const straddle = Buffer.concat([
+        headBuf,
+        needleBuf,
+        gapBuf,
+        litBuf,
+        Buffer.from('}\n'),
+        Buffer.alloc(300, 0x79),
+        Buffer.from('\n'),
+      ]);
+      writeFileSync(skewSidecar, straddle);
+      const skew = recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r20-skew',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      assert.equal(
+        skew.arrivalSeq,
+        Number.MAX_SAFE_INTEGER,
+        `cell 2: the needle-lost span with the invalid-byte prefix blinds — never a silent miss (got ${skew.arrivalSeq})`,
+      );
     } finally {
       if (prevLimit === undefined) delete process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
       else process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = prevLimit;

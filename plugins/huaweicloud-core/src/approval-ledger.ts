@@ -83,7 +83,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 
 import { devkitStateBase } from './lib/state-dir.ts';
@@ -309,12 +309,41 @@ const SEQ_SCAN_CHUNK_BYTES = 1 << 20;
 // carry; the detector governs only the needle-lost shapes.
 const SEQ_SCAN_CARRY_BYTES = 320;
 
-// The streamed scan's shape: the max plus the CONTENT ANCHORS the memo
-// validates (round 19, finding 2) — headSeq is the first seq value in the
-// FIRST haystack (the file's first chunk), tailSeq the last in the final
-// haystack (its last chunk+carry) — window-scoped so a bounded re-read of
-// the same windows re-extracts exactly these values.
-type StreamSeqScan = { max: number; blinded: boolean; headSeq: number | undefined; tailSeq: number | undefined };
+// The streamed scan's shape (rounds 19-20): the max plus the CONTENT
+// ANCHORS the memo validates. Round 19 anchored on headSeq/tailSeq — the
+// first/last seq VALUES in the end windows — and both r20 seats falsified
+// that (complementary shapes): the anchors are two scalars, so a middle
+// in-place insert preserving the first/last rows' seqs collides them
+// (A1: a 1200-byte 3-row sidecar, only the middle row rewritten, 7/40 +
+// the full harm chain; A2: a hit-path TOCTOU needing no tick race at all
+// — the hit path stats ONCE, and the attacker's write lands after it —
+// 15-19/40 at the production default limit). Round 20 anchors on BYTES
+// and a COUNT, both derived from the SAME windows on both paths (F4's
+// reader disagreement — the r19 scan's tailSeq persisted across passes
+// while the anchor reader's tail window stopped at 1MiB+320, so an
+// unchanged file never memoized — dissolves when both paths read the
+// same windows): headDigest/tailDigest are sha256 digests of the head
+// window [0, min(size,CHUNK)) and the tail window [size-CHUNK-CARRY,
+// size), and seqCount is the number of seq-field matches over BOTH
+// windows (deterministically double-counting their overlap for small
+// files — both paths compute it identically, which is what matters).
+type StreamAnchors = {
+  headDigest: string;
+  tailDigest: string;
+  seqCount: number;
+};
+
+// deadSpan: the blind came from the dead-span detector on a file the scan
+// otherwise READ TO EOF (content-stable — memoizable, unlike an
+// open/read/cap failure whose recovery must rescan); a memoized entry
+// reproduces the blinded verdict on a validated hit instead of re-paying
+// the per-append rescan tax (round 20, finding 3).
+type StreamSeqScan = {
+  max: number;
+  blinded: boolean;
+  deadSpan: boolean;
+  anchors: StreamAnchors | undefined;
+};
 
 function streamMaxValidSeq(path: string): StreamSeqScan {
   let fd: number | undefined;
@@ -329,7 +358,14 @@ function streamMaxValidSeq(path: string): StreamSeqScan {
     // non-regular entry is a BLINDED source, never read, whatever the
     // path held at any instant.
     fd = openRegularForRead(path);
-    if (fd === undefined) return { max: -1, blinded: true, headSeq: undefined, tailSeq: undefined };
+    if (fd === undefined) return { max: -1, blinded: true, deadSpan: false, anchors: undefined };
+    // Round 20, finding 1: the DECLARED size caps the stream — a sparse
+    // entry (one truncate, ~8KiB of disk, any size) would otherwise buy
+    // hours of CPU-bound chunk scanning inside the lock hold; over-cap
+    // blinds in O(1) (the over-limit posture, the store's own definition).
+    if (fstatSync(fd).size > streamScanLimitBytes()) {
+      return { max: -1, blinded: true, deadSpan: false, anchors: undefined };
+    }
     const chunk = Buffer.alloc(SEQ_SCAN_CHUNK_BYTES);
     // A number cut by a chunk boundary matches TRUNCATED in this pass and
     // whole in the next when the NEEDLE is carried (the carry re-presents
@@ -363,25 +399,39 @@ function streamMaxValidSeq(path: string): StreamSeqScan {
     // The colon is OPTIONAL: a span whose colon lies past the chunk boundary
     // ends the pass as needle+whitespace with no colon yet — the same dead
     // shape (the needle outside the carry can never be re-presented).
-    const openSpanRe = /"arrivalSeq"\s*:?\s*(-?[\d.eE+]*)$/;
+    // Round 20: the detector is BYTE-LEVEL and PRECISE. The r19 form
+    // computed a UTF-16 character index and re-encoded it to "bytes" —
+    // under the lossy utf8 decode each invalid byte became U+FFFD and
+    // inflated the computed offset by 2 bytes, shrinking the blind band:
+    // one invalid byte (or a multibyte char) before the needle turned
+    // the 320/321 boundary into a silent miss (seat 2's skew). The
+    // needle's byte offset is taken from the BUFFER directly (exact), and
+    // the span is open iff every byte after the needle to the buffer end
+    // is in the span alphabet (whitespace, ':', digits, . e E + -). The
+    // verdict stays PER BOUNDARY, held PENDING until the next read proves
+    // a following chunk exists (the EOF read discards it: a torn tail at
+    // true EOF is an uncommitted row, the r17 doctrine) — and round 20,
+    // finding 3 resolved it with a ONE-BYTE LOOKAHEAD at the next chunk's
+    // first byte, so a literal completing EXACTLY at the boundary (the
+    // r19 false positive: the value fully extracted, yet blinded — a
+    // permanent per-append rescan at ~1s/200MB) is recognized and NOT
+    // dead: digit/.eE+- continues the literal (or starts it): dead;
+    // whitespace completes a number whose digits were all seen (JSON
+    // puts no space inside a number) but keeps a digit-less span
+    // pre-number: dead; ':' keeps it pre-number: dead; anything else
+    // means the literal completed or no number is coming: not dead.
+    const needleBuf = Buffer.from('"arrivalSeq"', 'utf8');
+    const isWsByte = (b: number): boolean => b === 0x20 || b === 0x09 || b === 0x0a || b === 0x0d;
+    const isLiteralByte = (b: number): boolean =>
+      (b >= 0x30 && b <= 0x39) || b === 0x2e || b === 0x65 || b === 0x45 || b === 0x2b || b === 0x2d;
+    const isSpanByte = (b: number): boolean => isWsByte(b) || b === 0x3a || isLiteralByte(b);
+    const isDigitByte = (b: number): boolean => b >= 0x30 && b <= 0x39;
     let carry = Buffer.alloc(0);
     let max = -1;
-    let headSeq: number | undefined;
-    let tailSeq: number | undefined;
-    // The dead-span verdict is PER BOUNDARY: a pass whose text ends inside
-    // an open span with the needle outside the carry leaves that span dead
-    // forever — but ONLY when a following chunk exists (an interior
-    // boundary). The LAST data pass's boundary is the file's true EOF,
-    // where an open span is a torn tail — an uncommitted row, the r17
-    // doctrine: its partial value only ever floors at-or-below real, and
-    // no duplicate can form from a row no reader will ever see whole. So
-    // each pass's verdict is held PENDING until the next read proves a
-    // following chunk exists; the EOF read discards the pending verdict,
-    // and every earlier boundary's verdict stands (a multi-chunk file can
-    // carry its dead span at the FIRST boundary with clean text after).
     let deadAccum = false;
-    let pendingDead = false;
-    let firstPass = true;
+    // The PREVIOUS pass's pending open span (null = none): resolved by
+    // this pass's first byte per the lookahead above.
+    let prevOpen: { hasDigits: boolean } | null = null;
     for (;;) {
       const read = readSync(fd, chunk, 0, chunk.length, null);
       if (read === 0) break; // the pending verdict was the EOF boundary's: discard it (torn tail)
@@ -391,22 +441,40 @@ function streamMaxValidSeq(path: string): StreamSeqScan {
       let match: RegExpExecArray | null;
       while ((match = seqFieldRe.exec(text)) !== null) {
         const value = Number(match[1]!);
-        if (firstPass && headSeq === undefined) headSeq = value;
-        tailSeq = value;
         if (isValidArrivalSeq(value) && value > max) max = value;
       }
-      deadAccum = deadAccum || pendingDead; // the previous pass's boundary had a following chunk: it stands
-      const span = openSpanRe.exec(text);
-      pendingDead =
-        span !== null && Buffer.byteLength(text.slice(0, span.index), 'utf8') < haystack.length - SEQ_SCAN_CARRY_BYTES;
-      firstPass = false;
+      if (prevOpen !== null) {
+        const b = data[0]!;
+        if (isLiteralByte(b) || b === 0x3a || (isWsByte(b) && !prevOpen.hasDigits)) deadAccum = true;
+        prevOpen = null;
+      }
+      const needleAt = haystack.lastIndexOf(needleBuf);
+      if (needleAt !== -1) {
+        let pure = true;
+        let hasDigits = false;
+        for (let j = needleAt + needleBuf.length; j < haystack.length; j += 1) {
+          const b = haystack[j]!;
+          if (isDigitByte(b)) hasDigits = true;
+          if (!isSpanByte(b)) {
+            pure = false;
+            break;
+          }
+        }
+        if (pure && needleAt < haystack.length - SEQ_SCAN_CARRY_BYTES) prevOpen = { hasDigits };
+      }
       const keep = Math.min(SEQ_SCAN_CARRY_BYTES, haystack.length);
       carry = Buffer.from(haystack.subarray(haystack.length - keep)); // copy: the chunk is reused
     }
-    if (deadAccum) return { max: -1, blinded: true, headSeq, tailSeq };
-    return { max, blinded: false, headSeq, tailSeq };
+    // The anchors come from the SAME windows the hit path reads (round 20,
+    // F4): derived after the pass via positioned reads on this fd — the
+    // r19 tailSeq (persisted across passes, the file's LAST seq anywhere)
+    // disagreed with the reader's window and an unchanged wide-tail file
+    // never memoized.
+    const anchors = anchorDataFromFd(fd, fstatSync(fd).size);
+    if (deadAccum) return { max: -1, blinded: true, deadSpan: true, anchors };
+    return { max, blinded: false, deadSpan: false, anchors };
   } catch {
-    return { max: -1, blinded: true, headSeq: undefined, tailSeq: undefined }; // unreadable: unknown owners
+    return { max: -1, blinded: true, deadSpan: false, anchors: undefined }; // unreadable: unknown owners
   } finally {
     if (fd !== undefined) {
       try {
@@ -418,35 +486,78 @@ function streamMaxValidSeq(path: string): StreamSeqScan {
   }
 }
 
-// Re-extract the content anchors over the same windows the scan saw
-// (round 19, finding 2): two positioned reads — the first chunk, and the
-// final chunk+carry — no O(file) pass. The values compare exactly against
-// the memoized anchors; the windows are the scan's own first and last
-// haystacks, so an unchanged file re-extracts identical anchors whatever
-// the metadata clock did.
-function readAnchorSeqs(path: string): { headSeq: number | undefined; tailSeq: number | undefined } | undefined {
+// Read the anchor windows off an OPEN fd and derive the content anchors
+// (round 20, findings 2 and 4): the head window [0, min(size,CHUNK)) and
+// the tail window [size-CHUNK-CARRY, size), the SAME windows both the scan
+// and the hit path derive their anchors from (F4: the r19 pair used
+// different definitions — the scan's tailSeq persisted across passes, the
+// reader's window stopped at 1MiB+320 — so an unchanged file whose last
+// seq sat farther from EOF never memoized: a permanent per-append rescan).
+// Two positioned reads, O(window); sha256 digests + the seq-field match
+// count over the windows. The count is the brief's third gate: a middle
+// INSERT inside a covered window changes the count even where a digest
+// comparison alone might be argued away — and for files ≤ CHUNK+CARRY the
+// windows cover the whole file, so ANY byte change anywhere (the r20 A1
+// 1200-byte escape, the r20 A2 middle insert on small sidecars) changes
+// a digest or the count.
+const SEQ_FIELD_COUNT_RE = () => /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/g;
+
+// Small files get WHOLE-FILE anchors (round 20, the sub-tick closure):
+// windowed digests cannot see an insert between the windows, and the
+// re-stat's coarse-clock granularity (~1ms kernel ticks) lets a write
+// completing inside the cached-fast anchor reads pass — measured 4/40
+// wins on a 5MiB file with the re-stat alone. For files ≤ 8MiB the
+// anchor read covers the WHOLE file (a cached ~2ms read — inside the
+// single-digit-ms cost bar), so ANY byte change anywhere changes a digest
+// or the count deterministically, whatever the clock did. Larger files
+// keep the two 1MiB windows; their residual — a same-tick insert landing
+// in the uncovered middle of a >8MiB file — is the r19-disclosed class
+// with the corrected size boundary.
+const ANCHOR_WHOLE_FILE_BYTES = 8 * 1024 * 1024;
+
+function anchorDataFromFd(fd: number, size: number): StreamAnchors {
+  if (size <= ANCHOR_WHOLE_FILE_BYTES) {
+    const wholeBuf = Buffer.alloc(size);
+    const got = readSync(fd, wholeBuf, 0, size, 0);
+    const wholeText = wholeBuf.toString('utf8', 0, got);
+    let seqCount = 0;
+    const countRe = SEQ_FIELD_COUNT_RE();
+    while (countRe.exec(wholeText) !== null) seqCount += 1;
+    const digest = createHash('sha256').update(wholeBuf.subarray(0, got)).digest('base64');
+    return { headDigest: digest, tailDigest: digest, seqCount };
+  }
+  const headLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES);
+  const headBuf = Buffer.alloc(headLen);
+  const headGot = readSync(fd, headBuf, 0, headLen, 0);
+  const headText = headBuf.toString('utf8', 0, headGot);
+  const tailLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES + SEQ_SCAN_CARRY_BYTES);
+  const tailBuf = Buffer.alloc(tailLen);
+  const tailGot = readSync(fd, tailBuf, 0, tailLen, Math.max(0, size - tailLen));
+  const tailText = tailBuf.toString('utf8', 0, tailGot);
+  let seqCount = 0;
+  const countRe = SEQ_FIELD_COUNT_RE();
+  while (countRe.exec(headText) !== null) seqCount += 1;
+  const countRe2 = SEQ_FIELD_COUNT_RE();
+  while (countRe2.exec(tailText) !== null) seqCount += 1;
+  return {
+    headDigest: createHash('sha256').update(headBuf.subarray(0, headGot)).digest('base64'),
+    tailDigest: createHash('sha256').update(tailBuf.subarray(0, tailGot)).digest('base64'),
+    seqCount,
+  };
+}
+
+// The hit path's anchor read (round 20, finding 2): opens its own guarded
+// fd, applies the stream cap, derives the anchors from the same windows.
+// An anchor read that fails (absent, non-regular, over-cap now) returns
+// undefined and forces the full rescan.
+function readAnchorData(path: string): StreamAnchors | undefined {
   const fd = openRegularForRead(path);
-  if (fd === undefined) return undefined; // blinded/absent now: force the full rescan (it re-blinds)
+  if (fd === undefined) return undefined;
   try {
     const size = fstatSync(fd).size;
-    let headSeq: number | undefined;
-    let tailSeq: number | undefined;
-    if (size > 0) {
-      const headRe = /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/;
-      const headLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES);
-      const headBuf = Buffer.alloc(headLen);
-      const got = readSync(fd, headBuf, 0, headLen, 0);
-      const headMatch = headRe.exec(headBuf.toString('utf8', 0, got));
-      if (headMatch !== null) headSeq = Number(headMatch[1]!);
-      const tailRe = /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/g;
-      const tailLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES + SEQ_SCAN_CARRY_BYTES);
-      const tailBuf = Buffer.alloc(tailLen);
-      const tailGot = readSync(fd, tailBuf, 0, tailLen, Math.max(0, size - tailLen));
-      const tailText = tailBuf.toString('utf8', 0, tailGot);
-      let tailMatch: RegExpExecArray | null;
-      while ((tailMatch = tailRe.exec(tailText)) !== null) tailSeq = Number(tailMatch[1]!);
-    }
-    return { headSeq, tailSeq };
+    if (size > streamScanLimitBytes()) return undefined; // over-cap: never trusted
+    if (size === 0) return undefined; // an empty file has no anchors: rescan (it blinded anyway)
+    return anchorDataFromFd(fd, size);
   } catch {
     return undefined;
   } finally {
@@ -498,8 +609,10 @@ const takenSeqScanMemo = new Map<
     ctimeMs: number;
     size: number;
     max: number;
-    headSeq: number | undefined;
-    tailSeq: number | undefined;
+    blinded: boolean; // round 20 F3: a memoized dead-span blind reproduces itself on a validated hit
+    headDigest: string;
+    tailDigest: string;
+    seqCount: number;
   }
 >();
 
@@ -542,18 +655,41 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
         memo.dev === statBefore.dev &&
         memo.ino === statBefore.ino
       ) {
-        // Round 19, finding 2: the metadata fields can all collide under
-        // the kernel's coarse ctime clock (the same-tick in-flight
-        // rewrite), so the hit is decided by CONTENT: re-read the anchor
-        // windows and compare against the values the scan extracted.
-        // The anchors match -> the bytes the max was computed from are
-        // still the bytes at both ends -> trust the memoized max. Any
-        // mismatch (or an anchor read that now blinds) falls through to
-        // the full rescan.
-        const anchors = readAnchorSeqs(file);
-        if (anchors !== undefined && anchors.headSeq === memo.headSeq && anchors.tailSeq === memo.tailSeq) {
-          if (memo.max > max) max = memo.max;
-          memoized = true;
+        // Rounds 19-20, findings 2: the metadata fields can all collide
+        // (the same-tick in-flight rewrite — the kernel's coarse ctime
+        // clock; or a write landing after this stat, which the r19 hit
+        // path never saw because it statted ONCE), so the hit is decided
+        // by CONTENT, re-validated exactly like the scan path: read the
+        // anchor windows (the same windows the scan derives its anchors
+        // from — BYTES, digests, and the window seq count — not the r19
+        // seq VALUES a middle insert preserving the end rows collided),
+        // then RE-STAT: any write that moved the file between the two
+        // stats fails the hit and takes the full rescan. The residual
+        // window is the microseconds between the re-stat and the
+        // assignment — the scan path's own disclosed in-flight boundary,
+        // now symmetric.
+        const anchors = readAnchorData(file);
+        let anchorsMatch = false;
+        try {
+          const statAfterHit = statSync(file);
+          anchorsMatch =
+            anchors !== undefined &&
+            statAfterHit.mtimeMs === statBefore.mtimeMs &&
+            statAfterHit.ctimeMs === statBefore.ctimeMs &&
+            anchors.headDigest === memo.headDigest &&
+            anchors.tailDigest === memo.tailDigest &&
+            anchors.seqCount === memo.seqCount;
+        } catch {
+          anchorsMatch = false; // unstatable now: rescan
+        }
+        if (anchorsMatch) {
+          if (memo.blinded) {
+            blinded = true; // a stable dead-span blind: the verdict reproduces, no rescan (round 20 F3)
+            memoized = true;
+          } else if (memo.max > max) {
+            max = memo.max;
+            memoized = true;
+          }
         }
       }
     } catch {
@@ -561,11 +697,19 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
     }
     if (memoized) continue;
     const scanned = streamMaxValidSeq(file);
-    if (scanned.blinded) {
-      blinded = true; // committed rows behind an unreadable file: unknown owners
-      continue;
+    if (scanned.blinded && !scanned.deadSpan) {
+      blinded = true; // committed rows behind an unreadable/over-cap/non-regular file: unknown owners
+      continue; // never memoized: recovery (chmod, operator repair) must rescan (the r16 pin)
     }
-    if (scanned.max > max) max = scanned.max;
+    if (scanned.blinded) {
+      // deadSpan: the file read fine, the content is the cause — a stable
+      // blind. Memoize it (anchors validate the hit like any scan) so the
+      // per-append rescan tax dies (round 20, finding 3: measured ~1s per
+      // append at 200MB, forever, from a shape where the r19 detector
+      // over-fired; the precise lookahead now extracts most of those, and
+      // the genuinely-dead ones pay the scan ONCE).
+      blinded = true;
+    } else if (scanned.max > max) max = scanned.max;
     try {
       // READ-VALIDATE: the pre-scan and post-scan stats must agree, or the
       // bytes scanned are not the bytes the key describes — never memoize.
@@ -575,16 +719,20 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
         statAfter.mtimeMs === statBefore.mtimeMs &&
         statAfter.ctimeMs === statBefore.ctimeMs
       ) {
-        takenSeqScanMemo.set(file, {
-          dev: statAfter.dev,
-          ino: statAfter.ino,
-          mtimeMs: statAfter.mtimeMs,
-          ctimeMs: statAfter.ctimeMs,
-          size: statAfter.size,
-          max: scanned.max,
-          headSeq: scanned.headSeq,
-          tailSeq: scanned.tailSeq,
-        });
+        if (scanned.anchors !== undefined) {
+          takenSeqScanMemo.set(file, {
+            dev: statAfter.dev,
+            ino: statAfter.ino,
+            mtimeMs: statAfter.mtimeMs,
+            ctimeMs: statAfter.ctimeMs,
+            size: statAfter.size,
+            max: scanned.max,
+            blinded: scanned.blinded,
+            headDigest: scanned.anchors.headDigest,
+            tailDigest: scanned.anchors.tailDigest,
+            seqCount: scanned.anchors.seqCount,
+          });
+        }
       }
     } catch {
       // the memo is an optimization: an unstatable file rescans next time
@@ -835,7 +983,9 @@ function readRawConsents(): unknown[] | undefined {
     // A non-regular entry reads as absent-or-unreadable, the callers'
     // existing degraded postures (lockedAppend quarantines it — the
     // rename preserves the entry's bytes and the tree unblocks).
-    const text = readWholeTextViaFd(path, false);
+    // Round 20, finding 1: the declared size is capped (a sparse giant
+    // store blinds in O(1) instead of decoding for tens of seconds).
+    const text = readWholeTextViaFd(path);
     if (text === undefined) return undefined;
     const parsed: unknown = JSON.parse(text);
     return Array.isArray(parsed) ? parsed : undefined;
@@ -861,6 +1011,20 @@ const WHOLE_FILE_STRING_LIMIT_BYTES = 500 * 1024 * 1024;
 function wholeReadLimitBytes(): number {
   const override = Number(process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT);
   return Number.isSafeInteger(override) && override > 0 ? override : WHOLE_FILE_STRING_LIMIT_BYTES;
+}
+
+// The STREAMING scan's own declared-size cap (round 20, finding 1): the
+// scan streams in 1MiB chunks so V8's string limit does not bind it, but
+// an uncapped read is O(declared size) — a sparse sidecar buys hours of
+// CPU-bound scanning for ~8KiB of disk. The cap defaults to the same
+// 500MB discipline; HUAWEICLOUD_LEDGER_STREAM_LIMIT is its own seam so
+// the whole-read test seam (which stages SMALL sidecars the stream must
+// still read) does not blind them.
+const STREAM_SCAN_LIMIT_BYTES = WHOLE_FILE_STRING_LIMIT_BYTES;
+
+function streamScanLimitBytes(): number {
+  const override = Number(process.env.HUAWEICLOUD_LEDGER_STREAM_LIMIT);
+  return Number.isSafeInteger(override) && override > 0 ? override : STREAM_SCAN_LIMIT_BYTES;
 }
 
 // Open a ledger data file for reading WITHOUT the blocking hazard, with
@@ -897,24 +1061,31 @@ function openRegularForRead(path: string): number | undefined {
   }
 }
 
-// Whole-file text read through the guarded open (round 19, finding 1):
-// EVERY ledger read seam — the main store, the outcomes side channel, the
-// spool and its .taken-* sidecars — opens through openRegularForRead, so
-// a non-regular entry anywhere on the read path blinds in bounded time
+// Whole-file text read through the guarded open (rounds 19-20): EVERY
+// ledger read seam — the main store, the outcomes side channel, the spool
+// and its .taken-* sidecars — opens through openRegularForRead, so a
+// non-regular entry anywhere on the read path blinds in bounded time
 // instead of wedging the append (the r18 fix guarded the spool-shaped
 // seams only; a FIFO parked at the STORE or OUTCOMES path wedged the tier
 // resolution, the append, the real callTool face, and cross-process — the
 // degraded path re-entered the same blocking read past its 3s cap, S5).
-// `limitCheck` applies the whole-read size guard (the spool-shaped files:
-// line-oriented append-only sidecars); the store and the outcomes channel
-// read through whatever fits V8's string (a 500-512MB legal file keeps
-// parsing — the >512MB shape throws and degrades exactly as before, now
-// without the read ever blocking).
-function readWholeTextViaFd(path: string, limitCheck: boolean): string | undefined {
+// Round 20, finding 1 closed the other unbounded axis: the r19 doctrine
+// bounded the OPEN, not the READ — a REGULAR sparse file (one truncate,
+// ~8KiB of disk, any declared size) passed the isFile guard by design and
+// the read streamed O(declared size): a sparse 8GiB store cost the
+// approved call 23s (the utf8 decode of the whole extent before the late
+// ERR_STRING_TOO_LONG), and the streaming scan measured 2.6-3.6s/GiB —
+// ~7-15 hours at the ext4 maximum, inside the lock hold, the heartbeat
+// suppressing takeover. The DECLARED size is now capped at every seam: a
+// file whose fd declares more than the whole-read limit blinds in O(1)
+// (the same posture as the unreadable class — over-limit by the store's
+// own definition). Legitimate files under the cap are unchanged; the
+// 500-512MB sliver that previously parsed now degrades honestly.
+function readWholeTextViaFd(path: string): string | undefined {
   const fd = openRegularForRead(path);
   if (fd === undefined) return undefined; // absent, unopenable, or non-regular
   try {
-    if (limitCheck && fstatSync(fd).size > wholeReadLimitBytes()) return undefined; // would throw late: skip
+    if (fstatSync(fd).size > wholeReadLimitBytes()) return undefined; // over-limit: blind in O(1)
     return readFileSync(fd, 'utf8');
   } catch {
     return undefined;
@@ -927,11 +1098,11 @@ function readWholeTextViaFd(path: string, limitCheck: boolean): string | undefin
   }
 }
 
-// The spool-shaped whole read: the size guard applies (the sidecars are
-// line-oriented append-only files; a past-limit one reads as no lines at
-// O(1) while the streaming scan still floors from its seq fields).
+// The spool-shaped whole read (the sidecars are line-oriented append-only
+// files; a past-limit one reads as no lines at O(1) while the streaming
+// scan still floors from its seq fields up to its own cap, below).
 function readSpoolTextWhole(path: string): string | undefined {
-  return readWholeTextViaFd(path, true);
+  return readWholeTextViaFd(path);
 }
 
 // The spool's raw lines, best-effort: every non-empty line as text. A line
@@ -1612,8 +1783,10 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
     // guarded open (a FIFO at this path wedged every readConsentEvents —
     // the tier resolution reaches it on the way IN of every arrival);
     // unreadable-or-non-regular reads as no lines: the rows keep their
-    // arrival shape, the documented side-channel tolerance.
-    const text = readWholeTextViaFd(path, false);
+    // arrival shape, the documented side-channel tolerance. Round 20,
+    // finding 1: the declared size is capped (a sparse giant channel
+    // blinds in O(1)).
+    const text = readWholeTextViaFd(path);
     if (text === undefined) return;
     lines = text.split('\n').filter((line) => line.trim().length > 0);
   } catch {
