@@ -31,24 +31,38 @@ test('the approval roster only names real tools and the classified list is a sub
 });
 
 test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
-  // Interrogate rounds 1-4: typing the roster as a plain
+  // Interrogate rounds 1-5: typing the roster as a plain
   // ReadonlyArray<string> widens ApprovalRosterName to string and
   // silently inerts the registry's satisfies Record<ApprovalRosterName,
   // ApprovalSpec> — the adversary added a roster entry with no spec and
   // typecheck stayed green. The const tuple is what makes the compile-time
-  // coupling real. A text regex proved too weak three times: `as const`
-  // with a single element cast to string widened the tuple while still
-  // matching the spelling pin; a comment inside the array made a naive
-  // split see the comment text as an element; and round 4's shape — a
-  // '// ] as const;' comment INSIDE the array — terminated the non-greedy
-  // capture early, so the widened element after the comment was invisible
-  // to both the capture and the element check. The pin therefore strips
-  // comments BEFORE extracting the array body, then requires every
-  // element to be a bare quoted literal — no annotation, no cast, no
-  // concatenation — so the element type stays a string literal union.
+  // coupling real. A text regex proved too weak four times: `as const` with
+  // a cast element matched the spelling pin; a comment inside the array
+  // became a phantom element; a '// ] as const;' comment terminated the
+  // capture before a widening; and round 5's shape — a STRING LITERAL
+  // earlier in the file carrying a clean declaration spelling — fed the
+  // pin a decoy while the real tuple was widened (verified end to end: the
+  // defeated pin plus a removed run-spec let unattested writes, credential
+  // exfil operands, and placeholder secrets all execute).
+  //
+  // The parser therefore runs ONE left-to-right scan that masks string
+  // literal CONTENTS (quote kept, every inner char becomes 'S') and
+  // removes comments as it goes: a decoy inside a string is invisible to
+  // the pattern, a comment cannot smuggle text, and what remains can only
+  // be a real declaration. Elements are then checked as masked shapes —
+  // every element must be exactly a masked string literal, so an `as`
+  // cast, a concatenation, a template literal, or any other element-level
+  // widening fails — and the element COUNT is pinned to the imported
+  // runtime tuple, so the parsed declaration is the real one. Spelling
+  // validity (what a masked element cannot show) stays with the sibling
+  // test that checks the runtime values against TOOL_DEFINITIONS.
+  const skeletonOf = (text: string): string =>
+    text.replace(
+      /(['"`])((?:\\[\s\S]|(?!\1)[\s\S])*?)\1|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+      (match, quote: string, body: string) => (quote ? quote + body.replace(/[\s\S]/g, 'S') + quote : ''),
+    );
   const parseRosterTuple = (roster: string): string[] => {
-    const withoutComments = roster.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-    const match = withoutComments.match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
+    const match = skeletonOf(roster).match(/export const APPROVAL_TOOLS = (\[[\s\S]*?\]) as const;/);
     if (!match) return [];
     const body = match[1]!.replace(/^\[/, '').replace(/\]$/, '');
     return body
@@ -56,47 +70,82 @@ test('the approval roster stays a const tuple so the registry closure cannot be 
       .map((element) => element.trim())
       .filter((element) => element.length > 0);
   };
+  const cleanElements = (elements: string[]): boolean =>
+    elements.length > 0 && elements.every((element) => /^'S+'$/.test(element));
   const roster = readSource(join('src', 'approval-roster.ts'));
   const elements = parseRosterTuple(roster);
-  assert.ok(elements.length > 0, 'the tuple must not be empty (core gate registrations)');
-  for (const element of elements) {
-    assert.match(
-      element,
-      /^'[a-z0-9_]+'$/,
-      `roster element ${element} must be a bare quoted literal — annotations or \`as\` casts widen the tuple's element type and inert the registry closure`,
-    );
-  }
-  // The parser itself is pinned: a commented element parses as an element,
-  // and the widened spellings the adversary demonstrated still fail.
-  const commented = parseRosterTuple(
-    "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // the run face\n  /* PR-3a */ 'huaweicloud_sandbox_connect',\n] as const;",
-  );
-  assert.deepEqual(commented, ["'huaweicloud_run_approved_command'", "'huaweicloud_sandbox_connect'"]);
+  assert.ok(cleanElements(elements), 'the roster tuple must parse as masked bare string literals only');
   assert.equal(
-    parseRosterTuple("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;").length >
-      0 &&
-      parseRosterTuple("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;").every(
-        (element) => /^'[a-z0-9_]+'$/.test(element),
-      ),
+    elements.length,
+    APPROVAL_TOOLS.length,
+    'the parsed tuple must be the real declaration (element count equals the runtime roster)',
+  );
+  // The parser itself is pinned against every adversarial shape the rounds
+  // demonstrated. Clean shapes stay green; every widening goes red.
+  const clean = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";
+  assert.ok(cleanElements(parseRosterTuple(clean)), 'the current spelling parses clean');
+  const multiline =
+    "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // the run face\n  /* PR-3a */ 'huaweicloud_sandbox_connect',\n] as const;";
+  assert.ok(cleanElements(parseRosterTuple(multiline)), 'commented elements parse clean');
+  assert.equal(
+    cleanElements(
+      parseRosterTuple("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;"),
+    ),
     false,
     'an element-level cast must fail the element check',
   );
-  assert.deepEqual(
-    parseRosterTuple("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];"),
-    [],
+  assert.equal(
+    cleanElements(parseRosterTuple("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];")),
+    false,
     'a type annotation must fail the as-const requirement',
   );
-  // Round 4's adversarial shape: a '// ] as const;' comment inside the
-  // array used to terminate the non-greedy capture before the widened
-  // element. Comment-first stripping must expose it to the element check.
-  const commentHiddenWidening = parseRosterTuple(
-    "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // ] as const;\n  'huaweicloud_sandbox_connect' as string,\n] as const;",
-  );
-  assert.ok(
-    commentHiddenWidening.some((element) => !/^'[a-z0-9_]+'$/.test(element)),
+  assert.equal(
+    cleanElements(
+      parseRosterTuple(
+        "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // ] as const;\n  'huaweicloud_sandbox_connect' as string,\n] as const;",
+      ),
+    ),
+    false,
     'a widening hidden behind an in-array "// ] as const;" comment must fail the element check',
   );
-  assert.match(roster, /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/);
+  // Round 5's decoy shapes: a string literal earlier in the file carrying a
+  // clean spelling is MASKED, so the pin can only see the real declaration.
+  const decoyBeforeWidenedReal = `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";
+export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_check_cli' as string] as const;`;
+  assert.equal(
+    cleanElements(parseRosterTuple(decoyBeforeWidenedReal)),
+    false,
+    'a decoy string before a widened real declaration must fail — the pin sees the real tuple',
+  );
+  const decoyBeforeCleanReal = `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";
+export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`;
+  assert.ok(
+    cleanElements(parseRosterTuple(decoyBeforeCleanReal)),
+    'a decoy before a CLEAN real declaration stays green — the real tuple is clean',
+  );
+  assert.equal(
+    cleanElements(parseRosterTuple('export const APPROVAL_TOOLS = [`x`] as const;')),
+    false,
+    'a template-literal element is a widened shape',
+  );
+  assert.equal(
+    cleanElements(parseRosterTuple("export const APPROVAL_TOOLS = ['x' + 'y'] as const;")),
+    false,
+    'a concatenated element is a widened shape',
+  );
+  assert.equal(
+    cleanElements(parseRosterTuple('export const APPROVAL_TOOLS = [] as const;')),
+    false,
+    'an empty tuple must fail (core gate registrations)',
+  );
+  // The classified-list sibling pin reads the SAME skeleton (round 5, seat
+  // 2): a decoy comment cannot satisfy it while the real declaration is
+  // widened.
+  assert.match(
+    skeletonOf(roster),
+    /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/,
+    'the classified-list declaration must be present with the pinned shape outside strings and comments',
+  );
 });
 
 test('every registered classified tool provides a classify', () => {

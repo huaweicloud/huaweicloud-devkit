@@ -106,6 +106,26 @@ if (process.env.LEDGER_SLOW_HOLDER) {
   process.exit(0);
 }
 
+// Wedged-holder mode (round-5 finding 1): claim the ledger lock with the
+// ledger's exact parameters and BLOCK the main thread well past the wait
+// cap — the worker heartbeat keeps the claim fresh, exactly the shape
+// where a beating-but-wedged holder must not stall an approved call
+// forever. The process is killed by the parent; it never exits on its own.
+if (process.env.LEDGER_WEDGED_HOLDER) {
+  const { withDepLock } = await import('../plugins/huaweicloud-core/src/dep/receipts.ts');
+  const lockDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud', 'approval-consents-lock');
+  withDepLock(
+    () => {
+      spawnSync('sleep', ['120']);
+      process.exit(0);
+    },
+    lockDir,
+    1000,
+    200,
+  );
+  process.exit(0);
+}
+
 test(
   'consent events round-trip through the state tree with the evidence tier intact',
   withLedgerHome(async (home) => {
@@ -342,6 +362,56 @@ test(
         ['holder-event', 'parent-event'],
         'both the live section’s event and the waiter’s event survived — no steal, no erase',
       );
+    } finally {
+      child.kill();
+    }
+  }),
+);
+
+test(
+  'a wedged beating holder never stalls the approved append past the wait cap (round-5 finding 1)',
+  withLedgerHome(async (home) => {
+    // Round 5's verified hole: the heartbeat runs on a worker thread, so a
+    // holder wedged in its section keeps beating forever, and the waiter —
+    // a synchronous poll on the caller's main thread — blocked for the
+    // wedge's whole duration (measured 59.7s on a 60s wedge; unbounded
+    // past that). The cap now bounds the total wait: past it the append
+    // degrades to the documented unlocked posture instead of stalling the
+    // approved call. The holder below claims with the ledger's exact
+    // parameters and blocks for 120s; the append must return within the
+    // cap (plus poll slack) and land its event.
+    const { spawn } = await import('node:child_process');
+    const child = spawn(process.execPath, ['--experimental-strip-types', 'test/approval-ledger.test.ts'], {
+      cwd: process.cwd(),
+      env: {
+        ...process.env,
+        LEDGER_WEDGED_HOLDER: '1',
+        HUAWEICLOUD_HOME: home,
+        NODE_TEST_CONTEXT: undefined,
+        NODE_TEST_WORKER_ID: undefined,
+      },
+      stdio: ['ignore', 'ignore', 'inherit'],
+    });
+    try {
+      // Wait for the holder to be LIVE inside its section (its claim pid).
+      const { existsSync: fsExists } = await import('node:fs');
+      const pidFile = join(home, '.config', 'huaweicloud', 'approval-consents-lock', 'lock', 'pid');
+      const deadline = Date.now() + 30_000;
+      while (!fsExists(pidFile)) {
+        assert.ok(Date.now() < deadline, 'the wedged holder never claimed the lock');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await new Promise((resolve) => setTimeout(resolve, 500)); // mid-section, heartbeat live
+      const started = Date.now();
+      appendConsentEvent(baseEvent({ sessionId: 'contender-event', argsHash: 'h-contender' }));
+      const waited = Date.now() - started;
+      assert.ok(waited >= 3000, `the append must first exhaust the wait cap, not return early (waited ${waited}ms)`);
+      assert.ok(
+        waited < 5000,
+        `the append must degrade within the cap plus poll slack, never stall (waited ${waited}ms)`,
+      );
+      const ids = readConsentEvents().map((event) => event.sessionId);
+      assert.ok(ids.includes('contender-event'), 'the degraded unlocked append landed the contender event');
     } finally {
       child.kill();
     }

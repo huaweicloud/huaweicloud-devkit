@@ -301,12 +301,38 @@ function sweepStaleStashes(dir: string): void {
   }
 }
 
-function acquireLock(dir: string, takeoverMs: number = LOCK_TAKEOVER_MS): void {
+// Thrown by acquireLock when the opt-in wait budget expires: the caller's
+// documented posture for this error is degrade-and-proceed (the ledger
+// runs the append unlocked), never fail the approved call. Only the
+// opt-in maxWaitMs path can produce it; the dep installer never passes
+// one and keeps today's unbounded wait.
+export class LockWaitBudgetExceeded extends Error {
+  readonly waitedMs: number;
+  constructor(waitedMs: number) {
+    super(`lock wait budget exceeded after ${waitedMs}ms (holder still alive)`);
+    this.name = 'LockWaitBudgetExceeded';
+    this.waitedMs = waitedMs;
+  }
+}
+
+function acquireLock(dir: string, takeoverMs: number = LOCK_TAKEOVER_MS, maxWaitMs: number = 0): void {
   mkdirSync(dir, { recursive: true });
   sweepStaleStashes(dir);
   const lock = lockDirPath(dir);
   const deadline = Date.now() + takeoverMs;
+  const acquireStarted = Date.now();
   for (;;) {
+    // The opt-in TOTAL wait cap (interrogate round 5, finding 1): the
+    // heartbeat keeps a live-but-wedged holder's claim fresh forever —
+    // its worker thread beats while its main thread hangs — so a waiter
+    // with no cap would block the caller's event loop for the wedge's
+    // whole duration, unbounded. A caller that passes maxWaitMs gets a
+    // bounded wait instead: past the cap with the lock still held, this
+    // throw hands the caller its documented degradation. Checked at the
+    // loop top only, so a claim that succeeded never throws.
+    if (maxWaitMs > 0 && Date.now() - acquireStarted > maxWaitMs) {
+      throw new LockWaitBudgetExceeded(Date.now() - acquireStarted);
+    }
     // Identity of the directory THIS iteration creates at the lock path —
     // the claim is only complete once the pid file lands in THAT directory.
     // Round-9 (CI, live-reproduced under CPU load): a past-deadline rival
@@ -490,6 +516,7 @@ export function withDepLock<T>(
   dir: string = receiptDir(),
   takeoverMs: number = LOCK_TAKEOVER_MS,
   heartbeatMs: number = 0,
+  maxWaitMs: number = 0,
 ): T {
   const depth = lockDepth.get(dir) ?? 0;
   if (depth > 0) {
@@ -500,7 +527,7 @@ export function withDepLock<T>(
       lockDepth.set(dir, depth - 1);
     }
   }
-  acquireLock(dir, takeoverMs);
+  acquireLock(dir, takeoverMs, maxWaitMs);
   installExitCleanup();
   heldDirs.add(dir);
   lockDepth.set(dir, 1);

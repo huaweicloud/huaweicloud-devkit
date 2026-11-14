@@ -107,9 +107,13 @@ function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
 // target that does not exist yet at call time, or a path only reachable
 // from a child cwd the gate cannot know (args.cwd unset and a wrapper
 // changing the child's directory), stays uncovered.
-// obs:// (case-insensitive) is the documented cloud-object key scheme;
-// any other scheme-shaped spelling flows into local-path resolution.
-const OBS_URI_RE = /^obs:\/\//i;
+// obs:// — lowercase exactly — is the documented cloud-object key scheme
+// (interrogate round 5, both seats: the real KooCLI's own scheme match is
+// case-sensitive; Obs:// and OBS:// operands are LOCAL paths it lstats and
+// reads, measured live — `Error: lstat …/Obs:/no-such-twin` for the case
+// variants against a cloud-style error for lowercase). Case-variant
+// scheme spellings flow into local-path resolution like s3:// does.
+const OBS_URI_RE = /^obs:\/\//;
 
 // Segment rules, one per policy credentialFilePattern (each rule's comment
 // names the pattern it operationalizes):
@@ -163,8 +167,16 @@ function homeRootsForSpelling(): ReadonlyArray<string> {
   return [...new Set(roots)];
 }
 
-function resolvedLeafCandidates(leaf: string, cwdBases: ReadonlyArray<string>): string[] {
-  if (OBS_URI_RE.test(leaf)) return []; // a cloud object key, never a local path
+// schemeSkip marks a WHOLE leaf: an obs:// operand on the OBS commands is
+// a cloud object key, never a local file. An =-value spelling is NEVER
+// scheme-skipped (interrogate round 5, shape 2): the child dereferences
+// that channel as a file path regardless of the value's scheme spelling —
+// --cli-jsonInput=obs://probe.json opens cwd/obs:/probe.json, measured
+// live — so the value always resolves and refuses only when it resolves
+// to an existing credential file.
+function resolvedLeafCandidates(leaf: string, cwdBases: ReadonlyArray<string>, schemeSkip: boolean): string[] {
+  if (schemeSkip && OBS_URI_RE.test(leaf)) return []; // a cloud object key, never a local path
+  if (leaf === '') return []; // an empty spelling names no file the child can dereference
   // Any other scheme-shaped leaf still resolves below as a potential LOCAL
   // relative path: POSIX collapses the double slash, so join(base, 's3://k')
   // is base/s3:/k — exactly the local file the child opens.
@@ -202,12 +214,20 @@ function resolvedLeafCandidates(leaf: string, cwdBases: ReadonlyArray<string>): 
 
 function firstCredentialPathIn(value: unknown, cwdBases: ReadonlyArray<string>): string | null {
   if (typeof value === 'string') {
-    // The whole leaf, plus the VALUE half of an =-shaped leaf (rule a3):
-    // the child splits on the first '=' and dereferences the value.
+    if (value === '') return null; // a bare empty leaf dereferences nothing
+    // The whole leaf (scheme-skippable as a cloud operand), plus the VALUE
+    // half of an =-shaped leaf (rule a3) — the child splits on the first
+    // '=' and dereferences the value as a file path, so the value spelling
+    // is never scheme-skipped and never empty: an empty value is rejected
+    // by the child at parse level ([USE_ERROR] must be --param=value), it
+    // cannot name a file, and resolving it to the base directory would
+    // manufacture refusals (interrogate round 5, finding 3).
     const eq = value.indexOf('=');
-    const spellings = eq >= 0 ? [value, value.slice(eq + 1)] : [value];
-    for (const spelling of spellings) {
-      for (const resolved of resolvedLeafCandidates(spelling, cwdBases)) {
+    const valuePart = eq >= 0 ? value.slice(eq + 1) : null;
+    const spellings: Array<[string, boolean]> = [[value, true]];
+    if (valuePart !== null && valuePart !== '') spellings.push([valuePart, false]);
+    for (const [spelling, schemeSkip] of spellings) {
+      for (const resolved of resolvedLeafCandidates(spelling, cwdBases, schemeSkip)) {
         if (isCredentialResolvedPath(resolved)) return resolved;
       }
     }

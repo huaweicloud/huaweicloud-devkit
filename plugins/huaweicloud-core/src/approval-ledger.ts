@@ -49,7 +49,7 @@ function ledgerLockDir(): string {
 }
 
 // The takeover window, sized to THIS critical section (interrogate rounds
-// 3-4). Round 3 set 1s on the claim that the section is a millisecond RMW;
+// 3-5). Round 3 set 1s on the claim that the section is a millisecond RMW;
 // round 4 measured the claim false — the store is append-only forever, so
 // the section is O(store) plus the home directory's latency, and a 1s
 // window stole a LIVE productive writer mid-section, silently erasing a
@@ -61,10 +61,31 @@ function ledgerLockDir(): string {
 // worker-thread heartbeat (LEDGER_HEARTBEAT_MS) that refreshes the claim's
 // mtime for the duration of the section — a beating holder never goes
 // stale, however long its section runs, and is waited out instead of
-// stolen. Only a live holder whose heartbeat stops (a genuinely wedged
-// process) falls back to the window.
+// stolen.
+//
+// Round 5 closed the hole that left: a wedged MAIN thread keeps its worker
+// beating, so a live-but-hung holder is indistinguishable from a healthy
+// slow one and would be waited out FOREVER — the waiter is a synchronous
+// poll on the caller's main thread, so the whole server's event loop
+// stalls for the wedge (measured: 59.7s on a 60s wedge; still blocked at
+// 20s; zero event-loop turns). The honest rule, now stated: a live-beating
+// holder is PROBABLY productive, and a probably-productive holder is
+// waited out — but only up to a hard total cap (LEDGER_MAX_WAIT_MS).
+// Past the cap the waiter degrades to the documented unlocked-append
+// posture (the same one an unhostable lock dir gets): the ledger is
+// best-effort by contract, an approved call never stalls unboundedly, and
+// dead holders (immediate reclaim) and empty stale dirs (1s) keep their
+// current behavior under the cap. The cap applies to healthy sections too
+// by design: a healthy section longer than the cap races the degraded
+// append — the accepted cost of never freezing an approved call on a
+// holder that cannot be distinguished from a wedged one.
 const LEDGER_LOCK_TAKEOVER_MS = 1_000;
 const LEDGER_HEARTBEAT_MS = 200;
+// The hard total-wait cap (round 5): well under the 5s bar the round-3
+// stall probes set, and above every healthy-section shape the round-4
+// races measured (sections ≤2.9s; a waiter endures only the holder's
+// REMAINING section, ≤ that again).
+const LEDGER_MAX_WAIT_MS = 3_000;
 
 // The filtered view consumers read: every entry that parses to the
 // ConsentEvent shape. Malformed entries read as absent — read tolerance is
@@ -197,8 +218,14 @@ function withLedgerLock(fn: () => void): void {
       ledgerLockDir(),
       LEDGER_LOCK_TAKEOVER_MS,
       LEDGER_HEARTBEAT_MS,
+      LEDGER_MAX_WAIT_MS,
     );
   } catch {
+    // Acquisition failures (unhostable tree, read-only claim path) and the
+    // round-5 wait-budget throw share this posture: the body has not run,
+    // so it runs UNLOCKED — the ledger is best-effort, an approved call
+    // never blocks unboundedly on a lock, and a body-internal throw (made
+    // impossible by lockedAppend's hardening) is held defensively.
     if (!bodyRan) fn();
   }
 }
