@@ -9,10 +9,10 @@
 // 'elicitation' from PR-4. A memo-reuse event (PR-3a) inherits the
 // ORIGINAL event's tier and never upgrades it, so a posture-grade yes can
 // never be re-recorded as terminal-grade on retry — recordAskModeConsent
-// ENFORCES the inheritance by resolving the tier itself from the prior
-// event on the same consent key (sessionId + tool + argsHash): the
-// caller's evidence parameter is consulted only when no prior event
-// exists.
+// ENFORCES the inheritance by resolving the tier itself from the original
+// granted event on the same consent key (sessionId + tool + argsHash —
+// the earliest granted event by chronology, round 8): the caller's
+// evidence parameter is consulted only when no granted original exists.
 //
 // Write discipline (interrogate rounds 1-7): an append ADDS, it never
 // rewrites, and every committed append SURVIVES. The locked write path
@@ -160,9 +160,13 @@ let degradedDepth = 0;
 // a real 400k compaction). Sampling the small spool and taken files first
 // closes every gap: by the time the slow store read opens, the event is
 // either still in the taken file or already in the store it reads. Array
-// order: store, then spool, then taken — a spooled or taken-resident event
-// is chronologically newer than the store's rows, and the tier lookup's
-// backwards scan must meet the newest-class events first. A taken file the
+// order: store, then spool, then taken — DISPLAY order only. No ordering
+// choice here can affect an inheritance decision (round 8): the tier
+// resolution resolves the original by CHRONOLOGY and ignores array
+// position entirely, because fold order is not chronology — the taken
+// sidecars sort by a pid+UUID name, and after a stale-taken recovery even
+// the store's own row order is not chronological (a newer copy can land
+// below the older original it was folded ahead of). A taken file the
 // reader cannot read (a fold failure leaves it on disk, round 7 finding 3)
 // is skipped here the same way the fold skips it — the file survives with
 // its bytes. Malformed entries read as absent — read tolerance is fine;
@@ -543,23 +547,47 @@ export function appendConsentEvent(event: ConsentEvent): void {
   }
 }
 
-// The most recent GRANTED event on this consent key: the original a
-// memo-reuse inherits from. A denied arrival is not a consent — a retry
-// after one is a fresh ask, not a reuse.
-function latestGrantedFor(sessionId: string, tool: string, argsHash: string): ConsentEvent | undefined {
+// The ORIGINAL granted event on this consent key: the one a memo-reuse
+// inherits its evidence tier from. A denied arrival is not a consent — a
+// retry after one is a fresh ask, not a reuse.
+//
+// Round 8, finding 1 (both seats): the original is resolved by
+// CHRONOLOGY — the earliest granted event on the key — never by array
+// position. The merged view's order is fold order (store, spool, then
+// .taken-* sidecars in name order — a pid+UUID artifact with no relation
+// to chronology, and after a stale-taken recovery even the store's own
+// row order is not chronological), and a recovery state can hold the
+// same key in several sources at once: the terminal original in one
+// sidecar, a mis-recorded posture copy — born when a transient read
+// failure hid the original — in another. Taking the last array element
+// handed the inheritance to whichever random UUID name-sorted last
+// (measured: a controlled pair flipped terminal/posture on the name
+// order alone; the organic chain mis-inherited deterministically; the
+// real API downgraded on half the runs). Chronology is the rule the plan
+// states — a reuse inherits the ORIGINAL event's tier — and it is also
+// the self-consistent one: every reuse row re-records the inherited
+// tier, so in a healthy chain every granted row on the key carries the
+// original's tier and the scan direction is invisible; only the
+// failure-born copy differs, and it is always the NEWER row. Ties on
+// grantedAt break to the earliest array position — deterministic, and
+// chronology-consistent either way.
+function originalGrantedFor(sessionId: string, tool: string, argsHash: string): ConsentEvent | undefined {
   const events = readConsentEvents();
-  for (let i = events.length - 1; i >= 0; i -= 1) {
-    const event = events[i]!;
+  let original: ConsentEvent | undefined;
+  for (const event of events) {
     if (
-      event.sessionId === sessionId &&
-      event.tool === tool &&
-      event.argsHash === argsHash &&
-      event.outcome === 'granted'
+      event.sessionId !== sessionId ||
+      event.tool !== tool ||
+      event.argsHash !== argsHash ||
+      event.outcome !== 'granted'
     ) {
-      return event;
+      continue;
+    }
+    if (original === undefined || event.grantedAt < original.grantedAt) {
+      original = event;
     }
   }
-  return undefined;
+  return original;
 }
 
 export function recordAskModeConsent(params: {
@@ -574,7 +602,12 @@ export function recordAskModeConsent(params: {
   // stays posture when the caller asks for terminal) and never downgraded
   // (terminal stays terminal) — and only a FRESH key takes the caller's
   // evidence (posture for ask arrivals, terminal for approve-CLI
-  // confirmations in the later PRs). The resolution and the append share
+  // confirmations in the later PRs). The ORIGINAL is resolved by
+  // chronology (round 8): the earliest granted event on the key, wherever
+  // it lives — a recovery state can hold the same key in the store, the
+  // spool, and several .taken-* sidecars at once, and the failure-born
+  // mis-tiered copy is always the NEWER row, so the earliest granted row
+  // is the original by construction. The resolution and the append share
   // ONE section (locked: one hold; degraded: one synchronous block with
   // the spool routing), so two racing arrivals on the same key both
   // resolve against the store the other left, not a stale snapshot. A
@@ -585,7 +618,7 @@ export function recordAskModeConsent(params: {
   withLedgerLock(() => {
     let evidence = params.evidence ?? 'posture';
     try {
-      const original = latestGrantedFor(params.sessionId, params.tool, params.argsHash);
+      const original = originalGrantedFor(params.sessionId, params.tool, params.argsHash);
       if (original) evidence = original.evidence;
     } catch {
       // degrade to the caller's tier: the append is the fact that matters

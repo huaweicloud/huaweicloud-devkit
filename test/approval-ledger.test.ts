@@ -11,7 +11,7 @@ import {
   recordAskModeConsent,
 } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
 import { hashArgs } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
-import type { ConsentEvent } from '../plugins/huaweicloud-core/src/approval-types.ts';
+import type { ConsentEvent, ConsentEvidence } from '../plugins/huaweicloud-core/src/approval-types.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
 // The consent ledger's round-trip battery: events persist, malformed store
@@ -29,6 +29,15 @@ function stageStore(home: string, contents: string): string {
   mkdirSync(dir, { recursive: true });
   writeFileSync(file, contents);
   return file;
+}
+
+// The ledger's state-dir paths under an isolated home, with the dir
+// created — the shared staging preamble of the spool-surface pins (torn
+// tail, taken order).
+function ledgerSpoolPaths(home: string): { dir: string; spool: string; lockRoot: string } {
+  const dir = join(home, '.config', 'huaweicloud');
+  mkdirSync(dir, { recursive: true });
+  return { dir, spool: join(dir, 'approval-consents.json.spool.jsonl'), lockRoot: join(dir, 'approval-consents-lock') };
 }
 
 // Quarantine the store once: stage raw bytes, make them unreadable, append
@@ -520,10 +529,7 @@ test(
 test(
   'a torn spool tail never eats the next committed append, and a lost trailing newline never hides the last complete line (round-7 finding 1)',
   withLedgerHome(async (home) => {
-    const dir = join(home, '.config', 'huaweicloud');
-    const spool = join(dir, 'approval-consents.json.spool.jsonl');
-    const lockRoot = join(dir, 'approval-consents-lock');
-    mkdirSync(dir, { recursive: true });
+    const { dir, spool, lockRoot } = ledgerSpoolPaths(home);
     // Deterministic degradation (the round-3 unhostable-tree shape): a
     // regular FILE where the lock root belongs makes every acquisition
     // throw, so the append takes the additive-spool path with no wedge
@@ -661,6 +667,97 @@ test(
     chmodSync(unreadableTaken, 0o600);
     const salvaged = readFileSync(unreadableTaken, 'utf8');
     assert.ok(salvaged.includes('taken-kept'), 'the kept file still carries its consent line verbatim');
+  }),
+);
+
+test(
+  'the inherited tier is the earliest granted original by chronology, in every file and name order (round-8 finding 1)',
+  withLedgerHome(async (home) => {
+    const { dir, spool, lockRoot } = ledgerSpoolPaths(home);
+    // Two compaction sidecars whose names differ only in the pid+uuid part
+    // — in production that part is random, so any pin that depends on it
+    // is a pin on a coin flip. The recovery state: the terminal ORIGINAL
+    // on a key, plus a mis-recorded posture COPY (born when a transient
+    // read failure hid the original — always the NEWER row by
+    // construction), held across the store, the spool, and the two
+    // sidecars in every combination. Pre-fix, the resolution took the
+    // LAST granted row in fold order, so whichever sidecar name-sorted
+    // last decided the tier (both seats: the controlled pair flipped
+    // terminal/posture on the name order alone; the real API downgraded
+    // on half its runs; the organic chain mis-inherited
+    // deterministically). The resolution must pick the EARLIEST granted
+    // row on the key by grantedAt, regardless of which file holds it.
+    const takenFirst = join(dir, 'approval-consents.json.spool.jsonl.taken-11111111-0000-4000-8000-000000000001');
+    const takenLast = join(dir, 'approval-consents.json.spool.jsonl.taken-22222222-0000-4000-8000-000000000002');
+    const line = (argsHash: string, evidence: ConsentEvidence, grantedAt: number): string =>
+      JSON.stringify(baseEvent({ sessionId: 'ses-order', argsHash, evidence, grantedAt })) + '\n';
+    // One case = one consent key, so the cases cannot bleed into each
+    // other; the recorded reuse is the row with the live grantedAt.
+    const runCase = (
+      label: string,
+      argsHash: string,
+      stage: (write: (path: string, contents: string) => void) => void,
+    ): void => {
+      for (const path of [takenFirst, takenLast, spool]) rmSync(path, { force: true });
+      stageStore(home, '[]');
+      stage((path, contents) => writeFileSync(path, contents));
+      writeFileSync(lockRoot, 'not-a-directory'); // unhostable lock root: degrade the resolution deterministically
+      recordAskModeConsent({
+        sessionId: 'ses-order',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash,
+        outcome: 'granted',
+        evidence: 'elicitation', // an observable override: any pick but the original's tier is visible
+      });
+      rmSync(lockRoot, { force: true });
+      const rows = readConsentEvents().filter((event) => event.argsHash === argsHash);
+      const recorded = rows.find((event) => event.grantedAt > 1_000_000_000_000);
+      assert.ok(recorded, `${label}: the reuse recorded a row`);
+      assert.equal(
+        recorded.evidence,
+        'terminal',
+        `${label}: the reuse inherited the ORIGINAL's tier, not the fold order's last row`,
+      );
+    };
+
+    const key = (i: number): string => `h-order-${i}`;
+    // Two taken files, both name orders: the original in the
+    // first-sorting sidecar with the copy last (pre-fix: posture), and the
+    // mirror (pre-fix: terminal — must stay terminal).
+    runCase('original-first-name/copy-last', key(1), (write) => {
+      write(takenFirst, line(key(1), 'terminal', 1_000));
+      write(takenLast, line(key(1), 'posture', 2_000));
+    });
+    runCase('original-last-name/copy-first', key(2), (write) => {
+      write(takenFirst, line(key(2), 'posture', 2_000));
+      write(takenLast, line(key(2), 'terminal', 1_000));
+    });
+    // Spool vs taken: the original taken-resident, the copy spool-resident.
+    runCase('original-in-taken/copy-in-spool', key(3), (write) => {
+      write(spool, line(key(3), 'posture', 2_000));
+      write(takenFirst, line(key(3), 'terminal', 1_000));
+    });
+    // Store vs taken, both directions: the original compacted into the
+    // store with the copy taken-resident (pre-fix: posture — the taken
+    // class out-weighed the store's original), and the copy in the store
+    // with the original taken-resident.
+    runCase('original-in-store/copy-in-taken', key(4), (write) => {
+      stageStore(home, JSON.stringify([JSON.parse(line(key(4), 'terminal', 1_000))]));
+      write(takenLast, line(key(4), 'posture', 2_000));
+    });
+    runCase('copy-in-store/original-in-taken', key(5), (write) => {
+      stageStore(home, JSON.stringify([JSON.parse(line(key(5), 'posture', 2_000))]));
+      write(takenLast, line(key(5), 'terminal', 1_000));
+    });
+    // Store-only, NON-chronological row order (the post-recovery store
+    // shape): the copy lands ABOVE the original it was folded ahead of —
+    // pre-fix the backwards scan took the copy (the r8 seat's b4 cell).
+    runCase('store-only-copy-above-original', key(6), (write) => {
+      stageStore(
+        home,
+        JSON.stringify([JSON.parse(line(key(6), 'posture', 2_000)), JSON.parse(line(key(6), 'terminal', 1_000))]),
+      );
+    });
   }),
 );
 
