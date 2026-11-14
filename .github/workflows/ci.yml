@@ -131,7 +131,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - run: node --test test/agent-install.test.ts test/cross-platform-*.test.ts
+      # Install-family behavioral lane: the split agent-install coverage
+      # (the old agent-install.test.ts was split into agent-install-*.test.ts)
+      # plus the offline canary. The canary pins a dead registry and runs the
+      # QUICK layer: node --test exits 0 on a missing file and on a zero-test
+      # run, and import-based family rules cannot see installs spawned
+      # through scripts/lib helpers (the doctor-golden.test.ts counterexample
+      # from the 2026-11-15 interrogate round) — a green run here is the only
+      # proof the quick layer stays network-free and non-empty.
+      - name: Install-family tests (cross-platform seams)
+        run: node --test test/agent-install-*.test.ts test/cross-platform-*.test.ts
+      - name: Quick-layer offline canary (dead registry must stay green)
+        run: node scripts/test-quick.mjs
+        env:
+          npm_config_registry: http://127.0.0.1:9
+          npm_config_prefer_offline: 'true'
+          npm_config_cache: ${{ runner.temp }}/quick-canary-npm-cache
 
   pack:
     runs-on: ubuntu-24.04

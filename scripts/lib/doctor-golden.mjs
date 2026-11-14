@@ -95,9 +95,13 @@ export function doctorGoldenEnv(home, extra = {}) {
 // inherit the doctor-only pins — none of them affect the installed files.
 // npm_config_cache pins the undici fetch's cache to one stable dir so the
 // cold-registry fetch happens once per machine, not once per capture.
+// prefer_offline lets a warm cache satisfy the fetch without a registry
+// round-trip — the golden install still needs the network on a cold cache,
+// and this lane is the full layer, so that is fine.
 export function installGoldenEnv(home) {
   const env = baseEnv(home, { HUAWEICLOUD_OPENCODE_PERMISSION_SEAM: 'on' });
   env.npm_config_cache = join(tmpdir(), 'doctor-golden-npm-cache');
+  env.npm_config_prefer_offline = 'true';
   return env;
 }
 

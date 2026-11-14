@@ -3,7 +3,12 @@
 ## Commands
 
 ```bash
-npm test                 # all tests (node --test)
+npm test                 # all tests (node --test) — the FULL suite; every gate that names npm test (CI matrix,
+                         #   npm-publish.yml, RELEASING, CONTRIBUTING, the PR template) runs everything
+npm run test:quick      # quick layer only (~1/3 of the wall time): every test EXCEPT the install family
+                         #   (files importing the install harnesses, see scripts/lib/test-layers.mjs) and
+                         #   doctor-golden/real-agents; runs pretest:quick (npm run build) first. The quick
+                         #   layer is the local inner loop — before pushing or publishing, still run npm test
 npm run build            # compile src → dist/ AND regenerate the skills/ tree from src/packs/*/skills/
 npm run typecheck        # tsc type gate (src + test projects)
 npm run lint             # ESLint + markdownlint
@@ -28,6 +33,7 @@ npm run test:e2e         # agent-level E2E (real opencode, codex, or hermes + LL
 
 node --test test/structure.test.ts    # single test file
 node --test test/real-agents.test.ts  # real opencode/codex lifecycle (needs the CLIs on PATH; CI lane: e2e-nightly.yml's real-agents job, DEVKIT_REAL_AGENT_TESTS=1)
+node scripts/test-quick.mjs            # the quick layer directly (no pretest:quick build — run npm run build first on a fresh checkout)
 node ./scripts/validate-package.mjs   # validation alone
 ```
 
@@ -172,7 +178,9 @@ The encrypted secret vault (`secret://<scope>/<name>` refs, `src/lib/secret-vaul
 
 ```bash
 npm run lint            # markdownlint + ESLint
-npm test                # node --test (includes structure.test.ts and the jscpd new-duplication gate)
+npm test                # node --test, the FULL suite — includes structure.test.ts, the jscpd new-duplication
+                         #   gate, and the install family (npm run test:quick is the local inner loop only;
+                         #   before pushing, publishing, or touching install/codearts/deps code, run this)
 npm run validate        # package/version/skill/kooCli pairing checks
 npm run format          # prettier --write
 npm run pack:verify     # simulate npm pack, catch missing files (e.g. new manifests)
@@ -198,7 +206,8 @@ If you changed a SKILL.md, add or update a guard in `test/structure.test.ts` and
 - OpenCode integration lives in `integrations/opencode/` (separate from the plugin).
 - Node >= 22.19 required (engines — undici 8.12.3's runtime floor; 22.18 is where type stripping landed), ESM only. Type stripping is on the whole build chain, not just the `.ts` test suite: build/validate/prepack scripts import repo `.ts` modules, and git-URL installs run prepack — on older 22.x the chain dies with `ERR_UNKNOWN_FILE_EXTENSION .ts`.
 - Test temp fixtures: create them through the shared `fixtureDir()` registry (`test/fixture-dir.ts` — registry-created dirs are removed at process exit) or clean them per-test. `test/structure.test.ts` enforces this deny-by-default: a `test/*.test.ts` with raw `mkdtempSync` must import the registry or sit on the per-test-cleaner allowlist. Never run the suite with `TMPDIR=$HOME` — the 2026-10-09 ext4 lock-verification runs leaked 614 fixture dirs into the home directory that way (the same leak is invisible on tmpfs `/tmp`, where reboots erase it). Signal death (SIGKILL/SIGINT/SIGTERM) skips exit handlers, so an interrupted run can still leave dirs behind.
-- Test helpers that spawn `install` against a fake HOME are network-bound: every cold-cache install fetches undici from the npm registry into `$HOME/.npm` (measured 79s on a high-latency registry day; seconds when warm). That is why install-bearing helpers use `timeout: 240000` — a 60s bound kills installs mid-flight (spawn status `null`) and reads as a test failure, not a network flake.
+- Test layers: `scripts/lib/test-layers.mjs` is the single source of truth for the quick/full partition; `test/structure-layers.test.ts` pins it. A test that spawns real installs (including through `scripts/lib` helpers — `doctor-golden.test.ts` is the counterexample) belongs in the full layer; a quick-layer test must stay network-free (the dead-registry canary in ci.yml's integration lane enforces this). `test/npm-cache.ts` lives outside `fixture-dir.ts` so per-test-cleaner allowlist files can adopt the shared cache without the registry-migration obligation.
+- Test helpers that spawn `install` against a fake HOME are network-bound on a cold cache: the install family (and the doctor-golden lane) fetch undici from the npm registry (measured 79s on a high-latency registry day; seconds when warm). `test/npm-cache.ts` (`npmCacheEnv()`) shares one warm `$TMPDIR` cache across every install-bearing test file — new install-spawning env builders must spread it. `npm run test:quick` excludes this family entirely, and ci.yml's integration lane pins a dead-registry quick-layer canary so a network install leaking back into the quick layer fails CI instead of a random machine. Install-bearing helpers keep `timeout: 240000` — the warm cache removes the fetch, not the retry headroom, and a 60s bound still kills installs mid-flight (spawn status `null`) and reads as a test failure, not a network flake.
 - npm tarballs ship a built `dist/` and generated `skills/` tree (prepack). Neither is committed: a raw git clone or marketplace file copy lacks both — run `npm run build` before using `.mcp.json`/`bin/setup.cjs` from a checkout. The safety hook wrapper falls back to the `.ts` source on its own, but the MCP server config does not; a missing skills tree makes the MCP server refuse to start (fail-loud by design).
 - jscpd (`npm run lint:dup`) gates _new_ duplication only. The committed `.jscpd-baseline.json` fingerprints the legacy clones (generated from the v2 tree); the gate compares against it, never against a branch ref, and there is deliberately no `threshold` (total-percentage gates fail builds on legacy duplication and are the documented top reason teams disable copy/paste gates). Scan scope: hand-written TS/JS under `plugins/huaweicloud-core/src`, `hooks`, `scripts`, `bin`, `test`, `integrations`, plus `eslint.config.mjs`. Exclusion works by three mechanisms, not one: the roots keep the generated `plugins/huaweicloud-core/skills/` tree (now also gitignored) and the root `skills/` dir out; the `formats` restriction is a TypeScript-and-JavaScript allowlist — the authoritative skill sources inside the scanned `src` root (`src/packs/*/skills/`) are markdown and therefore excluded, and a TypeScript or JavaScript file added there is scanned; the `ignore` globs cover `**/dist/**` (belt-and-braces; the built tree already sits outside the roots), `*.d.mts` declaration twins, `test/fixtures/`, and the `test/huaweicloud-*` scaffolding. Legitimate regen-worthy hits: moved-not-deleted duplication (extracting one copy of an intra-file self-clone into a helper), intentional test repetition, and edits inside a baselined clone region. Fingerprints are whitespace-sensitive: run `npm run format` before regenerating with `npm run lint:dup -- --baseline .jscpd-baseline.json --update-baseline`, then commit the file alongside the change. When upgrading jscpd, keep the exact pin (ratchet flags are documented only in `--help`), re-check config parity (a config-file run must match a CLI-flag run), and regenerate the baseline. The generated skills tree is likewise excluded from `.prettierignore` and the `lint:md` globs: its rendered shape is pinned by the packs-sync round-trip test and the `--check` gate, not by the formatters.
 - When verifying a gate from a shell, capture the exit code directly (`cmd > /tmp/gate.log 2>&1; echo $?`) — never through a pipe (`cmd | tail; echo $?` reports tail's exit code, not the command's). A masked-exit-code "lint green" claim is how a red eslint shipped as green in this repo's history; the same applies to any summarized gate output. On a shared checkout, serialize heavyweight gates (`npm test` and `npm run pack:verify` race each other's staging swaps).

@@ -33,10 +33,11 @@ cd huaweicloud-devkit
 npm install
 
 # local checks
-npm test          # run all tests
-npm run validate  # structural validation
-npm run lint      # markdownlint + ESLint
-npm run lint:dup  # jscpd duplication scan (full report; CI gates new clones only)
+npm test              # run all tests (the full suite — CI and the publish gate run exactly this)
+npm run test:quick    # the local inner loop: every test except the install family (~1/3 of the wall time)
+npm run validate      # structural validation
+npm run lint          # markdownlint + ESLint
+npm run lint:dup      # jscpd duplication scan (full report; CI gates new clones only)
 ```
 
 Requires Node.js >= 22.19.
@@ -85,7 +86,7 @@ Do not bypass, disable, or relax these checks. If a check fails, fix the underly
 
 ## Testing
 
-- Run `npm test` locally before pushing.
+- Run `npm test` locally before pushing (`npm run test:quick` is the fast inner loop — install-family tests only run in the full suite).
 - When you introduce new invariants (e.g., required SKILL.md structure), add corresponding tests under `test/`.
 - Keep existing tests green.
 
