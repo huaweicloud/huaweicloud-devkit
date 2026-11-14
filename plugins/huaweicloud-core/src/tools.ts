@@ -55,7 +55,7 @@ import { VENDOR_GATED_TOOLS, enforceVendorGate } from './vendor-gate.ts';
 // ledger, and the envelope faces) lives in the approval-* family;
 // dispatchTool calls runApprovalGate after the vendor gate and before the
 // pack dispatch.
-import { runApprovalGate } from './approval-gate.ts';
+import { recordApprovalDispatchOutcome, runApprovalGate } from './approval-gate.ts';
 import type { ApprovalSpec } from './approval-types.ts';
 // The capability catalog (service_catalog / list_packs / pack_info
 // handlers, the SKILL_OWNER inversion, and the shared pack-refusal
@@ -298,8 +298,21 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
   // never-guard are exhaustive over. opts rides through verbatim: every pack
   // handler takes (args, opts), and the update pack's doQuery/sessionId
   // seams keep reaching their handlers exactly as before the migration.
+  // The dispatch wrapper also hands the gate's approval spec the handler's
+  // delivery outcome (round 10, finding 4): the gate records the consent
+  // ARRIVAL before dispatch, and this leg — the only place that sees the
+  // handler's return or throw — records what became of the approved call,
+  // best-effort, for PR-3a's retry memo. Non-gated pack tools dispatch
+  // through unchanged (the recorder no-ops without a spec).
   if (isPackToolName(name)) {
-    return await PACK_TOOL_HANDLERS[name](args, opts);
+    try {
+      const result = await PACK_TOOL_HANDLERS[name](args, opts);
+      recordApprovalDispatchOutcome(name, approvalSpec, args, opts, result);
+      return result;
+    } catch (error) {
+      recordApprovalDispatchOutcome(name, approvalSpec, args, opts, undefined, error);
+      throw error;
+    }
   }
 
   switch (name) {

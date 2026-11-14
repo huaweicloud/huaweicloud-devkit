@@ -92,11 +92,16 @@ export interface ApprovalSpec {
 // arrivals write one; token mode keeps its existing semantics (single use,
 // tombstone, five-minute TTL) and records nothing — its evidence is the
 // custody-HMAC grant inside approvals.json. The event's subject is the
-// CONSENT, not the execution: it records that the user allowed this exact
-// call (the arrival ApprovalCoreConsent models as the human yes), and
-// `outcome` is the consent's outcome — 'granted' when the call was
-// allowed, 'denied' when the popup was declined — never the handler's
-// execution result, which is a different fact the event does not claim.
+// CONSENT's lifecycle, not the handler's internals: it records that the
+// user allowed this exact call (the arrival ApprovalCoreConsent models as
+// the human yes) and — as a best-effort follow-up the dispatch layer
+// writes after the handler returns (round 10, finding 4) — what became of
+// the call the consent authorized, in outcomeDetail. `outcome` is the
+// consent's own outcome — 'granted' when the call was allowed, 'denied'
+// when the popup was declined; `outcomeDetail` is the dispatch result of
+// the approved call ('delivered' | 'uncertain' | 'failed'), the datum
+// PR-3a's retry memo keys reuse on. Neither field claims anything about
+// the handler's internal execution beyond that delivery class.
 export interface ConsentEvent {
   sessionId: string;
   tool: string;
@@ -105,4 +110,18 @@ export interface ConsentEvent {
   grantedAt: number;
   scope: 'once' | 'session';
   evidence: ConsentEvidence;
+  // The dispatch outcome of the call this consent authorized (round 10,
+  // finding 4 — PR-3a's memo datum). Absent on every row written before
+  // the dispatch layer's follow-up lands, and on any follow-up that could
+  // not be recorded best-effort.
+  outcomeDetail?: ConsentDeliveryOutcome;
 }
+
+// What became of the call a consent authorized, as observed by the
+// dispatch layer that ran the handler: 'delivered' when the handler
+// returned an ok result, 'failed' when it returned a not-ok result (the
+// non-delivered class — the child answered with a failure), 'uncertain'
+// when the handler threw and whether the call completed is unknowable.
+// PR-3a's S1 memo reuses a prior consent exactly when this is 'uncertain'
+// or 'failed' (ApprovalCoreConsent's result-conditioned scope).
+export type ConsentDeliveryOutcome = 'delivered' | 'uncertain' | 'failed';

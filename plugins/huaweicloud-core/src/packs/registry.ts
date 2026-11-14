@@ -127,11 +127,19 @@ export function isPackToolName(name: ToolName): name is PackToolName {
 
 // The per-pack approval specs merged once, keyed exactly by the roster
 // (approval-roster.ts). The satisfies check closes the loop at compile
-// time — for real, because the roster is a const tuple: a roster entry
-// without a spec fails the Record's required keys, a spec the roster does
-// not carry fails the excess-property check, and neither can regress to an
-// inert string-keyed check without widening the tuple (the const shape is
-// pinned by test/structure.test.ts). The dispatch-layer gate
+// time in ONE direction — for real, because the roster is a const tuple:
+// a roster entry without a spec fails the Record's required keys, and a
+// spec the roster does not carry fails the excess-property check — but
+// ONLY for inline object literals. A spread merge (the shape PR-3 uses
+// to add its per-pack spec tables, `{ ...A, ...B }`) introduces object
+// types TypeScript does not excess-check (round 10, finding 2: a
+// spread-in spec for an unrostered tool typechecked, silently gated, and
+// recorded an ask-mode consent no popup ever showed — a spec-only
+// registration is invisible to the hook exemption, _meta, and the
+// ask-rule writers the roster drives). The runtime invariant in
+// test/structure.test.ts (every APPROVAL_SPECS key must be a roster
+// member) closes the spread direction: a pack spec whose tool the roster
+// does not carry fails the battery loud. The dispatch-layer gate
 // (src/approval-gate.ts, called from tools.ts after the vendor gate)
 // resolves each call's spec from this table; the roster itself stays a
 // plain string tuple so the .mjs hook and PR-2's opencode writer can

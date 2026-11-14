@@ -76,7 +76,14 @@ let classifyTextCommand;
 // "classifier unavailable". The empty-roster fallback is the fail-closed
 // posture FOR THE EXEMPTION; only a policy load failure fails the
 // classifier.
-let rosterApprovalTools = [];
+//
+// Round 10, finding 3: the roster leaf also carries each member's
+// payload-shape row (APPROVAL_TOOL_INPUT_SHAPES — the run face an args
+// array, PR-3a's exec faces a command string). An older leaf (no such
+// export) degrades to an empty table, and the per-tool fallback below
+// covers the transition.
+let rosterApprovalTools;
+let rosterInputShapes;
 try {
   const policyModule = existsSync(join(__dirname, '..', 'dist', 'safety-policy.js'))
     ? await import('../dist/safety-policy.js')
@@ -99,13 +106,14 @@ try {
   const rosterModule = existsSync(join(__dirname, '..', 'dist', 'approval-roster.js'))
     ? await import('../dist/approval-roster.js')
     : await import('../src/approval-roster.ts');
-  ({ APPROVAL_TOOLS: rosterApprovalTools } = rosterModule);
+  ({ APPROVAL_TOOLS: rosterApprovalTools, APPROVAL_TOOL_INPUT_SHAPES: rosterInputShapes } = rosterModule);
 } catch {
   // A dist predating the roster (stale checkout) or any other resolution
   // failure: run with the empty roster — no exemption fires, every deny
   // stands. Strictly safer than the total block this replaced, and the
   // deny message is not misattributed to the policy.
   rosterApprovalTools = [];
+  rosterInputShapes = [];
 }
 
 function readStdin() {
@@ -118,33 +126,77 @@ function readStdin() {
 
 // The roster exemption (the approval-chain core PR): a call attributable
 // to the devkit server's roster tool skips ONLY the deny classes the
-// dispatch-layer approval gate owns (write/execution — it binds a token,
-// a human grant, and a pin view before anything executes). Every other
-// deny — credential-file reads, secret reveals, invalid input — stays in
-// force for roster calls too, because the server gate does not replicate
-// them at the hook's breadth (interrogate round 1: the argv classifier
-// never consults credentialFilePatterns).
+// dispatch-layer approval gate owns, and the skip set is
+// payload-shape-scoped (round 10, finding 3):
+//   - args-array tools (the hcloud run face): write/execution — the spec
+//     binds a token, a human grant, and a pin view before anything
+//     executes. The hook's destructive class KEEPS denying for them: an
+//     argv payload never carries shell text the server classifies, and
+//     the r1/r2 batteries pinned exactly this split.
+//   - command-string tools (PR-3a's exec faces): write/execution AND
+//     destructive — the command IS the payload, and the server gate's
+//     classified flow (token mint → confirm → strict classification,
+//     the plan's PR-3a lanes) owns the whole command content; without
+//     the destructive skip the plan's own lane-2 command (rm -rf) could
+//     never reach the server gate the plan bets on.
+// Every other deny — credential-file reads, secret reveals, invalid
+// input — stays in force for roster calls too, because the server gate
+// does not replicate them at the hook's breadth (interrogate round 1:
+// the argv classifier never consults credentialFilePatterns).
 //
-// Attribution is shape-scoped (interrogate rounds 1-2): a roster tool's
-// tool_input carries exactly its args ARRAY — none of the other keys
-// commandText() classifies (command, cmd, script, arguments) may be
-// present, not even with a null or empty value, because a payload with a
-// write in any of THOSE keys is exactly the Bash-shaped text this
-// exemption must never cover. The SAME shape test applies to the bare
-// exact-name arm (round 2, finding 1b): the devkit's own calls always
-// carry the roster shape, so nothing legitimate loses the exemption,
-// while a colliding foreign name loses it in every spelling. The residual
-// is unchanged: a foreign tool that copies both the name and the shape
-// is indistinguishable from the devkit at the hook layer; a hostile MCP
+// Attribution is shape-scoped (interrogate rounds 1-2) and PER-TOOL
+// (round 10, finding 3): each roster member's payload shape row lives in
+// the roster leaf's APPROVAL_TOOL_INPUT_SHAPES, and a payload is exempt
+// only when it matches ITS tool's row. The run face's row is the args
+// array with none of the other text keys present — a command string
+// riding its name (the round-1/round-2 foreign-suffix smuggle) still
+// fails, whatever server sent it. The exec faces' row (PR-3a's
+// registrations) is the command string their pinned schema actually
+// carries — without a row for them, their real payload shape could never
+// satisfy the test, so PR-3a's registrations could never reach the
+// server gate on hook-bearing harnesses. A roster member with NO row
+// (an older roster leaf, or the transition window while PR-3 lands)
+// admits only the two known devkit payload shapes — and the
+// command-bearing class only on the tool's EXACT name, so a foreign
+// suffixed name cannot reach the command shape through the fallback; a
+// present commandString row matches like any other row (the devkit's
+// own prefixed calls must reach it). The residual is unchanged: a
+// foreign tool that copies both the name and the shape is
+// indistinguishable from the devkit at the hook layer; a hostile MCP
 // server was always outside the hook's trust boundary.
 const TEXT_KEYS_COMMAND_TEXT_READS = ['command', 'cmd', 'script', 'arguments'];
 
-function isRosterToolCall(toolName, toolInput) {
-  if (typeof toolName !== 'string' || !Array.isArray(rosterApprovalTools)) return false;
+function matchesArgsArrayShape(args) {
+  return Array.isArray(args.args) && TEXT_KEYS_COMMAND_TEXT_READS.every((key) => args[key] === undefined);
+}
+
+function matchesCommandStringShape(args) {
+  return (
+    typeof args.command === 'string' &&
+    args.args === undefined &&
+    TEXT_KEYS_COMMAND_TEXT_READS.every((key) => key === 'command' || args[key] === undefined)
+  );
+}
+
+// The payload-shape class a roster-attributed call matched, or undefined
+// when the call is not exempt: 'argsArray' or 'commandString' (the skip
+// set differs between them, so the caller needs the class, not a
+// boolean).
+function rosterExemptionShape(toolName, toolInput) {
+  if (typeof toolName !== 'string' || !Array.isArray(rosterApprovalTools)) return undefined;
   const args = (toolInput ?? {}) || {};
-  const rosterShaped = Array.isArray(args.args) && TEXT_KEYS_COMMAND_TEXT_READS.every((key) => args[key] === undefined);
-  if (!rosterShaped) return false;
-  return rosterApprovalTools.some((tool) => toolName === tool || toolName.endsWith('_' + tool));
+  const exact = rosterApprovalTools.find((tool) => toolName === tool);
+  const matched = exact !== undefined ? exact : rosterApprovalTools.find((tool) => toolName.endsWith('_' + tool));
+  if (matched === undefined) return undefined;
+  const shape = (rosterInputShapes ?? {})[matched];
+  if (shape === 'commandString') return matchesCommandStringShape(args) ? 'commandString' : undefined;
+  if (shape === 'argsArray') return matchesArgsArrayShape(args) ? 'argsArray' : undefined;
+  // No shape row: the transition fallback — the two known devkit payload
+  // shapes, with the command-bearing class restricted to the exact tool
+  // name (a foreign suffixed impostor cannot reach it).
+  if (matchesArgsArrayShape(args)) return 'argsArray';
+  if (exact !== undefined && matchesCommandStringShape(args)) return 'commandString';
+  return undefined;
 }
 
 function main() {
@@ -170,10 +222,21 @@ function main() {
     return;
   }
   if (result.decision !== 'deny') return;
-  // The exemption skips only the approval-gated classes (write/execution)
-  // for attributable roster calls; every other deny stands, and nothing is
+  // The exemption skips only the approval-gated classes for attributable
+  // roster calls, scoped by the payload's shape class (the skip sets are
+  // documented at rosterExemptionShape): args-array payloads skip
+  // write/execution, command-string payloads — the exec faces whose
+  // whole payload the server gate's classified flow owns — skip
+  // write/execution/destructive. Every other deny stands, and nothing is
   // skipped before the classifier has produced a verdict.
-  if (isRosterToolCall(data.tool_name, data.tool_input) && (result.risk === 'write' || result.risk === 'execution')) {
+  const exemptShape = rosterExemptionShape(data.tool_name, data.tool_input);
+  if (exemptShape === 'argsArray' && (result.risk === 'write' || result.risk === 'execution')) {
+    return;
+  }
+  if (
+    exemptShape === 'commandString' &&
+    (result.risk === 'write' || result.risk === 'execution' || result.risk === 'destructive')
+  ) {
     return;
   }
   deny(result.reason);

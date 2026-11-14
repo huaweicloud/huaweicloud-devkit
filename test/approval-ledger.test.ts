@@ -807,66 +807,93 @@ test(
 );
 
 test(
-  'an exact grantedAt tie resolves by tier precedence, never by file host or fold order (round-9 finding 1)',
+  'an exact grantedAt tie resolves to the WEAKEST tier present, never by file host or fold order (rounds 9-10)',
   withLedgerHome(async (home) => {
     const paths = ledgerSpoolPaths(home);
     // The round-8 fix's boundary case, found by BOTH r9 seats: the r8
     // resolution's strict '<' kept the FIRST row in merged-array order at
     // an equal grantedAt — and array order is fold order, so a
     // same-millisecond failure-born posture copy won the tie whenever its
-    // host name-sorted or folded first (measured: 10/20 wrong on the
-    // taken pair alternating with the pid+uuid name order; three of six
-    // host cells wrong 20/20; the first compaction baked the wrong pick
-    // into the store permanently). The round-8 pin could not see it —
-    // every r8 case uses distinct stamps. At an exact tie chronology
-    // cannot distinguish the rows, so the tiebreak must be CONTENT: tier
-    // precedence (terminal > elicitation > posture — the strongest human
-    // evidence), a function of the rows' own content and never of the
-    // fold order.
+    // host name-sorted or folded first. The round-9 fix made the tie
+    // content-based (tier precedence) but strongest-wins — and round 10,
+    // finding 1 (both seats) falsified the DIRECTION: strongest-wins is
+    // an UPGRADE path (a posture original with a stronger-tier same-ms
+    // copy re-recorded elicitation/terminal over it, 10/10 in three
+    // stagings), the exact sentence the plan forbids ("inherits the
+    // evidence tier of the original event it reuses and never upgrades
+    // it"). At an exact cross-tier tie chronology cannot name the
+    // original, so the only plan-conforming tiebreak is the SAFE
+    // direction: the WEAKEST tier present. The honest cost this pin
+    // encodes: the r9 cell (a terminal original beside a posture copy at
+    // the same stamp) now records posture — a rare mis-grade DOWN, never
+    // a fabricated upgrade.
     const takenFirst = orderTakenFirst(paths.dir);
     const takenLast = orderTakenLast(paths.dir);
-    const T = 1_500; // the EXACT collision: original and copy carry the same grantedAt
-    const expectOriginal = (argsHash: string, stage: (write: (path: string, contents: string) => void) => void): void =>
-      expectOriginalTier(
-        home,
-        paths,
-        argsHash,
-        stage,
-        'at an exact tie the strongest human evidence (the original) wins',
+    const T = 1_500; // the EXACT collision: both rows carry the same grantedAt
+    const expectWeakest = (
+      argsHash: string,
+      stage: (write: (path: string, contents: string) => void) => void,
+    ): void => {
+      const { label, tier } = recordReuseTier(home, paths, argsHash, stage);
+      assert.equal(
+        tier,
+        'posture',
+        `${label}: at an exact cross-tier tie the WEAKEST tier present wins — never an upgrade`,
       );
+    };
     const key = (i: number): string => `h-tie-${i}`;
-    // The taken pair, both name orders — the production randomUUID coin
-    // flip; pre-fix each order was deterministically wrong one way.
-    expectOriginal(key(1), (write) => {
+    // The r9 cell set, re-derived under weakest-wins: a terminal ORIGINAL
+    // beside a posture copy at the same stamp — both taken name orders
+    // (the production randomUUID coin flip), store-vs-taken both
+    // directions, spool-vs-taken, and the store-only copy-above-original
+    // cell. Every one now records posture: the mis-grade DOWN is the
+    // sanctioned trade, stably across name orders and fold orders.
+    expectWeakest(key(1), (write) => {
       write(takenFirst, orderLine(key(1), 'terminal', T));
       write(takenLast, orderLine(key(1), 'posture', T));
     });
-    expectOriginal(key(2), (write) => {
+    expectWeakest(key(2), (write) => {
       write(takenFirst, orderLine(key(2), 'posture', T));
       write(takenLast, orderLine(key(2), 'terminal', T));
     });
-    // Store vs taken, both directions, at the tie.
-    expectOriginal(key(3), (write) => {
+    expectWeakest(key(3), (write) => {
       stageStore(home, JSON.stringify([JSON.parse(orderLine(key(3), 'posture', T))]));
       write(takenLast, orderLine(key(3), 'terminal', T));
     });
-    expectOriginal(key(4), (write) => {
+    expectWeakest(key(4), (write) => {
       stageStore(home, JSON.stringify([JSON.parse(orderLine(key(4), 'terminal', T))]));
       write(takenLast, orderLine(key(4), 'posture', T));
     });
-    // Spool copy vs taken original at the tie (pre-fix: the spool folded
-    // ahead of taken decided it — posture).
-    expectOriginal(key(5), (write) => {
+    expectWeakest(key(5), (write) => {
       write(paths.spool, orderLine(key(5), 'posture', T));
       write(takenFirst, orderLine(key(5), 'terminal', T));
     });
-    // Store-only, copy ABOVE the original, at the tie.
-    expectOriginal(key(6), (write) => {
+    expectWeakest(key(6), (write) => {
       stageStore(
         home,
         JSON.stringify([JSON.parse(orderLine(key(6), 'posture', T)), JSON.parse(orderLine(key(6), 'terminal', T))]),
       );
       void write;
+    });
+    // The upgrade direction round 10 found (both seats): a posture
+    // ORIGINAL with a STRONGER copy at the same stamp — pre-fix recorded
+    // the copy's tier (elicitation 10/10, terminal 10/10, all six host
+    // cells, the locked path permanent). Weakest-wins keeps the
+    // original's grade down: posture, never an upgrade.
+    expectWeakest(key(8), (write) => {
+      write(takenFirst, orderLine(key(8), 'posture', T));
+      write(takenLast, orderLine(key(8), 'terminal', T));
+    });
+    expectWeakest(key(9), (write) => {
+      write(takenFirst, orderLine(key(9), 'posture', T));
+      write(takenLast, orderLine(key(9), 'elicitation', T));
+    });
+    // The all-three-tiers tie: the weakest tier present (posture) wins
+    // across every permutation.
+    expectWeakest(key(10), (write) => {
+      write(takenFirst, orderLine(key(10), 'posture', T));
+      write(takenLast, orderLine(key(10), 'elicitation', T));
+      stageStore(home, JSON.stringify([JSON.parse(orderLine(key(10), 'terminal', T))]));
     });
     // A tie with EQUAL tiers is immaterial: both rows carry posture, and
     // the resolution must still resolve (posture), never fall through to

@@ -32,6 +32,17 @@ function copyHookFixture(dir: string, opts: { safety?: boolean } = {}): void {
   if (opts.safety !== false) cpSync(join(pluginRoot, 'safety'), join(dir, 'safety'), { recursive: true });
 }
 
+// Run the fixture's hook on one payload: '' output reads as allow (no
+// verdict written), otherwise the deny's permissionDecision.
+function runFixtureHook(dir: string, payload: { tool_name: string; tool_input: Record<string, unknown> }): string {
+  const out = spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+  }).stdout;
+  if (out.trim() === '') return 'allow';
+  return JSON.parse(out).hookSpecificOutput.permissionDecision;
+}
+
 test('node hook file exists', () => {
   assert.ok(existsSync(hookPath));
 });
@@ -123,6 +134,8 @@ test('node hook runs normally on a stale dist that predates the roster: the empt
     rmSync(join(dir, 'src', 'approval-roster.ts'), { force: true });
     assert.ok(!existsSync(join(dir, 'dist', 'approval-roster.js')), 'the stale dist must not carry the roster leaf');
 
+    // runFixtureHook returns '' for allow, so the raw-output comparisons
+    // below keep their exact semantics.
     const runStale = (payload: { tool_name: string; tool_input: Record<string, unknown> }): string =>
       spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
         input: JSON.stringify(payload),
@@ -154,6 +167,137 @@ test('node hook runs normally on a stale dist that predates the roster: the empt
       "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'];\n",
     );
     assert.equal(runStale(rosterShaped), '', 'with the roster present the roster-shaped write is exempt');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('the roster exemption admits each roster member by its OWN payload shape: the PR-3a exec seam (round-10 finding 3)', () => {
+  // The exemption used to accept one payload shape only (the run face's
+  // args array), so PR-3a's exec tools — whose pinned schema carries the
+  // command as a `command` STRING — could never satisfy it: their
+  // registrations would arrive, the hook would still deny their calls
+  // with the hcloud plan-flow message, and the server gate the plan
+  // bets on would be unreachable on hook-bearing harnesses (the seat's
+  // probe: exec write denied, the plan's lane-2 rm -rf denied, while an
+  // args-array payload on the same name exempted). The exemption is now
+  // per-tool through the roster leaf's APPROVAL_TOOL_INPUT_SHAPES, and
+  // the skip set is shape-scoped: command-string payloads skip
+  // write/execution/destructive (the server gate's classified flow owns
+  // the whole command), args-array payloads keep the r1/r2 split
+  // (write/execution only). Three states pin here: the SHIPPED roster
+  // (the run face's args-array row still rejects command strings on its
+  // name, whatever the server), the PR-3a SIMULATED roster (a roster row
+  // without its shape table yet — the probe's exact state), and the
+  // PR-3a-LANDED table (the exec row present, so the devkit's own
+  // prefixed calls reach the server gate).
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-pr3aseam-'));
+  const runStale = (payload: { tool_name: string; tool_input: Record<string, unknown> }): string =>
+    runFixtureHook(dir, payload);
+  const writeRosterLeaf = (body: string): void => writeFileSync(join(dir, 'dist', 'approval-roster.js'), body);
+  try {
+    copyHookFixture(dir);
+    mkdirSync(join(dir, 'dist'), { recursive: true });
+    writeFileSync(
+      join(dir, 'dist', 'safety-policy.js'),
+      "export { classifyTextCommand } from '../src/safety-policy.ts';\n",
+    );
+    const execPayload = { command: 'hcloud ECS DeleteServer --server_id=i-1', mode: 'sync', workspace_id: 'ws-1' };
+    const rmrfPayload = { command: 'rm -rf /tmp/x', mode: 'sync', workspace_id: 'ws-1' };
+    const runArgsPayload = { args: ['hcloud', 'ECS', 'DeleteServer', '--server_id=i-1'], approvedByUser: true };
+
+    // State 1 — the SHIPPED roster and shape table: the run face's
+    // args-array row rejects a command string on its name in every
+    // spelling (the round-1/round-2 foreign-suffix smuggle), while its
+    // own args-array payload stays exempt.
+    writeRosterLeaf(
+      "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'];\n" +
+        "export const APPROVAL_TOOL_INPUT_SHAPES = { huaweicloud_run_approved_command: 'argsArray' };\n",
+    );
+    assert.equal(
+      runStale({
+        tool_name: 'huaweicloud_run_approved_command',
+        tool_input: { command: 'hcloud ECS DeleteServer --server_id=i-1' },
+      }),
+      'deny',
+      'shipped state: bare run-face name + command string denies',
+    );
+    assert.equal(
+      runStale({
+        tool_name: 'mcp__evil__huaweicloud_run_approved_command',
+        tool_input: { command: 'hcloud ECS DeleteServer --server_id=i-1' },
+      }),
+      'deny',
+      'shipped state: foreign-suffixed run-face name + command string denies',
+    );
+    assert.equal(
+      runStale({
+        tool_name: 'mcp__huaweicloud-devkit__huaweicloud_run_approved_command',
+        tool_input: runArgsPayload,
+      }),
+      'allow',
+      'shipped state: the run face keeps its args-array exemption',
+    );
+
+    // State 2 — the PR-3a SIMULATED roster (the seat's probe: a roster
+    // row added, its shape table not yet): the exec tool's REAL payload
+    // shape now reaches the server gate, and the plan's lane-2 rm -rf
+    // too; a foreign SUFFIX on the exec name cannot reach the
+    // command-shape fallback (exact names only).
+    writeRosterLeaf(
+      "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_sandbox_exec_one_shot'];\n",
+    );
+    assert.equal(
+      runStale({ tool_name: 'huaweicloud_sandbox_exec_one_shot', tool_input: execPayload }),
+      'allow',
+      'simulated PR-3a: the exec write reaches the server gate',
+    );
+    assert.equal(
+      runStale({ tool_name: 'huaweicloud_sandbox_exec_one_shot', tool_input: rmrfPayload }),
+      'allow',
+      'simulated PR-3a: the lane-2 destructive command reaches the server gate',
+    );
+    assert.equal(
+      runStale({ tool_name: 'huaweicloud_sandbox_exec_one_shot', tool_input: runArgsPayload }),
+      'allow',
+      'simulated PR-3a: an args-array payload on the exec name still exempts',
+    );
+    assert.equal(
+      runStale({ tool_name: 'mcp__evil__huaweicloud_sandbox_exec_one_shot', tool_input: execPayload }),
+      'deny',
+      'simulated PR-3a: a foreign SUFFIX cannot reach the command-shape fallback',
+    );
+    assert.equal(
+      runStale({
+        tool_name: 'mcp__huaweicloud-devkit__huaweicloud_run_approved_command',
+        tool_input: runArgsPayload,
+      }),
+      'allow',
+      'simulated PR-3a: the run face keeps its exemption',
+    );
+
+    // State 3 — the PR-3a-LANDED shape table: the exec row is present,
+    // so the devkit's own PREFIXED calls (the real harness spelling)
+    // reach the server gate.
+    writeRosterLeaf(
+      "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_sandbox_exec_one_shot'];\n" +
+        "export const APPROVAL_TOOL_INPUT_SHAPES = { huaweicloud_run_approved_command: 'argsArray', huaweicloud_sandbox_exec_one_shot: 'commandString' };\n",
+    );
+    assert.equal(
+      runStale({ tool_name: 'mcp__huaweicloud-devkit__huaweicloud_sandbox_exec_one_shot', tool_input: execPayload }),
+      'allow',
+      'landed PR-3a: the prefixed exec call reaches the server gate',
+    );
+    // A payload of the WRONG shape for its row never exempts, whatever
+    // the name.
+    assert.equal(
+      runStale({
+        tool_name: 'huaweicloud_sandbox_exec_one_shot',
+        tool_input: { command: 'rm -rf /tmp/x', args: ['x'] },
+      }),
+      'deny',
+      'a mixed-shape payload (command AND args) never exempts',
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

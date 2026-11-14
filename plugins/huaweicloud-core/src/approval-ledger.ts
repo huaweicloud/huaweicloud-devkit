@@ -11,8 +11,25 @@
 // never be re-recorded as terminal-grade on retry — recordAskModeConsent
 // ENFORCES the inheritance by resolving the tier itself from the original
 // granted event on the same consent key (sessionId + tool + argsHash —
-// the earliest granted event by chronology, round 8): the caller's
-// evidence parameter is consulted only when no granted original exists.
+// the earliest granted event by chronology, round 8; at an exact
+// same-millisecond cross-tier tie, where chronology cannot name the
+// original, the WEAKEST tier present wins — round 10's never-upgrade
+// direction, with the rare mis-grade DOWN as the recorded honest cost):
+// the caller's evidence parameter is consulted only when no granted
+// original exists.
+//
+// PR-3a contract (round 10, G2, recorded for the landing PR — no code in
+// PR-1 beyond this note): the S3 session standing consent needs a
+// tier-safe writer this ledger does not export yet — recordAskModeConsent
+// hard-codes scope 'once' and takes no scope parameter, and
+// appendConsentEvent takes the scope but does no tier resolution, so a
+// standing grant or memo event routed through the latter would upgrade
+// unchecked. The standing writer PR-3a lands MUST resolve the tier
+// exactly the way recordAskModeConsent does (chronology, weakest-wins tie)
+// and take the scope as a parameter; and the gate's ask result must first
+// become a structured value carrying approvedVia (a gate-contract change
+// in approval-gate.ts AND tools.ts, the latter unlisted in PR-3a's file
+// list) before the memo can report what it reused.
 //
 // Write discipline (interrogate rounds 1-7): an append ADDS, it never
 // rewrites, and every committed append SURVIVES. The locked write path
@@ -69,7 +86,7 @@ import { dirname, join } from 'node:path';
 
 import { devkitStateBase } from './lib/state-dir.ts';
 import { withDepLock } from './dep/receipts.ts';
-import type { ConsentEvent, ConsentEvidence } from './approval-types.ts';
+import type { ConsentDeliveryOutcome, ConsentEvent, ConsentEvidence } from './approval-types.ts';
 
 function ledgerFilePath(): string {
   return join(devkitStateBase(), 'approval-consents.json');
@@ -130,6 +147,13 @@ const LEDGER_HEARTBEAT_MS = 200;
 // bounds the CALLER's stall, and the additive spool carries the evidence
 // for whatever runs past it.
 const LEDGER_MAX_WAIT_MS = 3_000;
+
+// The delivery-annotation budget (round 10, finding 4): the follow-up is
+// best-effort by contract, so it never pays the arrival cap — a wedged
+// holder must not tax the approved call's tail a second time. Past this
+// short budget the annotation skips and the row keeps its arrival shape
+// (an absent outcomeDetail reads as unknown to PR-3a's memo).
+const LEDGER_ANNOTATE_MAX_WAIT_MS = 250;
 
 // Degraded-section re-entrancy (round 6, finding 1): when >0, this process
 // is inside a degraded (unlocked) ledger section. Nested ledger calls
@@ -202,7 +226,7 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
     ) {
       continue;
     }
-    out.push({
+    const event: ConsentEvent = {
       sessionId: record.sessionId,
       tool: record.tool,
       argsHash: record.argsHash,
@@ -210,7 +234,18 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
       grantedAt: record.grantedAt,
       scope: record.scope,
       evidence: record.evidence,
-    });
+    };
+    // The delivery-outcome follow-up (round 10, finding 4): pass it through
+    // when present and well-formed; a malformed value reads as absent (the
+    // documented read tolerance — the write path preserves the raw row).
+    if (
+      record.outcomeDetail === 'delivered' ||
+      record.outcomeDetail === 'uncertain' ||
+      record.outcomeDetail === 'failed'
+    ) {
+      event.outcomeDetail = record.outcomeDetail;
+    }
+    out.push(event);
   }
   return out;
 }
@@ -575,16 +610,33 @@ export function appendConsentEvent(event: ConsentEvent): void {
 // whenever its host name-sorted or folded first; measured 10/20 wrong on
 // the taken pair, three of six host cells wrong 20/20, the first
 // compaction baking the pick into the store permanently). At such a tie
-// chronology cannot distinguish the rows, so the tiebreak is CONTENT:
-// tier precedence, terminal > elicitation > posture — the strongest
-// human evidence wins, a function of the rows' own content and never of
-// the fold order.
+// chronology cannot distinguish the rows, so the tiebreak is CONTENT —
+// but round 10, finding 1 (both seats) fixed its direction: the WEAKEST
+// tier present wins (posture < elicitation < terminal), a function of
+// the rows' own content and never of the fold order, and the only
+// direction the plan's never-upgrade line survives — see
+// TIER_PRECEDENCE below for the honest cost.
 
-// Tier precedence for the equal-chronology tiebreak (round 9, finding 1):
-// the strength of the HUMAN evidence behind the consent — a terminal
+// Tier precedence for the equal-chronology tiebreak (rounds 9-10): the
+// strength of the HUMAN evidence behind the consent — a terminal
 // confirmation outranks an elicitation response, which outranks a
 // posture-grade arrival. Pure data, keyed by the evidence model, with no
-// undefined case (the filtered view only yields these three tiers).
+// undefined case (the filtered view only yields these three tiers). The
+// table NAMES the strength order; round 10, finding 1 (both seats) fixed
+// the DIRECTION it is consulted in: at an exact cross-tier tie the WEAKEST
+// tier present wins, never the strongest. The round-9 strongest-wins rule
+// was an UPGRADE path — a posture-grade original with a stronger-tier
+// same-millisecond copy re-recorded elicitation/terminal over it (10/10
+// in both stagings, all six host cells, the locked path baking it
+// permanently), violating the plan line ("inherits the evidence tier of
+// the original event it reuses and never upgrades it, so a posture-grade
+// yes can never be re-recorded as terminal-grade on retry"). At an exact
+// tie chronology cannot name the original, so no tiebreak can recover
+// originality — the only plan-conforming direction is the SAFE one: the
+// weakest tier present. The honest cost, recorded: the r9 cell (a
+// terminal original beside a posture copy at the same stamp) now records
+// posture — a rare mis-grade DOWN. That is the correct trade: a mis-grade
+// down never fabricates stronger evidence, while a mis-grade up does.
 const TIER_PRECEDENCE: Record<ConsentEvidence, number> = { posture: 0, elicitation: 1, terminal: 2 };
 
 function originalGrantedFor(sessionId: string, tool: string, argsHash: string): ConsentEvent | undefined {
@@ -603,21 +655,26 @@ function originalGrantedFor(sessionId: string, tool: string, argsHash: string): 
       original = event;
       continue;
     }
-    // Round 9, finding 1 (both seats): an EXACT grantedAt collision between
-    // rows with DIFFERENT tiers was resolved by array position — fold order
-    // — so a same-millisecond failure-born posture copy could win the
-    // inheritance whenever its host name-sorted or folded first (measured:
-    // 10/20 wrong on the taken pair, alternating with the pid+uuid name
-    // order; three of six host cells wrong 20/20; the first compaction
-    // baked the wrong pick into the store permanently). At a tie,
-    // chronology cannot distinguish the rows, so the tiebreak resolves by
-    // the rows' CONTENT — tier precedence, the strongest human evidence —
-    // never by which file hosted them or what the fold order was. At a tie
-    // with EQUAL tiers the choice is immaterial (both rows carry the same
-    // tier; the incumbent stays).
+    // Round 9, finding 1 (both seats) + round 10, finding 1 (both seats):
+    // an EXACT grantedAt collision between rows with DIFFERENT tiers was
+    // first resolved by array position — fold order — so a
+    // same-millisecond failure-born posture copy could win the
+    // inheritance whenever its host name-sorted or folded first. Round 9
+    // replaced position with content: tier precedence, strongest wins.
+    // Round 10 falsified the DIRECTION: strongest-wins is an UPGRADE path
+    // — a posture-grade original with a stronger-tier same-ms copy
+    // re-recorded the stronger tier over it (10/10 in three stagings, all
+    // six host cells, the locked path permanent), the exact sentence the
+    // plan forbids. At a tie chronology cannot distinguish the rows, and
+    // it cannot name the original either — so the tiebreak resolves to
+    // the WEAKEST tier present: downgrade-safe, upgrade-impossible. The
+    // honest cost: a terminal original beside a weaker same-ms copy
+    // records the weaker tier — a rare mis-grade DOWN, never a fabricated
+    // upgrade. At a tie with EQUAL tiers the choice is immaterial (both
+    // rows carry the same tier; the incumbent stays).
     if (
       event.grantedAt === original.grantedAt &&
-      TIER_PRECEDENCE[event.evidence] > TIER_PRECEDENCE[original.evidence]
+      TIER_PRECEDENCE[event.evidence] < TIER_PRECEDENCE[original.evidence]
     ) {
       original = event;
     }
@@ -634,22 +691,27 @@ export function recordAskModeConsent(params: {
 }): void {
   // Tier resolution is the ledger's rule, not the caller's: a reuse
   // inherits the original event's tier verbatim — never upgraded (posture
-  // stays posture when the caller asks for terminal) and never downgraded
-  // (terminal stays terminal) — and only a FRESH key takes the caller's
-  // evidence (posture for ask arrivals, terminal for approve-CLI
-  // confirmations in the later PRs). The ORIGINAL is resolved by
-  // chronology (round 8): the earliest granted event on the key, wherever
-  // it lives — a recovery state can hold the same key in the store, the
-  // spool, and several .taken-* sidecars at once, and the failure-born
-  // mis-tiered copy is always the NEWER row, so the earliest granted row
-  // is the original by construction. The resolution and the append share
-  // ONE section (locked: one hold; degraded: one synchronous block with
-  // the spool routing), so two racing arrivals on the same key both
-  // resolve against the store the other left, not a stale snapshot. A
-  // resolution failure (an unreadable store the hardened read already
-  // degrades to empty, a state-dir validation throw) degrades to the
-  // caller's tier so the append still lands — the same best-effort
-  // posture as the append itself (interrogate round 4).
+  // stays posture when the caller asks for terminal); the one sanctioned
+  // downgrade is the exact same-millisecond cross-tier tie, where
+  // chronology cannot name the original and the WEAKEST tier present wins
+  // (round 10, finding 1 — a rare mis-grade DOWN, never a fabricated
+  // upgrade). Only a FRESH key takes the caller's evidence (posture for
+  // ask arrivals, terminal for approve-CLI confirmations in the later
+  // PRs). The ORIGINAL is resolved by chronology (round 8): the earliest
+  // granted event on the key, wherever it lives — a recovery state can
+  // hold the same key in the store, the spool, and several .taken-*
+  // sidecars at once, and the failure-born mis-tiered copy is always the
+  // NEWER row, so the earliest granted row is the original by
+  // construction — except at the exact-tie boundary, where the
+  // weakest-wins rule above is the only plan-conforming answer. The
+  // resolution and the append share ONE section (locked: one hold;
+  // degraded: one synchronous block with the spool routing), so two
+  // racing arrivals on the same key both resolve against the store the
+  // other left, not a stale snapshot. A resolution failure (an unreadable
+  // store the hardened read already degrades to empty, a state-dir
+  // validation throw) degrades to the caller's tier so the append still
+  // lands — the same best-effort posture as the append itself
+  // (interrogate round 4).
   withLedgerLock(() => {
     let evidence = params.evidence ?? 'posture';
     try {
@@ -668,4 +730,83 @@ export function recordAskModeConsent(params: {
       evidence,
     });
   });
+}
+
+// The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
+// PR-3a's memo datum): annotate the most recent granted consent row on a
+// key with what became of the call the consent authorized. The gate
+// records the ARRIVAL (recordAskModeConsent, above); the dispatch layer —
+// which is the only place that ever sees the handler's return or throw —
+// calls this best-effort follow-up after the handler ran. The ledger's
+// subject widens accordingly: the CONSENT's lifecycle (arrival + what
+// became of the call it authorized), never the handler's internal
+// execution. PR-3a's S1 memo keys reuse on this datum (uncertain /
+// failed → reuse the prior consent; delivered → no reuse).
+//
+// Best-effort in every direction, by design: the annotation takes the
+// ledger lock under a SHORT wait budget (a wedged holder must not tax the
+// approved call's tail a second time after the arrival already paid the
+// 3s cap) and SKIPS on any failure — lock unobtainable, no store, an
+// unreadable store (the quarantine is the append's business; this path
+// never rewrites a store it could not read), or the row not found. "Not
+// found" is the common healthy skip: token mode records no arrival
+// (nothing to annotate), a classified pass-through records none either,
+// and a consent whose arrival degraded to the spool is left alone —
+// rewriting a spool line is the unlocked read-rewrite this ledger
+// forbids (round 6). A skipped annotation leaves the row as the arrival
+// wrote it; the memo treats an absent outcomeDetail as unknown. The
+// update itself is an in-place field write on ONE row under the lock —
+// the same locked read-modify-write shape as lockedAppend, targeting the
+// most recent granted row on the key (the arrival the dispatch layer
+// just approved; racing same-key arrivals may leave the newest row
+// ambiguous, which is why PR-3a's precise keyed join lands with the
+// approvedVia carrier — the recorded G2 note).
+export function annotateDispatchOutcome(params: {
+  sessionId: string;
+  tool: string;
+  argsHash: string;
+  outcomeDetail: ConsentDeliveryOutcome;
+}): void {
+  try {
+    withDepLock(
+      () => {
+        const path = ledgerFilePath();
+        const raw = readRawConsents();
+        if (raw === undefined) return; // absent or unreadable store: nothing to annotate
+        let targetIndex = -1;
+        let targetStamp = Number.NEGATIVE_INFINITY;
+        for (let i = 0; i < raw.length; i += 1) {
+          const entry = raw[i];
+          if (!entry || typeof entry !== 'object') continue;
+          const record = entry as Record<string, unknown>;
+          if (
+            record.sessionId !== params.sessionId ||
+            record.tool !== params.tool ||
+            record.argsHash !== params.argsHash ||
+            record.outcome !== 'granted' ||
+            typeof record.grantedAt !== 'number'
+          ) {
+            continue;
+          }
+          // The most recent granted row on the key; ties take the later
+          // index (the last row the fold placed at that stamp).
+          if (record.grantedAt >= targetStamp) {
+            targetStamp = record.grantedAt;
+            targetIndex = i;
+          }
+        }
+        if (targetIndex === -1) return; // spool/taken-resident or no arrival: skip
+        (raw[targetIndex] as Record<string, unknown>).outcomeDetail = params.outcomeDetail;
+        const tmp = `${path}.${process.pid}.annotate.tmp`;
+        writeFileSync(tmp, JSON.stringify(raw), { encoding: 'utf8', mode: 0o600 });
+        renameSync(tmp, path);
+      },
+      ledgerLockDir(),
+      LEDGER_LOCK_TAKEOVER_MS,
+      LEDGER_HEARTBEAT_MS,
+      LEDGER_ANNOTATE_MAX_WAIT_MS,
+    );
+  } catch {
+    // best-effort by contract: a recording failure never fails the call
+  }
 }

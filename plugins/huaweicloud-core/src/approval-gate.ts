@@ -29,8 +29,8 @@ import type { ToolArgs, CallToolOptions } from './tools.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
 import { huaweiConfigBase } from './lib/state-dir.ts';
-import { recordAskModeConsent } from './approval-ledger.ts';
-import type { ApprovalSpec } from './approval-types.ts';
+import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
+import type { ApprovalSpec, ConsentDeliveryOutcome } from './approval-types.ts';
 
 // The gate result: 'pass' lets dispatch continue; an envelope object is
 // returned to the caller INSTEAD of the handler's value. Approval-shaped
@@ -436,4 +436,60 @@ export async function runApprovalGate(
   // The token spent and the binding verified: the registered handler runs
   // the pure execution it owns.
   return 'pass';
+}
+
+// The dispatch-result follow-up (round 10, finding 4, PR-3a's memo
+// datum): after the pack handler the gate's caller dispatched returns —
+// or throws — callTool hands the result here, and this records what
+// became of the call the gate approved, on the gate's behalf. The gate
+// itself returns 'pass' before dispatch (its contract is unchanged —
+// the structured approvedVia carrier is the recorded PR-3a note, not a
+// PR-1 change); the dispatch layer is the only place that ever sees the
+// handler's return or throw, so it is the only place the delivery class
+// can be observed.
+//
+// The classes, from the handler's return or throw: 'delivered' when the
+// handler returned an ok result, 'failed' when it returned a not-ok
+// result (the non-delivered class — the child answered with a failure),
+// 'uncertain' when the handler threw and whether the call completed is
+// unknowable. PR-3a's S1 memo reuses a prior consent exactly on
+// 'uncertain' or 'failed' (ApprovalCoreConsent's result-conditioned
+// scope).
+//
+// Best-effort in every direction: ask mode only (token mode records no
+// arrival, so there is no row to annotate — and the check keeps the
+// default-mode dispatch path free of any ledger work), no-ops without a
+// spec, and never throws — a recording failure must never fail the call
+// it is recording. The ledger's annotateDispatchOutcome enforces the
+// short wait budget and the skip-on-any-failure posture.
+export function recordApprovalDispatchOutcome(
+  name: ToolName,
+  spec: ApprovalSpec | undefined,
+  args: ToolArgs,
+  opts: CallToolOptions,
+  handlerResult: unknown,
+  handlerThrew?: unknown,
+): void {
+  try {
+    if (!spec) return;
+    if (approvalModeFromEnv(process.env) !== 'ask') return; // no ask arrival was recorded
+    const outcomeDetail: ConsentDeliveryOutcome =
+      handlerThrew !== undefined ? 'uncertain' : handlerResultIsOk(handlerResult) ? 'delivered' : 'failed';
+    annotateDispatchOutcome({
+      sessionId: opts.sessionId ?? 'default',
+      tool: name,
+      argsHash: hashArgs(bindingValue(spec, args)),
+      outcomeDetail,
+    });
+  } catch {
+    // best-effort by contract: the dispatch outcome is a convenience
+    // datum; the consent (the safety-critical fact) is already recorded
+  }
+}
+
+function handlerResultIsOk(handlerResult: unknown): boolean {
+  if (handlerResult && typeof handlerResult === 'object' && 'ok' in handlerResult) {
+    return (handlerResult as Record<string, unknown>).ok !== false;
+  }
+  return true;
 }

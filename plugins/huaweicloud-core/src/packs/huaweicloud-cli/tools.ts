@@ -423,8 +423,15 @@ export const HUAWEICLOUD_CLI_APPROVAL_SPECS: Readonly<Record<'huaweicloud_run_ap
     assertArgsExecutable: (bindingValue, mode) => assertNoPlaceholderSecret(bindingValue as string[], mode),
     summarize: (bindingValue) => {
       const effective = bindingValue as string[];
+      // Round 10, G1: the summary is built from the REDACTED pin view, not
+      // the raw argument stream — the ApprovalSpec contract ("never the raw
+      // argument stream — a popup must not leak secrets") must hold for the
+      // one field PR-3's USER_CONFIRMATION_REQUIRED envelope and PR-4's
+      // elicitation form spread verbatim. pinViewArgs is the same redaction
+      // vocabulary the pin view uses; an unredactable summary would leak
+      // exactly what the pin view hides.
       return {
-        summary: `huaweicloud_run_approved_command: ${['hcloud', ...effective].join(' ').slice(0, 200)}`,
+        summary: `huaweicloud_run_approved_command: ${['hcloud', ...pinViewArgs(effective)].join(' ').slice(0, 200)}`,
         argsHash: hashArgs(effective),
         pinView: pinViewArgs(effective),
       };

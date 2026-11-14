@@ -30,6 +30,29 @@ test('the approval roster only names real tools and the classified list is a sub
   }
 });
 
+test('every approval spec is rostered: the spread-merge direction the satisfies check cannot see (round-10 finding 2)', () => {
+  // The registry's satisfies closure holds for INLINE object literals
+  // only: a spec added through a spread merge ({ ...A, ...B } — the shape
+  // PR-3 uses for its per-pack spec tables) carries extra keys past the
+  // excess-property check without failing the build. A spec-only
+  // registration silently GATES its tool (the dispatch gate resolves
+  // specs from the merged table) while remaining invisible to every
+  // roster consumer — the hook exemption, _meta, PR-2's ask-rule
+  // writer — so in ask mode the tool executes on a prompt the user was
+  // never shown and records a granted/posture consent the user never
+  // gave. This runtime invariant is the mirror of the
+  // roster-names-real-tools pin: the merged table's keys must be a
+  // subset of the roster tuple, so any roster/spec drift fails the
+  // battery loud instead of silently gating.
+  const roster = new Set(APPROVAL_TOOLS as ReadonlyArray<string>);
+  for (const key of Object.keys(APPROVAL_SPECS)) {
+    assert.ok(
+      roster.has(key),
+      `approval spec ${key} is not on the roster — the gate would silently engage for an unrostered tool`,
+    );
+  }
+});
+
 test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
   // Interrogate rounds 1-5: typing the roster as a plain
   // ReadonlyArray<string> widens ApprovalRosterName to string and

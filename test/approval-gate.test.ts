@@ -16,7 +16,12 @@ import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approv
 import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import { createLinkedDevkitServers } from '../plugins/huaweicloud-core/src/mcp-protocol.ts';
 import { readConsentEvents } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
-import { runApprovalGate, NO_SESSION_SEAM_ERROR } from '../plugins/huaweicloud-core/src/approval-gate.ts';
+import {
+  recordApprovalDispatchOutcome,
+  runApprovalGate,
+  NO_SESSION_SEAM_ERROR,
+} from '../plugins/huaweicloud-core/src/approval-gate.ts';
+import { HUAWEICLOUD_CLI_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
 import type { ApprovalSpec } from '../plugins/huaweicloud-core/src/approval-types.ts';
 import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
@@ -159,6 +164,29 @@ test('token mode: the gate mints nothing for the plan-face tool — only the pla
   });
 });
 
+test('no registered spec summarize view leaks a secret-shaped value (round-10 G1)', async () => {
+  // The ApprovalSpec contract (approval-types.ts): the summary is "the
+  // redacted popup view ... never the raw argument stream — a popup must
+  // not leak secrets". The one landed spec violated it (the summary
+  // joined the raw effective args, so `--secret_string=<real secret>`
+  // rode the line verbatim while the pin view redacted it); no
+  // production consumer emits summary today, but PR-3's
+  // USER_CONFIRMATION_REQUIRED envelope and PR-4's elicitation form
+  // spread `...view` for every tool — the leak would ride the popup.
+  // The invariant is over every REGISTERED spec, so a PR-3 spec that
+  // regresses it fails here the moment it lands.
+  const SECRET = 'Sup3rSecret!passw0rd';
+  const secretBinding = ['CSMS', 'CreateSecret', `--secret_string=${SECRET}`];
+  for (const [name, spec] of Object.entries(APPROVAL_SPECS)) {
+    const view = spec.summarize(secretBinding);
+    assert.ok(
+      !view.summary.includes(SECRET),
+      `${name}: the summary must not leak the secret (build it from the redacted pin view)`,
+    );
+    assert.ok(!JSON.stringify(view.pinView).includes(SECRET), `${name}: the pin view stays redacted`);
+  }
+});
+
 test('ask mode: the gate routes to the handler with no token and records a posture-tier consent event', async () => {
   await withTempAuthHome(async (_home) => {
     const fake = fakeHcloudExecutable('console.log(JSON.stringify({ ok: true }));');
@@ -176,6 +204,63 @@ test('ask mode: the gate routes to the handler with no token and records a postu
         assert.equal(events[0]!.outcome, 'granted');
         assert.equal(events[0]!.argsHash, hashArgs(['ECS', 'DeleteServer', '--server_id=i-1']));
         assert.equal(events[0]!.sessionId, 'default');
+      });
+    } finally {
+      if (prevBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = prevBin;
+    }
+  });
+});
+
+test('ask mode: the dispatch layer records what became of the approved call — the PR-3a memo datum (round-10 finding 4)', async () => {
+  // Pre-fix, a FAILED (non-delivered) handler left gate-side state
+  // byte-identical to a delivered one: the consent row said 'granted' and
+  // nothing anywhere recorded the handler's outcome, so PR-3a's retry
+  // memo could not distinguish its own two conditions (reuse after
+  // uncertain/failed vs no reuse after delivered). The dispatch wrapper
+  // now hands the gate's spec the handler's return — or throw — and the
+  // gate records the delivery class on the just-written consent row,
+  // best-effort. All three classes pin here: failed (the child answered
+  // with a failure), delivered (an ok result), and uncertain (the handler
+  // threw — whether the call completed is unknowable).
+  await withTempAuthHome(async () => {
+    const failing = fakeHcloudExecutable('console.error("boom"); process.exit(1);');
+    const succeeding = fakeHcloudExecutable('console.log(JSON.stringify({ ok: true }));');
+    const prevBin = process.env.HCLOUD_BIN;
+    process.env.HCLOUD_BIN = failing;
+    try {
+      await withApprovalMode('ask', async () => {
+        const args = ['ECS', 'ListServersDetails'];
+        const failedRun = (await runApproved(undefined, args)) as ApprovedRunResult;
+        assert.equal(failedRun.ok, false, 'the failing handler returns a not-ok result');
+        let events = readConsentEvents();
+        assert.equal(events.length, 1, 'one arrival, one row');
+        assert.equal(events[0]!.outcomeDetail, 'failed', 'a failed handler leaves a distinguishable failed row');
+
+        // The same call succeeding records delivered (the in-place update
+        // targets the newest granted row on the key).
+        process.env.HCLOUD_BIN = succeeding;
+        const okRun = (await runApproved(undefined, args)) as ApprovedRunResult;
+        assert.equal(okRun.ok, true);
+        events = readConsentEvents();
+        assert.equal(events.length, 2, 'the second arrival is its own row');
+        assert.equal(events[1]!.outcomeDetail, 'delivered', 'a delivered handler records delivered');
+        assert.notEqual(events[0]!.outcomeDetail, events[1]!.outcomeDetail, 'the two rows are distinguishable');
+
+        // The throw leg's classification: the handler threw, so the call's
+        // completion is unknowable — the datum the memo treats as
+        // retryable. Driven through the gate's recorder directly (the real
+        // run handler reports child failures as results, never throws).
+        recordApprovalDispatchOutcome(
+          'huaweicloud_run_approved_command',
+          HUAWEICLOUD_CLI_APPROVAL_SPECS.huaweicloud_run_approved_command,
+          { args, approvedByUser: true },
+          {},
+          undefined,
+          new Error('handler crashed mid-dispatch'),
+        );
+        events = readConsentEvents();
+        assert.equal(events[1]!.outcomeDetail, 'uncertain', 'a thrown handler records uncertain');
       });
     } finally {
       if (prevBin === undefined) delete process.env.HCLOUD_BIN;
