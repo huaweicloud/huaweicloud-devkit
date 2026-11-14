@@ -530,6 +530,17 @@ export function recordApprovalDispatchOutcome(
 // void handler, the async-start receipt {started:'uncertain'}: an
 // accepted start is a delivered dispatch, and the async completion is
 // the poll call's own result).
+// The benign-message content test (round 14, finding 3): the failure
+// vocabulary the real handlers' message channels use, both languages —
+// small and honest, not a heuristic. A message carrying any of these is
+// an error-ish report, not a benign remark.
+const MESSAGE_FAILURE_MARKERS = ['failed', 'error', 'exception', 'denied', 'rejected', 'is not', '失败', '错误'];
+
+function messageCarriesFailure(message: string): boolean {
+  const lower = message.toLowerCase();
+  return MESSAGE_FAILURE_MARKERS.some((marker) => lower.includes(marker));
+}
+
 function handlerResultCarriesFailure(handlerResult: unknown): boolean {
   if (handlerResult instanceof Error) return true; // returned, not thrown: an answer
   if (typeof handlerResult !== 'object' || handlerResult === null) return false;
@@ -537,21 +548,30 @@ function handlerResultCarriesFailure(handlerResult: unknown): boolean {
   // (1) An explicit success signal wins before every failure mark.
   if (record.ok === true || record.success === true || record.status === 'ok') return false;
   // (2) The upgrade family's benign no-op envelope (round 13, finding 3):
-  // `success: false` plus the requiresRestart marker plus a message, with
-  // no error field — the REAL "already at the latest version" return of
-  // upgradePackage/handleUpgrade ({success:false, message:'已是最新版本…',
-  // requiresRestart:false}), which the error-truthy message mark used to
-  // read as a failure. Shape-scoped so a bare {success:false} (no marker
-  // pair) keeps the documented loose-edge behavior.
+  // `success: false` plus the requiresRestart marker plus a BENIGN message,
+  // with no error field — the REAL "already at the latest version" return
+  // of upgradePackage/handleUpgrade ({success:false, message:'已是最新版本…',
+  // requiresRestart:false}). Round 14, finding 3 (both seats): the message's
+  // CONTENT must be benign — an error-ish message under the marker pair is
+  // a real failure reported in the message channel ({success:false,
+  // requiresRestart:true, message:'failed: network error'} recorded
+  // delivered pre-fix — a suppressed failure, the permissive direction the
+  // memo keys on), so the carve-out requires a message free of the failure
+  // vocabulary below and an error-ish shape falls through to the failure
+  // marks. A bare {success:false} (no marker pair) reads failed: the real
+  // up-to-date envelope carries all three.
   if (
     record.success === false &&
     record.requiresRestart !== undefined &&
     typeof record.message === 'string' &&
+    record.message.length > 0 &&
+    !messageCarriesFailure(record.message) &&
     record.error === undefined &&
     record.errorMessage === undefined
   ) {
-    return false; // an explicit "nothing to do" answer: delivered
+    return false; // an explicit benign "nothing to do" answer: delivered
   }
+  if (record.success === false) return true; // not-ok with no benign carve-out: failed
   // (3) An ok field that is not success is the explicit verdict.
   if (record.ok === false || record.ok === 'false') return true;
   // (4) exitCode marks only shapes with no ok field (the exec faces).

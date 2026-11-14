@@ -446,6 +446,32 @@ test('the delivery classification reads every failure-mark shape the handler fam
         'failed',
         'the REAL upgrade failure (success:false + error, no marker pair) still reads failed',
       );
+      // Round 14, finding 3 (both seats): the benign-noop carve-out now
+      // tests the message's CONTENT — an error-ish message under the marker
+      // pair is a real failure reported in the message channel, never a
+      // suppressed delivered; and a bare {success:false} (no marker pair)
+      // reads failed.
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: 'failed: network error' }),
+        'failed',
+        'an error-ish message under the marker pair is a failure, not a benign no-op',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: '升级失败: 网络错误' }),
+        'failed',
+        'the failure vocabulary is read in both languages the handlers emit',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: 'upgraded, restart the devkit session' }),
+        'delivered',
+        'a genuinely benign message under the marker pair stays a no-op',
+      );
+      assert.equal(await classify({ success: false }), 'failed', 'a bare not-ok with no marker pair is failed');
+      assert.equal(
+        await classify({ success: false, requiresRestart: true }),
+        'failed',
+        'the marker pair without a benign message falls through to the failure marks',
+      );
     });
   });
 });

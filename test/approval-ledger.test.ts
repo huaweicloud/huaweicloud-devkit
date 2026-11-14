@@ -45,6 +45,26 @@ function ledgerSpoolPaths(home: string): { dir: string; spool: string; lockRoot:
   return { dir, spool: join(dir, 'approval-consents.json.spool.jsonl'), lockRoot: join(dir, 'approval-consents-lock') };
 }
 
+// The shared skew-leg of the chronology pins (rounds 13-14): stage a
+// two-row store — the posture original at seq 0 under a fast clock, a
+// failure-born terminal copy at seq 1 written later after the clock
+// stepped back (grantAt 4000 < the original's 5000) — then drive ONE real
+// reuse on the key and return its rows. `seqFilePresent` false removes the
+// high-water file first (the missing-counter-over-non-empty-store shape).
+function stageSkewPairAndReuse(home: string, key: string, seqFilePresent: boolean): ConsentEvent[] {
+  const row = (evidence: ConsentEvidence, grantedAt: number, arrivalSeq: number): string =>
+    JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, evidence, grantedAt, arrivalSeq }));
+  if (!seqFilePresent) rmSync(join(home, '.config', 'huaweicloud', 'approval-consents.seq'), { force: true });
+  stageStore(home, `[${row('posture', 5_000, 0)},${row('terminal', 4_000, 1)}]`);
+  recordAskModeConsent({
+    sessionId: 'ses',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash: key,
+    outcome: 'granted',
+  });
+  return readConsentEvents().filter((event) => event.argsHash === key);
+}
+
 // A staged consent line for the inheritance-order pins: one key, one
 // tier, one stamp — the shape both r8 seats and r9 seats staged.
 function orderLine(argsHash: string, evidence: ConsentEvidence, grantedAt: number): string {
@@ -160,6 +180,19 @@ const baseEvent = (overrides: Partial<ConsentEvent> = {}): ConsentEvent => ({
 if (process.env.LEDGER_WORKER) {
   const worker = process.env.LEDGER_WORKER!;
   const perWorker = Number(process.env.LEDGER_PER_WORKER || 10);
+  // Barrier mode (round 14, finding 2): wait for a marker file before the
+  // first append, so a test can synchronize many workers' first
+  // acquisition windows and prove the seq assignment serializes under the
+  // lock (pre-fix it ran before withDepLock and duplicated seqs).
+  const barrier = process.env.LEDGER_BARRIER;
+  if (barrier) {
+    const barrierDeadline = Date.now() + 60_000;
+    while (!existsSync(barrier)) {
+      if (Date.now() > barrierDeadline) process.exit(3);
+      // a busy-wait: the window under test is the assignment itself, not
+      // the poll cadence
+    }
+  }
   for (let i = 0; i < perWorker; i += 1) {
     appendConsentEvent(baseEvent({ sessionId: `worker-${worker}-${i}`, argsHash: `h-${worker}-${i}` }));
   }
@@ -1125,12 +1158,17 @@ test(
     // nothing at all — the degraded twin stays datumless whatever
     // interleaving produced it.
     const T = 1_700_000_000_000; // the same-ms collision stamp
-    const key = 'h-twin13';
-    const annotate = (arrivalStamp: number, detail: 'failed' | 'delivered'): void => {
+    // One key PER CELL (round 14 hygiene): the annotate's outcome lines
+    // accumulate in the shared side channel, and a seq-keyed line binds to
+    // the exact row it names — so a shared key lets one cell's stale line
+    // bind a later cell's row. The cells are independent cases; their keys
+    // must be too.
+    const key = (i: number): string => `h-twin13-${i}`;
+    const annotate = (argsHash: string, arrivalStamp: number, detail: 'failed' | 'delivered'): void => {
       annotateDispatchOutcome({
         sessionId: 'ses',
         tool: 'huaweicloud_run_approved_command',
-        argsHash: key,
+        argsHash,
         arrivalStamp,
         outcomeDetail: detail,
       });
@@ -1141,14 +1179,15 @@ test(
     // in the spool at the same stamp. The fold must keep A's datum on A's
     // row; B stays unannotated.
     {
-      const storeRow = baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 });
+      const cellKey = key(1);
+      const storeRow = baseEvent({ sessionId: 'ses', argsHash: cellKey, grantedAt: T, arrivalSeq: 0 });
       stageStore(home, JSON.stringify([storeRow]));
-      annotate(T, 'failed'); // the line is written (A's row is store-resident, no twin yet)
+      annotate(cellKey, T, 'failed'); // the line is written (A's row is store-resident, no twin yet)
       writeFileSync(
         paths.spool,
-        JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 })) + '\n',
+        JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: cellKey, grantedAt: T, arrivalSeq: 1 })) + '\n',
       );
-      const rows = readConsentEvents().filter((event) => event.argsHash === key);
+      const rows = readConsentEvents().filter((event) => event.argsHash === cellKey);
       assert.equal(rows.length, 2, 'twin cell 1: both rows are visible');
       assert.equal(rows[0]!.outcomeDetail, 'failed', 'twin cell 1: the store row keeps its own datum');
       assert.equal(rows[1]!.outcomeDetail, undefined, 'twin cell 1: the degraded twin never receives the line');
@@ -1164,15 +1203,16 @@ test(
         paths.dir,
         'approval-consents.json.spool.jsonl.taken-13130000-0000-4000-8000-000000000000',
       );
-      const storeRow = baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 });
+      const cellKey = key(2);
+      const storeRow = baseEvent({ sessionId: 'ses', argsHash: cellKey, grantedAt: T, arrivalSeq: 0 });
       rmSync(paths.spool, { force: true });
       stageStore(home, JSON.stringify([storeRow]));
-      annotate(T, 'delivered');
+      annotate(cellKey, T, 'delivered');
       writeFileSync(
         takenFile,
-        JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 })) + '\n',
+        JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: cellKey, grantedAt: T, arrivalSeq: 1 })) + '\n',
       );
-      const rows = readConsentEvents().filter((event) => event.argsHash === key);
+      const rows = readConsentEvents().filter((event) => event.argsHash === cellKey);
       assert.equal(rows.length, 2, 'twin cell 2: both rows are visible');
       assert.equal(rows[0]!.outcomeDetail, 'delivered', 'twin cell 2: the store row keeps its own datum');
       assert.equal(rows[1]!.outcomeDetail, undefined, 'twin cell 2: the taken twin never receives the line');
@@ -1183,15 +1223,16 @@ test(
     // line binds to the LAST store row at that stamp, and the earlier row
     // keeps whatever it carries.
     {
+      const cellKey = key(3);
       const rowA = {
-        ...baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 }),
+        ...baseEvent({ sessionId: 'ses', argsHash: cellKey, grantedAt: T, arrivalSeq: 0 }),
         outcomeDetail: 'failed' as const,
       };
-      const rowB = baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 });
+      const rowB = baseEvent({ sessionId: 'ses', argsHash: cellKey, grantedAt: T, arrivalSeq: 1 });
       rmSync(paths.spool, { force: true });
       stageStore(home, JSON.stringify([rowA, rowB]));
-      annotate(T, 'delivered');
-      const rows = readConsentEvents().filter((event) => event.argsHash === key);
+      annotate(cellKey, T, 'delivered');
+      const rows = readConsentEvents().filter((event) => event.argsHash === cellKey);
       assert.equal(rows[0]!.outcomeDetail, 'failed', 'samems cell: the earlier store row keeps its own datum');
       assert.equal(rows[1]!.outcomeDetail, 'delivered', 'samems cell: the line takes the last store row at the stamp');
     }
@@ -1209,19 +1250,9 @@ test(
     // tracks real arrival order whatever the wall clock did; the resolution
     // orders by (arrivalSeq, grantedAt).
     const key = 'h-skew13';
-    const row = (evidence: ConsentEvidence, grantedAt: number, arrivalSeq: number): string =>
-      JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, evidence, grantedAt, arrivalSeq }));
-    // The original (posture) arrived first (seq 0) under a fast clock
-    // (stamp 5000); the failure-born terminal copy was written LATER
-    // (seq 1) after the clock stepped back to 4000.
-    stageStore(home, `[${row('posture', 5_000, 0)},${row('terminal', 4_000, 1)}]`);
-    recordAskModeConsent({
-      sessionId: 'ses',
-      tool: 'huaweicloud_run_approved_command',
-      argsHash: key,
-      outcome: 'granted',
-    });
-    let rows = readConsentEvents().filter((event) => event.argsHash === key);
+    // The skew staging + reuse rides the shared helper (the r13 pin's
+    // store predates the counter file, so the file is removed on purpose).
+    let rows = stageSkewPairAndReuse(home, key, false);
     assert.equal(
       rows.at(-1)!.evidence,
       'posture',
@@ -1229,7 +1260,13 @@ test(
     );
     // Control: the copy newer in BOTH seq and stamp — chronology agrees
     // either way, and the verdict must not move.
-    stageStore(home, `[${row('posture', 5_000, 0)},${row('terminal', 6_000, 1)}]`);
+    stageStore(
+      home,
+      JSON.stringify([
+        baseEvent({ sessionId: 'ses', argsHash: key, evidence: 'posture', grantedAt: 5_000, arrivalSeq: 0 }),
+        baseEvent({ sessionId: 'ses', argsHash: key, evidence: 'terminal', grantedAt: 6_000, arrivalSeq: 1 }),
+      ]),
+    );
     recordAskModeConsent({
       sessionId: 'ses',
       tool: 'huaweicloud_run_approved_command',
@@ -1304,6 +1341,174 @@ test(
       elapsed < 400,
       `the one-pass fold stays linear (8k+8k read took ${elapsed}ms; the quadratic fold measured 850ms+)`,
     );
+  }),
+);
+
+test(
+  'the arrivalSeq counter floors at the store and fails newest, never oldest (round-14 finding 1)',
+  withLedgerHome(async (home) => {
+    // Both seats: the counter's failure floor was fail-open. A missing
+    // file over a NON-empty store stamped the next arrival 0 — colliding
+    // with the real original's seq, so a later-written stronger copy won
+    // chronology (the fabricated upgrade, no clock skew needed); an
+    // unreadable (chmod-000) file stamped -1 while the store write
+    // SUCCEEDED — a permanent first-sorting row; a non-numeric file
+    // rewound the counter under the store and serialized writers re-took
+    // 0,1,2. The counter now floors at the store (seed from the merged
+    // view's max whenever the file read fails or yields <= store max,
+    // never writing a value below it) and a row whose seq could not be
+    // determined sorts NEWEST, never oldest.
+    const dir = join(home, '.config', 'huaweicloud');
+    const seqFile = join(dir, 'approval-consents.seq');
+    const key = 'h-seq-floor';
+    const row = (evidence: ConsentEvidence, grantedAt: number, arrivalSeq: number): string =>
+      JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, evidence, grantedAt, arrivalSeq }));
+
+    // Cell 1 — the missing-file-over-non-empty-store shape (A2 1a): the
+    // shared skew staging with the seq file ABSENT over the non-empty
+    // store. The next append must seed from the store's max (never stamp
+    // 0 over a non-empty store — the A2 upgrade shape's root).
+    let rows = stageSkewPairAndReuse(home, key, false);
+    assert.equal(rows.length, 3, 'cell 1: the append landed');
+    assert.ok(rows[2]!.arrivalSeq > 1, `cell 1: the missing file seeded from the store (seq ${rows[2]!.arrivalSeq})`);
+    assert.equal(rows.at(-1)!.evidence, 'posture', 'cell 1: the original kept chronology — no fabricated upgrade');
+
+    // Cell 2 — the unreadable-file shape (A2 1b): chmod-000 the counter;
+    // the append SUCCEEDS (the store is writable) and the row must sort
+    // NEWEST, never -1, and the next append recovers above the store.
+    stageStore(home, `[${row('posture', 5_000, 0)},${row('terminal', 4_000, 1)}]`);
+    writeFileSync(seqFile, '1\n');
+    chmodSync(seqFile, 0o000);
+    recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(rows.length, 3, 'cell 2: the store write succeeded while the counter read failed');
+    assert.ok(
+      rows[2]!.arrivalSeq > 1,
+      `cell 2: the unreadable counter failed NEWEST (seq ${rows[2]!.arrivalSeq}), never -1`,
+    );
+    assert.equal(rows.at(-1)!.evidence, 'posture', 'cell 2: chronology held');
+    chmodSync(seqFile, 0o600);
+
+    // Cell 3 — the non-numeric-file shape (A2 1c): the counter rewinds to
+    // 0 under a seq-2 store unless the store floors it; three serialized
+    // writers must never re-take an existing seq.
+    stageStore(home, `[${row('posture', 1, 0)},${row('posture', 2, 1)},${row('posture', 3, 2)}]`);
+    writeFileSync(seqFile, 'not-a-number\n');
+    for (let i = 0; i < 3; i += 1) {
+      recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: key,
+        outcome: 'granted',
+      });
+    }
+    rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(rows.length, 6, 'cell 3: three appends landed');
+    const seqs = rows.map((event) => event.arrivalSeq).sort((a, b) => a - b);
+    for (let i = 1; i < seqs.length; i += 1) {
+      assert.ok(
+        seqs[i]! > seqs[i - 1]!,
+        `cell 3: strictly increasing seqs (got ${JSON.stringify(seqs)}) — the corrupted file did not rewind the counter`,
+      );
+    }
+    // And the recovered high-water is above the store's max: a value
+    // below it is never written.
+    const written = Number.parseInt(readFileSync(seqFile, 'utf8').trim(), 10);
+    assert.ok(written >= 5, `cell 3: the counter write-back is monotonic (${written})`);
+  }),
+);
+
+test(
+  'concurrent locked writers never duplicate a seq (round-14 finding 2)',
+  withLedgerHome(async (home) => {
+    // Both seats: the assignment used to run BEFORE withDepLock on the raw
+    // append face — 24 barrier-synchronized writers duplicated 13 seq
+    // groups (the "locked writers serialize" comment was mechanically
+    // false at the assignment site). The assignment now runs inside the
+    // lock body; the degraded path (which cannot hold the lock) remains
+    // the recorded duplicate residual. Barrier-synchronized workers drive
+    // the raw face through the test file's own worker mode.
+    const { spawn } = await import('node:child_process');
+    const barrier = join(home, 'go.marker');
+    const WORKERS = 12;
+    const PER = 5;
+    const children = [];
+    for (let i = 0; i < WORKERS; i += 1) {
+      children.push(
+        new Promise<void>((resolve, reject) => {
+          const child = spawnLedgerWorker(home, {
+            LEDGER_WORKER: `w${i}`,
+            LEDGER_PER_WORKER: String(PER),
+            LEDGER_BARRIER: barrier,
+          });
+          child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`worker w${i} exit ${code}`))));
+          child.on('error', reject);
+        }),
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000)); // all workers spinning on the barrier
+    writeFileSync(barrier, 'go');
+    await Promise.all(children);
+    const rows = readConsentEvents();
+    assert.equal(rows.length, WORKERS * PER, `every append landed (${rows.length})`);
+    const seqCounts = new Map<number, number>();
+    for (const event of rows) seqCounts.set(event.arrivalSeq, (seqCounts.get(event.arrivalSeq) ?? 0) + 1);
+    const duplicates = [...seqCounts.entries()].filter(([, count]) => count > 1);
+    assert.deepEqual(
+      duplicates,
+      [],
+      `the locked assignment serialized: no duplicate seqs (${duplicates.length} duplicate groups)`,
+    );
+  }),
+);
+
+test(
+  'the outcome line survives the compaction: a same-ms degraded twin compacted in BEHIND the annotated row never steals it (round-14 finding 4)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    // A2: the r13 fold keyed the line on key+stamp with no arrival
+    // identity, and the compaction always folds spool rows AFTER existing
+    // store rows — so the next ordinary append moved a same-ms degraded
+    // twin BEHIND the annotated row and the last-index rule handed the
+    // line to the twin (the row that annotated lost it). The line now
+    // carries the arrival's seq (captured by the annotate from the row
+    // its guard verified), so it binds to the EXACT row whatever the
+    // compaction did to the order.
+    const T = 1_700_000_000_000; // the shared millisecond
+    const key = 'h-twin14';
+    // Dispatch B: locked, store-resident at T (seq 0), its dispatch
+    // returned failed — the annotate writes the line (guard passes: B's
+    // row is store-resident, nothing newer outside).
+    stageStore(home, JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 })]));
+    annotateDispatchOutcome({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      arrivalStamp: T,
+      outcomeDetail: 'failed',
+    });
+    // Dispatch A: degraded at the same millisecond — its twin (seq 1)
+    // lands in the spool.
+    writeFileSync(
+      paths.spool,
+      JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 })) + '\n',
+    );
+    // One ordinary locked append compacts the spool into the store — the
+    // twin lands BEHIND the annotated row.
+    appendConsentEvent(baseEvent({ sessionId: 'ses-c', argsHash: 'other', grantedAt: T + 1 }));
+    const rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(rows.length, 2, 'both twin rows are store-resident after the compaction');
+    assert.ok(
+      rows[0]!.arrivalSeq === 0 && rows[1]!.arrivalSeq === 1,
+      'the compaction placed the twin behind the annotated row',
+    );
+    assert.equal(rows[0]!.outcomeDetail, 'failed', 'the row that annotated keeps its own datum through the compaction');
+    assert.equal(rows[1]!.outcomeDetail, undefined, 'the degraded twin never receives the line');
   }),
 );
 
