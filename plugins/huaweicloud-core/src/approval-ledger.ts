@@ -78,6 +78,7 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
   writeSync,
 } from 'node:fs';
@@ -139,13 +140,14 @@ function ledgerLockDir(): string {
 // append was 4.9-10.9s (past the 3s cap, so concurrent arrivals degraded
 // and their unlocked seq assignments collided). The locked path now
 // derives its floor from data it ALREADY parses (lockedAppend's store read
-// and takeSpool's fold), plus the tiny seq file (a crash between the file
-// write and the store rename can leave the file one ahead — the file value
-// covers that gap) and this process's last assignment: no extra IO. The
-// merged-view scan survives only as the DEGRADED path's repair leg, when
-// the file is invalid and no parsed data exists; the file is rewritten
-// monotonically (a value at or below the known max is never written), so
-// a repaired tree is fast again on the next append.
+// and takeSpool's fold) plus the streamed .taken-* scan (rounds 16-17)
+// and this process's last assignment: no extra IO, no merged-view read.
+// The seq FILE is no longer a floor source at all (round 17, finding 1):
+// the crash-gap values it used to cover are owned by no row (the row
+// either landed in the spool/store the next section parses, or was lost
+// entirely), so re-using them is safe, and no file value can decide the
+// counter. The merged-view scan survives as the DEGRADED path's floor
+// (round 16, finding 3), which the degraded path pays unconditionally.
 //
 // The assignment runs INSIDE the ledger lock's hold (round 14, finding 2):
 // locked writers serialize for real (24 barrier workers, zero duplicates).
@@ -222,28 +224,32 @@ function maxArrivalSeqInStore(): number {
   return max;
 }
 
-// This process's last assignment: a cheap rewind/foreign-write guard. The
-// file is the cross-process high-water; this catches a file that moved
-// backward between this process's own writes (the same-process rewind).
+// The seq file's value was REMOVED from every floor in round 17, finding 1
+// (both seats' band work): the r16 "sticky saturation" rule trusted the
+// file's value to decide that the space was exhausted, so ONE corrupted
+// byte at the last valid value (MAX_SAFE-3 — in-range, indistinguishable
+// from genuine saturation, which needs ~9e15 appends to reach) permanently
+// marked every later consent chronology-UNKNOWN with no repair: the file
+// was written back unchanged, the delivery annotation could never bind
+// again (a healthy store records delivered), and the tier inheritance
+// mis-graded DOWN forever (a terminal original re-recorded posture, the
+// never-upgrade line broken by the counter's own state). The floor is now
+// ALWAYS the parsed max — the store rows, the taken/spool entries, the
+// sidecar/spool scans — plus this process's last assignment; the FILE IS
+// AN OPTIMIZATION, NEVER A DECISION-MAKER (the r15 doctrine, now enforced):
+// it is written with the current truth on every append and read by no code
+// path (operators may inspect it). "Saturation" means exactly "the parsed
+// max has no room above it": a row legitimately at the last assignable
+// value still saturates (in-space seqs are trusted by design — the r15/r16
+// doctrine), but no FILE value can fabricate the state, and pruning the
+// store below the ceiling releases the counter naturally.
 let lastAssignedSeq: number | undefined;
 
-// The seq file's value, or undefined when the read fails or the value is
-// out of range (round 15: unreadable means invalid, whatever the reason).
-function readSeqFile(): number | undefined {
-  try {
-    const path = ledgerSeqPath();
-    if (!existsSync(path)) return undefined;
-    const parsed = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
-    return isValidArrivalSeq(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-// Write the high-water back, monotonic (never below the known max) and
-// best-effort (a failed write never fails the append — the parsed floor
-// recovers it on the next locked append).
+// Write the high-water back — the current truth (the last assignable value
+// assigned, or the parsed floor when this append marked unknown), best-effort
+// (a failed write never fails the append — the file decides nothing).
 function writeSeqFileMonotonic(next: number): void {
+  if (next < 0) return; // nothing assignable has ever been seen: leave the file absent
   try {
     const path = ledgerSeqPath();
     mkdirSync(dirname(path), { recursive: true });
@@ -251,65 +257,167 @@ function writeSeqFileMonotonic(next: number): void {
     writeFileSync(tmp, `${next}\n`, { encoding: 'utf8', mode: 0o600 });
     renameSync(tmp, path);
   } catch {
-    // best-effort: the parsed floor or the degraded repair recovers
+    // best-effort: the parsed floor recovers on the next append
   }
 }
 
-// The .taken-* sidecar seq scan (round 16, finding 2, both seats): the
-// reader folds every .taken-* file's rows, so the floor must consult them
-// too — a committed sidecar row whose fold fails this cycle (round 7
-// finding 3's documented transient class, kept on disk for the mandated
-// retry) was invisible to every r15 floor source, so the next append
-// re-issued its seq and the mandated read recovery exposed a duplicate
-// pair whose chronology fell back to grantedAt — the clock dependence the
-// counter was built to remove, driven organically cross-process by both
-// seats. The scan reads ONLY seq fields (cheap: normally zero sidecars —
-// one readdir), and it is SUPERSET-honest: a sidecar that cannot be READ
-// is a BLINDED source — its rows are committed and own seqs we cannot
-// see, so the space above the known max is not provably free and the
-// append takes the sentinel rather than risk a duplicate. When the read
+// The streaming seq-field scanner (round 17, findings 2 and 3): reads a
+// spool/sidecar file's arrivalSeq values in chunks WITHOUT building a
+// whole-file string — a file past V8's string limit (~512MB) makes every
+// readFileSync(file, 'utf8') throw ERR_STRING_TOO_LONG AFTER reading all
+// its bytes, the round-7 PERMANENT fold-failure class, which the r16 scan
+// re-paid on every append (~1.4-1.5s per 588MB sidecar; three crossed the
+// 3s wait cap and every concurrent arrival degraded). The scan finds the
+// `"arrivalSeq"` key bytes and reads the numeric literal that follows —
+// spoof-proof by JSON's own escaping rules: inside a string value a quote
+// is ALWAYS written `\"`, so the unescaped byte sequence `"arrivalSeq"`
+// can only be a real object key in valid JSON; a hand-staged invalid line
+// that matches can only push the floor HIGHER (a false max creates a gap,
+// never a duplicate — the safe direction), and its rows are invisible to
+// every reader forever (the malformed-line tolerance), so no visible row
+// can own a seq the scan missed. A file that cannot be OPENED or READ is
+// a BLINDED source (the r16 doctrine): its rows are committed and own
+// unknowable seqs, so the caller must mark the arrival chronology-unknown
+// rather than risk a duplicate.
+const SEQ_SCAN_CHUNK_BYTES = 1 << 20;
+const SEQ_SCAN_CARRY_BYTES = 64; // > the needle + the longest numeric literal
+
+function streamMaxValidSeq(path: string): { max: number; blinded: boolean } {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, 'r');
+    const chunk = Buffer.alloc(SEQ_SCAN_CHUNK_BYTES);
+    // A number cut by a chunk boundary matches TRUNCATED in this pass and
+    // whole in the next (the carry re-presents it): truncation only drops
+    // trailing digits, so the truncated value is never ABOVE the real one,
+    // and the full value follows — the max converges. A number ending at
+    // EOF is matched by its own final chunk's pass, terminator or not.
+    const seqFieldRe = /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/g;
+    let carry = Buffer.alloc(0);
+    let max = -1;
+    for (;;) {
+      const read = readSync(fd, chunk, 0, chunk.length, null);
+      if (read === 0) break;
+      const data = chunk.subarray(0, read);
+      const haystack = carry.length > 0 ? Buffer.concat([carry, data]) : data;
+      const text = haystack.toString('utf8');
+      let match: RegExpExecArray | null;
+      while ((match = seqFieldRe.exec(text)) !== null) {
+        const value = Number(match[1]);
+        if (isValidArrivalSeq(value) && value > max) max = value;
+      }
+      const keep = Math.min(SEQ_SCAN_CARRY_BYTES, haystack.length);
+      carry = Buffer.from(haystack.subarray(haystack.length - keep)); // copy: the chunk is reused
+    }
+    return { max, blinded: false };
+  } catch {
+    return { max: -1, blinded: true }; // unreadable: committed rows behind it own unknowable seqs
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        // best-effort: a leaked descriptor is the least harm here
+      }
+    }
+  }
+}
+
+// The sidecar scan memo (round 17, finding 3): a .taken-* file is
+// append-only-immutable once taken (removed at the next successful fold,
+// kept verbatim otherwise), so a successful scan's result is keyed by
+// path+mtime+size — the SECOND append pays nothing. Failures are NEVER
+// memoized: a chmod-blocked file's recovery (the r16 pin) must rescan, and
+// the memo key would not see a chmod (mtime/size unchanged).
+const takenSeqScanMemo = new Map<string, { mtimeMs: number; size: number; max: number }>();
+
+// The .taken-* sidecar seq scan (round 16, finding 2, both seats; streamed
+// and memoized round 17, finding 3): the reader folds every .taken-* file's
+// rows, so the floor must consult them too — a committed sidecar row whose
+// fold fails this cycle (round 7 finding 3's documented transient class,
+// kept on disk for the mandated retry) was invisible to every r15 floor
+// source, so the next append re-issued its seq and the mandated read
+// recovery exposed a duplicate pair whose chronology fell back to grantedAt
+// — the clock dependence the counter was built to remove, driven organically
+// cross-process by both seats. The scan streams SEQ FIELDS ONLY (chunked
+// bytes, no whole-file string) and is SUPERSET-honest: a sidecar that
+// cannot be READ is a BLINDED source — its rows are committed and own seqs
+// we cannot see, so the space above the known max is not provably free and
+// the append takes the sentinel rather than risk a duplicate. When the read
 // recovers the counter continues from the sidecar's real seqs.
-function scanTakenSidecarSeqs(): { max: number; blinded: boolean } {
+// `skipFiles` are the files THIS section's takeSpool already folded
+// successfully (their parsed events are in the floor already) — scanning
+// them again would re-read bytes the section already parsed.
+function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded: boolean } {
   let max = -1;
   let blinded = false;
   for (const file of takenSpoolFiles()) {
-    let text: string;
+    if (skipFiles.includes(file)) continue; // folded this section: parsed events already floor us
+    let memoized = false;
     try {
-      text = readFileSync(file, 'utf8');
+      const stat = statSync(file);
+      const memo = takenSeqScanMemo.get(file);
+      if (memo !== undefined && memo.mtimeMs === stat.mtimeMs && memo.size === stat.size) {
+        if (memo.max > max) max = memo.max;
+        memoized = true;
+      }
     } catch {
+      // the stat failed: fall through to the stream (which will blind)
+    }
+    if (memoized) continue;
+    const scanned = streamMaxValidSeq(file);
+    if (scanned.blinded) {
       blinded = true; // committed rows behind an unreadable file: unknown owners
       continue;
     }
-    for (const line of text.split('\n')) {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) continue;
-      try {
-        const parsed: unknown = JSON.parse(trimmed);
-        if (!parsed || typeof parsed !== 'object') continue;
-        const seq = (parsed as Record<string, unknown>).arrivalSeq;
-        if (isValidArrivalSeq(seq) && seq > max) max = seq;
-      } catch {
-        // a malformed line: the reader's raw-preservation doctrine applies
-      }
+    if (scanned.max > max) max = scanned.max;
+    try {
+      const stat = statSync(file);
+      takenSeqScanMemo.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, max: scanned.max });
+    } catch {
+      // the memo is an optimization: an unstatable file rescans next time
     }
   }
   return { max, blinded };
 }
 
+// The ACTIVE spool's seq scan (round 17, finding 2): the degraded path
+// cannot take the spool (no lock), and the merged view's spool read throws
+// for the r7 permanent class (a spool past V8's string limit) — so the
+// degraded floor was one source short of superset-consistency and re-issued
+// committed spool rows' seqs (the locked twin blinds correctly through the
+// taken scan after takeSpool's rename). The stream covers the spool the
+// same way it covers sidecars; an unreadable spool is a BLINDED source.
+function scanSpoolSeqs(): { max: number; blinded: boolean } {
+  try {
+    const spool = ledgerSpoolPath();
+    if (!existsSync(spool)) return { max: -1, blinded: false };
+    return streamMaxValidSeq(spool);
+  } catch {
+    return { max: -1, blinded: false }; // absent spool: nothing to floor from
+  }
+}
+
 // Assign seqs to the events of a LOCKED append, floored by everything the
-// section already parses (the store rows, the taken spool events), the
-// .taken-* sidecar scan (round 16, finding 2), the seq file, and this
-// process's last assignment. Runs inside the ledger lock's hold — no
-// merged-view read, no extra parse (round 15, finding 4). Saturation and
-// a blinded sidecar both mark the row chronology-UNKNOWN (round 16,
-// finding 1): the counter never re-issues a value an existing row owns.
-function assignSeqsLocked(events: ConsentEvent[], storeEntries: unknown[], spoolEntries: unknown[]): void {
-  const takenScan = scanTakenSidecarSeqs();
+// section already parses (the store rows, the taken spool events) plus the
+// .taken-* sidecar scan (round 16, finding 2; streamed and memoized round
+// 17, findings 2-3) and this process's last assignment. Runs inside the
+// ledger lock's hold — no merged-view read, no extra parse (round 15,
+// finding 4). The seq FILE is not a floor source (round 17, finding 1): it
+// is an optimization, never a decision-maker. Saturation and a blinded
+// source both mark the row chronology-UNKNOWN (round 16, finding 1): the
+// counter never re-issues a value an existing row owns.
+function assignSeqsLocked(
+  events: ConsentEvent[],
+  storeEntries: unknown[],
+  spoolEntries: unknown[],
+  folded: string[],
+): void {
+  const takenScan = scanTakenSidecarSeqs(folded);
   const floor = Math.max(
     maxValidSeqAmong(storeEntries),
     maxValidSeqAmong(spoolEntries),
     takenScan.max,
-    readSeqFile() ?? -1,
     lastAssignedSeq ?? -1,
   );
   let next = floor;
@@ -319,28 +427,30 @@ function assignSeqsLocked(events: ConsentEvent[], storeEntries: unknown[], spool
     if (next !== SEQ_UNKNOWN) lastAssignedSeq = next;
   }
   // The high-water file keeps the last ASSIGNABLE value (or the known floor
-  // when this append marked unknown): a sentinel never reaches the file —
-  // it would read as a poisoned file and rewind the counter.
+  // when this append marked unknown): a sentinel never reaches the file.
   writeSeqFileMonotonic(lastAssignedSeq !== undefined && lastAssignedSeq > floor ? lastAssignedSeq : floor);
 }
 
 // Assign a seq on the DEGRADED path (no lock, nothing parsed): the
-// merged-view scan is UNCONDITIONAL again (round 16, finding 3, both
-// seats — a REGRESSION inside r15: the cost fix made the repair scan
-// conditional on an INVALID file, so a VALID-but-rewound file
-// short-circuited the only repair leg on the one path that has nothing
-// parsed, and the r14 guarantee "a rewound file can never re-issue"
-// failed there; the degraded path is the rare path, and the cost fix's
-// purpose was the LOCKED common case). The .taken-* scan (finding 2)
-// covers what the merged view cannot read, and a blinded sidecar or
-// saturation marks the row unknown, never a duplicate. The unlocked file
-// read-write still races under concurrent degraded arrivals — the
-// recorded duplicate residual.
+// merged-view scan is UNCONDITIONAL (round 16, finding 3, both seats — the
+// r15 cost fix had made the repair scan conditional on an INVALID seq
+// file, so a VALID-but-rewound file short-circuited the only repair leg on
+// the one path that has nothing parsed; the degraded path is the rare path,
+// and the cost fix's purpose was the LOCKED common case). The .taken-*
+// scan (round 16, finding 2) covers what the merged view cannot read, and
+// the ACTIVE-SPOOL scan (round 17, finding 2) covers the one source the
+// r16 fix missed — a spool past V8's string limit whose rows the merged
+// view cannot read at all: the floor must see every source the reader can,
+// and a blinded sidecar, a blinded spool, or saturation marks the row
+// unknown, never a duplicate. The seq file is not a floor source here
+// either (round 17, finding 1). The unlocked file read-write still races
+// under concurrent degraded arrivals — the recorded duplicate residual.
 function assignSeqDegraded(event: ConsentEvent): void {
   try {
     const takenScan = scanTakenSidecarSeqs();
-    const floor = Math.max(maxArrivalSeqInStore(), takenScan.max, readSeqFile() ?? -1, lastAssignedSeq ?? -1);
-    const next = takenScan.blinded ? SEQ_UNKNOWN : nextSeqFromFloor(floor);
+    const spoolScan = scanSpoolSeqs();
+    const floor = Math.max(maxArrivalSeqInStore(), takenScan.max, spoolScan.max, lastAssignedSeq ?? -1);
+    const next = takenScan.blinded || spoolScan.blinded ? SEQ_UNKNOWN : nextSeqFromFloor(floor);
     event.arrivalSeq = next;
     if (next !== SEQ_UNKNOWN) lastAssignedSeq = next;
     writeSeqFileMonotonic(lastAssignedSeq !== undefined && lastAssignedSeq > floor ? lastAssignedSeq : floor);
@@ -514,6 +624,38 @@ function readRawConsents(): unknown[] | undefined {
   }
 }
 
+// V8's string limit (~512MB on 64-bit) makes readFileSync(file, 'utf8')
+// throw ERR_STRING_TOO_LONG AFTER reading every byte — the round-7
+// permanent class. Round 17, finding 3: a file KNOWN to be over the limit
+// is skipped BEFORE the read (the same no-lines outcome at O(1) — the
+// late-throw cost was ~1.4s per 588MB sidecar, paid by the tier
+// resolution's merged view and the take's fold attempt on EVERY append
+// for as long as the operator leaves the file in place).
+// HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT (bytes) tightens the guard for
+// tests — safe-directional only: a lower limit skips MORE whole reads
+// (fewer lines visible), never fewer, and the streaming seq scan still
+// floors the counter from the skipped file's bytes.
+// The default guard: just under V8's ~512MB string limit.
+const WHOLE_FILE_STRING_LIMIT_BYTES = 500 * 1024 * 1024;
+
+function wholeReadLimitBytes(): number {
+  const override = Number(process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT);
+  return Number.isSafeInteger(override) && override > 0 ? override : WHOLE_FILE_STRING_LIMIT_BYTES;
+}
+
+function readSpoolTextWhole(path: string): string | undefined {
+  try {
+    if (statSync(path).size > wholeReadLimitBytes()) return undefined; // would throw late: skip
+  } catch {
+    return undefined; // unstatable or absent: the read would fail anyway
+  }
+  try {
+    return readFileSync(path, 'utf8');
+  } catch {
+    return undefined;
+  }
+}
+
 // The spool's raw lines, best-effort: every non-empty line as text. A line
 // that does not parse degrades to skipped in the filtered view and is
 // preserved verbatim at compaction (the raw-preservation doctrine).
@@ -525,16 +667,14 @@ function spoolLines(): string[] {
 // spool itself, or a .taken-* compaction sidecar. An absent or unreadable
 // file reads as no lines (round 7, finding 3: the fold keeps unreadable
 // taken files on disk — the reader skipping them is what keeps a
-// mid-fold-failure compaction from losing the main write).
+// mid-fold-failure compaction from losing the main write), and a file
+// past the whole-read limit reads as no lines BEFORE the bytes are read
+// (round 17, finding 3 — its seq fields still floor the counter through
+// the streaming scan).
 function spoolLinesOf(path: string): string[] {
-  try {
-    if (!existsSync(path)) return [];
-    return readFileSync(path, 'utf8')
-      .split('\n')
-      .filter((line) => line.trim().length > 0);
-  } catch {
-    return [];
-  }
+  const text = readSpoolTextWhole(path);
+  if (text === undefined) return [];
+  return text.split('\n').filter((line) => line.trim().length > 0);
 }
 
 // Every .taken-* file beside the spool, sorted for a deterministic view.
@@ -636,9 +776,11 @@ function takeSpool(): { events: unknown[]; folded: string[] } {
   const events: unknown[] = [];
   const fold = (file: string): void => {
     try {
-      const lines = readFileSync(file, 'utf8')
-        .split('\n')
-        .filter((line) => line.trim().length > 0);
+      // Oversized-for-whole-read files are skipped BEFORE the bytes
+      // (round 17, finding 3): the retry would throw late every compaction.
+      const text = readSpoolTextWhole(file);
+      if (text === undefined) return; // keep the file, bytes intact — the next compaction retries
+      const lines = text.split('\n').filter((line) => line.trim().length > 0);
       for (const line of lines) {
         const parsed = parseSpoolLine(line);
         if (parsed === undefined) events.push(line);
@@ -712,15 +854,14 @@ function lockedAppend(events: ConsentEvent[]): void {
       existing = [];
     }
     // The seq assignment runs HERE, inside the lock's hold, floored by the
-    // data this section already parsed (round 15, findings 1 and 4): the
-    // store rows, the taken spool events, the tiny seq file, and this
-    // process's last assignment. No merged-view read — the r14 unconditional
-    // scan doubled the ask-arrival stall (a 1M-row append measured 4.9-10.9s
-    // past the 3s cap, so concurrent arrivals degraded and their unlocked
-    // assignments collided); the parsed floor keeps the r14 durability
-    // guarantees (a missing, unreadable, non-numeric, or rewound file can
-    // never re-issue a seq an existing row owns) at zero extra IO.
-    assignSeqsLocked(events, existing, spool.events);
+    // data this section already parsed (round 15, findings 1 and 4) plus the
+    // streamed .taken-* scan (rounds 16-17): the store rows, the taken spool
+    // events, the sidecar seq fields, and this process's last assignment.
+    // No merged-view read, no seq-file trust (round 17, finding 1: the file
+    // is an optimization, never a decision-maker) — the parsed and streamed
+    // floor keeps the r14 durability guarantee (no source the reader can
+    // see is invisible to the floor) at zero whole-file string reads.
+    assignSeqsLocked(events, existing, spool.events, spool.folded);
     try {
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.${process.pid}.tmp`;
@@ -834,9 +975,10 @@ export function appendConsentEvent(event: ConsentEvent): void {
   }
   try {
     withDepLock(
-      // lockedAppend assigns the seq from its parsed floor (round 15):
-      // store rows + taken spool events + the seq file + this process's
-      // last assignment — no merged-view read.
+      // lockedAppend assigns the seq from its parsed+streamed floor
+      // (rounds 15-17): store rows + taken spool events + the sidecar
+      // scan + this process's last assignment — no merged-view read, no
+      // seq-file trust.
       () => lockedAppend([event]),
       ledgerLockDir(),
       LEDGER_LOCK_TAKEOVER_MS,
@@ -1187,13 +1329,26 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
   }
   if (lines.length === 0) return;
   const rowIndexOf = new Map<string, number>();
+  // Round 17, finding 4 (both seats — the reader side of the r16
+  // finding-6 guard): the seq-keyed index takes only VALID seqs — a row
+  // whose seq is out of space (the ceiling band, the sentinel, Infinity,
+  // absent) has no provable identity and is never a bind target, the
+  // reader's mirror of the writer's "a sentinel identity binds nothing".
+  // A DUPLICATED (key, stamp, seq) identity — two rows, one identity, the
+  // r15-era racing residual — is marked AMBIGUOUS (-1) and binds nothing:
+  // the reader's mirror of the writer's count-and-skip, never array-last.
+  // The r15-era writer emitted exactly these lines (no range check on the
+  // threaded identity) and the channel is append-only, so a mixed-version
+  // fleet carries them; the reader must consume them safely.
   const rowSeqIndexOf = new Map<string, number>();
   const bound = Math.min(storeRowCount, out.length);
   for (let i = 0; i < bound; i += 1) {
     const event = out[i]!;
     const triple = `${event.sessionId}\0${event.tool}\0${event.argsHash}\0${event.grantedAt}`;
     rowIndexOf.set(triple, i);
-    rowSeqIndexOf.set(`${triple}\0${event.arrivalSeq}`, i);
+    if (!isValidArrivalSeq(event.arrivalSeq)) continue; // unknown chronology: no identity
+    const seqKey = `${triple}\0${event.arrivalSeq}`;
+    rowSeqIndexOf.set(seqKey, rowSeqIndexOf.has(seqKey) ? -1 : i);
   }
   // Round 15 (A2's cell 3): LEGACY lines apply first, then SEQ — the
   // seq-bearing line is the precise identity (the dispatch's own row), so
@@ -1202,7 +1357,10 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
   // overwrite a seq-bound datum). Each line parses ONCE here (the
   // pre-r15 shape re-parsed in the apply pass); the apply pass is one
   // parameterized loop — the seq keying adds the row's identity to the
-  // legacy triple.
+  // legacy triple. Round 17, finding 4: a line whose arrivalSeq is outside
+  // the assignable space is DROPPED entirely — it names an unprovable
+  // identity (the writer's r16 rule), and treating it as legacy would let
+  // it bind a row at the stamp positionally.
   const legacyRows: Partial<OutcomeLine>[] = [];
   const seqRows: Partial<OutcomeLine>[] = [];
   for (const line of lines) {
@@ -1220,8 +1378,9 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
     ) {
       continue;
     }
-    if (typeof row.arrivalSeq === 'number') seqRows.push(row);
-    else legacyRows.push(row);
+    if (isValidArrivalSeq(row.arrivalSeq)) seqRows.push(row);
+    else if (row.arrivalSeq === undefined) legacyRows.push(row);
+    // else: an out-of-space seq — no identity, never legacy: dropped
   }
   // One apply pass, parameterized by keying: legacy lines by the
   // (key, stamp) triple, seq lines by the full (key, stamp, seq) identity.
@@ -1231,7 +1390,7 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
     for (const row of rows) {
       const triple = `${row.sessionId}\0${row.tool}\0${row.argsHash}\0${row.grantedAt}`;
       const index = seqKeyed ? rowSeqIndexOf.get(`${triple}\0${row.arrivalSeq}`) : rowIndexOf.get(triple);
-      if (index !== undefined) out[index]!.outcomeDetail = row.outcomeDetail as ConsentDeliveryOutcome;
+      if (index !== undefined && index >= 0) out[index]!.outcomeDetail = row.outcomeDetail as ConsentDeliveryOutcome;
     }
   };
   applyOutcomeRows(legacyRows, false);

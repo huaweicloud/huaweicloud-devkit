@@ -118,10 +118,11 @@ export interface ConsentEvent {
   // copy the original — the fabricated upgrade the never-upgrade rule
   // exists to prevent, with no tiebreak firing (the stamps differ). The
   // resolution orders by (arrivalSeq, grantedAt): the counter tracks real
-  // arrival order (a tiny high-water file beside the store, floored by the
-  // parsed store on every locked append), so a later-arriving row never
-  // sorts as the original whatever the wall clock did. grantedAt stays
-  // for display and the annotate's stamp-keyed join.
+  // arrival order (floored by the parsed store, the streamed sidecar/spool
+  // scans, and this process's last assignment on every append — the seq
+  // file is an operator-visible high-water, never a floor source), so a
+  // later-arriving row never sorts as the original whatever the wall
+  // clock did. grantedAt stays for display and the annotate's keyed join.
   //
   // The assignable space is integers in [0, SEQ_CEILING) — MAX_SAFE_INTEGER-2
   // is the EXCLUSIVE ceiling, so the three values below the sentinel (the
@@ -134,7 +135,7 @@ export interface ConsentEvent {
   // one value at the boundary duplicated every later append forever with no
   // repair — when the floor leaves no assignable value above it, the new
   // row takes the SENTINEL instead (chronology-unknown, sorts newest,
-  // never an original), and the seq file stays at the last assignable
+  // never an original), and the high-water file keeps the last assignable
   // value. A row whose seq is absent, null, fractional, negative,
   // Infinite, or at/beyond the ceiling reads as the SENTINEL: the row stays
   // VISIBLE, sorts newest, and can never be an original — never invisible

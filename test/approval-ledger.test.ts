@@ -2188,6 +2188,360 @@ test(
 );
 
 test(
+  'the seq file is an optimization, never a decision-maker: every band value repairs from the parsed floor (round-17 finding 1)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const seqFile = join(paths.dir, 'approval-consents.seq');
+    const LAST_VALID = Number.MAX_SAFE_INTEGER - 3; // the last value below the exclusive ceiling
+    const fresh = (): void => {
+      wipeCounterScratch(paths);
+      stageStore(home, '[]');
+    };
+    const ask = (key: string, evidence?: ConsentEvidence) =>
+      recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: key,
+        outcome: 'granted',
+        ...(evidence !== undefined ? { evidence } : {}),
+      });
+
+    // Cell 1 — the r16 sticky trigger: a corrupted-but-in-range file at
+    // the LAST VALID value used to saturate every append forever with no
+    // repair (the r15 stall one value inward). Post-fix the file floors
+    // nothing: real seqs, and the file is REWRITTEN to the parsed truth.
+    fresh();
+    writeFileSync(seqFile, `${LAST_VALID}\n`);
+    const ids = [ask('h-r17-band-0'), ask('h-r17-band-1'), ask('h-r17-band-2')].map((a) => a.arrivalSeq);
+    assert.ok(
+      ids[0]! < ids[1]! && ids[1]! < ids[2]! && ids.every((s) => s < 1_000),
+      `cell 1: the last-valid file value floors nothing — strictly increasing small seqs (got ${JSON.stringify(ids)})`,
+    );
+    assert.equal(
+      Number.parseInt(readFileSync(seqFile, 'utf8').trim(), 10),
+      ids[2],
+      'cell 1: the file was rewritten to the parsed truth',
+    );
+
+    // Cell 2 — the tier inheritance the sticky state disabled: a terminal
+    // original beside the corrupted file, then a posture reuse — the
+    // reuse inherits terminal (the never-upgrade rule), not posture.
+    fresh();
+    writeFileSync(seqFile, `${LAST_VALID}\n`);
+    ask('h-r17-inherit', 'terminal');
+    const inherit = ask('h-r17-inherit', 'posture');
+    const inheritRows = readConsentEvents().filter((e) => e.argsHash === 'h-r17-inherit');
+    const inheritRow = inheritRows.find((e) => e.grantedAt === inherit.grantedAt);
+    assert.equal(
+      inheritRow!.evidence,
+      'terminal',
+      'cell 2: the reuse inherits the terminal original — no mis-grade DOWN',
+    );
+
+    // Cell 3 — pruning releases the counter: with the corrupted file
+    // gone from every floor, a store pruned below the ceiling resumes
+    // assignable seqs (the r16 sticky rule's operator recovery — deleting
+    // the file — is no longer needed).
+    fresh();
+    stageStore(
+      home,
+      JSON.stringify([
+        baseEvent({ sessionId: 'ses', argsHash: 'h-r17-prune', grantedAt: 100, arrivalSeq: LAST_VALID }),
+      ]),
+    );
+    const satFirst = ask('h-r17-prune-new');
+    assert.equal(
+      satFirst.arrivalSeq,
+      Number.MAX_SAFE_INTEGER,
+      'cell 3: a genuine parsed-max saturation still marks unknown',
+    );
+    // the operator prunes the store below the ceiling:
+    stageStore(
+      home,
+      JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-prune', grantedAt: 100, arrivalSeq: 3 })]),
+    );
+    const resumed = ask('h-r17-prune-after');
+    assert.ok(
+      resumed.arrivalSeq > 3 && resumed.arrivalSeq < 1_000,
+      `cell 3: pruning the store releases the counter (got ${resumed.arrivalSeq})`,
+    );
+    assert.equal(
+      Number.parseInt(readFileSync(seqFile, 'utf8').trim(), 10),
+      resumed.arrivalSeq,
+      'cell 3: the file reflects the resumed counter',
+    );
+  }),
+);
+
+test(
+  'the degraded floor consults the spool stream: committed spool rows floor the append, a blinded spool marks unknown (round-17 finding 2)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const spoolRows = (rows: Array<{ argsHash: string; arrivalSeq: number }>): void => {
+      writeFileSync(
+        paths.spool,
+        rows
+          .map((r) =>
+            JSON.stringify(
+              baseEvent({ sessionId: 'ses', argsHash: r.argsHash, grantedAt: 5_000, arrivalSeq: r.arrivalSeq }),
+            ),
+          )
+          .join('\n') + '\n',
+      );
+    };
+    const degrade = (): void => {
+      rmSync(paths.lockRoot, { recursive: true, force: true });
+      writeFileSync(paths.lockRoot, 'not-a-directory');
+    };
+
+    // Cell 1 — the r17 shape: the spool owns committed rows at seq 6 and
+    // 7 (the merged view's whole-file read fails for the giant class; a
+    // small spool here exercises the same floor source). The degraded
+    // append must take a seq ABOVE the spool's max — never a re-issue.
+    wipeCounterScratch(paths);
+    stageStore(
+      home,
+      JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-s-other', grantedAt: 900, arrivalSeq: 5 })]),
+    );
+    spoolRows([
+      { argsHash: 'h-r17-sp-K', arrivalSeq: 6 },
+      { argsHash: 'h-r17-sp-K', arrivalSeq: 7 },
+    ]);
+    degrade();
+    const d = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r17-sp-K',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    rmSync(paths.lockRoot, { force: true });
+    assert.ok(
+      d.arrivalSeq > 7,
+      `cell 1: the spool's committed seqs floor the degraded append above 7 (got ${d.arrivalSeq})`,
+    );
+    const owners = readConsentEvents().filter((e) => e.arrivalSeq === 6 || e.arrivalSeq === 7);
+    assert.equal(owners.length, 2, 'cell 1: seqs 6 and 7 each have exactly one owner — no duplicate re-issued');
+
+    // Cell 1b — the giant-spool shape: a spool the merged view CANNOT read
+    // whole (over the tightened test limit — the r7 ERR_STRING_TOO_LONG
+    // class) still floors the degraded append through the stream: the
+    // merged view sees no lines, the stream sees the seqs, the append
+    // takes a seq above them — never a re-issue.
+    const prevLimit = process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+    process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = '64';
+    try {
+      wipeCounterScratch(paths);
+      stageStore(
+        home,
+        JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-g-other', grantedAt: 900, arrivalSeq: 5 })]),
+      );
+      writeFileSync(
+        paths.spool,
+        JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: 'h-r17-g-K', grantedAt: 5_000, arrivalSeq: 6 })) +
+          '\n' +
+          'x'.repeat(200) +
+          '\n',
+      );
+      degrade();
+      const g = recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r17-g-K',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      rmSync(paths.lockRoot, { force: true });
+      assert.ok(
+        g.arrivalSeq > 6,
+        `cell 1b: the unreadable-whole spool's committed seq floors the append above 6 through the stream (got ${g.arrivalSeq})`,
+      );
+    } finally {
+      if (prevLimit === undefined) delete process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+      else process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = prevLimit;
+    }
+
+    // Cell 2 — a BLINDED spool (the unreadable class): the degraded
+    // append marks the row chronology-unknown rather than risk a
+    // duplicate of the unknowable seqs behind it.
+    wipeCounterScratch(paths);
+    stageStore(
+      home,
+      JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-b-other', grantedAt: 900, arrivalSeq: 4 })]),
+    );
+    spoolRows([{ argsHash: 'h-r17-bl-K', arrivalSeq: 5 }]);
+    chmodSync(paths.spool, 0o000);
+    degrade();
+    const blinded = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-r17-bl-K',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+    rmSync(paths.lockRoot, { force: true });
+    chmodSync(paths.spool, 0o600);
+    assert.equal(
+      blinded.arrivalSeq,
+      Number.MAX_SAFE_INTEGER,
+      'cell 2: a blinded spool marks the arrival chronology-unknown — never a duplicate',
+    );
+  }),
+);
+
+test(
+  'an over-limit whole read is skipped before the bytes, its seq fields still floor, and repeated appends stay correct (round-17 finding 3)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const prevLimit = process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+    process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = '64'; // the safe-directional test seam
+    try {
+      // A sidecar OVER the (tightened) whole-read limit: the merged view
+      // reads no lines from it (the skip happens before the bytes), but
+      // the streaming scan extracts its seqs — the append floors from it,
+      // no duplicate, and the SECOND append continues past the first (the
+      // memo is correct, not just cheap).
+      wipeCounterScratch(paths);
+      stageStore(
+        home,
+        JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-ov-other', grantedAt: 900, arrivalSeq: 4 })]),
+      );
+      const over = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-r17-over');
+      const big = 'x'.repeat(200);
+      writeFileSync(
+        over,
+        [
+          JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: 'h-r17-ov-K', grantedAt: 5_000, arrivalSeq: 5 })),
+          big,
+          big,
+          big,
+        ].join('\n') + '\n',
+      );
+      const visible = readConsentEvents().filter((e) => e.argsHash === 'h-r17-ov-K');
+      assert.equal(
+        visible.length,
+        0,
+        'the over-limit sidecar reads as no lines in the merged view — skipped before the bytes',
+      );
+      const a1 = recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r17-ov-new1',
+        outcome: 'granted',
+      });
+      assert.ok(
+        a1.arrivalSeq > 5,
+        `the streamed seq fields floor the append above the sidecar's max (got ${a1.arrivalSeq})`,
+      );
+      const a2 = recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r17-ov-new2',
+        outcome: 'granted',
+      });
+      assert.ok(
+        a2.arrivalSeq > a1.arrivalSeq,
+        'the second append continues past the first — the memo keeps the floor correct',
+      );
+      // The sidecar row is invisible to the view (the first cell), so the
+      // no-re-issue property is observed at the source: the sidecar keeps
+      // its bytes verbatim (kept, not folded, not removed) and its row
+      // still owns seq 5 — the counter floored above it twice and never
+      // re-issued it.
+      const sidecarBytes = readFileSync(over, 'utf8')
+        .split('\n')
+        .filter((l) => l.trim().length > 0);
+      assert.equal(sidecarBytes.length, 4, 'the over-limit sidecar is kept verbatim — not folded, not removed');
+      assert.equal(
+        (JSON.parse(sidecarBytes[0]!) as { arrivalSeq?: number }).arrivalSeq,
+        5,
+        'the sidecar row keeps its seq — floored above, never re-issued',
+      );
+    } finally {
+      if (prevLimit === undefined) delete process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
+      else process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = prevLimit;
+    }
+  }),
+);
+
+test(
+  'the outcome-line reader mirrors the writer: out-of-space line seqs and full-identity twins bind nothing (round-17 finding 4)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const T = 1_700_000_000_000;
+    const SENTINEL = Number.MAX_SAFE_INTEGER;
+    const outcomes = join(paths.dir, 'approval-consents.json.outcomes.jsonl');
+    const stageOutcomeLines = (lines: string[]): void => {
+      rmSync(outcomes, { force: true });
+      writeFileSync(outcomes, lines.join('\n') + '\n');
+    };
+    const line = (argsHash: string, arrivalSeq: number | null, detail: string): string =>
+      JSON.stringify({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash,
+        grantedAt: T,
+        ...(arrivalSeq !== null ? { arrivalSeq } : {}),
+        outcomeDetail: detail,
+      });
+
+    // Cell 1 — a sentinel-valued row plus a sentinel-seq line naming it:
+    // neither side is a provable identity; the reader (like the r16
+    // writer's guard) binds nothing.
+    wipeCounterScratch(paths);
+    stageOutcomeLines([line('h-r17-e1', SENTINEL, 'failed')]);
+    stageStore(
+      home,
+      JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-e1', grantedAt: T, arrivalSeq: SENTINEL })]),
+    );
+    let rows = readConsentEvents().filter((e) => e.argsHash === 'h-r17-e1');
+    assert.equal(rows[0]!.outcomeDetail, undefined, 'cell 1: a sentinel-seq line binds a sentinel row never');
+
+    // Cell 2 — a full-identity twin in the store and a seq-bearing line
+    // naming the shared identity: the reader counts and skips, never
+    // binds array-last.
+    wipeCounterScratch(paths);
+    stageOutcomeLines([line('h-r17-e2', 20, 'delivered')]);
+    stageStore(
+      home,
+      JSON.stringify([
+        baseEvent({ sessionId: 'ses', argsHash: 'h-r17-e2', grantedAt: T, arrivalSeq: 20 }),
+        baseEvent({ sessionId: 'ses', argsHash: 'h-r17-e2', grantedAt: T, arrivalSeq: 20 }),
+      ]),
+    );
+    rows = readConsentEvents().filter((e) => e.argsHash === 'h-r17-e2');
+    assert.equal(rows[0]!.outcomeDetail, undefined, 'cell 2: the identity twin binds nothing (row 0)');
+    assert.equal(rows[1]!.outcomeDetail, undefined, 'cell 2: the identity twin binds nothing (row 1)');
+
+    // Cell 3 — the r15-era writer's other shape: a line with a seq in the
+    // ceiling band (invalid) is dropped entirely — never legacy-keyed.
+    wipeCounterScratch(paths);
+    stageOutcomeLines([line('h-r17-e3', Number.MAX_SAFE_INTEGER - 2, 'failed')]);
+    stageStore(
+      home,
+      JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-e3', grantedAt: T, arrivalSeq: 20 })]),
+    );
+    rows = readConsentEvents().filter((e) => e.argsHash === 'h-r17-e3');
+    assert.equal(
+      rows[0]!.outcomeDetail,
+      undefined,
+      'cell 3: a ceiling-band line seq binds nothing and is never legacy-keyed',
+    );
+
+    // Cell 4 — the legacy line (no arrivalSeq — the r16 seq-less-row
+    // writer's product) still binds its unique row: the reader's hardening
+    // must not narrow the legacy contract.
+    wipeCounterScratch(paths);
+    stageOutcomeLines([line('h-r17-e4', null, 'failed')]);
+    const { arrivalSeq: legacySeq, ...legacyRow } = baseEvent({ sessionId: 'ses', argsHash: 'h-r17-e4', grantedAt: T });
+    void legacySeq;
+    stageStore(home, JSON.stringify([legacyRow]));
+    rows = readConsentEvents().filter((e) => e.argsHash === 'h-r17-e4');
+    assert.equal(rows[0]!.outcomeDetail, 'failed', 'cell 4: the legacy seq-less line still binds its unique row');
+  }),
+);
+
+test(
   'a ledger-internal failure never fails the approved call: a relative state dir degrades to a no-op (round-4 finding 4)',
   withLedgerHome(async () => {
     // devkitStateBase() THROWS on a relative HUAWEICLOUD_STATE_DIR — inside
