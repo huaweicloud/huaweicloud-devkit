@@ -280,11 +280,39 @@ function writeSeqFileMonotonic(next: number): void {
 // unknowable seqs, so the caller must mark the arrival chronology-unknown
 // rather than risk a duplicate.
 const SEQ_SCAN_CHUNK_BYTES = 1 << 20;
-const SEQ_SCAN_CARRY_BYTES = 64; // > the needle + the longest numeric literal
+// Round 18, finding 2 (A1; A2's O1): the r17 carry was 64 bytes on the claim
+// "> the needle + the longest numeric literal" — false for the regex it
+// runs, whose needle-to-number gap (\s*:\s*) is UNBOUNDED: a committed,
+// JSON-valid row whose gap exceeded the carry and straddled the chunk
+// boundary lost its needle between passes and its seq was NEVER extracted —
+// a false NEGATIVE on a valid row, the duplicate-producing direction (T4:
+// the counter re-issued 301; the in-chunk control took 302). The carry now
+// covers the needle-to-number span for gaps up to ~290 bytes: a needle
+// whose number lies past the chunk end must have started within the last
+// CARRY bytes to be carried whole into the next haystack, so any gap up to
+// CARRY - needle(12) - literal headroom is extracted across the boundary.
+// A WIDER gap is a documented miss (the hand-formatted class: no JSON
+// producer — JSON.stringify or any formatter — emits more than one space
+// after a colon, so writer-produced rows always extract; the truncated
+// number a boundary DOES see still floors at or below the real value — a
+// gap, never a duplicate).
+const SEQ_SCAN_CARRY_BYTES = 320;
 
 function streamMaxValidSeq(path: string): { max: number; blinded: boolean } {
   let fd: number | undefined;
   try {
+    // Round 18, finding 3 (A2): the scan's only failure class was THROWN
+    // errors — a FIFO entry with the reserved .taken-* name BLOCKED the
+    // open, and a symlink to /dev/zero never reached EOF, wedging the
+    // append path unboundedly inside the ledger lock's hold (the heartbeat
+    // kept the claim fresh, so takeover never fired and every other
+    // process's contender degraded only to re-enter the same scan). A
+    // non-regular entry is a BLINDED source, never opened: the stat is
+    // non-blocking, and no devkit writer creates such files, so the
+    // posture for hand-staged entries is bounded-blindness, the same class
+    // as the unreadable file.
+    const entryStat = statSync(path);
+    if (!entryStat.isFile()) return { max: -1, blinded: true }; // FIFO/device/directory: never open it
     fd = openSync(path, 'r');
     const chunk = Buffer.alloc(SEQ_SCAN_CHUNK_BYTES);
     // A number cut by a chunk boundary matches TRUNCATED in this pass and
@@ -323,13 +351,34 @@ function streamMaxValidSeq(path: string): { max: number; blinded: boolean } {
   }
 }
 
-// The sidecar scan memo (round 17, finding 3): a .taken-* file is
-// append-only-immutable once taken (removed at the next successful fold,
-// kept verbatim otherwise), so a successful scan's result is keyed by
-// path+mtime+size — the SECOND append pays nothing. Failures are NEVER
-// memoized: a chmod-blocked file's recovery (the r16 pin) must rescan, and
-// the memo key would not see a chmod (mtime/size unchanged).
-const takenSeqScanMemo = new Map<string, { mtimeMs: number; size: number; max: number }>();
+// The sidecar scan memo (round 17, finding 3; key discipline round 18,
+// finding 1, both seats): a successful scan's result is memoized so the
+// SECOND append pays nothing. The key is ENFORCED, not assumed: r17 keyed
+// by path+mtime+size on the "append-only-immutable once taken" claim, and
+// both r18 seats falsified the claim with the operator-remediation class —
+// a timestamp-preserving replacement (cp -p, a restore, or an in-place
+// rewrite with utimesSync restoring the mtime) collides all three fields
+// and the memo decided the floor from bytes that no longer existed,
+// re-issuing the replacement's committed seq (A1's harm cell ran the full
+// chain: operator split -> visible duplicate -> the reuse inherited the
+// stronger tier). The key now includes the identity the kernel maintains
+// and userland tools cannot forge: dev+ino (a cp -p or rename-replacement
+// is a different inode) and ctimeMs — POSIX status-change time, bumped by
+// EVERY write AND by the utimesSync call itself, so restoring the mtime
+// restores nothing about it (verified: an in-place writeFileSync plus
+// utimesSync back to the frozen mtime leaves mtime and ino identical and
+// ctime moved). The stored key is also READ-VALIDATED: the file is stat'ed
+// before the stream and again after it, and the memo is written only when
+// the two stats agree — bytes that changed while the scan was in flight
+// are never cached under the new content's key. What remains outside the
+// key is deliberate inode-level forgery (debugfs-class) — an adversary
+// with that access can hand-stage any content directly, the documented
+// trust boundary for staged state. Failures are NEVER memoized: a
+// chmod-blocked file's recovery (the r16 pin) must rescan.
+const takenSeqScanMemo = new Map<
+  string,
+  { dev: number; ino: number; mtimeMs: number; ctimeMs: number; size: number; max: number }
+>();
 
 // The .taken-* sidecar seq scan (round 16, finding 2, both seats; streamed
 // and memoized round 17, finding 3): the reader folds every .taken-* file's
@@ -341,10 +390,14 @@ const takenSeqScanMemo = new Map<string, { mtimeMs: number; size: number; max: n
 // — the clock dependence the counter was built to remove, driven organically
 // cross-process by both seats. The scan streams SEQ FIELDS ONLY (chunked
 // bytes, no whole-file string) and is SUPERSET-honest: a sidecar that
-// cannot be READ is a BLINDED source — its rows are committed and own seqs
-// we cannot see, so the space above the known max is not provably free and
-// the append takes the sentinel rather than risk a duplicate. When the read
-// recovers the counter continues from the sidecar's real seqs.
+// cannot be READ — or is not a regular file at all (round 18, finding 3:
+// a FIFO or device entry with the reserved name would BLOCK the open
+// inside the ledger lock's hold, cross-process, so a non-regular entry is
+// a blinded source, never opened) — is a BLINDED source: its rows are
+// committed and own seqs we cannot see, so the space above the known max
+// is not provably free and the append takes the sentinel rather than risk
+// a duplicate. When the read recovers the counter continues from the
+// sidecar's real seqs.
 // `skipFiles` are the files THIS section's takeSpool already folded
 // successfully (their parsed events are in the floor already) — scanning
 // them again would re-read bytes the section already parsed.
@@ -353,11 +406,19 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
   let blinded = false;
   for (const file of takenSpoolFiles()) {
     if (skipFiles.includes(file)) continue; // folded this section: parsed events already floor us
+    let statBefore: ReturnType<typeof statSync> | undefined;
     let memoized = false;
     try {
-      const stat = statSync(file);
+      statBefore = statSync(file);
       const memo = takenSeqScanMemo.get(file);
-      if (memo !== undefined && memo.mtimeMs === stat.mtimeMs && memo.size === stat.size) {
+      if (
+        memo !== undefined &&
+        memo.mtimeMs === statBefore.mtimeMs &&
+        memo.ctimeMs === statBefore.ctimeMs &&
+        memo.size === statBefore.size &&
+        memo.dev === statBefore.dev &&
+        memo.ino === statBefore.ino
+      ) {
         if (memo.max > max) max = memo.max;
         memoized = true;
       }
@@ -372,8 +433,23 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
     }
     if (scanned.max > max) max = scanned.max;
     try {
-      const stat = statSync(file);
-      takenSeqScanMemo.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, max: scanned.max });
+      // READ-VALIDATE: the pre-scan and post-scan stats must agree, or the
+      // bytes scanned are not the bytes the key describes — never memoize.
+      const statAfter = statSync(file);
+      if (
+        statBefore !== undefined &&
+        statAfter.mtimeMs === statBefore.mtimeMs &&
+        statAfter.ctimeMs === statBefore.ctimeMs
+      ) {
+        takenSeqScanMemo.set(file, {
+          dev: statAfter.dev,
+          ino: statAfter.ino,
+          mtimeMs: statAfter.mtimeMs,
+          ctimeMs: statAfter.ctimeMs,
+          size: statAfter.size,
+          max: scanned.max,
+        });
+      }
     } catch {
       // the memo is an optimization: an unstatable file rescans next time
     }
@@ -645,7 +721,13 @@ function wholeReadLimitBytes(): number {
 
 function readSpoolTextWhole(path: string): string | undefined {
   try {
-    if (statSync(path).size > wholeReadLimitBytes()) return undefined; // would throw late: skip
+    const stat = statSync(path);
+    // Round 18, finding 3: a non-regular entry (a FIFO, a device) is
+    // skipped without opening — a FIFO's readFileSync BLOCKS forever (the
+    // merged view and the take's fold both read through this seam, and the
+    // tier resolution reaches it before the scan does).
+    if (!stat.isFile()) return undefined; // blinded: no lines, the file kept
+    if (stat.size > wholeReadLimitBytes()) return undefined; // would throw late: skip
   } catch {
     return undefined; // unstatable or absent: the read would fail anyway
   }
