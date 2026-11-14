@@ -751,16 +751,61 @@ export function recordAskModeConsent(params: {
 // never rewrites a store it could not read), or the row not found. "Not
 // found" is the common healthy skip: token mode records no arrival
 // (nothing to annotate), a classified pass-through records none either,
-// and a consent whose arrival degraded to the spool is left alone —
-// rewriting a spool line is the unlocked read-rewrite this ledger
-// forbids (round 6). A skipped annotation leaves the row as the arrival
-// wrote it; the memo treats an absent outcomeDetail as unknown. The
-// update itself is an in-place field write on ONE row under the lock —
-// the same locked read-modify-write shape as lockedAppend, targeting the
-// most recent granted row on the key (the arrival the dispatch layer
-// just approved; racing same-key arrivals may leave the newest row
-// ambiguous, which is why PR-3a's precise keyed join lands with the
-// approvedVia carrier — the recorded G2 note).
+// and a consent whose arrival degraded to the spool or a taken sidecar
+// is left alone — enforced (round 11, finding 1, both seats), not just
+// promised: pre-fix, the store-only target scan stamped this call's
+// outcome over an EARLIER arrival's committed row in exactly that
+// state (sequential, deterministic, the ~3s healthy-section band), so
+// the annotate now resolves the newest granted row on the key through
+// the MERGED reader (store + spool + taken) first and skips entirely
+// unless that row is the store row this dispatch's own arrival wrote —
+// rewriting a spool line stays forbidden (the unlocked read-rewrite
+// this ledger forbids, round 6), and so does rewriting another
+// arrival's store row. A skipped annotation leaves the row as the
+// arrival wrote it; the memo treats an absent outcomeDetail as unknown.
+// The update itself is an in-place field write on ONE row under the
+// lock — the same locked read-modify-write shape as lockedAppend. The
+// recorded residual narrows to the RACING shape alone: concurrent
+// same-key arrivals can interleave between this call's arrival and its
+// annotate so the newest store row is not provably this dispatch's own
+// — PR-3a's precise keyed join lands with the approvedVia carrier (the
+// recorded G2 note).
+// The newest granted stamp on a consent key among the rows OUTSIDE the
+// main store (the spool and every .taken-* sidecar) — the merged-world
+// leg of the annotate's targeting guard (round 11, finding 1). A spool
+// or taken line is a committed event (round 7), so the annotate must
+// treat its stamp as authoritative when deciding which row is the
+// newest consent on the key. Read tolerance matches the filtered view:
+// a line that does not parse, or a row that does not match the key or
+// is not granted, contributes nothing.
+function newestGrantedStampOutsideStore(params: { sessionId: string; tool: string; argsHash: string }): number {
+  let newest = Number.NEGATIVE_INFINITY;
+  const consider = (lines: string[]): void => {
+    for (const line of lines) {
+      const parsed = parseSpoolLine(line);
+      if (parsed === undefined) continue;
+      const record = parsed.parsed;
+      if (!record || typeof record !== 'object') continue;
+      const row = record as Record<string, unknown>;
+      if (
+        row.sessionId === params.sessionId &&
+        row.tool === params.tool &&
+        row.argsHash === params.argsHash &&
+        row.outcome === 'granted' &&
+        typeof row.grantedAt === 'number' &&
+        row.grantedAt > newest
+      ) {
+        newest = row.grantedAt;
+      }
+    }
+  };
+  consider(spoolLines());
+  for (const file of takenSpoolFiles()) {
+    consider(spoolLinesOf(file));
+  }
+  return newest;
+}
+
 export function annotateDispatchOutcome(params: {
   sessionId: string;
   tool: string;
@@ -795,7 +840,27 @@ export function annotateDispatchOutcome(params: {
             targetIndex = i;
           }
         }
-        if (targetIndex === -1) return; // spool/taken-resident or no arrival: skip
+        if (targetIndex === -1) return; // no store row on the key: nothing annotatable
+        // Round 11, finding 1 (both seats): the store-only scan used to
+        // stamp this call's outcome over an EARLIER arrival's committed
+        // row whenever THIS dispatch's own arrival degraded to the spool
+        // (or any newer granted row on the key lived in the spool or a
+        // taken sidecar) — sequentially, deterministically, in the exact
+        // ~3.0-3.25s healthy-section band the round-6 cap was sized for:
+        // a delivered row rewritten to failed while the failed call's
+        // own row carried no datum at all, falsifying the "left alone"
+        // promise this function's header made. The guard: resolve the
+        // newest granted row on the key through the MERGED world (store +
+        // spool + taken) before writing. If any granted row on the key
+        // outside the store carries a stamp at or beyond the store
+        // target's, the newest committed row is not the store row — this
+        // call's arrival degraded, or a newer arrival lives outside the
+        // store — so the annotate SKIPS entirely: degraded arrivals carry
+        // no delivery outcome in PR-1, enforced now instead of promised,
+        // and a row that is not the arrival this dispatch created is
+        // never annotated. Ties skip too: an equal stamp cannot prove the
+        // store row is THIS dispatch's arrival.
+        if (newestGrantedStampOutsideStore(params) >= targetStamp) return;
         (raw[targetIndex] as Record<string, unknown>).outcomeDetail = params.outcomeDetail;
         const tmp = `${path}.${process.pid}.annotate.tmp`;
         writeFileSync(tmp, JSON.stringify(raw), { encoding: 'utf8', mode: 0o600 });

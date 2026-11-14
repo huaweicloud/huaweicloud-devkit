@@ -6,12 +6,17 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  annotateDispatchOutcome,
   appendConsentEvent,
   readConsentEvents,
   recordAskModeConsent,
 } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
 import { hashArgs } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
-import type { ConsentEvent, ConsentEvidence } from '../plugins/huaweicloud-core/src/approval-types.ts';
+import type {
+  ConsentDeliveryOutcome,
+  ConsentEvent,
+  ConsentEvidence,
+} from '../plugins/huaweicloud-core/src/approval-types.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
 // The consent ledger's round-trip battery: events persist, malformed store
@@ -903,6 +908,100 @@ test(
       write(takenLast, orderLine(key(7), 'posture', T));
     });
     assert.equal(tier, 'posture', `${label}: an equal-tier tie keeps the resolved tier, not the caller's override`);
+  }),
+);
+
+test(
+  'the delivery annotation never lands on another arrival row: a spool/taken-resident newest row skips entirely (round-11 finding 1)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    // Both r11 seats found the same sequential corruption: the annotate
+    // scanned the MAIN STORE ONLY for the newest granted row on the key,
+    // so when THIS dispatch's own arrival degraded to the spool (or lived
+    // in a taken sidecar — the round-7 recovery state) it found an
+    // EARLIER arrival's store row and stamped this call's outcome over
+    // it: a delivered row rewritten to failed, the failed call's own row
+    // datumless, deterministic in the ~3s healthy-section band the
+    // round-6 cap was sized for — falsifying the header's "left alone"
+    // promise. The guard: the annotate resolves the newest granted row on
+    // the key through the MERGED world (store + spool + taken) and skips
+    // entirely unless that row is the store row this dispatch's own
+    // arrival wrote. Never another arrival's row; ties skip (an equal
+    // stamp cannot prove ownership).
+    const takenFile = join(paths.dir, 'approval-consents.json.spool.jsonl.taken-12390000-0000-4000-8000-000000000000');
+    const annotateKey = (hash: string): void => {
+      annotateDispatchOutcome({
+        sessionId: 'ses-annotate',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: hash,
+        outcomeDetail: 'failed',
+      });
+    };
+    const detailOf = (hash: string, stamp: number): ConsentDeliveryOutcome | 'absent' | undefined => {
+      const row = readConsentEvents().find((event) => event.argsHash === hash && event.grantedAt === stamp);
+      return row === undefined ? undefined : (row.outcomeDetail ?? 'absent');
+    };
+    const stageKey = (hash: string): void => {
+      rmSync(takenFile, { force: true });
+      rmSync(paths.spool, { force: true });
+      stageStore(home, '[]');
+    };
+    const line = (hash: string, grantedAt: number): string =>
+      JSON.stringify(baseEvent({ sessionId: 'ses-annotate', argsHash: hash, grantedAt })) + '\n';
+
+    // Cell 1 — the taken-resident newest arrival (the round-7 recovery
+    // state the ledger deliberately keeps visible): the earlier store row
+    // was DELIVERED, this call's arrival is taken-resident, this call
+    // FAILED. Pre-fix: the store row flipped to failed. Post-fix: skip —
+    // the delivered row keeps its own call's outcome, the taken row stays
+    // unannotated.
+    stageKey('h-an-taken');
+    stageStore(home, JSON.stringify([{ ...JSON.parse(line('h-an-taken', 1_000)), outcomeDetail: 'delivered' }]));
+    writeFileSync(takenFile, line('h-an-taken', 2_000));
+    annotateKey('h-an-taken');
+    assert.equal(
+      detailOf('h-an-taken', 1_000),
+      'delivered',
+      'taken cell: the earlier delivered row keeps its own outcome',
+    );
+    assert.equal(detailOf('h-an-taken', 2_000), 'absent', 'taken cell: this degraded arrival stays unannotated');
+
+    // Cell 2 — the spool-resident newest arrival (the degraded-dispatch
+    // shape): same skip.
+    stageKey('h-an-spool');
+    stageStore(home, JSON.stringify([{ ...JSON.parse(line('h-an-spool', 1_000)), outcomeDetail: 'delivered' }]));
+    writeFileSync(paths.spool, line('h-an-spool', 2_000));
+    annotateKey('h-an-spool');
+    assert.equal(
+      detailOf('h-an-spool', 1_000),
+      'delivered',
+      'spool cell: the earlier delivered row keeps its own outcome',
+    );
+    assert.equal(detailOf('h-an-spool', 2_000), 'absent', 'spool cell: this degraded arrival stays unannotated');
+
+    // Cell 3 — the guard must not OVER-skip: an earlier degraded arrival
+    // sits in the spool with an OLDER stamp; this dispatch's own arrival
+    // landed in the store. The annotate proceeds on the store row — the
+    // newest granted row on the key is this call's own, store-resident.
+    stageKey('h-an-normal');
+    writeFileSync(paths.spool, line('h-an-normal', 900));
+    stageStore(home, JSON.stringify([JSON.parse(line('h-an-normal', 1_000))]));
+    annotateKey('h-an-normal');
+    assert.equal(
+      detailOf('h-an-normal', 1_000),
+      'failed',
+      "normal cell: the annotate lands on this call's own store row",
+    );
+    assert.equal(detailOf('h-an-normal', 900), 'absent', 'normal cell: the earlier degraded row is untouched');
+
+    // Cell 4 — the tie: a taken-resident row at the SAME stamp as the
+    // store row cannot prove the store row is this dispatch's arrival —
+    // skip (never another arrival's row, even at ambiguity).
+    stageKey('h-an-tie');
+    stageStore(home, JSON.stringify([{ ...JSON.parse(line('h-an-tie', 1_000)), outcomeDetail: 'delivered' }]));
+    writeFileSync(takenFile, line('h-an-tie', 1_000));
+    annotateKey('h-an-tie');
+    assert.equal(detailOf('h-an-tie', 1_000), 'delivered', 'tie cell: an ambiguous newest row is left alone');
   }),
 );
 

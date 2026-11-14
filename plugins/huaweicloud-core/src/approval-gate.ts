@@ -449,12 +449,14 @@ export async function runApprovalGate(
 // can be observed.
 //
 // The classes, from the handler's return or throw: 'delivered' when the
-// handler returned an ok result, 'failed' when it returned a not-ok
-// result (the non-delivered class — the child answered with a failure),
-// 'uncertain' when the handler threw and whether the call completed is
-// unknowable. PR-3a's S1 memo reuses a prior consent exactly on
-// 'uncertain' or 'failed' (ApprovalCoreConsent's result-conditioned
-// scope).
+// returned result carries no failure marks, 'failed' when the child
+// ANSWERED with a failure — ok:false, a nonzero exitCode (the sandbox
+// exec faces' shape, which carries no ok), a rejected/error status, an
+// error-truthy error/message value, or a returned Error instance (an
+// answer, not an uncertainty — round 11, finding 2), 'uncertain' when
+// the handler threw and whether the call completed is unknowable.
+// PR-3a's S1 memo reuses a prior consent exactly on 'uncertain' or
+// 'failed' (ApprovalCoreConsent's result-conditioned scope).
 //
 // Best-effort in every direction: ask mode only (token mode records no
 // arrival, so there is no row to annotate — and the check keeps the
@@ -474,7 +476,7 @@ export function recordApprovalDispatchOutcome(
     if (!spec) return;
     if (approvalModeFromEnv(process.env) !== 'ask') return; // no ask arrival was recorded
     const outcomeDetail: ConsentDeliveryOutcome =
-      handlerThrew !== undefined ? 'uncertain' : handlerResultIsOk(handlerResult) ? 'delivered' : 'failed';
+      handlerThrew !== undefined ? 'uncertain' : handlerResultCarriesFailure(handlerResult) ? 'failed' : 'delivered';
     annotateDispatchOutcome({
       sessionId: opts.sessionId ?? 'default',
       tool: name,
@@ -487,9 +489,32 @@ export function recordApprovalDispatchOutcome(
   }
 }
 
-function handlerResultIsOk(handlerResult: unknown): boolean {
-  if (handlerResult && typeof handlerResult === 'object' && 'ok' in handlerResult) {
-    return (handlerResult as Record<string, unknown>).ok !== false;
-  }
-  return true;
+// The failure-mark reader for the three-valued delivery classification
+// (round 11, finding 2): a returned result is 'failed' when the child
+// ANSWERED with a failure — by any of the shapes the handler families
+// report it in. The run face carries `ok: boolean` on every path (its
+// failure paths set ok:false, which the first mark catches), but the
+// sandbox exec faces — PR-3a's first registrations, the same wave this
+// datum exists for — return {stdout, exitCode} with NO ok field, so a
+// nonzero exitCode must read as the intent's own example of 'failed'
+// ("the child answered with a failure"); approval-shaped envelopes
+// report {status:'rejected'|'error'}; error-shaped results carry an
+// error/message value; a truthy-string 'false' in the ok slot (a
+// loose-typed handler) reads as failure too. A RETURNED Error instance
+// is judged failed, recorded honestly: a returned error is an ANSWER
+// (the handler decided the call failed), not an uncertainty — the
+// thrown leg above stays the only 'uncertain'. An async-start receipt
+// ({started:'uncertain'}, no marks) classifies delivered: the dispatch
+// was accepted, and the async completion is the poll call's own result,
+// not this dispatch's. Every other returned shape — no failure marks
+// present — is 'delivered'.
+function handlerResultCarriesFailure(handlerResult: unknown): boolean {
+  if (handlerResult instanceof Error) return true; // returned, not thrown: an answer
+  if (typeof handlerResult !== 'object' || handlerResult === null) return false;
+  const record = handlerResult as Record<string, unknown>;
+  if (record.ok === false || record.ok === 'false') return true;
+  if (typeof record.exitCode === 'number' && record.exitCode !== 0) return true;
+  if (record.status === 'rejected' || record.status === 'error') return true;
+  const failure = record.error ?? record.errorMessage ?? record.message;
+  return failure !== undefined && failure !== null && failure !== '';
 }

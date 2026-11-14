@@ -15,7 +15,7 @@ import {
 import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
 import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import { createLinkedDevkitServers } from '../plugins/huaweicloud-core/src/mcp-protocol.ts';
-import { readConsentEvents } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
+import { readConsentEvents, recordAskModeConsent } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
 import {
   recordApprovalDispatchOutcome,
   runApprovalGate,
@@ -266,6 +266,81 @@ test('ask mode: the dispatch layer records what became of the approved call — 
       if (prevBin === undefined) delete process.env.HCLOUD_BIN;
       else process.env.HCLOUD_BIN = prevBin;
     }
+  });
+});
+
+test('the delivery classification reads every failure-mark shape the handler families report (round-11 finding 2)', async () => {
+  // Pre-fix, the classifier read ONE convention only (ok === false), so
+  // every other error-shaped answer recorded delivered — including the
+  // sandbox exec handlers' real return shape {stdout, exitCode} (no ok
+  // field: exitCode 1 delivered), approval-shaped envelopes, error
+  // values, and returned Error instances. PR-3a's memo reuses a prior
+  // consent exactly on uncertain/failed, so a failed exec recording
+  // delivered would suppress exactly the retry the datum exists to
+  // authorize — live the day the exec tools register. The broadened
+  // boundary: a returned result is failed when it carries ok:false (or
+  // the loose string 'false'), a numeric nonzero exitCode, a
+  // rejected/error status, or an error-truthy error/message value; a
+  // RETURNED Error is judged failed too (an answer, not an uncertainty —
+  // the thrown leg stays the only uncertain); no failure marks →
+  // delivered. The run face's real paths (ok: boolean on every path)
+  // keep their classifications — the existing dispatch legs above pin
+  // those.
+  await withTempAuthHome(async () => {
+    await withApprovalMode('ask', async () => {
+      const classify = async (handlerResult: unknown, handlerThrew?: unknown): Promise<string | undefined> => {
+        const args = [`ECS`, `ListServersDetails`, `--case=${Math.random().toString(36).slice(2)}`];
+        recordAskModeConsent({
+          sessionId: 'default',
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: hashArgs(args),
+          outcome: 'granted',
+        });
+        recordApprovalDispatchOutcome(
+          'huaweicloud_run_approved_command',
+          HUAWEICLOUD_CLI_APPROVAL_SPECS.huaweicloud_run_approved_command,
+          { args, approvedByUser: true },
+          {},
+          handlerResult,
+          handlerThrew,
+        );
+        return readConsentEvents().find((event) => event.argsHash === hashArgs(args))?.outcomeDetail;
+      };
+      assert.equal(await classify({ ok: false }), 'failed', '{ok:false} — the pinned failed class');
+      assert.equal(await classify({ ok: true }), 'delivered', '{ok:true} — the pinned delivered class');
+      assert.equal(
+        await classify({ stdout: 'err', exitCode: 1, url: 'wss://w', source: 3, username: 'root', command: 'false' }),
+        'failed',
+        "the sandbox exec faces' real shape, exitCode 1 — the child answered with a failure",
+      );
+      assert.equal(
+        await classify({ stdout: 'fine', exitCode: 0, url: 'wss://w', source: 3, username: 'root', command: 'true' }),
+        'delivered',
+        'the sandbox exec shape with exitCode 0',
+      );
+      assert.equal(
+        await classify({ status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' }),
+        'failed',
+        'an approval-shaped envelope reports its rejection',
+      );
+      assert.equal(await classify({ error: 'boom' }), 'failed', 'an error-shaped result');
+      assert.equal(
+        await classify(new Error('returned, not thrown')),
+        'failed',
+        'a returned Error is an answer: failed',
+      );
+      assert.equal(
+        await classify({ ok: 'false' }),
+        'failed',
+        "a loose-typed string 'false' in the ok slot reads as failure",
+      );
+      assert.equal(await classify(undefined), 'delivered', 'a void handler carries no failure marks');
+      assert.equal(
+        await classify(undefined, new Error('handler crashed mid-dispatch')),
+        'uncertain',
+        'the thrown leg stays the only uncertain',
+      );
+    });
   });
 });
 

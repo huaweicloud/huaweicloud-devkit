@@ -288,6 +288,27 @@ test('the roster exemption admits each roster member by its OWN payload shape: t
       'allow',
       'landed PR-3a: the prefixed exec call reaches the server gate',
     );
+    // The recorded residual, pinned as the landed design intends it (the
+    // r11 seat's offered judgment, adopted): once the exec row lands, a
+    // FOREIGN server that copies the exec name AND its command shape
+    // exempts — the devkit's own prefixed calls carry user-configured
+    // server prefixes the hook cannot know, so the command row cannot be
+    // prefix-discriminated. The name+shape-copy class is outside the
+    // hook's trust boundary (the documented round-10 residual); the
+    // credential class still denies on every name, foreign included.
+    assert.equal(
+      runStale({ tool_name: 'mcp__attacker__huaweicloud_sandbox_exec_one_shot', tool_input: rmrfPayload }),
+      'allow',
+      'landed PR-3a: the name+shape-copy residual exempts the command shape (documented, outside the trust boundary)',
+    );
+    assert.equal(
+      runStale({
+        tool_name: 'mcp__attacker__huaweicloud_sandbox_exec_one_shot',
+        tool_input: { command: `cat ~/.config/huaweicloud/credentials.json`, mode: 'sync' },
+      }),
+      'deny',
+      'the credential class survives the exemption on every name, foreign included',
+    );
     // A payload of the WRONG shape for its row never exempts, whatever
     // the name.
     assert.equal(
