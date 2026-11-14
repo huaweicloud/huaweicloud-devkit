@@ -110,6 +110,22 @@ export interface ConsentEvent {
   grantedAt: number;
   scope: 'once' | 'session';
   evidence: ConsentEvidence;
+  // The arrival counter (round 13, finding 4): a monotonically increasing
+  // per-store sequence the ledger assigns on EVERY append — the true
+  // chronology key for the tier resolution, immune to clock steps. A
+  // backward NTP/VM-restore step gives a later-written copy a SMALLER
+  // grantedAt, and grantedAt-only chronology then names the failure-born
+  // copy the original — the fabricated upgrade the never-upgrade rule
+  // exists to prevent, with no tiebreak firing (the stamps differ). The
+  // resolution orders by (arrivalSeq, grantedAt): the counter tracks real
+  // arrival order (a tiny high-water file beside the store), so a
+  // later-arriving row never sorts as the original whatever the wall
+  // clock did. grantedAt stays for display and the annotate's stamp-keyed
+  // join. REQUIRED on every ledger-written row: a row without a valid
+  // number is not a ledger row and reads as absent (the documented read
+  // tolerance — the field is new in this round, so hand-staged rows that
+  // predate it vanish from the filtered view).
+  arrivalSeq: number;
   // The dispatch outcome of the call this consent authorized (round 10,
   // finding 4 — PR-3a's memo datum). Absent on every row written before
   // the dispatch layer's follow-up lands, and on any follow-up that could

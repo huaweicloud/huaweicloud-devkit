@@ -22,6 +22,7 @@ import {
   NO_SESSION_SEAM_ERROR,
 } from '../plugins/huaweicloud-core/src/approval-gate.ts';
 import { HUAWEICLOUD_CLI_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
+import { upgradePackage } from '../plugins/huaweicloud-core/src/update-upgrade.ts';
 import type { ApprovalSpec } from '../plugins/huaweicloud-core/src/approval-types.ts';
 import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
@@ -401,15 +402,49 @@ test('the delivery classification reads every failure-mark shape the handler fam
         'delivered',
         'REAL huaweicloud_upgrade SUCCESS classifies delivered',
       );
-      assert.equal(
-        await classify({ success: true, message: 'Already at the latest version.', latest: '9.9.9', current: '9.9.9' }),
-        'delivered',
-        'the upgrade up-to-date no-op is not a failure',
+      // Round 13, finding 3 (A2): the REAL upgradePackage branches, driven
+      // with every effect injected — the r12 pin's up-to-date cell used a
+      // {success:true} shape the handler never returns (the real no-op
+      // carries success:FALSE + a benign message + the requiresRestart
+      // marker), so it was green while the real path recorded failed.
+      // Driving the real function is the only shape the pin cannot drift
+      // from again.
+      const noSpawn = (): never => {
+        throw new Error('the pin must inject every effect: the up-to-date branch never spawns');
+      };
+      const upToDate = await upgradePackage(
+        { target: 'all', version: 'latest' },
+        { doQuery: async () => ({}), currentVersion: '2.0.0', spawnFn: noSpawn },
       );
+      assert.deepEqual(
+        upToDate,
+        { success: false, message: '已是最新版本，无需升级。', requiresRestart: false },
+        'the REAL up-to-date envelope is the benign no-op shape',
+      );
+      assert.equal(await classify(upToDate), 'delivered', 'the REAL upgradePackage up-to-date no-op is not a failure');
+      const upgraded = await upgradePackage(
+        { target: 'all', version: 'latest' },
+        {
+          doQuery: async () => ({ latest: '2.0.0' }),
+          currentVersion: '1.9.0',
+          spawnFn: () => ({ status: 0, stdout: '', stderr: '' }),
+        },
+      );
+      assert.equal(upgraded.success, true, 'the REAL success branch');
+      assert.equal(await classify(upgraded), 'delivered', 'the REAL upgrade success classifies delivered');
+      const failed = await upgradePackage(
+        { target: 'all', version: 'latest' },
+        {
+          doQuery: async () => ({ latest: '2.0.0' }),
+          currentVersion: '1.9.0',
+          spawnFn: () => ({ status: 1, stdout: '', stderr: 'boom' }),
+        },
+      );
+      assert.equal(failed.success, false, 'the REAL failure branch');
       assert.equal(
-        await classify({ success: false, error: 'upgrade failed: registry unreachable' }),
+        await classify(failed),
         'failed',
-        'the upgrade FAILURE shape (success:false + error) still reads failed',
+        'the REAL upgrade failure (success:false + error, no marker pair) still reads failed',
       );
     });
   });

@@ -106,6 +106,44 @@ function ledgerLockDir(): string {
   return join(devkitStateBase(), 'approval-consents-lock');
 }
 
+// The arrival counter's high-water file (round 13, finding 4): the last
+// sequence number assigned, a few bytes beside the store. The counter is
+// CLOCK-INDEPENDENT by construction — grantedAt can step backward under an
+// NTP correction or a VM restore, and the (arrivalSeq, grantedAt)
+// chronology key must still name the true original. Assignment: read the
+// file, bump, write back atomically (tmp+rename — a torn truncate would
+// reset chronology). The locked append holds the ledger lock while it
+// does this, so locked writers serialize; the degraded append does it
+// unlocked, and two concurrent degraded arrivals can race the read-write —
+// both take the same number. Duplicates are the tolerable direction: the
+// (seq, grantedAt) key falls to grantedAt among equal seqs, and the
+// weakest-wins tiebreak governs a same-ms equal-seq collision. A missing
+// or unreadable file reads as -1 (a fresh tree starts at 0). Any failure
+// degrades to -1: the rows this append can still write are the ones whose
+// own write is about to fail anyway (an unhostable state tree fails both).
+function ledgerSeqPath(): string {
+  return join(devkitStateBase(), 'approval-consents.seq');
+}
+
+function nextArrivalSeq(): number {
+  try {
+    const path = ledgerSeqPath();
+    mkdirSync(dirname(path), { recursive: true });
+    let current = -1;
+    if (existsSync(path)) {
+      const parsed = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+      if (Number.isFinite(parsed)) current = parsed;
+    }
+    const next = current + 1;
+    const tmp = `${path}.${process.pid}.seq.tmp`;
+    writeFileSync(tmp, `${next}\n`, { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, path);
+    return next;
+  } catch {
+    return -1; // best-effort: the append's own write fails in the same state
+  }
+}
+
 // The takeover window, sized to THIS critical section (interrogate rounds
 // 3-5). Round 3 set 1s on the claim that the section is a millisecond RMW;
 // round 4 measured the claim false — the store is append-only forever, so
@@ -198,11 +236,14 @@ export function readConsentEvents(): ConsentEvent[] {
     }
   };
   const out = filterEvents(readRawConsents() ?? []);
+  const storeRowCount = out.length;
   foldIntoView(sampledSpool, out);
   foldIntoView(sampledTaken, out);
-  // The delivery-outcome side channel (round 12, finding 4): attaches the
-  // annotate's lines to the rows they name, after every source is folded.
-  applyOutcomeLines(out);
+  // The delivery-outcome side channel (rounds 12-13): attaches the
+  // annotate's lines to the STORE-resident rows they name, after every
+  // source is folded — one pass, store rows only (the annotate guard's
+  // own semantics: a degraded twin never receives a line).
+  applyOutcomeLines(out, storeRowCount);
   return out;
 }
 
@@ -218,7 +259,8 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
       typeof record.grantedAt !== 'number' ||
       (record.outcome !== 'granted' && record.outcome !== 'denied') ||
       (record.scope !== 'once' && record.scope !== 'session') ||
-      (record.evidence !== 'terminal' && record.evidence !== 'elicitation' && record.evidence !== 'posture')
+      (record.evidence !== 'terminal' && record.evidence !== 'elicitation' && record.evidence !== 'posture') ||
+      typeof record.arrivalSeq !== 'number'
     ) {
       continue;
     }
@@ -230,6 +272,7 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
       grantedAt: record.grantedAt,
       scope: record.scope,
       evidence: record.evidence,
+      arrivalSeq: record.arrivalSeq,
     };
     // The delivery-outcome follow-up (round 10, finding 4): pass it through
     // when present and well-formed; a malformed value reads as absent (the
@@ -554,6 +597,11 @@ function withLedgerLock(fn: () => void): void {
 // appends one line and never reads the store, so nothing committed can be
 // erased; the next locked append compacts it.
 export function appendConsentEvent(event: ConsentEvent): void {
+  // The arrival counter (round 13, finding 4): assigned by the LEDGER on
+  // every append, whatever the caller passed — the caller cannot game or
+  // clock-order it. Both the locked and degraded paths write the row
+  // through here, so this is the one assignment point.
+  event.arrivalSeq = nextArrivalSeq();
   // Inside a degraded section already: additive, no acquisition attempt.
   if (degradedDepth > 0) {
     spoolAppend([event]);
@@ -579,8 +627,8 @@ export function appendConsentEvent(event: ConsentEvent): void {
 // retry after one is a fresh ask, not a reuse.
 //
 // Round 8, finding 1 (both seats): the original is resolved by
-// CHRONOLOGY — the earliest granted event on the key — never by array
-// position. The merged view's order is fold order (store, spool, then
+// CHRONOLOGY — the earliest arrival on the key, keyed (arrivalSeq,
+// grantedAt) since round 13 — never by array position. The merged view's order is fold order (store, spool, then
 // .taken-* sidecars in name order — a pid+UUID artifact with no relation
 // to chronology, and after a stale-taken recovery even the store's own
 // row order is not chronological), and a recovery state can hold the
@@ -643,7 +691,11 @@ function originalGrantedFor(sessionId: string, tool: string, argsHash: string): 
     ) {
       continue;
     }
-    if (original === undefined || event.grantedAt < original.grantedAt) {
+    if (original === undefined || event.arrivalSeq < original.arrivalSeq) {
+      original = event;
+      continue;
+    }
+    if (event.arrivalSeq === original.arrivalSeq && event.grantedAt < original.grantedAt) {
       original = event;
       continue;
     }
@@ -664,7 +716,20 @@ function originalGrantedFor(sessionId: string, tool: string, argsHash: string): 
     // records the weaker tier — a rare mis-grade DOWN, never a fabricated
     // upgrade. At a tie with EQUAL tiers the choice is immaterial (both
     // rows carry the same tier; the incumbent stays).
+    //
+    // Round 13, finding 4: the primary key is the ARRIVAL SEQUENCE, not
+    // grantedAt — grantedAt steps backward under an NTP/VM-restore clock
+    // correction, and a later-written failure-born copy with a smaller
+    // stamp then won strict chronology (measured: a posture original
+    // re-recorded as terminal, no tiebreak firing because the stamps
+    // differ). The counter is assigned per append from the high-water
+    // file, so it tracks real arrival order whatever the wall clock did;
+    // grantedAt stays the key within an equal-seq collision (concurrent
+    // degraded arrivals can race the unlocked counter read-write and take
+    // the same number) and the weakest-wins rule governs the exact
+    // (seq, grantedAt) tie.
     if (
+      event.arrivalSeq === original.arrivalSeq &&
       event.grantedAt === original.grantedAt &&
       TIER_PRECEDENCE[event.evidence] < TIER_PRECEDENCE[original.evidence]
     ) {
@@ -686,6 +751,7 @@ export function recordAskModeConsent(params: {
   argsHash: string;
   outcome: 'granted' | 'denied';
   evidence?: ConsentEvidence;
+  arrivalSeq?: number;
 }): number {
   // Tier resolution is the ledger's rule, not the caller's: a reuse
   // inherits the original event's tier verbatim — never upgraded (posture
@@ -727,6 +793,7 @@ export function recordAskModeConsent(params: {
       grantedAt,
       scope: 'once',
       evidence,
+      arrivalSeq: 0, // appendConsentEvent assigns the real counter
     });
   });
   return grantedAt;
@@ -837,16 +904,35 @@ interface OutcomeLine {
   outcomeDetail: ConsentDeliveryOutcome;
 }
 
-// Attach the outcome lines to the merged view (round 12, finding 4): each
-// line names the consent row it annotates by the arrival's stamp, and the
-// LAST view row matching (sessionId, tool, argsHash, grantedAt) carries
-// it — the later index is the same same-millisecond tie rule the r11
-// annotate used (the newest row the fold placed at that stamp). A line
-// whose row does not exist (the arrival's append was dropped, or the
-// arrival degraded and the annotate correctly skipped writing nothing) is
+// Attach the outcome lines to the merged view (rounds 12-13): each line
+// names the consent row it annotates by the arrival's stamp, and the fold
+// binds it to the LAST STORE-RESIDENT row matching (sessionId, tool,
+// argsHash, grantedAt) — the later index is the same same-millisecond tie
+// rule the r11 annotate used (the newest store row the fold placed at
+// that stamp). Round 13, finding 2 (A1's twin probe): the fold used to
+// scan ALL sources and could bind a line to a spool- or taken-resident
+// TWIN sharing the arrival's stamp — a degraded arrival receiving
+// dispatch A's outcome, the exact row class the annotate guard refuses to
+// annotate, re-opening the r11 falsification at the same-ms boundary.
+// The annotate's own guard writes a line only when the arrival's row is
+// STORE-RESIDENT (the arrivalPresent check) and no equal-or-newer granted
+// row lives outside the store — so the fold now binds to a store row or
+// nothing at all, mirroring the guard's semantics: a degraded twin never
+// receives a line, and a line whose row left the store (quarantine) is
 // inert. A line overrides an in-row outcomeDetail: the line was appended
 // after the row was written, so it is the newer fact.
-function applyOutcomeLines(out: ConsentEvent[]): void {
+//
+// Round 13, finding 1 (both seats, quantified independently): the fold
+// used to scan the view FROM THE END for EVERY line — O(lines × rows) on
+// every readConsentEvents, which runs inside the lock section of every
+// ask-mode arrival's tier resolution — 5.9-7.0s at 20k dispatches,
+// crossing the 3s cap at ~15k and the 5s caller bar at ~17k, and pushing
+// concurrent arrivals past the cap so their degraded rows' outcomes were
+// never recorded. The fold is now ONE PASS: a Map over the store rows
+// (key+stamp → the last index), then each line attaches in O(1) —
+// O(store + lines) total, keeping the additive file, the lockless
+// writer, and the r12 erasure fix intact.
+function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
   let lines: string[];
   try {
     const path = ledgerOutcomePath();
@@ -856,6 +942,13 @@ function applyOutcomeLines(out: ConsentEvent[]): void {
       .filter((line) => line.trim().length > 0);
   } catch {
     return; // unreadable side channel: the rows keep their arrival shape
+  }
+  if (lines.length === 0) return;
+  const rowIndexOf = new Map<string, number>();
+  const bound = Math.min(storeRowCount, out.length);
+  for (let i = 0; i < bound; i += 1) {
+    const event = out[i]!;
+    rowIndexOf.set(`${event.sessionId}\0${event.tool}\0${event.argsHash}\0${event.grantedAt}`, i);
   }
   for (const line of lines) {
     const parsed = parseSpoolLine(line);
@@ -872,18 +965,8 @@ function applyOutcomeLines(out: ConsentEvent[]): void {
     ) {
       continue;
     }
-    for (let i = out.length - 1; i >= 0; i -= 1) {
-      const event = out[i]!;
-      if (
-        event.sessionId === row.sessionId &&
-        event.tool === row.tool &&
-        event.argsHash === row.argsHash &&
-        event.grantedAt === row.grantedAt
-      ) {
-        event.outcomeDetail = row.outcomeDetail;
-        break; // the LAST matching row — the same-ms tie rule
-      }
-    }
+    const index = rowIndexOf.get(`${row.sessionId}\0${row.tool}\0${row.argsHash}\0${row.grantedAt}`);
+    if (index !== undefined) out[index]!.outcomeDetail = row.outcomeDetail;
   }
 }
 

@@ -333,6 +333,7 @@ export async function runApprovalGate(
       tool: name,
       argsHash: hashArgs(value),
       outcome: 'granted',
+      arrivalSeq: 0, // the ledger assigns the real counter on append
     });
     return { pass: { arrivalStamp } };
   }
@@ -535,9 +536,25 @@ function handlerResultCarriesFailure(handlerResult: unknown): boolean {
   const record = handlerResult as Record<string, unknown>;
   // (1) An explicit success signal wins before every failure mark.
   if (record.ok === true || record.success === true || record.status === 'ok') return false;
-  // (2) An ok field that is not success is the explicit verdict.
+  // (2) The upgrade family's benign no-op envelope (round 13, finding 3):
+  // `success: false` plus the requiresRestart marker plus a message, with
+  // no error field — the REAL "already at the latest version" return of
+  // upgradePackage/handleUpgrade ({success:false, message:'已是最新版本…',
+  // requiresRestart:false}), which the error-truthy message mark used to
+  // read as a failure. Shape-scoped so a bare {success:false} (no marker
+  // pair) keeps the documented loose-edge behavior.
+  if (
+    record.success === false &&
+    record.requiresRestart !== undefined &&
+    typeof record.message === 'string' &&
+    record.error === undefined &&
+    record.errorMessage === undefined
+  ) {
+    return false; // an explicit "nothing to do" answer: delivered
+  }
+  // (3) An ok field that is not success is the explicit verdict.
   if (record.ok === false || record.ok === 'false') return true;
-  // (3) exitCode marks only shapes with no ok field (the exec faces).
+  // (4) exitCode marks only shapes with no ok field (the exec faces).
   if (!('ok' in record) && typeof record.exitCode === 'number' && record.exitCode !== 0) return true;
   if (record.status === 'rejected' || record.status === 'error') return true;
   const failure = record.error ?? record.errorMessage ?? record.message;

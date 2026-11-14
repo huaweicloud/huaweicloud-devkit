@@ -145,6 +145,11 @@ const baseEvent = (overrides: Partial<ConsentEvent> = {}): ConsentEvent => ({
   grantedAt: 1_700_000_000_000,
   scope: 'once',
   evidence: 'posture',
+  // Round 13, finding 4: the arrival counter, constant for staged rows —
+  // with equal seqs the (seq, grantedAt) chronology reduces to grantedAt,
+  // so every pre-r13 chronology verdict holds; pins that exercise the
+  // clock-skew key stage EXPLICIT distinct seqs.
+  arrivalSeq: 0,
   ...overrides,
 });
 
@@ -234,10 +239,12 @@ test(
 
     const events = readConsentEvents();
     assert.equal(events.length, 2);
-    assert.deepEqual(events[0], baseEvent());
+    assert.deepEqual(events[0], baseEvent({ arrivalSeq: 0 }));
     assert.deepEqual(
       events[1],
-      baseEvent({ outcome: 'denied', evidence: 'terminal', scope: 'session', sessionId: 'ses-2' }),
+      // Round 13, finding 4: the arrival counter is assigned per append —
+      // the second row carries the second seq, whatever the caller staged.
+      baseEvent({ outcome: 'denied', evidence: 'terminal', scope: 'session', sessionId: 'ses-2', arrivalSeq: 1 }),
     );
 
     const file = join(home, '.config', 'huaweicloud', 'approval-consents.json');
@@ -1044,6 +1051,7 @@ test(
           grantedAt: earlierStamp,
           scope: 'once',
           evidence: 'posture',
+          arrivalSeq: 0,
           outcomeDetail: 'delivered',
         },
       ]),
@@ -1099,6 +1107,203 @@ test(
     assert.equal(rows.length, 2, 'the second arrival is its own row');
     assert.equal(rows[1]!.outcomeDetail, 'failed', 'the side channel carries the datum into the merged view');
     assert.equal(rows[0]!.outcomeDetail, 'delivered', 'the earlier row is untouched');
+  }),
+);
+
+test(
+  'the outcome fold binds to the STORE-resident row only: a same-ms degraded twin never receives a line (round-13 finding 2)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    // The r11/r12 annotate guard refuses to write a line when the arrival
+    // degraded — but the r12 reader's fold attached each line to the LAST
+    // view row matching key+stamp across ALL sources, so a degraded twin
+    // sharing the arrival's exact millisecond received dispatch A's
+    // outcome at read time (A1's twin probe: truth A=failed B=delivered,
+    // view A=(absent) B=failed — the degraded row carrying a datum the
+    // guard refuses to write). The fold now mirrors the guard's own
+    // semantics: a line binds to a STORE-resident row at that key+stamp or
+    // nothing at all — the degraded twin stays datumless whatever
+    // interleaving produced it.
+    const T = 1_700_000_000_000; // the same-ms collision stamp
+    const key = 'h-twin13';
+    const annotate = (arrivalStamp: number, detail: 'failed' | 'delivered'): void => {
+      annotateDispatchOutcome({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: key,
+        arrivalStamp,
+        outcomeDetail: detail,
+      });
+    };
+
+    // Cell 1 — the ordering-1 interleave (A1's twin probe): dispatch A
+    // locked and annotated FIRST, then dispatch B's degraded twin appears
+    // in the spool at the same stamp. The fold must keep A's datum on A's
+    // row; B stays unannotated.
+    {
+      const storeRow = baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 });
+      stageStore(home, JSON.stringify([storeRow]));
+      annotate(T, 'failed'); // the line is written (A's row is store-resident, no twin yet)
+      writeFileSync(
+        paths.spool,
+        JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 })) + '\n',
+      );
+      const rows = readConsentEvents().filter((event) => event.argsHash === key);
+      assert.equal(rows.length, 2, 'twin cell 1: both rows are visible');
+      assert.equal(rows[0]!.outcomeDetail, 'failed', 'twin cell 1: the store row keeps its own datum');
+      assert.equal(rows[1]!.outcomeDetail, undefined, 'twin cell 1: the degraded twin never receives the line');
+    }
+
+    // Cell 2 — the taken-resident twin (the crash-recovery duplicate): the
+    // line is written before the twin exists, then a .taken-* duplicate of
+    // the row appears at the same stamp. The store row keeps the datum;
+    // the taken twin stays unannotated (pre-fix, the fold's last-row rule
+    // handed the line to the taken row).
+    {
+      const takenFile = join(
+        paths.dir,
+        'approval-consents.json.spool.jsonl.taken-13130000-0000-4000-8000-000000000000',
+      );
+      const storeRow = baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 });
+      rmSync(paths.spool, { force: true });
+      stageStore(home, JSON.stringify([storeRow]));
+      annotate(T, 'delivered');
+      writeFileSync(
+        takenFile,
+        JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 })) + '\n',
+      );
+      const rows = readConsentEvents().filter((event) => event.argsHash === key);
+      assert.equal(rows.length, 2, 'twin cell 2: both rows are visible');
+      assert.equal(rows[0]!.outcomeDetail, 'delivered', 'twin cell 2: the store row keeps its own datum');
+      assert.equal(rows[1]!.outcomeDetail, undefined, 'twin cell 2: the taken twin never receives the line');
+    }
+
+    // Cell 3 — the store-only same-ms rule through the fold: two
+    // STORE-resident rows at the same stamp (the r11 samems shape); the
+    // line binds to the LAST store row at that stamp, and the earlier row
+    // keeps whatever it carries.
+    {
+      const rowA = {
+        ...baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 }),
+        outcomeDetail: 'failed' as const,
+      };
+      const rowB = baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 });
+      rmSync(paths.spool, { force: true });
+      stageStore(home, JSON.stringify([rowA, rowB]));
+      annotate(T, 'delivered');
+      const rows = readConsentEvents().filter((event) => event.argsHash === key);
+      assert.equal(rows[0]!.outcomeDetail, 'failed', 'samems cell: the earlier store row keeps its own datum');
+      assert.equal(rows[1]!.outcomeDetail, 'delivered', 'samems cell: the line takes the last store row at the stamp');
+    }
+  }),
+);
+
+test(
+  'the tier chronology keys the arrival sequence, so a backward clock step never names the copy the original (round-13 finding 4)',
+  withLedgerHome(async (home) => {
+    // A1's skew probe: a NTP/VM-restore step gives a later-written
+    // failure-born copy a SMALLER grantedAt, and grantedAt-only chronology
+    // named it the original — the fabricated upgrade the never-upgrade
+    // rule exists to prevent, with no tiebreak firing (the stamps differ).
+    // The counter is assigned per append from the high-water file, so it
+    // tracks real arrival order whatever the wall clock did; the resolution
+    // orders by (arrivalSeq, grantedAt).
+    const key = 'h-skew13';
+    const row = (evidence: ConsentEvidence, grantedAt: number, arrivalSeq: number): string =>
+      JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, evidence, grantedAt, arrivalSeq }));
+    // The original (posture) arrived first (seq 0) under a fast clock
+    // (stamp 5000); the failure-born terminal copy was written LATER
+    // (seq 1) after the clock stepped back to 4000.
+    stageStore(home, `[${row('posture', 5_000, 0)},${row('terminal', 4_000, 1)}]`);
+    recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    let rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(
+      rows.at(-1)!.evidence,
+      'posture',
+      "the seq named the true original: the reuse inherits posture, never the skewed copy's terminal",
+    );
+    // Control: the copy newer in BOTH seq and stamp — chronology agrees
+    // either way, and the verdict must not move.
+    stageStore(home, `[${row('posture', 5_000, 0)},${row('terminal', 6_000, 1)}]`);
+    recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(rows.at(-1)!.evidence, 'posture', 'control: the healthy chain keeps its verdict');
+    // And the counter is live on real rows: two sequential arrivals get
+    // increasing seqs even though this test freezes nothing.
+    stageStore(home, '[]');
+    const first = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    const second = recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+    });
+    rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.ok(rows[0]!.arrivalSeq < rows[1]!.arrivalSeq, 'real arrivals carry increasing seqs');
+    assert.notEqual(first, second, 'distinct arrivals keep distinct stamps');
+  }),
+);
+
+test(
+  'the outcome fold is one pass: 8k rows + 8k lines read in linear time with every datum attached (round-13 finding 1)',
+  withLedgerHome(async (home) => {
+    // Both r13 seats quantified the quadratic independently: the fold
+    // scanned the merged view FROM THE END for every line, and the read
+    // runs inside the lock section of every ask-mode arrival's tier
+    // resolution — 5.9-7.0s at 20k dispatches, crossing the 3s lock cap at
+    // ~15k and the 5s caller bar at ~17k, and pushing concurrent arrivals
+    // past the cap so their degraded rows' outcomes were never recorded.
+    // The fold is now O(store + lines) — one map pass over the store rows,
+    // then one pass over the lines. The bound is coarse on purpose: the
+    // linear fold measures ~55ms at 8k+8k here and the quadratic ~850ms+;
+    // 400ms separates them on any host this battery runs on, and the
+    // correctness half (every line attaches) is the primary assertion.
+    const dir = join(home, '.config', 'huaweicloud');
+    const N = 8_000;
+    const rows: ConsentEvent[] = [];
+    const lines: string[] = [];
+    for (let i = 0; i < N; i += 1) {
+      rows.push(baseEvent({ sessionId: 'ses', argsHash: `k-${i}`, grantedAt: 1_700_000_000_000 + i, arrivalSeq: i }));
+      lines.push(
+        JSON.stringify({
+          sessionId: 'ses',
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: `k-${i}`,
+          grantedAt: 1_700_000_000_000 + i,
+          outcomeDetail: 'failed',
+        }),
+      );
+    }
+    stageStore(home, JSON.stringify(rows));
+    writeFileSync(join(dir, 'approval-consents.json.outcomes.jsonl'), lines.join('\n') + '\n');
+    const started = Date.now();
+    const view = readConsentEvents();
+    const elapsed = Date.now() - started;
+    assert.equal(view.length, N, 'every staged row is visible');
+    assert.equal(
+      view.filter((event) => event.outcomeDetail === 'failed').length,
+      N,
+      'every outcome line attaches to its row',
+    );
+    assert.ok(
+      elapsed < 400,
+      `the one-pass fold stays linear (8k+8k read took ${elapsed}ms; the quadratic fold measured 850ms+)`,
+    );
   }),
 );
 
