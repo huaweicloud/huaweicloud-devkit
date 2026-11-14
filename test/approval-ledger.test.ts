@@ -45,6 +45,25 @@ function ledgerSpoolPaths(home: string): { dir: string; spool: string; lockRoot:
   return { dir, spool: join(dir, 'approval-consents.json.spool.jsonl'), lockRoot: join(dir, 'approval-consents-lock') };
 }
 
+// The same-ms twin timeline's staging halves (rounds 14-15): dispatch D1's
+// store row (seq 0) under the shared millisecond, and the pair that
+// compacts a same-ms degraded twin (seq 1) in BEHIND it — the twin lands in
+// the spool and one ordinary locked append folds it after D1's row. The
+// r14 twin pin annotates BETWEEN the halves (the annotate runs before the
+// compaction); the r15 capture pin annotates after both (the twin is
+// already store-resident — the contested window).
+function stageTwinStoreRow(home: string, key: string, T: number): void {
+  stageStore(home, JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 })]));
+}
+
+function compactTwinInBehind(paths: { spool: string }, key: string, T: number): void {
+  writeFileSync(
+    paths.spool,
+    JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 })) + '\n',
+  );
+  appendConsentEvent(baseEvent({ sessionId: 'ses-c', argsHash: 'other', grantedAt: T + 1 }));
+}
+
 // The shared skew-leg of the chronology pins (rounds 13-14): stage a
 // two-row store — the posture original at seq 0 under a fast clock, a
 // failure-born terminal copy at seq 1 written later after the clock
@@ -196,6 +215,35 @@ if (process.env.LEDGER_WORKER) {
   for (let i = 0; i < perWorker; i += 1) {
     appendConsentEvent(baseEvent({ sessionId: `worker-${worker}-${i}`, argsHash: `h-${worker}-${i}` }));
   }
+  process.exit(0);
+}
+
+// Fast-path probe mode (round 15, finding 4): ONE ask-mode arrival through
+// the real ledger, then write the process's outcomes-file read count to
+// LEDGER_FASTPATH_COUNT_FILE and exit before any test registers. Spawned
+// with the FS_COUNT_HOOK_SOURCE preload via --require (see the pin below):
+// the hook patches fs.readFileSync BEFORE this file's module graph links,
+// so the count covers the whole arrival — module mocks cannot rebind an
+// already-linked builtin, and this file statically imports the ledger.
+if (process.env.LEDGER_FASTPATH_COUNT_FILE) {
+  const fastpathDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud');
+  const fastpathLockRoot = join(fastpathDir, 'approval-consents-lock');
+  if (process.env.LEDGER_FASTPATH_DEGRADED) {
+    // The degraded probe: no seq file (the only floor source left is the
+    // merged view) and the lock root blocked, so the append degrades.
+    rmSync(join(fastpathDir, 'approval-consents.seq'), { force: true });
+    rmSync(fastpathLockRoot, { recursive: true, force: true });
+    writeFileSync(fastpathLockRoot, 'not-a-directory');
+  }
+  const arrival = recordAskModeConsent({
+    sessionId: 'ses-fastpath',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash: process.env.LEDGER_FASTPATH_KEY ?? 'h-fastpath',
+    outcome: 'granted',
+  });
+  if (process.env.LEDGER_FASTPATH_DEGRADED) rmSync(fastpathLockRoot, { force: true });
+  const reads = (globalThis as { __outcomesReads?: number }).__outcomesReads ?? 0;
+  writeFileSync(process.env.LEDGER_FASTPATH_COUNT_FILE, `${reads} ${arrival.arrivalSeq}\n`);
   process.exit(0);
 }
 
@@ -1055,12 +1103,13 @@ test(
     const paths = ledgerSpoolPaths(home);
     const store = join(paths.dir, 'approval-consents.json');
     const key = 'h-r12-dropped';
-    const annotate = (arrivalStamp?: number): void => {
+    const annotate = (arrivalStamp?: number, arrivalSeq?: number): void => {
       annotateDispatchOutcome({
         sessionId: 'ses-r12',
         tool: 'huaweicloud_run_approved_command',
         argsHash: key,
         arrivalStamp,
+        arrivalSeq,
         outcomeDetail: 'failed',
       });
     };
@@ -1100,14 +1149,14 @@ test(
     // absence proved ownership. Now: no row with the arrival's stamp, no
     // annotate, ever.
     mkdirSync(`${store}.${process.pid}.tmp`, { recursive: true });
-    const arrivalStamp = recordAskModeConsent({
+    const dropped = recordAskModeConsent({
       sessionId: 'ses-r12',
       tool: 'huaweicloud_run_approved_command',
       argsHash: key,
       outcome: 'granted',
     });
     rmSync(`${store}.${process.pid}.tmp`, { recursive: true, force: true });
-    annotate(arrivalStamp);
+    annotate(dropped.grantedAt, dropped.arrivalSeq);
     assert.equal(
       rawBytes(),
       before,
@@ -1127,14 +1176,14 @@ test(
     // and the pre-fix whole-file annotate erased that commit (the round-6
     // erasure class through the r10 writer). A lockless additive annotate
     // cannot erase anything, structurally.
-    const secondStamp = recordAskModeConsent({
+    const second = recordAskModeConsent({
       sessionId: 'ses-r12',
       tool: 'huaweicloud_run_approved_command',
       argsHash: key,
       outcome: 'granted',
     });
     const beforeLanding = rawBytes();
-    annotate(secondStamp);
+    annotate(second.grantedAt, second.arrivalSeq);
     assert.equal(rawBytes(), beforeLanding, 'a LANDING annotate still writes only the side channel, never the store');
     rows = readConsentEvents().filter((event) => event.argsHash === key);
     assert.equal(rows.length, 2, 'the second arrival is its own row');
@@ -1164,12 +1213,18 @@ test(
     // bind a later cell's row. The cells are independent cases; their keys
     // must be too.
     const key = (i: number): string => `h-twin13-${i}`;
-    const annotate = (argsHash: string, arrivalStamp: number, detail: 'failed' | 'delivered'): void => {
+    const annotate = (
+      argsHash: string,
+      arrivalStamp: number,
+      detail: 'failed' | 'delivered',
+      arrivalSeq?: number,
+    ): void => {
       annotateDispatchOutcome({
         sessionId: 'ses',
         tool: 'huaweicloud_run_approved_command',
         argsHash,
         arrivalStamp,
+        arrivalSeq,
         outcomeDetail: detail,
       });
     };
@@ -1231,10 +1286,32 @@ test(
       const rowB = baseEvent({ sessionId: 'ses', argsHash: cellKey, grantedAt: T, arrivalSeq: 1 });
       rmSync(paths.spool, { force: true });
       stageStore(home, JSON.stringify([rowA, rowB]));
-      annotate(cellKey, T, 'delivered');
+      // Round 15, finding 2: two store rows share the stamp — a stamp-only
+      // call is AMBIGUOUS and skips; the dispatch's own identity (rowB's
+      // seq) binds the line to the exact row it wrote.
+      annotate(cellKey, T, 'delivered', 1);
       const rows = readConsentEvents().filter((event) => event.argsHash === cellKey);
       assert.equal(rows[0]!.outcomeDetail, 'failed', 'samems cell: the earlier store row keeps its own datum');
-      assert.equal(rows[1]!.outcomeDetail, 'delivered', 'samems cell: the line takes the last store row at the stamp');
+      assert.equal(rows[1]!.outcomeDetail, 'delivered', 'samems cell: the threaded identity binds the exact row');
+      // And the stamp-only call on a fresh ambiguous pair skips — never
+      // positional (the r15 doctrine): a fresh key, two same-stamp rows, no
+      // threaded identity — the ambiguity is detected, not resolved.
+      const skipKey = key(4);
+      const skipRowA = {
+        ...baseEvent({ sessionId: 'ses', argsHash: skipKey, grantedAt: T, arrivalSeq: 0 }),
+        outcomeDetail: 'failed' as const,
+      };
+      const skipRowB = baseEvent({ sessionId: 'ses', argsHash: skipKey, grantedAt: T, arrivalSeq: 1 });
+      rmSync(paths.spool, { force: true });
+      stageStore(home, JSON.stringify([skipRowA, skipRowB]));
+      annotate(skipKey, T, 'delivered');
+      const rows2 = readConsentEvents().filter((event) => event.argsHash === skipKey);
+      assert.equal(
+        rows2[0]!.outcomeDetail,
+        'failed',
+        'samems skip cell: an ambiguous stamp-only call never overwrites the earlier row',
+      );
+      assert.equal(rows2[1]!.outcomeDetail, undefined, 'samems skip cell: the ambiguous call binds nothing');
     }
   }),
 );
@@ -1292,7 +1369,8 @@ test(
     });
     rows = readConsentEvents().filter((event) => event.argsHash === key);
     assert.ok(rows[0]!.arrivalSeq < rows[1]!.arrivalSeq, 'real arrivals carry increasing seqs');
-    assert.notEqual(first, second, 'distinct arrivals keep distinct stamps');
+    assert.notEqual(first.grantedAt, second.grantedAt, 'distinct arrivals keep distinct stamps');
+    assert.ok(first.arrivalSeq < second.arrivalSeq, 'the identity threads the seq the ledger assigned');
   }),
 );
 
@@ -1484,7 +1562,7 @@ test(
     // Dispatch B: locked, store-resident at T (seq 0), its dispatch
     // returned failed — the annotate writes the line (guard passes: B's
     // row is store-resident, nothing newer outside).
-    stageStore(home, JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 0 })]));
+    stageTwinStoreRow(home, key, T);
     annotateDispatchOutcome({
       sessionId: 'ses',
       tool: 'huaweicloud_run_approved_command',
@@ -1493,14 +1571,9 @@ test(
       outcomeDetail: 'failed',
     });
     // Dispatch A: degraded at the same millisecond — its twin (seq 1)
-    // lands in the spool.
-    writeFileSync(
-      paths.spool,
-      JSON.stringify(baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: T, arrivalSeq: 1 })) + '\n',
-    );
-    // One ordinary locked append compacts the spool into the store — the
-    // twin lands BEHIND the annotated row.
-    appendConsentEvent(baseEvent({ sessionId: 'ses-c', argsHash: 'other', grantedAt: T + 1 }));
+    // lands in the spool, and one ordinary locked append compacts it in
+    // BEHIND the annotated row.
+    compactTwinInBehind(paths, key, T);
     const rows = readConsentEvents().filter((event) => event.argsHash === key);
     assert.equal(rows.length, 2, 'both twin rows are store-resident after the compaction');
     assert.ok(
@@ -1509,6 +1582,265 @@ test(
     );
     assert.equal(rows[0]!.outcomeDetail, 'failed', 'the row that annotated keeps its own datum through the compaction');
     assert.equal(rows[1]!.outcomeDetail, undefined, 'the degraded twin never receives the line');
+  }),
+);
+
+test(
+  'the arrivalSeq space is bounded: poisoned rows and files never stall, duplicate, or hide a row (round-15 finding 1)',
+  withLedgerHome(async (home) => {
+    const dir = join(home, '.config', 'huaweicloud');
+    const seqFile = join(dir, 'approval-consents.seq');
+    const spool = join(dir, 'approval-consents.json.spool.jsonl');
+    const key = 'h-r15-bound';
+    const row = (evidence: ConsentEvidence, grantedAt: number, arrivalSeq: number | null, k = key): string =>
+      JSON.stringify({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: k,
+        outcome: 'granted',
+        grantedAt,
+        scope: 'once',
+        evidence,
+        ...(arrivalSeq !== null ? { arrivalSeq } : {}),
+      });
+    const MAX_SAFE = Number.MAX_SAFE_INTEGER;
+
+    // Cell 1 — the seats' poison shape (both seats, independent staging):
+    // a spool line claiming seq MAX_SAFE-1 over a small store. The poison
+    // is out of the assignable space: the appends get strictly increasing
+    // VALID seqs (the floor counts valid seqs only), no row carries the
+    // sentinel, and the reuse keeps posture (the r13 shape at a healthy
+    // counter).
+    stageStore(home, `[${row('posture', 100, 0, 'h-p1')},${row('posture', 101, 1, 'h-p1')}]`);
+    writeFileSync(spool, row('posture', 102, MAX_SAFE - 1, 'h-poison') + '\n');
+    const appends: number[] = [];
+    for (let i = 0; i < 3; i += 1) {
+      recordAskModeConsent({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-p1',
+        outcome: 'granted',
+      });
+      const rows = readConsentEvents().filter((event) => event.argsHash === 'h-p1');
+      appends.push(rows.at(-1)!.arrivalSeq);
+    }
+    // Relationally asserted (round 15): lastAssignedSeq is a process-global
+    // the earlier tests in this file legitimately advance, so the appends
+    // may land on a higher lane than the staged 2/3/4 — what the cell pins
+    // is the POISON's absence from the floor: strictly increasing (a
+    // saturated counter re-takes one value), every seq valid (never the
+    // sentinel, never past the assignable space), and the whole lane small
+    // (the poison would floor it to ~MAX_SAFE_INTEGER).
+    assert.ok(
+      appends[0]! < appends[1]! && appends[1]! < appends[2]! && appends.every((seq) => seq < 1_000),
+      `cell 1: strictly increasing seqs on a small lane — the poison never floors the counter (got ${JSON.stringify(appends)})`,
+    );
+    const poisonRow = readConsentEvents().find((event) => event.argsHash === 'h-poison');
+    assert.equal(
+      poisonRow!.arrivalSeq,
+      MAX_SAFE,
+      'cell 1: the poison row reads as the sentinel — visible, newest, never a floor',
+    );
+
+    // Cell 2 — the forward-corrupted FILE (A1's P5): a file value outside
+    // the space is invalid; the parsed store floor repairs it, and the
+    // counter recovers monotonically.
+    stageStore(
+      home,
+      `[${row('posture', 100, 0, 'h-p2')},${row('posture', 101, 1, 'h-p2')},${row('posture', 102, 2, 'h-p2')}]`,
+    );
+    writeFileSync(seqFile, `${MAX_SAFE - 1}\n`);
+    recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-p2',
+      outcome: 'granted',
+    });
+    let rows = readConsentEvents().filter((event) => event.argsHash === 'h-p2');
+    const repaired = rows.at(-1)!.arrivalSeq;
+    assert.ok(
+      repaired < MAX_SAFE - 2,
+      `cell 2: the corrupted file was repaired to a valid seq — the out-of-range value floored nothing (seq ${repaired})`,
+    );
+    assert.equal(Number.parseInt(readFileSync(seqFile, 'utf8').trim(), 10), repaired, 'cell 2: the file was rewritten');
+    recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-p2',
+      outcome: 'granted',
+    });
+    rows = readConsentEvents().filter((event) => event.argsHash === 'h-p2');
+    assert.ok(rows.at(-1)!.arrivalSeq > repaired, 'cell 2: the recovered counter advances');
+
+    // Cell 3 — the Infinity shape (A1): a row whose seq overflows to
+    // Infinity on parse is VISIBLE (sentinel, newest) — never serialized
+    // null, never invisible — and the counter ignores it.
+    stageStore(
+      home,
+      '[{"sessionId":"ses","tool":"huaweicloud_run_approved_command","argsHash":"h-inf","outcome":"granted","grantedAt":1,"scope":"once","evidence":"posture","arrivalSeq":1e999}]',
+    );
+    const infRows = readConsentEvents().filter((event) => event.argsHash === 'h-inf');
+    assert.equal(infRows.length, 1, 'cell 3: the Infinity row stays visible');
+    assert.equal(infRows[0]!.arrivalSeq, MAX_SAFE, 'cell 3: it reads as the sentinel');
+    recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-inf',
+      outcome: 'granted',
+    });
+    rows = readConsentEvents().filter((event) => event.argsHash === 'h-inf');
+    assert.ok(
+      rows.at(-1)!.arrivalSeq < 1_000,
+      `cell 3: the counter stayed on the small monotonic lane — the Infinity row is not a floor (seq ${rows.at(-1)!.arrivalSeq})`,
+    );
+    // The tier resolution skips sentinel rows (unknown chronology never
+    // names an original): a key with only sentinel rows resolves fresh.
+    assert.equal(rows.at(-1)!.evidence, 'posture', 'cell 3: the sentinel row was not an original');
+  }),
+);
+
+test(
+  'the annotate binds the threaded identity, never a positional candidate (round-15 finding 2)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const T = 1_700_000_000_000;
+    const key = 'h-r15-capture';
+    // The T2 timeline (both seats): dispatch D1's store row (seq 0), the
+    // same-ms degraded twin (seq 1) compacts in BEHIND it, and D1's
+    // annotate runs LAST. The positional capture used to mint the line
+    // carrying the TWIN's seq; the threaded identity binds D1's own row.
+    stageTwinStoreRow(home, key, T);
+    compactTwinInBehind(paths, key, T);
+    // D1's dispatch finishes now: the annotate with the threaded identity.
+    annotateDispatchOutcome({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      arrivalStamp: T,
+      arrivalSeq: 0,
+      outcomeDetail: 'failed',
+    });
+    const rows = readConsentEvents().filter((event) => event.argsHash === key);
+    assert.equal(rows.length, 2, 'both rows are store-resident after the compaction');
+    assert.equal(rows[0]!.arrivalSeq, 0, 'the compaction placed the twin behind');
+    assert.equal(rows[0]!.outcomeDetail, 'failed', "the threaded identity bound the dispatch's OWN row");
+    assert.equal(rows[1]!.outcomeDetail, undefined, 'the degraded twin never receives the line');
+  }),
+);
+
+// The fast-path probe's preload hook (round 15, finding 4): patch
+// fs.readFileSync BEFORE the worker's module graph links — an ESM builtin
+// link snapshots the patched export, so every outcomes-file read the
+// process performs is counted. Written at runtime into the probe's home;
+// no committed .cjs file to lint.
+const FS_COUNT_HOOK_SOURCE = [
+  "const fs = require('node:fs');",
+  'const real = fs.readFileSync;',
+  'globalThis.__outcomesReads = 0;',
+  'fs.readFileSync = function patchedReadFileSync(path, ...rest) {',
+  "  if (String(path).endsWith('.outcomes.jsonl')) globalThis.__outcomesReads += 1;",
+  '  return real.call(fs, path, ...rest);',
+  '};',
+].join('\n');
+
+// Round 15, finding 4 (both seats): the locked path's seq floor is
+// PARSED, not scanned. The r14 floor fix read the merged view on EVERY
+// append (the seq file "optimization" consulted nothing — "the file is an
+// optimization" was false as written), doubling the ask-arrival stall: a
+// 1M-row append measured 4.9-10.9s, past the 3s wait cap, so concurrent
+// arrivals degraded and their unlocked seq assignments collided. The
+// observable: the outcomes file is the ONE file only the merged view reads
+// (the parsed floor reads the raw store, the taken spool, and the seq file
+// — all of which the locked section already needs). Count its reads in a
+// fresh worker process, patched at --require preload time: ONE ask-mode
+// arrival with a HEALTHY seq file reads it exactly once (the tier
+// resolution) — the r14 scan paid a second read on every append. A
+// corrupted file is repaired by the PARSED floor at no extra read, the
+// repaired tree is fast again (the scan is a repair path, not a deferral),
+// and the DEGRADED path keeps the merged-view scan where it is the only
+// floor source left (phase 4: a missing file under an unacquirable lock
+// still floors from the store, never rewinds).
+test(
+  'the locked floor is parsed, not scanned: the outcomes file is read once per arrival, healthy or corrupted (round-15 finding 4)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    const key = 'h-r15-fast';
+    const outcomes = join(paths.dir, 'approval-consents.json.outcomes.jsonl');
+    const seqFile = join(paths.dir, 'approval-consents.seq');
+    const countFile = join(home, 'outcomes-reads.txt');
+    const hookFile = join(home, 'fs-read-hook.cjs');
+    writeFileSync(hookFile, FS_COUNT_HOOK_SOURCE);
+    stageStore(home, JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: key, grantedAt: 1_000, arrivalSeq: 0 })]));
+    writeFileSync(
+      outcomes,
+      JSON.stringify({
+        sessionId: 'ses',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: key,
+        grantedAt: 1_000,
+        arrivalSeq: 0,
+        outcomeDetail: 'delivered',
+      }) + '\n',
+    );
+    writeFileSync(seqFile, '0\n');
+    const probeResult = (): [number, number] => {
+      const tokens = readFileSync(countFile, 'utf8').trim().split(/\s+/);
+      return [Number(tokens[0] || '0'), Number(tokens[1] || '0')];
+    };
+    const countReads = (): number => probeResult()[0];
+    const probe = (degraded = false): Promise<void> => {
+      rmSync(countFile, { force: true });
+      return new Promise((resolve, reject) => {
+        const child = spawnLedgerWorker(
+          home,
+          {
+            LEDGER_FASTPATH_COUNT_FILE: countFile,
+            LEDGER_FASTPATH_KEY: key,
+            ...(degraded ? { LEDGER_FASTPATH_DEGRADED: '1' } : {}),
+          },
+          ['--require', hookFile],
+        );
+        child.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`fastpath probe exit ${code}`))));
+        child.on('error', reject);
+      });
+    };
+
+    // Phase 1 — a HEALTHY seq file: the fast path. Exactly ONE outcomes
+    // read (the tier resolution's merged view); the pre-r15 floor scan
+    // paid a second on every append.
+    await probe();
+    assert.equal(countReads(), 1, 'healthy file: one outcomes read — the floor is parsed, not scanned');
+    assert.equal(Number(readFileSync(seqFile, 'utf8').trim()), 1, 'the seq advanced past the file value');
+
+    // Phase 2 — a CORRUPTED (out-of-range) file: the parsed floor repairs
+    // it with NO scan — still one read — and the file is rewritten valid.
+    writeFileSync(seqFile, `${Number.MAX_SAFE_INTEGER - 1}\n`);
+    await probe();
+    assert.equal(countReads(), 1, 'corrupted file: the parsed floor repairs without a merged-view scan');
+    assert.equal(
+      Number(readFileSync(seqFile, 'utf8').trim()),
+      2,
+      'the corrupted file was rewritten from the parsed floor',
+    );
+
+    // Phase 3 — the repaired tree is fast again: the scan was a repair, not
+    // a deferral to every subsequent append.
+    await probe();
+    assert.equal(countReads(), 1, 'after repair: still one read — the seq file is a real fast path');
+    assert.equal(Number(readFileSync(seqFile, 'utf8').trim()), 3, 'the repaired file keeps advancing');
+
+    // Phase 4 — the DEGRADED repair leg, in a FRESH process (the parent's
+    // process-global lastAssignedSeq, bumped by earlier tests in this file,
+    // would mask which source floored the counter): the r15 finding's "the
+    // corruption-repair path still pays the scan once". Lock root blocked
+    // and the seq file ABSENT, the degraded assignment floors from the
+    // merged view alone — the probe reads the outcomes file exactly TWICE
+    // (the tier resolution's read + the repair scan) and the spooled row
+    // gets store-max+1, never a rewound duplicate.
+    await probe(true);
+    const [degradedReads, degradedSeq] = probeResult();
+    assert.equal(degradedReads, 2, 'the degraded repair pays the merged-view scan exactly once (tier read + scan)');
+    assert.equal(degradedSeq, 4, 'the degraded repair floors from the merged view (store max 3 + 1), never rewinds');
   }),
 );
 

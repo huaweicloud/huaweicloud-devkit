@@ -10,8 +10,12 @@ import assert from 'node:assert/strict';
 // wedge/over-cap/contention tests in both battery files spawn them against
 // one isolated HUAWEICLOUD_HOME. One place for the spawn shape and the
 // claim wait, so the battery files do not grow clone copies of it.
-export function spawnLedgerWorker(home: string, workerEnv: Record<string, string>): ChildProcess {
-  return spawn(process.execPath, ['--experimental-strip-types', 'test/approval-ledger.test.ts'], {
+export function spawnLedgerWorker(
+  home: string,
+  workerEnv: Record<string, string>,
+  extraNodeArgs: string[] = [],
+): ChildProcess {
+  return spawn(process.execPath, ['--experimental-strip-types', ...extraNodeArgs, 'test/approval-ledger.test.ts'], {
     cwd: process.cwd(),
     env: {
       ...process.env,

@@ -107,46 +107,88 @@ function ledgerLockDir(): string {
 }
 
 // The arrival counter's high-water file (round 13, finding 4; hardened
-// round 14, findings 1-2): the last sequence number assigned, a few bytes
-// beside the store. The counter is CLOCK-INDEPENDENT by construction —
-// grantedAt can step backward under an NTP correction or a VM restore, and
-// the (arrivalSeq, grantedAt) chronology key must still name the true
-// original. Assignment: read the file, bump, write back atomically
-// (tmp+rename). The FLOOR IS THE STORE (round 14, finding 1, both seats):
-// the file is an optimization over the source of truth — whenever its read
-// fails, yields a non-number, or carries a value at or below the store's
-// own max arrivalSeq, the counter seeds from max(store seq) instead, so a
-// lost, corrupted, or rewound file can never stamp a new arrival with a
-// seq an EXISTING row already owns (measured: a missing file over a
-// non-empty store named a later-written copy the original — the fabricated
-// upgrade the counter was built to prevent, with no clock skew; a
-// non-numeric file rewound the counter to 0 under a seq-2 store and three
-// serialized writers re-took 0,1,2). A row whose seq could not be
-// determined even then — the store read itself failed — sorts NEWEST
-// (SEQ_UNKNOWN, a sentinel that loses to every real seq), never oldest:
-// a failed counter read means UNKNOWN, not 'first'. The write back is
-// monotonic: a value at or below the store's max is never written. The
-// assignment runs INSIDE the ledger lock's hold (round 14, finding 2,
-// both seats): the raw appendConsentEvent face used to assign before
-// withDepLock, and 24 concurrent writers duplicated 13 seq groups — the
-// locked body (lockedAppend) and the degraded body assign under the
-// lock/degraded-section discipline, so locked writers serialize for real
-// (the degraded path remains the recorded duplicate residual: it cannot
-// hold the lock, its read-write races, and equal seqs fall to grantedAt
-// with weakest-wins governing the exact tie — and its store read at
-// assignment time seeds from the merged view's max).
+// rounds 14-15): the last sequence number assigned, a few bytes beside the
+// store. The counter is CLOCK-INDEPENDENT by construction — grantedAt can
+// step backward under an NTP correction or a VM restore, and the
+// (arrivalSeq, grantedAt) chronology key must still name the true
+// original.
+//
+// Round 15, finding 1 (both seats) bounded the space: the r14 floor fix
+// validated only the TYPE of the values it consumed, so one corrupted or
+// adversarial row/file value near 2^53 poisoned the counter permanently —
+// a determinable row landed ON the sentinel (mis-marked chronology-UNKNOWN
+// forever), following rows left the safe-integer range, LOCKED writers
+// duplicated seqs (the r14 zero-duplicates invariant falsified at a
+// poisoned floor), and the grantedAt fallback re-opened the r13 fabricated
+// upgrade end-to-end; an Infinity row serialized arrivalSeq:null and the
+// consent vanished from every reader. The assignable space is now integers
+// in [0, SEQ_MAX_VALID]; any row or file value outside it is UNREADABLE —
+// a row normalizes to the sentinel at read (visible, sorts newest, never
+// invisible, never an original: unknown chronology cannot name one), the
+// counter seeds from the max of VALID seqs only, and the sentinel itself is
+// never assignable (a determinable row gets max+1 clamped below the
+// sentinel; the clamp can duplicate a row staged exactly at SEQ_MAX_VALID —
+// the recorded top-edge residual, reachable only by corruption, since
+// organic growth is one per append).
+//
+// Round 15, finding 4 (both seats) made the floor CHEAP: the r14 fix ran
+// the full merged-view scan on EVERY append (the file "optimization"
+// consulted nothing), doubling the ask-arrival stall — at 1M rows a single
+// append was 4.9-10.9s (past the 3s cap, so concurrent arrivals degraded
+// and their unlocked seq assignments collided). The locked path now
+// derives its floor from data it ALREADY parses (lockedAppend's store read
+// and takeSpool's fold), plus the tiny seq file (a crash between the file
+// write and the store rename can leave the file one ahead — the file value
+// covers that gap) and this process's last assignment: no extra IO. The
+// merged-view scan survives only as the DEGRADED path's repair leg, when
+// the file is invalid and no parsed data exists; the file is rewritten
+// monotonically (a value at or below the known max is never written), so
+// a repaired tree is fast again on the next append.
+//
+// The assignment runs INSIDE the ledger lock's hold (round 14, finding 2):
+// locked writers serialize for real (24 barrier workers, zero duplicates).
+// The degraded path remains the recorded duplicate residual: it cannot
+// hold the lock, its file read-write races, and equal seqs fall to
+// grantedAt with weakest-wins governing the exact tie.
 function ledgerSeqPath(): string {
   return join(devkitStateBase(), 'approval-consents.seq');
 }
 
 // The unknown-seq sentinel: sorts AFTER every real seq, so a row the
-// counter could not number is never mistaken for the earliest arrival.
+// counter could not number is never mistaken for the earliest arrival —
+// and (round 15) never an original: the tier resolution skips sentinel
+// rows, because unknown chronology cannot name one.
 const SEQ_UNKNOWN = Number.MAX_SAFE_INTEGER;
 
-// The store's highest assigned seq — the counter's floor. Scans the merged
-// view (a degraded arrival compacted later still owns its seq), skipping
-// the unknown sentinel. Best-effort like every read here: on failure the
-// caller takes the sentinel, never a rewind.
+// The top of the assignable space: the largest seq a row or the file may
+// legitimately carry. Two values of headroom sit deliberately OUTSIDE the
+// space below the sentinel — SEQ_UNKNOWN-1 (the seats' poison value) and
+// SEQ_UNKNOWN itself — so a corrupted value there can never seed the floor
+// (the r15 probes poison at exactly SEQ_UNKNOWN-1 and would otherwise walk
+// the counter onto the sentinel).
+const SEQ_MAX_VALID = Number.MAX_SAFE_INTEGER - 2;
+
+// A seq is readable iff it is an integer inside the assignable space.
+function isValidArrivalSeq(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= SEQ_MAX_VALID;
+}
+
+// The highest valid seq among parsed store/spool entries — the locked
+// path's floor, computed from data the caller already parsed (no IO).
+// Out-of-range and absent values are invisible to the floor by design.
+function maxValidSeqAmong(entries: unknown[]): number {
+  let max = -1;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== 'object') continue;
+    const seq = (entry as Record<string, unknown>).arrivalSeq;
+    if (isValidArrivalSeq(seq) && seq > max) max = seq;
+  }
+  return max;
+}
+
+// The merged view's highest valid seq — the degraded path's repair leg
+// (the file is invalid and no parsed data exists). Read-only; sentinel
+// rows are skipped (they are not seqs the counter can build on).
 function maxArrivalSeqInStore(): number {
   let max = -1;
   for (const event of readConsentEvents()) {
@@ -155,35 +197,90 @@ function maxArrivalSeqInStore(): number {
   return max;
 }
 
-function nextArrivalSeq(): number {
-  let next: number;
+// This process's last assignment: a cheap rewind/foreign-write guard. The
+// file is the cross-process high-water; this catches a file that moved
+// backward between this process's own writes (the same-process rewind).
+let lastAssignedSeq: number | undefined;
+
+// The seq file's value, or undefined when the read fails or the value is
+// out of range (round 15: unreadable means invalid, whatever the reason).
+function readSeqFile(): number | undefined {
   try {
     const path = ledgerSeqPath();
-    let current = Number.NaN;
-    try {
-      if (existsSync(path)) {
-        const parsed = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
-        if (Number.isFinite(parsed)) current = parsed;
-      }
-    } catch {
-      current = Number.NaN; // unreadable: the store floors the counter
-    }
-    const storeMax = maxArrivalSeqInStore();
-    // Never trust a file that rewinds under (or ties) the store's max.
-    if (!(current > storeMax)) current = storeMax;
-    next = current + 1;
-    try {
-      mkdirSync(dirname(path), { recursive: true });
-      const tmp = `${path}.${process.pid}.seq.tmp`;
-      writeFileSync(tmp, `${next}\n`, { encoding: 'utf8', mode: 0o600 });
-      renameSync(tmp, path);
-    } catch {
-      // the write-back is best-effort; the row still carries `next`
-    }
+    if (!existsSync(path)) return undefined;
+    const parsed = Number.parseInt(readFileSync(path, 'utf8').trim(), 10);
+    return isValidArrivalSeq(parsed) ? parsed : undefined;
   } catch {
-    next = SEQ_UNKNOWN; // the store read itself failed: unknown, never oldest
+    return undefined;
   }
-  return next;
+}
+
+// Write the high-water back, monotonic (never below the known max) and
+// best-effort (a failed write never fails the append — the parsed floor
+// recovers it on the next locked append).
+function writeSeqFileMonotonic(next: number): void {
+  try {
+    const path = ledgerSeqPath();
+    mkdirSync(dirname(path), { recursive: true });
+    const tmp = `${path}.${process.pid}.seq.tmp`;
+    writeFileSync(tmp, `${next}\n`, { encoding: 'utf8', mode: 0o600 });
+    renameSync(tmp, path);
+  } catch {
+    // best-effort: the parsed floor or the degraded repair recovers
+  }
+}
+
+// The next assignable seq from a known floor, clamped below the sentinel.
+// The clamp can duplicate a row staged exactly at SEQ_MAX_VALID — the
+// recorded top-edge residual (organic growth is one per append; only
+// corruption reaches the top).
+function clampNextSeq(floor: number): number {
+  const next = floor + 1;
+  return next > SEQ_MAX_VALID ? SEQ_MAX_VALID : next;
+}
+
+// Assign seqs to the events of a LOCKED append, floored by everything the
+// section already parsed (the store rows, the taken spool events), the
+// seq file, and this process's last assignment. Runs inside the ledger
+// lock's hold — no merged-view read, no extra parse (round 15, finding 4).
+function assignSeqsLocked(events: ConsentEvent[], storeEntries: unknown[], spoolEntries: unknown[]): void {
+  const floor = Math.max(
+    maxValidSeqAmong(storeEntries),
+    maxValidSeqAmong(spoolEntries),
+    readSeqFile() ?? -1,
+    lastAssignedSeq ?? -1,
+  );
+  let next = clampNextSeq(floor);
+  for (const event of events) {
+    event.arrivalSeq = next;
+    lastAssignedSeq = next;
+    next = clampNextSeq(next);
+  }
+  writeSeqFileMonotonic(lastAssignedSeq ?? clampNextSeq(floor));
+}
+
+// Assign a seq on the DEGRADED path (no lock, nothing parsed): the file
+// and this process's last assignment are the fast floor; when the file is
+// invalid the merged-view scan is the repair leg. The unlocked file
+// read-write races under concurrent degraded arrivals — the recorded
+// duplicate residual.
+function assignSeqDegraded(event: ConsentEvent): void {
+  let floor: number;
+  const fileValue = readSeqFile();
+  if (fileValue === undefined) {
+    try {
+      floor = Math.max(maxArrivalSeqInStore(), lastAssignedSeq ?? -1);
+    } catch {
+      event.arrivalSeq = SEQ_UNKNOWN; // the store read itself failed: unknown
+      return;
+    }
+  } else {
+    floor = Math.max(fileValue, lastAssignedSeq ?? -1);
+  }
+  const next = clampNextSeq(floor);
+  event.arrivalSeq = next;
+  lastAssignedSeq = next;
+  writeSeqFileMonotonic(next);
 }
 
 // The takeover window, sized to THIS critical section (interrogate rounds
@@ -301,8 +398,7 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
       typeof record.grantedAt !== 'number' ||
       (record.outcome !== 'granted' && record.outcome !== 'denied') ||
       (record.scope !== 'once' && record.scope !== 'session') ||
-      (record.evidence !== 'terminal' && record.evidence !== 'elicitation' && record.evidence !== 'posture') ||
-      typeof record.arrivalSeq !== 'number'
+      (record.evidence !== 'terminal' && record.evidence !== 'elicitation' && record.evidence !== 'posture')
     ) {
       continue;
     }
@@ -314,7 +410,13 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
       grantedAt: record.grantedAt,
       scope: record.scope,
       evidence: record.evidence,
-      arrivalSeq: record.arrivalSeq,
+      // Round 15, finding 1: a seq outside the assignable space (absent,
+      // null, negative, fractional, Infinity, at/above the sentinel) reads
+      // as the SENTINEL — the row stays VISIBLE, sorts newest, and can
+      // never be an original — never invisible (the pre-fix Infinity row
+      // serialized to null and vanished from every reader, losing consent
+      // events to a one-field corruption).
+      arrivalSeq: isValidArrivalSeq(record.arrivalSeq) ? record.arrivalSeq : SEQ_UNKNOWN,
     };
     // The delivery-outcome follow-up (round 10, finding 4): pass it through
     // when present and well-formed; a malformed value reads as absent (the
@@ -543,6 +645,16 @@ function lockedAppend(events: ConsentEvent[]): void {
     } else {
       existing = [];
     }
+    // The seq assignment runs HERE, inside the lock's hold, floored by the
+    // data this section already parsed (round 15, findings 1 and 4): the
+    // store rows, the taken spool events, the tiny seq file, and this
+    // process's last assignment. No merged-view read — the r14 unconditional
+    // scan doubled the ask-arrival stall (a 1M-row append measured 4.9-10.9s
+    // past the 3s cap, so concurrent arrivals degraded and their unlocked
+    // assignments collided); the parsed floor keeps the r14 durability
+    // guarantees (a missing, unreadable, non-numeric, or rewound file can
+    // never re-issue a seq an existing row owns) at zero extra IO.
+    assignSeqsLocked(events, existing, spool.events);
     try {
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.${process.pid}.tmp`;
@@ -639,29 +751,27 @@ function withLedgerLock(fn: () => void): void {
 // appends one line and never reads the store, so nothing committed can be
 // erased; the next locked append compacts it.
 export function appendConsentEvent(event: ConsentEvent): void {
+  // The seq starts UNKNOWN and is assigned by the ledger inside the write
+  // path (rounds 13-15) — the caller cannot game or clock-order it, and an
+  // append that dies before assignment leaves the sentinel (the annotate
+  // then finds no row with that identity and skips — absence never proves
+  // ownership, the round-12 doctrine).
+  event.arrivalSeq = SEQ_UNKNOWN;
   // Inside a degraded section already: additive, no acquisition attempt.
-  // The seq assignment rides inside the write bodies (round 14, finding 2,
-  // both seats): the locked body assigns under the ledger lock's hold, so
-  // locked writers serialize for real; the degraded body assigns inside
-  // its own degraded section. The caller cannot game or clock-order it —
-  // whatever it passed is overwritten.
+  // The assignment rides inside the write bodies: the locked body assigns
+  // under the ledger lock's hold (locked writers serialize for real), the
+  // degraded body assigns inside its own degraded section.
   if (degradedDepth > 0) {
-    event.arrivalSeq = nextArrivalSeq();
+    assignSeqDegraded(event);
     spoolAppend([event]);
     return;
   }
   try {
     withDepLock(
-      () => {
-        // Assigned INSIDE the hold (round 14, finding 2, both seats): the
-        // raw append face used to assign before withDepLock, and 24
-        // concurrent writers duplicated 13 seq groups. Under the lock the
-        // read-bump-write is serialized with every other locked assigner
-        // (the degraded assigner cannot take the lock and remains the
-        // recorded duplicate residual).
-        event.arrivalSeq = nextArrivalSeq();
-        lockedAppend([event]);
-      },
+      // lockedAppend assigns the seq from its parsed floor (round 15):
+      // store rows + taken spool events + the seq file + this process's
+      // last assignment — no merged-view read.
+      () => lockedAppend([event]),
       ledgerLockDir(),
       LEDGER_LOCK_TAKEOVER_MS,
       LEDGER_HEARTBEAT_MS,
@@ -670,13 +780,10 @@ export function appendConsentEvent(event: ConsentEvent): void {
   } catch {
     // Acquisition failed (budget, unhostable tree, read-only claim): the
     // spool is the degraded append — lockedAppend never runs unlocked.
-    // The counter assignment here is unlocked (the degraded path cannot
-    // hold the lock): it seeds from the merged view's max, and two
-    // concurrent degraded arrivals racing the read-derive can take the
-    // same number — the recorded duplicate residual, tolerable because
-    // equal seqs fall to grantedAt and weakest-wins governs the exact
-    // tie.
-    event.arrivalSeq = nextArrivalSeq();
+    // The assignment is the degraded one (file + last assignment, or the
+    // merged-view repair when the file is invalid) and remains the
+    // recorded duplicate residual: it cannot hold the lock.
+    assignSeqDegraded(event);
     spoolAppend([event]);
   }
 }
@@ -750,6 +857,12 @@ function originalGrantedFor(sessionId: string, tool: string, argsHash: string): 
     ) {
       continue;
     }
+    // Round 15, finding 1: a sentinel row's chronology is UNKNOWN — it can
+    // never name the original (a corrupted or pre-field row must not
+    // fabricate an upgrade when the wall clock, or a hand-staged stall,
+    // would hand it the win). Keys whose only granted rows are sentinel
+    // rows resolve as fresh keys: the caller's tier.
+    if (event.arrivalSeq === SEQ_UNKNOWN) continue;
     if (original === undefined || event.arrivalSeq < original.arrivalSeq) {
       original = event;
       continue;
@@ -804,6 +917,8 @@ function originalGrantedFor(sessionId: string, tool: string, argsHash: string): 
 // proven by the stamp, never by absence — an append the best-effort catch
 // drops leaves a stamp no row matches, and the annotate then no-ops
 // instead of stamping an earlier call's row).
+// Returns the arrival's IDENTITY — the stamp AND the seq the ledger
+// assigned (round 15, finding 2). See the return statement below.
 export function recordAskModeConsent(params: {
   sessionId: string;
   tool: string;
@@ -811,7 +926,7 @@ export function recordAskModeConsent(params: {
   outcome: 'granted' | 'denied';
   evidence?: ConsentEvidence;
   arrivalSeq?: number;
-}): number {
+}): { grantedAt: number; arrivalSeq: number } {
   // Tier resolution is the ledger's rule, not the caller's: a reuse
   // inherits the original event's tier verbatim — never upgraded (posture
   // stays posture when the caller asks for terminal); the one sanctioned
@@ -836,6 +951,16 @@ export function recordAskModeConsent(params: {
   // lands — the same best-effort posture as the append itself
   // (interrogate round 4).
   const grantedAt = Date.now();
+  const event: ConsentEvent = {
+    sessionId: params.sessionId,
+    tool: params.tool,
+    argsHash: params.argsHash,
+    outcome: params.outcome,
+    grantedAt,
+    scope: 'once',
+    evidence: 'posture', // resolved below, before the append
+    arrivalSeq: 0, // appendConsentEvent assigns the real counter
+  };
   withLedgerLock(() => {
     let evidence = params.evidence ?? 'posture';
     try {
@@ -844,18 +969,17 @@ export function recordAskModeConsent(params: {
     } catch {
       // degrade to the caller's tier: the append is the fact that matters
     }
-    appendConsentEvent({
-      sessionId: params.sessionId,
-      tool: params.tool,
-      argsHash: params.argsHash,
-      outcome: params.outcome,
-      grantedAt,
-      scope: 'once',
-      evidence,
-      arrivalSeq: 0, // appendConsentEvent assigns the real counter
-    });
+    event.evidence = evidence;
+    appendConsentEvent(event);
   });
-  return grantedAt;
+  // Round 15, finding 2: the arrival's IDENTITY — the stamp AND the seq the
+  // ledger assigned. The dispatch layer threads both to the delivery
+  // recorder, whose annotate binds the outcome line to EXACTLY the row this
+  // arrival wrote (ownership by identity, never by position: the positional
+  // capture let a same-ms degraded twin compacted in behind the dispatch's
+  // own row steal the delivery outcome). A dropped append returns the
+  // sentinel seq — no row matches it, and the annotate skips.
+  return { grantedAt, arrivalSeq: event.arrivalSeq };
 }
 
 // The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
@@ -1005,6 +1129,16 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
     rowIndexOf.set(triple, i);
     rowSeqIndexOf.set(`${triple}\0${event.arrivalSeq}`, i);
   }
+  // Round 15 (A2's cell 3): LEGACY lines apply first, then SEQ — the
+  // seq-bearing line is the precise identity (the dispatch's own row), so
+  // it wins over any legacy line at the same row regardless of file order
+  // (a mixed-version fleet writing both shapes cannot have a pre-seq line
+  // overwrite a seq-bound datum). Each line parses ONCE here (the
+  // pre-r15 shape re-parsed in the apply pass); the apply pass is one
+  // parameterized loop — the seq keying adds the row's identity to the
+  // legacy triple.
+  const legacyRows: Partial<OutcomeLine>[] = [];
+  const seqRows: Partial<OutcomeLine>[] = [];
   for (const line of lines) {
     const parsed = parseSpoolLine(line);
     if (parsed === undefined) continue;
@@ -1020,35 +1154,47 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
     ) {
       continue;
     }
-    const triple = `${row.sessionId}\0${row.tool}\0${row.argsHash}\0${row.grantedAt}`;
-    // A seq-bearing line binds to the exact row (round 14, finding 4):
-    // immune to compaction reordering; the twin's seq differs.
-    if (typeof row.arrivalSeq === 'number') {
-      const index = rowSeqIndexOf.get(`${triple}\0${row.arrivalSeq}`);
-      if (index !== undefined) out[index]!.outcomeDetail = row.outcomeDetail;
-      continue;
-    }
-    // Legacy line (pre-seq): the key+stamp last-store-row rule.
-    const index = rowIndexOf.get(triple);
-    if (index !== undefined) out[index]!.outcomeDetail = row.outcomeDetail;
+    if (typeof row.arrivalSeq === 'number') seqRows.push(row);
+    else legacyRows.push(row);
   }
+  // One apply pass, parameterized by keying: legacy lines by the
+  // (key, stamp) triple, seq lines by the full (key, stamp, seq) identity.
+  // LEGACY runs first so the seq-bearing line — the precise identity —
+  // wins over any legacy line at the same row regardless of file order.
+  const applyOutcomeRows = (rows: Partial<OutcomeLine>[], seqKeyed: boolean): void => {
+    for (const row of rows) {
+      const triple = `${row.sessionId}\0${row.tool}\0${row.argsHash}\0${row.grantedAt}`;
+      const index = seqKeyed ? rowSeqIndexOf.get(`${triple}\0${row.arrivalSeq}`) : rowIndexOf.get(triple);
+      if (index !== undefined) out[index]!.outcomeDetail = row.outcomeDetail as ConsentDeliveryOutcome;
+    }
+  };
+  applyOutcomeRows(legacyRows, false);
+  applyOutcomeRows(seqRows, true);
 }
 
 // The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
 // PR-3a's memo datum): record what became of the call a consent
 // authorized, on the consent row that arrival created. The gate records
-// the ARRIVAL (recordAskModeConsent, which returns the stamp it wrote);
-// the dispatch layer — the only place that ever sees the handler's return
-// or throw — hands that stamp here with the delivery class. The ledger's
-// subject is the CONSENT's lifecycle (arrival + what became of the call
-// it authorized), never the handler's internal execution.
+// the ARRIVAL (recordAskModeConsent, which returns the identity it wrote —
+// the stamp and the seq); the dispatch layer — the only place that ever
+// sees the handler's return or throw — hands that identity here with the
+// delivery class. The ledger's subject is the CONSENT's lifecycle
+// (arrival + what became of the call it authorized), never the handler's
+// internal execution.
 //
-// Ownership is proven by the STAMP, never by absence (round 12, finding 2,
-// both seats' shape): the annotate proceeds only when a granted row on
-// the key with EXACTLY the arrival's stamp exists in the main store. An
+// Ownership is proven by IDENTITY, never by position or absence (rounds
+// 12 and 15): the annotate proceeds only when the store holds the granted
+// row with EXACTLY the arrival's (stamp, seq). Round 15, finding 2 (both
+// seats) closed the positional hole: the capture used to scan for the
+// last store row at key+stamp, so a same-ms degraded twin compacted in
+// behind the dispatch's own row before its annotate ran received the line
+// — the degraded row carrying a delivery outcome the annotate's own guard
+// refuses to write, and the dispatch's row losing it. The threaded seq
+// now names the exact row; a direct call with no threaded seq binds only
+// a UNIQUE key+stamp match (ambiguity skips — never positional); an
 // arrival whose append was silently dropped (lockedAppend's best-effort
 // catch — ENOSPC/EIO/EACCES, the clamp shapes) leaves no row anywhere, so
-// the stamp matches nothing and the annotate is a no-op: the earlier
+// the identity matches nothing and the annotate is a no-op: the earlier
 // call's row on the same key keeps its own datum. An arrival that
 // degraded to the spool or a taken sidecar fails the same test (its row
 // is not store-resident), which also enforces the r10/r11 posture —
@@ -1066,40 +1212,76 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
 // absent outcomeDetail as unknown. The recorded residual is the RACING
 // same-key shape alone (concurrent arrivals interleaving between arrival
 // and annotate — PR-3a's keyed join lands with the approvedVia carrier,
-// the recorded G2 note), plus the same-millisecond ambiguity the
-// last-row rule resolves deterministically but not provably.
+// the recorded G2 note), plus the same-millisecond equal-stamp pairs a
+// direct (no-seq) call cannot disambiguate — skipped, never positional.
 export function annotateDispatchOutcome(params: {
   sessionId: string;
   tool: string;
   argsHash: string;
   arrivalStamp?: number;
+  // The arrival's seq, threaded from recordAskModeConsent's return through
+  // the gate and the dispatch layer (round 15, finding 2) — the dispatch's
+  // own identity. Optional for direct callers (probes, legacy): see the
+  // unique-match fallback below.
+  arrivalSeq?: number;
   outcomeDetail: ConsentDeliveryOutcome;
 }): void {
   try {
     if (typeof params.arrivalStamp !== 'number') return; // no stamp: never annotate
     const raw = readRawConsents();
     if (raw === undefined) return; // absent or unreadable store: nothing to annotate
-    let arrivalPresent = false;
-    // The LAST matching row's seq (round 14, finding 4): the same-ms tie
-    // rule the fold uses — when two store rows share the arrival's stamp,
-    // the newest one at that stamp is the row the dispatch's annotate
-    // binds to, and the captured seq makes that binding survive any later
-    // compaction reordering (a same-ms degraded twin compacted in BEHIND
-    // the annotated row must never steal the line).
+    // Round 15, finding 2 (both seats): the capture used to take the LAST
+    // raw-store row matching key+stamp — a positional ownership rule, so a
+    // same-ms degraded twin compacted in BEHIND the dispatch's own row
+    // before its annotate ran received the line (the twin carried a
+    // delivery outcome the annotate's own guard refuses to write; the
+    // dispatch's row lost it). The identity is now THREADED, never
+    // captured: the dispatch's own (stamp, seq) names the exact row, and
+    // the guard verifies that exact row exists in the store.
     let arrivalSeq: number | undefined;
-    for (const entry of raw) {
-      if (!entry || typeof entry !== 'object') continue;
+    let arrivalPresent = false;
+    // The guard prefix both captures share: the row must be this key's
+    // granted arrival at the arrival's stamp. The threaded capture adds
+    // the seq conjunct; the fallback counts matches instead.
+    const rowAtKeyAndStamp = (entry: unknown): Record<string, unknown> | undefined => {
+      if (!entry || typeof entry !== 'object') return undefined;
       const record = entry as Record<string, unknown>;
-      if (
-        record.sessionId === params.sessionId &&
+      return record.sessionId === params.sessionId &&
         record.tool === params.tool &&
         record.argsHash === params.argsHash &&
         record.outcome === 'granted' &&
         record.grantedAt === params.arrivalStamp
-      ) {
-        arrivalPresent = true;
-        if (typeof record.arrivalSeq === 'number') arrivalSeq = record.arrivalSeq;
+        ? record
+        : undefined;
+    };
+    if (typeof params.arrivalSeq === 'number') {
+      arrivalSeq = params.arrivalSeq;
+      for (const entry of raw) {
+        const record = rowAtKeyAndStamp(entry);
+        if (record !== undefined && record.arrivalSeq === params.arrivalSeq) {
+          arrivalPresent = true;
+          break;
+        }
       }
+    } else {
+      // The direct-call fallback (no threaded identity): the store row at
+      // key+stamp is bound ONLY when it is UNIQUE — ambiguity (the twin
+      // shape) skips, so a legacy/probe call can never bind the wrong row.
+      // The unique row's own seq becomes the line's key, exact as above.
+      let matches = 0;
+      let uniqueSeq: number | undefined;
+      for (const entry of raw) {
+        const record = rowAtKeyAndStamp(entry);
+        if (record !== undefined) {
+          matches += 1;
+          if (typeof record.arrivalSeq === 'number') uniqueSeq = record.arrivalSeq;
+        }
+      }
+      if (matches === 1 && uniqueSeq !== undefined) {
+        arrivalSeq = uniqueSeq;
+        arrivalPresent = true;
+      }
+      // matches !== 1: ambiguous or absent — never positional.
     }
     if (!arrivalPresent) return; // dropped append or degraded arrival: no row is provably this dispatch's
     if (newestGrantedStampOutsideStore(params) >= params.arrivalStamp) return; // the r11 guard

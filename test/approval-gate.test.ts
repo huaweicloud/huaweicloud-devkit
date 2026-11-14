@@ -254,7 +254,7 @@ test('ask mode: the dispatch layer records what became of the approved call — 
         // run handler reports child failures as results, never throws),
         // with the arrival stamp the gate's ask branch returns — the
         // round-12 ownership requirement (no stamp, no annotate).
-        const arrivalStamp = recordAskModeConsent({
+        const throwArrival = recordAskModeConsent({
           sessionId: 'default',
           tool: 'huaweicloud_run_approved_command',
           argsHash: hashArgs(args),
@@ -267,7 +267,8 @@ test('ask mode: the dispatch layer records what became of the approved call — 
           {},
           undefined,
           new Error('handler crashed mid-dispatch'),
-          arrivalStamp,
+          throwArrival.grantedAt,
+          throwArrival.arrivalSeq,
         );
         events = readConsentEvents();
         assert.equal(events.length, 3, 'the throw leg records its own arrival first');
@@ -304,7 +305,7 @@ test('the delivery classification reads every failure-mark shape the handler fam
         // The arrival stamp the gate's ask branch returns — the round-12
         // ownership requirement: the recorder keys the annotate to exactly
         // the row this arrival wrote (no stamp, no annotate).
-        const arrivalStamp = recordAskModeConsent({
+        const arrival = recordAskModeConsent({
           sessionId: 'default',
           tool: 'huaweicloud_run_approved_command',
           argsHash: hashArgs(args),
@@ -317,7 +318,8 @@ test('the delivery classification reads every failure-mark shape the handler fam
           {},
           handlerResult,
           handlerThrew,
-          arrivalStamp,
+          arrival.grantedAt,
+          arrival.arrivalSeq,
         );
         return readConsentEvents().find((event) => event.argsHash === hashArgs(args))?.outcomeDetail;
       };
@@ -467,6 +469,63 @@ test('the delivery classification reads every failure-mark shape the handler fam
         'a genuinely benign message under the marker pair stays a no-op',
       );
       assert.equal(await classify({ success: false }), 'failed', 'a bare not-ok with no marker pair is failed');
+      // Round 15, finding 3 (both seats): the negation window — a benign
+      // no-op message that mentions a failure word in a NEGATED sense is
+      // benign by content ('No error occurred', '未发生错误', 'Nothing
+      // was denied'); the r14 substring vocabulary recorded all of them
+      // failed (the permissive direction: the memo reuses on failed, so a
+      // delivered no-op bought the next identical call a popup-free reuse).
+      // The window is narrow: the real failure envelopes keep their hits.
+      assert.equal(
+        await classify({
+          success: false,
+          requiresRestart: true,
+          message: 'No error occurred while checking for updates; nothing to do.',
+        }),
+        'delivered',
+        'a benign negated error mention (English) is delivered',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: '已是最新版本，未发生错误。' }),
+        'delivered',
+        'a benign negated error mention (Chinese) is delivered',
+      );
+      assert.equal(
+        await classify({
+          success: false,
+          requiresRestart: true,
+          message: 'Nothing was denied; the operation was a no-op.',
+        }),
+        'delivered',
+        'a benign negated denial mention is delivered',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: 'Nothing to do: no failures, no errors.' }),
+        'delivered',
+        'benign plural negations are delivered',
+      );
+      // The positive controls keep their hits — the window is not a blanket
+      // pardon.
+      assert.equal(
+        await classify({ success: false, requiresRestart: true, message: 'failed: network error' }),
+        'failed',
+        'a positive failure mention (English) stays failed',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: '升级失败: 网络错误' }),
+        'failed',
+        'a positive failure mention (Chinese) stays failed',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: '有错误，请重试' }),
+        'failed',
+        'a positive Chinese mention (有 = there IS) is not a negation',
+      );
+      assert.equal(
+        await classify({ success: false, requiresRestart: false, message: '无法确认最新版本（registry 查询失败）' }),
+        'failed',
+        'the real failure wording stays failed (the 无 sits outside the window)',
+      );
       assert.equal(
         await classify({ success: false, requiresRestart: true }),
         'failed',

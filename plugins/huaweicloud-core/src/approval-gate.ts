@@ -33,15 +33,17 @@ import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger
 import type { ApprovalSpec, ConsentDeliveryOutcome } from './approval-types.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
-// consent stamp the ask branch just wrote) to the dispatch layer, which
-// hands it to the delivery recorder — the round-12 finding-2 requirement
-// (ownership by stamp, never by absence) and the precursor of the
-// approvedVia carrier the recorded PR-3a note schedules; an envelope
+// consent stamp AND the seq the ask branch just wrote — round 15, finding
+// 2) to the dispatch layer, which hands it to the delivery recorder — the
+// ownership-by-identity requirement (never by position or absence) and the
+// precursor of the approvedVia carrier the recorded PR-3a note schedules;
+// an envelope
 // object is returned to the caller INSTEAD of the handler's value.
 // Approval-shaped refusals are results, not throws, so callTool's caller
 // (and the trace seam) see the same JSON shapes the pack handler returns
 // for them.
-export type ApprovalGateOutcome = { pass: { arrivalStamp?: number } } | { envelope: Record<string, unknown> };
+export type ApprovalGateOutcome =
+  { pass: { arrivalStamp?: number; arrivalSeq?: number } } | { envelope: Record<string, unknown> };
 
 export const NO_SESSION_SEAM_ERROR =
   'Runtime pack configuration is available in stdio agent sessions only; this surface carries no session state.';
@@ -328,14 +330,19 @@ export async function runApprovalGate(
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'ask');
     if (classifiedPass) return { pass: {} };
-    const arrivalStamp = recordAskModeConsent({
+    const arrival = recordAskModeConsent({
       sessionId: opts.sessionId ?? 'default',
       tool: name,
       argsHash: hashArgs(value),
       outcome: 'granted',
       arrivalSeq: 0, // the ledger assigns the real counter on append
     });
-    return { pass: { arrivalStamp } };
+    // The arrival's IDENTITY (round 15, finding 2): the stamp AND the seq —
+    // the dispatch layer threads both to the delivery recorder so the
+    // annotate binds the outcome line to EXACTLY the row this arrival
+    // wrote, never to a positional candidate (a same-ms twin compacted in
+    // behind used to steal the line).
+    return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
   }
 
   const token = typeof args.approvalToken === 'string' ? args.approvalToken : '';
@@ -481,6 +488,7 @@ export function recordApprovalDispatchOutcome(
   handlerResult: unknown,
   handlerThrew?: unknown,
   arrivalStamp?: number,
+  arrivalSeq?: number,
 ): void {
   try {
     if (!spec) return;
@@ -492,6 +500,7 @@ export function recordApprovalDispatchOutcome(
       tool: name,
       argsHash: hashArgs(bindingValue(spec, args)),
       arrivalStamp,
+      arrivalSeq,
       outcomeDetail,
     });
   } catch {
@@ -530,15 +539,46 @@ export function recordApprovalDispatchOutcome(
 // void handler, the async-start receipt {started:'uncertain'}: an
 // accepted start is a delivered dispatch, and the async completion is
 // the poll call's own result).
-// The benign-message content test (round 14, finding 3): the failure
-// vocabulary the real handlers' message channels use, both languages —
-// small and honest, not a heuristic. A message carrying any of these is
-// an error-ish report, not a benign remark.
+// The benign-message content test (round 14, finding 3; negation window
+// round 15, finding 3, both seats): the failure vocabulary the real
+// handlers' message channels use, both languages — small and honest, not a
+// heuristic. A message carrying any of these is an error-ish report, not a
+// benign remark — UNLESS the marker is NEGATED: a benign no-op message
+// that mentions a failure word in a negated sense ('No error occurred',
+// '未发生错误', 'Nothing was denied') is benign by content, and the r14
+// substring test recorded it failed (the permissive direction the memo
+// keys on: a delivered no-op recorded failed buys the next identical call
+// a popup-free reuse). The window is pragmatic: a marker preceded within
+// a few words (≤ 16 chars — the seats' benign phrasings measure 1-16) by
+// an English negation word or a Chinese negation character is not a
+// marker hit. The window is deliberately narrow: the real failure
+// envelope '无法确认最新版本（registry 查询失败）' keeps its hit (the 无
+// sits 20 chars before 失败, outside the window), and that envelope carries
+// an `error` field anyway, so the carve-out never sees it.
 const MESSAGE_FAILURE_MARKERS = ['failed', 'error', 'exception', 'denied', 'rejected', 'is not', '失败', '错误'];
+
+const NEGATION_WINDOW_CHARS = 16;
+const ENGLISH_NEGATION_RE = /\b(no|not|nothing|without)\b/;
+// Chinese negation: the characters that negate by themselves, plus the
+// 没有 pair — bare 有 is NOT a negation ('有错误' = "there IS an error",
+// positive, must keep its hit).
+const CHINESE_NEGATION_RE = /(未|无|没有)/;
+
+function markerIsNegated(lower: string, at: number): boolean {
+  const window = lower.slice(Math.max(0, at - NEGATION_WINDOW_CHARS), at);
+  return ENGLISH_NEGATION_RE.test(window) || CHINESE_NEGATION_RE.test(window);
+}
 
 function messageCarriesFailure(message: string): boolean {
   const lower = message.toLowerCase();
-  return MESSAGE_FAILURE_MARKERS.some((marker) => lower.includes(marker));
+  for (const marker of MESSAGE_FAILURE_MARKERS) {
+    let at = lower.indexOf(marker);
+    while (at !== -1) {
+      if (!markerIsNegated(lower, at)) return true;
+      at = lower.indexOf(marker, at + marker.length);
+    }
+  }
+  return false;
 }
 
 function handlerResultCarriesFailure(handlerResult: unknown): boolean {

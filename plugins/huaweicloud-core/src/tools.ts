@@ -289,10 +289,12 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
   // caller as the same JSON the handler would have returned.
   const approvalSpec = (APPROVAL_SPECS as Partial<Record<ToolName, ApprovalSpec>>)[name];
   let arrivalStamp: number | undefined;
+  let arrivalSeq: number | undefined;
   if (approvalSpec) {
     const gated = await runApprovalGate(name, approvalSpec, args, opts);
     if (!('pass' in gated)) return gated.envelope;
     arrivalStamp = gated.pass.arrivalStamp;
+    arrivalSeq = gated.pass.arrivalSeq;
   }
   // The delivery-outcome recorder sits at the COMMON dispatch boundary
   // (round 12, finding 3): the gate covers every roster member — pack
@@ -307,10 +309,10 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
     const result = isPackToolName(name)
       ? await PACK_TOOL_HANDLERS[name](args, opts)
       : await dispatchCoreTool(name, args, opts);
-    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, result, undefined, arrivalStamp);
+    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, result, undefined, arrivalStamp, arrivalSeq);
     return result;
   } catch (error) {
-    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, undefined, error, arrivalStamp);
+    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, undefined, error, arrivalStamp, arrivalSeq);
     throw error;
   }
 }
