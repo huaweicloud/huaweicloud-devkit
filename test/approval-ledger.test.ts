@@ -40,6 +40,68 @@ function ledgerSpoolPaths(home: string): { dir: string; spool: string; lockRoot:
   return { dir, spool: join(dir, 'approval-consents.json.spool.jsonl'), lockRoot: join(dir, 'approval-consents-lock') };
 }
 
+// A staged consent line for the inheritance-order pins: one key, one
+// tier, one stamp — the shape both r8 seats and r9 seats staged.
+function orderLine(argsHash: string, evidence: ConsentEvidence, grantedAt: number): string {
+  return JSON.stringify(baseEvent({ sessionId: 'ses-order', argsHash, evidence, grantedAt })) + '\n';
+}
+
+// The two staged sidecar names the inheritance pins use — differing only
+// in the pid part, the production randomUUID coin flip's stand-in.
+function orderTakenFirst(dir: string): string {
+  return join(dir, 'approval-consents.json.spool.jsonl.taken-11111111-0000-4000-8000-000000000001');
+}
+
+function orderTakenLast(dir: string): string {
+  return join(dir, 'approval-consents.json.spool.jsonl.taken-22222222-0000-4000-8000-000000000002');
+}
+
+// The pins' shared assertion leg: the reuse must record the ORIGINAL's
+// tier. The message differs per round (distinct stamps: chronology; equal
+// stamps: the tier-precedence tiebreak), so it is a parameter.
+function expectOriginalTier(
+  home: string,
+  paths: ReturnType<typeof ledgerSpoolPaths>,
+  argsHash: string,
+  stage: (write: (path: string, contents: string) => void) => void,
+  message: string,
+): void {
+  const { label, tier } = recordReuseTier(home, paths, argsHash, stage);
+  assert.equal(tier, 'terminal', `${label}: ${message}`);
+}
+
+// Drive ONE real reuse on a staged consent key and return the tier the
+// resolution recorded — the shared leg of the inheritance pins (rounds
+// 8-9). Staging wipes the two taken sidecars and the spool and resets the
+// store to empty, so the cases cannot bleed into each other; the reuse is
+// degraded deterministically (unhostable lock root) and asks for
+// 'elicitation' — an observable override, so any pick but the resolved
+// original's tier is visible in the recorded row.
+function recordReuseTier(
+  home: string,
+  paths: { dir: string; spool: string; lockRoot: string },
+  argsHash: string,
+  stage: (write: (path: string, contents: string) => void) => void,
+): { label: string; tier: ConsentEvidence } {
+  for (const path of [orderTakenFirst(paths.dir), orderTakenLast(paths.dir), paths.spool])
+    rmSync(path, { force: true });
+  stageStore(home, '[]');
+  stage((path, contents) => writeFileSync(path, contents));
+  writeFileSync(paths.lockRoot, 'not-a-directory');
+  recordAskModeConsent({
+    sessionId: 'ses-order',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash,
+    outcome: 'granted',
+    evidence: 'elicitation',
+  });
+  rmSync(paths.lockRoot, { force: true });
+  const rows = readConsentEvents().filter((event) => event.argsHash === argsHash);
+  const recorded = rows.find((event) => event.grantedAt > 1_000_000_000_000);
+  assert.ok(recorded, `case ${argsHash}: the reuse recorded a row`);
+  return { label: argsHash, tier: recorded.evidence };
+}
+
 // Quarantine the store once: stage raw bytes, make them unreadable, append
 // (which must quarantine rather than overwrite), and return the fresh
 // sidecar's name with its readability restored for the caller's byte check.
@@ -673,7 +735,7 @@ test(
 test(
   'the inherited tier is the earliest granted original by chronology, in every file and name order (round-8 finding 1)',
   withLedgerHome(async (home) => {
-    const { dir, spool, lockRoot } = ledgerSpoolPaths(home);
+    const paths = ledgerSpoolPaths(home);
     // Two compaction sidecars whose names differ only in the pid+uuid part
     // — in production that part is random, so any pin that depends on it
     // is a pin on a coin flip. The recovery state: the terminal ORIGINAL
@@ -686,78 +748,134 @@ test(
     // terminal/posture on the name order alone; the real API downgraded
     // on half its runs; the organic chain mis-inherited
     // deterministically). The resolution must pick the EARLIEST granted
-    // row on the key by grantedAt, regardless of which file holds it.
-    const takenFirst = join(dir, 'approval-consents.json.spool.jsonl.taken-11111111-0000-4000-8000-000000000001');
-    const takenLast = join(dir, 'approval-consents.json.spool.jsonl.taken-22222222-0000-4000-8000-000000000002');
-    const line = (argsHash: string, evidence: ConsentEvidence, grantedAt: number): string =>
-      JSON.stringify(baseEvent({ sessionId: 'ses-order', argsHash, evidence, grantedAt })) + '\n';
-    // One case = one consent key, so the cases cannot bleed into each
-    // other; the recorded reuse is the row with the live grantedAt.
-    const runCase = (
-      label: string,
-      argsHash: string,
-      stage: (write: (path: string, contents: string) => void) => void,
-    ): void => {
-      for (const path of [takenFirst, takenLast, spool]) rmSync(path, { force: true });
-      stageStore(home, '[]');
-      stage((path, contents) => writeFileSync(path, contents));
-      writeFileSync(lockRoot, 'not-a-directory'); // unhostable lock root: degrade the resolution deterministically
-      recordAskModeConsent({
-        sessionId: 'ses-order',
-        tool: 'huaweicloud_run_approved_command',
+    // row on the key by grantedAt, regardless of which file holds it —
+    // these cases all use DISTINCT stamps (the equal-stamp boundary is
+    // the round-9 pin below).
+    const takenFirst = orderTakenFirst(paths.dir);
+    const takenLast = orderTakenLast(paths.dir);
+    const expectOriginal = (argsHash: string, stage: (write: (path: string, contents: string) => void) => void): void =>
+      expectOriginalTier(
+        home,
+        paths,
         argsHash,
-        outcome: 'granted',
-        evidence: 'elicitation', // an observable override: any pick but the original's tier is visible
-      });
-      rmSync(lockRoot, { force: true });
-      const rows = readConsentEvents().filter((event) => event.argsHash === argsHash);
-      const recorded = rows.find((event) => event.grantedAt > 1_000_000_000_000);
-      assert.ok(recorded, `${label}: the reuse recorded a row`);
-      assert.equal(
-        recorded.evidence,
-        'terminal',
-        `${label}: the reuse inherited the ORIGINAL's tier, not the fold order's last row`,
+        stage,
+        "the reuse inherited the ORIGINAL's tier, not the fold order's pick",
       );
-    };
-
     const key = (i: number): string => `h-order-${i}`;
     // Two taken files, both name orders: the original in the
     // first-sorting sidecar with the copy last (pre-fix: posture), and the
     // mirror (pre-fix: terminal — must stay terminal).
-    runCase('original-first-name/copy-last', key(1), (write) => {
-      write(takenFirst, line(key(1), 'terminal', 1_000));
-      write(takenLast, line(key(1), 'posture', 2_000));
+    expectOriginal(key(1), (write) => {
+      write(takenFirst, orderLine(key(1), 'terminal', 1_000));
+      write(takenLast, orderLine(key(1), 'posture', 2_000));
     });
-    runCase('original-last-name/copy-first', key(2), (write) => {
-      write(takenFirst, line(key(2), 'posture', 2_000));
-      write(takenLast, line(key(2), 'terminal', 1_000));
+    expectOriginal(key(2), (write) => {
+      write(takenFirst, orderLine(key(2), 'posture', 2_000));
+      write(takenLast, orderLine(key(2), 'terminal', 1_000));
     });
     // Spool vs taken: the original taken-resident, the copy spool-resident.
-    runCase('original-in-taken/copy-in-spool', key(3), (write) => {
-      write(spool, line(key(3), 'posture', 2_000));
-      write(takenFirst, line(key(3), 'terminal', 1_000));
+    expectOriginal(key(3), (write) => {
+      write(paths.spool, orderLine(key(3), 'posture', 2_000));
+      write(takenFirst, orderLine(key(3), 'terminal', 1_000));
     });
     // Store vs taken, both directions: the original compacted into the
     // store with the copy taken-resident (pre-fix: posture — the taken
     // class out-weighed the store's original), and the copy in the store
     // with the original taken-resident.
-    runCase('original-in-store/copy-in-taken', key(4), (write) => {
-      stageStore(home, JSON.stringify([JSON.parse(line(key(4), 'terminal', 1_000))]));
-      write(takenLast, line(key(4), 'posture', 2_000));
+    expectOriginal(key(4), (write) => {
+      stageStore(home, JSON.stringify([JSON.parse(orderLine(key(4), 'terminal', 1_000))]));
+      write(takenLast, orderLine(key(4), 'posture', 2_000));
     });
-    runCase('copy-in-store/original-in-taken', key(5), (write) => {
-      stageStore(home, JSON.stringify([JSON.parse(line(key(5), 'posture', 2_000))]));
-      write(takenLast, line(key(5), 'terminal', 1_000));
+    expectOriginal(key(5), (write) => {
+      stageStore(home, JSON.stringify([JSON.parse(orderLine(key(5), 'posture', 2_000))]));
+      write(takenLast, orderLine(key(5), 'terminal', 1_000));
     });
     // Store-only, NON-chronological row order (the post-recovery store
     // shape): the copy lands ABOVE the original it was folded ahead of —
     // pre-fix the backwards scan took the copy (the r8 seat's b4 cell).
-    runCase('store-only-copy-above-original', key(6), (write) => {
+    expectOriginal(key(6), (write) => {
       stageStore(
         home,
-        JSON.stringify([JSON.parse(line(key(6), 'posture', 2_000)), JSON.parse(line(key(6), 'terminal', 1_000))]),
+        JSON.stringify([
+          JSON.parse(orderLine(key(6), 'posture', 2_000)),
+          JSON.parse(orderLine(key(6), 'terminal', 1_000)),
+        ]),
       );
+      void write;
     });
+  }),
+);
+
+test(
+  'an exact grantedAt tie resolves by tier precedence, never by file host or fold order (round-9 finding 1)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    // The round-8 fix's boundary case, found by BOTH r9 seats: the r8
+    // resolution's strict '<' kept the FIRST row in merged-array order at
+    // an equal grantedAt — and array order is fold order, so a
+    // same-millisecond failure-born posture copy won the tie whenever its
+    // host name-sorted or folded first (measured: 10/20 wrong on the
+    // taken pair alternating with the pid+uuid name order; three of six
+    // host cells wrong 20/20; the first compaction baked the wrong pick
+    // into the store permanently). The round-8 pin could not see it —
+    // every r8 case uses distinct stamps. At an exact tie chronology
+    // cannot distinguish the rows, so the tiebreak must be CONTENT: tier
+    // precedence (terminal > elicitation > posture — the strongest human
+    // evidence), a function of the rows' own content and never of the
+    // fold order.
+    const takenFirst = orderTakenFirst(paths.dir);
+    const takenLast = orderTakenLast(paths.dir);
+    const T = 1_500; // the EXACT collision: original and copy carry the same grantedAt
+    const expectOriginal = (argsHash: string, stage: (write: (path: string, contents: string) => void) => void): void =>
+      expectOriginalTier(
+        home,
+        paths,
+        argsHash,
+        stage,
+        'at an exact tie the strongest human evidence (the original) wins',
+      );
+    const key = (i: number): string => `h-tie-${i}`;
+    // The taken pair, both name orders — the production randomUUID coin
+    // flip; pre-fix each order was deterministically wrong one way.
+    expectOriginal(key(1), (write) => {
+      write(takenFirst, orderLine(key(1), 'terminal', T));
+      write(takenLast, orderLine(key(1), 'posture', T));
+    });
+    expectOriginal(key(2), (write) => {
+      write(takenFirst, orderLine(key(2), 'posture', T));
+      write(takenLast, orderLine(key(2), 'terminal', T));
+    });
+    // Store vs taken, both directions, at the tie.
+    expectOriginal(key(3), (write) => {
+      stageStore(home, JSON.stringify([JSON.parse(orderLine(key(3), 'posture', T))]));
+      write(takenLast, orderLine(key(3), 'terminal', T));
+    });
+    expectOriginal(key(4), (write) => {
+      stageStore(home, JSON.stringify([JSON.parse(orderLine(key(4), 'terminal', T))]));
+      write(takenLast, orderLine(key(4), 'posture', T));
+    });
+    // Spool copy vs taken original at the tie (pre-fix: the spool folded
+    // ahead of taken decided it — posture).
+    expectOriginal(key(5), (write) => {
+      write(paths.spool, orderLine(key(5), 'posture', T));
+      write(takenFirst, orderLine(key(5), 'terminal', T));
+    });
+    // Store-only, copy ABOVE the original, at the tie.
+    expectOriginal(key(6), (write) => {
+      stageStore(
+        home,
+        JSON.stringify([JSON.parse(orderLine(key(6), 'posture', T)), JSON.parse(orderLine(key(6), 'terminal', T))]),
+      );
+      void write;
+    });
+    // A tie with EQUAL tiers is immaterial: both rows carry posture, and
+    // the resolution must still resolve (posture), never fall through to
+    // the caller's elicitation override.
+    const { label, tier } = recordReuseTier(home, paths, key(7), (write) => {
+      write(takenFirst, orderLine(key(7), 'posture', T));
+      write(takenLast, orderLine(key(7), 'posture', T));
+    });
+    assert.equal(tier, 'posture', `${label}: an equal-tier tie keeps the resolved tier, not the caller's override`);
   }),
 );
 

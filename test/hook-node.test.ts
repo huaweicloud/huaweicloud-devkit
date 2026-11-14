@@ -21,6 +21,17 @@ function runHook(payload: HookPayload) {
   });
 }
 
+// Stage a hook fixture: the plugin's hooks and src trees (and by default
+// safety/) copied into a scratch dir — the shared preamble of the
+// fixture-based hook tests; each test then mutates its own copy (no dist,
+// no safety, a stale dist, corrupt rules).
+function copyHookFixture(dir: string, opts: { safety?: boolean } = {}): void {
+  const pluginRoot = join(process.cwd(), 'plugins', 'huaweicloud-core');
+  cpSync(join(pluginRoot, 'hooks'), join(dir, 'hooks'), { recursive: true });
+  cpSync(join(pluginRoot, 'src'), join(dir, 'src'), { recursive: true });
+  if (opts.safety !== false) cpSync(join(pluginRoot, 'safety'), join(dir, 'safety'), { recursive: true });
+}
+
 test('node hook file exists', () => {
   assert.ok(existsSync(hookPath));
 });
@@ -31,10 +42,7 @@ test('node hook still blocks when the plugin copy has no built dist', () => {
   // the PreToolUse safety gate.
   const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-nodist-'));
   try {
-    const pluginRoot = join(process.cwd(), 'plugins', 'huaweicloud-core');
-    cpSync(join(pluginRoot, 'hooks'), join(dir, 'hooks'), { recursive: true });
-    cpSync(join(pluginRoot, 'src'), join(dir, 'src'), { recursive: true });
-    cpSync(join(pluginRoot, 'safety'), join(dir, 'safety'), { recursive: true });
+    copyHookFixture(dir);
     assert.ok(!existsSync(join(dir, 'dist')), 'fixture must not contain dist');
 
     const result = spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
@@ -64,9 +72,7 @@ test('node hook denies fail-closed when the policy cannot be loaded (interrogate
   // pipe writes are not waited for, and a dropped verdict reads as allow.
   const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-nopolicy-'));
   try {
-    const pluginRoot = join(process.cwd(), 'plugins', 'huaweicloud-core');
-    cpSync(join(pluginRoot, 'hooks'), join(dir, 'hooks'), { recursive: true });
-    cpSync(join(pluginRoot, 'src'), join(dir, 'src'), { recursive: true });
+    copyHookFixture(dir, { safety: false });
     assert.ok(!existsSync(join(dir, 'dist')), 'fixture must not contain dist');
     assert.ok(!existsSync(join(dir, 'safety')), 'fixture must not contain safety/');
 
@@ -86,6 +92,73 @@ test('node hook denies fail-closed when the policy cannot be loaded (interrogate
   }
 });
 
+test('node hook runs normally on a stale dist that predates the roster: the empty-roster fallback narrows to trunk (interrogate round 9)', () => {
+  // Round 9, finding 2: the roster import shared the policy's try block,
+  // so a dist built before approval-roster.js existed (a stale checkout —
+  // dist is gitignored, a pull does not rebuild, bin/setup.cjs copies
+  // whatever dist is on disk) threw and the catch denied EVERY Bash
+  // payload as "the safety policy failed to load" — wrong cause (the
+  // policy loads fine), total block, and the hook's own staleness
+  // contract ("an older dist silently runs the old classifier") inverted
+  // into "classifier unavailable". The roster is not load-bearing for the
+  // classifier: an unresolvable roster falls back to EMPTY, which is
+  // trunk behavior — every write/execution deny stands, no exemption
+  // fires — strictly safer than the total block and no safety property
+  // lost.
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-staledist-'));
+  try {
+    copyHookFixture(dir);
+    // The stale dist: a policy module that imports fine (delegating to the
+    // source classifier — the fixture stays independent of the repo's
+    // built dist) and NO roster leaf — the shape of a dist built at
+    // origin/v2. The source tree is aged to match (the roster's src leaf
+    // removed), so NO resolution path can supply the roster: this is the
+    // seat's byte-for-byte stale shape, and the empty-roster fallback is
+    // the only behavior that can save the classifier.
+    mkdirSync(join(dir, 'dist'), { recursive: true });
+    writeFileSync(
+      join(dir, 'dist', 'safety-policy.js'),
+      "export { classifyTextCommand } from '../src/safety-policy.ts';\n",
+    );
+    rmSync(join(dir, 'src', 'approval-roster.ts'), { force: true });
+    assert.ok(!existsSync(join(dir, 'dist', 'approval-roster.js')), 'the stale dist must not carry the roster leaf');
+
+    const runStale = (payload: { tool_name: string; tool_input: Record<string, unknown> }): string =>
+      spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
+        input: JSON.stringify(payload),
+        encoding: 'utf8',
+      }).stdout;
+    // A benign Bash row must behave exactly like the full dist: allow (no
+    // verdict written) — pre-fix this printed the policy-load-failed deny.
+    assert.equal(runStale({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }), '', 'benign Bash stays allowed');
+    // An hcloud write keeps its REAL deny — the write-approval reason, not
+    // the misattributed policy-load failure.
+    const write = runStale({ tool_name: 'Bash', tool_input: { command: 'hcloud ECS DeleteServer --server_id=i-1' } });
+    assert.match(JSON.parse(write).hookSpecificOutput.permissionDecisionReason, /write operation blocked/);
+    // A roster-shaped MCP write call: with the empty roster NO exemption
+    // fires, so the hook-layer deny stands — trunk behavior, strictly
+    // safer. (With the roster present the same call is exempt — the leaf
+    // below.)
+    const rosterShaped = {
+      tool_name: 'mcp__huaweicloud-devkit__huaweicloud_run_approved_command',
+      tool_input: { args: ['hcloud', 'ECS', 'DeleteServer', '--server_id=i-1'], approvedByUser: true },
+    };
+    assert.equal(JSON.parse(runStale(rosterShaped)).hookSpecificOutput.permissionDecision, 'deny');
+
+    // The full-dist control: the same fixture plus a resolvable roster
+    // leaf (the literal array — the src leaf stays aged out) — the
+    // roster-shaped write call is exempt now, proving the stale leg's
+    // deny came from the empty roster and not from a broken classifier.
+    writeFileSync(
+      join(dir, 'dist', 'approval-roster.js'),
+      "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'];\n",
+    );
+    assert.equal(runStale(rosterShaped), '', 'with the roster present the roster-shaped write is exempt');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('node hook denies fail-closed when classification itself throws (corrupt rules file, interrogate round 2)', () => {
   // The load-time guard covers DEFAULT_POLICY only; a truncated
   // cloud-risk-rules.json kills risk-rule-engine's JSON.parse INSIDE
@@ -95,10 +168,7 @@ test('node hook denies fail-closed when classification itself throws (corrupt ru
   // (load_cloud_risk_rules try/except).
   const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-badrules-'));
   try {
-    const pluginRoot = join(process.cwd(), 'plugins', 'huaweicloud-core');
-    cpSync(join(pluginRoot, 'hooks'), join(dir, 'hooks'), { recursive: true });
-    cpSync(join(pluginRoot, 'src'), join(dir, 'src'), { recursive: true });
-    cpSync(join(pluginRoot, 'safety'), join(dir, 'safety'), { recursive: true });
+    copyHookFixture(dir);
     mkdirSync(join(dir, 'safety', 'rules'), { recursive: true });
     writeFileSync(join(dir, 'safety', 'rules', 'cloud-risk-rules.json'), '{"rules": [trunc', 'utf8');
     assert.ok(!existsSync(join(dir, 'dist')), 'fixture must not contain dist');

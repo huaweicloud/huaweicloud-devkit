@@ -568,9 +568,25 @@ export function appendConsentEvent(event: ConsentEvent): void {
 // the self-consistent one: every reuse row re-records the inherited
 // tier, so in a healthy chain every granted row on the key carries the
 // original's tier and the scan direction is invisible; only the
-// failure-born copy differs, and it is always the NEWER row. Ties on
-// grantedAt break to the earliest array position — deterministic, and
-// chronology-consistent either way.
+// failure-born copy differs, and it is always the NEWER row — except at
+// an exact millisecond collision (round 9, finding 1: the same-ms
+// boundary reopened the round-8 defect — the strict-< incumbent kept
+// the FIRST row in array order, which is fold order, so the copy won
+// whenever its host name-sorted or folded first; measured 10/20 wrong on
+// the taken pair, three of six host cells wrong 20/20, the first
+// compaction baking the pick into the store permanently). At such a tie
+// chronology cannot distinguish the rows, so the tiebreak is CONTENT:
+// tier precedence, terminal > elicitation > posture — the strongest
+// human evidence wins, a function of the rows' own content and never of
+// the fold order.
+
+// Tier precedence for the equal-chronology tiebreak (round 9, finding 1):
+// the strength of the HUMAN evidence behind the consent — a terminal
+// confirmation outranks an elicitation response, which outranks a
+// posture-grade arrival. Pure data, keyed by the evidence model, with no
+// undefined case (the filtered view only yields these three tiers).
+const TIER_PRECEDENCE: Record<ConsentEvidence, number> = { posture: 0, elicitation: 1, terminal: 2 };
+
 function originalGrantedFor(sessionId: string, tool: string, argsHash: string): ConsentEvent | undefined {
   const events = readConsentEvents();
   let original: ConsentEvent | undefined;
@@ -584,6 +600,25 @@ function originalGrantedFor(sessionId: string, tool: string, argsHash: string): 
       continue;
     }
     if (original === undefined || event.grantedAt < original.grantedAt) {
+      original = event;
+      continue;
+    }
+    // Round 9, finding 1 (both seats): an EXACT grantedAt collision between
+    // rows with DIFFERENT tiers was resolved by array position — fold order
+    // — so a same-millisecond failure-born posture copy could win the
+    // inheritance whenever its host name-sorted or folded first (measured:
+    // 10/20 wrong on the taken pair, alternating with the pid+uuid name
+    // order; three of six host cells wrong 20/20; the first compaction
+    // baked the wrong pick into the store permanently). At a tie,
+    // chronology cannot distinguish the rows, so the tiebreak resolves by
+    // the rows' CONTENT — tier precedence, the strongest human evidence —
+    // never by which file hosted them or what the fold order was. At a tie
+    // with EQUAL tiers the choice is immaterial (both rows carry the same
+    // tier; the incumbent stays).
+    if (
+      event.grantedAt === original.grantedAt &&
+      TIER_PRECEDENCE[event.evidence] > TIER_PRECEDENCE[original.evidence]
+    ) {
       original = event;
     }
   }

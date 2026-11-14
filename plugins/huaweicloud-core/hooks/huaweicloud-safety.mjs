@@ -62,19 +62,26 @@ function deny(reason) {
 let classifyTextCommand;
 // The approval-gate roster, imported from the same place the policy came
 // from (compiled dist/ preferred, TypeScript source fallback — the roster
-// is a pure string-array module, so the fallback needs no build). A
-// load failure takes the deny-fail-closed path below together with the
-// policy: an exemption the hook cannot resolve must not silently widen.
-let rosterApprovalTools;
+// is a pure string-array module, so the fallback needs no build). The
+// roster is NOT load-bearing for the classifier: an unresolvable roster
+// falls back to EMPTY, which narrows to trunk behavior — every
+// write/execution deny stands, no exemption fires — so no safety
+// property is lost and the staleness contract keeps holding. Round 9,
+// finding 2: this import used to share the policy's try block, so a
+// dist built before approval-roster.js existed (a stale checkout — dist
+// is gitignored, a pull does not rebuild) threw, the catch denied EVERY
+// Bash payload as "the safety policy failed to load" (wrong cause: the
+// policy loaded fine), and the hook's own staleness contract ("an
+// older dist silently runs the old classifier") inverted into
+// "classifier unavailable". The empty-roster fallback is the fail-closed
+// posture FOR THE EXEMPTION; only a policy load failure fails the
+// classifier.
+let rosterApprovalTools = [];
 try {
   const policyModule = existsSync(join(__dirname, '..', 'dist', 'safety-policy.js'))
     ? await import('../dist/safety-policy.js')
     : await import('../src/safety-policy.ts');
   ({ classifyTextCommand } = policyModule);
-  const rosterModule = existsSync(join(__dirname, '..', 'dist', 'approval-roster.js'))
-    ? await import('../dist/approval-roster.js')
-    : await import('../src/approval-roster.ts');
-  ({ APPROVAL_TOOLS: rosterApprovalTools } = rosterModule);
 } catch {
   writeSync(
     1,
@@ -87,6 +94,18 @@ try {
     }) + '\n',
   );
   process.exit(0);
+}
+try {
+  const rosterModule = existsSync(join(__dirname, '..', 'dist', 'approval-roster.js'))
+    ? await import('../dist/approval-roster.js')
+    : await import('../src/approval-roster.ts');
+  ({ APPROVAL_TOOLS: rosterApprovalTools } = rosterModule);
+} catch {
+  // A dist predating the roster (stale checkout) or any other resolution
+  // failure: run with the empty roster — no exemption fires, every deny
+  // stands. Strictly safer than the total block this replaced, and the
+  // deny message is not misattributed to the policy.
+  rosterApprovalTools = [];
 }
 
 function readStdin() {
