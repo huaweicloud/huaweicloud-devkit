@@ -507,31 +507,38 @@ const SEQ_FIELD_COUNT_RE = () => /"arrivalSeq"\s*:\s*(-?[\d.eE+]+)/g;
 // re-stat's coarse-clock granularity (~1ms kernel ticks) lets a write
 // completing inside the cached-fast anchor reads pass — measured 4/40
 // wins on a 5MiB file with the re-stat alone. For files ≤ 8MiB the
-// anchor read covers the WHOLE file (a cached ~2ms read — inside the
-// single-digit-ms cost bar), so ANY byte change anywhere changes a digest
-// or the count deterministically, whatever the clock did. Larger files
-// keep the two 1MiB windows; their residual — a same-tick insert landing
-// in the uncovered middle of a >8MiB file — is the r19-disclosed class
-// with the corrected size boundary.
+// anchor read covers the WHOLE file, so ANY byte change anywhere changes
+// the digest deterministically, whatever the clock did. Round 21,
+// finding 3 corrected the r20 cost claim ("a cached ~2ms read — inside
+// the single-digit-ms cost bar" — measured ~62ms median per append at
+// the 8MiB top edge, ~31ms at 4MiB, ~15ms at 2MiB, ~11x the r19 windowed
+// hit at the same size) and cut the redundancy: the whole-file digest
+// subsumes the seq-count gate inside the band, so the count pass (the
+// full-text decode plus the regex sweep — half the measured hit cost)
+// is SKIPPED for whole-file-anchored sizes and seqCount is recorded as 0
+// on both paths (identically, so the memo comparison stays consistent).
+// The honest measured cost of the remaining read+sha256 hit path:
+// ~7-15ms at the realistic sizes (≤4MiB), ~30ms at the 8MiB top edge —
+// documented in the round's record, still inside the r3 caller bar by
+// two orders of magnitude. Larger files keep the two 1MiB windows; their
+// residual — a same-tick insert landing in the uncovered middle of a
+// >8MiB file — is the r19-disclosed class with the corrected size
+// boundary.
 const ANCHOR_WHOLE_FILE_BYTES = 8 * 1024 * 1024;
 
 function anchorDataFromFd(fd: number, size: number): StreamAnchors {
   if (size <= ANCHOR_WHOLE_FILE_BYTES) {
-    const wholeBuf = Buffer.alloc(size);
+    const wholeBuf = Buffer.allocUnsafe(size);
     const got = readSync(fd, wholeBuf, 0, size, 0);
-    const wholeText = wholeBuf.toString('utf8', 0, got);
-    let seqCount = 0;
-    const countRe = SEQ_FIELD_COUNT_RE();
-    while (countRe.exec(wholeText) !== null) seqCount += 1;
     const digest = createHash('sha256').update(wholeBuf.subarray(0, got)).digest('base64');
-    return { headDigest: digest, tailDigest: digest, seqCount };
+    return { headDigest: digest, tailDigest: digest, seqCount: 0 }; // the count gate is subsumed: skipped in the band
   }
   const headLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES);
-  const headBuf = Buffer.alloc(headLen);
+  const headBuf = Buffer.allocUnsafe(headLen);
   const headGot = readSync(fd, headBuf, 0, headLen, 0);
   const headText = headBuf.toString('utf8', 0, headGot);
   const tailLen = Math.min(size, SEQ_SCAN_CHUNK_BYTES + SEQ_SCAN_CARRY_BYTES);
-  const tailBuf = Buffer.alloc(tailLen);
+  const tailBuf = Buffer.allocUnsafe(tailLen);
   const tailGot = readSync(fd, tailBuf, 0, tailLen, Math.max(0, size - tailLen));
   const tailText = tailBuf.toString('utf8', 0, tailGot);
   let seqCount = 0;
@@ -683,11 +690,22 @@ function scanTakenSidecarSeqs(skipFiles: string[] = []): { max: number; blinded:
           anchorsMatch = false; // unstatable now: rescan
         }
         if (anchorsMatch) {
+          // Round 21, finding 1 (seat 1): a validated hit memoizes
+          // UNCONDITIONALLY — the r20 restructure made memoized conditional
+          // on the max improving the running floor, so in a multi-sidecar
+          // state a sidecar whose memoized max did not exceed an earlier
+          // sidecar's contribution fell through to a FULL RESCAN on every
+          // append forever (measured 344-593ms per 64MiB non-improving
+          // sidecar vs 37/28/30ms for the swapped control on identical
+          // content; the r19 source memoized on the same tree) — the exact
+          // permanent-rescan tax class r17-F3/r20-F3/F4 were each accepted
+          // as findings for, reintroduced by the fix that closed them.
+          // The improvement check stays as a max-compare only.
           if (memo.blinded) {
             blinded = true; // a stable dead-span blind: the verdict reproduces, no rescan (round 20 F3)
             memoized = true;
-          } else if (memo.max > max) {
-            max = memo.max;
+          } else {
+            if (memo.max > max) max = memo.max;
             memoized = true;
           }
         }
@@ -988,7 +1006,17 @@ function readRawConsents(): unknown[] | undefined {
     const text = readWholeTextViaFd(path);
     if (text === undefined) return undefined;
     const parsed: unknown = JSON.parse(text);
-    return Array.isArray(parsed) ? parsed : undefined;
+    if (!Array.isArray(parsed)) return undefined;
+    // Round 21, finding 1: the element-content guard — a sub-cap store
+    // whose content is one giant value (the 300MiB-string shape that
+    // aborted the server in the serializer) reads as UNREADABLE here, so
+    // the callers take their existing degraded postures: the tier
+    // resolution degrades to the caller's tier, and lockedAppend
+    // QUARANTINES the file (preserve-then-write: the bytes land in the
+    // .corrupt-* sidecar before the fresh store is ever written) and the
+    // append proceeds. The 250MiB control stays admitted, unchanged.
+    if (!elementsWithinContentLimit(parsed)) return undefined;
+    return parsed as unknown[];
   } catch {
     return undefined;
   }
@@ -1025,6 +1053,68 @@ const STREAM_SCAN_LIMIT_BYTES = WHOLE_FILE_STRING_LIMIT_BYTES;
 function streamScanLimitBytes(): number {
   const override = Number(process.env.HUAWEICLOUD_LEDGER_STREAM_LIMIT);
   return Number.isSafeInteger(override) && override > 0 ? override : STREAM_SCAN_LIMIT_BYTES;
+}
+
+// The ELEMENT-content bound (round 21, finding 1, seat 2 — the deepest
+// class of the round: a whole-server abort no catch can see): the r20 caps
+// bound the DECLARED size of a file, not the memory the append allocates
+// after an admitted read. A sub-cap store (300MiB, under the 500MiB cap)
+// whose content is one large JSON string parses fine alone, but the
+// append's whole-store JSON.stringify — with the tier resolution's parse
+// and lockedAppend's own parse both still live — puts three file-sized
+// strings in flight and V8 aborts from INSIDE the serializer (FATAL
+// ERROR: Zone Allocation failed), which is NOT a JS throw: lockedAppend's
+// catch never runs, the whole MCP server dies (SIGABRT over the wire,
+// reproduced against the bundled dist), and the unchanged store makes it
+// a permanent kill switch — every later ask-mode arrival aborts again.
+// The spool twin (one 300MiB line) aborts the first append the same way,
+// and the ledger's own compaction mints the poisoned store from it. The
+// realistic many-small-rows store at exactly the cap completes (23.5s,
+// 3.47GiB peak) — the aborting shape is exactly the giant-single-value
+// content a cap exists to bound, admitted because its declared size is
+// legal. The fix bounds the PARSED ARTIFACT per element: any single
+// store/fold element whose content exceeds the bound reads as
+// unreadable — the store path quarantines (bytes preserved, the
+// preserve-then-write doctrine), the fold path keeps the taken file
+// (the r7 read-failure posture, retried, never dropped), the append
+// lands in a fresh store, the call completes. The bound sits above the
+// measured-good 250MiB control (admitted, behavior unchanged) and below
+// the measured-abort 300MiB shape, with the whole-array serialization
+// ALSO replaced by a streamed per-element write (below) so the admitted
+// band's write never amplifies: per-element serialization is bounded by
+// this guard, the write buffer by construction.
+const LEDGER_ELEMENT_CONTENT_LIMIT_BYTES = 256 * 1024 * 1024; // 256MiB: 250MiB control admitted, 300MiB shape quarantined
+
+// An element's content size, computed WITHOUT serialization (round 21:
+// measuring by serializing is the very allocation the bound exists to
+// prevent): a string's UTF-16 length (the JS-string size the serializer
+// would produce), an object's summed string-property lengths plus
+// structural overhead, recursing into nested arrays/objects. O(1) per
+// string, O(properties) per row — a consent row is ~8 properties.
+function elementContentUnits(entry: unknown): number {
+  if (typeof entry === 'string') return entry.length;
+  if (typeof entry === 'number' || typeof entry === 'boolean' || entry === null || entry === undefined) return 16;
+  if (Array.isArray(entry)) {
+    let total = 16;
+    for (const item of entry) total += elementContentUnits(item) + 4;
+    return total;
+  }
+  if (typeof entry === 'object') {
+    let total = 256; // structural overhead: braces, quotes, commas
+    for (const value of Object.values(entry as Record<string, unknown>)) total += elementContentUnits(value) + 8;
+    return total;
+  }
+  return 16;
+}
+
+// True when every element of a parsed store/fold batch is within the
+// element bound — the admission test for anything about to be serialized
+// into the store.
+function elementsWithinContentLimit(entries: unknown[]): boolean {
+  for (const entry of entries) {
+    if (elementContentUnits(entry) > LEDGER_ELEMENT_CONTENT_LIMIT_BYTES) return false;
+  }
+  return true;
 }
 
 // Open a ledger data file for reading WITHOUT the blocking hazard, with
@@ -1239,11 +1329,21 @@ function takeSpool(): { events: unknown[]; folded: string[] } {
       const text = readSpoolTextWhole(file);
       if (text === undefined) return; // keep the file, bytes intact — the next compaction retries
       const lines = text.split('\n').filter((line) => line.trim().length > 0);
+      // Round 21, finding 1: the fold is ALL-OR-NOTHING per file under the
+      // element-content guard — a giant single line (the 300MiB spool twin
+      // of the abort shape) would otherwise land in the store as one
+      // string element and abort the append's serialization on THIS and
+      // every later arrival. A file with any over-bound element is kept
+      // like a read failure (the r7 posture: bytes intact, retried every
+      // compaction, never dropped) and the store write proceeds without
+      // it — the call completes.
+      const batch: unknown[] = [];
       for (const line of lines) {
         const parsed = parseSpoolLine(line);
-        if (parsed === undefined) events.push(line);
-        else events.push(parsed.parsed);
+        batch.push(parsed === undefined ? line : parsed.parsed);
       }
+      if (!elementsWithinContentLimit(batch)) return; // keep the file: retried, evidence preserved
+      events.push(...batch);
       folded.push(file);
     } catch {
       // read failure: keep the file in place, bytes intact — evidence is
@@ -1271,6 +1371,76 @@ function takeSpool(): { events: unknown[]; folded: string[] } {
     if (!folded.includes(file)) fold(file);
   }
   return { events, folded };
+}
+
+// The streamed store write (round 21, finding 1): the store array is
+// serialized PER ELEMENT through a bounded buffer — '[' + row + ',' + … +
+// ']' — instead of one whole-array JSON.stringify. The r20 shape put the
+// entire future store's serialization in one zone-allocated buffer that
+// doubles its way up (256MiB->512MiB needs 768MiB contiguous), and with
+// the tier resolution's parse and lockedAppend's own parse of the same
+// file both live, three file-sized strings coexisted at the stringify:
+// V8 aborted from inside the serializer (Zone Allocation failed — not a
+// JS throw, invisible to every catch, the whole server died). Every
+// element reaching this writer is already inside the element-content
+// bound (the read and fold guards above), so each per-element
+// serialization is bounded; the write buffer is ~1MiB by construction;
+// the bytes produced are IDENTICAL to the whole-array stringify (the JSON
+// array grammar element-for-element — structure pins read the store).
+function writeStoreArrayAtomic(tmpPath: string, batches: unknown[][]): void {
+  const fd = openSync(tmpPath, 'w', 0o600);
+  try {
+    // writeSync can return a PARTIAL count (RLIMIT_FSIZE, a full disk's
+    // last block): a write loop that ignores the count accepts a
+    // TRUNCATED file as complete — the tmp would be renamed over the
+    // store mid-row and the folded taken files removed (evidence loss,
+    // the exact r7-3 class; caught by the r8 organic probe's
+    // capped-child leg, where the pre-r21 writeFileSync threw EFBIG on
+    // the second attempt and left the taken files in place). Every write
+    // loops until the whole piece lands; a zero-progress write throws so
+    // the caller's catch keeps the taken files.
+    const writeAll = (text: string): void => {
+      let at = 0;
+      for (;;) {
+        const wrote = writeSync(fd, text.slice(at), null, 'utf8');
+        if (wrote <= 0) throw new Error('the store write made no progress');
+        at += wrote;
+        if (at >= text.length) return;
+      }
+    };
+    let buffer = '';
+    const flush = (): void => {
+      if (buffer.length > 0) {
+        writeAll(buffer);
+        buffer = '';
+      }
+    };
+    buffer += '[';
+    let first = true;
+    for (const batch of batches) {
+      for (const element of batch) {
+        buffer += first ? '' : ',';
+        first = false;
+        const piece = JSON.stringify(element);
+        // A single element's serialization can exceed the flush buffer
+        // (an admitted up-to-256MiB string element): write it directly,
+        // never holding two oversized pieces at once.
+        if (piece.length > 1024 * 1024) {
+          const head = buffer;
+          buffer = '';
+          if (head.length > 0) writeAll(head);
+          writeAll(piece);
+        } else {
+          buffer += piece;
+          if (buffer.length >= 1024 * 1024) flush();
+        }
+      }
+    }
+    buffer += ']';
+    flush();
+  } finally {
+    closeSync(fd);
+  }
 }
 
 // The locked append core: read the raw store, quarantine an unreadable
@@ -1323,7 +1493,9 @@ function lockedAppend(events: ConsentEvent[]): void {
     try {
       mkdirSync(dirname(path), { recursive: true });
       const tmp = `${path}.${process.pid}.tmp`;
-      writeFileSync(tmp, JSON.stringify([...existing, ...spool.events, ...events]), { encoding: 'utf8', mode: 0o600 });
+      // Round 21, finding 1: the streamed per-element write (bounded
+      // memory by construction) — see writeStoreArrayAtomic above.
+      writeStoreArrayAtomic(tmp, [existing, spool.events, events]);
       renameSync(tmp, path);
     } catch {
       // same degradation contract as writeApprovals in approval-tokens.ts

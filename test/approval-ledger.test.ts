@@ -8,6 +8,7 @@ import {
   ftruncateSync,
   mkdirSync,
   openSync,
+  statSync,
   readdirSync,
   readFileSync,
   rmSync,
@@ -240,6 +241,93 @@ function quarantineOnce(home: string, rawBytes: string, alreadySeen: string[] = 
   return sidecar;
 }
 
+// The 8MiB pad-slice pieces for the abort-probe stagings (a shared shape —
+// the store and spool twins pad the same way to different wrappers).
+function padSlices(padRoom: number, first: string, last: string): string[] {
+  const pieces = [first];
+  let emitted = 0;
+  while (emitted < padRoom) {
+    const slice = Math.min(8 * 1024 * 1024, padRoom - emitted);
+    pieces.push('x'.repeat(slice));
+    emitted += slice;
+  }
+  pieces.push(last);
+  return pieces;
+}
+
+// Stream a text file out in 8MiB chunks without ever holding a giant
+// staging string (the r21 abort-probe modes + the memo-hit mode): a
+// bounded write loop over a caller-supplied piece generator is overkill —
+// this takes the COMPLETE text pieces in order (each piece stays small;
+// the giant pad is emitted in 8MiB slices by the caller).
+function streamTextFile(path: string, pieces: string[]): void {
+  const fd = openSync(path, 'w', 0o600);
+  try {
+    const buf = Buffer.alloc(8 * 1024 * 1024);
+    let fill = 0;
+    const flush = (): void => {
+      if (fill > 0) {
+        writeSync(fd, buf, 0, fill);
+        fill = 0;
+      }
+    };
+    for (const piece of pieces) {
+      let remaining = piece;
+      while (remaining.length > 0) {
+        const take = Math.min(remaining.length, buf.length - fill);
+        Buffer.from(remaining, 'utf8').copy(buf, fill, 0, take);
+        fill += take;
+        remaining = remaining.slice(take);
+        if (fill === buf.length) flush();
+      }
+    }
+    flush();
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// A spawned probe child with a kill bound (the r18/r19/r21 pin shape): a
+// blocking open or a giant parse belongs in a child — a wedge reads as the
+// bound, an abort as the exit signal, and `verify` inspects the home on a
+// clean exit.
+function runProbeChild(
+  home: string,
+  workerEnv: Record<string, string>,
+  label: string,
+  boundMs: number,
+  verify: () => void,
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const child = spawnLedgerWorker(home, workerEnv);
+    const bound = setTimeout(() => {
+      child.kill('SIGKILL');
+      reject(new Error(`${label}: the probe never returned (killed at the ${boundMs / 1000}s bound)`));
+    }, boundMs);
+    child.on('exit', (code, signal) => {
+      clearTimeout(bound);
+      if (signal !== null) {
+        reject(new Error(`${label}: the child died with ${signal}`));
+        return;
+      }
+      if (code !== 0) {
+        reject(new Error(`${label}: the probe child exited ${code}`));
+        return;
+      }
+      try {
+        verify();
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+    child.on('error', (error) => {
+      clearTimeout(bound);
+      reject(error);
+    });
+  });
+}
+
 function withLedgerHome(fn: (home: string) => Promise<void> | void): () => Promise<void> {
   return async () => {
     const home = fixtureDir('approval-ledger-');
@@ -347,6 +435,126 @@ if (process.env.LEDGER_NONREGULAR_OUTCOMES) {
     sessionId: 'ses-nonregular',
     tool: 'huaweicloud_run_approved_command',
     argsHash: 'h-nonregular-outcomes',
+    outcome: 'granted',
+  });
+  writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'probe-ok'), '1');
+  process.exit(0);
+}
+
+// The r21 memo-hit probe (round 21, finding 2): two dense .taken-* sidecars
+// with different maxes (the higher sorts FIRST — the bug shape), a readSync
+// counter hooked over the sidecar fds, one append to scan+memoize, then
+// two more appends whose sidecar reads are counted. A memoized hit pays
+// 2 positioned anchor reads per file; the r20 pre-fix fall-through paid a
+// full chunked rescan (16 reads per 16MiB file) per append.
+// The r21 capped-append probe (the write-count fix): one plain locked
+// append. The PARENT stages a store past the ulimit plus a spool row, and
+// spawns this mode under `ulimit -f 1` — the write must fail (EFBIG on the
+// second partial attempt) and the taken file must SURVIVE (the r7 keep
+// class). Pre-fix, the streamed writer ignored writeSync's partial count:
+// the truncated 1024-byte tmp landed as the store and the folded taken
+// file was REMOVED — evidence loss, caught by the r8 organic probe.
+if (process.env.LEDGER_CAPPED_APPEND_PROBE) {
+  recordAskModeConsent({
+    sessionId: 'ses-capped',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash: 'h-capped',
+    outcome: 'granted',
+  });
+  writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'probe-ok'), '1');
+  process.exit(0);
+}
+
+if (process.env.LEDGER_MEMO_HIT_PROBE) {
+  const probeDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud');
+  mkdirSync(probeDir, { recursive: true });
+  // The seam: the fold must SKIP the sidecars (they stay on disk as the
+  // memo-only class) while the stream scans them — the .taken-* files the
+  // memo exists for are exactly the ones the fold cannot consume.
+  process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = '64';
+  const MiB = 1024 * 1024;
+  const rowOf = (seq: number): string =>
+    JSON.stringify({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-hit',
+      outcome: 'granted',
+      grantedAt: 1000 + seq,
+      scope: 'once',
+      evidence: 'posture',
+      arrivalSeq: seq,
+    }) + '\n';
+  const stageDense = (name: string, maxSeq: number): void => {
+    const pieces: string[] = [];
+    let total = 0;
+    let n = 0;
+    while (total < 16 * MiB - 512) {
+      const piece = rowOf(n === 0 ? maxSeq : 1);
+      pieces.push(piece);
+      total += piece.length;
+      n += 1;
+    }
+    streamTextFile(join(probeDir, name), pieces);
+  };
+  // aaaa sorts before bbbb; aaaa carries the HIGHER max (the non-improving
+  // shape for bbbb on every later append).
+  stageDense('approval-consents.json.spool.jsonl.taken-r21-aaaa', 50);
+  stageDense('approval-consents.json.spool.jsonl.taken-r21-bbbb', 30);
+  const readCount = (): number => (globalThis as { __sidecarReads?: number }).__sidecarReads ?? 0;
+  const ask = (key: string) =>
+    recordAskModeConsent({
+      sessionId: 'ses',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: key,
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+  ask('h-hit-first'); // scans both, memoizes both
+  // The counter is read LIVE here and at the end (a number captured at the
+  // top of the mode would be a stale snapshot of 0).
+  writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'count1'), String(readCount()));
+  ask('h-hit-second');
+  ask('h-hit-third');
+  writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'count2'), String(readCount()));
+  process.exit(0);
+}
+
+// The r21 abort-probe modes (round 21, finding 1): a sub-cap ledger file
+// whose content is ONE GIANT JSON VALUE — the shape that aborted the whole
+// Node process inside the serializer (FATAL ERROR: Zone Allocation failed,
+// not a JS throw, invisible to every catch; SIGABRT over the real wire,
+// reproduced against the bundled dist; the store unchanged by the abort,
+// so a permanent kill switch). STORE mode stages a 300MiB single-pad-row
+// store (streamed — no giant staging strings); SPOOL mode stages a 300MiB
+// single-line spool whose fold would land the giant value in the store.
+// One ask-mode arrival each; probe-ok proves the child survived. The
+// parent asserts exit 0 + the marker + the quarantine/keep posture.
+if (process.env.LEDGER_ABORT_STORE_PROBE || process.env.LEDGER_ABORT_SPOOL_PROBE) {
+  const probeDir = join(process.env.HUAWEICLOUD_HOME!, '.config', 'huaweicloud');
+  mkdirSync(probeDir, { recursive: true });
+  const MiB = 1024 * 1024;
+  const store = join(probeDir, 'approval-consents.json');
+  const spool = join(probeDir, 'approval-consents.json.spool.jsonl');
+  const row =
+    '{"sessionId":"ses","tool":"huaweicloud_run_approved_command","argsHash":"h-old-terminal","outcome":"granted","grantedAt":1000,"scope":"once","evidence":"terminal","arrivalSeq":0,"pad":"';
+  const rowTail = '"}';
+  if (process.env.LEDGER_ABORT_STORE_PROBE) {
+    // Stream the store out: '[' + row + pad... + ']' — no giant staging
+    // string anywhere in the child itself.
+    const target = 300 * MiB;
+    const padRoom = target - (1 + row.length) - rowTail.length - 1;
+    streamTextFile(store, padSlices(padRoom, '[' + row, rowTail + ']'));
+  } else {
+    // The spool twin: one 300MiB JSON string line — the fold's parse hands
+    // a giant value to the store write; the guard must keep the file like
+    // a read failure (bytes intact, retried) and the call must proceed.
+    const target = 300 * MiB;
+    streamTextFile(spool, padSlices(target - 2, '"', '"')); // the two quotes
+  }
+  recordAskModeConsent({
+    sessionId: 'ses-abort',
+    tool: 'huaweicloud_run_approved_command',
+    argsHash: 'h-abort-new',
     outcome: 'granted',
   });
   writeFileSync(join(process.env.HUAWEICLOUD_HOME!, 'probe-ok'), '1');
@@ -1859,6 +2067,26 @@ test(
 // link snapshots the patched export, so every outcomes-file read the
 // process performs is counted. Written at runtime into the probe's home;
 // no committed .cjs file to lint.
+// The r21 memo-hit hook: counts readSync calls on fds whose open path is a
+// .taken-* sidecar (the scan's chunked reads and the anchor reads alike).
+const SIDECAR_READ_HOOK_SOURCE = [
+  "const fs = require('node:fs');",
+  'const realOpen = fs.openSync;',
+  'const realRead = fs.readSync;',
+  'globalThis.__sidecarReads = 0;',
+  'const fdPaths = new Map();',
+  'fs.openSync = function patchedOpenSync(path, ...rest) {',
+  '  const fd = realOpen.call(fs, path, ...rest);',
+  '  try { fdPaths.set(fd, String(path)); } catch {}',
+  '  return fd;',
+  '};',
+  'fs.readSync = function patchedReadSync(fd, ...rest) {',
+  '  const p = fdPaths.get(fd);',
+  "  if (p !== undefined && p.includes('.spool.jsonl.taken-')) globalThis.__sidecarReads += 1;",
+  '  return realRead.call(fs, fd, ...rest);',
+  '};',
+].join('\n');
+
 const FS_COUNT_HOOK_SOURCE = [
   "const fs = require('node:fs');",
   'const real = fs.readFileSync;',
@@ -3123,6 +3351,173 @@ test(
       if (prevLimit === undefined) delete process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT;
       else process.env.HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT = prevLimit;
     }
+  }),
+);
+
+test(
+  'a sub-cap giant-value ledger file degrades the audit trail, never aborts the process (round-21 finding 1)',
+  withLedgerHome((home) => {
+    // Both abort shapes run in spawned children: the pre-fix failure was a
+    // V8 Zone abort (FATAL ERROR — not a JS throw, invisible to every
+    // catch; the child's exit signal is the observable), and the staging
+    // parses allocate ~1.2-1.5GB that belongs in a child, not the suite's
+    // process. A wedge reads as the parent's kill bound; an abort reads as
+    // the child's exit signal — either way a non-zero exit fails the pin.
+    const cell = (mode: string, label: string): Promise<void> =>
+      runProbeChild(home, { [mode]: '1' }, label, 90_000, () => {
+        assert.ok(existsSync(join(home, 'probe-ok')), `${label}: the child completed its append`);
+        const dir = join(home, '.config', 'huaweicloud');
+        const names = readdirSync(dir);
+        if (mode === 'LEDGER_ABORT_STORE_PROBE') {
+          // The 300MiB giant-value store quarantines (bytes preserved in
+          // the .corrupt-* sidecar) and the append lands in a fresh store
+          // — the call completed.
+          const quarantined = names.find((name) => name.includes('.corrupt-'));
+          assert.ok(quarantined, 'the store shape: the giant-value store is quarantined, bytes preserved');
+          assert.ok(
+            statSync(join(dir, quarantined!)).size >= 300 * 1024 * 1024,
+            'the store shape: the quarantine sidecar carries the full original bytes',
+          );
+          assert.ok(names.includes('approval-consents.json'), 'the store shape: a fresh store exists');
+        } else {
+          // The spool twin: the fold refuses the giant line, the taken
+          // file is kept with its bytes (the r7 read-failure posture), the
+          // append lands, the call completed.
+          const taken = names.find((name) => name.includes('.spool.jsonl.taken-'));
+          assert.ok(taken, 'the spool shape: the giant spool line is kept as a taken file');
+          assert.ok(
+            statSync(join(dir, taken!)).size >= 300 * 1024 * 1024 - 2,
+            'the spool shape: the taken file carries the full original bytes',
+          );
+          assert.ok(names.includes('approval-consents.json'), 'the spool shape: the store exists');
+        }
+        rmSync(join(home, 'probe-ok'), { force: true });
+      });
+    return cell('LEDGER_ABORT_STORE_PROBE', 'the store shape').then(() =>
+      cell('LEDGER_ABORT_SPOOL_PROBE', 'the spool shape'),
+    );
+  }),
+);
+
+test(
+  'a validated memo hit memoizes unconditionally: a non-improving sidecar never rescans (round-21 finding 2)',
+  withLedgerHome((home) => {
+    // The readSync counter runs in the spawned child via the preload hook
+    // (the hook must wrap the ledger module's OWN fs — a --require preload
+    // patches node:fs before the ledger links it, the r15-F4 pattern).
+    return new Promise<void>((resolve, reject) => {
+      const hookFile = join(home, 'sidecar-read-hook.cjs');
+      writeFileSync(hookFile, SIDECAR_READ_HOOK_SOURCE);
+      const child = spawnLedgerWorker(home, { LEDGER_MEMO_HIT_PROBE: '1' }, ['--require', hookFile]);
+      const bound = setTimeout(() => {
+        child.kill('SIGKILL');
+        reject(new Error('the memo-hit probe never returned (killed at the 60s bound)'));
+      }, 60_000);
+      child.on('exit', (code, signal) => {
+        clearTimeout(bound);
+        if (signal !== null || code !== 0) {
+          reject(new Error(`the memo-hit probe child exited code=${code} signal=${signal}`));
+          return;
+        }
+        try {
+          const count1 = Number(readFileSync(join(home, 'count1'), 'utf8'));
+          const count2 = Number(readFileSync(join(home, 'count2'), 'utf8'));
+          const hitReads = count2 - count1; // appends 2-3 only
+          // Post-fix: each append pays 2 anchor reads per 16MiB windowed
+          // sidecar => 2 files x 2 reads x 2 appends = 8 (slack to 20 for
+          // chunk-boundary carry reads). Pre-fix (the r20 conditional):
+          // bbbb fell through to a full chunked rescan every append —
+          // 2+17 reads x 2 appends ~= 38+.
+          assert.ok(
+            hitReads <= 20,
+            `the non-improving sidecar memoizes: appends 2-3 paid ${hitReads} sidecar reads (want <= 20; the pre-fix rescan pays ~38)`,
+          );
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      });
+      child.on('error', (error) => {
+        clearTimeout(bound);
+        reject(error);
+      });
+    });
+  }),
+);
+
+test(
+  'a partial store write never lands a truncated store or drops the folded taken file (round-21 write-count fix)',
+  withLedgerHome((home) => {
+    // Stage: a store past the ulimit (12 seed rows, ~1.8KB) plus one
+    // degraded spool row, then ONE append under `ulimit -f 1` (1024
+    // bytes). The write fails mid-file: the taken file must be kept with
+    // its bytes (the r7 keep class), the store must NOT be a truncated
+    // replacement, and the child must exit 0 (the best-effort contract).
+    return new Promise<void>((resolve, reject) => {
+      const dir = join(home, '.config', 'huaweicloud');
+      mkdirSync(dir, { recursive: true });
+      // The staging runs in the SUITE process (small strings only).
+      const rows = Array.from({ length: 12 }, (_, i) =>
+        JSON.stringify({
+          sessionId: `seed-${i}`,
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: `h-seed-${i}`,
+          outcome: 'granted',
+          grantedAt: 1_700_000_000_000 + i,
+          scope: 'once',
+          evidence: 'posture',
+          arrivalSeq: i,
+        }),
+      );
+      const storeBefore = JSON.stringify(JSON.parse(`[${rows.join(',')}]`));
+      writeFileSync(join(dir, 'approval-consents.json'), storeBefore);
+      // One degraded spool row (the K row the taken file must keep).
+      writeFileSync(
+        join(dir, 'approval-consents.json.spool.jsonl'),
+        JSON.stringify({
+          sessionId: 'ses-K',
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: 'hK',
+          outcome: 'granted',
+          grantedAt: 1_700_000_000_100,
+          scope: 'once',
+          evidence: 'terminal',
+          arrivalSeq: 12,
+        }) + '\n',
+      );
+      const beforeBytes = readFileSync(join(dir, 'approval-consents.json'), 'utf8');
+      const child = spawnSync(
+        'bash',
+        ['-c', 'ulimit -f 1; exec node --experimental-strip-types test/approval-ledger.test.ts'],
+        {
+          encoding: 'utf8',
+          timeout: 60_000,
+          env: {
+            ...process.env,
+            HUAWEICLOUD_HOME: home,
+            LEDGER_CAPPED_APPEND_PROBE: '1',
+            NODE_TEST_CONTEXT: undefined,
+            NODE_TEST_WORKER_ID: undefined,
+          },
+        },
+      );
+      try {
+        assert.equal(child.status, 0, `the capped child must exit 0 (got ${child.status} ${child.signal ?? ''})`);
+        assert.ok(existsSync(join(home, 'probe-ok')), 'the capped child completed its append');
+        const names = readdirSync(dir);
+        const taken = names.find((name) => name.includes('.spool.jsonl.taken-'));
+        assert.ok(taken, 'the taken file survives the failed write (the r7 keep class)');
+        const takenText = readFileSync(join(dir, taken!), 'utf8');
+        assert.ok(takenText.includes('"terminal"'), "the taken file keeps the K row's bytes");
+        assert.ok(
+          readFileSync(join(dir, 'approval-consents.json'), 'utf8') === beforeBytes,
+          'the store is byte-identical after the failed write — no truncated replacement landed',
+        );
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
   }),
 );
 
