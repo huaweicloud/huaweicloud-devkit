@@ -35,6 +35,7 @@ export {
   stripLeadingHcloudBinArgs,
   firstPlaceholderSecretArg,
   pinViewArgs,
+  needsUserConfirmation,
   type HcloudPlan,
   type HcloudPlanWithArgs,
 } from './hcloud-plan.ts';

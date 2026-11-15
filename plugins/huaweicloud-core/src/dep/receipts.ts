@@ -1,6 +1,17 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
 
 import { DEPENDENCIES, type DependencyId } from '../lib/dependency-model.ts';
 import type { ResolvedDependency } from '../lib/dep-resolve.ts';
@@ -199,7 +210,13 @@ const LOCK_POLL_MS = 50;
 // window is taken over anyway — the guard must never block forever. The
 // window must exceed the longest critical section (the tier uninstall's
 // 60s spawnSync) plus resolution margin, or a legitimate holder still
-// inside its section gets its lock taken over mid-flight.
+// inside its section gets its lock taken over mid-flight. A holder whose
+// claim goes stale while its pid is STILL alive is judged wedged by this
+// same window — correct for the installer's bounded sections, wrong for
+// a caller whose section cost is unbounded: such callers pass the
+// heartbeatMs option (below), which refreshes the claim's mtime for the
+// duration of the section so a live productive holder never goes stale
+// however long its section runs.
 const LOCK_TAKEOVER_MS = 90_000;
 
 const lockDepth = new Map<string, number>();
@@ -284,12 +301,38 @@ function sweepStaleStashes(dir: string): void {
   }
 }
 
-function acquireLock(dir: string, takeoverMs: number = LOCK_TAKEOVER_MS): void {
+// Thrown by acquireLock when the opt-in wait budget expires: the caller's
+// documented posture for this error is degrade-and-proceed (the ledger
+// runs the append unlocked), never fail the approved call. Only the
+// opt-in maxWaitMs path can produce it; the dep installer never passes
+// one and keeps today's unbounded wait.
+export class LockWaitBudgetExceeded extends Error {
+  readonly waitedMs: number;
+  constructor(waitedMs: number) {
+    super(`lock wait budget exceeded after ${waitedMs}ms (holder still alive)`);
+    this.name = 'LockWaitBudgetExceeded';
+    this.waitedMs = waitedMs;
+  }
+}
+
+function acquireLock(dir: string, takeoverMs: number = LOCK_TAKEOVER_MS, maxWaitMs: number = 0): void {
   mkdirSync(dir, { recursive: true });
   sweepStaleStashes(dir);
   const lock = lockDirPath(dir);
   const deadline = Date.now() + takeoverMs;
+  const acquireStarted = Date.now();
   for (;;) {
+    // The opt-in TOTAL wait cap (interrogate round 5, finding 1): the
+    // heartbeat keeps a live-but-wedged holder's claim fresh forever —
+    // its worker thread beats while its main thread hangs — so a waiter
+    // with no cap would block the caller's event loop for the wedge's
+    // whole duration, unbounded. A caller that passes maxWaitMs gets a
+    // bounded wait instead: past the cap with the lock still held, this
+    // throw hands the caller its documented degradation. Checked at the
+    // loop top only, so a claim that succeeded never throws.
+    if (maxWaitMs > 0 && Date.now() - acquireStarted > maxWaitMs) {
+      throw new LockWaitBudgetExceeded(Date.now() - acquireStarted);
+    }
     // Identity of the directory THIS iteration creates at the lock path —
     // the claim is only complete once the pid file lands in THAT directory.
     // Round-9 (CI, live-reproduced under CPU load): a past-deadline rival
@@ -440,7 +483,41 @@ function installExitCleanup(): void {
   });
 }
 
-export function withDepLock<T>(fn: () => T, dir: string = receiptDir(), takeoverMs: number = LOCK_TAKEOVER_MS): T {
+// The opt-in claim heartbeat (interrogate round 4): a worker thread that
+// refreshes the claim pid file's mtime every intervalMs for the duration
+// of the section. The acquire loop judges liveness by that mtime, so a
+// beating holder never goes stale however long its section runs — the
+// worker's timer fires on its own OS thread while the holder's main
+// thread is blocked in a multi-second parse/write, which no in-section
+// refresh could cover. Opt-in only: the dep installer's call sites pass
+// no heartbeat and keep exactly today's semantics (bounded sections,
+// window-sized takeover). A worker that fails to spawn degrades to the
+// no-heartbeat behavior — the documented residual for that path.
+function startClaimHeartbeat(lock: string, heartbeatMs: number): Worker | undefined {
+  try {
+    return new Worker(
+      [
+        "const { utimesSync } = require('node:fs');",
+        "const { workerData } = require('node:worker_threads');",
+        'setInterval(() => {',
+        '  const now = Date.now() / 1000;',
+        '  try { utimesSync(workerData.pidFile, now, now); } catch {}',
+        '}, workerData.intervalMs);',
+      ].join('\n'),
+      { eval: true, workerData: { pidFile: join(lock, LOCK_PID_FILE), intervalMs: heartbeatMs } },
+    );
+  } catch {
+    return undefined;
+  }
+}
+
+export function withDepLock<T>(
+  fn: () => T,
+  dir: string = receiptDir(),
+  takeoverMs: number = LOCK_TAKEOVER_MS,
+  heartbeatMs: number = 0,
+  maxWaitMs: number = 0,
+): T {
   const depth = lockDepth.get(dir) ?? 0;
   if (depth > 0) {
     lockDepth.set(dir, depth + 1);
@@ -450,13 +527,15 @@ export function withDepLock<T>(fn: () => T, dir: string = receiptDir(), takeover
       lockDepth.set(dir, depth - 1);
     }
   }
-  acquireLock(dir, takeoverMs);
+  acquireLock(dir, takeoverMs, maxWaitMs);
   installExitCleanup();
   heldDirs.add(dir);
   lockDepth.set(dir, 1);
+  const heartbeat = heartbeatMs > 0 ? startClaimHeartbeat(lockDirPath(dir), heartbeatMs) : undefined;
   try {
     return fn();
   } finally {
+    if (heartbeat) heartbeat.terminate().catch(() => {});
     lockDepth.set(dir, 0);
     releaseLock(dir);
     heldDirs.delete(dir);

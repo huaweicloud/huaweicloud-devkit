@@ -5,8 +5,233 @@ import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
+import { APPROVAL_TOOLS, APPROVAL_CLASSIFIED_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
+import { APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/registry.ts';
+import { TOOL_DEFINITIONS } from '../plugins/huaweicloud-core/src/tools.ts';
 import type { JscpdBaseline, JscpdConfig, JscpdReport, PackageJson, PackageLock } from './structure-helpers.ts';
 import { readJson, readSource, root } from './structure-helpers.ts';
+
+test('the approval roster only names real tools and the classified list is a subset of it', () => {
+  // The roster is a const string tuple by contract (the .mjs hook and
+  // PR-2's opencode writer import it without the registry graph), so
+  // nothing at compile time forces its entries to be tool names — this
+  // runtime pin does. A roster entry that names no tool silently gates
+  // nothing; a classified entry that is not on the roster silently
+  // bypasses the gate.
+  const known = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));
+  for (const name of APPROVAL_TOOLS) {
+    assert.ok(known.has(name as (typeof TOOL_DEFINITIONS)[number]['name']), `roster names unknown tool ${name}`);
+  }
+  for (const name of APPROVAL_CLASSIFIED_TOOLS) {
+    assert.ok(
+      (APPROVAL_TOOLS as ReadonlyArray<string>).includes(name),
+      `classified tool ${name} must also be on the approval roster`,
+    );
+  }
+});
+
+test('every approval spec is rostered: the spread-merge direction the satisfies check cannot see (round-10 finding 2)', () => {
+  // The registry's satisfies closure holds for INLINE object literals
+  // only: a spec added through a spread merge ({ ...A, ...B } — the shape
+  // PR-3 uses for its per-pack spec tables) carries extra keys past the
+  // excess-property check without failing the build. A spec-only
+  // registration silently GATES its tool (the dispatch gate resolves
+  // specs from the merged table) while remaining invisible to every
+  // roster consumer — the hook exemption, _meta, PR-2's ask-rule
+  // writer — so in ask mode the tool executes on a prompt the user was
+  // never shown and records a granted/posture consent the user never
+  // gave. This runtime invariant is the mirror of the
+  // roster-names-real-tools pin: the merged table's keys must be a
+  // subset of the roster tuple, so any roster/spec drift fails the
+  // battery loud instead of silently gating.
+  const roster = new Set(APPROVAL_TOOLS as ReadonlyArray<string>);
+  for (const key of Object.keys(APPROVAL_SPECS)) {
+    assert.ok(
+      roster.has(key),
+      `approval spec ${key} is not on the roster — the gate would silently engage for an unrostered tool`,
+    );
+  }
+});
+
+test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
+  // Interrogate rounds 1-5: typing the roster as a plain
+  // ReadonlyArray<string> widens ApprovalRosterName to string and
+  // silently inerts the registry's satisfies Record<ApprovalRosterName,
+  // ApprovalSpec> — the adversary added a roster entry with no spec and
+  // typecheck stayed green. The const tuple is what makes the compile-time
+  // coupling real. A text regex proved too weak four times: `as const` with
+  // a cast element matched the spelling pin; a comment inside the array
+  // became a phantom element; a '// ] as const;' comment terminated the
+  // capture before a widening; and round 5's shape — a STRING LITERAL
+  // earlier in the file carrying a clean declaration spelling — fed the
+  // pin a decoy while the real tuple was widened (verified end to end: the
+  // defeated pin plus a removed run-spec let unattested writes, credential
+  // exfil operands, and placeholder secrets all execute).
+  //
+  // The parser therefore runs ONE left-to-right scan that masks string
+  // literal CONTENTS (quote kept, every inner char becomes 'S') and
+  // removes comments as it goes: a decoy inside a string is invisible to
+  // the pattern, a comment cannot smuggle text. Round 6 closed the last
+  // extraction hole: a REGEX LITERAL is neither a string nor a comment,
+  // passes the skeleton verbatim, and first-match extraction read the
+  // decoy's clean tuple while the real declaration was widened (verified
+  // end to end: the attacked tree passed every static guard while a
+  // roster member ran with no spec, no gate, no attestation). The pin now
+  // requires EVERY occurrence of the declaration pattern in the skeleton
+  // to be a clean masked tuple of exactly the runtime arity: a decoy
+  // regex carrying a clean shape is itself an occurrence and must satisfy
+  // the rules, and the widened real declaration beside it fails them —
+  // there is no "first" match to hide behind. Spelling validity (what a
+  // masked element cannot show) stays with the sibling test that checks
+  // the runtime values against TOOL_DEFINITIONS.
+  const skeletonOf = (text: string): string =>
+    text.replace(
+      /(['"`])((?:\\[\s\S]|(?!\1)[\s\S])*?)\1|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+      (match, quote: string, body: string) => (quote ? quote + body.replace(/[\s\S]/g, 'S') + quote : ''),
+    );
+  const tupleElementsOf = (occurrence: string): string[] => {
+    const body = occurrence.replace(/^.*?=\s*(\[[\s\S]*?\]) as const;[\s\S]*$/, '$1');
+    return body
+      .replace(/^\[/, '')
+      .replace(/\]$/, '')
+      .split(',')
+      .map((element) => element.trim())
+      .filter((element) => element.length > 0);
+  };
+  const parseAllRosterTuples = (roster: string): Array<string[]> => {
+    const skeleton = skeletonOf(roster);
+    const occurrences = [...skeleton.matchAll(/export const APPROVAL_TOOLS = \[[\s\S]*?\] as const;/g)].map(
+      (match) => match[0],
+    );
+    return occurrences.map((occurrence) => tupleElementsOf(occurrence));
+  };
+  const cleanElements = (elements: string[]): boolean =>
+    elements.length > 0 && elements.every((element) => /^'S+'$/.test(element));
+  // allTuplesClean: at least one declaration-shaped occurrence exists, and
+  // every one is a clean masked tuple (no widening anywhere — zero
+  // occurrences fails closed). allTuplesSafe additionally pins every
+  // occurrence to the runtime arity — the strict form the real file must
+  // satisfy: the real declaration cannot be dirty, no decoy can hide it,
+  // and a clean decoy of any other arity is rejected outright (fail-closed;
+  // the current tree carries exactly one occurrence).
+  const allTuplesClean = (text: string): boolean => {
+    const all = parseAllRosterTuples(text);
+    return all.length > 0 && all.every((elements) => cleanElements(elements));
+  };
+  const allTuplesSafe = (text: string): boolean => {
+    const all = parseAllRosterTuples(text);
+    return (
+      all.length > 0 && all.every((elements) => cleanElements(elements) && elements.length === APPROVAL_TOOLS.length)
+    );
+  };
+  const roster = readSource(join('src', 'approval-roster.ts'));
+  const tuples = parseAllRosterTuples(roster);
+  assert.ok(tuples.length > 0, 'the roster declaration must be present outside strings and comments');
+  assert.ok(
+    allTuplesSafe(roster),
+    'every declaration-shaped occurrence must be a clean masked tuple of the runtime arity',
+  );
+  // The parser itself is pinned against every adversarial shape the rounds
+  // demonstrated. Clean shapes stay green; every widening goes red — and
+  // round 6's decoy shapes must fail through EVERY occurrence being clean.
+  assert.ok(allTuplesClean("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;"));
+  assert.ok(
+    allTuplesClean(
+      "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // the run face\n  /* PR-3a */ 'huaweicloud_sandbox_connect',\n] as const;",
+    ),
+    'commented elements parse clean',
+  );
+  assert.equal(
+    allTuplesClean("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;"),
+    false,
+    'an element-level cast must fail the element check',
+  );
+  assert.equal(
+    allTuplesClean("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];"),
+    false,
+    'a type annotation must fail the as-const requirement',
+  );
+  assert.equal(
+    allTuplesClean(
+      "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // ] as const;\n  'huaweicloud_sandbox_connect' as string,\n] as const;",
+    ),
+    false,
+    'a widening hidden behind an in-array "// ] as const;" comment must fail the element check',
+  );
+  // Round 5's string-literal decoy: masked, so only the real declaration
+  // is an occurrence.
+  assert.equal(
+    allTuplesClean(
+      `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_check_cli' as string] as const;`,
+    ),
+    false,
+    'a decoy string before a widened real declaration must fail — the pin sees the real tuple',
+  );
+  assert.ok(
+    allTuplesClean(
+      `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`,
+    ),
+    'a decoy before a CLEAN real declaration stays green — the real tuple is clean',
+  );
+  // Round 6's regex-literal decoy (the attacked shapes verified end to
+  // end): the regex passes the skeleton VERBATIM, so it is itself an
+  // occurrence — clean, but the widened real declaration beside it fails.
+  const regexDecoyBeforeWidenedReal = `// eslint-disable-next-line no-unused-vars\nconst pinSightDecoyRegex = /export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_secret_set'] as const;/;\n\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_secret_set' as string] as const;`;
+  assert.equal(
+    allTuplesClean(regexDecoyBeforeWidenedReal),
+    false,
+    'a regex-literal decoy before a widened real declaration must fail — every occurrence is checked',
+  );
+  const regexDecoyBeforeCleanReal = `const pinSightDecoyRegex = /export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;/;\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`;
+  assert.ok(
+    allTuplesClean(regexDecoyBeforeCleanReal),
+    'a regex decoy beside a CLEAN real declaration stays green — both occurrences are clean',
+  );
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [`x`] as const;'),
+    false,
+    'a template-literal element is a widened shape',
+  );
+  assert.equal(
+    allTuplesClean("export const APPROVAL_TOOLS = ['x' + 'y'] as const;"),
+    false,
+    'a concatenated element is a widened shape',
+  );
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [] as const;'),
+    false,
+    'an empty tuple must fail (core gate registrations)',
+  );
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [...([] as string[])] as const;'),
+    false,
+    'a spread element is a widened shape',
+  );
+  // A same-length runtime-element swap is a clean shape by this pin; the
+  // sibling value-level test (roster names real tools) is the guard for
+  // that class.
+  assert.match(
+    skeletonOf(roster),
+    /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/,
+    'the classified-list declaration must be present with the pinned shape outside strings and comments',
+  );
+});
+
+test('every registered classified tool provides a classify', () => {
+  // ApprovalCoreMint pins classification before the mint: a classified
+  // registration without a classify function cannot decide engagement, so
+  // it would fail open. The registry satisfies check pins the spec's
+  // existence; this pins the classified flavor's function.
+  for (const name of APPROVAL_CLASSIFIED_TOOLS) {
+    const spec = APPROVAL_SPECS[name as keyof typeof APPROVAL_SPECS];
+    assert.ok(spec, `classified tool ${name} has no ApprovalSpec`);
+    assert.equal(
+      typeof spec.classify,
+      'function',
+      `classified tool ${name} must register a pure classify (classify-before-mint)`,
+    );
+  }
+});
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {
   // Since the sandbox pack's family split the handlers live in

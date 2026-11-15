@@ -48,6 +48,14 @@ const CORE_VALUE_FILES = [
   'src/search-market.ts',
   'src/icon-library.ts',
   'src/detect-framework.ts',
+  // The approval-gate leaves, both zod-free by contract: approval-types.ts
+  // carries the ApprovalSpec/ConsentEvent vocabulary a pack's spec table
+  // imports, approval-roster.ts the plain string arrays the hook graph and
+  // the opencode writer share. The gate (approval-gate.ts) and the ledger
+  // (approval-ledger.ts) stay unlisted on purpose — packs register data,
+  // they never run the gate or write the store themselves.
+  'src/approval-types.ts',
+  'src/approval-roster.ts',
 ];
 
 // Core directories a pack may value-import (in addition to type-only edges).

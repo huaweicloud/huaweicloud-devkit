@@ -161,6 +161,11 @@ export default [
       'plugins/huaweicloud-core/hooks/huaweicloud-safety.mjs',
       'test/huaweicloud-agent-toolkit-test/scripts/invoke-mcp.mjs',
       'test/fixtures/**',
+      // The ledger test re-executes itself as a worker-mode child process
+      // (the concurrency test): the worker block must exit before any test
+      // registers, which is the legitimate entry-point exit this rule
+      // carves out.
+      'test/approval-ledger.test.ts',
     ],
     rules: {
       'n/no-process-exit': 'off',

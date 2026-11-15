@@ -70,6 +70,24 @@ export const gitConfig = z.looseObject({
   open_type: z.string().optional(),
 });
 
+// The shared approval-gate parameters, declared once for every roster tool
+// the gate covers (the hcloud run face today; the PR-3 pack registrations
+// join by spreading the same parts into their schemas). Both are optional
+// in the schema ON PURPOSE, same doctrine as vendorConfirmed: a missing
+// value must reach callTool's gate, which owns the refusal teaching —
+// SDK-level required-field rejects would silence the consent instruction.
+// The gate, not zod, is the enforcement.
+export const approvalTokenArg = z
+  .string()
+  .optional()
+  .describe(
+    "Required in token-approval mode (from the minting face — the plan tool, or the approval gate's USER_CONFIRMATION_REQUIRED envelope); omit in ask mode where the harness client confirms at run time.",
+  );
+
+export const approvedByUserArg = booleanArg.describe(
+  'Must be true only after the user explicitly approves this exact call.',
+);
+
 export const workspaceId = z
   .string()
   .optional()
