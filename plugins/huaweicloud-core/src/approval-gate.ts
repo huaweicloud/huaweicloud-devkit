@@ -30,8 +30,7 @@ import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
 import { huaweiConfigBase } from './lib/state-dir.ts';
 import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
-import type { ApprovalSpec, ConsentDeliveryOutcome } from './approval-types.ts';
-import { scanSavedAllowRows, savedAllowAction, type SavedAllowScan } from './lib/opencode-saved-perms.ts';
+import type { ApprovalSpec, ConsentDeliveryOutcome, ElicitFormRequest, ElicitOutcome } from './approval-types.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
 // consent stamp AND the seq the ask branch just wrote — round 15, finding
@@ -51,72 +50,6 @@ export const NO_SESSION_SEAM_ERROR =
 
 const GRANT_REQUIRED_NEXT_STEP =
   'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.';
-
-// The saved-allow-row refusal (the always-allow fail-open). In ask mode the
-// user's confirmation IS the harness prompt on this call, and opencode's
-// "Always allow" answer persists an allow row into its own store that is
-// evaluated AFTER the configured ask rule (findLast), so the button silently
-// converts every future call on this action into an unprompted execution. The
-// server cannot suppress the button, so the only honest defense is to refuse
-// the arrival itself: the call never executes and never mints, and the
-// envelope teaches the removal instead of pretending the prompt still gated
-// anything. Token mode is untouched (a custody grant is single-use and has no
-// stored client-side twin).
-export const SAVED_ALLOW_ROW_CODE = 'SAVED_ALLOW_ROW_BLOCKS_ASK_APPROVAL';
-
-function savedAllowRowRefusal(scan: SavedAllowScan, action: string): Record<string, unknown> {
-  const rows = scan.status === 'ok' ? scan.rows : [];
-  const dbPath = scan.dbPath;
-  const rowIds = rows.map((row) => row.id);
-  const rowLines = rows.map((row) => `${row.id} (${row.projectWorktree ?? row.projectId})`).join(', ');
-  const scopeNote =
-    scan.status === 'ok' && scan.scope === 'any-project'
-      ? ' The saved row could not be attributed to the current project, so every matching row counts.'
-      : '';
-  const reason =
-    `opencode has a saved "always allow" permission row covering ${action}, so the client would run this call ` +
-    `without prompting and the ask posture's confirmation would be silently skipped.${scopeNote}`;
-  const nextStep =
-    `Remove the saved rule covering ${action} in opencode (its saved permission list, or the opencode API ` +
-    `DELETE /api/permission/saved/<id>), then retry this call. ` +
-    `The row lives in ${dbPath} (table "permission": ${rowLines}); with opencode closed it can be deleted ` +
-    `there directly. "npx huaweicloud-devkit update" repairs the config-file half only and cannot remove it.`;
-  return {
-    status: 'rejected',
-    code: SAVED_ALLOW_ROW_CODE,
-    reason,
-    savedAllow: {
-      action,
-      dbPath,
-      scope: scan.status === 'ok' ? scan.scope : 'unknown',
-      rows: rows.map((row) => ({
-        id: row.id,
-        action: row.action,
-        resource: row.resource,
-        project: row.projectWorktree ?? row.projectId,
-      })),
-      rowIds,
-    },
-    nextStep,
-  };
-}
-
-// Ask-mode arrivals pass this before any consent record: a saved allow row
-// covers the very action this call is asking about, so the harness prompt the
-// ask contract trusts is not the gate that ran. Returns the refusal envelope,
-// or null when the store holds no covering row (including every unreadable
-// store shape: the guard warns on stderr and lets the call through, because a
-// store we cannot read must never break the approved path).
-function savedAllowRowGuard(name: ToolName): Record<string, unknown> | null {
-  const action = savedAllowAction(name);
-  const scan = scanSavedAllowRows({ scope: 'project', actions: [action] });
-  if (scan.status === 'unreadable') {
-    console.error(`[huaweicloud-devkit] opencode saved-permission store unreadable (${scan.dbPath}): ${scan.detail}`);
-    return null;
-  }
-  if (scan.status !== 'ok' || scan.rows.length === 0) return null;
-  return savedAllowRowRefusal(scan, action);
-}
 
 // The command-forward anchor (the operator-approved display field): a call
 // that carries the tool's `command` string must spell the exact line its args
@@ -398,6 +331,115 @@ function grantRequired(spec: ApprovalSpec, value: unknown, opts: CallToolOptions
   return spec.classify ? spec.classify(value, opts) === 'required' : true;
 }
 
+// ── The server-run confirmation ladder (PR-1.5) ───────────────────────────
+//
+// Ask mode no longer trusts a client popup. On a client that declared the
+// elicitation form capability in its initialize params, the gate raises the
+// form itself (T1): the form body carries the command line and the redacted
+// summarize view, and one boolean field is the approval. On a client that
+// declared nothing, the gate refuses with a chat round-trip envelope (T3):
+// the model must show the command to the user and retry with the attestation,
+// which is model-relayed posture trust and every surface labels it so.
+// Token mode (T4) is untouched.
+export const ELICITATION_DECLINED = 'ELICITATION_DECLINED';
+export const ELICITATION_CANCELLED = 'ELICITATION_CANCELLED';
+export const ELICITATION_TIMEOUT = 'ELICITATION_TIMEOUT';
+export const ELICITATION_FAILED = 'ELICITATION_FAILED';
+export const ASK_CONFIRMATION_REQUIRED = 'ASK_CONFIRMATION_REQUIRED';
+
+// The explicit abstention bound. The SDK's 60 s default is the no-answer
+// bound the probe measured (-32001), and it is shorter than a human reading
+// a command line; five minutes leaves room to read and answer without
+// leaving an unresponsive client able to stall a call indefinitely.
+export const ELICITATION_TIMEOUT_MS = 300_000;
+
+// The form's one field: a boolean. Both probed harnesses render a boolean
+// as a Yes/No choice, and one field keeps the payload inside the restricted
+// top-level schema the form mode accepts.
+const ELICITATION_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    confirm: {
+      type: 'boolean',
+      title: 'Run this command',
+      description: 'Approve runs the command exactly once. Decline or dismiss cancels it.',
+    },
+  },
+  required: ['confirm'],
+};
+
+function elicitationRequest(commandLine: string, summary: string): ElicitFormRequest {
+  return {
+    message:
+      'HuaweiCloud DevKit is requesting your confirmation to run this command:\n\n' +
+      `${commandLine}\n\n` +
+      `${summary}\n\n` +
+      'Approve to run it once. Decline or dismiss to cancel without running anything.',
+    schema: ELICITATION_SCHEMA,
+    timeoutMs: ELICITATION_TIMEOUT_MS,
+  };
+}
+
+function elicitRefusal(outcome: ElicitOutcome, commandLine: string): Record<string, unknown> {
+  const nextStep =
+    'Nothing ran and nothing was approved. Retry the call when the user is ready to answer the form.';
+  if (outcome.decision === 'timeout') {
+    return {
+      status: 'rejected',
+      code: ELICITATION_TIMEOUT,
+      reason: `the confirmation form was not answered within ${Math.round(ELICITATION_TIMEOUT_MS / 1000)} s.`,
+      command: commandLine,
+      nextStep,
+    };
+  }
+  if (outcome.decision === 'error') {
+    return {
+      status: 'rejected',
+      code: ELICITATION_FAILED,
+      reason: `the client could not deliver the confirmation form (${outcome.detail ?? 'transport failure'}).`,
+      command: commandLine,
+      nextStep,
+    };
+  }
+  const cancelled = outcome.decision === 'cancel';
+  return {
+    status: 'rejected',
+    code: cancelled ? ELICITATION_CANCELLED : ELICITATION_DECLINED,
+    reason: cancelled
+      ? 'the user dismissed the confirmation form without approving.'
+      : 'the user declined the confirmation form.',
+    command: commandLine,
+    nextStep: 'Nothing ran. Do not retry the same command without a fresh approval from the user.',
+  };
+}
+
+// T3: the client cannot render a form, so the model is the relay. The
+// envelope names the command it must show and the exact retry that
+// continues; the refusals below and the ledger tier keep the posture
+// labelled where a later reader meets it.
+function askConfirmationEnvelope(
+  commandLine: string,
+  summary: string,
+  view: { argsHash: string },
+): Record<string, unknown> {
+  return {
+    status: 'rejected',
+    code: ASK_CONFIRMATION_REQUIRED,
+    userConfirmation: {
+      needed: true,
+      mode: 'chat',
+      command: commandLine,
+      summary,
+      instruction:
+        'Show this exact command to the user in chat and wait for their answer. If they approve, retry the same call ' +
+        'with approvedByUser: true. That retry is model-relayed posture trust: it is the user\'s word as you report it, ' +
+        'not a mechanically verified answer.',
+    },
+    argsHash: view.argsHash,
+    nextStep: 'Retry with approvedByUser: true only after the user explicitly approves the command above.',
+  };
+}
+
 export async function runApprovalGate(
   name: ToolName,
   spec: ApprovalSpec,
@@ -412,10 +454,19 @@ export async function runApprovalGate(
     return { envelope: { ok: false, error: NO_SESSION_SEAM_ERROR } };
   }
 
-  // The approvedByUser attestation precedes every gate effect, exactly as
-  // it preceded the mode branch in the trunk handler: a call that fails it
-  // throws before anything is minted, recorded, or consumed.
-  if (args.approvedByUser !== true) {
+  // The approval posture resolves once, before any effect: a bogus
+  // DEVKIT_APPROVAL_MODE is boot fail-fast, never a silent fallback.
+  const approvalMode = approvalModeFromEnv(process.env);
+
+  // The approvedByUser attestation precedes every gate effect in token mode
+  // and on the legacy ask-mode shape (the trunk contract exactly as the
+  // hcloud battery pins it). Ask mode on the command-forward shape is the
+  // server-run ladder instead (PR-1.5): a capable client's call is confirmed
+  // by the form the gate raises, and a non-capable client's unattested call
+  // is answered with the T3 envelope that asks for the very attestation the
+  // retry then carries. Throwing here would silence both.
+  const serverRunArrival = approvalMode === 'ask' && args.command !== undefined;
+  if (args.approvedByUser !== true && !serverRunArrival) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
 
@@ -435,43 +486,62 @@ export async function runApprovalGate(
   // skips consent machinery, never safety floors.
   const classifiedPass = spec.flavor === 'classified' && spec.classify?.(value, opts) === 'none';
 
-  const approvalMode = approvalModeFromEnv(process.env);
   if (approvalMode === 'ask') {
-    // The harness client's permission prompt on this very call is the
-    // user's confirmation: run the execution floors, record the arrival,
-    // then route to the handler with no token. The consent event's
-    // subject is the ARRIVAL, not the execution: the consent fact ("the
-    // user allowed this exact call") is fully known here, while the
-    // handler's outcome is a different fact the event does not claim —
-    // outcome below is the consent's outcome (a call that reached the gate
-    // with the attestation was allowed, hence 'granted'), the same
-    // arrival semantics ApprovalCoreConsent models as the human yes.
-    // Floors first, so a refused call is not a consent arrival; a
-    // classified pass-through sits after the floors and skips only the
-    // consent record.
+    // Floors first, so a refused call is not a consent arrival; a classified
+    // pass-through sits after the floors and skips only the consent record.
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'ask');
     if (classifiedPass) return { pass: {} };
-    // The saved-allow-row guard (the always-allow fail-open): a store row
-    // covering this action means opencode itself will not prompt, so the
-    // confirmation this branch would otherwise record never happened. Refuse
-    // before the consent record — a refused call is not a consent arrival.
-    const savedAllow = savedAllowRowGuard(name);
-    if (savedAllow !== null) return { envelope: savedAllow };
-    const arrival = recordAskModeConsent({
-      sessionId: opts.sessionId ?? 'default',
-      tool: name,
-      argsHash: hashArgs(value),
-      outcome: 'granted',
-      command: spec.summarize(value).command,
-      arrivalSeq: 0, // the ledger assigns the real counter on append
-    });
-    // The arrival's IDENTITY (round 15, finding 2): the stamp AND the seq —
-    // the dispatch layer threads both to the delivery recorder so the
-    // annotate binds the outcome line to EXACTLY the row this arrival
-    // wrote, never to a positional candidate (a same-ms twin compacted in
-    // behind used to steal the line).
-    return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
+
+    const view = spec.summarize(value);
+    // The display line: the validated command field when the caller sent it
+    // (the command-forward shape), else the summarize view's redacted echo
+    // (the legacy shape keeps executing, it just shows the redacted line).
+    const commandLine = typeof args.command === 'string' && args.command !== '' ? args.command : (view.command ?? '');
+    const consented = (evidence: 'elicitation' | 'posture'): ApprovalGateOutcome => {
+      const arrival = recordAskModeConsent({
+        sessionId: opts.sessionId ?? 'default',
+        tool: name,
+        argsHash: view.argsHash,
+        outcome: 'granted',
+        evidence,
+        evidenceFinal: true,
+        command: view.command,
+        arrivalSeq: 0, // the ledger assigns the real counter on append
+      });
+      // The arrival's IDENTITY (round 15, finding 2): the stamp AND the seq —
+      // the dispatch layer threads both to the delivery recorder so the
+      // annotate binds the outcome line to EXACTLY the row this arrival
+      // wrote, never to a positional candidate (a same-ms twin compacted in
+      // behind used to steal the line).
+      return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
+    };
+
+    // T1: the client declared elicitation.form, so the gate raises the form
+    // itself. The accept IS the confirmation (the attestation is not
+    // consulted: a human answered, which is strictly stronger). Any other
+    // answer — decline, dismiss, the explicit timeout, a transport failure,
+    // an accept that submitted No — refuses fail-closed: nothing executes,
+    // nothing mints, nothing is recorded.
+    const elicitation = opts.elicitation;
+    if (elicitation?.capable) {
+      const outcome = await elicitation.prompt(elicitationRequest(commandLine, view.summary));
+      const accepted = outcome.decision === 'accept' && outcome.content?.['confirm'] === true;
+      if (!accepted) {
+        const refusal = outcome.decision === 'accept' ? { ...outcome, decision: 'decline' as const } : outcome;
+        return { envelope: elicitRefusal(refusal, commandLine) };
+      }
+      return consented('elicitation');
+    }
+
+    // T3: no form capability. An attested call is the chat round-trip's
+    // retry and executes on posture trust (the same contract PR-1 shipped);
+    // an unattested command-forward arrival is answered with the envelope
+    // that asks for exactly that retry.
+    if (args.approvedByUser !== true) {
+      return { envelope: askConfirmationEnvelope(commandLine, view.summary, view) };
+    }
+    return consented('posture');
   }
 
   const token = typeof args.approvalToken === 'string' ? args.approvalToken : '';

@@ -145,6 +145,12 @@ const DELIBERATE_OPTIONALS = [
     property: 'approvalToken',
     reason: 'DEVKIT_APPROVAL_MODE=ask makes the harness client the confirmation, so the token becomes mode-conditional',
   },
+  {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'approvedByUser',
+    reason:
+      'PR-1.5 server-run confirmation: the attestation is the T3 chat round-trip retry marker, so the first ask-mode arrival carries none and must reach the gate (a schema-required field would die in SDK validation). Token mode still throws the teaching rejection when it is absent.',
+  },
 ];
 
 function normalize(node) {

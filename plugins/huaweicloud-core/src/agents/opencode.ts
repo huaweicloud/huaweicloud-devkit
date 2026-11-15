@@ -73,15 +73,13 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
     ctx.skip('ASK approval posture (opencode not verifiably at or above 1.19.0)');
     return;
   }
-  const posture = askPostureCheck(ctx, gate);
-  savedAllowStoreCheck(ctx, posture === 'ask');
+  askPostureCheck(ctx, gate);
+  savedAllowStoreCheck(ctx);
 }
 
-// The posture verdict the saved-store check words itself by: 'ask' means the
-// client prompt is the contract's confirmation (so a saved row is the
-// fail-open the server gate refuses), anything else means the token gate is
-// the contract (so a saved row only suppresses a prompt that gate does not
-// rely on).
+// The posture verdict (the client rule / server env pair). PR-2 flips this
+// pair's meaning; PR-1.5 keeps its current evaluation and no longer feeds the
+// verdict to the saved-row check (the server gate makes the row inert).
 function askPostureCheck(ctx: DoctorReporter, gate: 'v2-array' | 'v1-object'): 'ask' | 'other' {
   let cfg: Record<string, unknown> | null;
   try {
@@ -163,24 +161,23 @@ function askPostureCheck(ctx: DoctorReporter, gate: 'v2-array' | 'v1-object'): '
 // this check names the row and the store so the user can remove it. Zero rows
 // prints nothing at all (the healthy fresh state), so a clean install's
 // doctor output stays byte-identical.
-function savedAllowStoreCheck(ctx: DoctorReporter, askPosture: boolean): void {
+function savedAllowStoreCheck(ctx: DoctorReporter): void {
   const scan = scanSavedAllowRows({ scope: 'all' });
   if (scan.status === 'absent') return;
   if (scan.status === 'unreadable') {
     ctx.warn(
-      `ASK approval: opencode saved-permission store unreadable (${scan.dbPath}): ${scan.detail} — saved "always allow" rows cannot be detected; the server gate lets calls through rather than guess`,
+      `ASK approval hygiene: opencode saved-permission store unreadable (${scan.dbPath}): ${scan.detail} — saved "always allow" rows cannot be listed`,
     );
     return;
   }
   if (scan.rows.length === 0) return;
+  // WARN, not FAIL (PR-1.5 demotion): the confirmation runs server-side, so a
+  // saved client-side allow row can no longer suppress it (the form is raised
+  // inside the tool call and never routes through opencode's permission
+  // evaluation). The row is a stale grant worth cleaning up, not a gate.
   const actions = [...new Set(scan.rows.map((row) => row.action))].join(', ');
-  const consequence = askPosture
-    ? 'the client will not prompt and the server gate refuses those calls'
-    : 'the client will not prompt and those calls fall to the approval-token gate instead';
-  ctx.check(
-    'ASK approval: no saved "always allow" rule',
-    false,
-    `opencode's permission store holds a saved allow rule for ${actions} — it is evaluated after the configured rules, so ${consequence}. Remove the saved rule for each named action in opencode (its saved permission list, or the opencode API DELETE /api/permission/saved/<id>); it lives in ${scan.dbPath}, table "permission". "npx huaweicloud-devkit update" repairs the config half only and cannot remove it`,
+  ctx.warn(
+    `ASK approval hygiene: opencode's permission store holds a saved "always allow" rule for ${actions} — the server-run confirmation ignores it, so calls are not fail-open; the row is still a stale grant. List them: opencode api GET /api/permission/saved. Remove one: opencode api DELETE /api/permission/saved/<id>. It lives in ${scan.dbPath}, table "permission".`,
   );
   for (const row of scan.rows) {
     ctx.raw(`        ${row.id} → ${row.projectWorktree ?? row.projectId} (action ${row.action})`);

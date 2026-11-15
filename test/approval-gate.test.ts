@@ -21,14 +21,25 @@ import {
   recordApprovalDispatchOutcome,
   runApprovalGate,
   NO_SESSION_SEAM_ERROR,
-  SAVED_ALLOW_ROW_CODE,
+  ASK_CONFIRMATION_REQUIRED,
+  ELICITATION_CANCELLED,
+  ELICITATION_DECLINED,
+  ELICITATION_FAILED,
+  ELICITATION_TIMEOUT,
+  ELICITATION_TIMEOUT_MS,
 } from '../plugins/huaweicloud-core/src/approval-gate.ts';
 import { savedAllowAction } from '../plugins/huaweicloud-core/src/lib/opencode-saved-perms.ts';
-import { seedStoreIn, withStoreDir, writeCorruptStore, type SeedStore } from './opencode-saved-perms-harness.ts';
+import { seedStoreIn, withStoreDir, type SeedStore } from './opencode-saved-perms-harness.ts';
 import { HUAWEICLOUD_CLI_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
 import { getToolSchema } from '../plugins/huaweicloud-core/src/tool-schemas.ts';
 import { upgradePackage } from '../plugins/huaweicloud-core/src/update-upgrade.ts';
-import type { ApprovalSpec, ConsentEvent } from '../plugins/huaweicloud-core/src/approval-types.ts';
+import type {
+  ApprovalSpec,
+  ConsentEvent,
+  ElicitationSeam,
+  ElicitFormRequest,
+  ElicitOutcome,
+} from '../plugins/huaweicloud-core/src/approval-types.ts';
 import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
 import { spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness.ts';
@@ -893,7 +904,11 @@ test('the seam precheck precedes the attestation and the mode branch', async () 
   });
 });
 
-test('the roster-driven _meta: ask mode declares user interaction for roster tools only', async () => {
+test('the _meta flip: roster tools carry no client interaction flag in any mode', async () => {
+  // PR-1.5 removed the flag. The confirmation runs on the server now: a
+  // capable client answers the gate's own form, and the rest get the T3 chat
+  // round-trip. A client dialog ahead of either would double-confirm (codex
+  // measured its own approval prompt followed by the server form).
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const previous = process.env.DEVKIT_APPROVAL_MODE;
 
@@ -918,19 +933,12 @@ test('the roster-driven _meta: ask mode declares user interaction for roster too
   };
 
   try {
-    const ask = await listMeta('ask');
-    for (const meta of ask.roster) {
-      assert.deepEqual(
-        meta,
-        { 'anthropic/requiresUserInteraction': true },
-        'every roster tool declares it in ask mode',
-      );
-    }
-    assert.equal(ask.offRoster, undefined, 'a non-roster tool declares no _meta');
-
-    const token = await listMeta(undefined);
-    for (const meta of token.roster) {
-      assert.equal(meta, undefined, 'token mode declares no _meta');
+    for (const mode of ['ask', undefined, 'token']) {
+      const listed = await listMeta(mode);
+      for (const meta of listed.roster) {
+        assert.equal(meta?.['anthropic/requiresUserInteraction'], undefined, `no interaction flag in mode ${mode}`);
+      }
+      assert.equal(listed.offRoster, undefined, 'a non-roster tool declares no _meta');
     }
   } finally {
     if (previous === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
@@ -1710,10 +1718,47 @@ interface SeededAskRun {
   dir: string;
 }
 
+interface SeededAskOptions {
+  /** false omits the attestation (the T3 first arrival). Defaults to true. */
+  attested?: boolean;
+  /** The command-forward display line. */
+  command?: string;
+  /** The server-run confirmation seam (absent: a non-capable client). */
+  seam?: ElicitationSeam;
+}
+
+interface ElicitRecorder {
+  seam: ElicitationSeam;
+  requests: ElicitFormRequest[];
+}
+
+// A fake confirmation client: `capable` may flip between calls so a case can
+// prove the gate reads the session record per arrival, and every form the
+// gate raises is captured for content assertions.
+function elicitingSeam(
+  answer: ElicitOutcome | ((request: ElicitFormRequest) => ElicitOutcome),
+  capable: boolean | (() => boolean) = true,
+): ElicitRecorder {
+  const requests: ElicitFormRequest[] = [];
+  return {
+    requests,
+    seam: {
+      get capable(): boolean {
+        return typeof capable === 'function' ? capable() : capable;
+      },
+      async prompt(request) {
+        requests.push(request);
+        return typeof answer === 'function' ? answer(request) : answer;
+      },
+    },
+  };
+}
+
 // One ask-mode arrival against a seeded store: the isolated auth home, the
-// pinned store root, the marker fake, and the ask posture, so each case below
-// states only its store shape and its assertion.
-async function seededAskRun(seed: SeedStore, args: string[], command?: string): Promise<SeededAskRun> {
+// pinned store root, the marker fake, the ask posture, and the injected
+// confirmation seam, so each case below states only its store shape, its
+// client capability, and its assertion.
+async function seededAskRun(seed: SeedStore, args: string[], options: SeededAskOptions = {}): Promise<SeededAskRun> {
   let outcome: SeededAskRun | undefined;
   await withTempAuthHome(async () => {
     await withStoreDir(async (dir) => {
@@ -1723,7 +1768,16 @@ async function seededAskRun(seed: SeedStore, args: string[], command?: string): 
       process.env.HCLOUD_BIN = fakeHcloudWithMarker(marker);
       try {
         await withApprovalMode('ask', async () => {
-          const result: unknown = await runApprovedForward(command, undefined, args);
+          const callArgs: Record<string, unknown> = {
+            args,
+            maxRetries: 0,
+            vendorConfirmed: VENDOR,
+          };
+          if (options.attested !== false) callArgs.approvedByUser = true;
+          if (options.command !== undefined) callArgs.command = options.command;
+          const result: unknown = await callTool('huaweicloud_run_approved_command', callArgs, {
+            ...(options.seam ? { elicitation: options.seam } : {}),
+          });
           const events = readConsentEvents();
           outcome = { result, executed: existsSync(marker), consents: events.length, events, dir };
         });
@@ -1737,102 +1791,32 @@ async function seededAskRun(seed: SeedStore, args: string[], command?: string): 
   return outcome;
 }
 
-test('ask mode: a saved "always allow" row for this project refuses the arrival, records no consent, executes nothing', async () => {
-  const cwd = process.cwd();
-  const { result, executed, consents, dir } = await seededAskRun(
-    {
-      projects: [{ id: 'p-this', worktree: cwd }],
-      permissions: [{ id: 'psv_this_project', projectId: 'p-this', action: savedAllowAction() }],
-    },
-    ['ECS', 'DeleteServer', '--server_id=i-1'],
-  );
-  const refusal = result as {
-    status: string;
-    code: string;
-    reason: string;
-    nextStep: string;
-    savedAllow: { dbPath: string; action: string; scope: string; rows: Array<Record<string, unknown>> };
+test('guard demotion: a saved "always allow" row changes nothing in the ask arrival', async () => {
+  // The saved store cannot suppress a server-raised form: the form is
+  // initiated inside the tool call and never routes through opencode's
+  // permission evaluation. The reader survives for doctor hygiene only, so
+  // the row must be inert here; the same call with and without it behaves
+  // identically.
+  const seedWithRow: SeedStore = {
+    projects: [{ id: 'p-this', worktree: process.cwd() }],
+    permissions: [{ id: 'psv_this', projectId: 'p-this', action: savedAllowAction() }],
   };
-  assert.equal(refusal.status, 'rejected');
-  assert.equal(refusal.code, SAVED_ALLOW_ROW_CODE);
-  assert.match(refusal.reason, /saved "always allow"/, 'the reason names the fail-open');
-  assert.equal(refusal.savedAllow.action, savedAllowAction());
-  assert.equal(refusal.savedAllow.scope, 'project');
-  assert.equal(refusal.savedAllow.dbPath, join(dir, 'opencode', 'opencode.db'), 'the envelope names the store');
-  assert.deepEqual(
-    refusal.savedAllow.rows.map((row) => row['id']),
-    ['psv_this_project'],
-    'the envelope names the row',
-  );
-  assert.match(refusal.nextStep, /DELETE \/api\/permission\/saved/, 'the removal step is concrete');
-  assert.match(refusal.nextStep, /npx huaweicloud-devkit update/, 'the config-half limit is stated');
-  assert.equal(executed, false, 'the refusal never executes');
-  assert.equal(consents, 0, 'a refused call is not a consent arrival');
-});
+  const withRow = await seededAskRun(seedWithRow, ['ECS', 'DeleteServer', '--server_id=i-1']);
+  assert.equal((withRow.result as ApprovedRunResult).approved, true, 'the row does not block the call');
+  assert.equal(withRow.executed, true);
+  assert.equal(withRow.consents, 1, 'the arrival is recorded as usual');
+  assert.equal(withRow.events[0]!.evidence, 'posture', 'an attested legacy arrival keeps the posture tier');
 
-test('ask mode: a clean store changes nothing (the same call executes and records the arrival)', async () => {
-  const { result, executed, consents } = await seededAskRun({ projects: [{ id: 'p-this', worktree: process.cwd() }] }, [
-    'ECS',
-    'ListServersDetails',
-  ]);
-  assert.equal((result as ApprovedRunResult).approved, true, 'a clean store leaves the ask path byte-identical');
-  assert.equal(executed, true, 'the handler ran');
-  assert.equal(consents, 1, 'the posture-tier arrival is still recorded');
-});
-
-test("ask mode: another project's saved row never refuses a call whose project join resolves", async () => {
-  const { result, executed } = await seededAskRun(
-    {
-      projects: [
-        { id: 'p-this', worktree: process.cwd() },
-        { id: 'p-other', worktree: join(process.cwd(), 'other-project') },
-      ],
-      permissions: [{ id: 'psv_other', projectId: 'p-other', action: savedAllowAction() }],
-    },
-    ['ECS', 'ListServersDetails'],
-  );
-  assert.equal((result as ApprovedRunResult).approved, true, "another project's grant is not this call's problem");
-  assert.equal(executed, true);
-});
-
-test('ask mode: an unattributable saved row refuses conservatively (the any-project fallback)', async () => {
-  const { result, executed } = await seededAskRun(
-    {
-      projects: [{ id: 'p-unrelated', worktree: join(process.cwd(), 'unrelated-project') }],
-      permissions: [{ id: 'psv_unattributed', projectId: 'p-unrelated', action: savedAllowAction() }],
-    },
-    ['ECS', 'ListServersDetails'],
-  );
-  const refusal = result as { code: string; savedAllow: { scope: string } };
-  assert.equal(refusal.code, SAVED_ALLOW_ROW_CODE, 'an unattributable saved allow still refuses');
-  assert.equal(refusal.savedAllow.scope, 'any-project');
-  assert.equal(executed, false);
-});
-
-test('ask mode: an unreadable store warns and lets the call through (never a hard fail)', async () => {
-  let outcome: { approved: boolean; executed: boolean } | undefined;
-  await withTempAuthHome(async () => {
-    await withStoreDir(async (dir) => {
-      writeCorruptStore(dir);
-      const marker = join(dir, 'executed.marker');
-      const previousBin = process.env.HCLOUD_BIN;
-      process.env.HCLOUD_BIN = fakeHcloudWithMarker(marker);
-      try {
-        await withApprovalMode('ask', async () => {
-          const result = (await runApproved(undefined, ['ECS', 'ListServersDetails'])) as ApprovedRunResult;
-          outcome = { approved: result.approved, executed: existsSync(marker) };
-        });
-      } finally {
-        if (previousBin === undefined) delete process.env.HCLOUD_BIN;
-        else process.env.HCLOUD_BIN = previousBin;
-      }
-    });
+  // And with a capable client the form fires regardless of the row.
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+  const elicited = await seededAskRun(seedWithRow, ['ECS', 'DeleteServer', '--server_id=i-1'], {
+    attested: false,
+    command: 'hcloud ECS DeleteServer --server_id=i-1',
+    seam,
   });
-  assert.deepEqual(
-    outcome,
-    { approved: true, executed: true },
-    'a store we cannot read never breaks the approved path',
-  );
+  assert.equal((elicited.result as ApprovedRunResult).approved, true);
+  assert.equal(requests.length, 1, 'the form fired with the seeded row present');
+  assert.equal(elicited.events[0]!.evidence, 'elicitation');
 });
 
 test('token mode: a seeded saved row changes nothing (the guard is ask-only)', async () => {
@@ -1856,6 +1840,182 @@ test('token mode: a seeded saved row changes nothing (the guard is ask-only)', a
   });
 });
 
+// ── The server-run confirmation ladder (PR-1.5) ───────────────────────────
+// Ask mode no longer trusts a client popup. A client that declared
+// elicitation.form gets the gate's own form (T1); the rest get the chat
+// round-trip envelope (T3) whose retry carries the attestation. Every
+// non-accept answer refuses fail-closed: nothing executes, nothing mints,
+// nothing is recorded. Token mode is untouched.
+
+const LADDER_ARGS = ['ECS', 'DeleteServer', '--server_id=i-1'];
+const LADDER_COMMAND = 'hcloud ECS DeleteServer --server_id=i-1';
+const LADDER_PROJECTS: SeedStore = { projects: [{ id: 'p', worktree: process.cwd() }] };
+
+test('T1: a capable client accepts the form, the call executes, and the ledger stamps elicitation', async () => {
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+  const { result, executed, events, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  assert.equal((result as ApprovedRunResult).approved, true, 'the form accept executes the call');
+  assert.equal(executed, true);
+  assert.equal(consents, 1);
+  assert.equal(events[0]!.evidence, 'elicitation', 'the accept is recorded as elicitation evidence');
+  assert.equal(events[0]!.command, LADDER_COMMAND, 'the row carries the command line the user read');
+  assert.equal(requests.length, 1, 'exactly one form, raised by the gate');
+  const form = requests[0]!;
+  assert.ok(form.message.includes(LADDER_COMMAND), 'the form body carries the command string');
+  assert.ok(
+    form.message.includes('huaweicloud_run_approved_command:'),
+    'the form body carries the redacted summarize view',
+  );
+  assert.equal(form.timeoutMs, ELICITATION_TIMEOUT_MS);
+  assert.ok(form.timeoutMs > 60_000, 'the explicit timeout is longer than the SDK default');
+  const fields = Object.keys(form.schema.properties);
+  assert.ok(fields.length <= 4, 'the schema stays within four simple fields');
+  assert.equal(fields.length, 1);
+  assert.equal(form.schema.properties['confirm']!['type'], 'boolean', 'the approval field is a boolean');
+  assert.deepEqual(form.schema.required, ['confirm']);
+});
+
+test('T1: the form fires even when the model asserts the attestation (the human answers, not the model)', async () => {
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+  const { result } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, seam });
+  assert.equal((result as ApprovedRunResult).approved, true);
+  assert.equal(requests.length, 1, 'the capable client is always asked');
+});
+
+test('T1: a decline refuses fail-closed with nothing executed and no consent row', async () => {
+  const { seam } = elicitingSeam({ decision: 'decline' });
+  const { result, executed, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  const refusal = result as { status: string; code: string; command: string; nextStep: string };
+  assert.equal(refusal.status, 'rejected');
+  assert.equal(refusal.code, ELICITATION_DECLINED);
+  assert.equal(refusal.command, LADDER_COMMAND, 'the envelope names the command that was declined');
+  assert.match(refusal.nextStep, /Nothing ran/);
+  assert.equal(executed, false, 'nothing executes');
+  assert.equal(consents, 0, 'a refusal is not a consent arrival');
+});
+
+test('T1: a dismiss (cancel) refuses with its own code and nothing executed', async () => {
+  const { seam } = elicitingSeam({ decision: 'cancel' });
+  const { result, executed, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  assert.equal((result as { code: string }).code, ELICITATION_CANCELLED);
+  assert.equal(executed, false);
+  assert.equal(consents, 0);
+});
+
+test('T1: the explicit timeout refuses with its own code (-32001 lands as a decision, never a throw)', async () => {
+  const { seam } = elicitingSeam({ decision: 'timeout', detail: 'MCP error -32001: Request timed out' });
+  const { result, executed, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  const refusal = result as { code: string; reason: string };
+  assert.equal(refusal.code, ELICITATION_TIMEOUT);
+  assert.match(refusal.reason, /not answered within 300 s/, 'the envelope names the bound');
+  assert.equal(executed, false);
+  assert.equal(consents, 0);
+});
+
+test('T1: a transport failure refuses as ELICITATION_FAILED, never as an executed call', async () => {
+  const { seam } = elicitingSeam({ decision: 'error', detail: 'socket closed' });
+  const { result, executed } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  assert.equal((result as { code: string }).code, ELICITATION_FAILED);
+  assert.equal(executed, false);
+});
+
+test('T1: an accept that submitted No refuses as a decline', async () => {
+  const { seam } = elicitingSeam({ decision: 'accept', content: { confirm: false } });
+  const { result, executed, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  assert.equal((result as { code: string }).code, ELICITATION_DECLINED);
+  assert.equal(executed, false);
+  assert.equal(consents, 0);
+});
+
+test('T3: a non-capable client gets the chat envelope, and the attested retry executes with posture evidence', async () => {
+  const first = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, attested: false });
+  const envelope = first.result as {
+    status: string;
+    code: string;
+    userConfirmation: { needed: boolean; mode: string; command: string; summary: string; instruction: string };
+    nextStep: string;
+  };
+  assert.equal(envelope.status, 'rejected');
+  assert.equal(envelope.code, ASK_CONFIRMATION_REQUIRED, 'a code distinct from the token and elicit refusals');
+  assert.equal(envelope.userConfirmation.needed, true);
+  assert.equal(envelope.userConfirmation.mode, 'chat');
+  assert.equal(envelope.userConfirmation.command, LADDER_COMMAND, 'the envelope carries the command string');
+  assert.ok(envelope.userConfirmation.summary.includes('huaweicloud_run_approved_command:'), 'and the summarize view');
+  assert.match(envelope.userConfirmation.instruction, /approvedByUser: true/, 'the exact retry is named');
+  assert.match(envelope.userConfirmation.instruction, /posture trust/, 'the trust class is labeled');
+  assert.equal(first.executed, false, 'the first arrival executes nothing');
+  assert.equal(first.consents, 0, 'and records no consent');
+
+  const retry = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND });
+  assert.equal((retry.result as ApprovedRunResult).approved, true, 'the attested retry executes');
+  assert.equal(retry.executed, true);
+  assert.equal(retry.events[0]!.evidence, 'posture', 'the retry is posture-tier evidence');
+});
+
+test('the ladder never fabricates an upgrade: a chat retry after a form answer records posture, not elicitation', async () => {
+  // Both arrivals share one consent key (session + tool + argsHash). The
+  // ledger's PR-1 rule inherits the earliest granted row's tier (memo-reuse
+  // semantics); a channel-verified ladder arrival opts out, so the row names
+  // the channel that actually answered instead of claiming a form nobody
+  // answered for that arrival.
+  let capable = true;
+  const { seam } = elicitingSeam({ decision: 'accept', content: { confirm: true } }, () => capable);
+  const first = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, attested: false, seam });
+  assert.equal(first.events[0]!.evidence, 'elicitation');
+  capable = false;
+  const retry = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND });
+  assert.equal(retry.events[0]!.evidence, 'posture', 'the chat retry is posture-grade, never an inherited upgrade');
+});
+
+test('the capability is read per arrival from the session record (no re-probe, no caching)', async () => {
+  let capable = true;
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } }, () => capable);
+  const first = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, attested: false, seam });
+  assert.equal((first.result as ApprovedRunResult).approved, true, 'the capable arrival elicits');
+  capable = false;
+  const second = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, attested: false, seam });
+  assert.equal((second.result as { code: string }).code, ASK_CONFIRMATION_REQUIRED, 'the same seam now reads T3');
+  assert.equal(requests.length, 1, 'the T3 arrival raised no form');
+});
+
+test('the ask-mode legacy shape keeps the trunk attestation throw (the hcloud battery pins it)', async () => {
+  await withTempAuthHome(async () => {
+    await assert.rejects(
+      () =>
+        callTool('huaweicloud_run_approved_command', {
+          args: ['ECS', 'DeleteServer', '--server_id=i-1'],
+          maxRetries: 0,
+          vendorConfirmed: VENDOR,
+        } as never),
+      /approvedByUser must be true/,
+    );
+  });
+});
+
 // ── The command-forward call shape (operator-approved addendum) ───────────
 // The run tool's input carries a `command` string beside `args`, so the
 // harness permission popup shows the command line the user is approving
@@ -1869,7 +2029,7 @@ test('command-forward: an ask-mode call carrying the exact command line executes
   const { result, executed, consents, events } = await seededAskRun(
     { projects: [{ id: 'p', worktree: process.cwd() }] },
     args,
-    command,
+    { command },
   );
   assert.equal((result as ApprovedRunResult).approved, true, 'the matching command line executes');
   assert.equal(executed, true);
@@ -1882,7 +2042,7 @@ test('command-forward: the plan echo spelling (shell-quoted) passes too', async 
   const { result } = await seededAskRun(
     { projects: [{ id: 'p', worktree: process.cwd() }] },
     ['ECS', 'DeleteServer', '--server_id=i-1', '--description=a b'],
-    'hcloud ECS DeleteServer --server_id=i-1 "--description=a b"',
+    { command: 'hcloud ECS DeleteServer --server_id=i-1 "--description=a b"' },
   );
   assert.equal((result as ApprovedRunResult).approved, true, "the plan's own quoted echo is accepted verbatim");
 });
@@ -1891,7 +2051,9 @@ test('command-forward: the plan echo forwards verbatim (plan.command passes the 
   const args = ['ECS', 'DeleteServer', '--server_id=i-1', '--description=a b'];
   const plan = planHcloudCommand(args, { mintApprovalToken: false });
   assert.ok(plan.command, 'the plan carries the echo the model forwards');
-  const { result } = await seededAskRun({ projects: [{ id: 'p', worktree: process.cwd() }] }, args, plan.command);
+  const { result } = await seededAskRun({ projects: [{ id: 'p', worktree: process.cwd() }] }, args, {
+    command: plan.command,
+  });
   assert.equal((result as ApprovedRunResult).approved, true, 'the documented pass-through works with a quoted arg');
 });
 
@@ -1899,7 +2061,7 @@ test('command-forward: a command line that disagrees with the args rejects in as
   const { result, executed, consents } = await seededAskRun(
     { projects: [{ id: 'p', worktree: process.cwd() }] },
     ['ECS', 'DeleteServer', '--server_id=i-123'],
-    'hcloud ECS DeleteServer --server_id=i-999',
+    { command: 'hcloud ECS DeleteServer --server_id=i-999' },
   );
   const refusal = result as { status: string; code: string; reason: string; expected: string[]; nextStep: string };
   assert.equal(refusal.status, 'rejected');
@@ -1938,11 +2100,9 @@ test('command-forward: a token-mode mismatch rejects without burning the token, 
 });
 
 test('command-forward: a command with no args is malformed and nothing executes', async () => {
-  const { result, executed, consents } = await seededAskRun(
-    { projects: [{ id: 'p', worktree: process.cwd() }] },
-    [],
-    'hcloud ECS DeleteServer --server_id=i-1',
-  );
+  const { result, executed, consents } = await seededAskRun({ projects: [{ id: 'p', worktree: process.cwd() }] }, [], {
+    command: 'hcloud ECS DeleteServer --server_id=i-1',
+  });
   assert.equal((result as { code: string }).code, 'COMMAND_REQUIRES_ARGS');
   assert.equal(executed, false, 'nothing executes');
   assert.equal(consents, 0);

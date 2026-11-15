@@ -103,6 +103,52 @@ export interface ApprovalSpec {
   };
 }
 
+// ── The server-run confirmation ladder (PR-1.5) ──────────────────────────
+//
+// The operator's 2026-11-15 pivot moves the ask-mode confirmation onto the
+// server. On a client that declares the MCP elicitation form capability, the
+// gate itself asks the human (T1): a form whose message carries the command
+// line and whose single boolean field is the approval. On a client that does
+// not declare it, the gate refuses with a chat round-trip envelope (T3) that
+// teaches the model to show the command and retry with the attestation.
+// Token mode (T4) is untouched. The types below are the transport-free seam:
+// the protocol layer implements ElicitationSeam over the SDK's elicitInput,
+// the gate consumes it, and tests inject a fake — no SDK import reaches the
+// gate, and the shapes stay zod-free.
+export type ElicitDecision = 'accept' | 'decline' | 'cancel' | 'timeout' | 'error';
+
+export interface ElicitOutcome {
+  decision: ElicitDecision;
+  /** The accepted form content (present on 'accept' only). */
+  content?: Record<string, unknown>;
+  /** Human-readable detail for a timeout or transport failure. */
+  detail?: string;
+}
+
+// The restricted top-level JSON Schema the elicitation form mode accepts
+// (flat properties, primitive values only). Kept structural so this module
+// needs no JSON-Schema dependency.
+export interface ElicitFormSchema {
+  type: 'object';
+  properties: Record<string, Record<string, unknown>>;
+  required?: string[];
+}
+
+export interface ElicitFormRequest {
+  /** The form body: the command line, the redacted summarize view, the effect. */
+  message: string;
+  schema: ElicitFormSchema;
+  /** The explicit bound (the SDK default is shorter than a human reading). */
+  timeoutMs: number;
+}
+
+export interface ElicitationSeam {
+  /** True when the client declared elicitation.form in its initialize params. */
+  capable: boolean;
+  /** Ask the human; resolves with the decision, never throws. */
+  prompt: (request: ElicitFormRequest) => Promise<ElicitOutcome>;
+}
+
 // The consent event the ledger stores (approval-ledger.ts). Ask-mode
 // arrivals write one; token mode keeps its existing semantics (single use,
 // tombstone, five-minute TTL) and records nothing — its evidence is the

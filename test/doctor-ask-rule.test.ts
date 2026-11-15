@@ -247,15 +247,14 @@ test('install honors a user-owned v1 key: add-only-if-absent keeps any value', (
   assert.ok(stdout.includes('"deny" — the write tool is blocked entirely'), 'doctor names the user-owned denial');
 });
 
-// ── The saved-permission store (PR-1.5) ───────────────────────────────────
-// The config-file posture can be perfectly healthy while opencode's own
-// store carries an "always allow" row for the same action: the row is
-// evaluated AFTER the configured ask rule (findLast), so the client stops
-// prompting and the ask contract is silently gone. Doctor names the row and
-// the store; a clean home prints nothing at all (zero rows is the healthy
-// fresh state, and the goldens stay byte-identical).
+// ── The saved-permission store (PR-1.5, demoted to a hygiene WARN) ────────
+// The confirmation runs server-side now, so a saved client-side "always
+// allow" row can no longer suppress it: the gate raises its own form inside
+// the tool call and never routes through opencode's permission evaluation.
+// Doctor keeps naming the row as a stale grant, WARN not FAIL, with the
+// probe-measured removal commands. A clean home prints nothing at all.
 
-const SAVED_LABEL = 'ASK approval: no saved "always allow" rule';
+const SAVED_WARN = '[WARN] ASK approval hygiene:';
 
 function seedSavedRow(home: string, seed: Parameters<typeof seedStoreIn>[1]): string {
   return seedStoreIn(join(home, '.local', 'share'), seed);
@@ -266,11 +265,11 @@ test('doctor: a clean store prints no saved-row line (the section is invisible o
   installAskOn(home);
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
   assert.ok(stdout.includes(`[PASS] ${ASK_LABEL}`), `the pair still passes, got:\n${stdout}`);
-  assert.equal(stdout.includes(SAVED_LABEL), false, 'no saved-row line on a clean home');
+  assert.equal(stdout.includes(SAVED_WARN), false, 'no saved-row line on a clean home');
   assert.equal(stdout.includes('saved-permission store'), false, 'no store line either');
 });
 
-test('doctor: a saved "always allow" row FAILs with the store path, the row, and the removal step', () => {
+test('doctor: a saved "always allow" row WARNs with the store path, the row, and the two api commands', () => {
   const home = fixtureDir('hwc-saved-row-');
   installAskOn(home);
   const dbPath = seedSavedRow(home, {
@@ -278,12 +277,14 @@ test('doctor: a saved "always allow" row FAILs with the store path, the row, and
     permissions: [{ id: 'psv_demo_row', projectId: 'p-demo', action: ASK_RULE_ACTION }],
   });
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
-  assert.ok(stdout.includes(`[FAIL] ${SAVED_LABEL}`), `expected the saved row to fail, got:\n${stdout}`);
+  assert.ok(stdout.includes(SAVED_WARN), `expected the hygiene warn, got:\n${stdout}`);
+  assert.equal(stdout.includes('[FAIL] ASK approval hygiene'), false, 'the demotion: never a FAIL');
+  assert.ok(stdout.includes('not fail-open'), 'the WARN states the gate already holds');
   assert.ok(stdout.includes(dbPath), 'the store path is named');
   assert.ok(stdout.includes('psv_demo_row'), 'the row id is listed');
   assert.ok(stdout.includes(join(home, 'work', 'devkit-demo')), 'the row project is listed');
-  assert.ok(stdout.includes('DELETE /api/permission/saved/<id>'), 'the removal step is concrete');
-  assert.ok(stdout.includes('repairs the config half only'), 'the config-half limit is stated');
+  assert.ok(stdout.includes('opencode api GET /api/permission/saved'), 'the list command is taught');
+  assert.ok(stdout.includes('opencode api DELETE /api/permission/saved/<id>'), 'the removal command is taught');
 });
 
 test('doctor: a saved row that does not cover the roster action prints nothing', () => {
@@ -294,10 +295,10 @@ test('doctor: a saved row that does not cover the roster action prints nothing',
     permissions: [{ id: 'psv_other_tool', projectId: 'p-demo', action: 'some-other-server_some_tool' }],
   });
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
-  assert.equal(stdout.includes(SAVED_LABEL), false, `a foreign row is not ours, got:\n${stdout}`);
+  assert.equal(stdout.includes(SAVED_WARN), false, `a foreign row is not ours, got:\n${stdout}`);
 });
 
-test('doctor: a saved wildcard row covering the action FAILs too', () => {
+test('doctor: a saved wildcard row covering the action WARNs too', () => {
   const home = fixtureDir('hwc-saved-wildcard-');
   installAskOn(home);
   seedSavedRow(home, {
@@ -305,7 +306,7 @@ test('doctor: a saved wildcard row covering the action FAILs too', () => {
     permissions: [{ id: 'psv_wild', projectId: 'p-demo', action: 'huaweicloud-devkit_*' }],
   });
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
-  assert.ok(stdout.includes(`[FAIL] ${SAVED_LABEL}`), `expected the wildcard row to fail, got:\n${stdout}`);
+  assert.ok(stdout.includes(SAVED_WARN), `expected the wildcard row to warn, got:\n${stdout}`);
 });
 
 test('doctor: an unreadable store WARNs (warn-only, never a hard fail)', () => {
@@ -316,13 +317,13 @@ test('doctor: an unreadable store WARNs (warn-only, never a hard fail)', () => {
   writeFileSync(join(opencodeDir, 'opencode.db'), 'not a database\n', 'utf8');
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
   assert.ok(
-    stdout.includes('[WARN] ASK approval: opencode saved-permission store unreadable'),
+    stdout.includes(`${SAVED_WARN} opencode saved-permission store unreadable`),
     `expected the warn, got:\n${stdout}`,
   );
-  assert.equal(stdout.includes(`[FAIL] ${SAVED_LABEL}`), false, 'an unreadable store is never a FAIL');
+  assert.equal(stdout.includes('[FAIL] ASK approval hygiene'), false, 'an unreadable store is never a FAIL');
 });
 
-test('doctor: in token mode a saved row still FAILs, worded as the token-gate consequence', () => {
+test('doctor: in token mode the stale row WARNs the same way (the row is inert in every posture)', () => {
   const home = fixtureDir('hwc-saved-token-');
   const config = installAskOn(home);
   delete config.permissions;
@@ -334,9 +335,5 @@ test('doctor: in token mode a saved row still FAILs, worded as the token-gate co
   });
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
   assert.ok(stdout.includes('[PASS] ASK approval posture (token mode)'), `token mode still passes, got:\n${stdout}`);
-  assert.ok(stdout.includes(`[FAIL] ${SAVED_LABEL}`), `the stale row is still named, got:\n${stdout}`);
-  assert.ok(
-    stdout.includes('fall to the approval-token gate instead'),
-    'the consequence is worded for the actual posture, not the ask one',
-  );
+  assert.ok(stdout.includes(SAVED_WARN), `the stale row is still named, got:\n${stdout}`);
 });

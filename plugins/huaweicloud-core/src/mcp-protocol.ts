@@ -1,6 +1,12 @@
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult, JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ErrorCode,
+  McpError,
+  type CallToolResult,
+  type ElicitRequestFormParams,
+  type JSONRPCMessage,
+} from '@modelcontextprotocol/sdk/types.js';
 
 import {
   TOOL_DEFINITIONS,
@@ -19,11 +25,7 @@ import { initTelemetry } from './telemetry/telemetry.ts';
 import { detectAgent } from './telemetry/agent-detect.ts';
 import { asRecord } from './lib/as-record.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
-import { APPROVAL_TOOLS } from './approval-roster.ts';
-// The roster is a const tuple for the registry's compile-time closure; the
-// includes check here widens it once to the plain string set the ToolName
-// side needs.
-const ROSTER_TOOLS: ReadonlyArray<string> = APPROVAL_TOOLS;
+import type { ElicitationSeam } from './approval-types.ts';
 
 const pkgVersion = readInstalledVersion() || '0.0.0';
 
@@ -280,6 +282,40 @@ export function normalizeToolCallParams(message: JSONRPCMessage): JSONRPCMessage
   return message;
 }
 
+// The server-run confirmation seam (PR-1.5). The SDK captures the client's
+// initialize params on the per-session Server instance (that IS the session
+// record), so `capable` reads the declared `elicitation.form` capability and
+// never re-probes. The prompt raises a form-mode elicitation with an
+// explicit timeout and resolves every failure as a decision: the gate
+// refuses fail-closed instead of surfacing a transport error as the tool
+// result. Never wired on the remote face (it forces token mode and must not
+// elicit).
+// The SDK's request-timeout code (-32001) as a plain number: the enum type
+// has no shared member with the wire error's numeric code, so compare numbers.
+const REQUEST_TIMEOUT_CODE: number = ErrorCode.RequestTimeout;
+
+function createElicitationSeam(server: McpServer): ElicitationSeam {
+  return {
+    get capable(): boolean {
+      return server.server.getClientCapabilities()?.elicitation?.form !== undefined;
+    },
+    async prompt({ message, schema, timeoutMs }) {
+      try {
+        const result = await server.server.elicitInput(
+          { mode: 'form', message, requestedSchema: schema as ElicitRequestFormParams['requestedSchema'] },
+          { timeout: timeoutMs },
+        );
+        return { decision: result.action, content: result.content };
+      } catch (error) {
+        if (error instanceof McpError && error.code === REQUEST_TIMEOUT_CODE) {
+          return { decision: 'timeout', detail: error.message };
+        }
+        return { decision: 'error', detail: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  };
+}
+
 export function createDevkitMcpServer({
   sessionId,
   runtimePacks = false,
@@ -288,9 +324,11 @@ export function createDevkitMcpServer({
   assertConstructedSchemas();
   // The approval posture resolves once at construction: a bogus
   // DEVKIT_APPROVAL_MODE throws here (boot fail-fast, the same doctrine
-  // DEVKIT_PACKS applies through syncDisclosure), and registerOne below is
-  // the one place the mode changes the wire surface.
-  const askMode = approvalModeFromEnv(process.env) === 'ask';
+  // DEVKIT_PACKS applies through syncDisclosure). The value itself is read
+  // per call by the gate, and it no longer changes the wire surface: the
+  // PR-1.5 flip removed the client interaction flag, because the server
+  // raises the confirmation now.
+  approvalModeFromEnv(process.env);
   // The contradictory construction is refused, not cautioned: a remote that
   // also carried runtime pack toggling would attach the onPacksChanged seam
   // to every callOpts, publishing the server host's absolute install path
@@ -359,23 +397,24 @@ export function createDevkitMcpServer({
         {
           description: tool.description,
           inputSchema: getToolSchema(tool.name),
-          // Ask mode only: Claude Code honors this flag by prompting the
-          // user on every call of this tool — even in acceptEdits/auto/
-          // bypassPermissions modes, with no "don't ask again" — and that
-          // client prompt IS the user's confirmation the mode trusts.
-          // Other clients ignore the flag. Declared only in ask mode so
-          // token-mode Claude Code users don't gain a second prompt on top
-          // of the terminal approve they already run. Roster-driven: every
-          // tool the approval gate covers gets the flag, and PR-3's
-          // registrations join by landing in the roster.
-          ...(askMode && ROSTER_TOOLS.includes(tool.name)
-            ? { _meta: { 'anthropic/requiresUserInteraction': true } }
-            : {}),
+          // No client interaction flag (PR-1.5 flip). The confirmation runs
+          // on the server now: on an elicitation-capable client the gate
+          // raises its own form, and on the rest the T3 chat round-trip is
+          // the confirmation. A client dialog ahead of either would
+          // double-confirm (codex measured the two-interaction sequence:
+          // its own approval prompt, then the server form), so roster tools
+          // carry no `anthropic/requiresUserInteraction`. The machinery
+          // stays roster-driven where it lives: nothing here keys on the
+          // roster because the policy emits nothing for any tool.
         },
         async (args): Promise<CallToolResult> => {
-          const callOpts: CallToolOptions = runtimePacks
-            ? { sessionId, onPacksChanged: () => syncDisclosure() }
-            : { sessionId };
+          // The server-run confirmation seam rides every stdio call; the
+          // remote face never wires it (ask mode is force-downgraded there).
+          const elicitation = remoteSurface ? undefined : createElicitationSeam(server);
+          const callOpts: CallToolOptions = {
+            ...(runtimePacks ? { sessionId, onPacksChanged: () => syncDisclosure() } : { sessionId }),
+            ...(elicitation ? { elicitation } : {}),
+          };
           const result = await callTool(tool.name, args, callOpts);
           const decorated = _decorateResult(sessionId, tool.name, result);
           return {

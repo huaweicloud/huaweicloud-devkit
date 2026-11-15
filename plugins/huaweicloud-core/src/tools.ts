@@ -56,7 +56,7 @@ import { VENDOR_GATED_TOOLS, enforceVendorGate } from './vendor-gate.ts';
 // dispatchTool calls runApprovalGate after the vendor gate and before the
 // pack dispatch.
 import { recordApprovalDispatchOutcome, runApprovalGate } from './approval-gate.ts';
-import type { ApprovalSpec } from './approval-types.ts';
+import type { ApprovalSpec, ElicitationSeam } from './approval-types.ts';
 // The capability catalog (service_catalog / list_packs / pack_info
 // handlers, the SKILL_OWNER inversion, and the shared pack-refusal
 // helpers) lives in capability-catalog.ts; dispatchTool switches into it.
@@ -205,6 +205,12 @@ export interface CallToolOptions {
   // mcp-protocol.ts. Its absence is the guard that keeps the stateless remote
   // from mutating process-shared pack state through a direct unlisted call.
   onPacksChanged?: () => void;
+  // The server-run confirmation seam (PR-1.5): mcp-protocol.ts wires the
+  // client's initialize capability record and the SDK elicitInput call here;
+  // the approval gate consumes it in ask mode. Absent on the remote face
+  // (force-token) and in every non-protocol construction, which is exactly
+  // the non-capable T3 path.
+  elicitation?: ElicitationSeam;
 }
 
 // Reject invalid numeric args up front instead of silently coercing them to

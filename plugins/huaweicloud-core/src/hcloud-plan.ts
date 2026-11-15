@@ -416,7 +416,7 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
         ? {
             needed: true,
             mode: 'ask',
-            note: "The harness client confirms this command with the user when huaweicloud_run_approved_command is called. Call it with the same args, the command field (this result's command line, so the prompt shows it first), and approvedByUser: true. No terminal approval line or token is needed.",
+            note: "The confirmation happens on the server when huaweicloud_run_approved_command is called: an elicitation-capable client renders a form with this command line, and any other client returns ASK_CONFIRMATION_REQUIRED, which you answer by showing the user this command in chat and retrying with approvedByUser: true. Send the same args and this result's command field on every call. No terminal approval line or token is needed.",
           }
         : {
             needed: true,

@@ -58,16 +58,16 @@ try {
 }
 
 if (transport === 'remote') {
-  // Ask mode is a stdio-harness posture: its confirmation evidence is the
-  // harness client's per-call permission prompt, and this stateless remote
-  // face serves plain HTTP callers with no trustworthy per-call prompt —
-  // so the env is forced back to the token gate, loudly, before any
-  // request handler resolves it. This is the only production entry to the
-  // remote surface.
+  // Ask mode is a stdio-session posture: its confirmation is the server-run
+  // gate's elicitation form (or the T3 chat round-trip), and this stateless
+  // remote face carries no session to ask in — no client capability record
+  // and no in-band round-trip — so the env is forced back to the token gate,
+  // loudly, before any request handler resolves it. This is the only
+  // production entry to the remote surface.
   if (approvalModeFromEnv(process.env) === 'ask') {
     process.env.DEVKIT_APPROVAL_MODE = 'token';
     process.stderr.write(
-      'DEVKIT_APPROVAL_MODE=ask is not supported on the remote transport (no per-call permission prompt to trust); falling back to token approval.\n',
+      'DEVKIT_APPROVAL_MODE=ask is not supported on the remote transport (no session to run the confirmation in); falling back to token approval.\n',
     );
   }
   const { startRemoteServer } = await import('./mcp-server-remote.ts');

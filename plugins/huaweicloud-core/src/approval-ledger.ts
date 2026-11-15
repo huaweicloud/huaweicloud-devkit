@@ -1976,6 +1976,15 @@ export function recordAskModeConsent(params: {
   // by the spec's contract); written on the row so the consent record names
   // what the user allowed, not only its hash.
   command?: string;
+  // The caller knows WHICH channel answered this arrival and wants that
+  // channel recorded (PR-1.5's ladder: an elicitation form answer is
+  // `elicitation`, a chat-round-trip retry is `posture`). Without this the
+  // ledger inherits the earliest granted row's tier on the consent key —
+  // PR-1's reuse rule, which would label a chat retry `elicitation` whenever
+  // a form had answered the same key earlier (a fabricated upgrade: the row
+  // would claim a form nobody answered for this arrival). Memo reuse keeps
+  // the inheriting path; a channel-verified arrival opts out.
+  evidenceFinal?: boolean;
 }): { grantedAt: number; arrivalSeq: number } {
   // Tier resolution is the ledger's rule, not the caller's: a reuse
   // inherits the original event's tier verbatim — never upgraded (posture
@@ -2014,11 +2023,13 @@ export function recordAskModeConsent(params: {
   if (params.command !== undefined && params.command !== '') event.command = params.command;
   withLedgerLock(() => {
     let evidence = params.evidence ?? 'posture';
-    try {
-      const original = originalGrantedFor(params.sessionId, params.tool, params.argsHash);
-      if (original) evidence = original.evidence;
-    } catch {
-      // degrade to the caller's tier: the append is the fact that matters
+    if (!params.evidenceFinal) {
+      try {
+        const original = originalGrantedFor(params.sessionId, params.tool, params.argsHash);
+        if (original) evidence = original.evidence;
+      } catch {
+        // degrade to the caller's tier: the append is the fact that matters
+      }
     }
     event.evidence = evidence;
     appendConsentEvent(event);
