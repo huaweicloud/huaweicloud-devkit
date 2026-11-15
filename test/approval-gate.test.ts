@@ -20,7 +20,10 @@ import {
   recordApprovalDispatchOutcome,
   runApprovalGate,
   NO_SESSION_SEAM_ERROR,
+  SAVED_ALLOW_ROW_CODE,
 } from '../plugins/huaweicloud-core/src/approval-gate.ts';
+import { savedAllowAction } from '../plugins/huaweicloud-core/src/lib/opencode-saved-perms.ts';
+import { seedStoreIn, withStoreDir, writeCorruptStore, type SeedStore } from './opencode-saved-perms-harness.ts';
 import { HUAWEICLOUD_CLI_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
 import { upgradePackage } from '../plugins/huaweicloud-core/src/update-upgrade.ts';
 import type { ApprovalSpec } from '../plugins/huaweicloud-core/src/approval-types.ts';
@@ -1661,4 +1664,176 @@ test('every roster entry resolves a spec and the roster names real tools', () =>
   for (const name of Object.keys(APPROVAL_SPECS)) {
     assert.ok(names.has(name), `spec for ${name} is not on the roster`);
   }
+});
+
+// ── The always-allow fail-open (PR-1.5): a saved client-side allow row ────
+// In ask mode the harness prompt on this call is the confirmation. opencode's
+// "Always allow" answer persists an allow row into its own SQLite store that
+// is evaluated AFTER the configured ask rule (findLast), so the gate must
+// refuse the arrival rather than record a consent nobody gave. Token mode
+// keeps its custody grant and is untouched.
+
+// A fake hcloud that leaves a marker file when it actually runs, so a refusal
+// can prove nothing executed. The harness script is extension-less and Node
+// loads it as ESM, so it uses import (a require there dies before the marker).
+function fakeHcloudWithMarker(marker: string): string {
+  return fakeHcloudExecutable(
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\nconsole.log(JSON.stringify({ ok: true }));`,
+  );
+}
+
+interface SeededAskRun {
+  /** The tool result; each case narrows it to the shape it asserts. */
+  result: unknown;
+  /** Whether the fake child actually ran (the refusal's proof of no execution). */
+  executed: boolean;
+  /** The ask-mode consent rows the arrival left behind (0 proves a refusal). */
+  consents: number;
+  /** The pinned store root (post-cleanup it is just a path string). */
+  dir: string;
+}
+
+// One ask-mode arrival against a seeded store: the isolated auth home, the
+// pinned store root, the marker fake, and the ask posture, so each case below
+// states only its store shape and its assertion.
+async function seededAskRun(seed: SeedStore, args: string[]): Promise<SeededAskRun> {
+  let outcome: SeededAskRun | undefined;
+  await withTempAuthHome(async () => {
+    await withStoreDir(async (dir) => {
+      seedStoreIn(dir, seed);
+      const marker = join(dir, 'executed.marker');
+      const previousBin = process.env.HCLOUD_BIN;
+      process.env.HCLOUD_BIN = fakeHcloudWithMarker(marker);
+      try {
+        await withApprovalMode('ask', async () => {
+          const result: unknown = await runApproved(undefined, args);
+          outcome = { result, executed: existsSync(marker), consents: readConsentEvents().length, dir };
+        });
+      } finally {
+        if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+        else process.env.HCLOUD_BIN = previousBin;
+      }
+    });
+  });
+  assert.ok(outcome, 'the seeded ask run completed');
+  return outcome;
+}
+
+test('ask mode: a saved "always allow" row for this project refuses the arrival, records no consent, executes nothing', async () => {
+  const cwd = process.cwd();
+  const { result, executed, consents, dir } = await seededAskRun(
+    {
+      projects: [{ id: 'p-this', worktree: cwd }],
+      permissions: [{ id: 'psv_this_project', projectId: 'p-this', action: savedAllowAction() }],
+    },
+    ['ECS', 'DeleteServer', '--server_id=i-1'],
+  );
+  const refusal = result as {
+    status: string;
+    code: string;
+    reason: string;
+    nextStep: string;
+    savedAllow: { dbPath: string; action: string; scope: string; rows: Array<Record<string, unknown>> };
+  };
+  assert.equal(refusal.status, 'rejected');
+  assert.equal(refusal.code, SAVED_ALLOW_ROW_CODE);
+  assert.match(refusal.reason, /saved "always allow"/, 'the reason names the fail-open');
+  assert.equal(refusal.savedAllow.action, savedAllowAction());
+  assert.equal(refusal.savedAllow.scope, 'project');
+  assert.equal(refusal.savedAllow.dbPath, join(dir, 'opencode', 'opencode.db'), 'the envelope names the store');
+  assert.deepEqual(
+    refusal.savedAllow.rows.map((row) => row['id']),
+    ['psv_this_project'],
+    'the envelope names the row',
+  );
+  assert.match(refusal.nextStep, /DELETE \/api\/permission\/saved/, 'the removal step is concrete');
+  assert.match(refusal.nextStep, /npx huaweicloud-devkit update/, 'the config-half limit is stated');
+  assert.equal(executed, false, 'the refusal never executes');
+  assert.equal(consents, 0, 'a refused call is not a consent arrival');
+});
+
+test('ask mode: a clean store changes nothing (the same call executes and records the arrival)', async () => {
+  const { result, executed, consents } = await seededAskRun({ projects: [{ id: 'p-this', worktree: process.cwd() }] }, [
+    'ECS',
+    'ListServersDetails',
+  ]);
+  assert.equal((result as ApprovedRunResult).approved, true, 'a clean store leaves the ask path byte-identical');
+  assert.equal(executed, true, 'the handler ran');
+  assert.equal(consents, 1, 'the posture-tier arrival is still recorded');
+});
+
+test("ask mode: another project's saved row never refuses a call whose project join resolves", async () => {
+  const { result, executed } = await seededAskRun(
+    {
+      projects: [
+        { id: 'p-this', worktree: process.cwd() },
+        { id: 'p-other', worktree: join(process.cwd(), 'other-project') },
+      ],
+      permissions: [{ id: 'psv_other', projectId: 'p-other', action: savedAllowAction() }],
+    },
+    ['ECS', 'ListServersDetails'],
+  );
+  assert.equal((result as ApprovedRunResult).approved, true, "another project's grant is not this call's problem");
+  assert.equal(executed, true);
+});
+
+test('ask mode: an unattributable saved row refuses conservatively (the any-project fallback)', async () => {
+  const { result, executed } = await seededAskRun(
+    {
+      projects: [{ id: 'p-unrelated', worktree: join(process.cwd(), 'unrelated-project') }],
+      permissions: [{ id: 'psv_unattributed', projectId: 'p-unrelated', action: savedAllowAction() }],
+    },
+    ['ECS', 'ListServersDetails'],
+  );
+  const refusal = result as { code: string; savedAllow: { scope: string } };
+  assert.equal(refusal.code, SAVED_ALLOW_ROW_CODE, 'an unattributable saved allow still refuses');
+  assert.equal(refusal.savedAllow.scope, 'any-project');
+  assert.equal(executed, false);
+});
+
+test('ask mode: an unreadable store warns and lets the call through (never a hard fail)', async () => {
+  let outcome: { approved: boolean; executed: boolean } | undefined;
+  await withTempAuthHome(async () => {
+    await withStoreDir(async (dir) => {
+      writeCorruptStore(dir);
+      const marker = join(dir, 'executed.marker');
+      const previousBin = process.env.HCLOUD_BIN;
+      process.env.HCLOUD_BIN = fakeHcloudWithMarker(marker);
+      try {
+        await withApprovalMode('ask', async () => {
+          const result = (await runApproved(undefined, ['ECS', 'ListServersDetails'])) as ApprovedRunResult;
+          outcome = { approved: result.approved, executed: existsSync(marker) };
+        });
+      } finally {
+        if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+        else process.env.HCLOUD_BIN = previousBin;
+      }
+    });
+  });
+  assert.deepEqual(
+    outcome,
+    { approved: true, executed: true },
+    'a store we cannot read never breaks the approved path',
+  );
+});
+
+test('token mode: a seeded saved row changes nothing (the guard is ask-only)', async () => {
+  await withTempAuthHome(async () => {
+    await withStoreDir(async (dir) => {
+      seedStoreIn(dir, {
+        projects: [{ id: 'p-this', worktree: process.cwd() }],
+        permissions: [{ id: 'psv_this', projectId: 'p-this', action: savedAllowAction() }],
+      });
+      const result = (await runApproved(undefined, ['ECS', 'DeleteServer', '--server_id=i-1'])) as {
+        status: string;
+        code: string;
+      };
+      assert.deepEqual(
+        result,
+        { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' },
+        'the trunk token contract holds',
+      );
+      assert.equal(inspectApprovalToken('anything').state, 'not_found', 'nothing was minted');
+    });
+  });
 });

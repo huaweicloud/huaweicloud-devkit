@@ -46,9 +46,14 @@ export function doctorEnv(home: string, extra: Record<string, string> = {}): Nod
   // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);
   // CODEX_HOME keys the uninstaller's codex cache cleanup. Ambient values
   // would leak doctor's fresh-install probes into real state (a test that
-  // needs XDG_CONFIG_HOME set uses the DSH_HOME guard pattern).
+  // needs XDG_CONFIG_HOME set uses the DSH_HOME guard pattern). XDG_DATA_HOME
+  // and OPENCODE_DB are the same hazard for the opencode saved-permission
+  // store: they would let doctor read the machine's live store (and its
+  // "always allow" rows) under a fake HOME.
   if (!('XDG_CONFIG_HOME' in extra)) delete env.XDG_CONFIG_HOME;
+  if (!('XDG_DATA_HOME' in extra)) delete env.XDG_DATA_HOME;
   delete env.CODEX_HOME;
+  delete env.OPENCODE_DB;
   if (!('DSH_HOME' in extra)) delete env.DSH_HOME;
   return env;
 }

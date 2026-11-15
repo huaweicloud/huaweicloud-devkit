@@ -6,6 +6,7 @@ import test from 'node:test';
 import { ASK_RULE_ACTION } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
 import { fixtureDir } from './fixture-dir.ts';
 import { runDoctor, runInstall } from './doctor-helpers.ts';
+import { seedStoreIn } from './opencode-saved-perms-harness.ts';
 
 // The ASK approval posture through the real installer and doctor: the
 // install writes the PAIR (the OpenCode permissions ask rule + the mcp
@@ -244,4 +245,98 @@ test('install honors a user-owned v1 key: add-only-if-absent keeps any value', (
   assert.equal(v1Permission(config)[ASK_RULE_ACTION], 'deny', 'the user’s value survives the write');
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v1' });
   assert.ok(stdout.includes('"deny" — the write tool is blocked entirely'), 'doctor names the user-owned denial');
+});
+
+// ── The saved-permission store (PR-1.5) ───────────────────────────────────
+// The config-file posture can be perfectly healthy while opencode's own
+// store carries an "always allow" row for the same action: the row is
+// evaluated AFTER the configured ask rule (findLast), so the client stops
+// prompting and the ask contract is silently gone. Doctor names the row and
+// the store; a clean home prints nothing at all (zero rows is the healthy
+// fresh state, and the goldens stay byte-identical).
+
+const SAVED_LABEL = 'ASK approval: no saved "always allow" rule';
+
+function seedSavedRow(home: string, seed: Parameters<typeof seedStoreIn>[1]): string {
+  return seedStoreIn(join(home, '.local', 'share'), seed);
+}
+
+test('doctor: a clean store prints no saved-row line (the section is invisible on zero rows)', () => {
+  const home = fixtureDir('hwc-saved-clean-');
+  installAskOn(home);
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes(`[PASS] ${ASK_LABEL}`), `the pair still passes, got:\n${stdout}`);
+  assert.equal(stdout.includes(SAVED_LABEL), false, 'no saved-row line on a clean home');
+  assert.equal(stdout.includes('saved-permission store'), false, 'no store line either');
+});
+
+test('doctor: a saved "always allow" row FAILs with the store path, the row, and the removal step', () => {
+  const home = fixtureDir('hwc-saved-row-');
+  installAskOn(home);
+  const dbPath = seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'devkit-demo') }],
+    permissions: [{ id: 'psv_demo_row', projectId: 'p-demo', action: ASK_RULE_ACTION }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes(`[FAIL] ${SAVED_LABEL}`), `expected the saved row to fail, got:\n${stdout}`);
+  assert.ok(stdout.includes(dbPath), 'the store path is named');
+  assert.ok(stdout.includes('psv_demo_row'), 'the row id is listed');
+  assert.ok(stdout.includes(join(home, 'work', 'devkit-demo')), 'the row project is listed');
+  assert.ok(stdout.includes('DELETE /api/permission/saved/<id>'), 'the removal step is concrete');
+  assert.ok(stdout.includes('repairs the config half only'), 'the config-half limit is stated');
+});
+
+test('doctor: a saved row that does not cover the roster action prints nothing', () => {
+  const home = fixtureDir('hwc-saved-foreign-');
+  installAskOn(home);
+  seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'other') }],
+    permissions: [{ id: 'psv_other_tool', projectId: 'p-demo', action: 'some-other-server_some_tool' }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.equal(stdout.includes(SAVED_LABEL), false, `a foreign row is not ours, got:\n${stdout}`);
+});
+
+test('doctor: a saved wildcard row covering the action FAILs too', () => {
+  const home = fixtureDir('hwc-saved-wildcard-');
+  installAskOn(home);
+  seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'devkit-demo') }],
+    permissions: [{ id: 'psv_wild', projectId: 'p-demo', action: 'huaweicloud-devkit_*' }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes(`[FAIL] ${SAVED_LABEL}`), `expected the wildcard row to fail, got:\n${stdout}`);
+});
+
+test('doctor: an unreadable store WARNs (warn-only, never a hard fail)', () => {
+  const home = fixtureDir('hwc-saved-corrupt-');
+  installAskOn(home);
+  const opencodeDir = join(home, '.local', 'share', 'opencode');
+  mkdirSync(opencodeDir, { recursive: true });
+  writeFileSync(join(opencodeDir, 'opencode.db'), 'not a database\n', 'utf8');
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(
+    stdout.includes('[WARN] ASK approval: opencode saved-permission store unreadable'),
+    `expected the warn, got:\n${stdout}`,
+  );
+  assert.equal(stdout.includes(`[FAIL] ${SAVED_LABEL}`), false, 'an unreadable store is never a FAIL');
+});
+
+test('doctor: in token mode a saved row still FAILs, worded as the token-gate consequence', () => {
+  const home = fixtureDir('hwc-saved-token-');
+  const config = installAskOn(home);
+  delete config.permissions;
+  delete envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE;
+  saveOpencodeConfig(home, config);
+  seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'devkit-demo') }],
+    permissions: [{ id: 'psv_token_mode', projectId: 'p-demo', action: ASK_RULE_ACTION }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes('[PASS] ASK approval posture (token mode)'), `token mode still passes, got:\n${stdout}`);
+  assert.ok(stdout.includes(`[FAIL] ${SAVED_LABEL}`), `the stale row is still named, got:\n${stdout}`);
+  assert.ok(
+    stdout.includes('fall to the approval-token gate instead'),
+    'the consequence is worded for the actual posture, not the ask one',
+  );
 });

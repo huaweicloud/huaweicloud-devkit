@@ -36,6 +36,7 @@ import {
   openCodeAskGate,
 } from './opencode-config.ts';
 import { inspectAskPermissionRule, inspectAskPermissionRuleV1 } from '../lib/opencode-ask-rule.ts';
+import { scanSavedAllowRows } from '../lib/opencode-saved-perms.ts';
 import type { DoctorReporter } from '../doctor-report.ts';
 import { asRecord } from '../lib/as-record.ts';
 
@@ -72,6 +73,16 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
     ctx.skip('ASK approval posture (opencode not verifiably at or above 1.19.0)');
     return;
   }
+  const posture = askPostureCheck(ctx, gate);
+  savedAllowStoreCheck(ctx, posture === 'ask');
+}
+
+// The posture verdict the saved-store check words itself by: 'ask' means the
+// client prompt is the contract's confirmation (so a saved row is the
+// fail-open the server gate refuses), anything else means the token gate is
+// the contract (so a saved row only suppresses a prompt that gate does not
+// rely on).
+function askPostureCheck(ctx: DoctorReporter, gate: 'v2-array' | 'v1-object'): 'ask' | 'other' {
   let cfg: Record<string, unknown> | null;
   try {
     cfg = asRecord(JSON.parse(readFileSync(opencodeConfigFile(), 'utf8')));
@@ -86,7 +97,7 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
         ? 'ASK approval posture: opencode config unreadable or the run-tool permission key is not a bare ask/allow/deny string — the installer keeps it untouched; add the ask key and DEVKIT_APPROVAL_MODE manually (see README, Harness permission notes)'
         : 'ASK approval posture: opencode config unreadable or permissions not array-shaped — the installer keeps it untouched; add the ask rule and DEVKIT_APPROVAL_MODE manually (see README, Harness permission notes)',
     );
-    return;
+    return 'other';
   }
   // The mcp entry carries the server half; a missing entry counts as no
   // env, so the halves are judged independently of entry presence.
@@ -101,7 +112,7 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
         ? ''
         : 'DEVKIT_APPROVAL_MODE=ask missing from the mcp entry — the client prompts AND the server still demands a token (re-run: npx huaweicloud-devkit install --target opencode)',
     );
-    return;
+    return envAsk ? 'ask' : 'other';
   }
   if (posture === 'allow') {
     // FAIL, never a warn: with the env also ask this is fail-open (the
@@ -115,7 +126,7 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
         ? 'the permission value for the run tool is "allow" (always allow) — writes no longer prompt: fail-open when DEVKIT_APPROVAL_MODE=ask, a plain token gate otherwise. Delete that key or set its value to "ask" (see README, Harness permission notes)'
         : 'the permissions rule for the run tool is "allow" (always allow) — writes no longer prompt: fail-open when DEVKIT_APPROVAL_MODE=ask, a plain token gate otherwise. Delete that rule or set its effect to "ask" (see README, Harness permission notes)',
     );
-    return;
+    return envAsk ? 'ask' : 'other';
   }
   if (posture === 'deny') {
     ctx.check(
@@ -125,7 +136,7 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
         ? 'the permission value for the run tool is "deny" — the write tool is blocked entirely. Delete that key or set its value to "ask" (see README, Harness permission notes)'
         : 'the permissions rule for the run tool is "deny" — the write tool is blocked entirely. Delete that rule or set its effect to "ask" (see README, Harness permission notes)',
     );
-    return;
+    return envAsk ? 'ask' : 'other';
   }
   if (envAsk) {
     // posture === 'absent': the fail-open direction.
@@ -136,10 +147,44 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
         ? 'DEVKIT_APPROVAL_MODE=ask is set but the permission ask key is missing — the server trusts a client prompt nobody shows (re-run: npx huaweicloud-devkit install --target opencode, or unset DEVKIT_APPROVAL_MODE in the mcp entry)'
         : 'DEVKIT_APPROVAL_MODE=ask is set but the permissions ask rule is missing — the server trusts a client prompt nobody shows (re-run: npx huaweicloud-devkit install --target opencode, or unset DEVKIT_APPROVAL_MODE in the mcp entry)',
     );
-    return;
+    return 'other';
   }
   // Token mode is the legitimate default posture, not an error.
   ctx.check('ASK approval posture (token mode)', true, '');
+  return 'other';
+}
+
+// Doctor: the opencode saved-permission store, the client-side twin of the
+// ask rule. One "Always allow" click on the client prompt persists an allow
+// row that opencode evaluates AFTER the configured rules (findLast), so it
+// silently converts every future call on the action into an unprompted
+// execution — the config file doctor already checks stays perfectly healthy
+// while the ask contract is gone. The server gate now refuses those arrivals;
+// this check names the row and the store so the user can remove it. Zero rows
+// prints nothing at all (the healthy fresh state), so a clean install's
+// doctor output stays byte-identical.
+function savedAllowStoreCheck(ctx: DoctorReporter, askPosture: boolean): void {
+  const scan = scanSavedAllowRows({ scope: 'all' });
+  if (scan.status === 'absent') return;
+  if (scan.status === 'unreadable') {
+    ctx.warn(
+      `ASK approval: opencode saved-permission store unreadable (${scan.dbPath}): ${scan.detail} — saved "always allow" rows cannot be detected; the server gate lets calls through rather than guess`,
+    );
+    return;
+  }
+  if (scan.rows.length === 0) return;
+  const actions = [...new Set(scan.rows.map((row) => row.action))].join(', ');
+  const consequence = askPosture
+    ? 'the client will not prompt and the server gate refuses those calls'
+    : 'the client will not prompt and those calls fall to the approval-token gate instead';
+  ctx.check(
+    'ASK approval: no saved "always allow" rule',
+    false,
+    `opencode's permission store holds a saved allow rule for ${actions} — it is evaluated after the configured rules, so ${consequence}. Remove the saved rule for each named action in opencode (its saved permission list, or the opencode API DELETE /api/permission/saved/<id>); it lives in ${scan.dbPath}, table "permission". "npx huaweicloud-devkit update" repairs the config half only and cannot remove it`,
+  );
+  for (const row of scan.rows) {
+    ctx.raw(`        ${row.id} → ${row.projectWorktree ?? row.projectId} (action ${row.action})`);
+  }
 }
 
 // Doctor: the skills-tree permission seam check — OpenCode installs only

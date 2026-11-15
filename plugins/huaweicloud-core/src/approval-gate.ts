@@ -31,6 +31,7 @@ import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalTok
 import { huaweiConfigBase } from './lib/state-dir.ts';
 import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
 import type { ApprovalSpec, ConsentDeliveryOutcome } from './approval-types.ts';
+import { scanSavedAllowRows, savedAllowAction, type SavedAllowScan } from './lib/opencode-saved-perms.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
 // consent stamp AND the seq the ask branch just wrote — round 15, finding
@@ -50,6 +51,72 @@ export const NO_SESSION_SEAM_ERROR =
 
 const GRANT_REQUIRED_NEXT_STEP =
   'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.';
+
+// The saved-allow-row refusal (the always-allow fail-open). In ask mode the
+// user's confirmation IS the harness prompt on this call, and opencode's
+// "Always allow" answer persists an allow row into its own store that is
+// evaluated AFTER the configured ask rule (findLast), so the button silently
+// converts every future call on this action into an unprompted execution. The
+// server cannot suppress the button, so the only honest defense is to refuse
+// the arrival itself: the call never executes and never mints, and the
+// envelope teaches the removal instead of pretending the prompt still gated
+// anything. Token mode is untouched (a custody grant is single-use and has no
+// stored client-side twin).
+export const SAVED_ALLOW_ROW_CODE = 'SAVED_ALLOW_ROW_BLOCKS_ASK_APPROVAL';
+
+function savedAllowRowRefusal(scan: SavedAllowScan, action: string): Record<string, unknown> {
+  const rows = scan.status === 'ok' ? scan.rows : [];
+  const dbPath = scan.dbPath;
+  const rowIds = rows.map((row) => row.id);
+  const rowLines = rows.map((row) => `${row.id} (${row.projectWorktree ?? row.projectId})`).join(', ');
+  const scopeNote =
+    scan.status === 'ok' && scan.scope === 'any-project'
+      ? ' The saved row could not be attributed to the current project, so every matching row counts.'
+      : '';
+  const reason =
+    `opencode has a saved "always allow" permission row covering ${action}, so the client would run this call ` +
+    `without prompting and the ask posture's confirmation would be silently skipped.${scopeNote}`;
+  const nextStep =
+    `Remove the saved rule covering ${action} in opencode (its saved permission list, or the opencode API ` +
+    `DELETE /api/permission/saved/<id>), then retry this call. ` +
+    `The row lives in ${dbPath} (table "permission": ${rowLines}); with opencode closed it can be deleted ` +
+    `there directly. "npx huaweicloud-devkit update" repairs the config-file half only and cannot remove it.`;
+  return {
+    status: 'rejected',
+    code: SAVED_ALLOW_ROW_CODE,
+    reason,
+    savedAllow: {
+      action,
+      dbPath,
+      scope: scan.status === 'ok' ? scan.scope : 'unknown',
+      rows: rows.map((row) => ({
+        id: row.id,
+        action: row.action,
+        resource: row.resource,
+        project: row.projectWorktree ?? row.projectId,
+      })),
+      rowIds,
+    },
+    nextStep,
+  };
+}
+
+// Ask-mode arrivals pass this before any consent record: a saved allow row
+// covers the very action this call is asking about, so the harness prompt the
+// ask contract trusts is not the gate that ran. Returns the refusal envelope,
+// or null when the store holds no covering row (including every unreadable
+// store shape: the guard warns on stderr and lets the call through, because a
+// store we cannot read must never break the approved path).
+function savedAllowRowGuard(name: ToolName): Record<string, unknown> | null {
+  const action = savedAllowAction(name);
+  const scan = scanSavedAllowRows({ scope: 'project', actions: [action] });
+  if (scan.status === 'unreadable') {
+    console.error(`[huaweicloud-devkit] opencode saved-permission store unreadable (${scan.dbPath}): ${scan.detail}`);
+    return null;
+  }
+  if (scan.status !== 'ok' || scan.rows.length === 0) return null;
+  return savedAllowRowRefusal(scan, action);
+}
 
 function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
   return spec.normalizeArgs ? spec.normalizeArgs(args) : args;
@@ -330,6 +397,12 @@ export async function runApprovalGate(
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'ask');
     if (classifiedPass) return { pass: {} };
+    // The saved-allow-row guard (the always-allow fail-open): a store row
+    // covering this action means opencode itself will not prompt, so the
+    // confirmation this branch would otherwise record never happened. Refuse
+    // before the consent record — a refused call is not a consent arrival.
+    const savedAllow = savedAllowRowGuard(name);
+    if (savedAllow !== null) return { envelope: savedAllow };
     const arrival = recordAskModeConsent({
       sessionId: opts.sessionId ?? 'default',
       tool: name,

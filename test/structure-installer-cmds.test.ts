@@ -176,6 +176,10 @@ test('dependency provisioning: new modules stay unbundled; setup-cli delegates',
     ['src/doctor-payload.ts', readSource(join('src', 'doctor-payload.ts'))] as const,
     ['src/doctor-native.ts', readSource(join('src', 'doctor-native.ts'))] as const,
     ['src/lib/banner.ts', readSource(join('src', 'lib', 'banner.ts'))] as const,
+    // The opencode saved-permission reader is a zod-free leaf serving BOTH
+    // graphs (the bundled gate's ask guard and the unbundled doctor), so it
+    // joins the guard by hand: src/lib/*.ts has no automatic walk.
+    ['src/lib/opencode-saved-perms.ts', readSource(join('src', 'lib', 'opencode-saved-perms.ts'))] as const,
     ['src/install-plan.ts', readSource(join('src', 'install-plan.ts'))] as const,
     ['src/install-prompts.ts', readSource(join('src', 'install-prompts.ts'))] as const,
     ['src/mcp-agent-config.ts', readSource(join('src', 'mcp-agent-config.ts'))] as const,
