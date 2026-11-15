@@ -100,6 +100,17 @@ function stagedRowJson(
   });
 }
 
+// The element-guard pins' home reset: scratch wipe + the store + every
+// quarantine sidecar, so each cell stages a clean tree (the store is
+// re-staged by the caller).
+function resetGuardHome(paths: { dir: string; spool: string }): void {
+  wipeCounterScratch(paths);
+  rmSync(join(paths.dir, 'approval-consents.json'), { force: true });
+  for (const name of readdirSync(paths.dir)) {
+    if (name.includes('.corrupt-')) rmSync(join(paths.dir, name), { force: true });
+  }
+}
+
 // The counter-scratch wipe the round-16 pins share: the active spool, every
 // .taken-* sidecar, and the seq file — the store is re-staged by the caller.
 function wipeCounterScratch(paths: { dir: string; spool: string }): void {
@@ -3610,6 +3621,193 @@ test(
         reject(error);
       }
     });
+  }),
+);
+
+test(
+  'the element-content guard counts property NAMES and is exclusive at the bound (round-23 findings 1 and 2)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    // All three cells run through the element bound's test seam (the
+    // safe-directional HUAWEICLOUD_LEDGER_ELEMENT_LIMIT, tightened to
+    // 4KB): the guard's ADMISSION DECISION is the observable (quarantine/
+    // keep vs write-into-store), which is the mechanism that prevents the
+    // SIGABRT at the 256MiB scale — the seats' full-scale repros (a
+    // 260MiB-KEY store and an exact-2^28-unit element both aborting the
+    // process; the value control quarantining correctly) are the round's
+    // evidence; these pins make the decision deterministic and cheap.
+    const SEAM = 4096;
+    process.env.HUAWEICLOUD_LEDGER_ELEMENT_LIMIT = String(SEAM);
+    try {
+      // Cell 1 — the KEY shape: a row whose poison sits in a property NAME
+      // ({"<giant key>":1}). The r21 guard walked Object.values only, so
+      // this scored ~280 units and was admitted; the write's
+      // JSON.stringify then aborted the process (Zone Allocation failed —
+      // not a JS throw, the catch never ran) and the unchanged store made
+      // it a permanent kill switch. Counted now: the key's units plus the
+      // value's, over the seam → the store reads unreadable → QUARANTINE
+      // with the bytes preserved, the append lands in a fresh store.
+      stageStore(home, JSON.stringify([{ ['k'.repeat(SEAM)]: 1 }]));
+      let names = readdirSync(paths.dir);
+      assert.ok(!names.some((n) => n.includes('.corrupt-')), 'cell 1 staging: no quarantine yet');
+      recordAskModeConsent({
+        sessionId: 'ses-r23-key',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r23-key',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      names = readdirSync(paths.dir);
+      const quarantined = names.find((name) => name.includes('.corrupt-'));
+      assert.ok(quarantined, 'cell 1: the giant-KEY store is quarantined — the guard counts property names');
+      assert.ok(
+        readFileSync(join(paths.dir, quarantined!), 'utf8').includes('k'.repeat(64)),
+        'cell 1: the quarantine sidecar carries the original bytes',
+      );
+
+      // Cell 1b — the score is in UTF-8 BYTES (round 23, finding 3, seat
+      // 1's addendum): a CJK pad of ~1366 units is 4098 BYTES — over the
+      // seam — while its UNIT count is under it. The r21/r22 form scored
+      // units, so this row was admitted at the same seam and the multibyte
+      // regime aborted at scale (130Mi CJK units = 390MB, under BOTH the
+      // 256Mi-unit guard and the 500MB cap, killed the process at the
+      // write's stringify; 125Mi answered — the seat's bisected cliff).
+      // Byte-anchored: the row reads over-bound and the store quarantines
+      // with bytes preserved — ASCII behavior is identical (bytes == units).
+      resetGuardHome(paths);
+      const cjkUnits = Math.ceil((SEAM + 2) / 3); // 1366 units = 4098 bytes
+      stageStore(
+        home,
+        JSON.stringify([
+          {
+            sessionId: '语'.repeat(cjkUnits),
+            tool: 't',
+            argsHash: 'h-cjk-pad',
+            outcome: 'granted',
+            grantedAt: 1,
+            scope: 'once',
+            evidence: 'posture',
+            arrivalSeq: 0,
+          },
+        ]),
+      );
+      recordAskModeConsent({
+        sessionId: 'ses-r23-cjk',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r23-cjk',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      names = readdirSync(paths.dir);
+      assert.ok(
+        names.some((name) => name.includes('.corrupt-')),
+        'cell 1b: the CJK row reads over-bound in the BYTE domain — the multibyte regime cannot buy admission with units',
+      );
+      // And the ASCII equivalent (the same seam, a pure-ASCII pad under
+      // the seam in BOTH domains) stays admitted — the byte anchoring
+      // does not narrow the ASCII band.
+      resetGuardHome(paths);
+      stageStore(
+        home,
+        JSON.stringify([
+          {
+            sessionId: 'a'.repeat(SEAM - 600),
+            tool: 't',
+            argsHash: 'h-ascii-pad',
+            outcome: 'granted',
+            grantedAt: 1,
+            scope: 'once',
+            evidence: 'posture',
+            arrivalSeq: 0,
+          },
+        ]),
+      );
+      recordAskModeConsent({
+        sessionId: 'ses-r23-ascii',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r23-ascii',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      names = readdirSync(paths.dir);
+      assert.ok(
+        !names.some((name) => name.includes('.corrupt-')),
+        'cell 1b control: the under-seam ASCII row stays admitted — the ASCII band is unchanged',
+      );
+
+      // Cell 2 — the BOUND is exclusive: an element of EXACTLY the seam
+      // reads as over-bound (the r21 form rejected only >, so an element
+      // of exactly 2^28 units was admitted and the parse->slice->stringify
+      // path aborted at the flatten; 2^28-1000 completed). The >= guard
+      // quarantines the exact-bound element like everything above it.
+      resetGuardHome(paths);
+      stageStore(home, JSON.stringify(['x'.repeat(SEAM)]));
+      recordAskModeConsent({
+        sessionId: 'ses-r23-bound',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r23-bound',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      names = readdirSync(paths.dir);
+      assert.ok(
+        names.some((name) => name.includes('.corrupt-')),
+        'cell 2: an element of EXACTLY the bound reads as over-bound (>=, the exclusive edge)',
+      );
+
+      // Cell 3 — the preserved-raw-line route (the kill-switch shape): a
+      // spool line over the seam is kept with its bytes like a read
+      // failure (the r7 keep class) and NEVER written into the store —
+      // the first append lands the OTHER rows, the store stays clean, and
+      // every later append completes (the r23 shape wrote the poison in
+      // and re-aborted forever).
+      resetGuardHome(paths);
+      const poison = 'y'.repeat(SEAM + 100); // one unparseable giant line
+      const cleanRow = JSON.stringify({
+        sessionId: 'ses-r23-clean',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r23-clean',
+        outcome: 'granted',
+        grantedAt: 1_000,
+        scope: 'once',
+        evidence: 'posture',
+        arrivalSeq: 0,
+      });
+      writeFileSync(paths.spool, cleanRow + '\n' + poison + '\n');
+      recordAskModeConsent({
+        sessionId: 'ses-r23-spool',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r23-spool',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      names = readdirSync(paths.dir);
+      const taken = names.find((name) => name.includes('.spool.jsonl.taken-'));
+      assert.ok(taken, 'cell 3: the over-bound preserved line keeps its taken file (the evidence, never the poison)');
+      const takenText = readFileSync(join(paths.dir, taken!), 'utf8');
+      assert.ok(
+        takenText.includes('h-r23-clean'),
+        'cell 3: the taken file carries the clean row too (all-or-nothing, the r21 design)',
+      );
+      assert.ok(takenText.includes('yyyy'), "cell 3: the taken file carries the poison line's bytes");
+      const storeText = readFileSync(join(paths.dir, 'approval-consents.json'), 'utf8');
+      assert.ok(!storeText.includes('yyyy'), 'cell 3: the poison line was never written into the store');
+      // And the SECOND append completes (the kill switch is dead): the new
+      // arrival lands in the clean store; the taken file is retried
+      // (kept again — all-or-nothing) and the store never carries the poison.
+      recordAskModeConsent({
+        sessionId: 'ses-r23-spool',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-r23-spool-2',
+        outcome: 'granted',
+        evidence: 'posture',
+      });
+      const storeAfterSecond = readFileSync(join(paths.dir, 'approval-consents.json'), 'utf8');
+      assert.ok(storeAfterSecond.includes('h-r23-spool-2'), 'cell 3: the second append lands its row');
+      assert.ok(!storeAfterSecond.includes('yyyy'), 'cell 3: the store stays poison-free after the second append');
+    } finally {
+      delete process.env.HUAWEICLOUD_LEDGER_ELEMENT_LIMIT;
+    }
   }),
 );
 

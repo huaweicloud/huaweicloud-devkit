@@ -94,6 +94,79 @@ function ledgerFilePath(): string {
   return join(devkitStateBase(), 'approval-consents.json');
 }
 
+// ============================================================================
+// THE RESIDUAL LEDGER — every disclosed adversarial-shape residual, rounds
+// 15-23, named in one place (the operator's known-boundary list; the round
+// that disclosed each shape is named, and every entry below is a MEASURED,
+// run-proven boundary — not a spec claim):
+//
+// 1. The >8MiB mid-gap in-flight memo residual (r19-r21): sidecars above
+//    the whole-file anchor band keep TWO 1MiB window digests; a mid-file
+//    insert OUTSIDE both windows, raced in-flight inside the hit path's
+//    validation window by a max-rate local writer, evades bounded content
+//    validation (measured 10/40 with the re-stat, 37/40 without; the
+//    sub-8MiB whole-file band closes it deterministically; the complete
+//    closure is a per-append full rescan — the r17-F3 cost the memo
+//    exists to avoid).
+// 2. The cap-degradation burst pairs (r15+): ask arrivals that cross
+//    LEDGER_MAX_WAIT_MS (3s) degrade together and race the unlocked
+//    read-derive-write window, colliding on a seq — the equal-seq pair
+//    then falls to grantedAt with weakest-wins at the exact tie. The
+//    24x50 barrier race lane reproduces it under burst (deltas ~3s, the
+//    signature); the production face (8x30) stays duplicate-free. The
+//    keyed join that closes it lands with PR-3a.
+// 3. The mid-scan out-of-band .taken-* writer (r17 O1b): a sidecar created
+//    between the floor scan's readdir and the take can duplicate a seq on
+//    the locked path — no LEGAL producer exists (takeSpool runs inside
+//    the same lock hold), so it is recorded, not fixed; the degraded
+//    readdir-vs-take interleave is a sub-shape of entry 2's unlocked race.
+// 4. The compaction-crash duplicate (r7): a crash between the main write
+//    and the taken-file removal leaves a taken file whose lines are
+//    ALREADY in the store; the next compaction folds it again — the
+//    duplicate is additive (a repeated consent row), the documented safe
+//    direction.
+// 5. The >V8-string taken file (r7): a sidecar past the whole-read limit
+//    never folds through the line path; kept with its bytes intact,
+//    retried every compaction, over the caps it blinds in O(1) — the
+//    operator-split remediation (readable chunks) is the documented
+//    recovery; under it the file is evidence, never a floor source.
+// 6. The fold's all-or-nothing element bound (r21-r23): a taken file
+//    carrying ANY over-bound line keeps the WHOLE file — clean rows defer
+//    with the poison (retried every compaction, never dropped) so a giant
+//    preserved line can never be written into the store (the kill-switch
+//    shape). The honest cost: a mixed file stays until the operator
+//    splits it.
+// 7. The multibyte admitted band (r23): the element guard scores UTF-8
+//    BYTES — ASCII behavior is identical (bytes == units), but a
+//    multibyte store previously admitted by unit count now quarantines
+//    with its bytes (a 125Mi-unit CJK row is 375Mi of bytes, over the
+//    256MiB bound — it previously ANSWERED at the edge of the measured
+//    130Mi-unit abort cliff). The invariant the guard enforces: any
+//    store it ADMITS is writable without abort, whatever its encoding;
+//    the guard's byte walk adds to the admitted giant store's disclosed
+//    multi-second tri-copy cost.
+// 8. The r3-caller cost residuals (carried): the 250MiB-admitted
+//    element's append keeps its multi-second tri-copy shape (unchanged
+//    admitted behavior); the ~2.4s floor+resolution cost at 1M rows is
+//    the tier resolution's inherent O(store) RMW.
+// 9. The auth pack's status:'cleared' (r17 O5): classifies failed
+//    through the delivery recorder — unregistered in PR-1; the PR-3b
+//    registration round adds it to the success vocabulary.
+//
+// Every other adversarial surface measured across rounds 15-23 is CLOSED
+// with an in-repo pin: the FIFO/device/sparse seams (r18-r20, bounded in
+// ms), the O(size) reads (r20-r21, capped in O(1)), the SIGABRT shapes
+// (r21-r23: the giant-value/key/exact-bound/multibyte element stores all
+// quarantine with bytes preserved), the writeAll partial-count classes
+// (r21-r22, byte-offset resume, byte-identity pinned), the memo key/
+// anchor/tax regressions (r18-r21, each pinned with a mutation), the
+// dead-span detector (r19-r20, byte-level, precise, blind memoized), the
+// negation/polarity vocabulary (r16, the absence-phrase strip), the
+// scanner carry (r18-r19: needle-in-carry extracts at any gap, the
+// needle-lost span blinds), and the seq space (r15-r17: bounded,
+// saturation a state, the file never a decision-maker).
+// ============================================================================
+
 // The spool: degraded appends land here, one JSON event per line, append
 // mode only. Compacted into the main store by the next locked append.
 function ledgerSpoolPath(): string {
@@ -1015,7 +1088,9 @@ function readRawConsents(): unknown[] | undefined {
     // QUARANTINES the file (preserve-then-write: the bytes land in the
     // .corrupt-* sidecar before the fresh store is ever written) and the
     // append proceeds. The 250MiB control stays admitted, unchanged.
-    if (!elementsWithinContentLimit(parsed)) return undefined;
+    // Round 23: the skip band (above) — small files skip the walk.
+    const fileBytes = statSync(path).size;
+    if (fileBytes >= elementGuardSkipBandBytes() && !elementsWithinContentLimit(parsed)) return undefined;
     return parsed as unknown[];
   } catch {
     return undefined;
@@ -1085,14 +1160,65 @@ function streamScanLimitBytes(): number {
 // this guard, the write buffer by construction.
 const LEDGER_ELEMENT_CONTENT_LIMIT_BYTES = 256 * 1024 * 1024; // 256MiB: 250MiB control admitted, 300MiB shape quarantined
 
+// The element bound's test seam (round 23): safe-DIRECTIONAL only — an
+// override is honored only when it TIGHTENS the bound (a lower limit
+// rejects more, the same posture as the whole-read/stream seams' lower
+// direction; a higher value is ignored, because raising the bound past
+// the measured 2^28 abort cliff would be the unsafe direction). Lets the
+// pins exercise the guard's admission decision (quarantine/keep vs
+// write-into-store) at KB staging instead of 256MB.
+function elementContentLimitBytes(): number {
+  const override = Number(process.env.HUAWEICLOUD_LEDGER_ELEMENT_LIMIT);
+  return Number.isSafeInteger(override) && override > 0 && override < LEDGER_ELEMENT_CONTENT_LIMIT_BYTES
+    ? override
+    : LEDGER_ELEMENT_CONTENT_LIMIT_BYTES;
+}
+
+// The guard's skip band (round 23, finding 3's cost mitigation): the
+// per-element byte walk is O(total content bytes) per append, which
+// measured ~+0.3-0.5s on an 87MB store and pushed a borderline live-writer
+// race over the 3s wait cap. For files UNDER the band the walk is
+// provably unnecessary in the SAFETY direction: an element's
+// RE-SERIALIZED bytes never exceed its share of the FILE's bytes —
+// escapes shrink on parse ("\u00e9" is 6 file bytes, the re-serialized
+// "é" is 4), numbers never grow, and the structural slack is the ~3
+// bytes of quotes and the newline the file already carries — so every
+// element of a file under the band has true serialized bytes under the
+// band < limit, and admission cannot reach the abort cliff. The walk
+// above the band stays the conservative padded-score check (its
+// structural padding can only over-refuse, the safe direction).
+// Realistic stores (every ledger-written tree is far under 64MiB) skip
+// the walk entirely; only genuinely giant files pay it, and those are
+// the ones the guard exists to examine.
+function elementGuardSkipBandBytes(): number {
+  return elementContentLimitBytes() / 4;
+}
+
 // An element's content size, computed WITHOUT serialization (round 21:
 // measuring by serializing is the very allocation the bound exists to
 // prevent): a string's UTF-16 length (the JS-string size the serializer
 // would produce), an object's summed string-property lengths plus
 // structural overhead, recursing into nested arrays/objects. O(1) per
 // string, O(properties) per row — a consent row is ~8 properties.
+// Round 23, finding 3 (seat 1's addendum): the score is in UTF-8 BYTES —
+// the domain the write actually pays. The r21/r22 form scored a string by
+// its UTF-16 unit count, which is memory-safe only in the ASCII regime
+// (units == bytes): a 130Mi-unit CJK element (390MB of file, under BOTH
+// the 256Mi-unit guard and the 500MB read cap) was ADMITTED and the write
+// aborted the process — Zone Allocation failed in the stringify, the
+// same measured 125Mi-answers/130Mi-aborts cliff the seat bisected; the
+// hole had sat inside the r21 admitted band since that round because
+// every giant-element acceptance ran ASCII. UTF-8 is at most 3 bytes per
+// BMP unit (exactly the CJK x3 regime) and 4 bytes per astral pair, so
+// byte-anchoring is the honest bound: ASCII behavior is IDENTICAL (bytes
+// == units — the 2x249MiB pair control stays admitted), and multibyte
+// content is measured at what the serializer will actually emit —
+// over-bound multibyte stores quarantine with their bytes, the r21
+// doctrine, never an abort. Buffer.byteLength measures without
+// serializing (the r21 no-serialization rule holds: it is a walk, not an
+// allocation).
 function elementContentUnits(entry: unknown): number {
-  if (typeof entry === 'string') return entry.length;
+  if (typeof entry === 'string') return Buffer.byteLength(entry, 'utf8');
   if (typeof entry === 'number' || typeof entry === 'boolean' || entry === null || entry === undefined) return 16;
   if (Array.isArray(entry)) {
     let total = 16;
@@ -1101,7 +1227,19 @@ function elementContentUnits(entry: unknown): number {
   }
   if (typeof entry === 'object') {
     let total = 256; // structural overhead: braces, quotes, commas
-    for (const value of Object.values(entry as Record<string, unknown>)) total += elementContentUnits(value) + 8;
+    const record = entry as Record<string, unknown>;
+    // Round 23, finding 1: property NAMES are content too. The r21 form
+    // walked Object.values only, so a row whose poison sits in a KEY
+    // ({"<260MiB key>":1} scores 280 units) was ADMITTED and the write's
+    // JSON.stringify aborted the process — Zone Allocation failed, not a
+    // JS throw, the catch never ran, and the unchanged store made it a
+    // permanent kill switch (the value control quarantined correctly at
+    // the same size). Keys serialize into the piece exactly like values,
+    // and in the same byte domain (round 23, finding 3).
+    for (const key of Object.keys(record)) {
+      total += Buffer.byteLength(key, 'utf8') + 8;
+      total += elementContentUnits(record[key]) + 8;
+    }
     return total;
   }
   return 16;
@@ -1109,10 +1247,15 @@ function elementContentUnits(entry: unknown): number {
 
 // True when every element of a parsed store/fold batch is within the
 // element bound — the admission test for anything about to be serialized
-// into the store.
+// into the store. Round 23, finding 2: the bound is EXCLUSIVE (>=) — the
+// r21 form rejected only `>`, so an element of EXACTLY the bound
+// (2^28 units) was admitted and the parse->slice->stringify path aborted
+// (the flatten at exactly 2^28; 2^28-1000 completes): the admitted band
+// must be WRITABLE, and the exact-bound element now reads as over-bound
+// with the same quarantine/keep posture as everything above it.
 function elementsWithinContentLimit(entries: unknown[]): boolean {
   for (const entry of entries) {
-    if (elementContentUnits(entry) > LEDGER_ELEMENT_CONTENT_LIMIT_BYTES) return false;
+    if (elementContentUnits(entry) >= elementContentLimitBytes()) return false;
   }
   return true;
 }
@@ -1342,7 +1485,10 @@ function takeSpool(): { events: unknown[]; folded: string[] } {
         const parsed = parseSpoolLine(line);
         batch.push(parsed === undefined ? line : parsed.parsed);
       }
-      if (!elementsWithinContentLimit(batch)) return; // keep the file: retried, evidence preserved
+      // Round 23: the skip band (above) — small spool files skip the walk.
+      if (statSync(file).size >= elementGuardSkipBandBytes() && !elementsWithinContentLimit(batch)) {
+        return; // keep the file: retried, evidence preserved
+      }
       // Round 22, finding 2 (A2): the r21 refactor's events.push(...batch)
       // spread overflows V8's argument limit past ~125k elements — the
       // RangeError was swallowed by this catch, so a >125k-line degraded
