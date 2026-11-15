@@ -3,11 +3,15 @@
 // its evidence is the custody-HMAC grant inside approvals.json (single use,
 // tombstone, five-minute TTL, all unchanged).
 //
-// The evidence tier is written from day one: 'posture' for ask-mode
-// arrivals (the harness client's prompt is the confirmation the mode
-// trusts), 'terminal' for approve-CLI confirmations the plan face reports,
-// 'elicitation' from PR-4. A memo-reuse event (PR-3a) inherits the
-// ORIGINAL event's tier and never upgrades it, so a posture-grade yes can
+// The evidence tier is written from day one: 'elicitation' for the
+// server-raised form the approval gate sends inside the run call,
+// 'posture' for the T3 chat round-trip's attested retry (the model reports
+// the user's chat answer; posture trust, not mechanically verified), and
+// 'terminal' for approve-CLI confirmations the plan face reports. A
+// channel-verified ladder arrival (PR-1.5, evidenceFinal) records the
+// channel that just answered instead of inheriting. A memo-reuse event
+// (PR-3a) inherits the ORIGINAL event's tier and never upgrades it, so a
+// posture-grade yes can
 // never be re-recorded as terminal-grade on retry — recordAskModeConsent
 // ENFORCES the inheritance by resolving the tier itself from the original
 // granted event on the same consent key (sessionId + tool + argsHash —

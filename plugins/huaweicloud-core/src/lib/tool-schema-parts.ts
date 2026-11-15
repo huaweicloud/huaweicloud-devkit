@@ -81,7 +81,7 @@ export const approvalTokenArg = z
   .string()
   .optional()
   .describe(
-    "Required in token-approval mode (from the minting face — the plan tool, or the approval gate's USER_CONFIRMATION_REQUIRED envelope); omit in ask mode where the harness client confirms at run time.",
+    "Required in token-approval mode (from the minting face — the plan tool, or the approval gate's USER_CONFIRMATION_REQUIRED envelope); omit in ask mode, where the server-run gate confirms at run time.",
   );
 
 // Optional in the schema for the same reason: in token mode the gate throws

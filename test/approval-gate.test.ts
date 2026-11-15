@@ -2057,6 +2057,45 @@ test('command-forward: the plan echo forwards verbatim (plan.command passes the 
   assert.equal((result as ApprovedRunResult).approved, true, 'the documented pass-through works with a quoted arg');
 });
 
+test('command-forward: a shell-special secret substitutes into the accepted line (the echo is balanced)', async () => {
+  // Interrogate round 1, finding 1: the plan echo used to be redacted AFTER
+  // quoting, so a quoted secret-bearing argument lost its closing quote and
+  // no substitution could produce either accepted line — the documented flow
+  // refused on the most common secret-bearing write (Huawei's password
+  // policy forces characters quoteShellArg must quote). The echo now redacts
+  // per arg before quoting.
+  const secret = 'Sup3rSecret!';
+  const planArgs = ['RDS', 'CreateInstance', `--server.adminPass=${secret}`, '--name=db1'];
+  const plan = planHcloudCommand(planArgs, { mintApprovalToken: false });
+  assert.ok(plan.command, 'the plan carries the echo');
+  assert.equal((plan.command!.match(/"/g) ?? []).length % 2, 0, 'the echo keeps its quotes balanced');
+  assert.equal(plan.command!.includes(secret), false, 'the echo never carries the secret');
+  const substituted = plan.command!.replaceAll('<redacted>', secret);
+  const { result } = await seededAskRun(LADDER_PROJECTS, planArgs, { command: substituted });
+  const refusal = result as { code?: string };
+  assert.notEqual(refusal.code, 'COMMAND_ARGS_MISMATCH', 'the documented substitution must never mismatch');
+  assert.equal((result as ApprovedRunResult).approved, true, 'the substituted line executes');
+});
+
+test('command-forward: a secret carrying a literal double quote keeps the plain args spelling as the honest fallback', async () => {
+  // The inner-quote pathology cannot round-trip into the quoted variant (the
+  // substituted line's own quote closes the token early); the gate's
+  // `expected` list carries the plain spelling, and that spelling executes.
+  const secret = 'Sup3r"Secret!';
+  const planArgs = ['RDS', 'CreateInstance', `--server.adminPass=${secret}`];
+  const plan = planHcloudCommand(planArgs, { mintApprovalToken: false });
+  const quotedSubstitution = plan.command!.replaceAll('<redacted>', secret);
+  const refused = await seededAskRun(LADDER_PROJECTS, planArgs, { command: quotedSubstitution });
+  const envelope = refused.result as { code: string; expected: string[] };
+  assert.equal(envelope.code, 'COMMAND_ARGS_MISMATCH', 'the quoted substitution honestly mismatches');
+  assert.ok(
+    envelope.expected.includes(['hcloud', ...planArgs].join(' ')),
+    'the plain args spelling is offered as the expected line',
+  );
+  const plain = await seededAskRun(LADDER_PROJECTS, planArgs, { command: ['hcloud', ...planArgs].join(' ') });
+  assert.equal((plain.result as ApprovedRunResult).approved, true, 'the plain spelling executes');
+});
+
 test('command-forward: a command line that disagrees with the args rejects in ask mode and executes nothing', async () => {
   const { result, executed, consents } = await seededAskRun(
     { projects: [{ id: 'p', worktree: process.cwd() }] },

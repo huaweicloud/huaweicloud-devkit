@@ -31,10 +31,14 @@ export type GateFlavor = 'always' | 'classified';
 export type ApprovalTokenSource = 'plan-face' | 'gate';
 
 // The consent channel a ledger entry records. 'terminal' is the approve CLI
-// (PIN-checked, the human's own TTY); 'elicitation' is a client-relayed
-// allow (PR-4 — client-relay evidence, never human-present by itself);
-// 'posture' is ask mode, where the harness client's permission prompt on
-// the very call is the confirmation.
+// (PIN-checked, the human's own TTY). 'elicitation' is the server-raised
+// form the gate sends from inside a tool call: the human answered the
+// client's own form UI, so the acceptance is machine-verified evidence of a
+// human answer (not human-PRESENT: the client relayed it). 'posture' is the
+// T3 chat round-trip's attested retry: the model reports that the user
+// approved in chat, with no mechanical proof a human answered — posture
+// trust, labeled as such on every teaching surface. Neither tier is a client
+// permission popup; the client's own rules no longer gate the call.
 export type ConsentEvidence = 'terminal' | 'elicitation' | 'posture';
 
 // The result a classified tool's pure classify function reports:

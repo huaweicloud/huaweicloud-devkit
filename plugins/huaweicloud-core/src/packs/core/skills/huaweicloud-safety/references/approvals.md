@@ -8,7 +8,7 @@ A write or execution command runs only after the user confirms the plan token in
    - `needed: true` means the command is a write or has execution side effects, and `command` is the exact line the user must run: `npx huaweicloud-devkit approve <approvalToken>`.
    - `needed: false` means the command is read-only, so the terminal confirmation does not apply.
 2. Confirm: show the user the plan echo and the `userConfirmation.command` line, then wait. The user runs that line in their own terminal. The terminal prints the redacted command and states that this authorizes one execution.
-3. Run: call `huaweicloud_run_approved_command` with the same `approvalToken`, the same `args`, the same `command` line (copy the plan echo's `command` field verbatim), and `approvedByUser: true`.
+3. Run (token mode): call `huaweicloud_run_approved_command` with the same `approvalToken`, the same `args`, the same `command` line (copy the plan echo's `command` field verbatim), and `approvedByUser: true` — the flag is your statement that the user approved; the terminal-confirmed grant is the confirmation. Ask mode has its own ladder below.
 
 An unconfirmed non-read command is rejected with `status: "rejected"` and `code: "USER_CONFIRMATION_REQUIRED"`, plus a `nextStep` naming the approve line. The refusal does not consume the token, so retry the same call after the user confirms.
 
@@ -57,7 +57,7 @@ OpenCode's saved "always allow" row can no longer suppress the confirmation, bec
 ## What the agent must not do
 
 - Never run `npx huaweicloud-devkit approve` or `npx huaweicloud-devkit pin` yourself, in any spelling. The confirmation's value is that the user's own terminal records it, and the safety hook denies both verbs on the agent Bash face for exactly that reason.
-- Never treat `approvedByUser: true` as the confirmation. It is the agent's statement that the user approved the exact command, and the run tool still requires the terminal-confirmed grant.
+- Never treat `approvedByUser: true` as the confirmation. In token mode it is the agent's statement that the user approved the exact command and the run tool still requires the terminal-confirmed grant; in ask mode it is the chat round-trip's retry marker, sent only after the user answered, and it never substitutes for the form or the round-trip.
 - Never ask the user for their PIN, and never enter a PIN on the user's behalf.
 - Never retry a run with different arguments under the same token. Plan again and get a fresh confirmation.
 - Never send a `command` line that differs from the `args` you send, and never send a prettified or shortened line. The gate rejects the mismatch instead of running it.
