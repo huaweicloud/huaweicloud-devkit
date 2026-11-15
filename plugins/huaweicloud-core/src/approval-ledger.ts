@@ -55,7 +55,11 @@
 // O_APPEND whole-file protocol — no read, no rewrite, nothing to erase),
 // the reader merges spool lines into the filtered view, and the next
 // LOCKED append compacts the spool into the main store under the lock.
-// The degradation may cost latency, never evidence.
+// The degradation may cost latency; evidence survives it when the
+// additive spool write lands — but the spool append is itself
+// best-effort (its catch never fails the call), so on a failing state
+// tree the event can be lost, the same contract as the locked write's
+// internal best-effort catch.
 //
 // Round 7 hardened the same surface at three points the seats measured:
 // the spool append inspects and terminates a torn tail before adding its
@@ -104,10 +108,10 @@ function ledgerFilePath(): string {
 //    the whole-file anchor band keep TWO 1MiB window digests; a mid-file
 //    insert OUTSIDE both windows, raced in-flight inside the hit path's
 //    validation window by a max-rate local writer, evades bounded content
-//    validation (measured 10/40 with the re-stat, 37/40 without; the
-//    sub-8MiB whole-file band closes it deterministically; the complete
-//    closure is a per-append full rescan — the r17-F3 cost the memo
-//    exists to avoid).
+//    validation (measured 14-19/40 with the re-stat across rounds' runs,
+//    37/40 without; the sub-8MiB whole-file band closes it
+//    deterministically; the complete closure is a per-append full rescan —
+//    the r17-F3 cost the memo exists to avoid).
 // 2. The cap-degradation burst pairs (r15+): ask arrivals that cross
 //    LEDGER_MAX_WAIT_MS (3s) degrade together and race the unlocked
 //    read-derive-write window, colliding on a seq — the equal-seq pair
@@ -127,9 +131,20 @@ function ledgerFilePath(): string {
 //    direction.
 // 5. The >V8-string taken file (r7): a sidecar past the whole-read limit
 //    never folds through the line path; kept with its bytes intact,
-//    retried every compaction, over the caps it blinds in O(1) — the
-//    operator-split remediation (readable chunks) is the documented
-//    recovery; under it the file is evidence, never a floor source.
+//    retried every compaction, over the caps it blinds in O(1). There is
+//    NO in-band recovery that restores the merged view: by construction a
+//    spool past the read cap folds into a store past the SAME cap (a
+//    568.8MB spool split into two readable chunks folds to a 568.8MB
+//    store — over the cap, back to quarantine). The honest operator paths
+//    are external: (a) archive the oversized taken file elsewhere and
+//    accept that its rows leave the merged view, or (b) keep the store
+//    under the cap by periodic maintenance before the spool accumulates
+//    past it. The consequences, named exactly: the bytes are ALWAYS
+//    preserved on disk (the taken file and the quarantine sidecar both
+//    keep them); the view loss is permanent for that content (no code
+//    path reads a .corrupt-* sidecar); and the counter reseeds from the
+//    surviving rows. Under the caps the file is evidence, never a floor
+//    source.
 // 6. The fold's all-or-nothing element bound (r21-r23): a taken file
 //    carrying ANY over-bound line keeps the WHOLE file — clean rows defer
 //    with the poison (retried every compaction, never dropped) so a giant
@@ -239,8 +254,13 @@ function ledgerSeqPath(): string {
 const SEQ_UNKNOWN = Number.MAX_SAFE_INTEGER;
 
 // The EXCLUSIVE ceiling of the assignable space: integers in [0, SEQ_CEILING)
-// are assignable; the three values below the sentinel — SEQ_CEILING itself,
-// SEQ_UNKNOWN-1, and SEQ_UNKNOWN — are never assigned and never readable.
+// are assignable — SEQ_CEILING itself and the one value below it
+// (SEQ_UNKNOWN-1) are outside the space, never assigned, and never read as a
+// row's seq. SEQ_UNKNOWN — the sentinel — IS assigned, as a STATE MARKER:
+// saturation, blinded sources, and undeterminable chronology stamp rows with
+// it, and every reader reads it back as exactly that (the sentinel sorts
+// NEWEST, the tier resolution skips sentinel rows, and the annotate never
+// binds a sentinel identity).
 // Round 15 bounded the space with two values of headroom; round 16, finding 1
 // (both seats) found the boundary itself was the poison: a value at the old
 // ceiling floored every later append at the top, and clampNextSeq re-issued
@@ -856,8 +876,12 @@ function scanSpoolSeqs(): { max: number; blinded: boolean } {
 // ledger lock's hold — no merged-view read, no extra parse (round 15,
 // finding 4). The seq FILE is not a floor source (round 17, finding 1): it
 // is an optimization, never a decision-maker. Saturation and a blinded
-// source both mark the row chronology-UNKNOWN (round 16, finding 1): the
-// counter never re-issues a value an existing row owns.
+// source both mark the row chronology-UNKNOWN (round 16, finding 1): on
+// the locked path with validated sources the counter never re-issues a
+// value an existing row owns; the mid-gap in-flight insert ABOVE the
+// determinism band is the recorded exception (the RESIDUAL LEDGER's
+// entry 1 — a racing local writer inside the memo hit's validation
+// window, measured 14-19/40).
 function assignSeqsLocked(
   events: ConsentEvent[],
   storeEntries: unknown[],
@@ -934,9 +958,14 @@ function assignSeqDegraded(event: ConsentEvent): void {
 // holder is PROBABLY productive, and a probably-productive holder is
 // waited out — but only up to a hard total cap (LEDGER_MAX_WAIT_MS).
 // Past the cap the waiter degrades to the additive-spool append: the
-// ledger is best-effort by contract, an approved call never stalls
-// unboundedly, and dead holders (immediate reclaim) and empty stale dirs
-// (1s) keep their current behavior under the cap. The cap applies to
+// ledger is best-effort by contract, and an approved call never blocks
+// unboundedly ON THE LOCK — the wait is capped and the waiter degrades
+// past it. The cap does NOT bound the holder's own section, which is the
+// uncapped O(store) read-modify-write (the recorded cost residual: 4.1s
+// at 1.4M events, 23.5s at the exact 500MB cap edge) — an approved call
+// on a giant tree is slow, never wedged — and dead holders (immediate
+// reclaim) and empty stale dirs (1s) keep their current behavior under
+// the cap. The cap applies to
 // healthy sections too by design: a healthy section longer than the cap
 // makes concurrent waiters degrade — their events land additively in the
 // spool instead of racing the holder's whole-file write (round 6: the
@@ -1105,9 +1134,11 @@ function readRawConsents(): unknown[] | undefined {
 // resolution's merged view and the take's fold attempt on EVERY append
 // for as long as the operator leaves the file in place).
 // HUAWEICLOUD_LEDGER_WHOLE_READ_LIMIT (bytes) tightens the guard for
-// tests — safe-directional only: a lower limit skips MORE whole reads
-// (fewer lines visible), never fewer, and the streaming seq scan still
-// floors the counter from the skipped file's bytes.
+// tests — a lower limit skips MORE whole reads (fewer lines visible).
+// The env override is honored as given in EITHER direction (any
+// positive integer); the safe direction is DOWN (the tests only tighten
+// it), and the streaming seq scan still floors the counter from the
+// skipped file's bytes.
 // The default guard: just under V8's ~512MB string limit.
 const WHOLE_FILE_STRING_LIMIT_BYTES = 500 * 1024 * 1024;
 
@@ -1122,7 +1153,9 @@ function wholeReadLimitBytes(): number {
 // CPU-bound scanning for ~8KiB of disk. The cap defaults to the same
 // 500MB discipline; HUAWEICLOUD_LEDGER_STREAM_LIMIT is its own seam so
 // the whole-read test seam (which stages SMALL sidecars the stream must
-// still read) does not blind them.
+// still read) does not blind them. Like the whole-read seam, the env
+// override is honored as given in either direction (any positive
+// integer; the tests only tighten it).
 const STREAM_SCAN_LIMIT_BYTES = WHOLE_FILE_STRING_LIMIT_BYTES;
 
 function streamScanLimitBytes(): number {
@@ -1179,10 +1212,13 @@ function elementContentLimitBytes(): number {
 // measured ~+0.3-0.5s on an 87MB store and pushed a borderline live-writer
 // race over the 3s wait cap. For files UNDER the band the walk is
 // provably unnecessary in the SAFETY direction: an element's
-// RE-SERIALIZED bytes never exceed its share of the FILE's bytes —
-// escapes shrink on parse ("\u00e9" is 6 file bytes, the re-serialized
-// "é" is 4), numbers never grow, and the structural slack is the ~3
-// bytes of quotes and the newline the file already carries — so every
+// RE-SERIALIZED bytes never exceed its share of the FILE's bytes by
+// enough to matter — escapes shrink on parse ("\u00e9" is 6 file
+// bytes, the re-serialized "é" is 4); numbers CAN grow in serialized
+// form (a file's compact "1e5" is 3 bytes, re-serialized "100000" is
+// 6) but the growth is bounded by the digit count the file itself
+// spent, and the structural slack is the ~3 bytes of quotes and the
+// newline the file already carries — so every
 // element of a file under the band has true serialized bytes under the
 // band < limit, and admission cannot reach the abort cliff. The walk
 // above the band stays the conservative padded-score check (its
@@ -1400,8 +1436,8 @@ function quarantineSidecarName(path: string): string {
 // open, read the byte at the end, write a '\n' terminator when that byte
 // is not a newline, then write the line. Never a rewrite of existing
 // bytes; strictly additive; the whole-file O_APPEND protocol cannot
-// erase anything because it never reads or rewrites the file it appends
-// to. Concurrent appenders interleave lines; the kernel serializes the
+// erase anything because it never REWRITES the file it appends to (the
+// tail inspection reads one byte; a read cannot erase). Concurrent appenders interleave lines; the kernel serializes the
 // size-update+write per open descriptor, and each line is a single small
 // write. The tail inspection is the round-7 discipline: a torn tail (a
 // disk-full clamp, a crash mid-append, a short write) must not GLUE the
@@ -1997,13 +2033,13 @@ export function recordAskModeConsent(params: {
 // execution. PR-3a's S1 memo keys reuse on this datum (uncertain /
 // failed → reuse the prior consent; delivered → no reuse).
 //
-// Best-effort in every direction, by design: the annotation takes the
-// ledger lock under a SHORT wait budget (a wedged holder must not tax the
-// approved call's tail a second time after the arrival already paid the
-// 3s cap) and SKIPS on any failure — lock unobtainable, no store, an
-// unreadable store (the quarantine is the append's business; this path
-// never rewrites a store it could not read), or the row not found. "Not
-// found" is the common healthy skip: token mode records no arrival
+// Best-effort in every direction, by design: the annotation is
+// LOCKLESS — it never takes the ledger lock (a wedged holder must not
+// tax the approved call's tail a second time after the arrival already
+// paid the 3s cap) and never writes the main store; it appends ONE line
+// to the additive outcomes side channel (.outcomes.jsonl). It SKIPS on
+// any failure — no store, an unreadable store, or the row not found.
+// "Not found" is the common healthy skip: token mode records no arrival
 // (nothing to annotate), a classified pass-through records none either,
 // and a consent whose arrival degraded to the spool or a taken sidecar
 // is left alone — enforced (round 11, finding 1, both seats), not just
@@ -2017,9 +2053,7 @@ export function recordAskModeConsent(params: {
 // this ledger forbids, round 6), and so does rewriting another
 // arrival's store row. A skipped annotation leaves the row as the
 // arrival wrote it; the memo treats an absent outcomeDetail as unknown.
-// The update itself is an in-place field write on ONE row under the
-// lock — the same locked read-modify-write shape as lockedAppend. The
-// recorded residual narrows to the RACING shape alone: concurrent
+// The recorded residual narrows to the RACING shape alone: concurrent
 // same-key arrivals can interleave between this call's arrival and its
 // annotate so the newest store row is not provably this dispatch's own
 // — PR-3a's precise keyed join lands with the approvedVia carrier (the
