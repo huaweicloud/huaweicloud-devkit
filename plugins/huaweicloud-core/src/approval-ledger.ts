@@ -1343,7 +1343,14 @@ function takeSpool(): { events: unknown[]; folded: string[] } {
         batch.push(parsed === undefined ? line : parsed.parsed);
       }
       if (!elementsWithinContentLimit(batch)) return; // keep the file: retried, evidence preserved
-      events.push(...batch);
+      // Round 22, finding 2 (A2): the r21 refactor's events.push(...batch)
+      // spread overflows V8's argument limit past ~125k elements — the
+      // RangeError was swallowed by this catch, so a >125k-line degraded
+      // spool NEVER compacted (measured: 125000 folds, 130000 silently
+      // stranded, every append re-reading the 24.7MB file inside the lock;
+      // the pre-r21 one-at-a-time loop folded the same spool cleanly).
+      // The plain loop restores the pre-r21 shape at the r21 guard's cost.
+      for (const item of batch) events.push(item);
       folded.push(file);
     } catch {
       // read failure: keep the file in place, bytes intact — evidence is
@@ -1396,16 +1403,29 @@ function writeStoreArrayAtomic(tmpPath: string, batches: unknown[][]): void {
     // store mid-row and the folded taken files removed (evidence loss,
     // the exact r7-3 class; caught by the r8 organic probe's
     // capped-child leg, where the pre-r21 writeFileSync threw EFBIG on
-    // the second attempt and left the taken files in place). Every write
-    // loops until the whole piece lands; a zero-progress write throws so
-    // the caller's catch keeps the taken files.
+    // the second attempt and left the taken files in place). Round 22,
+    // finding 1 (BOTH seats): the r21 loop was byte-safe ONLY for ASCII —
+    // writeSync's return counts BYTES while the loop sliced and bounded
+    // by UTF-16 code units, so for non-ASCII content a short count either
+    // exited "successfully" with the piece's tail never written (units <=
+    // W < bytes: the truncated tmp landed as the store, taken file
+    // removed, exit 0 — the natural RLIMIT_FSIZE shape: storeParses=false
+    // at 61440 bytes, taken gone) or resumed misaligned mid-multibyte
+    // (W < units: a span silently dropped, the store still parsing —
+    // 14852 vs 18430 bytes — the "never rewrites" doctrine broken without
+    // any detectable marker). The piece is now encoded ONCE and the loop
+    // runs over BYTE offsets — the read side's own discipline — so the
+    // byte-identity of the landed store holds by construction for ANY
+    // content; a zero-progress write still throws so the caller's catch
+    // keeps the taken files.
     const writeAll = (text: string): void => {
+      const buf = Buffer.from(text, 'utf8'); // encode once: byte offsets from here on
       let at = 0;
       for (;;) {
-        const wrote = writeSync(fd, text.slice(at), null, 'utf8');
+        const wrote = writeSync(fd, buf.subarray(at));
         if (wrote <= 0) throw new Error('the store write made no progress');
         at += wrote;
-        if (at >= text.length) return;
+        if (at >= buf.byteLength) return;
       }
     };
     let buffer = '';

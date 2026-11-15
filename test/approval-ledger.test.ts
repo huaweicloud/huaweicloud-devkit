@@ -287,6 +287,24 @@ function streamTextFile(path: string, pieces: string[]): void {
   }
 }
 
+// The capped-append child (the r21 ASCII + r22 multibyte pins): one plain
+// locked append under `ulimit -f 1` (1024 bytes) — the kernel partial-write
+// vehicle. The caller stages the home; the child runs the
+// LEDGER_CAPPED_APPEND_PROBE worker mode and exits 0 on completion.
+function spawnCappedAppendChild(home: string) {
+  return spawnSync('bash', ['-c', 'ulimit -f 1; exec node --experimental-strip-types test/approval-ledger.test.ts'], {
+    encoding: 'utf8',
+    timeout: 60_000,
+    env: {
+      ...process.env,
+      HUAWEICLOUD_HOME: home,
+      LEDGER_CAPPED_APPEND_PROBE: '1',
+      NODE_TEST_CONTEXT: undefined,
+      NODE_TEST_WORKER_ID: undefined,
+    },
+  });
+}
+
 // A spawned probe child with a kill bound (the r18/r19/r21 pin shape): a
 // blocking open or a giant parse belongs in a child — a wedge reads as the
 // bound, an abort as the exit signal, and `verify` inspects the home on a
@@ -3486,21 +3504,7 @@ test(
         }) + '\n',
       );
       const beforeBytes = readFileSync(join(dir, 'approval-consents.json'), 'utf8');
-      const child = spawnSync(
-        'bash',
-        ['-c', 'ulimit -f 1; exec node --experimental-strip-types test/approval-ledger.test.ts'],
-        {
-          encoding: 'utf8',
-          timeout: 60_000,
-          env: {
-            ...process.env,
-            HUAWEICLOUD_HOME: home,
-            LEDGER_CAPPED_APPEND_PROBE: '1',
-            NODE_TEST_CONTEXT: undefined,
-            NODE_TEST_WORKER_ID: undefined,
-          },
-        },
-      );
+      const child = spawnCappedAppendChild(home);
       try {
         assert.equal(child.status, 0, `the capped child must exit 0 (got ${child.status} ${child.signal ?? ''})`);
         assert.ok(existsSync(join(home, 'probe-ok')), 'the capped child completed its append');
@@ -3518,6 +3522,147 @@ test(
         reject(error);
       }
     });
+  }),
+);
+
+test(
+  'a partial write of MULTIBYTE content never lands a truncated store (round-22 finding 1, both seats)',
+  withLedgerHome((home) => {
+    // The r21 pin covered ASCII only — and the seats proved the ASCII green
+    // was structural: the r21 writeAll counted writeSync's BYTE return
+    // against UTF-16 CHARACTER offsets, so for non-ASCII content the ulimit's
+    // kernel partial (1024 bytes, NO error) landed inside the units<bytes
+    // window and the loop RETURNED 'successfully' with the tail never
+    // written: the truncated 1024-byte store was renamed into place and the
+    // folded taken file removed — the r8 evidence-loss class, exit 0, no
+    // error anywhere (the natural ulimit shape: storeParses=false, rows=0,
+    // taken gone; A2's instrumented run: one write, 61440 of 80351 bytes).
+    // This cell stages the same shape IN-REPO: a CJK row whose units(~725) <
+    // ulimit(1024) < bytes(~1925) — the early-exit window exactly — plus a
+    // degraded spool row, one append under `ulimit -f 1`. The fixed loop
+    // tracks BYTE offsets on the encoded buffer, so the partial resumes at
+    // the byte boundary, the next write hits EFBIG, the throw keeps the
+    // store byte-identical and the taken file with its bytes.
+    return new Promise<void>((resolve, reject) => {
+      const dir = join(home, '.config', 'huaweicloud');
+      mkdirSync(dir, { recursive: true });
+      const cjkRow = JSON.stringify({
+        sessionId: '错'.repeat(250),
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-cjk',
+        outcome: 'granted',
+        grantedAt: 1_700_000_000_000,
+        scope: 'once',
+        evidence: 'terminal',
+        arrivalSeq: 0,
+      });
+      // The spool row is a small ASCII row: the window the cell must hit is
+      // on the WHOLE write piece (the fold + the store rows + the appended
+      // row serializes as ONE flush), so the spool row must add units
+      // without pushing the total past the partial.
+      const cjkSpoolRow = JSON.stringify({
+        sessionId: 'ses-spool-ascii',
+        tool: 'huaweicloud_run_approved_command',
+        argsHash: 'h-cjk-spool',
+        outcome: 'granted',
+        grantedAt: 1_700_000_000_100,
+        scope: 'once',
+        evidence: 'posture',
+        arrivalSeq: 1,
+      });
+      const storeBefore = `[${cjkRow}]`;
+      // The write piece is '[' + cjkRow + ',' + cjkSpoolRow + ',' + <the
+      // mode's appended row ~180 ASCII units> + ']': the staging must put
+      // the TOTAL piece inside the early-exit window — units <= kernel
+      // partial (1024) < bytes — or the mutated loop would resume and hit
+      // EFBIG (the throw path) instead of exiting 'successfully'.
+      const appendedUnitsApprox = 200;
+      const pieceUnits = 1 + cjkRow.length + 1 + cjkSpoolRow.length + 1 + appendedUnitsApprox + 1;
+      const pieceBytes = Buffer.byteLength(`[${cjkRow},${cjkSpoolRow}]`, 'utf8') + appendedUnitsApprox + 2;
+      assert.ok(
+        pieceUnits < 1024 && pieceBytes > 1024,
+        `staging: the whole write piece sits in the early-exit window (units ${pieceUnits} < 1024 < bytes ${pieceBytes})`,
+      );
+      writeFileSync(join(dir, 'approval-consents.json'), storeBefore);
+      writeFileSync(join(dir, 'approval-consents.json.spool.jsonl'), cjkSpoolRow + '\n');
+      const child = spawnCappedAppendChild(home);
+      try {
+        assert.equal(
+          child.status,
+          0,
+          `the multibyte capped child must exit 0 (got ${child.status} ${child.signal ?? ''})`,
+        );
+        assert.ok(existsSync(join(home, 'probe-ok')), 'the multibyte capped child completed its append');
+        const names = readdirSync(dir);
+        const storeAfter = readFileSync(join(dir, 'approval-consents.json'), 'utf8');
+        // The fixed loop: byte-identical store (the throw fired past the
+        // partial), never the kernel-truncated 1024-byte landing.
+        assert.ok(
+          storeAfter === storeBefore,
+          'the multibyte store is byte-identical after the failed write — never the 1024-byte truncation',
+        );
+        const taken = names.find((name) => name.includes('.spool.jsonl.taken-'));
+        assert.ok(taken, 'the multibyte taken file survives the failed write');
+        const takenText = readFileSync(join(dir, taken!), 'utf8');
+        assert.ok(takenText.includes('"posture"'), "the taken file keeps the spool row's bytes");
+        resolve();
+      } catch (error) {
+        reject(error);
+      }
+    });
+  }),
+);
+
+test(
+  'a >125k-line degraded spool compacts: the fold never overflows the argument spread (round-22 finding 2)',
+  withLedgerHome(async (home) => {
+    const paths = ledgerSpoolPaths(home);
+    // The r21 fold refactor's events.push(...batch) spread overflowed V8's
+    // argument limit past ~125k elements — the RangeError was swallowed by
+    // the fold's catch, so a >125k-line degraded spool NEVER compacted
+    // (silently stranded, every append re-reading the 24.7MB file inside
+    // the lock; 125000 folded, 130000 did not, the pre-r21 one-at-a-time
+    // loop folded both). The plain loop restores the shape.
+    const LINES = 130_000;
+    const pieces: string[] = [];
+    for (let i = 0; i < LINES; i += 1) {
+      pieces.push(
+        JSON.stringify({
+          sessionId: 'ses-fold',
+          tool: 'huaweicloud_run_approved_command',
+          argsHash: `h-fold-${i}`,
+          outcome: 'granted',
+          grantedAt: 1_000 + i,
+          scope: 'once',
+          evidence: 'posture',
+          arrivalSeq: i,
+        }),
+      );
+    }
+    streamTextFile(
+      paths.spool,
+      pieces.map((p) => p + '\n'),
+    );
+    const beforeBytes = statSync(paths.spool).size;
+    assert.ok(beforeBytes > 20 * 1024 * 1024, `staging: a real >125k-line spool (${beforeBytes} bytes)`);
+
+    recordAskModeConsent({
+      sessionId: 'ses-fold',
+      tool: 'huaweicloud_run_approved_command',
+      argsHash: 'h-fold-new',
+      outcome: 'granted',
+      evidence: 'posture',
+    });
+
+    const names = readdirSync(paths.dir);
+    const taken = names.filter((name) => name.includes('.spool.jsonl.taken-'));
+    assert.equal(taken.length, 0, 'the 130k-line spool compacted — no stranded taken file');
+    const view = readConsentEvents();
+    assert.equal(
+      view.filter((e) => e.argsHash.startsWith('h-fold')).length,
+      LINES + 1,
+      `every folded line landed in the store (${LINES} staged + the new arrival)`,
+    );
   }),
 );
 
