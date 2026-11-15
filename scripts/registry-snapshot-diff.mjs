@@ -120,6 +120,12 @@ const DELIBERATE_ADDITIONS = [
       'The async-exec claim protocol (TLA+-verified as HwExecClaim): mode "async" claims a task directory and spawns the command detached, so long build-class commands stop hitting the synchronous timeout cliff; the pre-migration contract only knew the sync exec.',
   },
   {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'command',
+    reason:
+      'The operator-approved command-forward shape: the harness permission popup renders the tool input, so a top-level command line makes the command the first thing the user reads. Optional in the schema ON PURPOSE (the gate, not zod, is the enforcer): an args-only legacy call must still reach the gate, and the gate checks equality whenever the field is present.',
+  },
+  {
     tool: 'huaweicloud_sandbox_exec_one_shot',
     property: 'task_id',
     reason:

@@ -1074,6 +1074,12 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
       // events to a one-field corruption).
       arrivalSeq: isValidArrivalSeq(record.arrivalSeq) ? record.arrivalSeq : SEQ_UNKNOWN,
     };
+    // The command-forward line (redacted at write time): pass it through
+    // when present and well-formed; a malformed value reads as absent —
+    // the same tolerance the other optional fields carry.
+    if (typeof record.command === 'string' && record.command !== '') {
+      event.command = record.command;
+    }
     // The delivery-outcome follow-up (round 10, finding 4): pass it through
     // when present and well-formed; a malformed value reads as absent (the
     // documented read tolerance — the write path preserves the raw row).
@@ -1966,6 +1972,10 @@ export function recordAskModeConsent(params: {
   outcome: 'granted' | 'denied';
   evidence?: ConsentEvidence;
   arrivalSeq?: number;
+  // The command-forward line the summarize view rendered (already redacted
+  // by the spec's contract); written on the row so the consent record names
+  // what the user allowed, not only its hash.
+  command?: string;
 }): { grantedAt: number; arrivalSeq: number } {
   // Tier resolution is the ledger's rule, not the caller's: a reuse
   // inherits the original event's tier verbatim — never upgraded (posture
@@ -2001,6 +2011,7 @@ export function recordAskModeConsent(params: {
     evidence: 'posture', // resolved below, before the append
     arrivalSeq: 0, // appendConsentEvent assigns the real counter
   };
+  if (params.command !== undefined && params.command !== '') event.command = params.command;
   withLedgerLock(() => {
     let evidence = params.evidence ?? 'posture';
     try {

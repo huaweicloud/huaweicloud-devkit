@@ -11,6 +11,7 @@ import {
   hashArgs,
   inspectApprovalToken,
   pinViewArgs,
+  planHcloudCommand,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
 import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
@@ -25,8 +26,9 @@ import {
 import { savedAllowAction } from '../plugins/huaweicloud-core/src/lib/opencode-saved-perms.ts';
 import { seedStoreIn, withStoreDir, writeCorruptStore, type SeedStore } from './opencode-saved-perms-harness.ts';
 import { HUAWEICLOUD_CLI_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
+import { getToolSchema } from '../plugins/huaweicloud-core/src/tool-schemas.ts';
 import { upgradePackage } from '../plugins/huaweicloud-core/src/update-upgrade.ts';
-import type { ApprovalSpec } from '../plugins/huaweicloud-core/src/approval-types.ts';
+import type { ApprovalSpec, ConsentEvent } from '../plugins/huaweicloud-core/src/approval-types.ts';
 import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
 import { spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness.ts';
@@ -108,6 +110,19 @@ async function assertCpRefused(leaf: string, work: string, message: string): Pro
 function runApproved(token: string | undefined, args: string[]) {
   return callTool('huaweicloud_run_approved_command', {
     args,
+    ...(token !== undefined ? { approvalToken: token } : {}),
+    approvedByUser: true,
+    maxRetries: 0,
+    vendorConfirmed: VENDOR,
+  });
+}
+
+// The command-forward call: the same run call plus the display field, so a
+// test can drive the equality check without a second dispatch shape.
+function runApprovedForward(command: string | undefined, token: string | undefined, args: string[]) {
+  return callTool('huaweicloud_run_approved_command', {
+    args,
+    ...(command !== undefined ? { command } : {}),
     ...(token !== undefined ? { approvalToken: token } : {}),
     approvedByUser: true,
     maxRetries: 0,
@@ -1689,6 +1704,8 @@ interface SeededAskRun {
   executed: boolean;
   /** The ask-mode consent rows the arrival left behind (0 proves a refusal). */
   consents: number;
+  /** The consent rows themselves, for content assertions. */
+  events: ConsentEvent[];
   /** The pinned store root (post-cleanup it is just a path string). */
   dir: string;
 }
@@ -1696,7 +1713,7 @@ interface SeededAskRun {
 // One ask-mode arrival against a seeded store: the isolated auth home, the
 // pinned store root, the marker fake, and the ask posture, so each case below
 // states only its store shape and its assertion.
-async function seededAskRun(seed: SeedStore, args: string[]): Promise<SeededAskRun> {
+async function seededAskRun(seed: SeedStore, args: string[], command?: string): Promise<SeededAskRun> {
   let outcome: SeededAskRun | undefined;
   await withTempAuthHome(async () => {
     await withStoreDir(async (dir) => {
@@ -1706,8 +1723,9 @@ async function seededAskRun(seed: SeedStore, args: string[]): Promise<SeededAskR
       process.env.HCLOUD_BIN = fakeHcloudWithMarker(marker);
       try {
         await withApprovalMode('ask', async () => {
-          const result: unknown = await runApproved(undefined, args);
-          outcome = { result, executed: existsSync(marker), consents: readConsentEvents().length, dir };
+          const result: unknown = await runApprovedForward(command, undefined, args);
+          const events = readConsentEvents();
+          outcome = { result, executed: existsSync(marker), consents: events.length, events, dir };
         });
       } finally {
         if (previousBin === undefined) delete process.env.HCLOUD_BIN;
@@ -1836,4 +1854,149 @@ test('token mode: a seeded saved row changes nothing (the guard is ask-only)', a
       assert.equal(inspectApprovalToken('anything').state, 'not_found', 'nothing was minted');
     });
   });
+});
+
+// ── The command-forward call shape (operator-approved addendum) ───────────
+// The run tool's input carries a `command` string beside `args`, so the
+// harness permission popup shows the command line the user is approving
+// instead of a JSON args blob. The gate requires equality whenever the field
+// is present, refuses only-command as malformed, and leaves the legacy
+// args-only shape untouched (the trunk battery drives that shape unchanged).
+
+test('command-forward: an ask-mode call carrying the exact command line executes and the consent row records it', async () => {
+  const args = ['ECS', 'DeleteServer', '--server_id=i-1'];
+  const command = 'hcloud ECS DeleteServer --server_id=i-1';
+  const { result, executed, consents, events } = await seededAskRun(
+    { projects: [{ id: 'p', worktree: process.cwd() }] },
+    args,
+    command,
+  );
+  assert.equal((result as ApprovedRunResult).approved, true, 'the matching command line executes');
+  assert.equal(executed, true);
+  assert.equal(consents, 1);
+  assert.equal(events[0]!.command, command, 'the consent row carries the summarize view command string');
+  assert.equal(events[0]!.argsHash, hashArgs(args), 'the binding is still the args hash');
+});
+
+test('command-forward: the plan echo spelling (shell-quoted) passes too', async () => {
+  const { result } = await seededAskRun(
+    { projects: [{ id: 'p', worktree: process.cwd() }] },
+    ['ECS', 'DeleteServer', '--server_id=i-1', '--description=a b'],
+    'hcloud ECS DeleteServer --server_id=i-1 "--description=a b"',
+  );
+  assert.equal((result as ApprovedRunResult).approved, true, "the plan's own quoted echo is accepted verbatim");
+});
+
+test('command-forward: the plan echo forwards verbatim (plan.command passes the gate unchanged)', async () => {
+  const args = ['ECS', 'DeleteServer', '--server_id=i-1', '--description=a b'];
+  const plan = planHcloudCommand(args, { mintApprovalToken: false });
+  assert.ok(plan.command, 'the plan carries the echo the model forwards');
+  const { result } = await seededAskRun({ projects: [{ id: 'p', worktree: process.cwd() }] }, args, plan.command);
+  assert.equal((result as ApprovedRunResult).approved, true, 'the documented pass-through works with a quoted arg');
+});
+
+test('command-forward: a command line that disagrees with the args rejects in ask mode and executes nothing', async () => {
+  const { result, executed, consents } = await seededAskRun(
+    { projects: [{ id: 'p', worktree: process.cwd() }] },
+    ['ECS', 'DeleteServer', '--server_id=i-123'],
+    'hcloud ECS DeleteServer --server_id=i-999',
+  );
+  const refusal = result as { status: string; code: string; reason: string; expected: string[]; nextStep: string };
+  assert.equal(refusal.status, 'rejected');
+  assert.equal(refusal.code, 'COMMAND_ARGS_MISMATCH');
+  assert.match(refusal.reason, /does not match the requested args/, 'the mismatch is named');
+  assert.deepEqual(refusal.expected, ['hcloud ECS DeleteServer --server_id=i-123'], 'the expected line is named');
+  assert.match(refusal.nextStep, /<redacted>/, 'the substitution caveat is taught');
+  assert.equal(executed, false, 'nothing executes');
+  assert.equal(consents, 0, 'a refused call records no consent');
+});
+
+test('command-forward: a token-mode mismatch rejects without burning the token, and the corrected call still runs', async () => {
+  await withVaultAuthHome(async () => {
+    const args = ['ECS', 'DeleteServer', '--server_id=i-1'];
+    const token = createApprovalToken(args, { secretsSubstitutable: false, argsPinView: pinViewArgs(args) });
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+    const previousBin = process.env.HCLOUD_BIN;
+    process.env.HCLOUD_BIN = fakeHcloudExecutable('console.log(JSON.stringify({ ok: true }));');
+    try {
+      const refused = (await runApprovedForward('hcloud ECS DeleteServer --server_id=victim-9', token, args)) as {
+        code: string;
+      };
+      assert.equal(refused.code, 'COMMAND_ARGS_MISMATCH', 'the mismatch rejects before the consume');
+      assert.equal(inspectApprovalToken(token).state, 'valid', 'the refusal burned nothing');
+      const corrected = (await runApprovedForward(
+        'hcloud ECS DeleteServer --server_id=i-1',
+        token,
+        args,
+      )) as ApprovedRunResult;
+      assert.equal(corrected.approved, true, 'the corrected line spends the still-valid token');
+    } finally {
+      if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = previousBin;
+    }
+  });
+});
+
+test('command-forward: a command with no args is malformed and nothing executes', async () => {
+  const { result, executed, consents } = await seededAskRun(
+    { projects: [{ id: 'p', worktree: process.cwd() }] },
+    [],
+    'hcloud ECS DeleteServer --server_id=i-1',
+  );
+  assert.equal((result as { code: string }).code, 'COMMAND_REQUIRES_ARGS');
+  assert.equal(executed, false, 'nothing executes');
+  assert.equal(consents, 0);
+});
+
+test('command-forward: a non-string command is malformed, never coerced', async () => {
+  await withTempAuthHome(async () => {
+    const refused = (await callTool('huaweicloud_run_approved_command', {
+      args: ['ECS', 'ListServersDetails'],
+      command: 42,
+      approvedByUser: true,
+      maxRetries: 0,
+      vendorConfirmed: VENDOR,
+    } as never)) as { code: string };
+    assert.equal(refused.code, 'COMMAND_ARGS_MISMATCH');
+  });
+});
+
+test('command-forward: the legacy args-only shape executes unchanged', async () => {
+  const { result, executed, consents } = await seededAskRun({ projects: [{ id: 'p', worktree: process.cwd() }] }, [
+    'ECS',
+    'ListServersDetails',
+  ]);
+  assert.equal((result as ApprovedRunResult).approved, true, 'the trunk shape executes unchanged');
+  assert.equal(executed, true);
+  assert.equal(consents, 1);
+});
+
+test('command-forward: the summarize view carries the redacted command string and never the raw secret', () => {
+  const spec = HUAWEICLOUD_CLI_APPROVAL_SPECS.huaweicloud_run_approved_command;
+  const plain = spec.summarize(['ECS', 'DeleteServer', '--server_id=i-123']);
+  assert.equal(plain.command, 'hcloud ECS DeleteServer --server_id=i-123', 'the ordinary line, as the row carries it');
+  const secret = 'Real' + 'Pass99Aa';
+  const secretArgs = ['RDS', 'CreateInstance', `--password=${secret}`, '--name=db1'];
+  const view = spec.summarize(secretArgs);
+  assert.ok(view.command !== undefined, 'the view has a command line');
+  assert.equal(view.command!.includes(secret), false, 'the raw secret never reaches the view');
+  assert.equal(view.command!.includes('<redacted>'), true, 'the redaction is visible in the line');
+  assert.deepEqual(spec.commandAnchor!(secretArgs), [`hcloud RDS CreateInstance --password=${secret} --name=db1`]);
+});
+
+test('command-forward: the schema advertises the command field and keeps it optional so legacy calls reach the gate', () => {
+  const rendered = getToolSchema('huaweicloud_run_approved_command').toJSONSchema() as {
+    properties?: Record<string, { type?: unknown; description?: string }>;
+    required?: string[];
+  };
+  const command = rendered.properties?.['command'];
+  assert.ok(command, 'the command field is advertised in tools/list');
+  assert.equal(command!.type, 'string');
+  assert.match(command!.description ?? '', /Always send this/, 'the description teaches the field');
+  assert.equal(
+    (rendered.required ?? []).includes('command'),
+    false,
+    'optional in the schema: the gate is the enforcer',
+  );
+  assert.equal((rendered.required ?? []).includes('args'), true, 'args stays required');
 });

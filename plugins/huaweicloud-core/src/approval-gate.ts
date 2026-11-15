@@ -118,6 +118,55 @@ function savedAllowRowGuard(name: ToolName): Record<string, unknown> | null {
   return savedAllowRowRefusal(scan, action);
 }
 
+// The command-forward anchor (the operator-approved display field): a call
+// that carries the tool's `command` string must spell the exact line its args
+// execute, so the harness popup's first line is the command the user is
+// approving rather than a JSON args blob with self-attestation fields beside
+// it. The check runs in BOTH modes, before any mint, consent record, or
+// execution: a line that disagrees with the args is never what the user saw,
+// so nothing may run. The legacy args-only shape carries no field and is
+// untouched (the trunk battery drives exactly that shape), and a tool with no
+// executable line ignores the field.
+export const COMMAND_ARGS_MISMATCH = 'COMMAND_ARGS_MISMATCH';
+export const COMMAND_REQUIRES_ARGS = 'COMMAND_REQUIRES_ARGS';
+
+function commandAnchorRefusal(spec: ApprovalSpec, value: unknown, provided: unknown): Record<string, unknown> | null {
+  if (provided === undefined) return null; // the legacy args-only shape
+  const expected = spec.commandAnchor?.(value) ?? [];
+  if (expected.length === 0) return null; // this tool declares no executable line
+  if (typeof provided !== 'string' || provided.trim() === '') {
+    return {
+      status: 'rejected',
+      code: COMMAND_ARGS_MISMATCH,
+      reason: 'the command field must be the full command line, as a non-empty string.',
+      nextStep: 'Send command as the exact line the args execute, or omit it for the legacy args-only shape.',
+    };
+  }
+  const hasArgs = Array.isArray(value) && value.length > 0;
+  if (!hasArgs) {
+    return {
+      status: 'rejected',
+      code: COMMAND_REQUIRES_ARGS,
+      reason: `the command field is the display anchor for an args call and cannot stand alone (got "${provided.slice(0, 200)}").`,
+      nextStep: 'Send the args array together with the matching command line, or omit command entirely.',
+    };
+  }
+  if (!expected.includes(provided)) {
+    return {
+      status: 'rejected',
+      code: COMMAND_ARGS_MISMATCH,
+      reason:
+        `the command field does not match the requested args (got "${provided.slice(0, 200)}"). ` +
+        'The line the user reads in the popup must be the line that executes.',
+      expected,
+      nextStep:
+        "Send the exact command line: the plan result's command field, or the args array spelled out. " +
+        'Substitute real values where the plan shows <redacted>.',
+    };
+  }
+  return null;
+}
+
 function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
   return spec.normalizeArgs ? spec.normalizeArgs(args) : args;
 }
@@ -372,6 +421,12 @@ export async function runApprovalGate(
 
   const value = bindingValue(spec, args);
 
+  // The command-forward anchor precedes every mode effect (see the helper):
+  // a mismatched or malformed display line rejects with nothing minted,
+  // recorded, or executed.
+  const commandRefusal = commandAnchorRefusal(spec, value, args.command);
+  if (commandRefusal !== null) return { envelope: commandRefusal };
+
   // Classified flavor engages on content: a classify that says 'none'
   // needs no consent, so no mint, no ledger entry, no gate. The verdict is
   // computed once here and consulted per-branch below, and the floors run
@@ -408,6 +463,7 @@ export async function runApprovalGate(
       tool: name,
       argsHash: hashArgs(value),
       outcome: 'granted',
+      command: spec.summarize(value).command,
       arrivalSeq: 0, // the ledger assigns the real counter on append
     });
     // The arrival's IDENTITY (round 15, finding 2): the stamp AND the seq —

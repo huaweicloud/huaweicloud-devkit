@@ -600,6 +600,11 @@ test('the safety approvals reference exists and states its honest boundaries', (
       /V=approve; npx huaweicloud-devkit \$V/,
       `${label}: the variable-indirection hook residual is stated`,
     );
+    // The command-forward shape (PR-1.5 addendum): the reference teaches the
+    // field the popup renders first, and the refusal a mismatch earns.
+    assert.match(text, /Always send `command`/, `${label}: the command-forward field is taught`);
+    assert.match(text, /COMMAND_ARGS_MISMATCH/, `${label}: the mismatch rejection code is taught`);
+    assert.match(text, /TOP-LEVEL `command` field/, `${label}: the plan field to forward is disambiguated`);
   }
 });
 

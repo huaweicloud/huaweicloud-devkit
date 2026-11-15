@@ -88,11 +88,24 @@ export function needsUserConfirmation(args: string[], options: ClassifyOptions =
   return strict.decision === 'deny' && (strict.risk === 'write' || strict.risk === 'execution');
 }
 
-function quoteShellArg(value: unknown): string {
+export function quoteShellArg(value: unknown): string {
   const text = String(value);
   if (!text) return '""';
   if (/^[A-Za-z0-9_./:=@-]+$/.test(text)) return text;
   return `"${text.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+// The accepted executable lines for a normalized argument list: the
+// command-forward `command` field must equal one of them exactly. The plain
+// space-joined line is the contract's stated anchor; the shell-quoted line is
+// this module's own echo (plan.command), so a model that forwards the plan's
+// echo verbatim passes too. The two coincide for the ordinary case (service,
+// operation, --key=value) and differ only where an argument carries a space,
+// a quote, or another character the echo has to quote.
+export function hcloudExecutableLines(normalizedArgs: readonly string[]): string[] {
+  const plain = ['hcloud', ...normalizedArgs].join(' ');
+  const quoted = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
+  return plain === quoted ? [plain] : [plain, quoted];
 }
 
 function planningWarnings(args: string[]): string[] {
@@ -403,7 +416,7 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
         ? {
             needed: true,
             mode: 'ask',
-            note: 'The harness client confirms this command with the user when huaweicloud_run_approved_command is called. Call it with the same args and approvedByUser: true. No terminal approval line or token is needed.',
+            note: "The harness client confirms this command with the user when huaweicloud_run_approved_command is called. Call it with the same args, the command field (this result's command line, so the prompt shows it first), and approvedByUser: true. No terminal approval line or token is needed.",
           }
         : {
             needed: true,

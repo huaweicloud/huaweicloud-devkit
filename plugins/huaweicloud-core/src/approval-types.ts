@@ -81,11 +81,26 @@ export interface ApprovalSpec {
   // token minted and no ledger entry (ApprovalCoreMint GateMintSeam's
   // disabled-guard posture).
   requiresSessionSeam?: boolean;
+  // The command-forward anchor (the operator-approved display field): the
+  // accepted executable lines for this call, derived from the binding
+  // value. A call that carries the tool's `command` field must match one of
+  // them exactly (the gate compares before any mint, consent record, or
+  // execution); a call that omits the field keeps the legacy shape and is
+  // untouched. Tools whose args carry no executable line (the later pack
+  // registrations) simply leave it out, and the field is then ignored.
+  commandAnchor?: (bindingValue: unknown) => string[];
   // The redacted popup view plus the pin-view binding: one or two short
   // lines naming the tool and the pinned arguments (never the raw argument
-  // stream — a popup must not leak secrets), the binding-value hash, and
-  // the pin view the mismatch path compares against the stored entry.
-  summarize: (bindingValue: unknown) => { summary: string; argsHash: string; pinView: unknown };
+  // stream — a popup must not leak secrets), the binding-value hash, the
+  // pin view the mismatch path compares against the stored entry, and —
+  // when the tool has an executable line — the redacted command string the
+  // consent row carries.
+  summarize: (bindingValue: unknown) => {
+    summary: string;
+    argsHash: string;
+    pinView: unknown;
+    command?: string;
+  };
 }
 
 // The consent event the ledger stores (approval-ledger.ts). Ask-mode
@@ -149,6 +164,11 @@ export interface ConsentEvent {
   // the dispatch layer's follow-up lands, and on any follow-up that could
   // not be recorded best-effort.
   outcomeDetail?: ConsentDeliveryOutcome;
+  // The command-forward line the user allowed, as the summarize view
+  // rendered it (REDACTED by construction — the summarize contract never
+  // stores the raw argument stream). Absent on rows from tools with no
+  // executable line, and on every row written before the field landed.
+  command?: string;
 }
 
 // What became of the call a consent authorized, as observed by the

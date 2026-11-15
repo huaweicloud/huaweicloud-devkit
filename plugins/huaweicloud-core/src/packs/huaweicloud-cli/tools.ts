@@ -7,6 +7,8 @@ import {
   firstPlaceholderSecretArg,
   pinViewArgs,
   needsUserConfirmation,
+  quoteShellArg,
+  hcloudExecutableLines,
   type HcloudRunResult,
   type HcloudRunOptions,
 } from '../../hcloud-cli.ts';
@@ -389,6 +391,12 @@ const listOperationsSchema = z.looseObject({
 });
 const runApprovedCommandSchema = z.looseObject({
   vendorConfirmed,
+  command: z
+    .string()
+    .optional()
+    .describe(
+      'Always send this: the exact full hcloud command line this call executes, for example "hcloud ECS DeleteServer --server_id=i-123". Copy it from the plan result\'s command field (huaweicloud_plan_cli_command), substituting real values where the plan shows <redacted>. The harness permission popup renders it as the first thing the user reads, and the server checks it equals the line the args array spells: a mismatch is rejected without executing anything. Only a legacy caller that predates this field omits it, and the field is optional in the schema so such a call still reaches the gate instead of dying in validation.',
+    ),
   args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
   approvalToken: approvalTokenArg.describe(
     'Required in token-approval mode (from huaweicloud_plan_cli_command); omit in ask mode where the harness client confirms at run time.',
@@ -419,6 +427,7 @@ export const HUAWEICLOUD_CLI_APPROVAL_SPECS: Readonly<Record<'huaweicloud_run_ap
     flavor: 'always',
     tokenSource: 'plan-face',
     normalizeArgs: (args) => stripLeadingHcloudBinArgs(providedStringArgs(args)).args,
+    commandAnchor: (bindingValue) => hcloudExecutableLines(bindingValue as string[]),
     classify: (bindingValue) => (needsUserConfirmation(bindingValue as string[]) ? 'required' : 'none'),
     assertArgsExecutable: (bindingValue, mode) => assertNoPlaceholderSecret(bindingValue as string[], mode),
     summarize: (bindingValue) => {
@@ -430,10 +439,12 @@ export const HUAWEICLOUD_CLI_APPROVAL_SPECS: Readonly<Record<'huaweicloud_run_ap
       // elicitation form spread verbatim. pinViewArgs is the same redaction
       // vocabulary the pin view uses; an unredactable summary would leak
       // exactly what the pin view hides.
+      const redactedLine = ['hcloud', ...pinViewArgs(effective)].map((arg) => quoteShellArg(arg)).join(' ');
       return {
-        summary: `huaweicloud_run_approved_command: ${['hcloud', ...pinViewArgs(effective)].join(' ').slice(0, 200)}`,
+        summary: `huaweicloud_run_approved_command: ${redactedLine.slice(0, 200)}`,
         argsHash: hashArgs(effective),
         pinView: pinViewArgs(effective),
+        command: redactedLine,
       };
     },
   },
@@ -471,7 +482,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_run_approved_command',
     description:
-      "Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user. In the default token mode the user must also confirm the plan token in their own terminal (npx huaweicloud-devkit approve <token>) — a non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Under DEVKIT_APPROVAL_MODE=ask the harness client's permission prompt on this call is the confirmation: pass the same args with approvedByUser: true and no approvalToken. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
+      "Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user. In the default token mode the user must also confirm the plan token in their own terminal (npx huaweicloud-devkit approve <token>) — a non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Under DEVKIT_APPROVAL_MODE=ask the harness client's permission prompt on this call is the confirmation: pass the same args, the command field (the plan result's command line), approvedByUser: true, and no approvalToken. In both modes always send command: the popup shows it first, and the server rejects a line that does not match args (COMMAND_ARGS_MISMATCH). Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
     schema: runApprovedCommandSchema,
     handler: handleRunApprovedCommand,
   },

@@ -8,9 +8,17 @@ A write or execution command runs only after the user confirms the plan token in
    - `needed: true` means the command is a write or has execution side effects, and `command` is the exact line the user must run: `npx huaweicloud-devkit approve <approvalToken>`.
    - `needed: false` means the command is read-only, so the terminal confirmation does not apply.
 2. Confirm: show the user the plan echo and the `userConfirmation.command` line, then wait. The user runs that line in their own terminal. The terminal prints the redacted command and states that this authorizes one execution.
-3. Run: call `huaweicloud_run_approved_command` with the same `approvalToken`, the same `args`, and `approvedByUser: true`.
+3. Run: call `huaweicloud_run_approved_command` with the same `approvalToken`, the same `args`, the same `command` line (copy the plan echo's `command` field verbatim), and `approvedByUser: true`.
 
 An unconfirmed non-read command is rejected with `status: "rejected"` and `code: "USER_CONFIRMATION_REQUIRED"`, plus a `nextStep` naming the approve line. The refusal does not consume the token, so retry the same call after the user confirms.
+
+## The command field
+
+Always send `command`: the full hcloud command line, for example `hcloud ECS DeleteServer --server_id=i-123`. The plan result already carries it as the TOP-LEVEL `command` field (the redacted echo); forward that field verbatim. It is not `userConfirmation.command`, which is the approve line in token mode. Where the plan shows `<redacted>` for a secret value, substitute the real value in BOTH `args` and `command`.
+
+The harness permission popup renders the tool input, so `command` is the first line the user reads before allowing the call; `args` stays the machine-precision binding beside it. The server checks that `command` equals the line the `args` array spells. A mismatch is rejected with `code: "COMMAND_ARGS_MISMATCH"` and nothing executes, because the line the user read must be the line that runs. A `command` with no `args` is rejected as malformed with `code: "COMMAND_REQUIRES_ARGS"`.
+
+The field is optional in the schema only so a legacy args-only caller still reaches the gate and executes unchanged. New calls always send it.
 
 ## The PIN and the TTY check
 
@@ -37,7 +45,7 @@ An alternative posture where the confirmation happens in the harness client's ow
 
 The operator opts in; it is never the default. On OpenCode the installer (at or above 1.19.0) writes the client's ask rule — a top-level `permissions` array entry with effect `ask` on 2.0+, or the same effect as a `permission`-object key on 1.19–1.x; both name the `huaweicloud-devkit_huaweicloud_run_approved_command` action — plus `DEVKIT_APPROVAL_MODE=ask` in the mcp entry's environment, so the client half and the server half move together — the rule without the env double-gates (the client prompts AND the server still demands a token), the env without the rule fail-opens (the server trusts a prompt nobody shows). On other harnesses the operator sets `DEVKIT_APPROVAL_MODE=ask` in the server environment themselves; Claude Code needs no permission rule because the run tool declares `_meta` `anthropic/requiresUserInteraction` and the client prompts on every call.
 
-What changes: no approval token, no UUID in the model's context, no 5-minute TTL, and no single-use replay guard — a retried or repeated call simply prompts the user again. The PIN and TTY checks do not apply; the client's own prompt UI is the gate. `approvedByUser: true` is still required and still means the user approved this exact command.
+What changes: no approval token, no UUID in the model's context, no 5-minute TTL, and no single-use replay guard — a retried or repeated call simply prompts the user again. The PIN and TTY checks do not apply; the client's own prompt UI is the gate. `approvedByUser: true` is still required and still means the user approved this exact command, and `command` is what that prompt shows first, so send it on every ask-mode call too.
 
 Honest trust boundary: the evidence is the client prompt itself — a harness without a per-tool prompt (or one whose permission system auto-approves) would execute without any user confirmation, which is why the mode is opt-in and the pair must stay whole. OpenCode's "Allow always" answer to the prompt saves an `allow` rule on the same action that removes the gate from then on — `npx huaweicloud-devkit doctor` fails that state; delete the rule or set its effect back to `ask`. The remote transport refuses ask mode outright and forces token mode. Token mode remains the default and the fallback for harnesses without a per-tool prompt.
 
@@ -47,6 +55,7 @@ Honest trust boundary: the evidence is the client prompt itself — a harness wi
 - Never treat `approvedByUser: true` as the confirmation. It is the agent's statement that the user approved the exact command, and the run tool still requires the terminal-confirmed grant.
 - Never ask the user for their PIN, and never enter a PIN on the user's behalf.
 - Never retry a run with different arguments under the same token. Plan again and get a fresh confirmation.
+- Never send a `command` line that differs from the `args` you send, and never send a prettified or shortened line. The gate rejects the mismatch instead of running it.
 
 ## Honest security boundary
 
