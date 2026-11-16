@@ -46,9 +46,9 @@ export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number],
 // The client-facing permission action opencode namespaces a roster tool
 // under: `<mcp server key>_<tool>`, the key being our `.mcp.json` server name
 // (measured on 2.2.7, and byte-identical across the 1.19 V1 key and the 2.x
-// permission action). One home for the derivation, so the saved-store reader
-// (lib/opencode-saved-perms.ts), the ask-rule writer, and the doctor can
-// never drift onto different spellings of the same grant.
+// permission action). One home for the derivation, so the doctor's hygiene
+// reader (lib/opencode-saved-perms.ts), the ask-rule writer, and the doctor
+// can never drift onto different spellings of the same grant.
 export const APPROVAL_MCP_SERVER = 'huaweicloud-devkit';
 
 export function approvalToolAction(tool: string): string {

@@ -441,7 +441,7 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
         ? {
             needed: true,
             mode: 'ask',
-            note: "The confirmation happens on the server when huaweicloud_run_approved_command is called: an elicitation-capable client renders a form with this command line, and any other client returns ASK_CONFIRMATION_REQUIRED, which you answer by showing the user this command in chat and retrying with approvedByUser: true. Send the same args on every call. This command field is the display line: where it shows <redacted>, substitute the real values, and the args array spelled out is always accepted as the command. No terminal approval line or token is needed.",
+            note: 'The confirmation happens on the server when huaweicloud_run_approved_command is called: an elicitation-capable client renders a form with this command line, and any other client returns ASK_CONFIRMATION_REQUIRED, which you answer by showing the user this command in chat and retrying with approvedByUser: true. Send the same args on every call. This command field is the display line: where it shows <redacted>, substitute the real values, and the args array spelled out is always accepted as the command. No terminal approval line or token is needed.',
           }
         : {
             needed: true,

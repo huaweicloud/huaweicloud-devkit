@@ -1,30 +1,33 @@
-// The opencode saved-permission store reader.
+// The opencode saved-permission store reader — DOCTOR HYGIENE ONLY (PR-1.5).
 //
-// Why this exists: in the ask posture the user's confirmation is opencode's
-// own permission prompt on the roster action. A user who clicks "Always
-// allow" on that prompt makes opencode persist an ALLOW row for the action
-// into its SQLite store (measured on 2.2.7: the MCP tool wrapper asserts
-// `resources: ['*'], save: ['*']`, the reply handler writes those save
-// patterns through the saved-permission store, and `evaluate()` appends the
-// saved rows AFTER the configured rules with findLast). The saved allow
-// therefore beats our configured ask for every future args, silently — the
-// server can neither see the button nor influence it. This reader is what
-// lets the server-side gate refuse those arrivals and the doctor name the
-// row.
+// Why it exists: opencode persists an ALLOW row for the roster action when a
+// user clicks "Always allow" on the client's prompt (measured on 2.2.7: the
+// MCP tool wrapper asserts `resources: ['*'], save: ['*']`, the reply handler
+// writes those save patterns through the saved-permission store, and
+// `evaluate()` appends the saved rows AFTER the configured rules with
+// findLast). That row used to suppress the client popup the old ask posture
+// trusted. It cannot suppress anything now: the confirmation runs on the
+// server (the approval gate raises an elicitation form, or the T3 chat
+// round-trip), inside the tool call and outside opencode's permission
+// evaluation. The gate NEVER reads this store; the doctor does, and reports a
+// saved row as a stale grant the operator may clean up.
 //
 // What is trusted here: nothing in the store. The database is opened
 // readOnly, only `project`, `permission`, and the optional `worktree`
 // directory map are read (never a blob table), and every failure shape
 // degrades to "no rows" — a missing db is the healthy fresh state, an
 // unreadable or schema-shifted db is warn-only — so an opencode internals
-// change can never brick the approved call. Read-under-service is safe: the
-// live store runs WAL, and a readOnly reader takes no write lock
-// (probe-measured against an 805 MB store with the service running).
+// change can never brick a diagnostic. Read-under-service is safe: the live
+// store runs WAL, and a readOnly reader takes no write lock (probe-measured
+// against an 805 MB store with the service running).
 //
-// The `node:sqlite` import needs no flag on this package's Node floor:
-// SQLite was unflagged in v22.13.0 (and v23.4.0), the devkit requires
-// >= 22.19, and Node still labels the module experimental — on a 22.x
-// runtime the import emits one ExperimentalWarning on stderr.
+// `node:sqlite` is REQUIRED INSIDE the scan, never imported at module scope:
+// this module compiles into the setup-cli boot graph (agents/opencode.ts'
+// doctor), and the builtin is experimental through Node 22.x — the declared
+// floor — so a module-scope load printed its ExperimentalWarning on every CLI
+// run (the officeace-sqlite.ts precedent; test/structure.test.ts pins the
+// shape for every src module, and test/cli-boot-warnings.test.ts pins the
+// behavior on the floor).
 //
 // A row's `action` is a PATTERN, not a literal: opencode matches it with its
 // own wildcard matcher against the requested action, so a hand-edited or
@@ -37,9 +40,9 @@
 // this module must not drift from it.
 import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, realpathSync, statSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
 
 import { APPROVAL_TOOLS, approvalToolAction } from '../approval-roster.ts';
 
@@ -170,7 +173,7 @@ interface DirectoryRow {
   directory: string;
 }
 
-function readRows(db: DatabaseSync): {
+function readRows(db: SqliteDatabase): {
   projects: ProjectRow[];
   directories: DirectoryRow[];
   permissions: PermissionRow[];
@@ -200,7 +203,7 @@ function readRows(db: DatabaseSync): {
 // (the `worktree` table, which carries a row per directory it has attributed,
 // linked worktrees included). Tolerated, never required: the table is newer
 // than the store, so an older schema answers with the project join alone.
-function readDirectories(db: DatabaseSync): DirectoryRow[] {
+function readDirectories(db: SqliteDatabase): DirectoryRow[] {
   try {
     return db
       .prepare('SELECT project_id, directory FROM worktree')
@@ -275,11 +278,30 @@ function toRows(matched: PermissionRow[], projects: ProjectRow[]): SavedAllowRow
   }));
 }
 
+// The builtin, loaded on demand (see the header): the doctor is the only
+// consumer, and the CLI's boot graph must not import the experimental module.
+interface SqliteDatabase {
+  exec(sql: string): void;
+  prepare(sql: string): { all(): Array<Record<string, unknown>> };
+  close(): void;
+}
+
+type SqliteCtor = new (path: string, options: { readOnly?: boolean }) => SqliteDatabase;
+
+function loadDatabaseSync(): SqliteCtor {
+  const sqlite = createRequire(import.meta.url)('node:sqlite') as { DatabaseSync?: SqliteCtor };
+  const ctor = sqlite.DatabaseSync;
+  if (ctor === undefined) {
+    throw new Error('node:sqlite is unavailable; the saved-permission scan requires Node.js >= 22.19');
+  }
+  return ctor;
+}
+
 function scanFile(dbPath: string, options: SavedAllowScanOptions): SavedAllowScan {
   const actions = options.actions ?? savedAllowActions();
-  let db: DatabaseSync;
+  let db: SqliteDatabase;
   try {
-    db = new DatabaseSync(dbPath, { readOnly: true });
+    db = new (loadDatabaseSync())(dbPath, { readOnly: true });
   } catch (error) {
     return { status: 'unreadable', dbPath, detail: errorMessage(error) };
   }
