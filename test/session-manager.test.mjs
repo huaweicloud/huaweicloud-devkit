@@ -159,23 +159,25 @@ test('resolveProxyNodePort re-probes past targetPort + 1 when it is occupied', a
   assert.equal(port, 83);
 });
 
-test('D3-C3: buildDeployCheckScript accepts any non-zero HTTP code for nginx_serving', () => {
+test('D3-C3/#981: buildDeployCheckScript counts only 2xx/3xx as nginx_serving PASS', () => {
   const script = buildDeployCheckScript({
     port: 8080,
     project: 'myapp',
     outputPath: '/workspace/myapp/dist',
     isCrossPlatform: false,
   });
-  assert.ok(!script.includes('grep -qE "^(2|3)"'), 'must not use 2xx/3xx-only grep');
   assert.ok(script.includes('HTTP_CODE'), 'must capture HTTP_CODE variable');
   assert.ok(script.includes('"000"'), 'must check for 000 (connection refused)');
+  assert.ok(script.includes('-ge 200'), 'must require >= 200 for PASS');
+  assert.ok(script.includes('-lt 400'), 'must reject >= 400 (403/5xx) as FAIL');
   assert.ok(script.includes('nginx_serving:PASS'), 'must emit PASS line');
+  assert.ok(script.includes('did not serve the app'), 'must explain 4xx/5xx failure');
 });
 
-test('D3-C3: parseDeployCheckOutput returns nginx_serving PASS when nginx responds', () => {
+test('D3-C3/#981: parseDeployCheckOutput passes nginx_serving for HTTP 200', () => {
   const stdout = [
     '=== DEPLOY CHECK ===',
-    'nginx_serving:PASS (port 8080, HTTP 404)',
+    'nginx_serving:PASS (port 8080, HTTP 200)',
     'output_dir:PASS (/workspace/myapp/dist)',
     'devbridge_tunnel:PASS',
     'tunnel_url_accessible:PASS (https://abc-8080.cn-north-4-bridge.myhuaweicloud.com -> 200)',
@@ -189,6 +191,34 @@ test('D3-C3: parseDeployCheckOutput returns nginx_serving PASS when nginx respon
   assert.equal(result.complete, true);
   assert.equal(result.score.pass, 4);
   assert.equal(result.score.total, 4);
+});
+
+test('#981 R4: nginx 403 is FAIL and must not yield complete=true', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:FAIL (port 8080, HTTP 403 — nginx responded but did not serve the app; check index.html / output permissions)',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:FAIL (https://abc-8080.cn-north-4-bridge.myhuaweicloud.com -> HTTP 403 from the app (preview not serving content))',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:2/4',
+    'VERDICT:INCOMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.nginx_serving.status, 'FAIL');
+  assert.match(result.checks.nginx_serving.detail, /HTTP 403/);
+  assert.equal(result.complete, false);
+  assert.ok(result.missingSteps.includes('nginx_serving'));
+});
+
+test('#981 R4: buildDeployCheckScript fails tunnel probe on app 4xx/5xx', () => {
+  const script = buildDeployCheckScript({
+    port: 8080,
+    project: 'myapp',
+    outputPath: '/workspace/myapp/dist',
+    isCrossPlatform: false,
+  });
+  assert.ok(script.includes('preview not serving content'), 'probe must fail app 4xx/5xx');
 });
 
 test('D3-C3: parseDeployCheckOutput returns nginx_serving FAIL when no response', () => {
