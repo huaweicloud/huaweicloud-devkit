@@ -83,14 +83,46 @@ export function fakeHcloudScript(source: string) {
 // POSIX-only shape: this writes an extension-less shebang script, which
 // Windows cannot exec — a shell:false spawn of it fails before the child
 // runs (SPAWN_ERROR, observed on the windows lanes, run 42979717544).
-// Windows callers must guard with a win32 skip or assert spawn-indifferent
-// outcomes (the approval battery's approved:true shape).
+// Windows callers route through activateFakeHcloudBin instead, guard with
+// a win32 skip, or assert spawn-indifferent outcomes (the approval
+// battery's approved:true shape).
 export function fakeHcloudExecutable(source: string) {
   const dir = fixtureDir('huaweicloud-toolkit-bin-');
   const script = join(dir, 'fake-hcloud');
   writeFileSync(script, `#!/usr/bin/env node\n${source}`, 'utf8');
   chmodSync(script, 0o755);
   return script;
+}
+
+// Activate a fake hcloud for tests that drive the real spawn path through
+// callTool and must observe the child's effects. POSIX keeps the shebang
+// shape as HCLOUD_BIN; win32 cannot exec it through the run path's
+// shell:false spawn, so the same source rides node itself through the
+// resolution chain's env tier — HCLOUD_BIN = <node> with
+// HCLOUD_BIN_ARGS_JSON = [<script.mjs>] (resolveHcloudCommand). The source
+// must be ESM: the win32 twin runs it as .mjs. Returns the restore
+// function; nested activations restore in LIFO order.
+export function activateFakeHcloudBin(source: string): () => void {
+  const previousBin = process.env.HCLOUD_BIN;
+  if (process.platform === 'win32') {
+    const previousArgs = process.env.HCLOUD_BIN_ARGS_JSON;
+    const dir = fixtureDir('huaweicloud-toolkit-bin-');
+    const script = join(dir, 'fake-hcloud.mjs');
+    writeFileSync(script, source, 'utf8');
+    process.env.HCLOUD_BIN = process.execPath;
+    process.env.HCLOUD_BIN_ARGS_JSON = JSON.stringify([script]);
+    return () => {
+      if (previousArgs === undefined) delete process.env.HCLOUD_BIN_ARGS_JSON;
+      else process.env.HCLOUD_BIN_ARGS_JSON = previousArgs;
+      if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = previousBin;
+    };
+  }
+  process.env.HCLOUD_BIN = fakeHcloudExecutable(source);
+  return () => {
+    if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+    else process.env.HCLOUD_BIN = previousBin;
+  };
 }
 
 export function withMetaRepo(files: Record<string, unknown[]>) {
