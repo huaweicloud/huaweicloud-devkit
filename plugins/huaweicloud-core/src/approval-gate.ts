@@ -62,6 +62,11 @@ export type ApprovalGateOutcome =
         approvedVia?: ApprovalReuseVia;
         consentScope?: ApprovalConsentScope;
       };
+      // The APPROVED BINDING (the spec's normalizeArgs value for this call,
+      // the resolved snapshot a credential-consuming handler must execute —
+      // never a post-consent re-read of its backing stores; PR-3b's TOCTOU
+      // finding). Undefined only for an envelope path, which never passes.
+      binding: unknown;
     }
   | { envelope: Record<string, unknown> };
 
@@ -705,7 +710,7 @@ export async function runApprovalGate(
     // pass-through sits after the floors and skips only the consent record.
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'ask');
-    if (classifiedPass) return { pass: {} };
+    if (classifiedPass) return { pass: {}, binding: value };
 
     const view = spec.summarize(value);
     // The display line every confirmation surface shows: the REDACTED
@@ -730,9 +735,14 @@ export async function runApprovalGate(
       // the dispatch layer threads both to the delivery recorder so the
       // annotate binds the outcome line to EXACTLY the row this arrival
       // wrote, never to a positional candidate (a same-ms twin compacted in
-      // behind used to steal the line).
+      // behind used to steal the line). The binding rides along: the value
+      // resolved BEFORE the confirmation surface was shown, so a credential-
+      // consuming handler executes the approved snapshot, never a
+      // post-consent re-read (PR-3b's TOCTOU finding — the shown account is
+      // the executed account).
       return {
         pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'once' },
+        binding: value,
       };
     };
 
@@ -742,7 +752,7 @@ export async function runApprovalGate(
     // not a new consent) and never consumes the grant — the first-use
     // disappearance bug the spec caught.
     if (standingGrantLive(sessionId, name, view.argsHash)) {
-      return { pass: { approvedVia: 'standing-session' } };
+      return { pass: { approvedVia: 'standing-session' }, binding: value };
     }
 
     // The S1 retry memo: a byte-identical repeat after a non-delivered
@@ -771,6 +781,7 @@ export async function runApprovalGate(
           arrivalSeq: arrival.arrivalSeq,
           consentScope: 'once',
         },
+        binding: value,
       };
     }
 
@@ -807,7 +818,7 @@ export async function runApprovalGate(
           command: view.command,
           scope: 'session',
         });
-        return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'session' } };
+        return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'session' }, binding: value };
       }
       return consented('elicitation');
     }
@@ -860,7 +871,7 @@ export async function runApprovalGate(
     // pass-through skips the mint and the floors never.
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'token');
-    if (classifiedPass) return { pass: {} };
+    if (classifiedPass) return { pass: {}, binding: value };
     const view = spec.summarize(value);
     const minted = createApprovalToken(value, { secretsSubstitutable: false, argsPinView: view.pinView });
     return {
@@ -946,8 +957,11 @@ export async function runApprovalGate(
   }
 
   // The token spent and the binding verified: the registered handler runs
-  // the pure execution it owns.
-  return { pass: {} };
+  // the pure execution it owns. The binding rides along: this call's
+  // recomputed resolution, which the hash comparison just proved equal to
+  // the minted one, so the handler executes exactly what was approved —
+  // never a post-consent re-read (PR-3b's TOCTOU finding).
+  return { pass: {}, binding: value };
 }
 
 // The dispatch-result follow-up (round 10, finding 4, PR-3a's memo

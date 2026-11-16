@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { vendorConfirmed } from '../../lib/tool-schema-parts.ts';
+import { approvalTokenArg, approvedByUserArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
 import { getAuthStatus, syncAuth } from '../../auth/service.ts';
 import { checkAccountType } from '../../auth/account-type.ts';
 import {
@@ -225,6 +225,10 @@ const authInitSchema = z.looseObject({
   sk: z.string().optional().describe('Huawei Cloud Secret Key (required unless clear=true)'),
   region: z.string().optional().describe('Default region (optional)'),
   clear: z.boolean().optional().describe('Set to true to clear runtime credentials and revert to env/file'),
+  approvalToken: approvalTokenArg.describe(
+    'Required in token-approval mode (from the USER_CONFIRMATION_REQUIRED envelope this gate returns); omit in ask mode, where the server-run gate confirms at run time.',
+  ),
+  approvedByUser: approvedByUserArg,
 });
 
 const authSwitchSchema = z.looseObject({
@@ -235,6 +239,10 @@ const authSwitchSchema = z.looseObject({
   sk: z.string().optional().describe('Huawei Cloud Secret Key to switch this session to.'),
   securityToken: z.string().optional().describe('Security (STS) token when the new credentials are session-scoped.'),
   region: z.string().optional().describe('Optional default region applied with the switched credentials.'),
+  approvalToken: approvalTokenArg.describe(
+    'Required in token-approval mode (from the USER_CONFIRMATION_REQUIRED envelope this gate returns); omit in ask mode, where the server-run gate confirms at run time.',
+  ),
+  approvedByUser: approvedByUserArg,
 });
 
 const authConfirmSchema = z.looseObject({
@@ -278,14 +286,14 @@ export const AUTH_TOOLS = [
   {
     name: 'huaweicloud_auth_init',
     description:
-      'Set or clear runtime Huawei Cloud credentials (AK/SK) for this MCP session. Runtime credentials take highest priority over environment variables and config files for all subsequent API calls. Use when switching accounts within the same Agent session — call with AK/SK to switch, or with clear=true to fall back to env/file credentials. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Set or clear runtime Huawei Cloud credentials (AK/SK) for this MCP session. Runtime credentials take highest priority over environment variables and config files for all subsequent API calls. Use when switching accounts within the same Agent session — call with AK/SK to switch, or with clear=true to fall back to env/file credentials. Approval-gated: the account switch requires the user\u2019s explicit confirmation, and the confirmation view names the target account fingerprint — in the default token mode the first call returns USER_CONFIRMATION_REQUIRED with an approvalToken the user confirms in their own terminal (npx huaweicloud-devkit approve <token>); under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself (an elicitation form, or the ASK_CONFIRMATION_REQUIRED chat round-trip). Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: authInitSchema,
     handler: handleAuthInit,
   },
   {
     name: 'huaweicloud_auth_switch',
     description:
-      'Switch Huawei Cloud credentials within the current session. action=temporary keeps AK/SK in memory only (restart loses them; hcloud commands are unaffected and an A+C warning will be raised). action=persist writes S1 (single source of truth) with configuredBySession flag and propagates to S2 (KooCLI current profile) and S3 (OBS). action=clear resets runtime credentials. mode=import reads AK/SK from ~/.config/huaweicloud/creds-import.json then wipes it (SK never enters conversation). mode=memory passes AK/SK as tool arguments (SK is visible to model - prefer import). mode=mcp-config reads the injected mcp_settings environment. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Switch Huawei Cloud credentials within the current session. action=temporary keeps AK/SK in memory only (restart loses them; hcloud commands are unaffected and an A+C warning will be raised). action=persist writes S1 (single source of truth) with configuredBySession flag and propagates to S2 (KooCLI current profile) and S3 (OBS). action=clear resets runtime credentials. mode=import reads AK/SK from ~/.config/huaweicloud/creds-import.json then wipes it (SK never enters conversation). mode=memory passes AK/SK as tool arguments (SK is visible to model - prefer import). mode=mcp-config reads the injected mcp_settings environment. Approval-gated: the switch requires the user\u2019s explicit confirmation, and the confirmation view names the target account fingerprint and the credential source — in the default token mode the first call returns USER_CONFIRMATION_REQUIRED with an approvalToken the user confirms in their own terminal (npx huaweicloud-devkit approve <token>); under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself (an elicitation form, or the ASK_CONFIRMATION_REQUIRED chat round-trip). Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: authSwitchSchema,
     handler: handleAuthSwitch,
   },

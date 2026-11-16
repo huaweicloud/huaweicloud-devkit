@@ -119,6 +119,21 @@ test('remote MCP server initializes, lists tools, and plans CLI commands', async
   const toolNames = new Set(listed.body.result.tools.map((tool) => tool.name));
   assert.ok(toolNames.has('huaweicloud_plan_cli_command'));
   assert.ok(toolNames.has('huaweicloud_list_operations'));
+  // The four auth mutators stay withheld on the unauthenticated remote
+  // face (they write the user's LOCAL credential state — auth_init sets
+  // cross-request runtime state, auth_sync/auth_switch/auth_confirm
+  // decrypt S1 refs and write plaintext into ~/.obsutilconfig and the
+  // KooCLI profile). PR-3b registers the pair on the approval chain;
+  // registering must not surface them here.
+  for (const withheld of [
+    'huaweicloud_auth_sync',
+    'huaweicloud_auth_init',
+    'huaweicloud_auth_switch',
+    'huaweicloud_auth_confirm',
+  ]) {
+    assert.equal(toolNames.has(withheld), false, `${withheld} must stay off the remote face`);
+  }
+  assert.ok(toolNames.has('huaweicloud_auth_status'), 'the read face stays reachable remotely');
   // The remote face never registers packs_configure, so no description it
   // serves may teach it either — the list_skills description scopes its
   // mention to stdio agent sessions, and this pin closes the side door for

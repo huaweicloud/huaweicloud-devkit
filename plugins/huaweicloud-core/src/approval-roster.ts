@@ -9,13 +9,16 @@
 // ReadonlyArray<string> widens the key type to string and silently inerts
 // the compile-time closure (an interrogate-round-1 finding).
 //
-// PR-1 populated the roster with the hcloud pair's run face; PR-3a adds the
-// sandbox pack's eight mutating faces — connect, the two exec tools, the
-// three tunnel faces, sign_agreement, and credentials. Two lists, not one,
-// because the two flavors need different downstream facts: always tools get
-// client ask-rules and _meta flags, classified tools additionally need a
-// classify in their spec (pinned by structure.test.ts: every
-// APPROVAL_CLASSIFIED_TOOLS entry must provide one).
+// PR-1 populated the roster with the hcloud pair's run face; PR-3a added
+// the sandbox pack's eight mutating faces (connect, the two exec tools,
+// the three tunnel faces, sign_agreement, credentials); PR-3b adds the auth
+// account-switch pair — the account switch can redirect every downstream
+// approved write to a different account, so it earns a human present on
+// every call. Two lists, not one, because the two flavors need different
+// downstream facts: always tools get client allow rules on install (the
+// yield posture), classified tools additionally need a classify in their
+// spec (pinned by structure.test.ts: every APPROVAL_CLASSIFIED_TOOLS entry
+// must provide one).
 
 export const APPROVAL_TOOLS = [
   'huaweicloud_run_approved_command',
@@ -27,6 +30,8 @@ export const APPROVAL_TOOLS = [
   'huaweicloud_sandbox_keepalive_watchdog',
   'huaweicloud_sandbox_sign_agreement',
   'huaweicloud_sandbox_credentials',
+  'huaweicloud_auth_init',
+  'huaweicloud_auth_switch',
 ] as const;
 
 export const APPROVAL_CLASSIFIED_TOOLS = [
@@ -50,9 +55,11 @@ export const APPROVAL_CLASSIFIED_TOOLS = [
 // classification stands (fail-closed: their payload shapes classify clean,
 // and any deny the classifier ever adds still blocks the call at the hook
 // layer, while a stuffed command/argv on those names can never borrow the
-// exempt classes). The fallback below exists ONLY for a MISSING row (an
-// older roster leaf or the landing transition), never for a present row
-// the hook does not know.
+// exempt classes). The auth pair (PR-3b) rides 'structured' too: its named
+// credential fields are a no-command-surface payload, and the server gate
+// does not classify that payload text. The fallback below exists ONLY for
+// a MISSING row (an older roster leaf or the landing transition), never
+// for a present row the hook does not know.
 // The Record is keyed by the roster tuple inline (this module is
 // import-free — it cannot take ApprovalRosterName from the registry, so
 // the tuple is widened here the same way the registry widens it).
@@ -68,6 +75,8 @@ export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number],
   huaweicloud_sandbox_keepalive_watchdog: 'structured',
   huaweicloud_sandbox_sign_agreement: 'structured',
   huaweicloud_sandbox_credentials: 'structured',
+  huaweicloud_auth_init: 'structured',
+  huaweicloud_auth_switch: 'structured',
 };
 
 // The client-facing permission action opencode namespaces a roster tool

@@ -3,7 +3,6 @@ import { dirname, join } from 'node:path';
 import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import test from 'node:test';
 
-import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { fingerprint, scanState } from '../plugins/huaweicloud-core/src/auth/reconcile.ts';
 import {
   backupGlobalCredentials,
@@ -18,7 +17,7 @@ import {
   writeLastSync,
 } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
 import { getAuthStatus, syncAuth } from '../plugins/huaweicloud-core/src/auth/service.ts';
-import type { AuthSwitchResult } from './cred-reconcile-harness.ts';
+import { gatedAuthSwitchCall, type AuthSwitchResult } from './cred-reconcile-harness.ts';
 import {
   FAKE_HCLOUD_FAIL,
   FAKE_HCLOUD_FAIL_PROJECT_ID,
@@ -34,7 +33,7 @@ test('12 auth_switch mode=import reads creds-import.json then wipes it', async (
     mkdirSync(dirname(importPath), { recursive: true });
     writeFileSync(importPath, JSON.stringify({ ak: 'E2E12_IMP_AK', sk: 'E2E12_IMP_SK', region: 'cn-north-4' }));
 
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'import',
       action: 'temporary',
@@ -102,7 +101,7 @@ test('16 restoreGlobalCredentialsBackup restores the previous S1', () => {
 
 test('17 persist with securityToken is rejected (R3) and S1 is not written (mode=memory)', async () => {
   await withTempHome(async () => {
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'memory',
       action: 'persist',
@@ -140,7 +139,7 @@ test('18 persist via mcp-config with platform STS token is rejected (R3) and S1 
     );
     process.env.CODEARTS_PROJECT_DIR = mcpDir;
 
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'mcp-config',
       action: 'persist',
@@ -162,7 +161,7 @@ test('19 malformed creds-import.json is still wiped even though the import is re
     writeFileSync(importPath, '{not-valid-json', 'utf8');
 
     await assert.rejects(
-      callTool('huaweicloud_auth_switch', {
+      gatedAuthSwitchCall({
         vendorConfirmed: 'test: vendor established by the harness',
         mode: 'import',
         action: 'temporary',

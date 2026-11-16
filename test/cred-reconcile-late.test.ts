@@ -6,7 +6,7 @@ import test from 'node:test';
 import { getAuthStatus } from '../plugins/huaweicloud-core/src/auth/service.ts';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { fingerprint, scanState } from '../plugins/huaweicloud-core/src/auth/reconcile.ts';
-import type { AuthSwitchResult } from './cred-reconcile-harness.ts';
+import { gatedAuthSwitchCall, type AuthSwitchResult } from './cred-reconcile-harness.ts';
 import {
   assertDeleteBeforeSet,
   persistViaSwitch,
@@ -140,7 +140,7 @@ test('25 initial scenario: a preset profile with a stale/expired securityToken i
 test('26 auth_confirm: same token submitted twice returns {status:ok, outcome:already_processed}', async () => {
   await withTempHome(async () => {
     writeGlobalCredentials({ ak: 'E2E26_A_AK', sk: 'E2E26_A_SK', region: 'cn-north-4' });
-    const switched = (await callTool('huaweicloud_auth_switch', {
+    const switched = (await gatedAuthSwitchCall({
       mode: 'memory',
       action: 'persist',
       ak: 'E2E26_B_AK',

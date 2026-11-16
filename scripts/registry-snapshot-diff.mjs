@@ -191,6 +191,30 @@ const DELIBERATE_ADDITIONS = [
     reason:
       "PR-3a's gate attestation on the credentials face: the token-mode statement of user approval and the ask-mode retry marker.",
   },
+  {
+    tool: 'huaweicloud_auth_init',
+    property: 'approvalToken',
+    reason:
+      'PR-3b registers the account-switch pair on the approval chain (gate tokenSource): a no-token call returns the USER_CONFIRMATION_REQUIRED envelope carrying this minted token, so the property is part of the gate contract the legacy snapshot predates.',
+  },
+  {
+    tool: 'huaweicloud_auth_init',
+    property: 'approvedByUser',
+    reason:
+      'PR-3b approval-chain registration: the attestation the chat round-trip retry carries in ask mode (and the token-mode attestation), optional in the schema on purpose so a missing value reaches the gate and its teaching refusal instead of dying in SDK validation.',
+  },
+  {
+    tool: 'huaweicloud_auth_switch',
+    property: 'approvalToken',
+    reason:
+      'PR-3b registers the account-switch pair on the approval chain (gate tokenSource): a no-token call returns the USER_CONFIRMATION_REQUIRED envelope carrying this minted token, so the property is part of the gate contract the legacy snapshot predates.',
+  },
+  {
+    tool: 'huaweicloud_auth_switch',
+    property: 'approvedByUser',
+    reason:
+      'PR-3b approval-chain registration: the attestation the chat round-trip retry carries in ask mode (and the token-mode attestation), optional in the schema on purpose so a missing value reaches the gate and its teaching refusal instead of dying in SDK validation.',
+  },
 ];
 
 // Deliberate optionals: properties the legacy snapshot carries as REQUIRED

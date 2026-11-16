@@ -7,7 +7,7 @@ import { callTool, type ToolName } from '../../plugins/huaweicloud-core/src/tool
 import { SANDBOX_APPROVAL_SPECS, bindingArgs } from '../../plugins/huaweicloud-core/src/packs/sandbox/approval.ts';
 import { fixtureDir } from '../fixture-dir.ts';
 
-// The PR-1 perf probe: p50 milliseconds per call for two in-process
+// The PR-1 perf probe: p50 milliseconds per call for three in-process
 // callTool probes, trunk and head interleaved, three rounds each.
 //
 //   Probe A — 200 huaweicloud_plan_cli_command calls: the approval pack's
@@ -16,6 +16,9 @@ import { fixtureDir } from '../fixture-dir.ts';
 //     existing mint cost.
 //   Probe B — 200 huaweicloud_search_docs calls: the cleanest signal for
 //     the diff-added dispatch-layer roster check on a non-gated tool.
+//   Probe C — 200 huaweicloud_auth_status calls (PR-3b): the roster-miss
+//     cost on the auth pack's own OFF-roster face — the two auth
+//     registrations must cost an ungated sibling nothing.
 //
 // The PR-3a probes (the plan's perf block):
 //
@@ -34,10 +37,12 @@ import { fixtureDir } from '../fixture-dir.ts';
 // bench runs from the head checkout against both trees, so it fails loudly
 // when the trunk side is missing instead of reporting a vacuous pass.
 // Rules: head fails if Probe A p50 exceeds trunk by more than 10 percent,
-// or if Probe B p50 exceeds trunk by more than 0.5 milliseconds absolute;
-// PR-3a adds: head fails if the classify step exceeds 2 milliseconds p50
-// absolute, or if the gated rejection path exceeds trunk ungated p50 plus
-// 5 milliseconds absolute.
+// Rules: head fails if Probe A p50 exceeds trunk by more than 10 percent,
+// if Probe B p50 exceeds trunk by more than 0.5 milliseconds absolute, or
+// if Probe C (auth_status, PR-3b) p50 exceeds trunk by more than 0.5
+// milliseconds absolute; PR-3a adds: head fails if the classify step
+// exceeds 2 milliseconds p50 absolute, or if the gated rejection path
+// exceeds trunk ungated p50 plus 5 milliseconds absolute.
 //
 // Excluded from `npm test` by the test/*.test.ts glob on purpose — this is
 // a deliberate perf run, never part of the CI battery.
@@ -107,6 +112,10 @@ function p50(samples: number[]): number {
 
 const PLAN_ARGS = { args: ['ECS', 'ListServersDetails'], vendorConfirmed: 'bench: vendor established by the harness' };
 const SEARCH_ARGS = { query: 'create ecs instance', topic: 'all' };
+// auth_status is vendor-gated but not approval-rostered (PR-3b's probe):
+// the probe carries the gate's quote and pays only the dispatch-layer
+// roster miss.
+const AUTH_STATUS_ARGS = { target: 'all', vendorConfirmed: 'bench: vendor established by the harness' };
 // A write-classified command with no workspace_id: on head the gate mints
 // and answers with the rejection envelope (nothing executes); on trunk the
 // same call runs ungated into the handler's synchronous workspace refusal.
@@ -162,6 +171,7 @@ test('approval-dispatch bench: head stays within the trunk p50 budgets', async (
 
   const planP50 = await runProbe('Probe A (plan_cli_command)', 'huaweicloud_plan_cli_command', PLAN_ARGS);
   const searchP50 = await runProbe('Probe B (search_docs)', 'huaweicloud_search_docs', SEARCH_ARGS);
+  const authStatusP50 = await runProbe('Probe C (auth_status)', 'huaweicloud_auth_status', AUTH_STATUS_ARGS);
 
   assert.ok(
     planP50.head <= planP50.trunk * PROBE_A_BUDGET_RATIO,
@@ -172,7 +182,15 @@ test('approval-dispatch bench: head stays within the trunk p50 budgets', async (
     `Probe B head p50 ${searchP50.head.toFixed(3)} ms exceeds trunk ${searchP50.trunk.toFixed(3)} ms by more than 0.5 ms absolute`,
   );
 
-  // Probe C (PR-3a): the gated sandbox rejection path against the same call
+  // Probe C (PR-3b): the roster-miss cost on the auth pack's own off-roster
+  // face — the two auth registrations must cost an ungated sibling nothing.
+  const authStatusP50 = await runProbe('Probe C (auth_status)', 'huaweicloud_auth_status', AUTH_STATUS_ARGS);
+  assert.ok(
+    authStatusP50.head <= authStatusP50.trunk + PROBE_B_BUDGET_MS,
+    `Probe C head p50 ${authStatusP50.head.toFixed(3)} ms exceeds trunk ${authStatusP50.trunk.toFixed(3)} ms by more than 0.5 ms absolute`,
+  );
+
+  // Probe D (PR-3a): the gated sandbox rejection path against the same call
   // ungated on trunk. The trunk call lands in the handler's synchronous
   // workspace refusal (a throw); the head call stops at the gate's mint
   // envelope. Both sides are swallowed by the runner: the measured cost is
@@ -200,16 +218,16 @@ test('approval-dispatch bench: head stays within the trunk p50 budgets', async (
   }
   const sandboxP50 = { trunk: p50(sandboxSamples.trunk), head: p50(sandboxSamples.head) };
   console.log(
-    `Probe C (sandbox exec rejection): trunk p50 ${sandboxP50.trunk.toFixed(3)} ms (ungated), ` +
+    `Probe D (sandbox exec rejection): trunk p50 ${sandboxP50.trunk.toFixed(3)} ms (ungated), ` +
       `head p50 ${sandboxP50.head.toFixed(3)} ms (gate + classify + mint)`,
   );
   assert.ok(
     sandboxP50.head <= sandboxP50.trunk + SANDBOX_REJECTION_BUDGET_MS,
-    `Probe C head p50 ${sandboxP50.head.toFixed(3)} ms exceeds trunk ungated ${sandboxP50.trunk.toFixed(3)} ms ` +
+    `Probe E head p50 ${sandboxP50.head.toFixed(3)} ms exceeds trunk ungated ${sandboxP50.trunk.toFixed(3)} ms ` +
       `by more than ${SANDBOX_REJECTION_BUDGET_MS} ms absolute`,
   );
 
-  // Probe D (PR-3a): the classified spec's pure classify step alone,
+  // Probe E (PR-3a): the classified spec's pure classify step alone,
   // head-only — the step did not exist on trunk. A fresh binding object per
   // iteration, so the WeakMap ruling cache never serves a hit.
   const execSpec = SANDBOX_APPROVAL_SPECS.huaweicloud_sandbox_exec_one_shot;
@@ -226,9 +244,9 @@ test('approval-dispatch bench: head stays within the trunk p50 budgets', async (
     }
   }
   const classifyP50 = p50(classifySamples);
-  console.log(`Probe D (sandbox classify step): head p50 ${classifyP50.toFixed(3)} ms`);
+  console.log(`Probe E (sandbox classify step): head p50 ${classifyP50.toFixed(3)} ms`);
   assert.ok(
     classifyP50 <= CLASSIFY_BUDGET_MS,
-    `Probe D head p50 ${classifyP50.toFixed(3)} ms exceeds the ${CLASSIFY_BUDGET_MS} ms absolute classify budget`,
+    `Probe E head p50 ${classifyP50.toFixed(3)} ms exceeds the ${CLASSIFY_BUDGET_MS} ms absolute classify budget`,
   );
 });
