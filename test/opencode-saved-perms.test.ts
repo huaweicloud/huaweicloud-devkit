@@ -21,7 +21,7 @@ import {
   type SeedStore,
 } from './opencode-saved-perms-harness.ts';
 import { APPROVAL_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
-import { ASK_RULE_ACTION } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
+import { allowRuleActions } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
 import {
   opencodeDataDir,
   opencodeDbCandidates,
@@ -78,13 +78,18 @@ function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T):
   }
 }
 
-test('the roster action comes from the roster leaf and matches the ask rule the installer writes', () => {
+test('the roster action comes from the roster leaf and matches the allow rule the installer writes', () => {
   assert.deepEqual(savedAllowActions(), [savedAllowAction()]);
   assert.equal(savedAllowAction(), ACTION);
   assert.equal(APPROVAL_TOOLS.length, 1, 'PR-1.5 registers only the hcloud run face');
-  // The ask-rule writer and the saved-store reader must name the same grant;
-  // a drift here would let the guard hunt a row the client never writes.
-  assert.equal(ASK_RULE_ACTION, savedAllowAction(), 'the writer and the saved-store guard name one action');
+  // The client-rule writer and the saved-store reader must name the same
+  // grant; a drift here would let the doctor hunt a row the client never
+  // writes, or a rule the client never evaluates.
+  assert.deepEqual(
+    allowRuleActions(),
+    savedAllowActions(),
+    'the writer and the saved-store reader name one action set',
+  );
 });
 
 test('the data root follows XDG_DATA_HOME when absolute, else ~/.local/share', () => {

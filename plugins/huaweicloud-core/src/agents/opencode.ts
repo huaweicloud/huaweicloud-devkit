@@ -35,7 +35,7 @@ import {
   openCodeSeamGlobs,
   openCodeAskGate,
 } from './opencode-config.ts';
-import { inspectAskPermissionRule, inspectAskPermissionRuleV1 } from '../lib/opencode-ask-rule.ts';
+import { readPermissionRules, readPermissionRulesV1, type RosterRuleState } from '../lib/opencode-ask-rule.ts';
 import { scanSavedAllowRows } from '../lib/opencode-saved-perms.ts';
 import type { DoctorReporter } from '../doctor-report.ts';
 import { asRecord } from '../lib/as-record.ts';
@@ -55,22 +55,25 @@ export function opencodeDoctorMcpConfigured(): string | null {
 }
 
 // Doctor: the ASK approval posture check — OpenCode installs only. The
-// posture is a PAIR the installer writes together: the client half (the ask
-// rule on huaweicloud_run_approved_command — a `permissions` array entry on
-// 2.0+, a `permission` object key on 1.19–1.x, both naming the same action)
-// and the server half (DEVKIT_APPROVAL_MODE=ask in the mcp entry's env). The
-// confirmation itself runs on the SERVER (the gate raises the elicitation
-// form, or the T3 chat round-trip on a client that cannot render one), so a
-// missing or altered half is config DRIFT from what this installer writes,
-// not a fail-open: no client rule can make the gate skip its own
-// confirmation. A gate-off opencode is a SKIP — token mode is that install's
-// legitimate posture — and so are configs the installer itself refuses to
-// touch. The verdict matrix stays FAIL for every drifted state (PR-2 flips
-// the posture's meaning): the rule without the env leaves the server in token
-// mode (a write then needs both the client rule and a terminal token), the
-// env without the rule has nothing for the installer's pair contract to
-// verify, and an allow/deny rule both depart from the written pair (deny
-// additionally bricks the write tool outright).
+// posture is a PAIR the installer writes together: the client half (one exact
+// allow rule per roster tool — a `permissions` array entry on 2.0+, a
+// `permission` object key on 1.19–1.x, both naming the same actions) and the
+// server half (DEVKIT_APPROVAL_MODE=ask in the mcp entry's env). Ask mode now
+// means the SERVER-RUN gate: the confirmation is raised inside the tool call
+// (elicitation form, or the T3 chat round-trip), so the client rules are
+// yield-only — they suppress the redundant client popup — and a client allow
+// rule can no longer fail anything open. The directions that survive the flip:
+//   - a deny rule bricks the call in the client, so it stays a FAIL;
+//   - a devkit-written ask rule is migration residue: FAIL, re-run install;
+//   - missing client coverage while the server gate is on is drift: FAIL;
+//   - allow rules without the server gate are the mixed state: WARN;
+//   - an unreadable shape with the gate on is a WARN, never silent (the
+//     verification's B2 invariant — the gate still holds server-side, so a
+//     WARN is honest, not a FAIL);
+//   - a user-owned rule on a roster action is surfaced by name with the skip
+//     recorded, never silently dropped.
+// A gate-off opencode is a SKIP — token mode is that install's legitimate
+// posture, and the migration still removes the legacy ask rules.
 export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
   const gate = openCodeAskGate();
   if (gate === 'off') {
@@ -81,81 +84,88 @@ export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
   savedAllowStoreCheck(ctx);
 }
 
-// The posture verdict (the client rule / server env pair). PR-2 flips this
-// pair's meaning; PR-1.5 keeps its current evaluation and no longer feeds the
-// verdict to the saved-row check (the server gate makes the row inert).
-function askPostureCheck(ctx: DoctorReporter, gate: 'v2-array' | 'v1-object'): 'ask' | 'other' {
+const ASK_POSTURE_LABEL = 'ASK approval posture (client allow rules + server gate)';
+
+function askPostureCheck(ctx: DoctorReporter, gate: 'v2-array' | 'v1-object'): void {
+  const v1 = gate === 'v1-object';
   let cfg: Record<string, unknown> | null;
   try {
     cfg = asRecord(JSON.parse(readFileSync(opencodeConfigFile(), 'utf8')));
   } catch {
     cfg = null;
   }
-  const posture =
-    cfg === null ? null : gate === 'v1-object' ? inspectAskPermissionRuleV1(cfg) : inspectAskPermissionRule(cfg);
-  if (cfg === null || posture === 'foreign') {
-    ctx.skip(
-      gate === 'v1-object'
-        ? 'ASK approval posture: opencode config unreadable or the run-tool permission key is not a bare ask/allow/deny string — the installer keeps it untouched; add the ask key and DEVKIT_APPROVAL_MODE manually (see README, Harness permission notes)'
-        : 'ASK approval posture: opencode config unreadable or permissions not array-shaped — the installer keeps it untouched; add the ask rule and DEVKIT_APPROVAL_MODE manually (see README, Harness permission notes)',
+  if (cfg === null) {
+    ctx.warn(
+      `${ASK_POSTURE_LABEL}: the opencode config is unreadable, so the client half cannot be verified — the server gate still confirms every roster call; fix the file and re-run: npx huaweicloud-devkit install --target opencode`,
     );
-    return 'other';
+    return;
   }
-  // The mcp entry carries the server half; a missing entry counts as no
-  // env, so the halves are judged independently of entry presence.
+  const reading = v1 ? readPermissionRulesV1(cfg) : readPermissionRules(cfg);
+  if (reading.sectionUnreadable) {
+    ctx.warn(
+      `${ASK_POSTURE_LABEL}: opencode ${v1 ? 'permission is not object-shaped' : 'permissions is not array-shaped'}, so the client half cannot be verified — the server gate still confirms every roster call; fix the shape and re-run: npx huaweicloud-devkit install --target opencode`,
+    );
+    return;
+  }
+  // The mcp entry carries the server half; a missing entry counts as no env.
   const env = asRecord(asRecord(asRecord(cfg.mcp)['huaweicloud-devkit']).environment);
-  const envAsk = env.DEVKIT_APPROVAL_MODE === 'ask';
-  const label = 'ASK approval posture (client rule + server gate)';
-  if (posture === 'ask') {
-    ctx.check(
-      label,
-      envAsk,
-      envAsk
-        ? ''
-        : 'the client rule is present but DEVKIT_APPROVAL_MODE=ask is missing from the mcp entry — the pair has drifted from what this installer writes, so the server runs the token gate while the client rule also fires (re-run: npx huaweicloud-devkit install --target opencode)',
-    );
-    return envAsk ? 'ask' : 'other';
+  const gateOn = env.DEVKIT_APPROVAL_MODE === 'ask';
+  const actionsIn = (state: RosterRuleState): string[] =>
+    reading.rules.filter((rule) => rule.state === state).map((rule) => rule.action);
+  const allow = actionsIn('allow');
+  const absent = actionsIn('absent');
+  const deny = actionsIn('deny');
+  const foreign = actionsIn('foreign');
+  const userOther = actionsIn('user-other');
+  const residue = reading.rules.filter((rule) => rule.askResidue).map((rule) => rule.action);
+
+  // Token mode with no client rules at all is the legitimate default posture.
+  if (!gateOn && absent.length === reading.rules.length) {
+    ctx.check('ASK approval posture (token mode)', true, '');
+    return;
   }
-  if (posture === 'allow') {
-    // FAIL, never a warn: the rule departs from the pair this installer
-    // writes (effect ask). It is drift, not a fail-open — the server gate
-    // raises the confirmation regardless of what the client rule says — and
-    // the verdict stays so PR-2's posture migration has a direction to fail.
-    ctx.check(
-      label,
-      false,
-      gate === 'v1-object'
-        ? 'the permission value for the run tool is "allow" — it has drifted from the "ask" pair this installer writes (the server still raises the confirmation itself). Delete that key or set its value to "ask" (see README, Harness permission notes)'
-        : 'the permissions rule for the run tool is "allow" — it has drifted from the "ask" pair this installer writes (the server still raises the confirmation itself). Delete that rule or set its effect to "ask" (see README, Harness permission notes)',
+
+  const fails: string[] = [];
+  const warns: string[] = [];
+  if (deny.length > 0) {
+    fails.push(
+      v1
+        ? `the permission value on ${deny.join(', ')} is "deny" — the write tool is blocked outright in the client; delete that key`
+        : `a permissions rule on ${deny.join(', ')} is "deny" — the write tool is blocked outright in the client; delete that rule`,
     );
-    return envAsk ? 'ask' : 'other';
   }
-  if (posture === 'deny') {
-    ctx.check(
-      label,
-      false,
-      gate === 'v1-object'
-        ? 'the permission value for the run tool is "deny" — the write tool is blocked entirely. Delete that key or set its value to "ask" (see README, Harness permission notes)'
-        : 'the permissions rule for the run tool is "deny" — the write tool is blocked entirely. Delete that rule or set its effect to "ask" (see README, Harness permission notes)',
+  if (residue.length > 0) {
+    fails.push(
+      `the devkit-written ask ${v1 ? 'value' : 'rule'} is still present on ${residue.join(', ')} — the posture migration missed it (re-run: npx huaweicloud-devkit install --target opencode)`,
     );
-    return envAsk ? 'ask' : 'other';
   }
-  if (envAsk) {
-    // posture === 'absent': the pair is half-written. The server gate still
-    // confirms every roster call, so this is drift from the installer's
-    // contract, not an open gate.
-    ctx.check(
-      label,
-      false,
-      gate === 'v1-object'
-        ? 'DEVKIT_APPROVAL_MODE=ask is set but the permission ask key is missing — the pair has drifted from what this installer writes (re-run: npx huaweicloud-devkit install --target opencode, or unset DEVKIT_APPROVAL_MODE in the mcp entry)'
-        : 'DEVKIT_APPROVAL_MODE=ask is set but the permissions ask rule is missing — the pair has drifted from what this installer writes (re-run: npx huaweicloud-devkit install --target opencode, or unset DEVKIT_APPROVAL_MODE in the mcp entry)',
+  if (gateOn && absent.length > 0) {
+    fails.push(
+      `the client allow ${v1 ? 'value' : 'rule'} is missing on ${absent.join(', ')} while DEVKIT_APPROVAL_MODE=ask is set — the pair has drifted from what this installer writes (re-run: npx huaweicloud-devkit install --target opencode)`,
     );
-    return 'other';
   }
-  // Token mode is the legitimate default posture, not an error.
-  ctx.check('ASK approval posture (token mode)', true, '');
-  return 'other';
+  if (!gateOn && allow.length > 0) {
+    warns.push(
+      `client allow ${v1 ? 'values' : 'rules'} on ${allow.join(', ')} are present but DEVKIT_APPROVAL_MODE=ask is missing from the mcp entry — the mixed state suppresses the client prompt while the server runs the token gate (re-run: npx huaweicloud-devkit install --target opencode)`,
+    );
+  }
+  if (userOther.length > 0) {
+    warns.push(
+      `a user-owned ${v1 ? 'permission value' : 'rule'} on ${userOther.join(', ')} covers a different resource, so the installer keeps it (skip recorded) and no exact "*" allow rule is written there (see README, Harness permission notes)`,
+    );
+  }
+  if (foreign.length > 0) {
+    warns.push(
+      `the ${v1 ? 'permission value' : 'permissions rule'} on ${foreign.join(', ')} is not a readable effect, so the client half cannot be verified there`,
+    );
+  }
+  if (fails.length > 0) {
+    ctx.check(ASK_POSTURE_LABEL, false, [...fails, ...warns].join(' '));
+  } else if (warns.length > 0) {
+    ctx.warn(`${ASK_POSTURE_LABEL}: ${warns.join(' ')}`);
+  } else {
+    ctx.check(ASK_POSTURE_LABEL, true, '');
+  }
 }
 
 // Doctor: the opencode saved-permission store, the client-side twin of the

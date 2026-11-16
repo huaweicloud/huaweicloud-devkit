@@ -75,8 +75,9 @@ export function runDoctor(home: string, extra: Record<string, string> = {}): str
 }
 
 // A real install into the fake home, so the native freshness checks see an
-// installed payload with receipt-managed native copies.
-export function runInstall(home: string, extra: Record<string, string> = {}): void {
+// installed payload with receipt-managed native copies. Returns the plain
+// (ANSI-stripped) stdout for assertions on installer WARN lines.
+export function runInstall(home: string, extra: Record<string, string> = {}): string {
   const run = spawnSync(process.execPath, [setupCli, 'install', '--target', 'opencode'], {
     encoding: 'utf8',
     env: doctorEnv(home, extra),
@@ -84,6 +85,18 @@ export function runInstall(home: string, extra: Record<string, string> = {}): vo
     timeout: 240_000,
   });
   assert.ok(run.status === 0, `install failed: ${run.stderr}\n${run.stdout}`);
+  return (run.stdout ?? '').replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+}
+
+// A real uninstall from the fake home (the posture's removal half).
+export function runUninstall(home: string, extra: Record<string, string> = {}): string {
+  const run = spawnSync(process.execPath, [setupCli, 'uninstall', '--target', 'opencode'], {
+    encoding: 'utf8',
+    env: doctorEnv(home, extra),
+    timeout: 120_000,
+  });
+  assert.ok(run.status === 0, `uninstall failed: ${run.stderr}\n${run.stdout}`);
+  return (run.stdout ?? '').replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
 }
 
 // An installed payload's skills/ dir, as copyServerPayload would have laid

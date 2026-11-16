@@ -2,130 +2,274 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  ASK_RULE_ACTION,
-  ASK_RULE_RESOURCE,
-  applyAskPermissionRule,
-  applyAskPermissionRuleV1,
+  PERMISSION_RULE_RESOURCE,
+  allowRuleActions,
+  applyAllowPermissionRules,
+  applyAllowPermissionRulesV1,
   askRuleShapeFor,
-  inspectAskPermissionRule,
-  inspectAskPermissionRuleV1,
   opencodeAskRuleVersionSupported,
-  removeAskPermissionRule,
-  removeAskPermissionRuleV1,
+  readPermissionRules,
+  readPermissionRulesV1,
+  removeAllowPermissionRules,
+  removeAllowPermissionRulesV1,
+  removeAskPermissionRules,
+  removeAskPermissionRulesV1,
 } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
 
-// Pure ask-rule logic (lib/opencode-ask-rule.ts), modeled on the seam
-// test's Part A: the ownership contract is add-only-if-absent on write and
-// value-exact on removal; these units pin every branch the CLI integration
-// cannot reach deterministically (user entries, non-array shapes,
-// last-match-wins inspection, the version floor's polarity).
+// Pure client-rule logic (lib/opencode-ask-rule.ts): the ownership contract
+// is add-only-if-absent per rule and value-exact on removal, one exact allow
+// rule per roster tool, plus the doctor's reading of the posture. These units
+// pin every branch the CLI integration cannot reach deterministically
+// (multi-rule partial coverage, user-owned entries, non-array shapes,
+// last-match-wins inspection, the legacy ask migration).
 
-const ourRule = { action: ASK_RULE_ACTION, resource: ASK_RULE_RESOURCE, effect: 'ask' };
+const ROSTER = allowRuleActions();
+const A = 'huaweicloud-devkit_tool_a';
+const B = 'huaweicloud-devkit_tool_b';
+const C = 'huaweicloud-devkit_tool_c';
+const OTHER = { action: 'other-server_other_tool', resource: PERMISSION_RULE_RESOURCE, effect: 'deny' };
 
-test('applyAskPermissionRule creates the single-entry array on a fresh config', () => {
+function allow(action: string): Record<string, unknown> {
+  return { action, resource: PERMISSION_RULE_RESOURCE, effect: 'allow' };
+}
+
+function ask(action: string): Record<string, unknown> {
+  return { action, resource: PERMISSION_RULE_RESOURCE, effect: 'ask' };
+}
+
+// ── V2: the `permissions` array form ──
+
+test('applyAllowPermissionRules writes one exact allow rule per roster tool on a fresh config', () => {
   const config: Record<string, unknown> = {};
-  const result = applyAskPermissionRule(config);
-  assert.deepEqual(result, { changed: true, skipped: false });
-  assert.deepEqual(config.permissions, [ourRule]);
+  const result = applyAllowPermissionRules(config);
+  assert.deepEqual(result, { changed: true, skipped: [], shapeUnreadable: false });
+  assert.deepEqual(
+    config.permissions,
+    ROSTER.map((action) => allow(action)),
+    'the roster drives one exact rule per tool',
+  );
+  assert.equal(ROSTER.length, 1, 'roster length is 1 at this PR; the mechanism is N-ready');
 });
 
-test('a user entry on the ask action survives the write, whatever its effect', () => {
-  for (const effect of ['allow', 'deny', 'ask']) {
-    const config = { permissions: [{ action: ASK_RULE_ACTION, resource: '*', effect }] };
-    const result = applyAskPermissionRule(config);
-    assert.deepEqual(result, { changed: false, skipped: true }, `effect ${effect} is user-owned`);
-    assert.deepEqual(config.permissions, [{ action: ASK_RULE_ACTION, resource: '*', effect }]);
-  }
+test('the N-rule set is written when the roster carries several tools', () => {
+  const config: Record<string, unknown> = {};
+  const result = applyAllowPermissionRules(config, [A, B, C]);
+  assert.deepEqual(result, { changed: true, skipped: [], shapeUnreadable: false });
+  assert.deepEqual(config.permissions, [allow(A), allow(B), allow(C)]);
 });
 
-test('the appended entry lands last, so last-matching-rule-wins makes it effective', () => {
-  const userRule = { action: 'other-server_other_tool', resource: '*', effect: 'deny' };
-  const config = { permissions: [userRule] };
-  const result = applyAskPermissionRule(config);
-  assert.deepEqual(result, { changed: true, skipped: false });
-  assert.deepEqual(config.permissions, [userRule, ourRule], 'our entry is the last one');
+test('partial coverage: an action that already carries anything else is skipped by name', () => {
+  const userDeny = { action: A, resource: PERMISSION_RULE_RESOURCE, effect: 'deny' };
+  const userResource = { action: B, resource: '/tmp/**', effect: 'allow' };
+  const config = { permissions: [userDeny, userResource, OTHER] };
+  const result = applyAllowPermissionRules(config, [A, B, C]);
+  assert.deepEqual(result, { changed: true, skipped: [A, B], shapeUnreadable: false });
+  assert.deepEqual(
+    config.permissions,
+    [userDeny, userResource, OTHER, allow(C)],
+    'user rules survive untouched and only the missing action is appended last',
+  );
+});
+
+test('a reinstall over our own rules is a no-op, never a false user-owned skip', () => {
+  const config = { permissions: [allow(A), allow(B)] };
+  const result = applyAllowPermissionRules(config, [A, B]);
+  assert.deepEqual(result, { changed: false, skipped: [], shapeUnreadable: false });
+  assert.deepEqual(config.permissions, [allow(A), allow(B)], 'no duplicate rows');
 });
 
 test('a non-array permissions shape is skipped untouched', () => {
-  const config = { permissions: 'ask' };
-  const result = applyAskPermissionRule(config);
-  assert.deepEqual(result, { changed: false, skipped: true });
-  assert.equal(config.permissions, 'ask', 'the user’s shape is never converted');
+  const config = { permissions: 'allow' };
+  const result = applyAllowPermissionRules(config);
+  assert.deepEqual(result, { changed: false, skipped: [], shapeUnreadable: true });
+  assert.equal(config.permissions, 'allow', 'the user’s shape is never converted');
 });
 
-test('removeAskPermissionRule deletes only value-exact matches and prunes the emptied array', () => {
-  const userEffect = { action: ASK_RULE_ACTION, resource: '*', effect: 'allow' };
-  const otherAction = { action: 'other-server_other_tool', resource: '*', effect: 'ask' };
-  const config = { permissions: [{ ...ourRule }, userEffect, otherAction] };
-  const changed = removeAskPermissionRule(config);
-  assert.equal(changed, true);
-  assert.deepEqual(config.permissions, [userEffect, otherAction], 'user-modified and other-action entries survive');
+test('removeAllowPermissionRules deletes only value-exact allow rows and prunes the emptied array', () => {
+  const userDeny = { action: A, resource: PERMISSION_RULE_RESOURCE, effect: 'deny' };
+  const userResource = { action: B, resource: '/tmp/**', effect: 'allow' };
+  const config = { permissions: [allow(A), userDeny, allow(B), userResource, OTHER] };
+  assert.equal(removeAllowPermissionRules(config, [A, B]), true);
+  assert.deepEqual(config.permissions, [userDeny, userResource, OTHER], 'user-modified rows survive');
 });
 
 test('removal prunes the permissions key only when OUR removals emptied it', () => {
-  const config = { permissions: [{ ...ourRule }] };
-  assert.equal(removeAskPermissionRule(config), true);
-  assert.equal('permissions' in config, false, 'the array the rule emptied is gone');
-});
+  const config = { permissions: ROSTER.map((action) => allow(action)) };
+  assert.equal(removeAllowPermissionRules(config), true);
+  assert.equal('permissions' in config, false, 'the array the rules emptied is gone');
 
-test('a pre-existing empty array is left alone (no phantom change)', () => {
-  const config = { permissions: [] };
-  assert.equal(removeAskPermissionRule(config), false);
-  assert.deepEqual(config.permissions, []);
+  const empty = { permissions: [] };
+  assert.equal(removeAllowPermissionRules(empty), false, 'a pre-existing empty array is left alone');
+  assert.deepEqual(empty.permissions, []);
 });
 
 test('removal is a no-op without an array to read', () => {
-  assert.equal(removeAskPermissionRule({}), false);
-  assert.equal(removeAskPermissionRule({ permissions: 'ask' }), false, 'the scalar shape is the user’s');
+  assert.equal(removeAllowPermissionRules({}), false);
+  assert.equal(removeAllowPermissionRules({ permissions: 'allow' }), false, 'the scalar shape is the user’s');
 });
 
-test('the full write/remove cycle restores the pre-rule content', () => {
-  const original = { permissions: [{ action: 'user_tool', resource: '*', effect: 'deny' }] };
-  const config = structuredClone(original);
-  applyAskPermissionRule(config);
-  assert.equal(removeAskPermissionRule(config), true);
-  assert.deepEqual(config, original);
+test('removeAskPermissionRules migrates only the exact legacy ask rows', () => {
+  const userAskResource = { action: A, resource: '/tmp/**', effect: 'ask' };
+  const config = { permissions: [ask(A), ask(B), userAskResource, allow(C), OTHER] };
+  assert.equal(removeAskPermissionRules(config, [A, B, C]), true);
+  assert.deepEqual(
+    config.permissions,
+    [userAskResource, allow(C), OTHER],
+    'legacy rows go; user rows and the allow set stay',
+  );
 });
 
-test('the accepted edge: a user-authored same-shape rule predating the write is removed with it', () => {
-  const config = { permissions: [{ ...ourRule }] };
-  assert.equal(removeAskPermissionRule(config), true);
-  assert.equal('permissions' in config, false);
+test('the migration leaves a config that never carried the old posture untouched', () => {
+  const config = { permissions: [allow(A), OTHER] };
+  assert.equal(removeAskPermissionRules(config, [A, B]), false);
+  assert.deepEqual(config.permissions, [allow(A), OTHER]);
 });
 
-test('inspectAskPermissionRule reads the LAST matching entry (last-match-wins)', () => {
-  // apply does NOT append when an entry on the action exists, so the
-  // multi-entry case is constructed by hand — exactly the shape a user's
-  // own edits produce.
-  const both = { permissions: [{ ...ourRule, effect: 'allow' }, { ...ourRule }] };
-  assert.equal(inspectAskPermissionRule(both), 'ask', 'the last entry wins');
-  const reversed = { permissions: [{ ...ourRule }, { ...ourRule, effect: 'deny' }] };
-  assert.equal(inspectAskPermissionRule(reversed), 'deny', 'the last entry wins');
+// ── V1: the `permission` object form (opencode 1.19.0 – 1.x) ──
+
+test('applyAllowPermissionRulesV1 writes one exact allow key per roster tool on a fresh config', () => {
+  const config: Record<string, unknown> = {};
+  const result = applyAllowPermissionRulesV1(config, [A, B]);
+  assert.deepEqual(result, { changed: true, skipped: [], shapeUnreadable: false });
+  assert.deepEqual(config.permission, { [A]: 'allow', [B]: 'allow' });
 });
 
-test('inspectAskPermissionRule reports each readable effect', () => {
-  for (const effect of ['ask', 'allow', 'deny'] as const) {
-    assert.equal(inspectAskPermissionRule({ permissions: [{ ...ourRule, effect }] }), effect);
+test('the V1 append lands last, so findLast makes it effective over an earlier wildcard', () => {
+  const config = { permission: { '*': 'allow', bash: 'allow' } };
+  const result = applyAllowPermissionRulesV1(config, [A]);
+  assert.deepEqual(result, { changed: true, skipped: [], shapeUnreadable: false });
+  assert.deepEqual(Object.keys(config.permission as Record<string, unknown>), ['*', 'bash', A], 'our key is last');
+});
+
+test('a V1 value that is not allow is user-owned and skipped by name; allow is the no-op state', () => {
+  for (const value of ['deny', 'ask', { '*': 'ask' }]) {
+    const config = { permission: { [A]: value } };
+    const result = applyAllowPermissionRulesV1(config, [A, B]);
+    assert.deepEqual(result, { changed: true, skipped: [A], shapeUnreadable: false }, `value ${JSON.stringify(value)}`);
+    assert.equal((config.permission as Record<string, unknown>)[A], value, 'the user’s value survives');
+    assert.equal((config.permission as Record<string, unknown>)[B], 'allow', 'the missing action is written');
   }
+  const covered = { permission: { [A]: 'allow' } };
+  assert.deepEqual(applyAllowPermissionRulesV1(covered, [A]), {
+    changed: false,
+    skipped: [],
+    shapeUnreadable: false,
+  });
 });
 
-test('inspectAskPermissionRule reports absent for no matching entry', () => {
-  assert.equal(inspectAskPermissionRule({}), 'absent', 'no permissions key');
-  assert.equal(inspectAskPermissionRule({ permissions: [] }), 'absent', 'empty array');
-  assert.equal(
-    inspectAskPermissionRule({ permissions: [{ action: 'other_tool', resource: '*', effect: 'allow' }] }),
-    'absent',
-    'only other actions',
-  );
+test('a scalar-shaped permission is skipped untouched (the global posture is the user’s)', () => {
+  const config = { permission: 'allow' };
+  const result = applyAllowPermissionRulesV1(config, [A]);
+  assert.deepEqual(result, { changed: false, skipped: [], shapeUnreadable: true });
+  assert.equal(config.permission, 'allow', 'the user’s shape is never converted');
 });
 
-test('inspectAskPermissionRule reports foreign for unreadable postures', () => {
-  assert.equal(inspectAskPermissionRule({ permissions: 'allow' }), 'foreign', 'non-array permissions');
-  assert.equal(
-    inspectAskPermissionRule({ permissions: [{ ...ourRule, effect: 'maybe' }] }),
-    'foreign',
-    'an effect outside the allow/ask/deny vocabulary is unreadable',
+test('removeAllowPermissionRulesV1 deletes only allow keys and prunes the emptied object', () => {
+  const config = { permission: { '*': 'deny', [A]: 'allow', [B]: 'deny' } };
+  assert.equal(removeAllowPermissionRulesV1(config, [A, B]), true);
+  assert.deepEqual(config.permission, { '*': 'deny', [B]: 'deny' }, 'user values survive value-exact removal');
+
+  const emptied = { permission: { [A]: 'allow' } };
+  assert.equal(removeAllowPermissionRulesV1(emptied, [A]), true);
+  assert.equal('permission' in emptied, false, 'the object our removal emptied is gone');
+});
+
+test('removeAskPermissionRulesV1 migrates only the exact legacy ask keys', () => {
+  const config = { permission: { '*': 'deny', [A]: 'ask', [B]: 'deny' } };
+  assert.equal(removeAskPermissionRulesV1(config, [A, B]), true);
+  assert.deepEqual(config.permission, { '*': 'deny', [B]: 'deny' });
+
+  const empty = { permission: {} };
+  assert.equal(removeAskPermissionRulesV1(empty, [A]), false, 'a pre-existing empty object is left alone');
+  assert.deepEqual(empty.permission, {});
+});
+
+test('the legacy posture is migrated away in BOTH shapes on one config', () => {
+  const config: Record<string, unknown> = {
+    permissions: [ask(A), allow(B)],
+    permission: { [A]: 'ask', '*': 'allow' },
+  };
+  const v2 = removeAskPermissionRules(config, [A, B]);
+  const v1 = removeAskPermissionRulesV1(config, [A, B]);
+  assert.equal(v2 || v1, true);
+  assert.deepEqual(config.permissions, [allow(B)], 'the V2 residue is gone');
+  assert.deepEqual(config.permission, { '*': 'allow' }, 'the V1 residue is gone and the user key survives');
+});
+
+// ── Reading the posture (the doctor's half) ──
+
+test('readPermissionRules reads every readable effect per roster action', () => {
+  for (const effect of ['allow', 'deny'] as const) {
+    const config = { permissions: [{ action: A, resource: PERMISSION_RULE_RESOURCE, effect }] };
+    const reading = readPermissionRules(config, [A]);
+    assert.equal(reading.sectionUnreadable, false);
+    assert.deepEqual(reading.rules, [{ action: A, state: effect, askResidue: false }]);
+  }
+  const askReading = readPermissionRules({ permissions: [ask(A)] }, [A]);
+  assert.deepEqual(askReading.rules, [{ action: A, state: 'ask', askResidue: true }], 'ask is the migration residue');
+});
+
+test('a missing rule reads absent, and a multi-action reading shows every gap', () => {
+  const reading = readPermissionRules({ permissions: [allow(A)] }, [A, B, C]);
+  assert.deepEqual(
+    reading.rules.map((rule) => [rule.action, rule.state]),
+    [
+      [A, 'allow'],
+      [B, 'absent'],
+      [C, 'absent'],
+    ],
+    'partial coverage names each missing action',
   );
+  assert.equal(readPermissionRules({}, [A]).rules[0]?.state, 'absent', 'no permissions key');
+});
+
+test('readPermissionRules flags ask residue even when a later allow row wins', () => {
+  const shadowed = { permissions: [ask(A), allow(A)] };
+  assert.deepEqual(readPermissionRules(shadowed, [A]).rules, [{ action: A, state: 'allow', askResidue: true }]);
+});
+
+test('a deny anywhere on the action reads deny (a bricked call, even shadowed)', () => {
+  const shadowed = {
+    permissions: [{ action: A, resource: '/tmp/**', effect: 'deny' }, allow(A)],
+  };
+  assert.equal(readPermissionRules(shadowed, [A]).rules[0]?.state, 'deny');
+});
+
+test('a user rule on another resource reads user-other, never a silent gap', () => {
+  const reading = readPermissionRules({ permissions: [{ action: A, resource: '/tmp/**', effect: 'allow' }] }, [A]);
+  assert.deepEqual(reading.rules, [{ action: A, state: 'user-other', askResidue: false }]);
+});
+
+test('an unknown effect or a non-array section reads unverifiable (foreign)', () => {
+  const unknown = { permissions: [{ action: A, resource: PERMISSION_RULE_RESOURCE, effect: 'maybe' }] };
+  assert.equal(readPermissionRules(unknown, [A]).rules[0]?.state, 'foreign');
+
+  const scalar = { permissions: { action: A, effect: 'allow' } };
+  const reading = readPermissionRules(scalar, [A]);
+  assert.equal(reading.sectionUnreadable, true);
+  assert.deepEqual(reading.rules, [{ action: A, state: 'foreign', askResidue: false }], 'the section names itself');
+});
+
+test('readPermissionRulesV1 maps each bare value and reports the unreadable shapes', () => {
+  assert.deepEqual(readPermissionRulesV1({ permission: { [A]: 'allow' } }, [A]).rules, [
+    { action: A, state: 'allow', askResidue: false },
+  ]);
+  assert.deepEqual(readPermissionRulesV1({ permission: { [A]: 'ask' } }, [A]).rules, [
+    { action: A, state: 'ask', askResidue: true },
+  ]);
+  assert.deepEqual(readPermissionRulesV1({ permission: { [A]: 'deny' } }, [A]).rules, [
+    { action: A, state: 'deny', askResidue: false },
+  ]);
+  assert.deepEqual(readPermissionRulesV1({}, [A]).rules, [{ action: A, state: 'absent', askResidue: false }]);
+  assert.deepEqual(readPermissionRulesV1({ permission: { other_tool: 'allow' } }, [A]).rules, [
+    { action: A, state: 'absent', askResidue: false },
+  ]);
+  assert.deepEqual(readPermissionRulesV1({ permission: { [A]: { '*': 'ask' } } }, [A]).rules, [
+    { action: A, state: 'foreign', askResidue: false },
+  ]);
+  const scalar = readPermissionRulesV1({ permission: 'allow' }, [A]);
+  assert.equal(scalar.sectionUnreadable, true);
+  assert.deepEqual(scalar.rules, [{ action: A, state: 'foreign', askResidue: false }]);
 });
 
 test('opencodeAskRuleVersionSupported pins the 2.0 floor and the unknown polarity', () => {
@@ -138,86 +282,6 @@ test('opencodeAskRuleVersionSupported pins the 2.0 floor and the unknown polarit
   assert.equal(opencodeAskRuleVersionSupported('opencode 2.2.7'), false, 'the probe must extract, not pass raw output');
   assert.equal(opencodeAskRuleVersionSupported('2'), false, 'unparsable per the anchored shape');
   assert.equal(opencodeAskRuleVersionSupported(null), false, 'absent/unparsable polarity is skip');
-});
-
-// ── The V1 shape: the `permission` object form (opencode 1.19.0 – 1.x) ──
-// Source-verified on the v1.19.0 tag: the run tool's permission key is
-// byte-identical to ASK_RULE_ACTION, fromConfig() maps a bare string value
-// to pattern "*", and evaluate() is findLast — so an appended key wins.
-// These units pin the same ownership contract the V2 tests pin above.
-
-test('applyAskPermissionRuleV1 creates the single-key permission object on a fresh config', () => {
-  const config: Record<string, unknown> = {};
-  const result = applyAskPermissionRuleV1(config);
-  assert.deepEqual(result, { changed: true, skipped: false });
-  assert.deepEqual(config.permission, { [ASK_RULE_ACTION]: 'ask' });
-});
-
-test('a user value on the ask key survives the V1 write, whatever its value', () => {
-  for (const value of ['allow', 'deny', 'ask', { '*': 'ask' }]) {
-    const config = { permission: { [ASK_RULE_ACTION]: value } };
-    const result = applyAskPermissionRuleV1(config);
-    assert.deepEqual(result, { changed: false, skipped: true }, `value ${JSON.stringify(value)} is user-owned`);
-    assert.deepEqual((config.permission as Record<string, unknown>)[ASK_RULE_ACTION], value);
-  }
-});
-
-test('the V1 append lands last, so findLast makes it effective over an earlier wildcard', () => {
-  const config = { permission: { '*': 'allow', bash: 'allow' } };
-  const result = applyAskPermissionRuleV1(config);
-  assert.deepEqual(result, { changed: true, skipped: false });
-  assert.deepEqual(Object.keys(config.permission), ['*', 'bash', ASK_RULE_ACTION], 'our key is the last one');
-});
-
-test('a scalar-shaped permission is skipped untouched (the global posture is the user’s)', () => {
-  const config = { permission: 'allow' };
-  const result = applyAskPermissionRuleV1(config);
-  assert.deepEqual(result, { changed: false, skipped: true });
-  assert.equal(config.permission, 'allow', 'the user’s shape is never converted');
-});
-
-test('removeAskPermissionRuleV1 deletes only the value-exact ask and prunes the emptied object', () => {
-  const config = { permission: { [ASK_RULE_ACTION]: 'ask' } };
-  assert.equal(removeAskPermissionRuleV1(config), true);
-  assert.equal('permission' in config, false, 'the object our removal emptied is gone');
-});
-
-test('V1 removal keeps user-modified values and unrelated keys', () => {
-  const modified = { permission: { '*': 'allow', [ASK_RULE_ACTION]: 'deny' } };
-  assert.equal(removeAskPermissionRuleV1(modified), false, 'a non-ask value is the user’s');
-  assert.deepEqual(modified.permission, { '*': 'allow', [ASK_RULE_ACTION]: 'deny' });
-
-  const mixed = { permission: { '*': 'allow', [ASK_RULE_ACTION]: 'ask' } };
-  assert.equal(removeAskPermissionRuleV1(mixed), true);
-  assert.deepEqual(mixed.permission, { '*': 'allow' }, 'the unrelated keys survive');
-});
-
-test('V1 removal is a no-op without an object to read', () => {
-  assert.equal(removeAskPermissionRuleV1({}), false);
-  assert.equal(removeAskPermissionRuleV1({ permission: 'ask' }), false, 'the scalar shape is the user’s');
-});
-
-test('the V1 write/remove cycle restores the pre-rule content', () => {
-  const original = { permission: { '*': 'deny' } };
-  const config = structuredClone(original);
-  applyAskPermissionRuleV1(config);
-  assert.equal(removeAskPermissionRuleV1(config), true);
-  assert.deepEqual(config, original);
-});
-
-test('inspectAskPermissionRuleV1 reads each bare effect and reports the unreadable shapes', () => {
-  for (const effect of ['ask', 'allow', 'deny'] as const) {
-    assert.equal(inspectAskPermissionRuleV1({ permission: { [ASK_RULE_ACTION]: effect } }), effect);
-  }
-  assert.equal(inspectAskPermissionRuleV1({}), 'absent', 'no permission key');
-  assert.equal(inspectAskPermissionRuleV1({ permission: {} }), 'absent', 'empty object');
-  assert.equal(inspectAskPermissionRuleV1({ permission: { other_tool: 'ask' } }), 'absent', 'only other tools');
-  assert.equal(inspectAskPermissionRuleV1({ permission: 'allow' }), 'foreign', 'the scalar global posture');
-  assert.equal(
-    inspectAskPermissionRuleV1({ permission: { [ASK_RULE_ACTION]: { '*': 'ask' } } }),
-    'foreign',
-    'a pattern map is not a single-effect posture',
-  );
 });
 
 test('askRuleShapeFor pins both measured floors and the unknown polarity', () => {
