@@ -2,8 +2,8 @@ import { getCredentials } from './hwlink-api.mjs';
 import { getProxyDispatcher } from '../proxy/proxy-agent.mjs';
 import { cacheUserHash } from '../telemetry/telemetry.mjs';
 import { detectAgent } from '../telemetry/agent-detect.mjs';
-import { readInstalledVersion } from '../update-check.mjs';
-import { pinnedTemplateFor } from './sandbox-pool.mjs';
+import { getRuntimeVersion } from '../update-check.mjs';
+import { maybeAutoUpgrade } from '../update-auto.mjs';
 
 function getHdkitBaseUrl() {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
@@ -22,7 +22,7 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
     'Content-Type': 'application/json',
     'X-HW-AK': ak,
     'X-HW-SK': sk,
-    'X-HW-Client-Version': readInstalledVersion() || '0.0.0',
+    'X-HW-Client-Version': getRuntimeVersion(),
     // #1040: 对外请求统一携带 X-HW-Agent（值=detectAgent 结果 harness）
     'X-HW-Agent': detectAgent().harness,
   };
@@ -79,9 +79,10 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
         ],
       };
     }
-    // 429 双错误码（两池配额契约）：配额满给出释放/复用引导；池容量不足只透传服务端
-    // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
-    // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
+    // 429 三错误码：配额满给出释放/复用引导；模板 running 上限与池容量不足只透传
+    // 服务端最终文案（不带 CODE 前缀、不附加额外引导）。
+    // HDKIT_QUOTA_EXCEEDED / HDKIT_CAPACITY_INSUFFICIENT 带 Retry-After；
+    // HDKIT_TEMPLATE_QUOTA_EXCEEDED 不带（需关机/释放同类型实例后重试）。
     if (code === 'HDKIT_QUOTA_EXCEEDED') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       err.remediation = {
@@ -93,6 +94,14 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
         ],
       };
     }
+    // 用户级模板 running 上限（HD.98320082）：服务端文案即最终展示内容
+    // （不带 "CODE: " 前缀、不附加旧的“每账号最多 5 台”引导）
+    if (code === 'HDKIT_TEMPLATE_QUOTA_EXCEEDED') {
+      err.message =
+        typeof data.message === 'string' && data.message.trim()
+          ? data.message
+          : '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+    }
     if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
       err.retryAfter = resp.headers.get('Retry-After') || undefined;
       // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
@@ -103,13 +112,38 @@ async function hdkitRequest(method, path, body, timeoutMs = 300000) {
       err.clientVersion = data.clientVersion || undefined;
       err.minVersion = data.minVersion || undefined;
       err.message = data.message || err.message;
+      const autoUpgrade = maybeAutoUpgrade({
+        trigger: data.minVersion ? 'version_gate' : 'startup_normal',
+        minVersion: data.minVersion || '',
+      });
+      err.autoUpgrade = autoUpgrade;
+      const autoStarted = autoUpgrade.status === 'started' || autoUpgrade.status === 'already_running';
+      const autoReady = autoUpgrade.status === 'already_upgraded';
+      const autoUnsupported = autoUpgrade.status === 'unsupported_install';
       err.remediation = {
         hint: `插件版本过旧（当前 ${data.clientVersion || '未知'}，需升级至正式版 ${data.minVersion || '最新版'} 及以上）：`,
-        steps: [
-          '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
-          '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
-          '也可直接调用 huaweicloud_upgrade 工具完成升级',
-        ],
+        steps: autoReady
+          ? [
+              `新版本 ${autoUpgrade.installedVersion || ''} 已安装，重启当前 Agent 会话即可`.trim(),
+              '若重启后仍被拦截，可在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+            ]
+          : autoStarted
+            ? [
+                '升级已在后台开始，完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+                '若长时间未完成，可在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+                '也可直接调用 huaweicloud_upgrade 工具完成升级',
+              ]
+            : autoUnsupported
+              ? [
+                  autoUpgrade.manual ||
+                    '当前安装方式暂不支持自动升级，请在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+                  '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+                ]
+              : [
+                  '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+                  '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+                  '也可直接调用 huaweicloud_upgrade 工具完成升级',
+                ],
       };
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
@@ -153,14 +187,11 @@ export async function hdkitConnect(options = {}) {
   if (options.source) body.source = options.source;
   if (options.env) body.env = options.env;
   if (options.git) body.git = options.git;
-  if (options.template_id) body.template_id = options.template_id;
   if (options.flavor_id) body.flavor_id = options.flavor_id;
   if (options.pool_type) {
     // 两池：pool_type 由服务端权威映射（不传默认 ephemeral）。
-    // 可选运维钉扎：配置 HW_POOL_TEMPLATE_* 时附带映射模板（服务端与老服务端均按显式模板处理）
+    // 自定义模板/显式 template_id 已下线，客户端不再上送。
     body.pool_type = options.pool_type;
-    const pinned = pinnedTemplateFor(options.pool_type);
-    if (pinned && !body.template_id) body.template_id = pinned;
   }
 
   return await hdkitRequest('POST', 'connect', body);
@@ -209,6 +240,18 @@ export async function hdkitCredentials(sessionId, devStageId, enableSts = true) 
   return await hdkitRequest('POST', 'credentials', body);
 }
 
+export async function hdkitShutdown(sessionId, devStageId) {
+  const body = {};
+  if (sessionId) body.session_id = sessionId;
+  if (devStageId) body.dev_stage_id = devStageId;
+
+  if (!sessionId && !devStageId) {
+    throw new Error('session_id or dev_stage_id is required');
+  }
+
+  return await hdkitRequest('POST', 'shutdown', body, 120000);
+}
+
 // ── DevBridge API Key relay 代理（经 hdkitservice 透传 DevStation relay 接口）──
 // 凭证由 hdkitRequest 内部 getCredentials() 统一解析，调用方无需传
 
@@ -231,17 +274,24 @@ export async function hdkitDeleteApiKey(keyId) {
   return await hdkitRequest('DELETE', `api-keys/${encodeURIComponent(keyId)}`, undefined, 30000);
 }
 
+function voucherErrorResult(error, fallbackMessage) {
+  return {
+    claimed: false,
+    message: error?.message || fallbackMessage,
+    code: error?.code,
+    ...(error?.clientVersion ? { clientVersion: error.clientVersion } : {}),
+    ...(error?.minVersion ? { minVersion: error.minVersion } : {}),
+    ...(error?.remediation ? { remediation: error.remediation } : {}),
+    ...(error?.autoUpgrade ? { autoUpgrade: error.autoUpgrade } : {}),
+  };
+}
+
 export async function hdkitVoucherStatus(domainId) {
   try {
     const path = domainId ? `voucher/status?domain_id=${encodeURIComponent(domainId)}` : 'voucher/status';
     return await hdkitRequest('GET', path, undefined, 30000);
   } catch (error) {
-    return {
-      claimed: false,
-      message: error?.message || 'Incentive service unavailable, please try again later',
-      code: error?.code,
-      ...(error?.remediation ? { remediation: error.remediation } : {}),
-    };
+    return voucherErrorResult(error, 'Incentive service unavailable, please try again later');
   }
 }
 
@@ -250,12 +300,7 @@ export async function hdkitVoucherClaim(domainId) {
     const body = domainId ? { domain_id: domainId } : {};
     return await hdkitRequest('POST', 'voucher/claim', body);
   } catch (error) {
-    return {
-      claimed: false,
-      message: error?.message || 'Incentive service unavailable, please try again later',
-      code: error?.code,
-      ...(error?.remediation ? { remediation: error.remediation } : {}),
-    };
+    return voucherErrorResult(error, 'Incentive service unavailable, please try again later');
   }
 }
 
@@ -264,11 +309,6 @@ export async function hdkitCompetitionVoucherClaim(domainId) {
     const body = domainId ? { domain_id: domainId } : {};
     return await hdkitRequest('POST', 'competition/voucher/claim', body);
   } catch (error) {
-    return {
-      claimed: false,
-      message: error?.message || 'Competition voucher service unavailable, please try again later',
-      code: error?.code,
-      ...(error?.remediation ? { remediation: error.remediation } : {}),
-    };
+    return voucherErrorResult(error, 'Competition voucher service unavailable, please try again later');
   }
 }

@@ -7,31 +7,51 @@
 ## 机制
 
 - **池 = 平台预置模板**：非持久 `9a108ab1bc354bc4979b949b36e3c8c1` / 持久 `05860f507ee94930844907a3a136d1a7` / flavor 3U6G `23ebdfe3b2d34cc4b34a1aaf03d27c54`（服务端 `POOL_TEMPLATE_*` 环境变量维护）
-- 客户端传 `pool_type`（ephemeral/persistent），**服务端权威映射** template_id；显式 `template_id` 优先（自定义模板）
-- **无 persist_mode 请求参数**（需求方两次纠正）；闲置语义由平台按模板配置，上游参数面仅 name/template_id/flavor_id/source/env/git
-- 实例名前缀即池归属：`hcdke*`（非持久）/ `hcdkp*`（持久）；同池才复用。遗留 `hcdk*` 老实例不参与池复用（老模板后续可能无对应资源池，处置待定）
+- 客户端只传 `pool_type`（ephemeral/persistent），**服务端权威映射** template_id；template_id/自定义模板已下线
+- **无 persist_mode 请求参数**；闲置语义由平台按模板配置；上游参数面有 template_id，但客户端不再传入
+- 实例名前缀即池归属：`hcdke*`（非持久）/ `hcdkp*`（持久）；同池才复用。遗留 `hcdk*` 老实例不参与池复用、不阻挡池实例创建，由平台闲置策略回收
 
 ## 两类沙箱
 
-| 维度     | 非持久化 (ephemeral)                    | 持久化 (persistent)                                                   |
-| -------- | --------------------------------------- | --------------------------------------------------------------------- |
-| 定位     | 预览/试用/一次性任务/敏感即焚           | 开发工作台/带数据库项目/跨日评审展示                                  |
-| 生命周期 | 闲置 30min 自动关机 + 1h 删除（已实测） | 闲置 1h 自动关机（实例与数据保留）；回收上限 7 天（资源组 DB 硬约束） |
-| 存储     | 无持久盘                                | 挂 EVS 32G                                                            |
-| 配额     | 每用户 1 台（同类复用）                 | 每用户 1 台（同类复用；可与 1 台非持久并存）                          |
+| 维度     | 非持久化 (ephemeral)                            | 持久化 (persistent)                                                   |
+| -------- | ----------------------------------------------- | --------------------------------------------------------------------- |
+| 定位     | 预览/试用/一次性任务/敏感即焚（含全栈/DB 预览） | 开发工作台/需要跨会话保留数据的项目/跨日评审展示                      |
+| 生命周期 | 闲置 30min 自动关机 + 1h 删除（已实测）         | 闲置 1h 自动关机（实例与数据保留）；回收上限 7 天（资源组 DB 硬约束） |
+| 存储     | 无持久盘                                        | 挂 EVS 32G                                                            |
+| 配额     | 每用户 1 台（同类复用）                         | 每用户 1 台（同类复用；可与 1 台非持久并存）                          |
+
+## 选型决策树（V1 dev，2026-11-12 定稿）
+
+默认 `ephemeral`；技术栈不是持久化触发器。
+
+| 信号                                    | pool_type    | 动作                         |
+| --------------------------------------- | ------------ | ---------------------------- |
+| 预览 / demo / 一次性 / 敏感即焚         | `ephemeral`  | 不问                         |
+| 全栈/DB 但只是预览/演示                 | `ephemeral`  | 不问，不因技术栈升级         |
+| 明确长期 / 跨天 / 保留数据 / 开发工作台 | `persistent` | 不问                         |
+| 模型推断工作台/长期，但用户未明说       | `persistent` | 确认一次                     |
+| 意图不明确                              | 先问         | 默认推荐 `ephemeral`         |
+| 同一任务/同一轮部署的后续操作           | 沿用当前池   | 不中途切换                   |
+| 新预览任务 + 已有 persistent            | `ephemeral`  | 必要时问一次是否复用现有环境 |
+| 用户明确 override                       | 按用户       | 提示数据不跨池迁移           |
+
+- `persistent` 只能来自**明确长期意图**，或**推断后确认**；不得仅因 full-stack/DB 选 persistent。
+- 同一任务沿用当前池；新任务重新选型。新预览默认 `ephemeral`，即使已有 persistent。
+- 新预览可能复用现有环境/数据时问一次：“已有持久化沙箱，是否直接复用（保留现有环境/数据），还是新建临时预览环境？”
+- 切换池数据不迁移。
 
 ## 生命周期（实测口径）
 
-| 项              | 口径                                           | 状态          |
-| --------------- | ---------------------------------------------- | ------------- |
-| 非持久闲置策略  | 30min 自动关机 + 1h 删除（平台定时任务）       | ✅ 已验证生效 |
-| 持久闲置策略    | 闲置 1h 自动关机（实例与数据盘保留）           | 平台侧        |
-| 持久闲置回收    | 保留期上限 7 天（原 14 天口径作废）            | 平台侧        |
-| 活性检测        | 当前仅 connect 单信号（三信号为后续诉求 G2）   | 现状          |
-| 删除/关机前通知 | 不支持（G6 诉求中）→ 客户端 TTL 播报为补偿方案 | 现状          |
-| 两池实际差异    | 仅 EVS 32GiB 数据盘（非持久池无 disks 字段）   | ✅ 已实证     |
+| 项              | 口径                                         | 状态          |
+| --------------- | -------------------------------------------- | ------------- |
+| 非持久闲置策略  | 30min 自动关机 + 1h 删除（平台定时任务）     | ✅ 已验证生效 |
+| 持久闲置策略    | 闲置 1h 自动关机（实例与数据盘保留）         | 平台侧        |
+| 持久闲置回收    | 保留期上限 7 天（原 14 天口径作废）          | 平台侧        |
+| 活性检测        | 当前仅 connect 单信号（三信号为后续诉求 G2） | 现状          |
+| 删除/关机前通知 | 不支持（G6 诉求中）→ 不播报 TTL；仅内部可见  | 现状          |
+| 两池实际差异    | 仅 EVS 32GiB 数据盘（非持久池无 disks 字段） | ✅ 已实证     |
 
-> 生命周期数值是**播报口径**，由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` / `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` / `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` / `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以**分钟**为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机/删除策略由平台资源池执行，hdkitservice 不控制。
+> 生命周期数值是**内部选池/诊断口径**，不向开发者播报：ephemeral 不播报；persistent 只播报沙箱生命周期与核时提醒，不播报隧道有效期/自动续期。由 hdkitservice 配置（`POOL_EPHEMERAL_IDLE_SHUTDOWN_MINUTES` / `POOL_EPHEMERAL_IDLE_DELETE_MINUTES` / `POOL_PERSISTENT_IDLE_SHUTDOWN_MINUTES` / `POOL_PERSISTENT_RECLAIM_MINUTES`，统一以**分钟**为单位；7 天 = 10080）随 connect 响应回显；客户端以回显为准，缺失时按上表默认值兜底。实际关机/删除策略由平台资源池执行，hdkitservice 不控制。
 
 ## 容量规划（原始申请口径）
 
@@ -48,8 +68,9 @@
 ## 配额与错误码
 
 - 每用户每类型 1 台（同类复用，ephemeral + persistent 可并存 1+1）；账号并发上限 5
-- 429 双错误码（均带 `Retry-After: 60`）：
+- 429 三错误码（`HDKIT_QUOTA_EXCEEDED` / `HDKIT_CAPACITY_INSUFFICIENT` 带 `Retry-After: 60`；`HDKIT_TEMPLATE_QUOTA_EXCEEDED` 不带）：
   - `HDKIT_QUOTA_EXCEEDED`：用户配额满（上游 `HD.98320022`）→ 重试无效，引导释放/复用已有实例
+  - `HDKIT_TEMPLATE_QUOTA_EXCEEDED`：当前账号此类型沙箱运行中实例达上限（上游 `HD.98320082`）→ 需关机/释放同类型实例后重试
   - `HDKIT_CAPACITY_INSUFFICIENT`：池容量不足（上游 `HD.99003001`/`HD.99008001`/`HD.98330021`）→ 服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端原样透传不再附加引导
 - 烧核：`HD.97520422` = 账号核心时长耗尽（沙箱运行消耗核时；客户端对含该码的错误输出友好播报）
 
@@ -60,10 +81,13 @@
 ## 客户端行为（本插件）
 
 - `sandbox_connect` 传 `pool_type`；非法值本地即报错（不发无效请求）；未传由服务端默认 ephemeral
-- 生命周期提示只在两个时机播报：connect（会话首次连接，或复用实例被唤醒 `started=true`）与 `expose_tunnel`（交付地址时，返回 `urlLifetimeHint` + `warnings`）；其余 exec/upload/deploy 工具不逐次播报
-- connect 返回值富化 `pool` 块（数值取服务端回显，缺失时用默认口径）；生命周期口径按 workspace 缓存到 `~/.config/huaweicloud/sandbox-pools.json`（0600，7 天过期），进程重启后仍可播报
+- 选型由 skill 的 Pool-Selection Gate 决定；客户端只校验/透传 `pool_type`，不自行推断
+- 生命周期数据只在内部使用：connect（会话首次连接，或复用实例被唤醒 `started=true`）与 `expose_tunnel`（交付地址时）会返回 `sandboxLifetime` / `urlLifetimeHint` / `warnings` 供内部诊断；ephemeral 不向开发者播报，persistent 只播报沙箱生命周期与核时提醒（不含隧道有效期/自动续期）；其余 exec/upload/deploy 工具不逐次播报
+- connect 返回值富化 `pool` 块（数值取服务端回显，缺失时用默认口径）；生命周期口径按 workspace 缓存到 `~/.config/huaweicloud/sandbox-pools.json`（0600，7 天过期），仅内部使用（进程重启后仍可用于选池/诊断，不向开发者播报）
 - 429：配额满给 `remediation` 引导；容量不足只透传服务端最终文案 + `retryAfter`
-- 钉扎（可选，运维场景）：`HW_POOL_TEMPLATE_EPHEMERAL`/`HW_POOL_TEMPLATE_PERSISTENT` 环境变量——设置后客户端附带映射 template_id 上送；日常部署无需配置（模板 ID 由服务端权威维护）
+- persistent 生命周期提示追加核时提醒：**如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。** ephemeral 不出现该提示
+- `sandbox_shutdown` 调 hdkitservice `POST /shutdown`（DevStation `close`，不 delete）；仅开发者明确要求时调用；返回 `stopped` / `shutting_down` / `already_stopped` / `close_requested`。非持久化沙箱也可关机，但不主动提示
+- 模板 ID 仅由服务端 `POOL_TEMPLATE_*` 权威维护；客户端不再支持 `HW_POOL_TEMPLATE_*` 钉扎或显式 template_id
 
 ## 平台侧关键依赖（G 清单，非 devkit 交付）
 

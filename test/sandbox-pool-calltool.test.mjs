@@ -9,11 +9,12 @@ import { tmpdir } from 'node:os';
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HW_SANDBOX_POOL_CACHE_PATH = join(tmpdir(), `hw-sandbox-calltool-test-${process.pid}.json`);
-delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
+// 下方用例伪造 409 HDKIT_VERSION_TOO_OLD：必须屏蔽后台自动升级（R1，同 hdkitservice-api.test.mjs）。
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
 let currentWs = null;
 const execLog = [];
+const closeLog = [];
 
 // 模块 mock 必须先于 tools.mjs 导入注册（按解析后 URL 拦截嵌套 import）
 mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', {
@@ -26,7 +27,10 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.mjs', {
       execLog.push(cmd);
       return { stdout: 'STUB', exitCode: 0 };
     },
-    closeSession: async () => true,
+    closeSession: async (ws, username) => {
+      closeLog.push({ ws, username });
+      return true;
+    },
     uploadFileWithSession: async () => ({ ok: true, remote_path: 'stub' }),
     uploadProjectWithSession: async () => ({ ok: true }),
     deployNginx: async () => ({ ok: true, port: 8080 }),
@@ -66,6 +70,28 @@ test('callTool connect: invalid pool_type returns structured guidance instead of
   assert.equal(result.ok, false);
   assert.equal(result.code, 'HDKIT_INVALID_POOL_TYPE');
   assert.match(result.message, /invalid pool_type/);
+});
+
+test('callTool connect: legacy template_id is rejected and never sent', async () => {
+  forgetWorkspacePool();
+  const originalFetch = global.fetch;
+  let fetchCalled = false;
+  global.fetch = async () => {
+    fetchCalled = true;
+    return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  };
+  try {
+    const result = await callTool('huaweicloud_sandbox_connect', {
+      pool_type: 'ephemeral',
+      template_id: 'legacy-tpl',
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_INVALID_REQUEST');
+    assert.match(result.message, /template_id 已不再支持/);
+    assert.equal(fetchCalled, false);
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test('callTool connect: 429 quota-exceeded remediation survives the MCP boundary', async () => {
@@ -111,6 +137,99 @@ test('callTool connect: capacity-insufficient shows exactly the server message (
   }
 });
 
+test('callTool connect: template-quota-exceeded returns structured copy without remediation or retryAfter', async () => {
+  const finalCopy = '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+  const restore = withFetchResponse(
+    { code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED', message: finalCopy },
+    { status: 429, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_connect', { pool_type: 'ephemeral' });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+    assert.equal(result.message, finalCopy);
+    assert.equal(result.remediation, undefined, 'template quota copy must not be wrapped in remediation');
+    assert.equal(result.retryAfter, undefined, 'template quota has no Retry-After');
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: closes via hdkitservice and returns status', async () => {
+  const restore = withFetchResponse(
+    { devStageId: 'ws1', status: 'shutting_down', message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒' },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { dev_stage_id: 'ws1' });
+    assert.equal(result.ok, true);
+    assert.equal(result.devStageId, 'ws1');
+    assert.equal(result.status, 'shutting_down');
+    assert.equal(result.message, '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒');
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: not-found returns structured code', async () => {
+  const restore = withFetchResponse(
+    { code: 'HDKIT_SANDBOX_NOT_FOUND', message: '环境不存在或已被删除' },
+    { status: 404, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { dev_stage_id: 'ws1' });
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_SANDBOX_NOT_FOUND');
+    assert.match(result.message, /环境不存在或已被删除/);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: session_id-only closes the returned workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = 'current-ws';
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-session',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { session_id: 'sess-1' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-session', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: workspace_id-only closes that workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = null;
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-fallback',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_shutdown', { workspace_id: 'ws-fallback' });
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-fallback', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
 test('callTool connect: version-too-old remediation survives the MCP boundary', async () => {
   const restore = withFetchResponse(
     {
@@ -152,6 +271,54 @@ test('callTool check_user: version-too-old returns structured guidance', async (
     assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
     assert.equal(result.minVersion, '1.1.13');
     assert.ok(result.remediation);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool sign_agreement: version gate is structured, autoUpgrade survives (#1117)', async () => {
+  const restore = withFetchResponse(
+    {
+      code: 'HDKIT_VERSION_TOO_OLD',
+      message: '插件版本过旧，请升级至正式版 1.1.13 及以上。',
+      clientVersion: '1.1.12',
+      minVersion: '1.1.13',
+    },
+    { status: 409, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_sandbox_sign_agreement', {});
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(result.clientVersion, '1.1.12');
+    assert.equal(result.minVersion, '1.1.13');
+    assert.ok(result.remediation, 'remediation must reach the tool result');
+    assert.ok(result.autoUpgrade, 'autoUpgrade must reach the tool result');
+    assert.match(result.remediation.steps.join(' '), /update --target <agent>/);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool voucher_status: version gate passes autoUpgrade through (#1117)', async () => {
+  const restore = withFetchResponse(
+    {
+      code: 'HDKIT_VERSION_TOO_OLD',
+      message: '插件版本过旧，请升级至正式版 1.1.13 及以上。',
+      clientVersion: '1.1.12',
+      minVersion: '1.1.13',
+    },
+    { status: 409, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = await callTool('huaweicloud_voucher_status', {});
+    assert.equal(result.claimed, false);
+    assert.equal(result.code, 'HDKIT_VERSION_TOO_OLD');
+    assert.equal(result.clientVersion, '1.1.12');
+    assert.equal(result.minVersion, '1.1.13');
+    assert.ok(result.remediation);
+    assert.ok(result.autoUpgrade, 'autoUpgrade must reach the tool result');
+    assert.equal(result.autoUpgrade.status, 'disabled');
   } finally {
     restore();
   }

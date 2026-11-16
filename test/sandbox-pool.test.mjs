@@ -8,7 +8,6 @@ process.env.HW_SANDBOX_POOL_CACHE_PATH = join(tmpdir(), `hw-sandbox-pool-test-${
 
 const {
   validatePoolType,
-  pinnedTemplateFor,
   rememberWorkspacePool,
   forgetWorkspacePool,
   poolContextFor,
@@ -36,21 +35,6 @@ test('validatePoolType rejects invalid values with guidance', () => {
   assert.throws(() => validatePoolType('persist_mode'), /invalid pool_type/);
 });
 
-// ── pinnedTemplateFor（运维钉扎，环境变量）──
-
-test('pinnedTemplateFor reads env and is empty by default', () => {
-  delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
-  assert.equal(pinnedTemplateFor('ephemeral'), '');
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'tpl-e';
-  process.env.HW_POOL_TEMPLATE_PERSISTENT = 'tpl-p';
-  assert.equal(pinnedTemplateFor('ephemeral'), 'tpl-e');
-  assert.equal(pinnedTemplateFor('persistent'), 'tpl-p');
-  assert.equal(pinnedTemplateFor(null), '');
-  delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
-});
-
 // ── workspace 池缓存与上下文 ──
 
 test('poolContextFor uses server-configured lifecycle and defaults when absent', () => {
@@ -64,6 +48,7 @@ test('poolContextFor uses server-configured lifecycle and defaults when absent',
   assert.equal(eph.poolLifecycle.idleDeleteMinutes, 60);
   assert.match(eph.persistenceHint, /30 分钟自动关机/);
   assert.match(eph.persistenceHint, /1 小时自动删除/);
+  assert.doesNotMatch(eph.persistenceHint, /核时|尽快关机/);
 
   rememberWorkspacePool('ws2', 'persistent');
   const per = poolContextFor('ws2');
@@ -72,6 +57,8 @@ test('poolContextFor uses server-configured lifecycle and defaults when absent',
   assert.equal(per.poolLifecycle.reclaimMinutes, 10080);
   assert.match(per.persistenceHint, /1 小时自动关机/);
   assert.match(per.persistenceHint, /7 天/);
+  assert.match(per.persistenceHint, /尽快关机/);
+  assert.match(per.persistenceHint, /核时/);
 
   // 服务端配置值优先于默认
   rememberWorkspacePool('ws3', 'ephemeral', {
@@ -131,6 +118,7 @@ test('enrichConnectResult broadcasts server-configured ephemeral lifecycle', () 
   assert.equal(result.pool.pool_type, 'ephemeral');
   assert.match(result.pool.ttl_hint, /45 分钟自动关机/);
   assert.match(result.pool.ttl_hint, /2 小时自动删除/);
+  assert.doesNotMatch(result.pool.ttl_hint, /核时|尽快关机/);
   assert.match(result.pool.lifecycle, /45min/);
 });
 
@@ -145,6 +133,8 @@ test('enrichConnectResult broadcasts persistent lifecycle on server echo', () =>
   assert.equal(result.pool.pool_type, 'persistent');
   assert.match(result.pool.ttl_hint, /闲置 1 小时自动关机/);
   assert.match(result.pool.ttl_hint, /7 天/);
+  assert.match(result.pool.ttl_hint, /尽快关机/);
+  assert.match(result.pool.ttl_hint, /核时/);
 });
 
 test('enrichConnectResult supports camelCase lifecycle echo (wire naming drift guard)', () => {
@@ -164,9 +154,9 @@ test('enrichConnectResult suppresses the hint when announce=false (reuse)', () =
   assert.equal(result.pool, undefined);
 });
 
-test('enrichConnectResult adds nothing without server pool echo (custom template / old server)', () => {
-  const custom = enrichConnectResult({ session_id: 's1', template_id: 'custom' });
-  assert.equal(custom.pool, undefined);
+test('enrichConnectResult adds nothing without server pool echo (old server)', () => {
+  const oldServerNoEcho = enrichConnectResult({ session_id: 's1', template_id: 'custom' });
+  assert.equal(oldServerNoEcho.pool, undefined);
 
   const oldServer = enrichConnectResult({ session_id: 's1' });
   assert.equal(oldServer.pool, undefined);
@@ -193,6 +183,7 @@ test('buildExposeLifetimeNotice renders ephemeral URL lifetime with tunnel expir
   assert.match(notice.urlLifetimeHint, /闲置 30 分钟自动关机/);
   assert.match(notice.urlLifetimeHint, /闲置 1 小时自动删除/);
   assert.match(notice.urlLifetimeHint, /隧道有效期 72 小时/);
+  assert.doesNotMatch(notice.urlLifetimeHint, /核时|尽快关机/);
   assert.match(notice.warning, /URL 存活期提示/);
 });
 
@@ -214,6 +205,8 @@ test('buildExposeLifetimeNotice renders persistent URL lifetime (data retained o
   assert.match(notice.urlLifetimeHint, /闲置 1 小时自动关机/);
   assert.match(notice.urlLifetimeHint, /实例与数据盘保留/);
   assert.match(notice.urlLifetimeHint, /隧道有效期 720 小时/);
+  assert.match(notice.urlLifetimeHint, /尽快关机/);
+  assert.match(notice.urlLifetimeHint, /避免持续消耗核时/);
 });
 
 test('buildExposeLifetimeNotice returns undefined when pool semantics are unknown', () => {

@@ -1,6 +1,6 @@
 ---
 name: huawei-sandbox
-description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application, backend service, or full-stack workbench. Covers sandbox lifecycle (check-user, sign-agreement, connect, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, backend service, 工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
+description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a task needs a temporary runtime to deploy, run, or preview a web application, backend service, or full-stack workbench. Covers sandbox lifecycle (check-user, sign-agreement, connect, shutdown, credentials), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, backend service, 工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
 version: 1
 ---
 
@@ -43,6 +43,40 @@ Hard rules:
 - **Pre-code checkpoint (MANDATORY)**: before uploading or writing ANY application code, verify the backend choice matches this gate. If an SPA-only deployment already started and persistence turns out to be implied, STOP, tell the developer, and redirect to the full-stack path — do not paper over it with a bolted-on static backend.
 - After the choice: PostgREST → follow [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) **FIRST** (backend before any frontend code), then continue with the web deployment steps; 自带后端 / 纯静态 → continue with [Web Application Deployment](#web-application-deployment).
 
+## Pool-Selection Gate (MANDATORY — do not skip)
+
+Before `huaweicloud_sandbox_connect`, select the pool by **task intent**, not by tech stack. Default is `ephemeral`.
+
+### 1. Default ephemeral
+
+- Preview / demo / trial / one-off / sensitive burn-after-use → `ephemeral`, even for full-stack or DB-backed projects.
+- A DB/full-stack stack is only a capability hint; it does not by itself require persistence.
+
+### 2. Persistent only with explicit or confirmed long-term intent
+
+Use `persistent` only when:
+
+- the developer explicitly says long-term / cross-day / resume later / keep data / development workbench; or
+- you infer a workbench/long-term task from the conversation, but the developer did not say it explicitly → ask once before connecting.
+
+If the intent is ambiguous, ask exactly one question:
+
+> 这个任务需要跨会话保留数据吗？① 临时预览/一次性（默认，非持久化） ② 长期/跨天继续（持久化）
+
+### 3. Task continuity
+
+- Same task / same deployment follow-up: keep the current pool; do not re-evaluate mid-task.
+- New task: re-evaluate. A new preview stays `ephemeral` even if a persistent sandbox already exists.
+- If the new preview might reuse the existing environment/data, ask once:
+  > 已有持久化沙箱，是否直接复用（保留现有环境/数据），还是新建临时预览环境？
+- Switching pools does not migrate data; tell the developer.
+
+### 4. Never
+
+- Never select `persistent` merely because the project is full-stack or DB-backed.
+- Never switch pool silently mid-task.
+- Never ask the pool question when the intent is already explicit.
+
 ## Overview
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
@@ -51,30 +85,40 @@ Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace t
 
 > 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状；数值为服务端配置下发的默认口径，平台调参以服务端回显为准）。
 
-`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
+`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**；客户端不再支持传 template_id/自定义模板）：
+
+> 下表生命周期数值仅用于内部选池与诊断：ephemeral 不向开发者播报；persistent 只播报沙箱生命周期与核时提醒，不播报隧道有效期/自动续期。
 
 | pool_type           | 语义               | 生命周期（平台策略）                                         | 适用                        |
 | ------------------- | ------------------ | ------------------------------------------------------------ | --------------------------- |
 | `ephemeral`（默认） | 非持久沙箱         | 闲置 30 分钟自动关机 + 闲置 1 小时自动删除（平台定时任务）   | 临时运行/预览，勿存重要数据 |
 | `persistent`        | 持久沙箱（EVS 盘） | 数据跨关机保留；闲置 1 小时自动关机；闲置回收保留期上限 7 天 | 需要跨会话保留数据          |
 
-Selection rules（agent 按意图自动选池，开发者可覆盖；意图不明确时呈现两类供选择）：
+Selection rules（按意图自动选池；具体按 [Pool-Selection Gate](#pool-selection-gate-mandatory--do-not-skip) 执行；默认 `ephemeral`，`persistent` 需明确长期意图或确认；开发者可覆盖）：
 
-| 意图 / 场景               | pool_type  | 理由                                |
-| ------------------------- | ---------- | ----------------------------------- |
-| 预览 / 试用 / demo        | ephemeral  | 用完即弃，无需保留状态              |
-| 一次性任务（跑完即弃）    | ephemeral  | 结果带出沙箱；实例随闲置回收        |
-| 敏感内容（即焚）          | ephemeral  | 闲置 1 小时自动删除，数据随实例消亡 |
-| 开发工作台 / workbench    | persistent | 会话跨天；状态需跨关机保留          |
-| 带数据库项目（DB-backed） | persistent | 数据落在挂载的 EVS 盘（32G）        |
-| 跨日评审 / 展示           | persistent | 评审者后续日期回访；实例保留        |
+| 意图 / 场景                  | pool_type  | 理由                                   |
+| ---------------------------- | ---------- | -------------------------------------- |
+| 预览 / 试用 / demo           | ephemeral  | 用完即弃，无需保留状态                 |
+| 一次性任务（跑完即弃）       | ephemeral  | 结果带出沙箱；实例随闲置回收           |
+| 敏感内容（即焚）             | ephemeral  | 闲置 1 小时自动删除，数据随实例消亡    |
+| 带数据库但只是预览/演示      | ephemeral  | 预览可重建数据；技术栈不是持久化触发器 |
+| 开发工作台 / workbench       | persistent | 会话跨天；状态需跨关机保留             |
+| 带数据库且需要跨会话保留数据 | persistent | 数据落在挂载的 EVS 盘（32G）           |
+| 跨日评审 / 展示              | persistent | 评审者后续日期回访；实例保留           |
 
+- **预览/一次性即使全栈/DB 也用 `ephemeral`**；技术栈不是持久化触发器
+- **`persistent` 只能来自明确长期意图，或推断后确认**；不得仅因 full-stack/DB 选 persistent
+- **同一任务沿用当前池**；新任务重新选型；新预览默认 `ephemeral`，必要时问一次是否复用已有 persistent
+- **切换池数据不迁移**
 - **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
-- **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`
-- **TTL 播报**：仅 connect（会话首次连接 / 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须转述 `urlLifetimeHint` / `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底
+- **429 三错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_TEMPLATE_QUOTA_EXCEEDED`（当前账号此类型沙箱运行中实例达上限，需关机/释放同类型实例后重试，无 `Retry-After`）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。`HDKIT_QUOTA_EXCEEDED` / `HDKIT_CAPACITY_INSUFFICIENT` 响应带 `Retry-After: 60`
+- **生命周期播报**：生命周期数值仅用于内部选池与诊断，不逐次播报。
+  - **ephemeral**：交付 URL 时只给 URL。不要提隧道/沙箱有效期、自动续期、闲置关机或删除，也不要建议迁移到持久沙箱或 OBS。例外：隧道无法持久时按 tunnel-persistence 小节的失败路径提示开发者“隧道将在会话结束后失效，请勿分享”；这不属于常规有效期播报。
+  - **persistent**：播报沙箱生命周期（闲置关机、数据盘保留、闲置回收上限），使用 `sandboxLifetime` / connect 的 `pool.ttl_hint` 口径；并提示“如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）”。不要播报 devbridge 隧道有效期或自动续期。
 - **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
+- **关机纪律**：仅当开发者明确要求关机时调用 `huaweicloud_sandbox_shutdown`；调用前确认一次，绝不自动关机。关机 ≠ 删除：只 close，不 delete，实例与 EVS 数据盘保留，下次 connect 自动唤醒。非持久化沙箱也可关机，但不主动提示；不要向开发者提“控制台关机”。
 - **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
-- 显式 `template_id` 优先于 `pool_type`（自定义模板场景）
+- 不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`
 - 完整口径、容量规划与 G 清单：[references/resource-pool.md](references/resource-pool.md)
 
 ## Activation
@@ -108,6 +152,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `huaweicloud_sandbox_connect`     | Connect to sandbox (one instance per user per pool; `pool_type` selects ephemeral/persistent, default ephemeral) |
 | `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                                                                    |
+| `huaweicloud_sandbox_shutdown`    | Shut down a running sandbox (close only; instance/data disk retained; reconnect wakes it)                        |
 
 ### Tunnel Persistence (public URL lifetime)
 
@@ -142,6 +187,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | Deployment completeness check      | `deploy_check`                     | Verifies nginx, DevBridge, URL, QR before reporting success  |
 | Tunnel lifetime renewal            | `renew_tunnel`                     | Rolling-window renewal, same URL stays alive                 |
 | URL must outlive the session       | `keepalive_watchdog`               | Unattended host re-attach + daily renewal + health check     |
+| 暂不使用 / 节省核时                | `sandbox_shutdown`                 | 只关机不删除；数据盘保留，下次 connect 自动唤醒              |
 | Single file upload (<1MB)          | `upload_file`                      | Base64 chunked, reliable for small files                     |
 | Project directory upload (>1MB)    | `upload_project`                   | HTTP tunnel, much faster than base64 for multi-file projects |
 
@@ -163,9 +209,9 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 
 **Step 0 — Target-Selection Gate (MANDATORY)**: before any sandbox lifecycle tool, confirm the target. If the developer asked to deploy/host/publish a site without naming a target, STOP and run the [Target-Selection Gate](#target-selection-gate-mandatory--do-not-skip) first; do NOT call `huaweicloud_sandbox_connect` until it is resolved. Proceed with this workflow only if the target is already confirmed as sandbox (or a temporary runtime).
 
-**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [两池沙箱（pool_type）](#两池沙箱pool_type) selection rules (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window (ephemeral: idle 30min shutdown + 1h delete; persistent: 7-day idle reclaim cap) before connecting.
+**Step 0.5 — Stack-Selection Gate (MANDATORY)**: before selecting a pool or uploading application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
 
-**Step 0.5 — Stack-Selection Gate (MANDATORY)**: before uploading or writing any application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
+**Step 0.6 — Pool-Selection Gate (MANDATORY)**: once the target is sandbox and the stack is known, select the pool per the [Pool-Selection Gate](#pool-selection-gate-mandatory--do-not-skip). Default `ephemeral`; use `persistent` only with explicit long-term intent or after confirmation. Same task reuses the current pool; a new task is re-evaluated. Check the task survives the chosen type's lifecycle window (ephemeral: idle 30min shutdown + 1h delete; persistent: 7-day idle reclaim cap) before connecting.
 
 Setup is a **plugin-side preflight** — the developer should be asked a question only once, when the agreement actually needs signing:
 
@@ -214,7 +260,7 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
 
 8. **Execute commands**: use `huaweicloud_sandbox_exec_with_session` for interactive work (cd, env setup), or `huaweicloud_sandbox_exec_one_shot` for long-running builds/installs. See [Tool Selection Guide](#tool-selection-guide).
 9. **Upload project** (if deploying local code): `huaweicloud_sandbox_upload_project` to transfer a local project directory into `/workspace/<name>` — uses HTTP tunnel, much faster than base64 for multi-file projects. Use `huaweicloud_sandbox_upload_file` for single files.
-10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer. **Every URL handoff MUST include the sandbox-lifetime notice from `urlLifetimeHint` (or `warnings`)**: the address dies when the sandbox idles out (ephemeral: shutdown/delete; persistent: shutdown, data retained), and the tunnel expiry is not the sandbox lifetime
+10. **Expose the deployed app and return the public URL**: set up a public access link for the app port and give the URL to the developer as the final result (see "Expose the deployed app (public URL)") — this step uses an internal tunnel mechanism that must never be mentioned to the developer. For **ephemeral** sandboxes, hand over the URL only: do not include tunnel/sandbox lifetime, auto-renewal, idle shutdown/delete, or migration suggestions. For **persistent** sandboxes, include only the sandbox lifecycle notice (idle shutdown, data retained, reclaim cap); do not include tunnel expiry or auto-renewal
 
 ## File Transfer (local → sandbox)
 
@@ -480,7 +526,7 @@ sleep 10 && cat /tmp/host.log
 This eliminates the most common deployment failure — historical tunnels from previous sessions accumulating past the max=10 quota.
 
 - The public URL has the form `https://<id>-<port>.devbridge-s2.hwtunnel.com` (from the `Tunnel URL:` line; 8-char lowercase base32 id). The pre-migration bridge domain `cn-north-4-bridge.myhuaweicloud.com` is dead — treat any URL on it as broken and never hand one to the developer.
-- **Start the host so it survives the exec session**: `setsid nohup ... < /dev/null & disown` (all three: setsid detaches the process group, `< /dev/null` drops the controlling tty, disown removes it from the shell's job table). On images without `setsid`, fall back to a bare `nohup ... &` launch (`if command -v setsid ...; else nohup ... ; fi`) and guard `disown` with `2>/dev/null || true` — a missing `setsid` must not leave the host unstarted. A bare `nohup ... &` (when `setsid` IS available) is reaped when the one-shot session ends — the tunnel dies right after a green in-session health check (the "200 but tunnel not found" trap). If the independent re-verify fails or answers 200 with a "tunnel not found" body, the URL is NOT persistent — always tell the developer 隧道将在会话结束后失效，请勿分享. `-e 72` sets the tunnel lifetime in **hours** — surface it to the developer with the URL ("链接有效期 72 小时").
+- **Start the host so it survives the exec session**: `setsid nohup ... < /dev/null & disown` (all three: setsid detaches the process group, `< /dev/null` drops the controlling tty, disown removes it from the shell's job table). On images without `setsid`, fall back to a bare `nohup ... &` launch (`if command -v setsid ...; else nohup ... ; fi`) and guard `disown` with `2>/dev/null || true` — a missing `setsid` must not leave the host unstarted. A bare `nohup ... &` (when `setsid` IS available) is reaped when the one-shot session ends — the tunnel dies right after a green in-session health check (the "200 but tunnel not found" trap). If the independent re-verify fails or answers 200 with a "tunnel not found" body, the URL is NOT persistent — always tell the developer 隧道将在会话结束后失效，请勿分享. `-e 72` sets the tunnel lifetime in **hours**; it is an internal setting and must not be surfaced to the developer.
 - **Return this URL to the developer as the deployment result link.** Keep the host process running (do not close the session before handing over the URL).
 - Tunnel `description` (`-d`) accepts only Chinese characters, letters, and digits (0-64). Symbols such as `-`/`_`/spaces are rejected (`Invalid tunnel description`).
 - Official docs: https://huaweicloud.github.io/devspace-devbridge/

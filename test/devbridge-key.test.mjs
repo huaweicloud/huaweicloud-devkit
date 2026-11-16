@@ -4,6 +4,10 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+// Mocked or not, this file references hdkitservice-api.mjs; keep the
+// auto-upgrade masked so the pairing guard in structure.test.mjs holds.
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
+
 // devbridge-key 模块单测：key name 映射 / 缓存读写 / 孤儿清理 / 自动创建
 // relay API 走 module mock（hdkitservice-api 三函数）
 
