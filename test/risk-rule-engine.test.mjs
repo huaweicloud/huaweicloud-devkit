@@ -398,3 +398,42 @@ test('evaluateArtifacts does not flag HCL Deny effect (#1066 D4-21)', () => {
     'Deny effect must not trigger the admin-policy rule',
   );
 });
+
+// The broad-action branch of hwc-iam-admin-policy requires an explicit
+// `Effect: Allow`, so artifacts that reference a named administrator managed
+// policy (AdministratorAccess/FullAccess ARN) without any Effect statement
+// slipped through as `allow`. Those references grant admin by themselves and
+// are covered by the dedicated hwc-iam-admin-managed-policy rule.
+
+test('evaluateArtifacts denies administrator managed policy references (#1066 D4-21)', () => {
+  for (const [label, content] of [
+    ['arn + FullAccess', 'arn:aws:iam::aws:policy/AdministratorAccess FullAccess'],
+    ['policy_arn assignment', 'resource "x" "y" {\n  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"\n}'],
+    [
+      'FullAccess role name',
+      'resource "huaweicloud_identity_role_assignment" "r" {\n  role_name = "DMS FullAccess"\n}',
+    ],
+  ]) {
+    const result = evaluateArtifacts([{ path: 'role.tf', content }]);
+    assert.equal(result.decision, 'deny', `${label} should deny`);
+    assert.equal(
+      result.findings.some((f) => f.ruleId === 'hwc-iam-admin-managed-policy'),
+      true,
+      `${label} should be reported by hwc-iam-admin-managed-policy`,
+    );
+  }
+});
+
+test('evaluateArtifacts does not flag scoped managed policy references (#1066 D4-21)', () => {
+  for (const content of [
+    'resource "x" "y" {\n  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"\n}',
+    'resource "x" "y" {\n  role_name = "ECS ReadOnlyAccess"\n}',
+  ]) {
+    const result = evaluateArtifacts([{ path: 'scoped.tf', content }]);
+    assert.equal(
+      result.findings.some((f) => f.ruleId === 'hwc-iam-admin-managed-policy'),
+      false,
+      'read-only managed policy references must not trigger the admin managed-policy rule',
+    );
+  }
+});
