@@ -324,6 +324,84 @@ test('the roster exemption admits each roster member by its OWN payload shape: t
   }
 });
 
+test('the structured shape rows never fall to the transition fallback: a present row means no exemption (PR-3a F3)', () => {
+  // Both seats drove the smuggle: a present-but-unknown shape row fell to
+  // the transition fallback, which ADMITS the two devkit payload classes
+  // on the exact roster name — so sign_agreement carrying a command
+  // string ('rm -rf') and connect carrying an hcloud-write argv both
+  // exempted at the hook layer and reached the server gate. The fix: a
+  // present row the hook does not exempt returns NO class, full
+  // classification stands, and the fallback exists only for a MISSING row
+  // (an older leaf, the landing transition) — exactly the doctrine
+  // comment's own words. This test drives the REAL roster leaf (the src
+  // fallback carries the shipped rows), so the six 'structured' tools and
+  // the two 'commandString' faces behave as shipped.
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-hook-structured-'));
+  try {
+    copyHookFixture(dir);
+    assert.ok(
+      !existsSync(join(dir, 'dist')),
+      'fixture must not contain dist: the src fallback carries the real roster',
+    );
+
+    // A stuffed command string on a structured lifecycle name denies: full
+    // classification runs, and 'rm -rf /tmp/x' is destructive.
+    assert.equal(
+      runFixtureHook(dir, {
+        tool_name: 'huaweicloud_sandbox_sign_agreement',
+        tool_input: { command: 'rm -rf /tmp/x' },
+      }),
+      'deny',
+      'sign_agreement + a stuffed command string never exempts',
+    );
+    // A stuffed hcloud-write argv on a structured lifecycle name denies.
+    assert.equal(
+      runFixtureHook(dir, {
+        tool_name: 'huaweicloud_sandbox_connect',
+        tool_input: { args: ['hcloud', 'ECS', 'DeleteServer', '--server_id=i-1'] },
+      }),
+      'deny',
+      'connect + an hcloud-write argv never exempts',
+    );
+    // The REAL payload shapes of the structured tools classify clean and
+    // reach the server gate (allow at the hook layer).
+    assert.equal(
+      runFixtureHook(dir, { tool_name: 'huaweicloud_sandbox_sign_agreement', tool_input: {} }),
+      'allow',
+      'the real empty payload passes to the server gate',
+    );
+    assert.equal(
+      runFixtureHook(dir, {
+        tool_name: 'huaweicloud_sandbox_connect',
+        tool_input: { vendorConfirmed: 'test: vendor established' },
+      }),
+      'allow',
+      'the real connect payload passes to the server gate',
+    );
+    // The commandString faces keep their exemption (the server gate's
+    // classified flow owns the command content), and the run face keeps
+    // its args-array exemption.
+    assert.equal(
+      runFixtureHook(dir, {
+        tool_name: 'huaweicloud_sandbox_exec_one_shot',
+        tool_input: { command: 'hcloud ECS DeleteServer --server_id=i-1', workspace_id: 'ws-1' },
+      }),
+      'allow',
+      'the exec commandString face still exempts',
+    );
+    assert.equal(
+      runFixtureHook(dir, {
+        tool_name: 'huaweicloud_run_approved_command',
+        tool_input: { args: ['hcloud', 'ECS', 'DeleteServer', '--server_id=i-1'], approvedByUser: true },
+      }),
+      'allow',
+      'the run face keeps its args-array exemption',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('node hook denies fail-closed when classification itself throws (corrupt rules file, interrogate round 2)', () => {
   // The load-time guard covers DEFAULT_POLICY only; a truncated
   // cloud-risk-rules.json kills risk-rule-engine's JSON.parse INSIDE

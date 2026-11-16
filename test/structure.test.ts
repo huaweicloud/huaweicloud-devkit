@@ -266,37 +266,37 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   // "exec runs commands" without the gate contract teaches the model to
   // fight the refusal instead of driving the confirmation. The guard pins
   // the sandbox skill's gate section and the safety skill's
-  // registered-tools wording, the memo, and the standing consent.
+  // registered-tools wording, the memo, and the standing consent. The
+  // roster list is DERIVED from the roster leaf (one line per member) so
+  // the sibling registrations' rebases must update it, never outgrow it.
   const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
   assert.match(sandboxSkill, /## Approval gate \(the eight mutating tools\)/);
   assert.match(sandboxSkill, /USER_CONFIRMATION_REQUIRED/);
   assert.match(sandboxSkill, /retry-uncertain/, 'the sandbox skill names the retry memo carrier');
   assert.match(sandboxSkill, /standing-session/, 'the sandbox skill names the standing-consent carrier');
-  // The exec doctrine: benign runs ungated, destructive refuses outright.
+  // The exec doctrine: benign runs ungated, and the refusal coverage is
+  // the ENGINE's real enumeration — never an "outright" overclaim.
   assert.match(sandboxSkill, /NO confirmation surface at all/);
-  assert.match(sandboxSkill, /no approval unlocks them, ever/);
+  assert.match(sandboxSkill, /no confirmation able to unlock it/, 'the refusal coverage names its own boundary');
+  assert.match(
+    sandboxSkill,
+    /Other destructive-shaped commands the engine does not enumerate still CONFIRM/,
+    'the un-enumerated destructive class confirms, never overclaimed as refused',
+  );
 
   const approvals = readSource(
     join('src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'references', 'approvals.md'),
   );
   assert.match(approvals, /The registered tools today/, 'the approvals reference names the registered roster');
-  for (const gated of [
-    'huaweicloud_sandbox_connect',
-    'huaweicloud_sandbox_exec_with_session',
-    'huaweicloud_sandbox_exec_one_shot',
-    'huaweicloud_sandbox_expose_tunnel',
-    'huaweicloud_sandbox_renew_tunnel',
-    'huaweicloud_sandbox_keepalive_watchdog',
-    'huaweicloud_sandbox_sign_agreement',
-    'huaweicloud_sandbox_credentials',
-  ]) {
-    assert.ok(approvals.includes(gated), `the approvals reference lists ${gated}`);
+  for (const tool of APPROVAL_TOOLS) {
+    assert.ok(approvals.includes(`\`${tool}\``), `the approvals reference lists ${tool} per the roster leaf`);
   }
   assert.match(approvals, /## The retry memo \(uncertain delivery\)/);
   assert.match(approvals, /approvedVia: "retry-uncertain"/);
   assert.match(approvals, /Remember for this session/);
   assert.match(approvals, /approvedVia: "standing-session"/);
-  assert.match(approvals, /the strict classification still arbitrates content after the confirm/);
+  assert.match(approvals, /no confirmation unlocks those/, 'the refusal class is the enumerated one');
+  assert.match(approvals, /still confirm per call/, 'the un-enumerated destructive class confirms');
 });
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {

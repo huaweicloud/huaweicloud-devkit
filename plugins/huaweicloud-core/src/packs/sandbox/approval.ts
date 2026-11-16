@@ -3,6 +3,7 @@ import { hashArgs } from '../../lib/approval-tokens.ts';
 import { classifyTextCommand, redactSecrets } from '../../safety-policy.ts';
 import { evaluateCommandRisk, loadRiskRules, type RiskCatalog } from '../../risk-rule-engine.ts';
 import { redactWithSupplementalKeys } from '../../lib/supplemental-redaction.ts';
+import { isSecretRef } from '../../lib/secret-vault/refs.ts';
 import type { ApprovalSpec } from '../../approval-types.ts';
 import type { ToolArgs } from '../../tools.ts';
 
@@ -163,6 +164,18 @@ function execSpec(toolShortName: 'exec_with_session' | 'exec_one_shot'): Approva
     flavor: 'classified',
     classify: (bindingValue) => rulingForBinding(bindingValue).verdict,
     assertArgsExecutable: (bindingValue) => assertCommandAllowed(bindingValue),
+    // The command IS the content, and the confirmation surfaces display it,
+    // so it anchors itself: provided must equal the binding's own command
+    // (it always does when the call is honest — the binding derives from
+    // the args). The anchor exists so the no-anchor refusal shape (a
+    // stuffed command on a tool that declares no displayable line) never
+    // kills the exec faces after the serial landing (the anchor-collision
+    // decision): the exec calls are anchored, the six lifecycle faces are
+    // not and refuse a stuffed command.
+    commandAnchor: (bindingValue) => {
+      const command = (bindingValue as Record<string, unknown>).command;
+      return typeof command === 'string' && command !== '' ? [command] : [];
+    },
     summarize: (bindingValue) => execView(toolShortName, bindingValue),
   };
 }
@@ -230,13 +243,32 @@ const signAgreementSpec: ApprovalSpec = {
 const credentialsSpec: ApprovalSpec = {
   ...sandboxBinding(),
   flavor: 'always',
-  summarize: (bindingValue) =>
-    viewOf(bindingValue, (view) => {
+  summarize: (bindingValue) => {
+    // Name the api_key's delivery channel — never its value (interrogate
+    // F6): a vault ref is itself conversation-safe (that is the ref
+    // doctrine), the parameter channel is named with the value redacted by
+    // the pin-view pass, and the environment channel is named when the
+    // handler's preferred tier is set. The substance the user confirms is
+    // WHICH credential enters the sandbox, and a ref or a channel is that
+    // fact.
+    const rawApiKey = asText(asRecordView(bindingValue).api_key ?? '');
+    const channel =
+      rawApiKey !== ''
+        ? isSecretRef(rawApiKey)
+          ? `api_key via vault ref ${rawApiKey}`
+          : 'api_key via parameter (value redacted)'
+        : process.env.HW_API_KEY
+          ? 'api_key via environment'
+          : '';
+    return viewOf(bindingValue, (view) => {
       const target = fieldEcho(view, ['session_id', 'dev_stage_id', 'enable_sts']);
-      return `huaweicloud_sandbox_credentials: validate and inject temporary credentials into the sandbox${
-        target !== '' ? ` (${target})` : ''
-      }`;
-    }),
+      const scope = target !== '' ? ` (${target})` : '';
+      return (
+        `huaweicloud_sandbox_credentials: validate and inject temporary credentials into the sandbox${scope}` +
+        (channel !== '' ? `; ${channel}` : '')
+      );
+    });
+  },
 };
 
 export const SANDBOX_APPROVAL_SPECS = {

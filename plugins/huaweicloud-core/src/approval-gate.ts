@@ -29,7 +29,7 @@ import type { ToolArgs, CallToolOptions } from './tools.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
 import { huaweiConfigBase } from './lib/state-dir.ts';
-import { annotateDispatchOutcome, recordAskModeConsent, retryMemoCovers } from './approval-ledger.ts';
+import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
 import type { ApprovalSpec, ConsentDeliveryOutcome, ElicitFormRequest, ElicitOutcome } from './approval-types.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
@@ -47,8 +47,22 @@ import type { ApprovalSpec, ConsentDeliveryOutcome, ElicitFormRequest, ElicitOut
 // for them.
 export type ApprovalReuseVia = 'retry-uncertain' | 'standing-session';
 
+// The consent row's scope for the arrival the pass represents, threaded to
+// the dispatch recorder: 'once' for fresh confirmations and memo reuses
+// (the memo keys on these arrivals' delivery outcome), 'session' for the
+// standing-consent tick (a scope-'session' grant must never arm the retry
+// memo), absent for standing rides (no row was written).
+export type ApprovalConsentScope = 'once' | 'session';
+
 export type ApprovalGateOutcome =
-  | { pass: { arrivalStamp?: number; arrivalSeq?: number; approvedVia?: ApprovalReuseVia } }
+  | {
+      pass: {
+        arrivalStamp?: number;
+        arrivalSeq?: number;
+        approvedVia?: ApprovalReuseVia;
+        consentScope?: ApprovalConsentScope;
+      };
+    }
   | { envelope: Record<string, unknown> };
 
 export const NO_SESSION_SEAM_ERROR =
@@ -71,8 +85,22 @@ export const COMMAND_REQUIRES_ARGS = 'COMMAND_REQUIRES_ARGS';
 
 function commandAnchorRefusal(spec: ApprovalSpec, value: unknown, provided: unknown): Record<string, unknown> | null {
   if (provided === undefined) return null; // the legacy args-only shape
-  const expected = spec.commandAnchor?.(value) ?? [];
-  if (expected.length === 0) return null; // this tool declares no executable line
+  // A tool that declares no anchorable line refuses a `command` field
+  // outright: the field exists to carry the line the user reads, and on a
+  // no-anchor tool it is a stuffed display field (the serial landing's
+  // no-anchor refusal, adopted here so the exec faces — which DO anchor
+  // their own command — and the six lifecycle faces behave as their
+  // registrations say from this PR on).
+  if (spec.commandAnchor === undefined) {
+    return {
+      status: 'rejected',
+      code: COMMAND_ARGS_MISMATCH,
+      reason: 'this tool declares no displayable command line, so a command field is not accepted for it.',
+      nextStep: 'Remove the command field and send the call as the schema defines it.',
+    };
+  }
+  const expected = spec.commandAnchor(value);
+  if (expected.length === 0) return null; // this call declares no executable line
   if (typeof provided !== 'string' || provided.trim() === '') {
     return {
       status: 'rejected',
@@ -81,8 +109,13 @@ function commandAnchorRefusal(spec: ApprovalSpec, value: unknown, provided: unkn
       nextStep: 'Send command as the exact line the args execute, or omit it for the legacy args-only shape.',
     };
   }
-  const hasArgs = Array.isArray(value) && value.length > 0;
-  if (!hasArgs) {
+  // The args-display shape (the run face): the command field anchors an
+  // ARGS call, so an EMPTY args array cannot carry it. Self-anchored
+  // registrations (the sandbox exec faces, whose binding is the object
+  // carrying the command content itself) never take this check — their
+  // anchor derives from the binding, not from an argv beside it, and their
+  // object binding is not the args-array display shape at all.
+  if (Array.isArray(value) && value.length === 0) {
     return {
       status: 'rejected',
       code: COMMAND_REQUIRES_ARGS,
@@ -419,6 +452,40 @@ export function askEnvelopeLive(sessionId: string, tool: string, argsHash: strin
   return live.has(argsHash);
 }
 
+// ── The S1 retry memo (PR-3a, interrogate round 2: in-memory) ─────────────
+//
+// A byte-identical repeat after a NON-DELIVERED outcome reuses the prior
+// consent. The memo's state is the IN-MEMORY record of what the last
+// 'once'-scoped consent's dispatch did — armed by the dispatch recorder
+// from the COMPUTED outcome (uncertain/failed arm it, delivered clears it),
+// never read back from the ledger. Three properties fall out, each pinned:
+// the annotate is best-effort and may fail to write its outcome line, but
+// the memo keys on the computed truth, so an unannotated delivered row
+// never arms a reuse (round-2 F5); the state dies with the process like
+// the T3 binding and the standing map, so a consent whose session ended
+// can never arm a cross-process execution (DECISION 3, seat B's F6); and
+// only 'once'-scoped arrivals feed it — a standing-consent tick's failed
+// dispatch is the grant's own lifecycle, not memo fuel (F4).
+const retryMemos = new Map<string, Map<string, boolean>>();
+
+function memoScope(sessionId: string, tool: string): string {
+  return `${sessionId}\u0000${tool}`;
+}
+
+/** The dispatch recorder's arm/clear seam: one 'once' consent's outcome. */
+export function noteRetryMemo(sessionId: string, tool: string, argsHash: string, covering: boolean): void {
+  const scope = memoScope(sessionId, tool);
+  const live = retryMemos.get(scope) ?? new Map<string, boolean>();
+  live.set(argsHash, covering);
+  retryMemos.set(scope, live);
+}
+
+/** True when the last 'once' consent on this exact key did not deliver. */
+export function retryMemoArmed(sessionId: string, tool: string, argsHash: string): boolean {
+  const scope = memoScope(sessionId, tool);
+  return retryMemos.get(scope)?.get(argsHash) === true;
+}
+
 // ── S3 session standing consent (PR-3a) ────────────────────────────────────
 //
 // The elicitation form's "Remember for this session" tick grants standing
@@ -597,20 +664,23 @@ export async function runApprovalGate(
   // DEVKIT_APPROVAL_MODE is boot fail-fast, never a silent fallback.
   const approvalMode = approvalModeFromEnv(process.env);
 
-  // The approvedByUser attestation precedes every gate effect in token mode
-  // and on the legacy ask-mode shape (the trunk contract exactly as the
-  // hcloud battery pins it). Ask mode on a PR-3 'gate' registration is the
-  // server-run ladder instead (PR-1.5): EVERY arrival is server-run — the
-  // registration has no pre-ladder legacy contract to preserve, and its
-  // six no-command faces would otherwise die on the attestation throw
-  // before any form or envelope could fire. On the plan-face tool the
-  // ladder stays keyed to the command-forward shape exactly as PR-1.5
-  // pinned it: a capable client's call is confirmed by the form the gate
-  // raises, and a non-capable client's unattested call is answered with
-  // the T3 envelope that asks for the very attestation the retry then
-  // carries. Throwing here would silence both.
+  const token = typeof args.approvalToken === 'string' ? args.approvalToken : '';
+
+  // The attestation's scope (PR-3b's adopted line, landed here so the
+  // registrations' teaching is true at landing): the plan-face tool always
+  // demands it (the trunk contract the hcloud battery pins), and EVERY
+  // tool demands it once a token rides the call — the token's spend is the
+  // confirmed execution, so the agent's statement is part of that
+  // contract. A gate-source tool's FIRST no-token call is exempt, so the
+  // mint envelope the teaching promises (USER_CONFIRMATION_REQUIRED with
+  // the approve line) is what the first caller actually receives. Ask
+  // mode keeps the server-run ladder's own contract untouched: a
+  // command-forward or gate-source arrival is confirmed by the form or
+  // the envelope the gate raises, and the legacy plan-face shape keeps its
+  // pinned attestation throw.
+  const attestationRequired = spec.tokenSource === 'plan-face' || token !== '';
   const serverRunArrival = approvalMode === 'ask' && (spec.tokenSource === 'gate' || args.command !== undefined);
-  if (args.approvedByUser !== true && !serverRunArrival) {
+  if (args.approvedByUser !== true && attestationRequired && !serverRunArrival) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
 
@@ -638,11 +708,13 @@ export async function runApprovalGate(
     if (classifiedPass) return { pass: {} };
 
     const view = spec.summarize(value);
-    // The display line: the validated command field when the caller sent it
-    // (the command-forward shape), else the summarize view's redacted echo
-    // (the legacy shape keeps executing, it just shows the redacted line;
-    // the six no-command lifecycle faces show the summary alone).
-    const commandLine = typeof args.command === 'string' && args.command !== '' ? args.command : (view.command ?? '');
+    // The display line every confirmation surface shows: the REDACTED
+    // view.command — the same redaction the pin view carries — never the
+    // raw args.command the anchor validated (interrogate F1: the form head
+    // and the T3 envelope echoed a plaintext secret from the raw field).
+    // The legacy args-only shape keeps its redacted echo; the six
+    // no-command lifecycle faces show the summary alone.
+    const commandLine = view.command ?? '';
     const sessionId = opts.sessionId ?? 'default';
     const consented = (evidence: 'elicitation' | 'posture'): ApprovalGateOutcome => {
       const arrival = recordAskModeConsent({
@@ -659,7 +731,9 @@ export async function runApprovalGate(
       // annotate binds the outcome line to EXACTLY the row this arrival
       // wrote, never to a positional candidate (a same-ms twin compacted in
       // behind used to steal the line).
-      return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
+      return {
+        pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'once' },
+      };
     };
 
     // S3 standing consent: a grant the user ticked covers identical later
@@ -678,10 +752,10 @@ export async function runApprovalGate(
     // silently degrading to a fresh chat round-trip). The reuse row
     // inherits the original's evidence tier through the ledger's
     // never-upgrade resolution (the caller's tier is only the no-original
-    // fallback, so the posture floor holds), and the arrival identity rides
+    // fallback, so the posture floor holds), the arrival identity rides
     // the pass so this dispatch's own outcome re-arms or clears the memo
-    // for the next identical call.
-    if (retryMemoCovers(sessionId, name, view.argsHash)) {
+    // for the next identical call, and the consent scope stays 'once'.
+    if (retryMemoArmed(sessionId, name, view.argsHash)) {
       const arrival = recordAskModeConsent({
         sessionId,
         tool: name,
@@ -695,6 +769,7 @@ export async function runApprovalGate(
           approvedVia: 'retry-uncertain',
           arrivalStamp: arrival.grantedAt,
           arrivalSeq: arrival.arrivalSeq,
+          consentScope: 'once',
         },
       };
     }
@@ -716,7 +791,10 @@ export async function runApprovalGate(
       // The standing-consent tick: this execution is a fresh consent (the
       // row carries the elicitation evidence and the session scope — the
       // durable grant record the doctor lists), and the in-memory grant
-      // covers identical later executions until the process dies.
+      // covers identical later executions until the process dies. The
+      // scope-'session' pass is the recorder's memo-exclusion signal: the
+      // tick's delivery outcome is the grant's own lifecycle, never memo
+      // fuel (round-2 F4).
       if (outcome.content?.['rememberForSession'] === true) {
         noteStandingGrant(sessionId, name, view.argsHash);
         const arrival = recordAskModeConsent({
@@ -729,7 +807,7 @@ export async function runApprovalGate(
           command: view.command,
           scope: 'session',
         });
-        return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
+        return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'session' } };
       }
       return consented('elicitation');
     }
@@ -764,7 +842,6 @@ export async function runApprovalGate(
     return consented('posture');
   }
 
-  const token = typeof args.approvalToken === 'string' ? args.approvalToken : '';
   if (!token) {
     // plan-face keeps the trunk contract: the plan face is the only
     // minter, so a no-token run call is a not-found rejection and the
@@ -853,17 +930,17 @@ export async function runApprovalGate(
     const providedView = JSON.stringify(view.pinView);
     if (storedView !== providedView) {
       throw new Error(
-        'Provided args do not match the approved plan. Use the exact args from the plan. ' +
-          'If the plan shows <redacted> for passwords or secrets, replace <redacted> with the actual values.',
+        'Provided args do not match the approved confirmation. Use the exact args the confirmation shows. ' +
+          'If it shows <redacted> for passwords or secrets, replace <redacted> with the actual values.',
       );
     }
-    // Views equal means ONLY secret values differ. The plan carried real
+    // Views equal means ONLY secret values differ. The confirmed call carried real
     // (non-placeholder) secrets → they are pinned: a different real secret
-    // rejects. A placeholder-bearing plan (secretsSubstitutable) keeps the
+    // rejects. A placeholder-bearing confirmation (secretsSubstitutable) keeps the
     // documented substitution flow.
     if (stored.secretsSubstitutable !== true) {
       throw new Error(
-        'Secret values are pinned to the approved plan: re-run huaweicloud_plan_cli_command with the final values and re-approve.',
+        'Secret values are pinned to the approved confirmation: get a fresh confirmation for the final values and retry with it.',
       );
     }
   }
@@ -911,12 +988,28 @@ export function recordApprovalDispatchOutcome(
   handlerThrew?: unknown,
   arrivalStamp?: number,
   arrivalSeq?: number,
+  consentScope?: ApprovalConsentScope,
 ): void {
   try {
     if (!spec) return;
     if (approvalModeFromEnv(process.env) !== 'ask') return; // no ask arrival was recorded
     const outcomeDetail: ConsentDeliveryOutcome =
       handlerThrew !== undefined ? 'uncertain' : handlerResultCarriesFailure(handlerResult) ? 'failed' : 'delivered';
+    // The retry memo's state (interrogate round 2): armed from the COMPUTED
+    // outcome, before the best-effort annotate and independent of its
+    // success — a failed annotate may leave the ledger row without its
+    // outcome line, but the memo never reads the ledger back, so an
+    // unannotated delivered row can never arm a reuse (F5). Only
+    // 'once'-scoped arrivals feed it; a standing tick's outcome is the
+    // grant's own lifecycle, not memo fuel (F4).
+    if (consentScope === 'once' && typeof arrivalStamp === 'number') {
+      noteRetryMemo(
+        opts.sessionId ?? 'default',
+        name,
+        hashArgs(bindingValue(spec, args)),
+        outcomeDetail !== 'delivered',
+      );
+    }
     annotateDispatchOutcome({
       sessionId: opts.sessionId ?? 'default',
       tool: name,

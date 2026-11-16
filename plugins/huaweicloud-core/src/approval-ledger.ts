@@ -29,8 +29,9 @@
 // consent grant the elicitation form's "remember for this session" tick
 // writes. No writer routes through appendConsentEvent without tier
 // resolution. The gate's ask result is the structured approvedVia carrier
-// (approval-gate.ts, threaded through tools.ts), and the S1 memo's
-// readiness reads retryMemoCovers below.
+// (approval-gate.ts, threaded through tools.ts); the S1 memo's state is
+// the gate's in-memory record, armed by the dispatch recorder from the
+// computed delivery outcome.
 //
 // Write discipline (interrogate rounds 1-7): an append ADDS, it never
 // rewrites, and every committed append SURVIVES. The locked write path
@@ -2124,48 +2125,6 @@ function newestGrantedStampOutsideStore(params: { sessionId: string; tool: strin
     consider(spoolLinesOf(file));
   }
   return newest;
-}
-
-// The S1 retry-memo readiness reader (PR-3a): a byte-identical repeat on a
-// consent key reuses the prior consent exactly when the last execution the
-// key saw did NOT deliver (ApprovalCoreConsent's result-conditioned scope:
-// 'uncertain' and 'failed' keep the memo covering, 'delivered' clears it,
-// and an outcome the best-effort annotate could not record reads as
-// delivery-unknown — the documented "the memo treats an absent
-// outcomeDetail as unknown", the same class as 'uncertain'). The deciding
-// row is the NEWEST granted row on the key, chronology by (arrivalSeq,
-// grantedAt) — the same ordering originalGrantedFor uses, newest-first, and
-// sentinel rows never decide: a row whose chronology is unreadable can
-// neither name an original (round 15) nor arbitrate a reuse. Denied rows
-// are invisible here by construction: a decline is not a consent, so it
-// can neither enable nor clear the memo. Fail-closed in every direction:
-// an unreadable store reads as not-ready, so the worst case is one extra
-// confirmation, never a silent reuse.
-export function retryMemoCovers(sessionId: string, tool: string, argsHash: string): boolean {
-  try {
-    let newest: ConsentEvent | undefined;
-    for (const event of readConsentEvents()) {
-      if (
-        event.sessionId !== sessionId ||
-        event.tool !== tool ||
-        event.argsHash !== argsHash ||
-        event.outcome !== 'granted' ||
-        event.arrivalSeq === SEQ_UNKNOWN
-      ) {
-        continue;
-      }
-      if (
-        newest === undefined ||
-        event.arrivalSeq > newest.arrivalSeq ||
-        (event.arrivalSeq === newest.arrivalSeq && event.grantedAt > newest.grantedAt)
-      ) {
-        newest = event;
-      }
-    }
-    return newest !== undefined && newest.outcomeDetail !== 'delivered';
-  } catch {
-    return false;
-  }
 }
 
 // The delivery-outcome side channel (round 12, finding 4): one JSON line

@@ -55,7 +55,12 @@ import { VENDOR_GATED_TOOLS, enforceVendorGate } from './vendor-gate.ts';
 // ledger, and the envelope faces) lives in the approval-* family;
 // dispatchTool calls runApprovalGate after the vendor gate and before the
 // pack dispatch.
-import { recordApprovalDispatchOutcome, runApprovalGate, type ApprovalReuseVia } from './approval-gate.ts';
+import {
+  recordApprovalDispatchOutcome,
+  runApprovalGate,
+  type ApprovalConsentScope,
+  type ApprovalReuseVia,
+} from './approval-gate.ts';
 import type { ApprovalSpec, ElicitationSeam } from './approval-types.ts';
 // The capability catalog (service_catalog / list_packs / pack_info
 // handlers, the SKILL_OWNER inversion, and the shared pack-refusal
@@ -297,12 +302,14 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
   let arrivalStamp: number | undefined;
   let arrivalSeq: number | undefined;
   let approvedVia: ApprovalReuseVia | undefined;
+  let consentScope: ApprovalConsentScope | undefined;
   if (approvalSpec) {
     const gated = await runApprovalGate(name, approvalSpec, args, opts);
     if (!('pass' in gated)) return gated.envelope;
     arrivalStamp = gated.pass.arrivalStamp;
     arrivalSeq = gated.pass.arrivalSeq;
     approvedVia = gated.pass.approvedVia;
+    consentScope = gated.pass.consentScope;
   }
   // The delivery-outcome recorder sits at the COMMON dispatch boundary
   // (round 12, finding 3): the gate covers every roster member — pack
@@ -317,7 +324,17 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
     const result = isPackToolName(name)
       ? await PACK_TOOL_HANDLERS[name](args, opts)
       : await dispatchCoreTool(name, args, opts);
-    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, result, undefined, arrivalStamp, arrivalSeq);
+    recordApprovalDispatchOutcome(
+      name,
+      approvalSpec,
+      args,
+      opts,
+      result,
+      undefined,
+      arrivalStamp,
+      arrivalSeq,
+      consentScope,
+    );
     // The reuse attribution (PR-3a): a call that rode the retry memo or the
     // session standing grant names it on the response, so the caller can
     // tell a fresh confirmation's execution from a reused consent's. Object
@@ -328,7 +345,24 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
     }
     return result;
   } catch (error) {
-    recordApprovalDispatchOutcome(name, approvalSpec, args, opts, undefined, error, arrivalStamp, arrivalSeq);
+    recordApprovalDispatchOutcome(
+      name,
+      approvalSpec,
+      args,
+      opts,
+      undefined,
+      error,
+      arrivalStamp,
+      arrivalSeq,
+      consentScope,
+    );
+    // The reuse attribution rides the error path too (interrogate round 2,
+    // F11): a memo-reused retry whose handler throws again still names what
+    // authorized it — programmatic callers see the marker on the error
+    // object; the wire shape of the error itself is unchanged.
+    if (approvedVia !== undefined && error instanceof Error) {
+      (error as Error & { approvedVia?: ApprovalReuseVia }).approvedVia = approvedVia;
+    }
     throw error;
   }
 }

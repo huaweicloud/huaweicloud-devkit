@@ -838,7 +838,7 @@ test('a gate-source retry with changed args rejects on the binding and never exe
           { approvedByUser: true, args: ['ECS', 'DeleteServer', '--server_id=attacker-2'], approvalToken: token },
           {},
         ),
-      /do not match the approved plan/,
+      /do not match the approved confirmation/,
     );
   });
 });

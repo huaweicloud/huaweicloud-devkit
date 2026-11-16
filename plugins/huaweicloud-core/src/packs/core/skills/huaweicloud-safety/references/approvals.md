@@ -19,7 +19,7 @@ One per line, append-shaped: a sibling registration adds its tools here without 
 ## The two gate flavors
 
 - **Always.** The call confirms on every invocation — connect, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands. No content rule ever exempts them.
-- **Classified.** The two sandbox exec faces classify the `command` string first (the same engines the Bash safety face uses). A benign command runs with NO confirmation surface at all — no form, no envelope, no token. A write-classified command confirms on every call. Destructive, credential-reading, secret-bearing, and invalid commands are refused outright with the rule named — no confirmation unlocks them, not even a terminal approve, because the strict classification still arbitrates content after the confirm.
+- **Classified.** The two sandbox exec faces classify the `command` string first (the same engines the Bash safety face uses). A benign command runs with NO confirmation surface at all — no form, no envelope, no token. A write-classified command confirms on every call. The strict engine refuses some content outright with the rule named — credential-file reads, environment dumps, slash-anchored recursive `rm -rf`, the workspace-wiping rm targets (`*`, `.`, `~`, `$HOME`), root-anchored `find / … -delete`, downloads piped straight into a shell, disk format, and shutdown commands — and no confirmation unlocks those. Other destructive-shaped commands the engine does not enumerate still confirm per call.
 
 ## Token mode (the default)
 
@@ -68,7 +68,7 @@ The PIN record stores only a mac over the vault custody master key, never the pl
 - Never retry a call with different arguments under the same memo or token. The reuse covers the byte-identical call only; anything else confirms again.
 - Always send `command` on the hcloud run face: the full command line, never a prettified or shortened one. The gate rejects a mismatch with the `args` instead of running it; the sandbox exec faces' `command` is content, not a display anchor, and the six lifecycle faces carry no field at all.
 - Never invent the user's answer to the chat round-trip. Wait for it, then retry with `approvedByUser: true` only after they approve.
-- Never treat a refusal you can see through (`rm -rf`, credential reads, secret reads) as approval-shaped: the strict classification denies them before any confirmation surface exists, and no channel unlocks them.
+- Never treat a strict-engine refusal as approval-shaped: the engine denies credential-file reads, environment dumps, the enumerated destructive shapes (slash-anchored recursive `rm -rf`, the `*`/`.`/`~`/`$HOME` wipe targets, root-anchored `find … -delete`, pipe-to-shell downloads, disk format, shutdown) before any confirmation surface exists, and no channel unlocks them. Rework the command instead of retrying it.
 
 ## Honest security boundary
 

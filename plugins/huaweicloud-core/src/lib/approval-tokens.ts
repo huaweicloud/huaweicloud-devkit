@@ -12,6 +12,7 @@ import {
 import { dirname, join } from 'node:path';
 
 import { redactSecrets } from '../safety-policy.ts';
+import { redactWithSupplementalKeys } from './supplemental-redaction.ts';
 import { ensureMasterKey, resolveMasterKey, type ResolvedMasterKey } from './secret-vault/custody.ts';
 import { devkitStateBase } from './pack-state.ts';
 
@@ -289,7 +290,11 @@ export function createApprovalToken(
   const map = readApprovals();
   map[token] = {
     argsHash: hashArgs(rawArgs),
-    argsRedacted: redactSecrets(rawArgs),
+    // The same supplemental-key pass the trace face and the gate's pin views
+    // run (lib/supplemental-redaction.ts): redactSecrets alone lets a
+    // long-lived key under api_key ride the store entry and the approve
+    // CLI's Confirming line in plaintext (interrogate round 2, F2).
+    argsRedacted: redactWithSupplementalKeys(redactSecrets(rawArgs)),
     createdAt: Date.now(),
     ...(opts.secretsSubstitutable === true ? { secretsSubstitutable: true } : {}),
     ...(opts.argsPinView !== undefined ? { argsPinView: opts.argsPinView } : {}),

@@ -43,28 +43,31 @@ export const APPROVAL_CLASSIFIED_TOOLS = [
 // so without this table the sandbox registrations could never reach the
 // server gate on hook-bearing harnesses. The Record is keyed by the roster
 // tuple, so a registration that widens APPROVAL_TOOLS fails the build until
-// its shape row lands with it. The hook's shape switch knows 'argsArray'
-// and 'commandString'; the six sandbox lifecycle faces carry an 'object'
-// row instead — their payloads have no command surface to skip, so the
-// row declares "no exemption applies" and the hook's fallback keeps full
-// classification in force for them (fail-closed, measured: their pinned
-// payload shapes classify clean, and any deny the classifier ever adds
-// still blocks the call at the hook layer).
+// its shape row lands with it. The hook's shape switch knows 'argsArray',
+// 'commandString', and 'structured': the first two are the exempt classes
+// (with different skip sets); 'structured' declares a no-command-surface
+// payload — the hook branch returns no exemption for it, and full
+// classification stands (fail-closed: their payload shapes classify clean,
+// and any deny the classifier ever adds still blocks the call at the hook
+// layer, while a stuffed command/argv on those names can never borrow the
+// exempt classes). The fallback below exists ONLY for a MISSING row (an
+// older roster leaf or the landing transition), never for a present row
+// the hook does not know.
 // The Record is keyed by the roster tuple inline (this module is
 // import-free — it cannot take ApprovalRosterName from the registry, so
 // the tuple is widened here the same way the registry widens it).
-export type ApprovalToolInputShape = 'argsArray' | 'commandString' | 'object';
+export type ApprovalToolInputShape = 'argsArray' | 'commandString' | 'structured';
 
 export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number], ApprovalToolInputShape> = {
   huaweicloud_run_approved_command: 'argsArray',
-  huaweicloud_sandbox_connect: 'object',
+  huaweicloud_sandbox_connect: 'structured',
   huaweicloud_sandbox_exec_with_session: 'commandString',
   huaweicloud_sandbox_exec_one_shot: 'commandString',
-  huaweicloud_sandbox_expose_tunnel: 'object',
-  huaweicloud_sandbox_renew_tunnel: 'object',
-  huaweicloud_sandbox_keepalive_watchdog: 'object',
-  huaweicloud_sandbox_sign_agreement: 'object',
-  huaweicloud_sandbox_credentials: 'object',
+  huaweicloud_sandbox_expose_tunnel: 'structured',
+  huaweicloud_sandbox_renew_tunnel: 'structured',
+  huaweicloud_sandbox_keepalive_watchdog: 'structured',
+  huaweicloud_sandbox_sign_agreement: 'structured',
+  huaweicloud_sandbox_credentials: 'structured',
 };
 
 // The client-facing permission action opencode namespaces a roster tool

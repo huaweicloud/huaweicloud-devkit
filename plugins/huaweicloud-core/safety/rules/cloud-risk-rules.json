@@ -547,6 +547,77 @@
       },
       "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",
       "remediation": "Use targeted deletions instead of recursive root removal. Avoid disk format, fork bombs, and system shutdown commands in sandbox terminals."
+    },
+    {
+      "id": "hwc-sandbox-destructive-unanchored-rm",
+      "title": "Recursive forced rm against an unanchored target",
+      "category": "destructive",
+      "severity": "deny",
+      "stages": ["command"],
+      "match": {
+        "any": [
+          {
+            "field": "text",
+            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+\\*(?:\\s|$)"
+          },
+          {
+            "field": "text",
+            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+\\.(?:/|\\s|$)"
+          },
+          {
+            "field": "text",
+            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+~"
+          },
+          {
+            "field": "text",
+            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+[\"']?\\$\\{?HOME\\}?[\"']?"
+          }
+        ]
+      },
+      "message": "A recursive forced rm targets the whole working tree, the current directory, or the user's home instead of a named path.",
+      "remediation": "Delete named paths only. Never rm -rf a glob, dot, tilde, or $HOME target; list what will be removed first."
+    },
+    {
+      "id": "hwc-sandbox-destructive-find-delete",
+      "title": "Root-anchored find with -delete",
+      "category": "destructive",
+      "severity": "deny",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "\\bfind\\s+/\\s"
+          },
+          {
+            "field": "text",
+            "regex": "-delete\\b"
+          }
+        ]
+      },
+      "message": "find starting at the filesystem root with -delete walks and removes everything it matches.",
+      "remediation": "Scope the find to a named directory under the workspace and test the match set with -print before adding -delete."
+    },
+    {
+      "id": "hwc-sandbox-pipe-to-shell",
+      "title": "Downloaded content piped straight into a shell",
+      "category": "destructive",
+      "severity": "deny",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "\\b(?:curl|wget)\\b"
+          },
+          {
+            "field": "text",
+            "regex": "\\|\\s*[\"']?(?:sudo\\s+)?(?:ba|z|da)?sh\\b"
+          }
+        ]
+      },
+      "message": "A curl or wget download is piped directly into a shell, executing unreviewed remote content.",
+      "remediation": "Download the script first, read it, then run it from the file. Never execute remote content sight-unseen through a pipe."
     }
   ]
 }
