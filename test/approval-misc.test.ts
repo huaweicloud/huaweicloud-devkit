@@ -5,7 +5,11 @@ import test from 'node:test';
 
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/registry.ts';
-import { runApprovalGate, NO_SESSION_SEAM_ERROR } from '../plugins/huaweicloud-core/src/approval-gate.ts';
+import {
+  runApprovalGate,
+  NO_SESSION_SEAM_ERROR,
+  COMMAND_ARGS_MISMATCH,
+} from '../plugins/huaweicloud-core/src/approval-gate.ts';
 import { confirmApprovalToken, hashArgs } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
 import { readConsentEvents } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
 import { clearRuntimePacksOverride } from '../plugins/huaweicloud-core/src/packs/enable.ts';
@@ -318,30 +322,46 @@ test('obs website set in ask mode: a declined form refuses fail-closed with noth
   });
 });
 
-test('obs read in ask mode: the classified pass-through raises no form and records no consent', async () => {
+// The ask-mode obs driver shared by the form-shape tests: one isolated
+// home, ask mode, a mocked fetch, and the captured form requests.
+async function withAskObsFetch(
+  handler: () =>
+    Promise<{ status: number; text: () => Promise<string> }> | { status: number; text: () => Promise<string> },
+  fn: (
+    drive: (toolArgs: Record<string, unknown>, sessionId: string) => Promise<Record<string, unknown>>,
+    requests: ElicitFormRequest[],
+  ) => Promise<void>,
+): Promise<void> {
+  const requests: ElicitFormRequest[] = [];
   await withTempAuthHome(async () => {
-    const requests: ElicitFormRequest[] = [];
     await withApprovalMode('ask', async () => {
       await withMockedFetch(
-        async () => ({ status: 200, text: async () => '<WebsiteConfiguration/>' }),
-        async () => {
-          const got = (await callTool(
-            'huaweicloud_obs_set_website_config',
-            {
-              action: 'get',
-              bucket: 'pr3c-bucket',
-              region: 'cn-north-4',
-              approvedByUser: true,
-            },
-            { sessionId: 'pr3c-obs-get', elicitation: elicitingSeam('accept', requests) },
-          )) as Record<string, unknown>;
-          assert.equal(got.ok, true, 'the signed read runs unconfirmed');
-        },
+        async () => handler(),
+        () =>
+          fn(
+            (toolArgs, sessionId) =>
+              callTool(
+                'huaweicloud_obs_set_website_config',
+                { ...toolArgs, approvedByUser: true },
+                { sessionId, elicitation: elicitingSeam('accept', requests) },
+              ) as Promise<Record<string, unknown>>,
+            requests,
+          ),
       );
     });
-    assert.equal(requests.length, 0, 'a signed read never pops');
-    assert.deepEqual(readConsentEvents(), [], 'the pass-through records no consent');
   });
+}
+
+test('obs read in ask mode: the classified pass-through raises no form and records no consent', async () => {
+  await withAskObsFetch(
+    () => ({ status: 200, text: async () => '<WebsiteConfiguration/>' }),
+    async (drive, requests) => {
+      const got = await drive({ action: 'get', bucket: 'pr3c-bucket', region: 'cn-north-4' }, 'pr3c-obs-get');
+      assert.equal(got.ok, true, 'the signed read runs unconfirmed');
+      assert.equal(requests.length, 0, 'a signed read never pops');
+      assert.deepEqual(readConsentEvents(), [], 'the pass-through records no consent');
+    },
+  );
 });
 
 test('secret_delete: token mode names the ref in the view, the confirmed retry deletes; secret_set stays ungated', async () => {
@@ -523,4 +543,144 @@ test('setup_obs_config stays unregistered: the handler answers, no gate envelope
     assert.notEqual(result.status, 'rejected', 'no gate rejection shape on an unregistered tool');
     assert.equal(existsSync(approvalsPath(home)), false, 'the flagged boundary item mints nothing');
   });
+});
+
+test('upgrade display/binding integrity: the unversioned mint binds "latest", so the natural retry executes (interrogate r2 finding 2)', async () => {
+  await withTempAuthHome(async () => {
+    // The UNVERSIONED mint: the user reads "version latest (target all)".
+    const envelope = await mint('huaweicloud_upgrade', {});
+    assert.match(
+      envelope.userConfirmation.summary,
+      /version latest \(target all\) — "latest" names the channel: the handler elects the stable or prerelease dist tag/,
+      'the view names the channel and says the handler elects the tag after consent',
+    );
+    assert.equal(confirmApprovalToken(envelope.approvalToken).status, 'confirmed');
+
+    // The natural retry carries the DISPLAYED value (version:'latest') — the
+    // normalized binding hashes identically to the unversioned mint, so the
+    // token consumes instead of mismatch-burning.
+    const spec = APPROVAL_SPECS.huaweicloud_upgrade as ApprovalSpec;
+    const withDisplayed = await runApprovalGate(
+      'huaweicloud_upgrade',
+      spec,
+      { version: 'latest', approvalToken: envelope.approvalToken, approvedByUser: true },
+      {},
+    );
+    assert.ok('pass' in withDisplayed, 'the retry with the displayed version consumes the token');
+
+    // The retry that stays unversioned binds the same normalized value.
+    const envelope2 = await mint('huaweicloud_upgrade', { target: 'opencode' });
+    assert.equal(confirmApprovalToken(envelope2.approvalToken).status, 'confirmed');
+    const unversioned = await runApprovalGate(
+      'huaweicloud_upgrade',
+      spec,
+      { target: 'opencode', approvalToken: envelope2.approvalToken, approvedByUser: true },
+      {},
+    );
+    assert.ok('pass' in unversioned, 'the unversioned retry consumes identically');
+  });
+});
+
+test('upgrade never mints a doomed approval: concrete versions and empty strings refuse before the mint', async () => {
+  await withTempAuthHome(async (home) => {
+    for (const version of ['2.1.0', 'next', '']) {
+      await assert.rejects(
+        callTool('huaweicloud_upgrade', { version, approvedByUser: true }),
+        /version must be "latest"/,
+        `version ${JSON.stringify(version)} refuses before the mint`,
+      );
+    }
+    assert.equal(existsSync(approvalsPath(home)), false, 'no token was minted for refused version shapes');
+  });
+});
+
+test('packs_configure never mints for shapes the handler refuses: the five validations hoisted before the mint', async () => {
+  await withTempAuthHome(async (home) => {
+    const seam = { onPacksChanged: (): void => {} };
+    const shapes: Array<[Record<string, unknown>, RegExp]> = [
+      [{}, /Provide at least one of enable, disable, or reset/],
+      [{ enable: ['bogus'] }, /Unknown pack id\(s\): bogus/],
+      [{ disable: ['core'] }, /core is always enabled/],
+      [{ enable: ['obs'], disable: ['obs'] }, /cannot be both enabled and disabled/],
+      [{ reset: true, enable: ['obs'] }, /cannot be combined with enable or disable/],
+    ];
+    for (const [args, message] of shapes) {
+      await assert.rejects(callTool('huaweicloud_packs_configure', { ...args, approvedByUser: true }, seam), message);
+      assert.equal(existsSync(approvalsPath(home)), false, 'a refused shape never mints');
+      assert.deepEqual(readConsentEvents(), [], 'a refused shape is not a consent arrival');
+    }
+  });
+});
+
+test('secret_delete never mints for a ref the vault would refuse: the parse hoisted before the mint', async () => {
+  await withVaultAuthHome(async (home) => {
+    await assert.rejects(
+      callTool('huaweicloud_secret_delete', { ref: 'not-a-ref', approvedByUser: true }),
+      /is not a valid secret ref/,
+      'an unparseable ref refuses before the mint',
+    );
+    assert.equal(existsSync(approvalsPath(home)), false, 'no token was minted for the doomed ref');
+  });
+});
+
+test('a command field on a commandless spec refuses with the real summarize shown (interrogate r2 fix-in-pass iv)', async () => {
+  await withTempAuthHome(async (home) => {
+    const refusal = (await callTool('huaweicloud_obs_set_website_config', {
+      ...WEBSITE_SET_ARGS,
+      command: 'hcloud OBS ls',
+      approvedByUser: true,
+    })) as Record<string, unknown>;
+    assert.equal(refusal.status, 'rejected');
+    assert.equal(refusal.code, COMMAND_ARGS_MISMATCH, 'the fabricated line refuses like a mismatched anchor');
+    assert.match(
+      String(refusal.summary),
+      /set website config on bucket pr3c-bucket/,
+      'the refusal shows the REAL summarize view, never the fabricated command',
+    );
+    assert.match(String(refusal.reason ?? ''), /takes no command field/, 'the reason names the refusal class');
+    assert.equal(existsSync(approvalsPath(home)), false, 'the display-integrity refusal mints nothing');
+
+    await withApprovalMode('ask', async () => {
+      const requests: ElicitFormRequest[] = [];
+      await withMockedFetch(
+        async () => ({ status: 200, text: async () => '' }),
+        async () => {
+          const askRefusal = (await callTool(
+            'huaweicloud_obs_set_website_config',
+            {
+              ...WEBSITE_SET_ARGS,
+              command: 'hcloud OBS ls',
+              approvedByUser: true,
+            },
+            { sessionId: 'pr3c-stuffed', elicitation: elicitingSeam('accept', requests) },
+          )) as Record<string, unknown>;
+          assert.equal(askRefusal.code, COMMAND_ARGS_MISMATCH, 'ask mode refuses the fabricated line before any form');
+        },
+      );
+      assert.equal(requests.length, 0, 'no form was ever raised for a fabricated display line');
+    });
+  });
+});
+
+test('a commandless confirmation leads with the summarize view, never a blank command slot (interrogate r2 fix-in-pass ii)', async () => {
+  let message = '';
+  await withAskObsFetch(
+    () => ({ status: 200, text: async () => '' }),
+    async (drive, requests) => {
+      const res = await drive(WEBSITE_SET_ARGS, 'pr3c-commandless-form');
+      assert.equal(res.ok, true, 'the form accept still executes');
+      message = requests[0]!.message;
+    },
+  );
+  assert.match(
+    message,
+    /requesting your confirmation to make this change:/,
+    'the heading names the change, not a command',
+  );
+  assert.match(
+    message,
+    /set website config on bucket pr3c-bucket \(region cn-north-4\), index index\.html/,
+    'the body leads with the real summarize view',
+  );
+  assert.doesNotMatch(message, /run this command:\n\n\n/, 'no blank command slot under a command heading');
 });

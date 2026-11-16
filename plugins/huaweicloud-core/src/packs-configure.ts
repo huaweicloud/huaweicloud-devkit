@@ -145,4 +145,35 @@ export const PACKS_CONFIGURE_APPROVAL_SPEC: Readonly<ApprovalSpec> = {
       pinView: safe,
     };
   },
+  // NoDoomedToken (interrogate round 2, fix-in-pass i): the handler's own
+  // five pure validations, hoisted BEFORE the mint — a shape the handler
+  // refuses would burn the user's approval on a guaranteed refusal, so it
+  // never mints. Message texts mirror the handler's exactly, so the two
+  // layers can never drift into different teachings; the handler keeps its
+  // own copies as the belt behind this floor.
+  assertArgsExecutable: (value: unknown): void => {
+    const { enable, disable, reset } = value as { enable?: unknown; disable?: unknown; reset?: unknown };
+    const enableIds = Array.isArray(enable) ? enable.map((id) => String(id)) : [];
+    const disableIds = Array.isArray(disable) ? disable.map((id) => String(id)) : [];
+    const resetIs = reset === true;
+    if (!resetIs && enableIds.length === 0 && disableIds.length === 0) {
+      throw new Error('Provide at least one of enable, disable, or reset.');
+    }
+    const bogus = [...enableIds, ...disableIds].filter((id) => !(PACK_IDS as readonly string[]).includes(id));
+    if (bogus.length > 0) {
+      throw new Error('Unknown pack id(s): ' + bogus.join(', ') + '. Valid pack ids: ' + PACK_IDS.join(', ') + '.');
+    }
+    if (disableIds.includes('core')) {
+      throw new Error(
+        'core is always enabled (the pack meta, safety, and discovery surface is force-included) and cannot be disabled.',
+      );
+    }
+    const overlap = enableIds.filter((id) => disableIds.includes(id));
+    if (overlap.length > 0) {
+      throw new Error('Pack id(s) cannot be both enabled and disabled in one call: ' + overlap.join(', ') + '.');
+    }
+    if (resetIs && (enableIds.length > 0 || disableIds.length > 0)) {
+      throw new Error('reset drops the whole session override and cannot be combined with enable or disable.');
+    }
+  },
 };

@@ -1,5 +1,6 @@
 import { hashArgs } from '../../lib/approval-tokens.ts';
 import { redactSecrets } from '../../safety-policy.ts';
+import { parseSecretRef } from '../../lib/secret-vault/refs.ts';
 import type { ApprovalSpec } from '../../approval-types.ts';
 import type { ToolArgs } from '../../tools.ts';
 
@@ -22,6 +23,18 @@ export const SECRETS_APPROVAL_SPECS: Readonly<Record<'huaweicloud_secret_delete'
     flavor: 'always',
     tokenSource: 'gate',
     normalizeArgs: deleteBinding,
+    // NoDoomedToken (interrogate round 2, fix-in-pass i): vaultDelete
+    // refuses an unparseable ref outright, so an approval minted for one is
+    // doomed — the retry would hit the same refusal forever. The ref must
+    // parse before any mint; the message mirrors vaultDelete's own
+    // VAULT_BAD_REF text so the two layers teach identically.
+    assertArgsExecutable: (value: unknown): void => {
+      const ref = (value as { ref?: unknown }).ref;
+      const parsed = typeof ref === 'string' ? parseSecretRef(ref) : null;
+      if (parsed === null) {
+        throw new Error(`"${String(ref)}" is not a valid secret ref (secret://<scope>/<name>, segments [a-z0-9-]).`);
+      }
+    },
     // The view folds through the shared redaction vocabulary before any
     // field reaches the summary or pin view (the ApprovalSpec contract);
     // the hash binds the raw content.

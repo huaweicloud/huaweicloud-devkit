@@ -240,28 +240,22 @@ test(
   ),
 );
 
-test('disable core is refused and nothing changes', () =>
+test('disable core is refused before the mint and nothing changes', () =>
   withEnv('core,obs', async () => {
-    const refused = await configureDirect({ disable: ['core'] });
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /core is always enabled/);
+    await assert.rejects(configureDirect({ disable: ['core'] }), /core is always enabled/);
     assert.equal(runtimePacksOverride(), null, 'the refusal must not leave an override behind');
   })());
 
-test('unknown ids are named with the valid list', () =>
+test('unknown ids are named with the valid list before the mint', () =>
   withEnv('core', async () => {
-    const refused = await configureDirect({ enable: ['bogus'] });
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /Unknown pack id\(s\): bogus/);
-    assert.match(refused.error ?? '', /core, huaweicloud-cli, sandbox/);
+    await assert.rejects(configureDirect({ enable: ['bogus'] }), /Unknown pack id\(s\): bogus/);
+    await assert.rejects(configureDirect({ enable: ['bogus'] }), /core, huaweicloud-cli, sandbox/);
     assert.equal(runtimePacksOverride(), null);
   })());
 
-test('missing every verb is a usage error', () =>
+test('missing every verb is a usage error before the mint', () =>
   withEnv('core', async () => {
-    const refused = await configureDirect({});
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /at least one of enable, disable, or reset/);
+    await assert.rejects(configureDirect({}), /at least one of enable, disable, or reset/);
   })());
 
 test(
@@ -319,11 +313,9 @@ test(
   ),
 );
 
-test('reset combined with enable or disable is refused', () =>
+test('reset combined with enable or disable is refused before the mint', () =>
   withEnv('core', async () => {
-    const refused = await configureDirect({ reset: true, enable: ['obs'] });
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /cannot be combined/);
+    await assert.rejects(configureDirect({ reset: true, enable: ['obs'] }), /cannot be combined/);
     assert.equal(runtimePacksOverride(), null);
   })());
 
@@ -352,11 +344,9 @@ test('enabling closure-pulled core is a noop', () =>
     assert.equal(result.override, null);
   })());
 
-test('the same pack in enable and disable is refused', () =>
+test('the same pack in enable and disable is refused before the mint', () =>
   withEnv('core', async () => {
-    const refused = await configureDirect({ enable: ['obs'], disable: ['obs'] });
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /cannot be both enabled and disabled/);
+    await assert.rejects(configureDirect({ enable: ['obs'], disable: ['obs'] }), /cannot be both enabled and disabled/);
     assert.equal(runtimePacksOverride(), null);
   })());
 

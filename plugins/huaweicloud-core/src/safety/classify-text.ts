@@ -877,6 +877,27 @@ export function classifyTextCommand(command: unknown, options: ClassifyOptions =
     };
   }
 
+  // The devkit's gated-mutation CLI twins (interrogate round 1, finding 1):
+  // `update`/`upgrade` rewrite the installed package, `secret rm` deletes a
+  // vault entry, and `packs enable|disable|all` rewrites the operator
+  // DEVKIT_PACKS posture — the exact mutations the MCP approval gate
+  // mediates on huaweicloud_upgrade, huaweicloud_secret_delete, and
+  // huaweicloud_packs_configure. The CLI path carries no gate at all, so an
+  // agent shelling to it performs the mutation with zero confirmation —
+  // the same bypass class the auth verbs established. The row shape mirrors
+  // the approve/pin family (a devkit bin spelling must be present, so a
+  // Huawei Cloud operation or a benign sentence containing the verb never
+  // trips), matched against the same two shadows. A human at their own
+  // terminal is unaffected: this is the agent Bash face.
+  if (shadowCandidates.some((candidate) => matchesAny(candidate, policy.blockedGatedCliPatterns))) {
+    return {
+      decision: 'deny',
+      risk: 'approval',
+      reason:
+        'Running the devkit update/upgrade, secret rm, and packs enable/disable CLI verbs from the agent Bash face is blocked: they perform the same mutations the MCP approval gate mediates (huaweicloud_upgrade, huaweicloud_secret_delete, huaweicloud_packs_configure), with no confirmation on this path. Call the MCP tool instead — its gate raises the confirmation (token, form, or chat round-trip) — or let the user run the CLI command in their own terminal.',
+    };
+  }
+
   // Order-independent reveal pair: `echo secret get <ref> --stdout | xargs
   // npx huaweicloud-devkit` reorders the argv through xargs while every word
   // is literal in the text — the patterns above assume bin-before-
