@@ -331,6 +331,50 @@ function grantRequired(spec: ApprovalSpec, value: unknown, opts: CallToolOptions
   return spec.classify ? spec.classify(value, opts) === 'required' : true;
 }
 
+// The T3 envelope binding (interrogate round 2, finding 4): the chat
+// round-trip is the only tier where the line the user reads and the line the
+// gate executes are two messages, so the envelope's argsHash must be the
+// binding, not a decoration. Every envelope emission records
+// (session, tool, argsHash -> shownAt); an attested ask arrival executes only
+// when its OWN argsHash has a live record. A drifted retry (different args)
+// and a pre-attested first call (no record at all) both get the envelope for
+// the line they are asking about, so the ritual always precedes the
+// execution. TTL-bounded rather than single-use: the binding fact is "this
+// exact line was shown", which stays true for the same command, and a lost
+// record only costs one extra round-trip. Session-scoped through
+// opts.sessionId, exactly like the token custody store is state-scoped.
+export const ASK_ENVELOPE_TTL_MS = 30 * 60_000;
+const shownAskEnvelopes = new Map<string, Map<string, number>>();
+
+function askEnvelopeScope(sessionId: string, tool: string): string {
+  return `${sessionId}\u0000${tool}`;
+}
+
+/** Record that the T3 envelope for this exact line was shown in this session. */
+export function noteAskEnvelopeShown(sessionId: string, tool: string, argsHash: string, at: number = Date.now()): void {
+  const scope = askEnvelopeScope(sessionId, tool);
+  const live = shownAskEnvelopes.get(scope) ?? new Map<string, number>();
+  live.set(argsHash, at);
+  shownAskEnvelopes.set(scope, live);
+}
+
+/** True when this exact line's envelope was shown in this session and is live. */
+export function askEnvelopeLive(sessionId: string, tool: string, argsHash: string, at: number = Date.now()): boolean {
+  const scope = askEnvelopeScope(sessionId, tool);
+  const live = shownAskEnvelopes.get(scope);
+  if (!live) return false;
+  // Lazy prune: a session's expired records never accumulate (the map is the
+  // only growth surface of this mechanism).
+  for (const [hash, shownAt] of live) {
+    if (at - shownAt > ASK_ENVELOPE_TTL_MS) live.delete(hash);
+  }
+  if (live.size === 0) {
+    shownAskEnvelopes.delete(scope);
+    return false;
+  }
+  return live.has(argsHash);
+}
+
 // ── The server-run confirmation ladder (PR-1.5) ───────────────────────────
 //
 // Ask mode no longer trusts a client popup. On a client that declared the
@@ -381,8 +425,7 @@ function elicitationRequest(commandLine: string, summary: string): ElicitFormReq
 }
 
 function elicitRefusal(outcome: ElicitOutcome, commandLine: string): Record<string, unknown> {
-  const nextStep =
-    'Nothing ran and nothing was approved. Retry the call when the user is ready to answer the form.';
+  const nextStep = 'Nothing ran and nothing was approved. Retry the call when the user is ready to answer the form.';
   if (outcome.decision === 'timeout') {
     return {
       status: 'rejected',
@@ -432,7 +475,7 @@ function askConfirmationEnvelope(
       summary,
       instruction:
         'Show this exact command to the user in chat and wait for their answer. If they approve, retry the same call ' +
-        'with approvedByUser: true. That retry is model-relayed posture trust: it is the user\'s word as you report it, ' +
+        "with approvedByUser: true. That retry is model-relayed posture trust: it is the user's word as you report it, " +
         'not a mechanically verified answer.',
     },
     argsHash: view.argsHash,
@@ -534,11 +577,31 @@ export async function runApprovalGate(
       return consented('elicitation');
     }
 
-    // T3: no form capability. An attested call is the chat round-trip's
-    // retry and executes on posture trust (the same contract PR-1 shipped);
-    // an unattested command-forward arrival is answered with the envelope
-    // that asks for exactly that retry.
+    // T3: no form capability. The attested path executes only when THIS
+    // line's envelope was shown in this session (see the binding state
+    // above): the args hash the envelope advertised is the binding, so a
+    // retry for different args — and a pre-attested first call — gets the
+    // envelope for the line they ask about instead of executing. The refusal
+    // teaches the ritual for the new line, so the proper envelope-then-retry
+    // still completes.
+    // The binding applies to the command-forward shape only: that is the
+    // shape whose unattested form emits this envelope, so a record can exist.
+    // The legacy args-only shape keeps PR-1's pinned contract exactly (its
+    // unattested form is the trunk attestation throw, so there is no envelope
+    // to bind to and an attested legacy arrival still executes on posture).
+    if (serverRunArrival) {
+      const sessionId = opts.sessionId ?? 'default';
+      const envelopeShown = askEnvelopeLive(sessionId, name, view.argsHash);
+      if (args.approvedByUser !== true || !envelopeShown) {
+        noteAskEnvelopeShown(sessionId, name, view.argsHash);
+        return { envelope: askConfirmationEnvelope(commandLine, view.summary, view) };
+      }
+      return consented('posture');
+    }
     if (args.approvedByUser !== true) {
+      // Unreachable for this shape (the trunk attestation throw precedes the
+      // mode branch); kept as a belt for a spec that registers without the
+      // command requirement.
       return { envelope: askConfirmationEnvelope(commandLine, view.summary, view) };
     }
     return consented('posture');
@@ -573,8 +636,11 @@ export async function runApprovalGate(
         approvalToken: minted,
         userConfirmation: {
           needed: true,
-          command: `npx huaweicloud-devkit approve ${minted}`,
+          // Order matters: the summarize view carries its own `command`
+          // (the redacted executable line, PR-1.5), and spreading it after
+          // this line overwrote the approve command the user must run.
           ...view,
+          command: `npx huaweicloud-devkit approve ${minted}`,
         },
         nextStep: GRANT_REQUIRED_NEXT_STEP,
       },

@@ -22,6 +22,9 @@ import {
   runApprovalGate,
   NO_SESSION_SEAM_ERROR,
   ASK_CONFIRMATION_REQUIRED,
+  ASK_ENVELOPE_TTL_MS,
+  askEnvelopeLive,
+  noteAskEnvelopeShown,
   ELICITATION_CANCELLED,
   ELICITATION_DECLINED,
   ELICITATION_FAILED,
@@ -1705,6 +1708,8 @@ function fakeHcloudWithMarker(marker: string): string {
   );
 }
 
+let seedRunSeq = 0;
+
 interface SeededAskRun {
   /** The tool result; each case narrows it to the shape it asserts. */
   result: unknown;
@@ -1721,10 +1726,14 @@ interface SeededAskRun {
 interface SeededAskOptions {
   /** false omits the attestation (the T3 first arrival). Defaults to true. */
   attested?: boolean;
+  /** Skip the envelope-then-retry ritual (a pre-attested first call). */
+  prime?: boolean;
   /** The command-forward display line. */
   command?: string;
   /** The server-run confirmation seam (absent: a non-capable client). */
   seam?: ElicitationSeam;
+  /** The session id the arrivals run in (the envelope binding is session-scoped). */
+  sessionId?: string;
 }
 
 interface ElicitRecorder {
@@ -1768,16 +1777,29 @@ async function seededAskRun(seed: SeedStore, args: string[], options: SeededAskO
       process.env.HCLOUD_BIN = fakeHcloudWithMarker(marker);
       try {
         await withApprovalMode('ask', async () => {
-          const callArgs: Record<string, unknown> = {
-            args,
-            maxRetries: 0,
-            vendorConfirmed: VENDOR,
-          };
-          if (options.attested !== false) callArgs.approvedByUser = true;
-          if (options.command !== undefined) callArgs.command = options.command;
-          const result: unknown = await callTool('huaweicloud_run_approved_command', callArgs, {
+          const callOpts = {
             ...(options.seam ? { elicitation: options.seam } : {}),
-          });
+            // A fresh session per seeded run: the T3 envelope record is
+            // session-scoped state, and a leaked record would silently
+            // authorize another case's line.
+            sessionId: options.sessionId ?? `seed-${(seedRunSeq += 1)}`,
+          };
+          const baseArgs: Record<string, unknown> = { args, maxRetries: 0, vendorConfirmed: VENDOR };
+          if (options.command !== undefined) baseArgs.command = options.command;
+          // The T3 binding (round 2, finding 4): an attested arrival executes
+          // only when its own line's envelope was shown in this session, so
+          // the realistic default runs the ritual first. `primed: false` is
+          // the pre-attested first call the finding pins as a refusal.
+          const needsRitual =
+            options.command !== undefined && options.attested !== false && !(options.seam?.capable ?? false);
+          if (needsRitual && options.prime !== false) {
+            await callTool('huaweicloud_run_approved_command', { ...baseArgs }, callOpts);
+          }
+          const result: unknown = await callTool(
+            'huaweicloud_run_approved_command',
+            { ...baseArgs, ...(options.attested !== false ? { approvedByUser: true } : {}) },
+            callOpts,
+          );
           const events = readConsentEvents();
           outcome = { result, executed: existsSync(marker), consents: events.length, events, dir };
         });
@@ -1991,6 +2013,123 @@ test('the ladder never fabricates an upgrade: a chat retry after a form answer r
   assert.equal(retry.events[0]!.evidence, 'posture', 'the chat retry is posture-grade, never an inherited upgrade');
 });
 
+test('T3 binding: the attested retry executes only for the line the envelope showed', async () => {
+  // Interrogate round 2, finding 4 (safety invariant): the chat round-trip is
+  // the only tier where the read line and the run line are two messages, so
+  // the envelope's argsHash is the binding. A drifted retry (different args)
+  // never executes; it gets the envelope for the line it asks about, and the
+  // proper ritual for that line then completes.
+  const session = 'f4-drift';
+  const shown = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    sessionId: session,
+  });
+  assert.equal((shown.result as { code: string }).code, ASK_CONFIRMATION_REQUIRED, 'the envelope is shown');
+
+  const driftedArgs = ['ECS', 'DeleteServer', '--server_id=i-2'];
+  const driftedCommand = 'hcloud ECS DeleteServer --server_id=i-2';
+  const drifted = await seededAskRun(LADDER_PROJECTS, driftedArgs, {
+    command: driftedCommand,
+    attested: true,
+    prime: false,
+    sessionId: session,
+  });
+  const envelope = drifted.result as { code: string; userConfirmation: { command: string } };
+  assert.equal(envelope.code, ASK_CONFIRMATION_REQUIRED, 'a different line refuses despite the attestation');
+  assert.equal(envelope.userConfirmation.command, driftedCommand, 'the envelope names the line the retry asked about');
+  assert.equal(drifted.executed, false, 'the drift never executes');
+
+  const proper = await seededAskRun(LADDER_PROJECTS, driftedArgs, {
+    command: driftedCommand,
+    attested: true,
+    prime: false,
+    sessionId: session,
+  });
+  assert.equal((proper.result as ApprovedRunResult).approved, true, 'the ritual for the drifted line completes');
+  assert.equal(proper.executed, true);
+  assert.equal(proper.events[0]!.evidence, 'posture');
+  assert.equal(proper.events[0]!.argsHash, hashArgs(driftedArgs), 'the row records the hash that was shown');
+});
+
+test('T3 binding: a pre-attested first call refuses (no envelope was ever shown)', async () => {
+  const pre = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: true,
+    prime: false,
+    sessionId: 'f4-preattest',
+  });
+  assert.equal((pre.result as { code: string }).code, ASK_CONFIRMATION_REQUIRED);
+  assert.equal(pre.executed, false, 'pre-attestation executes nothing');
+  assert.equal(pre.consents, 0);
+});
+
+test('T3 binding: the envelope record is session-scoped', async () => {
+  const shown = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    sessionId: 'f4-session-a',
+  });
+  assert.equal((shown.result as { code: string }).code, ASK_CONFIRMATION_REQUIRED);
+  const otherSession = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: true,
+    prime: false,
+    sessionId: 'f4-session-b',
+  });
+  assert.equal(
+    (otherSession.result as { code: string }).code,
+    ASK_CONFIRMATION_REQUIRED,
+    "another session's envelope does not authorize this one",
+  );
+  const sameSession = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: true,
+    prime: false,
+    sessionId: 'f4-session-a',
+  });
+  assert.equal((sameSession.result as ApprovedRunResult).approved, true, 'the session that showed the line executes');
+});
+
+test('T3 binding: an expired envelope record no longer authorizes', () => {
+  const session = 'f4-ttl';
+  const hash = 'f4-ttl-hash';
+  noteAskEnvelopeShown(session, 'huaweicloud_run_approved_command', hash, Date.now() - ASK_ENVELOPE_TTL_MS - 1000);
+  assert.equal(askEnvelopeLive(session, 'huaweicloud_run_approved_command', hash), false, 'a stale record is dead');
+  noteAskEnvelopeShown(session, 'huaweicloud_run_approved_command', hash);
+  assert.equal(askEnvelopeLive(session, 'huaweicloud_run_approved_command', hash), true, 'a fresh record is live');
+});
+
+test('a gate-source mint envelope keeps the approve line even when the view carries a command', async () => {
+  // Interrogate round 2, finding 5: the gate-source envelope spread the
+  // summarize view after `command`, so a view command overwrote the approve
+  // line. Unreachable at this head (no gate-source spec exists), but PR-3's
+  // registrations land exactly there.
+  await withTempAuthHome(async () => {
+    const spec: ApprovalSpec = {
+      domain: 'sandbox',
+      flavor: 'always',
+      tokenSource: 'gate',
+      summarize: (value) => ({
+        summary: 'sandbox: demo',
+        argsHash: hashArgs(value),
+        pinView: value,
+        command: 'hcloud ECS DeleteServer --server_id=i-1',
+      }),
+    };
+    const minted = (await runApprovalGate(
+      'huaweicloud_list_regions',
+      spec,
+      { approvedByUser: true, args: ['ECS', 'DeleteServer', '--server_id=i-1'] },
+      {},
+    )) as { envelope: Record<string, unknown> };
+    assert.equal(minted.envelope.code, 'USER_CONFIRMATION_REQUIRED');
+    const confirmation = minted.envelope.userConfirmation as Record<string, unknown>;
+    assert.match(confirmation.command as string, /^npx huaweicloud-devkit approve /, 'the approve line survives');
+    assert.equal(confirmation.summary, 'sandbox: demo', 'the rest of the view rides along');
+  });
+});
+
 test('the capability is read per arrival from the session record (no re-probe, no caching)', async () => {
   let capable = true;
   const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } }, () => capable);
@@ -2055,6 +2194,80 @@ test('command-forward: the plan echo forwards verbatim (plan.command passes the 
     command: plan.command,
   });
   assert.equal((result as ApprovedRunResult).approved, true, 'the documented pass-through works with a quoted arg');
+});
+
+test('command-forward: every secret charset family substitutes into an accepted line', async () => {
+  // Interrogate round 2, finding 1: per-arg-then-quote fixed the shell-special
+  // family but wrapped the placeholder for the SAFE-CHARSET family too (its
+  // `<` and `>` sit outside quoteShellArg's safe set), so the most common
+  // write (alphanumeric password, hex token) dead-ended the documented
+  // substitution. The echo now reproduces the REAL argument's quoting shape,
+  // so all four families substitute into a line the gate accepts.
+  const families = [
+    {
+      label: 'safe-charset',
+      secrets: ['Sup3rS3cret'],
+      args: ['RDS', 'CreateInstance', '--server.adminPass=Sup3rS3cret', '--name=db1'],
+    },
+    {
+      label: 'hex token',
+      secrets: ['a1b2c3d4e5f67890'],
+      args: ['RDS', 'CreateInstance', '--auth_token=a1b2c3d4e5f67890'],
+    },
+    {
+      label: 'shell-special',
+      secrets: ['Sup3rSecret!'],
+      args: ['RDS', 'CreateInstance', '--server.adminPass=Sup3rSecret!', '--name=db1'],
+    },
+    {
+      label: 'mixed (safe + special)',
+      secrets: ['Sup3rS3cret', 'a1b2c!'],
+      args: ['RDS', 'CreateInstance', '--server.adminPass=Sup3rS3cret', '--auth_token=a1b2c!', '--name=db1'],
+    },
+  ];
+  const spec = HUAWEICLOUD_CLI_APPROVAL_SPECS.huaweicloud_run_approved_command;
+  for (const family of families) {
+    const plan = planHcloudCommand(family.args, { mintApprovalToken: false });
+    assert.ok(plan.command, `${family.label}: the plan carries the echo`);
+    assert.equal(
+      (plan.command!.match(/"/g) ?? []).length % 2,
+      0,
+      `${family.label}: the echo keeps its quotes balanced`,
+    );
+    for (const secret of family.secrets) {
+      assert.equal(plan.command!.includes(secret), false, `${family.label}: the echo never carries a secret`);
+    }
+    let substituted = plan.command!;
+    for (const secret of family.secrets) substituted = substituted.replace('<redacted>', secret);
+    assert.ok(
+      spec.commandAnchor!(family.args).includes(substituted),
+      `${family.label}: the substituted line is one the gate accepts`,
+    );
+    const { result } = await seededAskRun(LADDER_PROJECTS, family.args, { command: substituted });
+    assert.notEqual((result as { code?: string }).code, 'COMMAND_ARGS_MISMATCH', `${family.label}: never a mismatch`);
+    assert.equal((result as ApprovedRunResult).approved, true, `${family.label}: the substituted line executes`);
+  }
+});
+
+test('command-forward: a safe-charset secret substitution also executes in token mode', async () => {
+  // The anchor check is mode-independent, so the same family must pass the
+  // token path too (it was the other half of round 2's measured dead-end).
+  await withVaultAuthHome(async () => {
+    const args = ['RDS', 'CreateInstance', '--server.adminPass=Sup3rS3cret', '--name=db1'];
+    const token = createApprovalToken(args, { secretsSubstitutable: false, argsPinView: pinViewArgs(args) });
+    assert.equal(confirmApprovalToken(token).status, 'confirmed');
+    const plan = planHcloudCommand(args, { mintApprovalToken: false });
+    const substituted = plan.command!.replace('<redacted>', 'Sup3rS3cret');
+    const previousBin = process.env.HCLOUD_BIN;
+    process.env.HCLOUD_BIN = fakeHcloudExecutable('console.log(JSON.stringify({ ok: true }));');
+    try {
+      const result = (await runApprovedForward(substituted, token, args)) as ApprovedRunResult;
+      assert.equal(result.approved, true, 'the substituted line spends the token and executes');
+    } finally {
+      if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = previousBin;
+    }
+  });
 });
 
 test('command-forward: a shell-special secret substitutes into the accepted line (the echo is balanced)', async () => {

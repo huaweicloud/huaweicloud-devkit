@@ -8,15 +8,15 @@ A write or execution command runs only after the user confirms the plan token in
    - `needed: true` means the command is a write or has execution side effects, and `command` is the exact line the user must run: `npx huaweicloud-devkit approve <approvalToken>`.
    - `needed: false` means the command is read-only, so the terminal confirmation does not apply.
 2. Confirm: show the user the plan echo and the `userConfirmation.command` line, then wait. The user runs that line in their own terminal. The terminal prints the redacted command and states that this authorizes one execution.
-3. Run (token mode): call `huaweicloud_run_approved_command` with the same `approvalToken`, the same `args`, the same `command` line (copy the plan echo's `command` field verbatim), and `approvedByUser: true` — the flag is your statement that the user approved; the terminal-confirmed grant is the confirmation. Ask mode has its own ladder below.
+3. Run (token mode): call `huaweicloud_run_approved_command` with the same `approvalToken`, the same `args`, the `command` line, and `approvedByUser: true` — the flag is your statement that the user approved; the terminal-confirmed grant is the confirmation. The `command` line is the display line: copy it from the plan echo and substitute the real values wherever it shows `<redacted>`; the args array spelled out is always an accepted command line. Ask mode has its own ladder below.
 
 An unconfirmed non-read command is rejected with `status: "rejected"` and `code: "USER_CONFIRMATION_REQUIRED"`, plus a `nextStep` naming the approve line. The refusal does not consume the token, so retry the same call after the user confirms.
 
 ## The command field
 
-Always send `command`: the full hcloud command line, for example `hcloud ECS DeleteServer --server_id=i-123`. The plan result already carries it as the TOP-LEVEL `command` field (the redacted echo); forward that field verbatim. It is not `userConfirmation.command`, which is the approve line in token mode. Where the plan shows `<redacted>` for a secret value, substitute the real value in BOTH `args` and `command`.
+Always send `command`: the full hcloud command line, for example `hcloud ECS DeleteServer --server_id=i-123`. The plan result carries it as the TOP-LEVEL `command` field (the redacted echo); it is the display line, not a value to copy blindly. Where it shows `<redacted>`, substitute the real values in both the `args` and the `command` line; the `args` array spelled out as one line is always accepted. It is not `userConfirmation.command`, which is the approve line in token mode.
 
-The harness permission popup renders the tool input, so `command` is the first line the user reads before allowing the call; `args` stays the machine-precision binding beside it. The server checks that `command` equals the line the `args` array spells. A mismatch is rejected with `code: "COMMAND_ARGS_MISMATCH"` and nothing executes, because the line the user read must be the line that runs. A `command` with no `args` is rejected as malformed with `code: "COMMAND_REQUIRES_ARGS"`.
+Whichever surface runs the confirmation renders `command` first: the server's elicitation form on a capable client, your own chat message carrying the T3 envelope on the rest, or a lingering client permission popup on an install that has not migrated yet. `args` stays the machine-precision binding beside it. The server checks that `command` equals the line the `args` array spells. A mismatch is rejected with `code: "COMMAND_ARGS_MISMATCH"` and nothing executes, because the line the user read must be the line that runs. A `command` with no `args` is rejected as malformed with `code: "COMMAND_REQUIRES_ARGS"`.
 
 The field is optional in the schema only so a legacy args-only caller still reaches the gate and executes unchanged. New calls always send it.
 
@@ -48,7 +48,7 @@ The confirmation happens on the server, in one of two tiers.
 
 Every non-approval answer refuses fail-closed: a decline, a dismiss, the timeout, and a transport failure all return a clean rejection (`ELICITATION_DECLINED`, `ELICITATION_CANCELLED`, `ELICITATION_TIMEOUT`, `ELICITATION_FAILED`) with nothing executed and nothing recorded. Do not retry a refused command without a fresh approval.
 
-The `command` field is first-class in both tiers. Send it on every call, because it is what the user reads: the form body on a capable client, your chat message on the rest. The plan result already carries it as the top-level `command` field; forward that verbatim and substitute real values where the plan shows `<redacted>`.
+The `command` field is first-class in both tiers. Send it on every call, because it is what the user reads: the form body on a capable client, your chat message on the rest. The plan result carries it as the top-level `command` field; it is the display line, so substitute the real values wherever it shows `<redacted>`, or send the args array spelled out (always accepted).
 
 The consent ledger records which tier answered: `evidence: "elicitation"` for a form answer, `evidence: "posture"` for a chat-round-trip retry. A ledger row that says posture means a model reported the user's approval, not that a human was mechanically verified.
 

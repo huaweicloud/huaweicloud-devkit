@@ -395,7 +395,7 @@ const runApprovedCommandSchema = z.looseObject({
     .string()
     .optional()
     .describe(
-      'Always send this: the exact full hcloud command line this call executes, for example "hcloud ECS DeleteServer --server_id=i-123". Copy it from the plan result\'s command field (huaweicloud_plan_cli_command), substituting real values where the plan shows <redacted>. The harness permission popup renders it as the first thing the user reads, and the server checks it equals the line the args array spells: a mismatch is rejected without executing anything. Only a legacy caller that predates this field omits it, and the field is optional in the schema so such a call still reaches the gate instead of dying in validation.',
+      'Always send this: the exact full hcloud command line this call executes, for example "hcloud ECS DeleteServer --server_id=i-123". The plan result\'s command field (huaweicloud_plan_cli_command) is the display line: copy it and substitute the real values wherever it shows <redacted>, or send the args array spelled out as one line. The confirmation body shows it as the first thing the user reads, and the server checks it equals the line the args array spells: a mismatch is rejected without executing anything. Only a legacy caller that predates this field omits it, and the field is optional in the schema so such a call still reaches the gate instead of dying in validation.',
     ),
   args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
   approvalToken: approvalTokenArg.describe(

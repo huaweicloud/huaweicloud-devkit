@@ -96,6 +96,16 @@ export function quoteShellArg(value: unknown): string {
   return `"${text.replace(/(["\\])/g, '\\$1')}"`;
 }
 
+// One redacted echo argument: the real argument's quoting shape with the
+// value text replaced. A real argument quoteShellArg leaves bare stays bare
+// (so a safe-charset substitution is the gate's plain line); one it would
+// quote gets the same wrapper around the redacted spelling (so a
+// shell-special substitution is the gate's quoted line).
+function redactedCommandArg(raw: string, redacted: string): string {
+  if (quoteShellArg(raw) === raw) return redacted;
+  return `"${redacted.replace(/(["\\])/g, '\\$1')}"`;
+}
+
 // The accepted executable lines for a normalized argument list: the
 // command-forward `command` field must equal one of them exactly. The plain
 // space-joined line is the contract's stated anchor; the shell-quoted line is
@@ -342,19 +352,20 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
   const inputArgs = Array.isArray(args) ? args.map(String) : [];
   const { args: normalizedArgs, stripped } = stripLeadingHcloudBinArgs(inputArgs);
   const classification = classifyHcloudArgs(normalizedArgs, options);
-  // The echo is redacted PER ARG and then quoted (the same construction as
-  // the `args` field and the approval summarize view). Redacting AFTER
-  // quoting broke the documented substitution flow: a shell-quoted
-  // secret-bearing argument lost its closing quote when the value inside was
-  // replaced, so `--server.adminPass=<redacted>` became
-  // `"--server.adminPass=<redacted> --name=db1` and no substitution could
-  // produce the line the approval gate accepts (measured: a Huawei password
-  // policy value with '!', which quoteShellArg must quote). Per-arg-first
-  // keeps the quoting balanced, so substituting the real value yields the
-  // gate's per-arg-quoted accepted variant.
-  const command = ['hcloud', ...normalizedArgs.map((arg) => redactSecrets(arg))]
-    .map((arg) => quoteShellArg(arg))
-    .join(' ');
+  // The echo reproduces the REAL argument's quoting SHAPE and redacts only the
+  // value text inside it, so replacing `<redacted>` with the real value yields
+  // exactly the line the approval gate accepts for every charset family.
+  // Quoting must be decided from the raw argument: the placeholder itself is
+  // not charset-safe (`<` and `>` sit outside quoteShellArg's safe set), so
+  // quoting the redacted spelling unconditionally would wrap a safe-charset
+  // value the real line leaves bare and dead-end the substitution on the most
+  // common family (alphanumeric password, hex token). The old post-quote
+  // redaction had the mirror defect on the shell-special family (an
+  // unbalanced quote), so this one construction now serves both.
+  const redactedArgs = normalizedArgs.map((arg) => redactSecrets(arg));
+  const command = ['hcloud', ...normalizedArgs.map((raw, i) => redactedCommandArg(raw, redactedArgs[i] ?? ''))].join(
+    ' ',
+  );
   const warnings: Array<string | SgFinding> = planningWarnings(normalizedArgs);
   if (stripped !== null) warnings.unshift(leadingBinWarning(stripped));
   const obsHint = obsWriteHint(normalizedArgs);
@@ -430,7 +441,7 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
         ? {
             needed: true,
             mode: 'ask',
-            note: "The confirmation happens on the server when huaweicloud_run_approved_command is called: an elicitation-capable client renders a form with this command line, and any other client returns ASK_CONFIRMATION_REQUIRED, which you answer by showing the user this command in chat and retrying with approvedByUser: true. Send the same args and this result's command field on every call. No terminal approval line or token is needed.",
+            note: "The confirmation happens on the server when huaweicloud_run_approved_command is called: an elicitation-capable client renders a form with this command line, and any other client returns ASK_CONFIRMATION_REQUIRED, which you answer by showing the user this command in chat and retrying with approvedByUser: true. Send the same args on every call. This command field is the display line: where it shows <redacted>, substitute the real values, and the args array spelled out is always accepted as the command. No terminal approval line or token is needed.",
           }
         : {
             needed: true,
