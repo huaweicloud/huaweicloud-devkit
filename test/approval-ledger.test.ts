@@ -17,7 +17,7 @@ import {
   writeFileSync,
   writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import {
@@ -236,6 +236,65 @@ function recordReuseTier(
   return { label: argsHash, tier: recorded.evidence };
 }
 
+const isWin = process.platform === 'win32';
+
+// PR-2.5 win32 accommodations. The unreadability fixtures below strip read
+// bits with chmod, which is a no-op on win32 ACLs — the reads kept
+// succeeding on the windows lanes, so every blinded-cell assertion failed
+// against a readable file (CI 43807877421). The twin denies the
+// locale-independent Everyone SID the one access the cell needs denied: a
+// deny ACE binds even the elevated CI runner, while the file's attributes
+// stay readable so existsSync keeps answering true — the
+// unreadable-vs-absent distinction the quarantine decision hinges on.
+function runIcacls(args: string[]): void {
+  const run = spawnSync('icacls', args, { encoding: 'utf8' });
+  assert.equal(run.status, 0, `icacls ${args.join(' ')} failed: ${(run.stderr || run.stdout || '').trim()}`);
+}
+
+// Blinded for the in-process reader: POSIX strips the read bits; win32
+// denies Everyone read-data.
+function makeUnreadable(file: string): void {
+  if (isWin) {
+    runIcacls([file, '/deny', '*S-1-1-0:(RD)']);
+    return;
+  }
+  chmodSync(file, 0o000);
+}
+
+// The readability restore every cell pairs with its blinding, so the
+// caller can read the preserved bytes back.
+function restoreReadable(file: string): void {
+  if (isWin) {
+    runIcacls([file, '/remove:d', '*S-1-1-0']);
+    return;
+  }
+  chmodSync(file, 0o600);
+}
+
+// The quarantine carve-out fixture: the preserve-then-write rename must
+// FAIL, so the append refuses rather than overwrite. POSIX makes the
+// parent read-only (nothing can be renamed in); win32 denies DELETE on
+// the store file itself — rename requires delete access, so the same
+// cannot-preserve observable holds at file level while reads stay open.
+// Returns the restore function.
+function blockQuarantineRename(file: string): () => void {
+  if (isWin) {
+    runIcacls([file, '/deny', '*S-1-1-0:(D)']);
+    return () => runIcacls([file, '/remove:d', '*S-1-1-0']);
+  }
+  const dir = dirname(file);
+  chmodSync(dir, 0o555); // r-x: rename into the dir fails
+  return () => chmodSync(dir, 0o755);
+}
+
+// The ulimit -f 1 vehicle drives a kernel mid-write truncation POSIX alone
+// offers: the windows lanes carry Git Bash, so bash runs — but MSYS2's
+// rlimit cannot bind a native node child, and the measured CI shape is the
+// capped append COMPLETING (run 43807877421), which asserts nothing about a
+// partial write. No cheap win32 twin produces a real kernel partial.
+const WIN32_ULIMIT_VEHICLE =
+  'win32: the ulimit -f 1 vehicle cannot bind a native node child (measured on the CI lanes: the capped append completes), so no kernel partial write ever happens';
+
 // Quarantine the store once: stage raw bytes, make them unreadable, append
 // (which must quarantine rather than overwrite), and return the fresh
 // sidecar's name with its readability restored for the caller's byte check.
@@ -243,12 +302,12 @@ function quarantineOnce(home: string, rawBytes: string, alreadySeen: string[] = 
   const dir = join(home, '.config', 'huaweicloud');
   stageStore(home, rawBytes);
   const file = join(dir, 'approval-consents.json');
-  chmodSync(file, 0o000); // unreadable in-process
+  makeUnreadable(file);
   recordAskModeConsent({ sessionId: 'ses-new', tool: 't', argsHash: 'h', outcome: 'granted' });
   const names = readdirSync(dir);
   const sidecar = names.find((name) => name.includes('.corrupt-') && !alreadySeen.includes(name));
   assert.ok(sidecar, `a fresh quarantine sidecar must exist, got: ${names.join(', ')}`);
-  chmodSync(join(dir, sidecar), 0o600);
+  restoreReadable(join(dir, sidecar));
   return sidecar;
 }
 
@@ -1172,7 +1231,7 @@ test(
     writeFileSync(unreadableTaken, JSON.stringify(baseEvent({ sessionId: 'taken-kept', argsHash: 'h-taken' })) + '\n', {
       mode: 0o600,
     });
-    chmodSync(unreadableTaken, 0o000);
+    makeUnreadable(unreadableTaken);
     writeFileSync(spool, JSON.stringify(baseEvent({ sessionId: 'spool-kept', argsHash: 'h-sp' })) + '\n');
 
     // A real locked append: the readable spool must fold and land, the
@@ -1189,9 +1248,9 @@ test(
       'the unreadable taken file survived with its bytes — evidence is never deleted on a read failure',
     );
     assert.ok(!existsSync(spool), 'the successfully folded spool was still removed');
-    // The bytes are intact under the 000 mode: restore readability and
+    // The bytes are intact under the blinded mode: restore readability and
     // confirm the line is still exactly what was staged.
-    chmodSync(unreadableTaken, 0o600);
+    restoreReadable(unreadableTaken);
     const salvaged = readFileSync(unreadableTaken, 'utf8');
     assert.ok(salvaged.includes('taken-kept'), 'the kept file still carries its consent line verbatim');
   }),
@@ -1828,7 +1887,7 @@ test(
     // NEWEST, never -1, and the next append recovers above the store.
     stageStore(home, `[${row('posture', 5_000, 0)},${row('terminal', 4_000, 1)}]`);
     writeFileSync(seqFile, '1\n');
-    chmodSync(seqFile, 0o000);
+    makeUnreadable(seqFile);
     recordAskModeConsent({
       sessionId: 'ses',
       tool: 'huaweicloud_run_approved_command',
@@ -1842,7 +1901,7 @@ test(
       `cell 2: the unreadable counter failed NEWEST (seq ${rows[2]!.arrivalSeq}), never -1`,
     );
     assert.equal(rows.at(-1)!.evidence, 'posture', 'cell 2: chronology held');
-    chmodSync(seqFile, 0o600);
+    restoreReadable(seqFile);
 
     // Cell 3 — the non-numeric-file shape (A2 1c): the counter rewinds to
     // 0 under a seq-2 store unless the store floors it; three serialized
@@ -2405,7 +2464,7 @@ test(
       blindedTaken,
       JSON.stringify({ ...base, argsHash: 'h-r16-blind', grantedAt: 5000, evidence: 'terminal', arrivalSeq: 5 }) + '\n',
     );
-    chmodSync(blindedTaken, 0o000);
+    makeUnreadable(blindedTaken);
     const c2 = recordAskModeConsent({
       sessionId: 'ses',
       tool: 'huaweicloud_run_approved_command',
@@ -2418,7 +2477,7 @@ test(
       Number.MAX_SAFE_INTEGER,
       'cell 2: a blinded sidecar marks the row unknown — never a duplicate of the seqs it hides',
     );
-    chmodSync(blindedTaken, 0o600);
+    restoreReadable(blindedTaken);
     const c3 = recordAskModeConsent({
       sessionId: 'ses',
       tool: 'huaweicloud_run_approved_command',
@@ -2744,7 +2803,7 @@ test(
       JSON.stringify([baseEvent({ sessionId: 'ses', argsHash: 'h-r17-b-other', grantedAt: 900, arrivalSeq: 4 })]),
     );
     spoolRows([{ argsHash: 'h-r17-bl-K', arrivalSeq: 5 }]);
-    chmodSync(paths.spool, 0o000);
+    makeUnreadable(paths.spool);
     degrade();
     const blinded = recordAskModeConsent({
       sessionId: 'ses',
@@ -2754,7 +2813,7 @@ test(
       evidence: 'posture',
     });
     rmSync(paths.lockRoot, { force: true });
-    chmodSync(paths.spool, 0o600);
+    restoreReadable(paths.spool);
     assert.equal(
       blinded.arrivalSeq,
       Number.MAX_SAFE_INTEGER,
@@ -3476,6 +3535,7 @@ test(
 
 test(
   'a partial store write never lands a truncated store or drops the folded taken file (round-21 write-count fix)',
+  { skip: isWin ? WIN32_ULIMIT_VEHICLE : false },
   withLedgerHome((home) => {
     // Stage: a store past the ulimit (12 seed rows, ~1.8KB) plus one
     // degraded spool row, then ONE append under `ulimit -f 1` (1024
@@ -3538,6 +3598,7 @@ test(
 
 test(
   'a partial write of MULTIBYTE content never lands a truncated store (round-22 finding 1, both seats)',
+  { skip: isWin ? WIN32_ULIMIT_VEHICLE : false },
   withLedgerHome((home) => {
     // The r21 pin covered ASCII only — and the seats proved the ASCII green
     // was structural: the r21 writeAll counted writeSync's BYTE return
@@ -3953,17 +4014,16 @@ test(
 test(
   'when even the quarantine fails, the append refuses to write',
   withLedgerHome(async (home) => {
-    // The carve-out: if the unreadable store cannot be moved aside (a
-    // read-only parent), the append is dropped entirely — evidence is
-    // preserved at the cost of the append, never the other way around.
-    const dir = join(home, '.config', 'huaweicloud');
+    // The carve-out: if the unreadable store cannot be moved aside, the
+    // append is dropped entirely — evidence is preserved at the cost of
+    // the append, never the other way around.
     const file = stageStore(home, '{"not":"an array"}');
     const original = readFileSync(file, 'utf8');
-    chmodSync(dir, 0o555); // r-x: rename into the dir fails
+    const restorePreservable = blockQuarantineRename(file);
     try {
       appendConsentEvent(baseEvent({ sessionId: 'ses-new' }));
     } finally {
-      chmodSync(dir, 0o755);
+      restorePreservable();
     }
     assert.equal(readFileSync(file, 'utf8'), original, 'the append refused to overwrite the store it could not read');
     assert.deepEqual(readConsentEvents(), [], 'nothing was recorded');
