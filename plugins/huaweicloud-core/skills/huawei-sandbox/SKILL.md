@@ -1052,6 +1052,8 @@ If the status code is not 2xx/3xx:
 
 When `deploy_check` returns `nextStep: expose_via_devbridge`, it also returns an executable `remediation` string — run those devbridge commands in the sandbox (after `source /tmp/hw_creds.sh`). Until a tunnel exists, `deploy_check` returns no `publicUrl`; do not fabricate a URL.
 
+When the tunnel probe fails because the **app** answered 4xx/5xx (`HTTP <code> from the app`, e.g. nginx 403), `deploy_check` returns `nextStep: configure_nginx` and **no** `remediation`: tunnel and host are healthy, so fix the app/nginx (see the Step 5 re-check) instead of re-creating the tunnel.
+
 Follow the standard [Expose the deployed app](#expose-the-deployed-app-public-url) procedure. The app is already running on the detected port — only DevBridge tunnel setup is needed.
 
 Use `exec_with_session` to background DevBridge. For SSR, DevBridge tunnels the nginx public port (not the Node port directly).

@@ -769,7 +769,7 @@ The tool checks:
 - **nginx_serving** — nginx responds with 2xx/3xx on the app port
 - **output_dir** — build output directory exists and is non-empty
 - **devbridge_tunnel** — DevBridge tunnel is active
-- **tunnel_url_accessible** — tunnel URL returns 200/304
+- **tunnel_url_accessible** — tunnel URL returns 2xx/3xx; gateway markers (`tunnel not found` / `port not configured` / `bad gateway`) and an app-level 4xx/5xx (e.g. nginx 403) all count as FAIL
 - **qr_code** (cross-platform only) — QR image exists in output dir
 
 Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
