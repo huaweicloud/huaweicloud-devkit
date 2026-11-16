@@ -1266,4 +1266,26 @@ test('gateway tunnel-error bodies are treated as unreachable, not content issues
   assert.match(sandbox, /port not configured/);
   assert.match(sandbox, /bad gateway/);
   assert.match(sandbox, /404 "tunnel not found" ≠ content issue/);
+
+  // #981 R4: an app-level 4xx/5xx (e.g. nginx 403) is a tunnel-probe FAIL, and the
+  // router must send those to nginx instead of handing out the destructive
+  // devbridge remediation for a healthy tunnel. Guard both halves + the contract.
+  assert.ok(
+    sessionManager.includes('APP_HTTP_FAILURE_DETAIL_PATTERN = /HTTP \\d{3} from the app/'),
+    'session-manager must expose the app-level HTTP failure detail pattern',
+  );
+  assert.ok(
+    sessionManager.includes(`if [ "$code" -ge 400 ] 2>/dev/null`),
+    'probe_tunnel must fail any remaining app 4xx/5xx',
+  );
+  assert.ok(
+    sessionManager.includes('tunnelAppLevelFailure') && sessionManager.includes(`? 'configure_nginx'`),
+    'parseDeployCheckOutput must route an app-level tunnel FAIL to configure_nginx',
+  );
+  assert.match(sandbox, /HTTP <code> from the app/);
+  assert.match(sandbox, /nextStep: configure_nginx/);
+  assert.match(
+    readFileSync(join(root, '.codeartsdoer', 'skills', 'huawei-sandbox', 'SKILL.md'), 'utf8'),
+    /tunnel URL returns 2xx\/3xx/,
+  );
 });
