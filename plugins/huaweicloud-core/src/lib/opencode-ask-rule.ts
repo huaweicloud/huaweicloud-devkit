@@ -2,13 +2,15 @@
 // merge/cleanup logic.
 //
 // Purpose: in the ASK approval posture (DEVKIT_APPROVAL_MODE=ask), the
-// confirmation runs on the SERVER inside the tool call (an elicitation form,
-// or the T3 chat round-trip on a client that cannot render one). The client
-// rules are yield-only: one exact `allow` rule per roster tool suppresses the
-// redundant client popup so the server form is the single confirmation. A
-// client rule can therefore no longer fail anything open — the gate confirms
-// every roster call regardless — but a `deny` rule still bricks the call in
-// the client, which is why the doctor keeps deny a FAIL direction.
+// confirmation runs on the SERVER inside the tool call — an elicitation form
+// on opencode 2.x, the T3 chat round-trip on 1.19–1.x (where forms do not
+// exist, so the yield hands the only mechanical client prompt to the
+// round-trip, recorded as posture trust). The client rules are yield-only:
+// one exact `allow` rule per roster tool suppresses the redundant client
+// popup so the server's confirmation is the only prompt. A client rule can
+// therefore no longer fail anything open — the gate confirms every roster
+// call regardless — but a `deny` rule still bricks the call in the client,
+// which is why the doctor keeps deny a FAIL direction.
 //
 // Shape, measured on opencode 2.2.7: the V2 config key is a top-level
 // `permissions` ARRAY of { action, resource, effect } objects; the MCP tool

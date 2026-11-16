@@ -5,15 +5,16 @@ import test from 'node:test';
 
 import { allowRuleActions } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
 import { fixtureDir } from './fixture-dir.ts';
-import { runDoctor, runInstall, runUninstall } from './doctor-helpers.ts';
+import { runDoctor, runDoctorStatus, runInstall, runUninstall } from './doctor-helpers.ts';
 import { seedStoreIn } from './opencode-saved-perms-harness.ts';
 
 // The ASK approval posture through the real installer and doctor. Under the
 // server-run gate the client half is one exact ALLOW rule per roster tool: it
-// suppresses the redundant client popup, and the server form (or the T3 chat
-// round-trip) is the single confirmation. The gate override
-// HUAWEICLOUD_OPENCODE_ASK_RULE keeps the shape deterministic — never the
-// natural probe, which would flip with the host's opencode.
+// suppresses the redundant client popup, and the server's own confirmation is
+// the only prompt — the elicitation form on opencode 2.x, the T3 chat
+// round-trip (posture trust) on 1.19–1.x, where forms do not exist. The gate
+// override HUAWEICLOUD_OPENCODE_ASK_RULE keeps the shape deterministic —
+// never the natural probe, which would flip with the host's opencode.
 
 const ACTION = allowRuleActions()[0]!;
 const ASK_LABEL = 'ASK approval posture (client allow rules + server gate)';
@@ -165,7 +166,7 @@ test('install with the ask gate off writes neither half of the pair', () => {
   assert.equal(envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE, undefined, 'no DEVKIT_APPROVAL_MODE env is written');
 });
 
-test('a user-set mode value wins: no client rules are written', () => {
+test('a user-set mode value wins: no client rules are kept, and stale ones are removed', () => {
   const home = fixtureDir('hwc-ask-usermode-');
   seedConfig(home, {
     mcp: { 'huaweicloud-devkit': canonicalEntry({ DEVKIT_APPROVAL_MODE: 'token' }) },
@@ -173,10 +174,34 @@ test('a user-set mode value wins: no client rules are written', () => {
   const stdout = runInstall(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
   const config = loadOpencodeConfig(home);
   assert.equal(envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE, 'token', 'the user’s value survives');
-  assert.equal('permissions' in config, false, 'no client allow rules are written');
-  assert.ok(stdout.includes("keeping the user's value, so no client allow rules are written"), 'the skip is warned');
+  assert.equal('permissions' in config, false, 'no client allow rules are kept');
+  assert.ok(stdout.includes("keeping the user's value, so no client allow rules are kept"), 'the skip is warned');
   const doctorOut = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
   assert.ok(doctorOut.includes(`[PASS] ${TOKEN_LABEL}`), `the user’s mechanical posture passes, got:\n${doctorOut}`);
+});
+
+test('a user-set mode value with stale allow rules: install removes them, keeps the value, doctor PASSes token mode', () => {
+  const home = fixtureDir('hwc-ask-usermode-stale-');
+  seedConfig(home, {
+    permissions: [ourAllow()],
+    permission: { [ACTION]: 'allow', 'user-server_user-tool': 'ask' },
+    mcp: { 'huaweicloud-devkit': canonicalEntry({ DEVKIT_APPROVAL_MODE: 'token' }) },
+  });
+  const stdout = runInstall(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
+  const config = loadOpencodeConfig(home);
+  assert.equal(envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE, 'token', 'the user’s value still wins');
+  assert.equal('permissions' in config, false, 'the stale V2 allow rows are removed');
+  assert.equal(v1Permission(config)[ACTION], undefined, 'the stale V1 allow key is removed');
+  assert.equal(v1Permission(config)['user-server_user-tool'], 'ask', 'unrelated user keys survive');
+  assert.ok(
+    stdout.includes("ASK client allow rules removed (DEVKIT_APPROVAL_MODE is the user's own)"),
+    `the removal is logged, got:\n${stdout}`,
+  );
+  // One re-run converges: the mixed-state WARN is gone and token mode passes.
+  const doctorOut = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
+  assert.ok(doctorOut.includes(`[PASS] ${TOKEN_LABEL}`), `token mode passes clean, got:\n${doctorOut}`);
+  assert.equal(doctorOut.includes(`[WARN] ${ASK_LABEL}`), false, 'the mixed state never survives a re-run');
+  assert.equal(doctorOut.includes(`[FAIL] ${ASK_LABEL}`), false);
 });
 
 test('a user-owned rule on another resource is skipped by name, never silently overridden (the roster replay)', () => {
@@ -216,10 +241,11 @@ test('doctor: a left-behind ask rule FAILs with the re-run remediation (the migr
   const config = installAskOn(home);
   config.permissions = [ourAsk()];
   saveOpencodeConfig(home, config);
-  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
+  const { stdout, status } = runDoctorStatus(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the ask residue to fail, got:\n${stdout}`);
   assert.ok(stdout.includes('the posture migration missed it'), 'the residue is named');
   assert.ok(stdout.includes('npx huaweicloud-devkit install --target opencode'), 'the re-run remediation is named');
+  assert.equal(status, 1, 'a FAIL-shaped config exits nonzero (the doctor exit contract)');
 });
 
 test('doctor: a deny rule FAILs with the bricked-call direction', () => {
@@ -227,10 +253,11 @@ test('doctor: a deny rule FAILs with the bricked-call direction', () => {
   const config = installAskOn(home);
   config.permissions = [{ action: ACTION, resource: '*', effect: 'deny' }];
   saveOpencodeConfig(home, config);
-  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
+  const { stdout, status } = runDoctorStatus(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the deny rule to fail, got:\n${stdout}`);
   assert.ok(stdout.includes('"deny" — the write tool is blocked outright'), 'the danger is named');
   assert.ok(stdout.includes('delete that rule'), 'the removal is named');
+  assert.equal(status, 1, 'a FAIL-shaped config exits nonzero (the doctor exit contract)');
 });
 
 test('doctor: allow rules without the server gate are a WARN naming the mixed state', () => {

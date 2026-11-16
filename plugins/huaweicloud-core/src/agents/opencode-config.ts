@@ -157,7 +157,7 @@ function applyApprovalModeToEntry(entry: Record<string, unknown>): ApprovalModeO
   if (current !== undefined) {
     const shown = typeof current === 'string' ? current : JSON.stringify(current);
     console.log(
-      `  \x1b[33m[WARN]\x1b[0m OpenCode mcp entry already sets DEVKIT_APPROVAL_MODE=${shown} — keeping the user's value, so no client allow rules are written (see README, Harness permission notes).`,
+      `  \x1b[33m[WARN]\x1b[0m OpenCode mcp entry already sets DEVKIT_APPROVAL_MODE=${shown} — keeping the user's value, so no client allow rules are kept (devkit-written ones are removed; see README, Harness permission notes).`,
     );
     return 'user';
   }
@@ -261,7 +261,18 @@ export function updateOpenCodeConfig(pluginDir: string): void {
   // every install made before the posture existed is the population this
   // must heal.
   let clientChanged = false;
-  if (askOn && approvalMode !== 'user') {
+  let clientRemoved = false;
+  if (askOn && approvalMode === 'user') {
+    // The server half left the pair (the user's own mode value governs the
+    // posture), so the client half leaves with it: any allow rules a past
+    // install wrote are removed value-exact, both shapes independently (a
+    // config can carry both). Without this, the doctor's mixed-state WARN
+    // could never heal — re-running install would reproduce it forever.
+    // After the removal the user's posture (token mode) is fully mechanical.
+    const removedV2 = removeAllowPermissionRules(config);
+    const removedV1 = removeAllowPermissionRulesV1(config);
+    clientRemoved = removedV2 || removedV1;
+  } else if (askOn) {
     const applied = askGate === 'v1-object' ? applyAllowPermissionRulesV1(config) : applyAllowPermissionRules(config);
     clientChanged = applied.changed;
     for (const action of applied.skipped) {
@@ -288,7 +299,7 @@ export function updateOpenCodeConfig(pluginDir: string): void {
     mcpMap['huaweicloud-devkit'] = entry;
     config.mcp = mcpMap;
   }
-  if (!rebuilt && !entryChanged && !permChanged && !clientChanged && !migrated) {
+  if (!rebuilt && !entryChanged && !permChanged && !clientChanged && !migrated && !clientRemoved) {
     console.log(`  OpenCode MCP config unchanged: ${configPath}`);
     return;
   }
@@ -300,6 +311,9 @@ export function updateOpenCodeConfig(pluginDir: string): void {
   );
   if (migrated) {
     console.log(`  ASK posture migrated (legacy ask rules removed) -> ${configPath}`);
+  }
+  if (clientRemoved) {
+    console.log(`  ASK client allow rules removed (DEVKIT_APPROVAL_MODE is the user's own) -> ${configPath}`);
   }
   if (clientChanged) {
     console.log(`  ASK approval (client allow rules + DEVKIT_APPROVAL_MODE server gate) -> ${configPath}`);

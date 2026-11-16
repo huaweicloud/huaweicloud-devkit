@@ -1176,6 +1176,9 @@ async function cmdDoctor(): Promise<void> {
   }
   if (fail > 0) {
     console.log('\x1b[33mFix failures above, then restart your session.\x1b[0m');
+    // A FAIL line is the command's verdict, so CI and scripts can gate on the
+    // exit code: a doctor that prints [FAIL] and exits 0 is not a check.
+    process.exitCode = 1;
   }
   if (fail === 0 && mcpConfigured) {
     console.log('\n\x1b[32mAll checks passed.\x1b[0m You can now describe your Huawei Cloud task');

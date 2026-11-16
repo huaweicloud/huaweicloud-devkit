@@ -58,20 +58,32 @@ export function doctorEnv(home: string, extra: Record<string, string> = {}): Nod
   return env;
 }
 
-export function runDoctor(home: string, extra: Record<string, string> = {}): string {
-  const run = spawnSync(process.execPath, [setupCli, 'doctor'], {
-    encoding: 'utf8',
-    env: doctorEnv(home, extra),
-    timeout: 60_000,
-  });
-  // exit 1 is the healthy "some check failed" path (a fake HOME has no
-  // installs); only a crash or timeout aborts the test.
+// The doctor-run tail every spawner shares: the status contract (exit 1 is
+// the healthy "some check failed" path — exit 0 means every check passed)
+// and the plain-text strip. One home for both, so a staged-bin runner and
+// the helpers below cannot drift.
+export function doctorRunText(run: { status: number | null; stdout: string | null; stderr?: string | null }): string {
   assert.ok(run.status === 0 || run.status === 1, `doctor crashed: ${run.stderr}`);
   // Strip ANSI so [PASS]/[FAIL] assertions see the plain markers (check()
   // wraps them in color escapes). The escape is built from fromCharCode —
   // same idiom as dep-provision's stripAnsi — because eslint's
   // no-control-regex (rightly) flags control characters in regex literals.
   return (run.stdout ?? '').replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+}
+
+// Doctor with the exit code exposed: a FAIL-shaped config exits 1 (the
+// cmdDoctor contract), so the posture's FAIL directions can pin it.
+export function runDoctorStatus(home: string, extra: Record<string, string> = {}): { stdout: string; status: number } {
+  const run = spawnSync(process.execPath, [setupCli, 'doctor'], {
+    encoding: 'utf8',
+    env: doctorEnv(home, extra),
+    timeout: 60_000,
+  });
+  return { stdout: doctorRunText(run), status: run.status ?? 1 };
+}
+
+export function runDoctor(home: string, extra: Record<string, string> = {}): string {
+  return runDoctorStatus(home, extra).stdout;
 }
 
 // A real install into the fake home, so the native freshness checks see an

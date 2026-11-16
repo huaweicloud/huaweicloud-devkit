@@ -196,6 +196,29 @@ test('the legacy posture is migrated away in BOTH shapes on one config', () => {
   assert.deepEqual(config.permission, { '*': 'allow' }, 'the V1 residue is gone and the user key survives');
 });
 
+test('the accepted edge: a user-authored same-shape ask row is migration collateral (both shapes)', () => {
+  // Indistinguishable from the devkit-written legacy posture, so the
+  // migration removes it together with our own — the same accepted edge the
+  // skills-tree seam records.
+  const v2: Record<string, unknown> = { permissions: [ask(A)] };
+  assert.equal(removeAskPermissionRules(v2, [A, B]), true);
+  assert.equal('permissions' in v2, false, 'the emptied array is pruned');
+
+  const v1: Record<string, unknown> = { permission: { [A]: 'ask' } };
+  assert.equal(removeAskPermissionRulesV1(v1, [A, B]), true);
+  assert.equal('permission' in v1, false, 'the emptied object is pruned');
+});
+
+test('the accepted edge: a user-authored same-shape allow row is removal collateral (both shapes)', () => {
+  const v2: Record<string, unknown> = { permissions: [allow(A)] };
+  assert.equal(removeAllowPermissionRules(v2, [A, B]), true);
+  assert.equal('permissions' in v2, false, 'the emptied array is pruned');
+
+  const v1: Record<string, unknown> = { permission: { [A]: 'allow' } };
+  assert.equal(removeAllowPermissionRulesV1(v1, [A, B]), true);
+  assert.equal('permission' in v1, false, 'the emptied object is pruned');
+});
+
 // ── Reading the posture (the doctor's half) ──
 
 test('readPermissionRules reads every readable effect per roster action', () => {
