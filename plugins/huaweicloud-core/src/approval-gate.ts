@@ -189,8 +189,46 @@ const OBS_URI_RE = /^obs:\/\//;
 //                                      executes as trunk did
 const CREDS_FILE_NAMES = new Set(['config', 'credentials', 'config.json', 'credentials.json', 'creds-import.json']);
 
-function isCredentialResolvedPath(resolvedPath: string): boolean {
-  const segments = resolvedPath.split('/').filter((segment) => segment.length > 0);
+export function isCredentialResolvedPath(resolvedPath: string): boolean {
+  // Compare in the filesystem's own case and split on BOTH separators.
+  //
+  // The split: win32 realpathSync returns backslash-separated paths, so a
+  // '/'-only split matched no segment rule there and the floor never
+  // refused on Windows (the PR-2.5 CI finding, fixed here). The resolution
+  // half above already speaks both spellings — its absolute candidate test
+  // accepts drive-letter forms with either separator on every platform —
+  // and this split reuses the same [\\/] vocabulary, one seam rather than
+  // a second win32 spelling of the rule.
+  //
+  // The lowercasing (the root-reproduced finding this round): NTFS is
+  // case-insensitive, so an attacker's upper-case spelling
+  // (.CONFIG\HUAWEICLOUD\SECRETS\.MASTER-KEY) resolves to the real
+  // credential file, while Node's non-native realpathSync preserves the
+  // caller's spelling instead of the on-disk one — a case-sensitive
+  // comparison then reads the attacker's spelling as a clean path and the
+  // floor refuses nothing. Lowercasing closes exactly that case-variant
+  // alias class and aligns the floor with the hook face's case-insensitive
+  // regex doctrine (policy patterns match with the 'i' flag). Trailing-dot
+  // and 8.3 short-name aliases ride the same spelling-preservation
+  // mechanism but are NOT normalized here — recorded residuals: they
+  // defeat the exact-name segment rules where one is the sole coverage,
+  // while the prefix rules (startsWith) and the vault tree's
+  // huaweicloud/secrets pair still cover the practical vault-key
+  // spellings. Pinned as non-matches in the driver battery.
+  //
+  // Drift direction, both changes: the floor only ever ADDS matches. On
+  // win32 a filename can contain neither a backslash nor (post-lowercase)
+  // a case distinction against the canonical tree, so every added match is
+  // a real credential path the floor was missing; on POSIX a distinct file
+  // whose name lowercases or backslash-splits onto a rule shape
+  // ('hcloud\credentials' as one name, a real 'HCloud/config' directory)
+  // picks up one extra refusal — the documented safe direction for a
+  // security floor, and the exhaustive direction probe over the alias
+  // enumeration confirms zero matches lost.
+  const segments = resolvedPath
+    .toLowerCase()
+    .split(/[\\/]/)
+    .filter((segment) => segment.length > 0);
   for (let i = 0; i < segments.length; i += 1) {
     const segment = segments[i]!;
     if (segment.startsWith('.hcloud') || segment.startsWith('.huaweicloud')) return true;
