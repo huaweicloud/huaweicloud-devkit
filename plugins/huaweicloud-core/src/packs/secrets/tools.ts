@@ -6,6 +6,7 @@ import { isCredentialEnvVarName, SECRET_REF_PATTERN } from '../../lib/secret-vau
 import { isCredentialFilePath } from '../../safety-policy.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
+import { approvalTokenArg, approvedByUserArg } from '../../lib/tool-schema-parts.ts';
 
 // The secrets pack: vault writes and inventory through MCP. There is
 // deliberately NO value-retrieval tool — plaintext never crosses the MCP
@@ -105,6 +106,8 @@ const secretListSchema = z.looseObject({
 
 const secretDeleteSchema = z.looseObject({
   ref: secretRefField.describe('Vault ref to delete.'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const SECRETS_TOOLS = [
@@ -125,7 +128,7 @@ export const SECRETS_TOOLS = [
   {
     name: 'huaweicloud_secret_delete',
     description:
-      'Delete one secret from the local vault by ref. Idempotent: removed=1 when a secret was deleted, removed=0 when the ref was not stored (usually a typo in the ref — check with huaweicloud_secret_list).',
+      'Delete one secret from the local vault by ref. Destructive with no version history, so the approval gate mediates every call: in the default token mode a no-token call returns USER_CONFIRMATION_REQUIRED with the approve command line for the user\u2019s own terminal, and under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself (form, or an ASK_CONFIRMATION_REQUIRED chat round-trip). Idempotent: removed=1 when a secret was deleted, removed=0 when the ref was not stored (usually a typo in the ref — check with huaweicloud_secret_list).',
     schema: secretDeleteSchema,
     handler: handleSecretDelete,
   },

@@ -20,6 +20,10 @@ import { HUAWEICLOUD_CLI_TOOL_HANDLERS, HUAWEICLOUD_CLI_APPROVAL_SPECS } from '.
 import { SANDBOX_APPROVAL_SPECS } from './sandbox/approval.ts';
 import { SECRETS_TOOL_HANDLERS } from './secrets/tools.ts';
 import { AUTH_APPROVAL_SPECS } from './auth/approval.ts';
+import { OBS_APPROVAL_SPECS } from './obs/approval.ts';
+import { UPDATE_APPROVAL_SPECS } from './update/approval.ts';
+import { SECRETS_APPROVAL_SPECS } from './secrets/approval.ts';
+import { PACKS_CONFIGURE_APPROVAL_SPEC } from '../packs-configure.ts';
 import type { ApprovalSpec } from '../approval-types.ts';
 import { APPROVAL_TOOLS } from '../approval-roster.ts';
 
@@ -152,6 +156,10 @@ export const APPROVAL_SPECS = {
   ...HUAWEICLOUD_CLI_APPROVAL_SPECS,
   ...SANDBOX_APPROVAL_SPECS,
   ...AUTH_APPROVAL_SPECS,
+  ...OBS_APPROVAL_SPECS,
+  ...UPDATE_APPROVAL_SPECS,
+  ...SECRETS_APPROVAL_SPECS,
+  huaweicloud_packs_configure: PACKS_CONFIGURE_APPROVAL_SPEC,
 } satisfies Record<ApprovalRosterName, ApprovalSpec>;
 
 // Per-pack tool lists invert PACK_OF instead of hand-writing name lists, so a

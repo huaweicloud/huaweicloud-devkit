@@ -20,7 +20,7 @@ import {
   writeCorruptStore,
   type SeedStore,
 } from './opencode-saved-perms-harness.ts';
-import { APPROVAL_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
+import { APPROVAL_TOOLS, approvalToolAction } from '../plugins/huaweicloud-core/src/approval-roster.ts';
 import { allowRuleActions } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
 import {
   opencodeDataDir,

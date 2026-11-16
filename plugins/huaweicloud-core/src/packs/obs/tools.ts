@@ -10,6 +10,7 @@ import { fetchWithProxy } from '../../proxy/proxy-agent.ts';
 import { asCredentialRecord, type CredentialLike } from '../../lib/credentials.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
+import { approvalTokenArg, approvedByUserArg } from '../../lib/tool-schema-parts.ts';
 import { asRecord } from '../../lib/as-record.ts';
 
 // Handlers migrated verbatim from src/tools.ts. setupObsConfig syncs the
@@ -411,12 +412,16 @@ const obsWebsiteConfigSchema = z.looseObject({
   region: z.string().describe('OBS 桶所在区域，如 cn-north-4'),
   indexDocument: z.string().optional().describe('首页文件名（action=set 时必填），如 index.html'),
   errorDocument: z.string().optional().describe('错误页面文件名（action=set 时可选），如 404.html 或 error.html'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 const obsCorsConfigSchema = z.looseObject({
   action: z.enum(['set', 'get', 'delete']).describe('操作类型：set=配置 CORS 规则，get=查询当前规则，delete=删除规则'),
   bucket: z.string().describe('OBS 桶名称'),
   region: z.string().describe('OBS 桶所在区域，如 cn-north-4'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
   rules: z
     .array(
       z.looseObject({

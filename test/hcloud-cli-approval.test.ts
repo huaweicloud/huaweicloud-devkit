@@ -14,9 +14,8 @@ import {
   type HcloudRunResult,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
-import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
-import { withApprovalMode } from './approval-mode-harness.ts';
+import { withApprovalMode, withVaultAuthHome } from './approval-mode-harness.ts';
 import { callTool, type ToolArgs } from '../plugins/huaweicloud-core/src/tools.ts';
 
 // Deterministic-tier seam: disable the once-per-session first-assertion
@@ -111,28 +110,9 @@ async function withFakeHcloudBin<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-// The ask-mode battery's env seam lives in approval-mode-harness.ts now
-// (one home for every approval battery — the gate battery and the PR-3a
-// sandbox battery share it); every assertion below is unchanged.
-
-// The confirmation battery needs a deterministic custody tier: the fixed env
-// master key the sibling approval tests use, layered over the fresh per-test
-// home. The custody cache is cleared on both ends so a key swap inside one
-// test can never observe a stale tier.
-const TEST_MASTER_KEY = Buffer.alloc(32, 0x33).toString('base64');
-
-async function withVaultAuthHome(fn: (home: string) => Promise<void> | void): Promise<void> {
-  const previousKey = process.env.HW_VAULT_MASTER_KEY;
-  process.env.HW_VAULT_MASTER_KEY = TEST_MASTER_KEY;
-  clearCustodyCache();
-  try {
-    await withTempAuthHome(fn);
-  } finally {
-    clearCustodyCache();
-    if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
-    else process.env.HW_VAULT_MASTER_KEY = previousKey;
-  }
-}
+// The ask-mode env seam and the vault-tier auth home live in
+// approval-mode-harness.ts (PR-3a's shared home for every approval
+// battery); every assertion below is unchanged.
 
 async function planApproval(): Promise<string> {
   const plan = (await callTool('huaweicloud_plan_cli_command', {

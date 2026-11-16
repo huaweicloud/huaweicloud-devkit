@@ -13,6 +13,7 @@ import {
 } from '../../update-check.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
+import { approvalTokenArg, approvedByUserArg } from '../../lib/tool-schema-parts.ts';
 
 // Handlers migrated verbatim from src/tools.ts; the doQuery injection seam on
 // CallToolOptions is passed through unchanged (test/upgrade-session.test.ts
@@ -69,6 +70,8 @@ const upgradeSchema = z.looseObject({
     .string()
     .optional()
     .describe('agent 目标（opencode/codex/codearts/.../all）。缺省时用 all（仅更新已安装的）。'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const UPDATE_TOOLS = [
@@ -81,8 +84,12 @@ export const UPDATE_TOOLS = [
   },
   {
     name: 'huaweicloud_upgrade',
+    // The mechanical approval gate enforces the consent this line used to
+    // only ask for (PR-3c): token mode runs the approve command from the
+    // gate's rejection envelope in the user's own terminal, ask mode lets
+    // the server raise the confirmation itself.
     description:
-      '升级 huaweicloud-devkit 到最新版本。执行前必须先征得用户同意。version 仅支持 "latest"。完成后需重启会话生效。',
+      '升级 huaweicloud-devkit 到最新版本。升级会改写磁盘上的插件本体，因此由审批门机械把关：默认 token 模式下，无 token 调用会返回 USER_CONFIRMATION_REQUIRED 与 approve 命令行，用户在自己的终端确认后才可重试；DEVKIT_APPROVAL_MODE=ask 时由服务器在调用内弹出确认（表单或聊天往返）。version 仅支持 "latest"。完成后需重启会话生效。',
     schema: upgradeSchema,
     handler: handleUpgrade,
   },
