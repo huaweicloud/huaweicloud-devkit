@@ -5,7 +5,15 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
-import { allSkills, doctorEnv, runDoctor, runInstall, root, writePayloadTree } from './doctor-helpers.ts';
+import {
+  allSkills,
+  doctorEnv,
+  doctorRunText,
+  runDoctor,
+  runInstall,
+  root,
+  writePayloadTree,
+} from './doctor-helpers.ts';
 
 test('doctor: DSH layout resolves the skills tree from the package root', () => {
   const home = fixtureDir('hwc-doctor-dsh-home-');
@@ -133,8 +141,7 @@ test('doctor: missing skills tree fails the check without aborting the run', () 
     env: doctorEnv(home),
     timeout: 60_000,
   });
-  assert.ok(run.status === 0 || run.status === 1, `doctor crashed: ${run.stderr}`);
-  const stdout = (run.stdout ?? '').replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+  const stdout = doctorRunText(run);
   assert.ok(stdout.includes('[FAIL] Skills tree'), 'the skills-tree check must FAIL');
   assert.ok(stdout.includes('lacks usable core-pack info'), 'the native block must warn instead of aborting the run');
   assert.ok(!stdout.includes('skills tree missing at'), `the throw leaked into output:\n${stdout}`);

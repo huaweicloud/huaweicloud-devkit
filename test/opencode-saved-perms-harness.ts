@@ -1,7 +1,8 @@
 // The seeded opencode permission-store harness: builds a fixture SQLite
 // store in the shape opencode 2.2.7 writes (the `project` and `permission`
-// tables), so the reader, the gate guard, and the doctor can be driven
-// against a real file without ever touching the machine's live store.
+// tables), so the reader and the doctor can be driven against a real file
+// without ever touching the machine's live store. The approval gate never
+// reads this store: the confirmation runs server-side.
 //
 // Every db lives under a fixtureDir() root in TMPDIR. The store's own
 // resolution root is `$XDG_DATA_HOME/opencode`, so withStoreDir pins

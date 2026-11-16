@@ -1692,12 +1692,12 @@ test('every roster entry resolves a spec and the roster names real tools', () =>
   }
 });
 
-// ── The always-allow fail-open (PR-1.5): a saved client-side allow row ────
-// In ask mode the harness prompt on this call is the confirmation. opencode's
-// "Always allow" answer persists an allow row into its own SQLite store that
-// is evaluated AFTER the configured ask rule (findLast), so the gate must
-// refuse the arrival rather than record a consent nobody gave. Token mode
-// keeps its custody grant and is untouched.
+// ── The always-allow fail-open, demoted (PR-1.5) ───────────────────────
+// The old ask posture trusted opencode's own prompt, so a persisted "always
+// allow" row (evaluated after the configured rule, findLast) suppressed the
+// confirmation. The confirmation now runs on the server inside the tool
+// call, so a saved row can no longer change the arrival: the tests below pin
+// that the row is inert in both ask and token mode.
 
 // A fake hcloud that leaves a marker file when it actually runs, so a refusal
 // can prove nothing executed. The harness script is extension-less and Node

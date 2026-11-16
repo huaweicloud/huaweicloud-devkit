@@ -23,6 +23,15 @@ import {
 } from './dep-provision-harness.ts';
 import { readReceipt, writeReceipt } from '../plugins/huaweicloud-core/src/dep/receipts.ts';
 
+// The doctor probes below share one runner: exit 1 is the healthy "some
+// check failed" path (the fixture PATH carries no hcloud), so doctor gates
+// on its FAIL lines, never on a zero exit.
+function doctorProbe(home: string, env: Record<string, string | undefined>): string {
+  const res = runSetupCli(['doctor'], home, env);
+  assert.ok(res.status === 0 || res.status === 1, `doctor crashed: ${res.stderr}`);
+  return res.stdout;
+}
+
 test('uninstall: devbridge is refused, the host never manages it', () => {
   const result = uninstallDependency('devbridge', noTargets, { receiptsDir: fixtureDir('dep-') });
   assert.equal(result.ok, false);
@@ -89,13 +98,12 @@ test('doctor renders devbridge and PACK_USES warnings for a sandbox-only trim', 
   // Empty PATH neutralizes codex detection (the neighboring dep-uninstall
   // test's precedent), so the union is exactly the installed target's trim.
   const emptyPath = fixtureDir('dep-provision-path-');
-  const res = runSetupCli(['doctor'], home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
-  assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /devbridge: sandbox-resident, not probed host-side/);
-  assert.match(res.stdout, /Pack sandbox uses discovery \(soft dependency\) but it is disabled/);
-  assert.match(res.stdout, /Pack sandbox uses obs \(soft dependency\) but it is disabled/);
-  assert.doesNotMatch(res.stdout, /open-mcp-gateway /, 'the gateway is outside this trim');
-  assert.match(res.stdout, /hcloud CLI installed/, 'the dedicated hcloud block still renders');
+  const stdout = doctorProbe(home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
+  assert.match(stdout, /devbridge: sandbox-resident, not probed host-side/);
+  assert.match(stdout, /Pack sandbox uses discovery \(soft dependency\) but it is disabled/);
+  assert.match(stdout, /Pack sandbox uses obs \(soft dependency\) but it is disabled/);
+  assert.doesNotMatch(stdout, /open-mcp-gateway /, 'the gateway is outside this trim');
+  assert.match(stdout, /hcloud CLI installed/, 'the dedicated hcloud block still renders');
 });
 
 test('doctor reports no pack dependencies for a core-only trim', () => {
@@ -103,11 +111,10 @@ test('doctor reports no pack dependencies for a core-only trim', () => {
   const installRes = runSetupCli(['install', '--target', 'opencode', '--packs', 'core'], home);
   assert.equal(installRes.status, 0, installRes.stderr);
   const emptyPath = fixtureDir('dep-provision-path-');
-  const res = runSetupCli(['doctor'], home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
-  assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /Pack dependencies: none required/);
-  assert.doesNotMatch(res.stdout, /devbridge: sandbox-resident/);
-  assert.doesNotMatch(res.stdout, /Pack .* uses .* soft dependency/);
+  const stdout = doctorProbe(home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
+  assert.match(stdout, /Pack dependencies: none required/);
+  assert.doesNotMatch(stdout, /devbridge: sandbox-resident/);
+  assert.doesNotMatch(stdout, /Pack .* uses .* soft dependency/);
 });
 
 test('doctor undici check counts the atomcode payload dir', () => {
@@ -117,9 +124,8 @@ test('doctor undici check counts the atomcode payload dir', () => {
   // the doctor's undici list (installAtomCode runs installRuntimeDeps).
   mkdirSync(join(home, '.atomcode', 'huaweicloud-plugins', 'node_modules', 'undici'), { recursive: true });
   const emptyPath = fixtureDir('dep-provision-path-');
-  const res = runSetupCli(['doctor'], home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
-  assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /\[PASS\].*Runtime deps \(undici\) installed/);
+  const stdout = doctorProbe(home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
+  assert.match(stdout, /\[PASS\].*Runtime deps \(undici\) installed/);
 });
 
 test('doctor payload checks cover an openclaw-only install', () => {
@@ -140,17 +146,16 @@ test('doctor payload checks cover an openclaw-only install', () => {
     'utf8',
   );
   const emptyPath = fixtureDir('dep-provision-path-');
-  const res = runSetupCli(['doctor'], home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
-  assert.equal(res.status, 0, res.stderr);
-  assert.match(res.stdout, /\[PASS\].*MCP server installed/);
-  assert.match(res.stdout, /MCP server can start \(OpenClaw\)/);
-  assert.match(res.stdout, /\[PASS\].*Runtime deps \(undici\) installed/);
-  assert.match(res.stdout, /\[PASS\].*Safety policy installed/);
+  const stdout = doctorProbe(home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
+  assert.match(stdout, /\[PASS\].*MCP server installed/);
+  assert.match(stdout, /MCP server can start \(OpenClaw\)/);
+  assert.match(stdout, /\[PASS\].*Runtime deps \(undici\) installed/);
+  assert.match(stdout, /\[PASS\].*Safety policy installed/);
   // The chain prints the target label only in its failure message; with
   // openclaw the only configured MCP surface present, a PASS here proves
   // the openclaw branch matched.
-  assert.match(res.stdout, /\[PASS\].*MCP configured/);
-  assert.match(res.stdout, /请重启 OpenClaw/);
+  assert.match(stdout, /\[PASS\].*MCP configured/);
+  assert.match(stdout, /请重启 OpenClaw/);
 });
 
 test(
@@ -178,9 +183,8 @@ test('dep status: a failed codex plugin probe widens the union (fail-safe)', { s
   assert.match(res.stdout, /Dependency status \(effective packs: 10\)/);
   // Doctor names the codex contribution: a widened union with no explaining
   // line reads as a phantom.
-  const doc = runSetupCli(['doctor'], home, { PATH: stubPath, HUAWEICLOUD_HOME: home });
-  assert.equal(doc.status, 0, doc.stderr);
-  assert.match(doc.stdout, /Packs \(Codex CLI\): all — codex plugin list could not be read/);
+  const docOut = doctorProbe(home, { PATH: stubPath, HUAWEICLOUD_HOME: home });
+  assert.match(docOut, /Packs \(Codex CLI\): all — codex plugin list could not be read/);
 });
 
 test('doctor warns exactly once for an unknown DEVKIT_PACKS id', () => {
@@ -196,19 +200,14 @@ test('doctor warns exactly once for an unknown DEVKIT_PACKS id', () => {
   envMap.DEVKIT_PACKS = 'bogus,core';
   writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
   const emptyPath = fixtureDir('dep-provision-path-');
-  const res = runSetupCli(['doctor'], home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
-  assert.equal(res.status, 0, res.stderr);
-  const unknownLines = res.stdout.match(/unknown id\(s\) in DEVKIT_PACKS/g) ?? [];
-  assert.equal(unknownLines.length, 1, `exactly one unknown-id WARN line:\n${res.stdout}`);
-  assert.doesNotMatch(
-    res.stdout,
-    /provisioning the full surface/,
-    'the provisioning-flavored line stays in provisioning',
-  );
-  const tally = /Results: (\d+) pass, (\d+) warn, (\d+) fail/.exec(res.stdout);
-  assert.ok(tally, `the Results tally rendered:\n${res.stdout}`);
-  const warnTags = res.stdout.match(/\[WARN\]/g) ?? [];
-  assert.equal(Number(tally[2]), warnTags.length, `shown WARN lines must equal the counted warn tally:\n${res.stdout}`);
+  const stdout = doctorProbe(home, { PATH: emptyPath, HUAWEICLOUD_HOME: home });
+  const unknownLines = stdout.match(/unknown id\(s\) in DEVKIT_PACKS/g) ?? [];
+  assert.equal(unknownLines.length, 1, `exactly one unknown-id WARN line:\n${stdout}`);
+  assert.doesNotMatch(stdout, /provisioning the full surface/, 'the provisioning-flavored line stays in provisioning');
+  const tally = /Results: (\d+) pass, (\d+) warn, (\d+) fail/.exec(stdout);
+  assert.ok(tally, `the Results tally rendered:\n${stdout}`);
+  const warnTags = stdout.match(/\[WARN\]/g) ?? [];
+  assert.equal(Number(tally[2]), warnTags.length, `shown WARN lines must equal the counted warn tally:\n${stdout}`);
 });
 
 test('findHcloudBin returns the HCLOUD_BIN fixture when the file exists', () => {
