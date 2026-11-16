@@ -16,7 +16,6 @@ import {
   removeAskPermissionRules,
   removeAskPermissionRulesV1,
 } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
-import { APPROVAL_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
 
 // Pure client-rule logic (lib/opencode-ask-rule.ts): the ownership contract
 // is add-only-if-absent per rule and value-exact on removal, one exact allow

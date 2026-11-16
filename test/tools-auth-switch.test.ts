@@ -103,23 +103,28 @@ function seedImportFile(ak: string, sk: string): { cfgDir: string; importFile: s
   return { cfgDir, importFile };
 }
 
-test('auth_switch persist(mode=import) rejects missing region and keeps import file (#502)', async () => {
+test('auth_switch persist(mode=import) without a region refuses before consent and keeps the import file (#502)', async () => {
   await withImportHome(async () => {
     const { cfgDir, importFile } = seedImportFile('IMPORT_AK', 'IMPORT_SK');
 
-    const out = (await gatedAuthSwitchCall({
-      vendorConfirmed: 'test: vendor established by the harness',
-      mode: 'import',
-      action: 'persist',
-    })) as AuthSwitchResult;
+    // Round 2 closed the recorded round-1 residual on the assert route:
+    // the regionless persist is a doomed shape, so the gate refuses it
+    // before any consent (NoDoomedToken) — the human is never asked to
+    // approve a call the handler answers invalid_region on. The import
+    // file survives the gate's peek, so the operator can add the region
+    // and retry.
+    await assert.rejects(
+      () =>
+        gatedAuthSwitchCall({
+          vendorConfirmed: 'test: vendor established by the harness',
+          mode: 'import',
+          action: 'persist',
+        }),
+      /region is required to persist credentials/,
+    );
 
-    assert.equal(out.status, 'error');
-    assert.equal(out.scope, 'invalid_region');
-    assert.match(out.error!, /region/);
-    // S1 must not be written on a rejected persist.
-    assert.equal(existsSync(join(cfgDir, 'credentials.json')), false);
-    // Import file must survive for replay.
-    assert.equal(existsSync(importFile), true);
+    assert.equal(existsSync(join(cfgDir, 'credentials.json')), false, 'S1 must not be written');
+    assert.equal(existsSync(importFile), true, 'import file must survive for replay (#502)');
   });
 });
 

@@ -171,7 +171,6 @@ test('approval-dispatch bench: head stays within the trunk p50 budgets', async (
 
   const planP50 = await runProbe('Probe A (plan_cli_command)', 'huaweicloud_plan_cli_command', PLAN_ARGS);
   const searchP50 = await runProbe('Probe B (search_docs)', 'huaweicloud_search_docs', SEARCH_ARGS);
-  const authStatusP50 = await runProbe('Probe C (auth_status)', 'huaweicloud_auth_status', AUTH_STATUS_ARGS);
 
   assert.ok(
     planP50.head <= planP50.trunk * PROBE_A_BUDGET_RATIO,

@@ -747,13 +747,6 @@ export async function runApprovalGate(
         pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'once' },
         binding: value,
       };
-      // consuming handler executes the approved snapshot, never a post-
-      // consent re-read (interrogate round 1, finding 2 — the shown account
-      // is the executed account).
-      return {
-        pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'once' },
-        binding: value,
-      };
     };
 
     // S3 standing consent: a grant the user ticked covers identical later
@@ -957,22 +950,11 @@ export async function runApprovalGate(
     }
     // Views equal means ONLY secret values differ. The confirmed call carried real
     // (non-placeholder) secrets → they are pinned: a different real secret
-    // rejects. A placeholder-bearing confirmation (secretsSubstitutable) keeps the
-    // documented substitution flow.
+    // rejects. A placeholder-bearing confirmation (secretsSubstitutable) keeps
+    // the documented substitution flow.
     if (stored.secretsSubstitutable !== true) {
       throw new Error(
         'Secret values are pinned to the approved confirmation: get a fresh confirmation for the final values and retry with it.',
-        'Provided args do not match the approved call. Use the exact arguments the approval was shown — the plan result for plan-faced tools, the confirmation envelope for every other roster tool. ' +
-          'If the approval shows <redacted> for passwords or secrets, replace <redacted> with the actual values.',
-      );
-    }
-    // Views equal means ONLY secret values differ. The approved call carried
-    // real (non-placeholder) secrets → they are pinned: a different real
-    // secret rejects. A placeholder-bearing approval (secretsSubstitutable)
-    // keeps the documented substitution flow.
-    if (stored.secretsSubstitutable !== true) {
-      throw new Error(
-        'Secret values are pinned to the approved call: re-run the call with the final values and confirm again (huaweicloud_plan_cli_command first, for the hcloud pair).',
       );
     }
   }
@@ -982,7 +964,6 @@ export async function runApprovalGate(
   // recomputed resolution, which the hash comparison just proved equal to
   // the minted one, so the handler executes exactly what was approved —
   // never a post-consent re-read (PR-3b's TOCTOU finding).
-  // never a post-consent re-read (interrogate round 1, finding 2).
   return { pass: {}, binding: value };
 }
 

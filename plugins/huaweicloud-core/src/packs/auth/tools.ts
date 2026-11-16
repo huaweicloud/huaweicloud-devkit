@@ -19,7 +19,12 @@ import {
   refreshUserHashAfterAuthChange,
 } from '../../lib/credentials.ts';
 import { resolveSecretValue } from '../../lib/secret-vault/store.ts';
-import { isApprovedSwitchSnapshot, switchSnapshot, type ApprovedSwitchSnapshot } from './approval.ts';
+import {
+  isApprovedInitSnapshot,
+  isApprovedSwitchSnapshot,
+  switchSnapshot,
+  type ApprovedSwitchSnapshot,
+} from './approval.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 
@@ -36,7 +41,7 @@ async function handleAuthSync(args: ToolArgs = {}, _opts: CallToolOptions = {}) 
   return result;
 }
 
-async function handleAuthInit(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
+async function handleAuthInit(args: ToolArgs = {}, opts: CallToolOptions = {}) {
   if (args.clear) {
     clearRuntimeCredentials();
     refreshUserHashAfterAuthChange({ regenerate: false });
@@ -48,10 +53,15 @@ async function handleAuthInit(args: ToolArgs = {}, _opts: CallToolOptions = {}) 
   // Incoming values may be secret:// refs. Resolve them so the runtime store
   // carries usable credentials (same contract as auth_switch and the CLI's
   // auth init); an unresolvable ref throws VaultError with its own
-  // remediation.
-  const ak = resolveSecretValue(args.ak) ?? args.ak;
-  const sk = resolveSecretValue(args.sk) ?? args.sk;
-  const region = resolveSecretValue(args.region) ?? args.region;
+  // remediation. When the gate threaded its approved snapshot (round 2,
+  // the twin path), the handler executes the RESOLVED VALUES the
+  // confirmation surface was shown against — a vault swap behind the same
+  // refs cannot execute an account that appeared on no surface. Without a
+  // matching snapshot (a direct handler call), the trunk resolution runs.
+  const approved = isApprovedInitSnapshot(opts.approvedBinding) ? opts.approvedBinding : null;
+  const ak = approved ? approved.ak : (resolveSecretValue(args.ak) ?? args.ak);
+  const sk = approved ? approved.sk : (resolveSecretValue(args.sk) ?? args.sk);
+  const region = approved ? approved.region : (resolveSecretValue(args.region) ?? args.region);
   setRuntimeCredentials(ak, sk, undefined, region);
   refreshUserHashAfterAuthChange();
   return { status: 'ok', message: 'Runtime credentials set for this MCP session.' };

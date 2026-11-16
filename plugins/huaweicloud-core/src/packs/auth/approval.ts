@@ -133,17 +133,48 @@ export function switchSnapshot(args: ToolArgs): ApprovedSwitchSnapshot {
   };
 }
 
+// Resolve the init substance with the SAME seam the switch snapshot uses
+// (round 2, the twin path): the args may carry secret:// refs, and the
+// binding must hash and name the RESOLVED account — the fingerprint of the
+// ref strings is the fingerprint of nothing. Resolution at snapshot time
+// also refuses the doomed shape pre-mint (an unresolvable ref throws
+// VaultError at the gate, before any consent surface or token store
+// write), and makes a vault swap behind the same refs change the binding
+// hash, so a confirmed retry re-asks instead of executing an unseen
+// account.
 function initSnapshot(args: ToolArgs): Record<string, unknown> {
   if (args.clear) return { clear: true };
-  const ak = asStr(args.ak);
-  const sk = asStr(args.sk);
-  const region = asStr(args.region);
+  const ak = resolved(asStr(args.ak));
+  const sk = resolved(asStr(args.sk));
+  const region = resolved(asStr(args.region));
   return {
     ak,
     sk,
     ...(region ? { region } : {}),
     account: fingerprint(ak, sk),
   };
+}
+
+// Shape guard for the init twin's dispatched snapshot: ak/sk/account are
+// strings (the resolved values), and the switch snapshot's channel keys
+// are absent — the two bindings never cross.
+export interface ApprovedInitSnapshot {
+  ak: string;
+  sk: string;
+  region?: string;
+  account: string;
+}
+
+export function isApprovedInitSnapshot(value: unknown): value is ApprovedInitSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.ak === 'string' &&
+    typeof v.sk === 'string' &&
+    typeof v.account === 'string' &&
+    !('mode' in v) &&
+    !('fromImport' in v)
+  );
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -241,7 +272,8 @@ export const AUTH_APPROVAL_SPECS: Readonly<Record<'huaweicloud_auth_init' | 'hua
       // NoDoomedToken (round 1, finding 4): no mint for a switch with no
       // resolvable target account (an absent or malformed import file, an
       // empty injection), and no mint for a persist shape the handler
-      // rejects anyway (STS cannot persist, R3).
+      // rejects anyway — a regionless persist (invalid_region, round 2's
+      // close of the recorded residual) or an STS persist (R3).
       assertArgsExecutable: (bindingValue) => {
         const binding = bindingValue as ApprovedSwitchSnapshot;
         if (binding.action === 'clear') return;
@@ -254,6 +286,11 @@ export const AUTH_APPROVAL_SPECS: Readonly<Record<'huaweicloud_auth_init' | 'hua
           throw new Error(
             'the account switch has no resolvable target account: pass ak/sk (mode=memory), ' +
               'a valid creds-import.json (mode=import), or an injected mcp_settings.json (mode=mcp-config).',
+          );
+        }
+        if (binding.action === 'persist' && !binding.region.trim()) {
+          throw new Error(
+            'region is required to persist credentials. Pass --region, or include "region" in creds-import.json (mode=import).',
           );
         }
         if (binding.action === 'persist' && binding.securityToken !== '') {

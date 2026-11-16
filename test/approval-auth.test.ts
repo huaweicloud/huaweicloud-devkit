@@ -16,6 +16,8 @@ import {
 import { fingerprint } from '../plugins/huaweicloud-core/src/auth/reconcile.ts';
 import { readConsentEvents } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
 import { AUTH_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/auth/approval.ts';
+import { vaultSet } from '../plugins/huaweicloud-core/src/lib/secret-vault/store.ts';
+import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import type {
   ElicitationSeam,
   ElicitFormRequest,
@@ -64,6 +66,18 @@ function elicitingSeam(
         requests.push(request);
         return typeof answer === 'function' ? answer(request) : answer;
       },
+    },
+  };
+}
+
+// A seam that must never be asked: used to prove a refusal floor runs
+// BEFORE any confirmation surface exists (a raised form fails the test
+// loudly instead of passing vacuously).
+function neverSeam(): ElicitationSeam {
+  return {
+    capable: true,
+    prompt: async () => {
+      throw new Error('the confirmation form must never be raised for a refused shape');
     },
   };
 }
@@ -359,6 +373,154 @@ test('ask mode: an import-mode switch binds the import file\u2019s account — a
         'the fresh envelope names the new account',
       );
     });
+  });
+});
+
+// ── The shown account is the executed account (round 1, finding 2) ─────────
+
+test('TOCTOU: a vault swap behind the init refs never executes — the shown account switches (round 2, the twin path)', async () => {
+  // The r2 seat's exact drive: auth_init with secret:// refs mints showing
+  // the fingerprint of the RESOLVED account (not the ref strings), the
+  // vault values are swapped behind the same refs after the confirm, and
+  // the retry with the token refuses — the refs are unchanged but the
+  // binding hashes the resolved values, so the swapped vault invalidates
+  // the approval and re-asks instead of executing an account that
+  // appeared on no surface.
+  const AK_REF = 'secret://user/r2-ak';
+  const SK_REF = 'secret://user/r2-sk';
+  const accountA = { ak: 'AKACCOUNTA', sk: 'sk-account-a-value-32-chars!!' };
+  const accountB = { ak: 'AKACCOUNTB', sk: 'sk-account-b-value-32-chars!!' };
+  const fpA = fingerprint(accountA.ak, accountA.sk);
+  const fpB = fingerprint(accountB.ak, accountB.sk);
+  const previousKey = process.env.HW_VAULT_MASTER_KEY;
+  process.env.HW_VAULT_MASTER_KEY = Buffer.alloc(32, 0x55).toString('base64');
+  clearCustodyCache();
+  try {
+    await withTempAuthHome(async (home) => {
+      vaultSet(AK_REF, accountA.ak);
+      vaultSet(SK_REF, accountA.sk);
+      const minted = (await callTool('huaweicloud_auth_init', {
+        vendorConfirmed: VENDOR,
+        ak: AK_REF,
+        sk: SK_REF,
+        region: 'cn-north-4',
+      })) as { code: string; approvalToken: string; userConfirmation: { summary: string } };
+      assert.equal(minted.code, 'USER_CONFIRMATION_REQUIRED');
+      assert.ok(
+        minted.userConfirmation.summary.includes(fpA),
+        'the envelope names the RESOLVED account\u2019s fingerprint, never the ref strings\u2019 hash',
+      );
+      assert.ok(!minted.userConfirmation.summary.includes(fpB));
+
+      assert.equal(confirmApprovalToken(minted.approvalToken).status, 'confirmed');
+      vaultSet(AK_REF, accountB.ak);
+      vaultSet(SK_REF, accountB.sk);
+      await assert.rejects(
+        () =>
+          callTool('huaweicloud_auth_init', {
+            vendorConfirmed: VENDOR,
+            ak: AK_REF,
+            sk: SK_REF,
+            region: 'cn-north-4',
+            approvalToken: minted.approvalToken,
+            approvedByUser: true,
+          }),
+        /do not match the approved call|Secret values are pinned/,
+        'the vault swap behind the same refs invalidates the approval',
+      );
+      assert.equal(hasRuntimeCredentials(), false, 'the unseen account never executed');
+      assert.equal(readGlobalCredentials()?.ak, undefined, 'S1 untouched');
+
+      // The re-ask names the new account: a fresh call shows fpB, so the
+      // human sees exactly which account the next approval would switch to.
+      const reminted = (await callTool('huaweicloud_auth_init', {
+        vendorConfirmed: VENDOR,
+        ak: AK_REF,
+        sk: SK_REF,
+        region: 'cn-north-4',
+      })) as { userConfirmation: { summary: string } };
+      assert.ok(reminted.userConfirmation.summary.includes(fpB), 'the fresh envelope names the new account');
+    });
+  } finally {
+    clearCustodyCache();
+    if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
+    else process.env.HW_VAULT_MASTER_KEY = previousKey;
+  }
+});
+
+test('TOCTOU: the init ask-mode window closes the same way — a vault swap inside the form executes the shown account', async () => {
+  const AK_REF = 'secret://user/r2c-ak';
+  const SK_REF = 'secret://user/r2c-sk';
+  const accountA = { ak: 'AKSHOWNAK', sk: 'sk-shown-value-32-chars!!!!' };
+  const accountB = { ak: 'AKHIDDENK', sk: 'sk-hidden-value-32-chars!!!' };
+  const fpA = fingerprint(accountA.ak, accountA.sk);
+  const previousKey = process.env.HW_VAULT_MASTER_KEY;
+  process.env.HW_VAULT_MASTER_KEY = Buffer.alloc(32, 0x55).toString('base64');
+  clearCustodyCache();
+  try {
+    await withTempAuthHome(async () => {
+      vaultSet(AK_REF, accountA.ak);
+      vaultSet(SK_REF, accountA.sk);
+      const seam: ElicitationSeam = {
+        capable: true,
+        prompt: async (request) => {
+          assert.ok(request.message.includes(fpA), 'the form shows the resolved account A');
+          vaultSet(AK_REF, accountB.ak);
+          vaultSet(SK_REF, accountB.sk);
+          return { decision: 'accept', content: { confirm: true } };
+        },
+      };
+      await withApprovalMode('ask', async () => {
+        await authInit({ ak: AK_REF, sk: SK_REF }, { elicitation: seam });
+        const runtime = resolveCredentialsWithRuntime({}) as { ak?: string };
+        assert.equal(runtime.ak, accountA.ak, 'the shown account executed, never the swapped one');
+      });
+    });
+  } finally {
+    clearCustodyCache();
+    if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
+    else process.env.HW_VAULT_MASTER_KEY = previousKey;
+  }
+});
+
+test('no doomed mints: an unresolvable ref on auth_init refuses before any mint (the F4 class)', async () => {
+  const previousKey = process.env.HW_VAULT_MASTER_KEY;
+  process.env.HW_VAULT_MASTER_KEY = Buffer.alloc(32, 0x55).toString('base64');
+  clearCustodyCache();
+  try {
+    await withTempAuthHome(async (home) => {
+      await assert.rejects(
+        () => authInit({ ak: 'secret://user/never-stored', sk: 'secret://user/also-never' }),
+        (error: unknown) => {
+          assert.match(error instanceof Error ? error.message : String(error), /secret|vault|resolve/i);
+          return true;
+        },
+      );
+      assert.equal(existsSync(approvalsFile(home)), false, 'the unresolvable ref mints nothing');
+      assert.equal(readConsentEvents().length, 0, 'no consent row exists for the refused shape');
+    });
+  } finally {
+    clearCustodyCache();
+    if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
+    else process.env.HW_VAULT_MASTER_KEY = previousKey;
+  }
+});
+
+test('round 2 opportunistic: a regionless persist refuses before any consent, in both modes of the gate', async () => {
+  await withTempAuthHome(async (home) => {
+    await assert.rejects(
+      () => authSwitch({ action: 'persist', region: undefined }),
+      /region is required to persist credentials/,
+    );
+    assert.equal(existsSync(approvalsFile(home)), false, 'the regionless persist mints nothing');
+    await withApprovalMode('ask', async () => {
+      await assert.rejects(
+        () => authSwitch({ action: 'persist', region: undefined }, { elicitation: neverSeam() }),
+        /region is required to persist credentials/,
+        'the ask-mode floor refuses before the form is ever raised',
+      );
+    });
+    assert.equal(readConsentEvents().length, 0, 'the human was never asked');
   });
 });
 
