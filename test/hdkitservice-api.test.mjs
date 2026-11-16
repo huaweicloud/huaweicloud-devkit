@@ -7,8 +7,13 @@ import fs from 'node:fs';
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
+// A 409 HDKIT_VERSION_TOO_OLD response triggers maybeAutoUpgrade inside
+// hdkitRequest. Without this flag a non-CI dev machine would spawn a REAL
+// detached runner executing `npx update --target all` (same masking as
+// mcp-server.test.mjs / plugins-e2e.test.mjs).
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
-const { hdkitConnect, hdkitConnectWithRetry, hdkitVoucherStatus, hdkitVoucherClaim } =
+const { hdkitConnect, hdkitConnectWithRetry, hdkitShutdown, hdkitVoucherStatus, hdkitVoucherClaim } =
   await import('../plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs');
 const { clearRuntimeCredentials } = await import('../plugins/huaweicloud-core/src/auth/credentials.mjs');
 
@@ -149,14 +154,9 @@ test('voucher status does NOT include remediation for non-CRED_INVALID errors', 
   }
 });
 
-// ── 两池：pool_type 透传与钉扎 ──
+// ── 两池：pool_type 透传（不再支持 template_id/钉扎）──
 
-test('hdkitConnect passes pool_type through without template pinning by default', async () => {
-  // T5 环境隔离：预删钉扎变量并保存宿主原值，结束恢复（宿主设了 HW_POOL_TEMPLATE_* 时本用例仍须成立）
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  const savedPer = process.env.HW_POOL_TEMPLATE_PERSISTENT;
-  delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
+test('hdkitConnect passes pool_type through and never sends template_id', async () => {
   const originalFetch = global.fetch;
   let capturedBody = null;
   global.fetch = async (_url, opts) => {
@@ -167,68 +167,13 @@ test('hdkitConnect passes pool_type through without template pinning by default'
     );
   };
   try {
-    const result = await hdkitConnect({ pool_type: 'persistent' });
+    const result = await hdkitConnect({ pool_type: 'persistent', template_id: 'legacy-tpl' });
     const body = JSON.parse(capturedBody);
     assert.equal(body.pool_type, 'persistent');
-    assert.equal(body.template_id, undefined); // 未钉扎：模板由服务端权威映射
+    assert.equal(body.template_id, undefined); // 自定义模板已下线：即使调用方传入也不上送
     assert.equal(result.pool_type, 'persistent');
   } finally {
     global.fetch = originalFetch;
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
-    if (savedPer === undefined) delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
-    else process.env.HW_POOL_TEMPLATE_PERSISTENT = savedPer;
-  }
-});
-
-test('hdkitConnect attaches pinned template when HW_POOL_TEMPLATE_* is configured', async () => {
-  // T5 环境隔离：保存宿主原值，结束恢复（而非无条件删除）
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  const originalFetch = global.fetch;
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
-  let capturedBody = null;
-  global.fetch = async (_url, opts) => {
-    capturedBody = opts.body;
-    return new Response(JSON.stringify({ session_id: 's1', dev_stage_id: 'd1' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  };
-  try {
-    await hdkitConnect({ pool_type: 'ephemeral' });
-    const body = JSON.parse(capturedBody);
-    assert.equal(body.pool_type, 'ephemeral');
-    assert.equal(body.template_id, 'pinned-eph-tpl'); // 钉扎：附带映射模板（老服务端兼容）
-  } finally {
-    global.fetch = originalFetch;
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
-  }
-});
-
-// ── T6 显式 template_id 优先于钉扎 ──
-
-test('hdkitConnect keeps explicit template_id over pinned template', async () => {
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
-  const originalFetch = global.fetch;
-  let capturedBody = null;
-  global.fetch = async (_url, opts) => {
-    capturedBody = opts.body;
-    return new Response(JSON.stringify({ session_id: 's1', dev_stage_id: 'd1' }), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json' },
-    });
-  };
-  try {
-    await hdkitConnect({ pool_type: 'ephemeral', template_id: 'explicit-tpl' });
-    const body = JSON.parse(capturedBody);
-    assert.equal(body.template_id, 'explicit-tpl'); // 显式模板优先，钉扎不覆盖
-    assert.equal(body.pool_type, 'ephemeral');
-  } finally {
-    global.fetch = originalFetch;
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
   }
 });
 
@@ -257,6 +202,51 @@ test('HDKIT_QUOTA_EXCEEDED carries retryAfter and release-oriented remediation',
     assert.match(err.remediation.hint, /配额已满/);
     assert.ok(Array.isArray(err.remediation.steps));
     assert.match(err.remediation.steps.join(' '), /复用/); // 引导复用/释放，而非重试
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('HDKIT_TEMPLATE_QUOTA_EXCEEDED passes the final server copy through untouched', async () => {
+  const originalFetch = global.fetch;
+  const finalCopy = '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED', message: finalCopy }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+    assert.equal(err.status, 429);
+    assert.equal(err.message, finalCopy);
+    assert.equal(err.retryAfter, undefined, 'template quota has no Retry-After');
+    assert.equal(err.remediation, undefined, 'template quota copy must not be wrapped in remediation');
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('HDKIT_TEMPLATE_QUOTA_EXCEEDED falls back to the final copy when server message is empty', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED' }), {
+      status: 429,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const err = await hdkitConnect({ pool_type: 'ephemeral' }).then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+    assert.equal(err.message, '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱');
+    assert.doesNotMatch(err.message, /^HDKIT_TEMPLATE_QUOTA_EXCEEDED:/);
   } finally {
     global.fetch = originalFetch;
   }
@@ -316,6 +306,9 @@ test('HDKIT_VERSION_TOO_OLD carries client/min version and upgrade remediation',
     assert.match(err.remediation.hint, /1\.1\.13/);
     assert.match(err.remediation.steps.join(' '), /npx --yes huaweicloud-devkit@latest update/);
     assert.match(err.remediation.steps.join(' '), /重启/);
+    assert.ok(err.autoUpgrade, 'expected autoUpgrade status');
+    assert.equal(err.autoUpgrade.status, 'disabled');
+    assert.equal(err.autoUpgrade.reason, 'skip_update');
   } finally {
     global.fetch = originalFetch;
   }
@@ -423,4 +416,58 @@ test('core-hours exhausted upstream code surfaces friendly remediation', async (
   } finally {
     global.fetch = originalFetch;
   }
+});
+
+// ── shutdown ──
+
+test('hdkitShutdown posts shutdown and returns server status', async () => {
+  const originalFetch = global.fetch;
+  let requestedUrl = null;
+  let requestBody = null;
+  global.fetch = async (url, opts) => {
+    requestedUrl = url;
+    requestBody = JSON.parse(opts.body);
+    return new Response(
+      JSON.stringify({
+        devStageId: 'ws1',
+        status: 'shutting_down',
+        message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } },
+    );
+  };
+  try {
+    const result = await hdkitShutdown('s1', null);
+    assert.match(String(requestedUrl), /\/shutdown$/);
+    assert.deepEqual(requestBody, { session_id: 's1' });
+    assert.equal(result.devStageId, 'ws1');
+    assert.equal(result.status, 'shutting_down');
+    assert.match(result.message, /正在关机/);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitShutdown surfaces not-found code', async () => {
+  const originalFetch = global.fetch;
+  global.fetch = async () =>
+    new Response(JSON.stringify({ code: 'HDKIT_SANDBOX_NOT_FOUND', message: '环境不存在或已被删除' }), {
+      status: 404,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  try {
+    const err = await hdkitShutdown(null, 'ws1').then(
+      () => null,
+      (error) => error,
+    );
+    assert.ok(err, 'expected rejection');
+    assert.equal(err.code, 'HDKIT_SANDBOX_NOT_FOUND');
+    assert.equal(err.status, 404);
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('hdkitShutdown requires an id', async () => {
+  await assert.rejects(() => hdkitShutdown(), /session_id or dev_stage_id is required/);
 });

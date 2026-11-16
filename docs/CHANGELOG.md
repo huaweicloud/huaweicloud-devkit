@@ -1,53 +1,38 @@
 # Changelog
 
-## 1.1.13 (2026-11-05)
+## 1.1.14-next.5 (2026-11-13)
 
-- chore: merge dev into main for 1.1.13 release (#1107)
-- chore(release): 1.1.12
-- chore: merge dev into main for 1.1.12 release (#1012)
-- chore(release): 1.1.10
-- chore: merge dev into main for 1.1.10 release (#973)
-- chore(release): 1.1.9 (#950)
-- chore: advance main to 1.1.9-next.3 (prepare 1.1.9 stable release) (#949)
-- chore(release): 1.1.8
-- chore: merge dev into main for 1.1.8 release (#892)
-- chore(release): 1.1.7
-- chore: merge dev into main for 1.1.7 release (#812)
-- chore(release): 1.1.6 (#796)
-- style: prettier normalize plugin manifests
-- chore(release): 1.1.6
-- chore(release): 1.1.5
-- chore: sync README beta badge to v1.1.5
-- chore: version override for 1.1.5 stable release
-- chore(release): 1.1.4
-- chore(release): 1.1.3 (#620)
-- chore: advance main to 1.1.3-next.4 (business keeps dev; prepare stable 1.1.3) (#619)
-- test(update-check): decouple upgrade-tag logic from repo package.json version
-- chore(release): 1.1.2
-- test: resolve structure.test.mjs to dev version (union-merge artifact)
-- chore(release): 1.1.1 (#515)
-- chore: merge dev into main for 1.1.1 stable release (#513)
-- chore: add dsh.bundle manifest for DSH plugin ecosystem
-- chore(release): 1.1.0 (#440)
-- chore: merge dev into main for 1.1.0 release (#438)
-- chore: version override for 1.1.0 stable release (#433)
-- docs: add Huawei Cloud npm mirror recommendation for China users
-- chore(release): 1.0.2
-- style: prettier format fix
-- feat: v1.0.2 stable - merge all dev changes
-- fix(release): update release trigger to workflow_dispatch and main push only
-- feat(release): sync release workflow to main, seed manifest with 1.0.1
-- fix(release): retire the live Publish Dev workflow on main
-- fix(release): restore full publish flow with quoted step names
-- fix(release): probe publish job with environment only
-- fix(release): probe without job outputs and needs.outputs wiring
-- fix(release): restore full tag-gated publish logic
-- fix(release): reduce npm-publish workflow to minimal probe
-- fix(release): drop workflow_dispatch inputs, derive dist-tag from the tag version
-- fix(release): rename publish workflow to npm-publish to recover a fresh workflow_dispatch index
-- fix(release): add pack-verify script to main
-- fix(release): sync ci.yml with pack verification to main
-- fix(release): add tag-gated Publish workflow to main so workflow_dispatch works from tags
+- feat(sandbox): 增加沙箱池选型门禁
+- fix(sandbox): 修复仅 session_id 时终端会话未关闭
+- feat(sandbox): 新增关机工具与持久化核时提示
+- fix(sandbox): 补齐模板配额错误码结构化出口与三码口径
+- fix(sandbox): 透传 HDKIT_TEMPLATE_QUOTA_EXCEEDED 提示
+
+## 1.1.14-next.4 (2026-11-12)
+
+- style(sandbox): format resource-pool table
+- fix(sandbox): align resource-pool lifetime wording
+- fix(sandbox): keep lifetime reminders out of the final report
+
+## 1.1.14-next.3 (2026-11-12)
+
+- fix(install): gate update on the node floor
+- fix(install): raise the Node floor to 22.19
+- fix(install): support the Node 22.5 floor without top-level sqlite
+
+## 1.1.14-next.2 (2026-11-10)
+
+- chore: set version override to 1.1.14 for next preview release
+- fix(update): keep upgrade backups and strip credentials from npx
+- style(update): prettier
+- docs(update): describe the write-set gate and full snapshot coverage (#1117)
+- fix(sandbox): pass the 409 version gate through every hdkit tool exit (#1117 optional #5)
+- fix(update): extract the real npm failure reason, not npm warn noise (#1117 optional #1)
+- fix(update): cover version manifests in the upgrade snapshot and verify real rewrites (#1117 R3)
+- fix(update): gate auto-upgrade on the update write set (#1117 R2)
+- fix(update): mask auto-upgrade in hdkitservice tests (#1117 R1)
+- feat(update): add silent auto-upgrade
+- feat(sandbox): only support pool_type in connect
 
 ## 1.1.13-next.8 (2026-11-05)
 

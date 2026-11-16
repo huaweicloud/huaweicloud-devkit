@@ -898,19 +898,48 @@ test('tools.mjs registers version-update tools', () => {
 
 test('stdio server warms update cache; shared protocol decorates first tool call', () => {
   const server = readFileSync(join(pluginRoot, 'src', 'mcp-server.mjs'), 'utf8');
-  assert.match(server, /getCachedUpdateInfo\(readInstalledVersion\(\)/);
+  assert.match(server, /getRuntimeVersion\(\)/);
+  assert.match(server, /getCachedUpdateInfo\(current\)/);
+  assert.match(server, /getUpgradePolicy\(\)/);
   const protocol = readFileSync(join(pluginRoot, 'src', 'mcp-protocol.mjs'), 'utf8');
   assert.match(protocol, /applyUpdateHint\(/);
   assert.match(protocol, /peekCachedUpdateInfo\(\)/);
+  assert.match(protocol, /getAutoUpgradeNotice\(/);
 });
 
 test('hdkitservice-api sends X-HW-Client-Version; SKILL session-start wording', () => {
   const api = readFileSync(join(pluginRoot, 'src', 'sandbox', 'hdkitservice-api.mjs'), 'utf8');
   assert.match(api, /X-HW-Client-Version/);
-  assert.match(api, /readInstalledVersion\(\)/);
+  assert.match(api, /getRuntimeVersion\(\)/);
   const skill = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-core', 'SKILL.md'), 'utf8');
   assert.match(skill, /先调用 `huaweicloud_check_update` 检查插件版本/);
   assert.match(skill, /若未先行检查，插件会在使用中收到服务端升级提示/);
+});
+
+test('auto-upgrade runner is shipped and updates every installed target', () => {
+  const runner = readFileSync(join(pluginRoot, 'src', 'auto-upgrade-runner.mjs'), 'utf8');
+  const auto = readFileSync(join(pluginRoot, 'src', 'update-auto.mjs'), 'utf8');
+  assert.match(runner, /runAutoUpgrade/);
+  assert.match(auto, /auto-upgrade-runner\.mjs/);
+  assert.match(auto, /'update', '--target', 'all'/);
+});
+
+test('tests touching hdkitservice mask the background auto-upgrade', () => {
+  const testDir = join(root, 'test');
+  for (const name of readdirSync(testDir)) {
+    if (!name.endsWith('.test.mjs') || name === 'structure.test.mjs') continue;
+    const content = readFileSync(join(testDir, name), 'utf8');
+    // Either importing hdkitservice-api or faking a 409 version-gate response
+    // reaches maybeAutoUpgrade; without the mask a non-CI machine spawns a REAL
+    // detached runner executing `npx update --target all`.
+    const touchesVersionGate = content.includes('hdkitservice-api.mjs') || content.includes('HDKIT_VERSION_TOO_OLD');
+    if (!touchesVersionGate) continue;
+    assert.match(
+      content,
+      /process\.env\.HUAWEICLOUD_DEVKIT_SKIP_UPDATE\s*=\s*'1'/,
+      `${name} references hdkitservice-api.mjs / HDKIT_VERSION_TOO_OLD and must set process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1' at file level (a 409 otherwise spawns a REAL detached auto-upgrade runner on non-CI machines)`,
+    );
+  }
 });
 
 test('READMEs recommend @latest for updates', () => {

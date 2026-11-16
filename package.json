@@ -1,7 +1,7 @@
 {
   "name": "huaweicloud-devkit",
   "mcpName": "io.github.huaweicloud/huaweicloud-devkit",
-  "version": "1.1.13",
+  "version": "1.1.14-next.5",
   "kooCliVersion": "7.3.12",
   "description": "Agent toolkit that helps coding agents use Huawei Cloud Skills, KooCLI, APIs, SDKs, and future MCP capabilities safely and accurately.",
   "type": "module",
@@ -81,6 +81,6 @@
   ],
   "license": "Apache-2.0",
   "engines": {
-    "node": ">=22"
+    "node": "^22.19.0 || >=23.4.0"
   }
 }

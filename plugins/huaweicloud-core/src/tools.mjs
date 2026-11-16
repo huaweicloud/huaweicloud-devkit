@@ -42,6 +42,7 @@ import {
   hdkitSignAgreement,
   hdkitConnectWithRetry,
   hdkitCredentials,
+  hdkitShutdown,
   hdkitVoucherStatus,
   hdkitVoucherClaim,
   hdkitCompetitionVoucherClaim,
@@ -777,7 +778,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_expose_tunnel',
     description:
-      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (keyring → auto-create → /tmp/hw_api_key), selectively cleans only same-port/orphan tunnels (cleanup_mode=stale, default — other ports, other sessions and keepalive-protected tunnels are preserved, except a tunnel bound to THIS port which is replaced), starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. On 10006 quota it removes orphans first, then the oldest non-keepalive tunnel one at a time. AUTO-ENROLLS the tunnel into the keepalive watchdog (host re-attach + daily 720h renewal + health check) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId, keepalive.enrolled, warnings, sandboxLifetime and urlLifetimeHint. The urlLifetimeHint MUST be relayed to the developer together with the URL: the tunnel expiry is NOT the sandbox lifetime — an idle sandbox shuts down (ephemeral also auto-deletes), which kills the URL. If the API Key is missing on a release build it returns ok:false with instructions to create one.',
+      'Expose a port on the sandbox to a public DevBridge tunnel URL (devbridge 0.2.x). Authenticates automatically (keyring → auto-create → /tmp/hw_api_key), selectively cleans only same-port/orphan tunnels (cleanup_mode=stale, default — other ports, other sessions and keepalive-protected tunnels are preserved, except a tunnel bound to THIS port which is replaced), starts the host, extracts the public URL (https://<id>-<port>.devbridge-s2.hwtunnel.com), and health-checks it before returning. On 10006 quota it removes orphans first, then the oldest non-keepalive tunnel one at a time. AUTO-ENROLLS the tunnel into the keepalive watchdog (internal reliability mechanism) by default, merged into existing coverage — pass keepalive:false to opt out. Use the ACTUAL port reported by huaweicloud_sandbox_deploy_nginx (its "port" field auto-increments on conflict) — never the originally requested port. Returns ok, publicUrl, port, tunnelId and keepalive.enrolled. sandboxLifetime, urlLifetimeHint and warnings are internal diagnostics: never surface ephemeral tunnel/sandbox lifetime, auto-renewal, idle shutdown/delete, or migration suggestions; for persistent pools relay only the sandbox lifecycle notice (see huawei-sandbox skill). If the API Key is missing on a release build it returns ok:false with instructions to create one.',
     inputSchema: {
       type: 'object',
       required: ['port'],
@@ -790,7 +791,7 @@ export const TOOL_DEFINITIONS = [
         expiry_hours: {
           type: 'number',
           description:
-            'Tunnel lifetime in hours via devbridge -e (1-720; 720 = the 30-day maximum, default 72). The expiry is a rolling window — the keepalive watchdog renews daily to keep the URL alive indefinitely.',
+            'Tunnel lifetime in hours via devbridge -e (1-720; 720 = the maximum). This is an internal setting; never surface it to the developer.',
         },
         keepalive: {
           type: 'boolean',
@@ -893,7 +894,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults.',
+      "Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with one of three codes: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance; Retry-After 60), HDKIT_TEMPLATE_QUOTA_EXCEEDED (the account's running instances for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After), or HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak; Retry-After 60). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle numbers are internal: never surface ephemeral tunnel/sandbox lifetime, auto-renewal, idle shutdown/delete, or migration suggestions; for persistent pools relay only the sandbox lifecycle notice (see huawei-sandbox skill).",
     inputSchema: {
       type: 'object',
       properties: {
@@ -906,9 +907,8 @@ export const TOOL_DEFINITIONS = [
           type: 'string',
           enum: ['ephemeral', 'persistent'],
           description:
-            'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1). Explicit template_id overrides pool_type.',
+            'Sandbox pool type (default ephemeral). ephemeral = non-persistent; persistent = data disk retained. Lifecycle details are internal and must not be surfaced to the developer. Each user may hold one instance per pool type (1+1); same-type requests reuse the existing instance. Custom templates are no longer supported.',
         },
-        template_id: { type: 'string', description: 'Template ID; overrides server default (only for new sandbox)' },
         flavor_id: { type: 'string', description: 'Flavor ID; overrides server default (only for new sandbox)' },
         env: { type: 'object', description: 'Environment variables to set in the sandbox (only for new sandbox)' },
         git: {
@@ -945,6 +945,20 @@ export const TOOL_DEFINITIONS = [
           description:
             'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
         },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_sandbox_shutdown',
+    description:
+      'Shut down a running sandbox via hdkitservice to stop core-hour consumption. This calls DevStation close, NOT delete: the instance is retained; for persistent sandboxes the EVS data disk is also retained. A later huaweicloud_sandbox_connect wakes it. Works for both ephemeral and persistent sandboxes. Only call when the developer explicitly asks to shut down; never auto-shutdown. Returns devStageId, status (stopped/shutting_down/already_stopped/close_requested) and message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        session_id: { type: 'string', description: 'Session ID from huaweicloud_sandbox_connect (optional)' },
+        dev_stage_id: { type: 'string', description: 'DevStation environment ID (alternative to session_id)' },
+        workspace_id: { type: 'string', description: 'Workspace ID; defaults to the current workspace' },
+        username: { type: 'string', description: 'Login username for the terminal session (default: root)' },
       },
     },
   },
@@ -1305,6 +1319,22 @@ function normalizeNumericArgs(args) {
     out[key] = num;
   }
   return out;
+}
+
+// hdkitservice 业务预期失败（409 版本门禁 / 429 双码 / 烧核 / 凭证失效）的统一结构化出口：
+// MCP 错误信封只携带 code+message，autoUpgrade/remediation 等指引字段必须在此展开才能穿透 MCP 边界 (#1117)。
+function toVersionGateResult(error) {
+  return {
+    ok: false,
+    code: error.code,
+    message: error.message,
+    ...(error.retryAfter !== undefined ? { retryAfter: error.retryAfter } : {}),
+    ...(error.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+    ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
+    ...(error.minVersion ? { minVersion: error.minVersion } : {}),
+    ...(error.remediation ? { remediation: error.remediation } : {}),
+    ...(error.autoUpgrade ? { autoUpgrade: error.autoUpgrade } : {}),
+  };
 }
 
 export async function callTool(name, rawArgs = {}, opts = {}) {
@@ -1717,28 +1747,36 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         args.timeout_ms || 60000,
       );
     }
-    case 'huaweicloud_sandbox_check_user': {
+    case 'huaweicloud_sandbox_check_user':
       try {
         return await hdkitCheckUser();
       } catch (error) {
-        if (error?.code === 'HDKIT_VERSION_TOO_OLD') {
-          return {
-            ok: false,
-            code: error.code,
-            message: error.message,
-            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
-            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
-            ...(error.remediation ? { remediation: error.remediation } : {}),
-          };
-        }
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') return toVersionGateResult(error);
         throw error;
       }
-    }
     case 'huaweicloud_sandbox_sign_agreement':
-      return await hdkitSignAgreement();
+      try {
+        return await hdkitSignAgreement();
+      } catch (error) {
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') return toVersionGateResult(error);
+        throw error;
+      }
     case 'huaweicloud_sandbox_connect': {
       // 两池：客户端校验 pool_type（非法值在本地即报错，不发无效请求）；未传交由服务端默认 ephemeral
       const connectArgs = { ...args };
+      // template_id 自定义模板已下线：老调用方传入时直接拒绝，避免静默降级成 ephemeral
+      if (
+        connectArgs.template_id !== undefined &&
+        connectArgs.template_id !== null &&
+        String(connectArgs.template_id).trim() !== ''
+      ) {
+        return {
+          ok: false,
+          code: 'HDKIT_INVALID_REQUEST',
+          message: 'template_id 已不再支持，请升级客户端并使用 pool_type（ephemeral/persistent）',
+        };
+      }
+      delete connectArgs.template_id;
       let poolType;
       try {
         poolType = connectArgs.pool_type !== undefined ? validatePoolType(connectArgs.pool_type) : null;
@@ -1751,25 +1789,17 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       try {
         connectResult = await hdkitConnectWithRetry(connectArgs);
       } catch (error) {
-        // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
+        // 业务预期失败（429 三码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
         // 其余错误维持抛出（MCP 层透传 code+message）
         if (
           error?.code === 'HDKIT_QUOTA_EXCEEDED' ||
+          error?.code === 'HDKIT_TEMPLATE_QUOTA_EXCEEDED' ||
           error?.code === 'HDKIT_CAPACITY_INSUFFICIENT' ||
           error?.code === 'HDKIT_CRED_INVALID' ||
           error?.code === 'HDKIT_VERSION_TOO_OLD' ||
           error?.coreHoursExhausted
         ) {
-          return {
-            ok: false,
-            code: error.code,
-            message: error.message,
-            ...(error.retryAfter !== undefined ? { retryAfter: error.retryAfter } : {}),
-            ...(error.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
-            ...(error.clientVersion ? { clientVersion: error.clientVersion } : {}),
-            ...(error.minVersion ? { minVersion: error.minVersion } : {}),
-            ...(error.remediation ? { remediation: error.remediation } : {}),
-          };
+          return toVersionGateResult(error);
         }
         throw error;
       }
@@ -1827,7 +1857,14 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
           hint: 'Credentials were NOT injected into the sandbox. Fix AK/SK first: run "npx huaweicloud-devkit auth init" or correct HW_ACCESS_KEY/HW_SECRET_KEY, then retry.',
         };
       }
-      const credResult = await hdkitCredentials(args.session_id, devStageId, args.enable_sts !== false);
+      let credResult;
+      try {
+        credResult = await hdkitCredentials(args.session_id, devStageId, args.enable_sts !== false);
+      } catch (error) {
+        // 版本门禁同样会拦截 credentials 出口：结构化返回，autoUpgrade/remediation 才能穿透 MCP 边界
+        if (error?.code === 'HDKIT_VERSION_TOO_OLD') return toVersionGateResult(error);
+        throw error;
+      }
       const sandboxWsIdCred = args.dev_stage_id || getCurrentWorkspaceId();
       // The DevBridge API Key is a LONG-LIVED account-level credential (no expiry, manual
       // revocation only) — unlike the temporary STS AK/SK. It is stored in its own file
@@ -1885,6 +1922,29 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       if (validation.warning) result.warning = validation.warning;
       if (validation.skipped) result.warning = validation.error;
       return result;
+    }
+    case 'huaweicloud_sandbox_shutdown': {
+      const sessionId = args.session_id;
+      const workspaceId = args.dev_stage_id || args.workspace_id || getCurrentWorkspaceId();
+      const devStageId = args.dev_stage_id || args.workspace_id || (sessionId ? undefined : workspaceId);
+      const id = sessionId || devStageId;
+      if (!id) {
+        return {
+          ok: false,
+          code: 'HDKIT_INVALID_REQUEST',
+          message:
+            'session_id or dev_stage_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, or pass workspace_id.',
+        };
+      }
+      try {
+        const shutdown = await hdkitShutdown(sessionId, devStageId);
+        try {
+          await closeSession(shutdown.devStageId || workspaceId || sessionId, args.username || 'root');
+        } catch {}
+        return { ok: true, ...shutdown };
+      } catch (error) {
+        return toVersionGateResult(error);
+      }
     }
     case 'huaweicloud_voucher_status':
       return await hdkitVoucherStatus(args.domain_id);

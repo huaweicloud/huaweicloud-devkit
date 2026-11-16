@@ -40,3 +40,11 @@ test('preflight hook exists and returns immediately when the skip flag is set', 
   assert.equal(launched, false, 'must not launch with the skip flag set');
   assert.match(reason, /disabled/);
 });
+
+test('MCP server entry wires the startup upgrade policy and auto-upgrade', () => {
+  assert.match(serverSrc, /from '\.\/update-policy\.mjs'/);
+  assert.match(serverSrc, /from '\.\/update-auto\.mjs'/);
+  assert.match(serverSrc, /getUpgradePolicy\(\)/);
+  assert.match(serverSrc, /maybeAutoUpgrade\(\{ trigger: 'startup_forced'/);
+  assert.match(serverSrc, /maybeAutoUpgrade\(\{ trigger: 'startup_normal'/);
+});

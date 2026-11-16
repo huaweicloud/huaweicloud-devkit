@@ -6,9 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import test from 'node:test';
 
-// Never trigger a real background KooCLI preinstall from spawned servers here
-// (the preinstall hook runs at mcp-server.mjs import time).
+// Never trigger a real background KooCLI preinstall or auto-upgrade from
+// spawned servers here (both hooks run at mcp-server.mjs import time).
 process.env.HUAWEICLOUD_SKIP_HCLOUD_PREINSTALL = '1';
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const serverPath = join(root, 'plugins', 'huaweicloud-core', 'src', 'mcp-server.mjs');
@@ -112,6 +113,7 @@ test('MCP server initializes, lists tools, and plans CLI commands', async () => 
     assert.ok(toolNames.has('huaweicloud_auth_sync'));
     assert.ok(toolNames.has('huaweicloud_sandbox_check_user'));
     assert.ok(toolNames.has('huaweicloud_sandbox_connect'));
+    assert.ok(toolNames.has('huaweicloud_sandbox_shutdown'));
 
     const runReadonly = listed.result.tools.find((tool) => tool.name === 'huaweicloud_run_readonly_command');
     assert.ok(Object.hasOwn(runReadonly.inputSchema.properties, 'timeoutMs'));

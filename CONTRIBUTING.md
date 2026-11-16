@@ -38,7 +38,7 @@ npm run validate  # structural validation
 npm run lint      # markdown lint
 ```
 
-Requires Node.js >= 22.
+Requires Node.js >= 22.19 (Node 23 requires 23.4+).
 
 ## Code of Conduct
 
