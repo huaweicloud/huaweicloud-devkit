@@ -581,6 +581,54 @@ test('upgrade display/binding integrity: the unversioned mint binds "latest", so
   });
 });
 
+test('upgrade target display/binding integrity: absent and empty bind as "all", non-allowlisted targets never mint (interrogate r3)', async () => {
+  await withTempAuthHome(async (home) => {
+    // Shape 2 (first, while the store is still empty): targets the handler
+    // would refuse (upgradePackage answers '不支持的升级目标' for anything
+    // outside the allowlist — a doomed approval) refuse BEFORE the mint.
+    for (const target of ['bogus', 'ALL']) {
+      await assert.rejects(
+        callTool('huaweicloud_upgrade', { target, approvedByUser: true }),
+        /不支持的升级目标/,
+        `target ${JSON.stringify(target)} refuses before the mint`,
+      );
+    }
+    assert.equal(existsSync(approvalsPath(home)), false, 'no token was minted for refused targets');
+
+    // Shape 1: the untargeted mint binds target:'all' — the natural retry
+    // spelling the DISPLAYED value consumes and passes.
+    const untargeted = await mint('huaweicloud_upgrade', {});
+    assert.equal(confirmApprovalToken(untargeted.approvalToken).status, 'confirmed');
+    const spec = APPROVAL_SPECS.huaweicloud_upgrade as ApprovalSpec;
+    const withAll = await runApprovalGate(
+      'huaweicloud_upgrade',
+      spec,
+      { target: 'all', approvalToken: untargeted.approvalToken, approvedByUser: true },
+      {},
+    );
+    assert.ok('pass' in withAll, 'the retry with the displayed target "all" consumes the token');
+
+    // Shape 3: an EMPTY target normalizes to 'all' in BOTH the view and the
+    // binding — the display shows what the hash binds, and the retry with
+    // the displayed value consumes.
+    const empty = await mint('huaweicloud_upgrade', { target: '' });
+    assert.match(empty.userConfirmation.summary, /\(target all\)/, 'the empty target displays "all"');
+    assert.equal(
+      empty.userConfirmation.argsHash,
+      hashArgs({ target: 'all', version: 'latest' }),
+      'the binding hashes the normalized target, not the empty string',
+    );
+    assert.equal(confirmApprovalToken(empty.approvalToken).status, 'confirmed');
+    const emptyRetry = await runApprovalGate(
+      'huaweicloud_upgrade',
+      spec,
+      { target: 'all', version: 'latest', approvalToken: empty.approvalToken, approvedByUser: true },
+      {},
+    );
+    assert.ok('pass' in emptyRetry, 'the retry with the displayed "all" consumes the empty-target mint');
+  });
+});
+
 test('upgrade never mints a doomed approval: concrete versions and empty strings refuse before the mint', async () => {
   await withTempAuthHome(async (home) => {
     for (const version of ['2.1.0', 'next', '']) {

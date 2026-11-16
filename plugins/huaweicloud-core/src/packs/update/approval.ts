@@ -1,6 +1,7 @@
 import { hashArgs } from '../../lib/approval-tokens.ts';
 import { redactSecrets } from '../../safety-policy.ts';
 import { asString } from '../../lib/as-text.ts';
+import { SUPPORTED_AGENT_TARGETS } from '../../auth/agent-registration.ts';
 import type { ApprovalSpec } from '../../approval-types.ts';
 import type { ToolArgs } from '../../tools.ts';
 
@@ -28,16 +29,34 @@ import type { ToolArgs } from '../../tools.ts';
 //       recorded: the tag can move between consent and execution (a
 //       registry publish lands mid-cycle); the consent pins the channel
 //       and the target, never the resolved artifact.
+//
+// Interrogate round 3, finding — the target half of the same doctrine:
+//   (a) An absent AND an empty target normalize to the literal 'all'
+//       (the handler's own default for both), so the displayed '(target
+//       all)' is the bound value and the natural retry with target:'all'
+//       consumes instead of mismatch-burning the confirmed token.
+//   (b) assertArgsExecutable also refuses targets outside the handler's
+//       SUPPORTED_AGENT_TARGETS allowlist (upgradePackage answers
+//       '不支持的升级目标' after the gate, review #717's shell-interpolation
+//       guard), so a bogus or case-variant target never mints a doomed
+//       approval.
 function upgradeBinding(args: ToolArgs): Record<string, unknown> {
-  return { target: args.target, version: args.version === undefined ? 'latest' : args.version };
+  return {
+    target: args.target === undefined || args.target === '' ? 'all' : args.target,
+    version: args.version === undefined ? 'latest' : args.version,
+  };
 }
 
 function assertUpgradeExecutable(value: unknown): void {
-  const { version } = value as { version?: unknown };
+  const { target, version } = value as { target?: unknown; version?: unknown };
   if (version !== 'latest') {
     throw new Error(
       `version must be "latest" (got ${JSON.stringify(version)}): the handler elects the actual dist tag from the channel. Send version: "latest" or omit it.`,
     );
+  }
+  const targetStr = String(target);
+  if (targetStr !== 'all' && !SUPPORTED_AGENT_TARGETS.includes(targetStr)) {
+    throw new Error(`不支持的升级目标：${targetStr}（有效目标：all，或 ${SUPPORTED_AGENT_TARGETS.join(', ')} 之一）`);
   }
 }
 
