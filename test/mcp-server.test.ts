@@ -107,10 +107,13 @@ test('MCP server returns isError tool results for tools/call missing required pa
     assert.equal(multi.result.isError, true, 'missing required params must set isError');
     const text = multi.result.content.map((c) => c.text || '').join(' ');
     assert.match(text, /args/);
-    // approvalToken is mode-conditional (DEVKIT_APPROVAL_MODE=ask drops the
-    // token), so the required-params error names only the always-required
-    // pair; the token contract is pinned by hcloud-cli-approval.test.ts.
-    assert.match(text, /approvedByUser/);
+    // Both approval parameters are mode-conditional in the schema
+    // (PR-1.5): approvalToken is token-mode-only, and approvedByUser is the
+    // T3 chat round-trip retry marker, so the first ask-mode arrival carries
+    // neither and must reach the gate. The schema therefore names neither in
+    // a bare call, and the gate owns their teaching (pinned by
+    // hcloud-cli-approval.test.ts and approval-gate.test.ts).
+    assert.doesNotMatch(text, /approvedByUser/);
   } finally {
     client.close();
   }
@@ -267,4 +270,44 @@ test('ping is auto-answered by the SDK protocol layer', async () => {
   } finally {
     client.close();
   }
+});
+
+test('the stdio transport forwards client responses to server-initiated requests', async () => {
+  // PR-1.5: the server raises the approval form itself (elicitation/create),
+  // and the client's ANSWER is an id-bearing message with no method. The
+  // transport used to answer every such message with -32601, which left the
+  // SDK's request pending until its timeout — the server form could never
+  // round-trip on the real stdio face (measured end-to-end through
+  // dist/mcp-server.js; the in-memory transport did not catch it). A
+  // response carries result/error and must reach the SDK; the malformed
+  // shape (neither) keeps its -32601 reply.
+  const { PassThrough } = await import('node:stream');
+  const { DevkitStdioTransport } = await import('../plugins/huaweicloud-core/src/mcp-stdio-transport.ts');
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const transport = new DevkitStdioTransport({
+    streams: { stdin, stdout },
+    initializeSideEffects: async () => {},
+  });
+  const forwarded: unknown[] = [];
+  transport.onmessage = (message) => {
+    forwarded.push(message);
+  };
+  const written: string[] = [];
+  stdout.on('data', (chunk: Buffer) => written.push(chunk.toString('utf8')));
+  await transport.start();
+
+  stdin.write(
+    `${JSON.stringify({ jsonrpc: '2.0', id: 7, result: { action: 'accept', content: { confirm: true } } })}\n`,
+  );
+  stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 8 })}\n`);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  await transport.close();
+
+  assert.deepEqual(
+    forwarded.map((message) => (message as { id: number }).id),
+    [7],
+    'the response reached the SDK; the malformed id-only message did not',
+  );
+  assert.match(written.join(''), /-32601/, 'the malformed message still earns a visible reply');
 });

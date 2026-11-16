@@ -41,10 +41,19 @@ export async function withTempAuthHome(fn: (home: string) => Promise<void> | voi
     HW_SECRET_KEY: process.env.HW_SECRET_KEY,
     HW_SECURITY_TOKEN: process.env.HW_SECURITY_TOKEN,
     HW_STS_EXPIRES_AT: process.env.HW_STS_EXPIRES_AT,
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+    OPENCODE_DB: process.env.OPENCODE_DB,
   };
   process.env.HUAWEICLOUD_HOME = home;
   process.env.HCLOUD_CONFIG_PATH = join(home, '.hcloud', 'config.json');
   process.env.HCLOUD_OBS_CONFIG_PATH = join(home, '.obsutilconfig');
+  // The ask-mode gate reads opencode's saved-permission store from the
+  // client's data root; pin it under the fixture home (and drop an ambient
+  // OPENCODE_DB) so the machine's real store, and any "always allow" row in
+  // it, can never decide a test outcome. A test that seeds a store sets its
+  // own XDG_DATA_HOME/OPENCODE_DB inside the callback.
+  process.env.XDG_DATA_HOME = join(home, '.local', 'share');
+  delete process.env.OPENCODE_DB;
   delete process.env.HW_ACCESS_KEY;
   delete process.env.HW_SECRET_KEY;
   delete process.env.HW_SECURITY_TOKEN;

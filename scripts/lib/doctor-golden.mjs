@@ -65,9 +65,14 @@ function baseEnv(home, extra) {
   // XDG_CONFIG_HOME redirects the opencode config root; CODEX_HOME keys the
   // codex cache cleanup; DSH_HOME keys the dsh layout; OFFICE_CLAW_CONFIG_ROOT
   // keys the officeace root (fixture (c) passes it explicitly). Ambient values
-  // would leak doctor's probes into real state.
+  // would leak doctor's probes into real state. XDG_DATA_HOME/OPENCODE_DB are
+  // the same hazard for opencode's saved-permission store: either would let
+  // the doctor read the machine's live store, whose "always allow" rows would
+  // enter the goldens.
   if (!('XDG_CONFIG_HOME' in extra)) delete env.XDG_CONFIG_HOME;
+  if (!('XDG_DATA_HOME' in extra)) delete env.XDG_DATA_HOME;
   delete env.CODEX_HOME;
+  delete env.OPENCODE_DB;
   if (!('DSH_HOME' in extra)) delete env.DSH_HOME;
   if (!('OFFICE_CLAW_CONFIG_ROOT' in extra)) delete env.OFFICE_CLAW_CONFIG_ROOT;
   return env;

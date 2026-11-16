@@ -3,11 +3,15 @@
 // its evidence is the custody-HMAC grant inside approvals.json (single use,
 // tombstone, five-minute TTL, all unchanged).
 //
-// The evidence tier is written from day one: 'posture' for ask-mode
-// arrivals (the harness client's prompt is the confirmation the mode
-// trusts), 'terminal' for approve-CLI confirmations the plan face reports,
-// 'elicitation' from PR-4. A memo-reuse event (PR-3a) inherits the
-// ORIGINAL event's tier and never upgrades it, so a posture-grade yes can
+// The evidence tier is written from day one: 'elicitation' for the
+// server-raised form the approval gate sends inside the run call,
+// 'posture' for the T3 chat round-trip's attested retry (the model reports
+// the user's chat answer; posture trust, not mechanically verified), and
+// 'terminal' for approve-CLI confirmations the plan face reports. A
+// channel-verified ladder arrival (PR-1.5, evidenceFinal) records the
+// channel that just answered instead of inheriting. A memo-reuse event
+// (PR-3a) inherits the ORIGINAL event's tier and never upgrades it, so a
+// posture-grade yes can
 // never be re-recorded as terminal-grade on retry — recordAskModeConsent
 // ENFORCES the inheritance by resolving the tier itself from the original
 // granted event on the same consent key (sessionId + tool + argsHash —
@@ -1074,6 +1078,12 @@ function filterEvents(entries: unknown[]): ConsentEvent[] {
       // events to a one-field corruption).
       arrivalSeq: isValidArrivalSeq(record.arrivalSeq) ? record.arrivalSeq : SEQ_UNKNOWN,
     };
+    // The command-forward line (redacted at write time): pass it through
+    // when present and well-formed; a malformed value reads as absent —
+    // the same tolerance the other optional fields carry.
+    if (typeof record.command === 'string' && record.command !== '') {
+      event.command = record.command;
+    }
     // The delivery-outcome follow-up (round 10, finding 4): pass it through
     // when present and well-formed; a malformed value reads as absent (the
     // documented read tolerance — the write path preserves the raw row).
@@ -1966,6 +1976,19 @@ export function recordAskModeConsent(params: {
   outcome: 'granted' | 'denied';
   evidence?: ConsentEvidence;
   arrivalSeq?: number;
+  // The command-forward line the summarize view rendered (already redacted
+  // by the spec's contract); written on the row so the consent record names
+  // what the user allowed, not only its hash.
+  command?: string;
+  // The caller knows WHICH channel answered this arrival and wants that
+  // channel recorded (PR-1.5's ladder: an elicitation form answer is
+  // `elicitation`, a chat-round-trip retry is `posture`). Without this the
+  // ledger inherits the earliest granted row's tier on the consent key —
+  // PR-1's reuse rule, which would label a chat retry `elicitation` whenever
+  // a form had answered the same key earlier (a fabricated upgrade: the row
+  // would claim a form nobody answered for this arrival). Memo reuse keeps
+  // the inheriting path; a channel-verified arrival opts out.
+  evidenceFinal?: boolean;
 }): { grantedAt: number; arrivalSeq: number } {
   // Tier resolution is the ledger's rule, not the caller's: a reuse
   // inherits the original event's tier verbatim — never upgraded (posture
@@ -2001,13 +2024,16 @@ export function recordAskModeConsent(params: {
     evidence: 'posture', // resolved below, before the append
     arrivalSeq: 0, // appendConsentEvent assigns the real counter
   };
+  if (params.command !== undefined && params.command !== '') event.command = params.command;
   withLedgerLock(() => {
     let evidence = params.evidence ?? 'posture';
-    try {
-      const original = originalGrantedFor(params.sessionId, params.tool, params.argsHash);
-      if (original) evidence = original.evidence;
-    } catch {
-      // degrade to the caller's tier: the append is the fact that matters
+    if (!params.evidenceFinal) {
+      try {
+        const original = originalGrantedFor(params.sessionId, params.tool, params.argsHash);
+        if (original) evidence = original.evidence;
+      } catch {
+        // degrade to the caller's tier: the append is the fact that matters
+      }
     }
     event.evidence = evidence;
     appendConsentEvent(event);

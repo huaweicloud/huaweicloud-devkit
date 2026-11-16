@@ -6,11 +6,12 @@
 // src/lib/approval-tokens.ts.
 //
 // The plan's approval posture is mode-dependent (HcloudPlanOptions.
-// approvalMode): 'ask' (DEVKIT_APPROVAL_MODE=ask) plans for the harness
-// client's own permission prompt as the user's confirmation, so no token
-// is minted and userConfirmation carries the ask note instead of a
-// terminal approve line; 'token' (the default) keeps the mint + approve
-// line contract above.
+// approvalMode): 'ask' (DEVKIT_APPROVAL_MODE=ask) plans for the SERVER-run
+// confirmation — the approval gate raises an elicitation form, or the T3
+// chat round-trip on a client that cannot render one — so no token is
+// minted and userConfirmation carries the ask note instead of a terminal
+// approve line; 'token' (the default) keeps the mint + approve line
+// contract above.
 
 import { classifyHcloudArgs, redactSecrets, stripExecutable, type ClassifyOptions } from './safety-policy.ts';
 import { isHcloudToken } from './safety/tokens.ts';
@@ -30,9 +31,9 @@ import { triageUnknownService } from './hcloud-triage.ts';
 // The plan's terminal-confirmation block: `needed` says the command waits
 // on a confirmation the user makes in their own terminal, `command` is the
 // exact line they run (present only on plans that minted a token). Ask
-// mode shifts the confirmation onto the harness client's permission
-// prompt: `mode` names that posture and `note` teaches the run call that
-// satisfies it — no `command` exists to name.
+// mode shifts the confirmation onto the server-run gate (a form, or the T3
+// chat round-trip): `mode` names that posture and `note` teaches the run
+// call that satisfies it — no `command` exists to name.
 export interface HcloudPlanUserConfirmation {
   needed: boolean;
   command?: string;
@@ -88,11 +89,34 @@ export function needsUserConfirmation(args: string[], options: ClassifyOptions =
   return strict.decision === 'deny' && (strict.risk === 'write' || strict.risk === 'execution');
 }
 
-function quoteShellArg(value: unknown): string {
+export function quoteShellArg(value: unknown): string {
   const text = String(value);
   if (!text) return '""';
   if (/^[A-Za-z0-9_./:=@-]+$/.test(text)) return text;
   return `"${text.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+// One redacted echo argument: the real argument's quoting shape with the
+// value text replaced. A real argument quoteShellArg leaves bare stays bare
+// (so a safe-charset substitution is the gate's plain line); one it would
+// quote gets the same wrapper around the redacted spelling (so a
+// shell-special substitution is the gate's quoted line).
+function redactedCommandArg(raw: string, redacted: string): string {
+  if (quoteShellArg(raw) === raw) return redacted;
+  return `"${redacted.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+// The accepted executable lines for a normalized argument list: the
+// command-forward `command` field must equal one of them exactly. The plain
+// space-joined line is the contract's stated anchor; the shell-quoted line is
+// this module's own echo (plan.command), so a model that forwards the plan's
+// echo verbatim passes too. The two coincide for the ordinary case (service,
+// operation, --key=value) and differ only where an argument carries a space,
+// a quote, or another character the echo has to quote.
+export function hcloudExecutableLines(normalizedArgs: readonly string[]): string[] {
+  const plain = ['hcloud', ...normalizedArgs].join(' ');
+  const quoted = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
+  return plain === quoted ? [plain] : [plain, quoted];
 }
 
 function planningWarnings(args: string[]): string[] {
@@ -328,7 +352,20 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
   const inputArgs = Array.isArray(args) ? args.map(String) : [];
   const { args: normalizedArgs, stripped } = stripLeadingHcloudBinArgs(inputArgs);
   const classification = classifyHcloudArgs(normalizedArgs, options);
-  const command = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
+  // The echo reproduces the REAL argument's quoting SHAPE and redacts only the
+  // value text inside it, so replacing `<redacted>` with the real value yields
+  // exactly the line the approval gate accepts for every charset family.
+  // Quoting must be decided from the raw argument: the placeholder itself is
+  // not charset-safe (`<` and `>` sit outside quoteShellArg's safe set), so
+  // quoting the redacted spelling unconditionally would wrap a safe-charset
+  // value the real line leaves bare and dead-end the substitution on the most
+  // common family (alphanumeric password, hex token). The old post-quote
+  // redaction had the mirror defect on the shell-special family (an
+  // unbalanced quote), so this one construction now serves both.
+  const redactedArgs = normalizedArgs.map((arg) => redactSecrets(arg));
+  const command = ['hcloud', ...normalizedArgs.map((raw, i) => redactedCommandArg(raw, redactedArgs[i] ?? ''))].join(
+    ' ',
+  );
   const warnings: Array<string | SgFinding> = planningWarnings(normalizedArgs);
   if (stripped !== null) warnings.unshift(leadingBinWarning(stripped));
   const obsHint = obsWriteHint(normalizedArgs);
@@ -369,10 +406,10 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
     }
   }
   const approvalMode = options.approvalMode ?? 'token';
-  // Ask mode never mints: the confirmation is the harness client's prompt
-  // on the run call, so there is no token to hand the model and nothing
-  // lands in the approvals store. Run paths keep mintApprovalToken:false
-  // in both modes.
+  // Ask mode never mints: the confirmation is the server-run gate inside
+  // the run call, so there is no token to hand the model and nothing lands
+  // in the approvals store. Run paths keep mintApprovalToken:false in both
+  // modes.
   const approvalToken =
     approvalMode === 'ask' || options.mintApprovalToken === false
       ? undefined
@@ -387,9 +424,10 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
     // The plan echo is a COMMAND string, not child-process output — banner
     // stripping is an output concern, and an argument VALUE that happens to
     // carry banner-shaped text must never blank the command the user is asked
-    // to approve (redactSecrets only).
-    command: redactSecrets(command),
-    executableBlock: redactSecrets(command),
+    // to approve (redaction only, already applied per arg above so the
+    // quoting stays balanced).
+    command,
+    executableBlock: command,
     warnings,
     classification: applyPreflightFindings(effectiveClassification, sgFindings),
     sgFindings,
@@ -403,7 +441,7 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
         ? {
             needed: true,
             mode: 'ask',
-            note: 'The harness client confirms this command with the user when huaweicloud_run_approved_command is called. Call it with the same args and approvedByUser: true. No terminal approval line or token is needed.',
+            note: 'The confirmation happens on the server when huaweicloud_run_approved_command is called: an elicitation-capable client renders a form with this command line, and any other client returns ASK_CONFIRMATION_REQUIRED, which you answer by showing the user this command in chat and retrying with approvedByUser: true. Send the same args on every call. This command field is the display line: where it shows <redacted>, substitute the real values, and the args array spelled out is always accepted as the command. No terminal approval line or token is needed.',
           }
         : {
             needed: true,

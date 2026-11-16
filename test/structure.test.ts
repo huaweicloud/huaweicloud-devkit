@@ -279,6 +279,12 @@ test('node:sqlite is required inside functions, never at module scope', () => {
   // CLI and asserting its stderr carries no Node warning lines (that half
   // only has teeth on Node 22.x, where the builtin still warns).
   const srcDir = join(root, 'plugins', 'huaweicloud-core', 'src');
+  // Two spellings reach module scope: a top-level `createRequire(...)('node:sqlite')`
+  // and an ES import. The import arm joined after PR-1.5's saved-perms reader
+  // walked through the require-only scan (its ESM import was invisible to the
+  // regex) and printed the warning on every CLI boot on Node 22.19.
+  const moduleScopeRequire = /^(?:export\s+)?(?:const|let|var)\b.*\(\s*['"]node:sqlite['"]\s*\)/;
+  const moduleScopeImport = /^\s*import\b[^;]*\bfrom\s+['"]node:sqlite['"]/;
   const offenders: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -287,7 +293,7 @@ test('node:sqlite is required inside functions, never at module scope', () => {
         walk(entryPath);
       } else if (entry.name.endsWith('.ts')) {
         for (const [idx, line] of readFileSync(entryPath, 'utf8').split('\n').entries()) {
-          if (/^(const|let|var)\b.*\(\s*['"]node:sqlite['"]\s*\)/.test(line)) {
+          if (moduleScopeRequire.test(line) || moduleScopeImport.test(line)) {
             offenders.push(`${relative(srcDir, entryPath)}:${idx + 1}`);
           }
         }
@@ -295,7 +301,11 @@ test('node:sqlite is required inside functions, never at module scope', () => {
     }
   };
   walk(srcDir);
-  assert.deepEqual(offenders, [], 'node:sqlite requires must sit inside functions (lazy), never at module scope');
+  assert.deepEqual(
+    offenders,
+    [],
+    'node:sqlite must be loaded lazily inside functions (require or import), never at module scope',
+  );
 });
 
 test('spawn call sites never combine a non-empty args array with shell', () => {

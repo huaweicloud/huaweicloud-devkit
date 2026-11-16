@@ -120,6 +120,12 @@ const DELIBERATE_ADDITIONS = [
       'The async-exec claim protocol (TLA+-verified as HwExecClaim): mode "async" claims a task directory and spawns the command detached, so long build-class commands stop hitting the synchronous timeout cliff; the pre-migration contract only knew the sync exec.',
   },
   {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'command',
+    reason:
+      'The operator-approved command-forward shape: the harness permission popup renders the tool input, so a top-level command line makes the command the first thing the user reads. Optional in the schema ON PURPOSE (the gate, not zod, is the enforcer): an args-only legacy call must still reach the gate, and the gate checks equality whenever the field is present.',
+  },
+  {
     tool: 'huaweicloud_sandbox_exec_one_shot',
     property: 'task_id',
     reason:
@@ -138,6 +144,12 @@ const DELIBERATE_OPTIONALS = [
     tool: 'huaweicloud_run_approved_command',
     property: 'approvalToken',
     reason: 'DEVKIT_APPROVAL_MODE=ask makes the harness client the confirmation, so the token becomes mode-conditional',
+  },
+  {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'approvedByUser',
+    reason:
+      'PR-1.5 server-run confirmation: the attestation is the T3 chat round-trip retry marker, so the first ask-mode arrival carries none and must reach the gate (a schema-required field would die in SDK validation). Token mode still throws the teaching rejection when it is absent.',
   },
 ];
 

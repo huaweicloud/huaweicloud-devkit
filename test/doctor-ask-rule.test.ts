@@ -6,6 +6,7 @@ import test from 'node:test';
 import { ASK_RULE_ACTION } from '../plugins/huaweicloud-core/src/lib/opencode-ask-rule.ts';
 import { fixtureDir } from './fixture-dir.ts';
 import { runDoctor, runInstall } from './doctor-helpers.ts';
+import { seedStoreIn } from './opencode-saved-perms-harness.ts';
 
 // The ASK approval posture through the real installer and doctor: the
 // install writes the PAIR (the OpenCode permissions ask rule + the mcp
@@ -14,7 +15,7 @@ import { runDoctor, runInstall } from './doctor-helpers.ts';
 // natural probe, which would flip with the host's opencode), and doctor
 // evaluates the pair, failing each known mixed state in its own direction.
 
-const ASK_LABEL = 'ASK approval posture (client prompt + server env)';
+const ASK_LABEL = 'ASK approval posture (client rule + server gate)';
 
 // The opencode config the installer wrote, as a mutable record the
 // hand-edit tests reshape in place.
@@ -61,7 +62,7 @@ test('doctor: install with the ask gate on writes both halves of the pair, and d
   assert.ok(stdout.includes(`[PASS] ${ASK_LABEL}`), `expected the pair to pass, got:\n${stdout}`);
 });
 
-test('doctor: an always-allow rule on the run tool FAILs (the ask contract is silently gone)', () => {
+test('doctor: an always-allow rule on the run tool FAILs (drift from the installer pair)', () => {
   const home = fixtureDir('hwc-ask-allow-');
   const config = installAskOn(home);
   ruleEntries(config).forEach((rule) => {
@@ -70,7 +71,7 @@ test('doctor: an always-allow rule on the run tool FAILs (the ask contract is si
   saveOpencodeConfig(home, config);
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the allow rule to fail, got:\n${stdout}`);
-  assert.ok(stdout.includes('"allow" (always allow)'), 'the danger is named');
+  assert.ok(stdout.includes('the permissions rule for the run tool is "allow"'), 'the drift is named');
   assert.ok(stdout.includes('Delete that rule or set its effect to "ask"'), 'the remediation is named');
 });
 
@@ -86,7 +87,7 @@ test('doctor: a deny rule on the run tool FAILs (the write tool is blocked entir
   assert.ok(stdout.includes('"deny" — the write tool is blocked entirely'), 'the danger is named');
 });
 
-test('doctor: the ask rule without the mcp env FAILs (the double-gate direction)', () => {
+test('doctor: the ask rule without the mcp env FAILs (drift from the installer pair)', () => {
   const home = fixtureDir('hwc-ask-noenv-');
   const config = installAskOn(home);
   delete envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE;
@@ -94,20 +95,20 @@ test('doctor: the ask rule without the mcp env FAILs (the double-gate direction)
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the missing env to fail, got:\n${stdout}`);
   assert.ok(
-    stdout.includes('the client prompts AND the server still demands a token'),
+    stdout.includes('DEVKIT_APPROVAL_MODE=ask is missing from the mcp entry'),
     'the double-gate direction is named',
   );
   assert.ok(stdout.includes('npx huaweicloud-devkit install --target opencode'), 'the healable remediation is named');
 });
 
-test('doctor: the mcp env without the ask rule FAILs (the fail-open direction)', () => {
+test('doctor: the mcp env without the ask rule FAILs (the drifted pair direction)', () => {
   const home = fixtureDir('hwc-ask-norule-');
   const config = installAskOn(home);
   delete config.permissions;
   saveOpencodeConfig(home, config);
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the missing rule to fail, got:\n${stdout}`);
-  assert.ok(stdout.includes('the server trusts a client prompt nobody shows'), 'the fail-open direction is named');
+  assert.ok(stdout.includes('the pair has drifted from what this installer writes'), 'the drift is named');
 });
 
 test('doctor: rule absent and env absent is the legitimate token-mode PASS', () => {
@@ -176,7 +177,7 @@ test('doctor: a v1 allow value FAILs with the key-shaped remediation (the ask co
   saveOpencodeConfig(home, config);
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v1' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the v1 allow to fail, got:\n${stdout}`);
-  assert.ok(stdout.includes('the permission value for the run tool is "allow" (always allow)'), 'the danger is named');
+  assert.ok(stdout.includes('the permission value for the run tool is "allow"'), 'the drift is named');
   assert.ok(stdout.includes('Delete that key or set its value to "ask"'), 'the shape-accurate remediation is named');
 });
 
@@ -190,7 +191,7 @@ test('doctor: a v1 deny value FAILs (the write tool is blocked entirely)', () =>
   assert.ok(stdout.includes('"deny" — the write tool is blocked entirely'), 'the danger is named');
 });
 
-test('doctor: the v1 key without the mcp env FAILs (the double-gate direction)', () => {
+test('doctor: the v1 key without the mcp env FAILs (the drifted pair direction)', () => {
   const home = fixtureDir('hwc-ask-v1-noenv-');
   const config = installAskV1(home);
   delete envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE;
@@ -198,19 +199,19 @@ test('doctor: the v1 key without the mcp env FAILs (the double-gate direction)',
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v1' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the missing env to fail, got:\n${stdout}`);
   assert.ok(
-    stdout.includes('the client prompts AND the server still demands a token'),
+    stdout.includes('DEVKIT_APPROVAL_MODE=ask is missing from the mcp entry'),
     'the double-gate direction is named',
   );
 });
 
-test('doctor: the v1 env without the key FAILs (the fail-open direction)', () => {
+test('doctor: the v1 env without the key FAILs (the drifted pair direction)', () => {
   const home = fixtureDir('hwc-ask-v1-norule-');
   const config = installAskV1(home);
   delete config.permission;
   saveOpencodeConfig(home, config);
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v1' });
   assert.ok(stdout.includes(`[FAIL] ${ASK_LABEL}`), `expected the missing key to fail, got:\n${stdout}`);
-  assert.ok(stdout.includes('the server trusts a client prompt nobody shows'), 'the fail-open direction is named');
+  assert.ok(stdout.includes('the pair has drifted from what this installer writes'), 'the drift is named');
 });
 
 test('doctor: v1 key and env both absent is the legitimate token-mode PASS', () => {
@@ -244,4 +245,95 @@ test('install honors a user-owned v1 key: add-only-if-absent keeps any value', (
   assert.equal(v1Permission(config)[ASK_RULE_ACTION], 'deny', 'the user’s value survives the write');
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v1' });
   assert.ok(stdout.includes('"deny" — the write tool is blocked entirely'), 'doctor names the user-owned denial');
+});
+
+// ── The saved-permission store (PR-1.5, demoted to a hygiene WARN) ────────
+// The confirmation runs server-side now, so a saved client-side "always
+// allow" row can no longer suppress it: the gate raises its own form inside
+// the tool call and never routes through opencode's permission evaluation.
+// Doctor keeps naming the row as a stale grant, WARN not FAIL, with the
+// probe-measured removal commands. A clean home prints nothing at all.
+
+const SAVED_WARN = '[WARN] ASK approval hygiene:';
+
+function seedSavedRow(home: string, seed: Parameters<typeof seedStoreIn>[1]): string {
+  return seedStoreIn(join(home, '.local', 'share'), seed);
+}
+
+test('doctor: a clean store prints no saved-row line (the section is invisible on zero rows)', () => {
+  const home = fixtureDir('hwc-saved-clean-');
+  installAskOn(home);
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes(`[PASS] ${ASK_LABEL}`), `the pair still passes, got:\n${stdout}`);
+  assert.equal(stdout.includes(SAVED_WARN), false, 'no saved-row line on a clean home');
+  assert.equal(stdout.includes('saved-permission store'), false, 'no store line either');
+});
+
+test('doctor: a saved "always allow" row WARNs with the store path, the row, and the two api commands', () => {
+  const home = fixtureDir('hwc-saved-row-');
+  installAskOn(home);
+  const dbPath = seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'devkit-demo') }],
+    permissions: [{ id: 'psv_demo_row', projectId: 'p-demo', action: ASK_RULE_ACTION }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes(SAVED_WARN), `expected the hygiene warn, got:\n${stdout}`);
+  assert.equal(stdout.includes('[FAIL] ASK approval hygiene'), false, 'the demotion: never a FAIL');
+  assert.ok(stdout.includes('not fail-open'), 'the WARN states the gate already holds');
+  assert.ok(stdout.includes(dbPath), 'the store path is named');
+  assert.ok(stdout.includes('psv_demo_row'), 'the row id is listed');
+  assert.ok(stdout.includes(join(home, 'work', 'devkit-demo')), 'the row project is listed');
+  assert.ok(stdout.includes('opencode api GET /api/permission/saved'), 'the list command is taught');
+  assert.ok(stdout.includes('opencode api DELETE /api/permission/saved/<id>'), 'the removal command is taught');
+});
+
+test('doctor: a saved row that does not cover the roster action prints nothing', () => {
+  const home = fixtureDir('hwc-saved-foreign-');
+  installAskOn(home);
+  seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'other') }],
+    permissions: [{ id: 'psv_other_tool', projectId: 'p-demo', action: 'some-other-server_some_tool' }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.equal(stdout.includes(SAVED_WARN), false, `a foreign row is not ours, got:\n${stdout}`);
+});
+
+test('doctor: a saved wildcard row covering the action WARNs too', () => {
+  const home = fixtureDir('hwc-saved-wildcard-');
+  installAskOn(home);
+  seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'devkit-demo') }],
+    permissions: [{ id: 'psv_wild', projectId: 'p-demo', action: 'huaweicloud-devkit_*' }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes(SAVED_WARN), `expected the wildcard row to warn, got:\n${stdout}`);
+});
+
+test('doctor: an unreadable store WARNs (warn-only, never a hard fail)', () => {
+  const home = fixtureDir('hwc-saved-corrupt-');
+  installAskOn(home);
+  const opencodeDir = join(home, '.local', 'share', 'opencode');
+  mkdirSync(opencodeDir, { recursive: true });
+  writeFileSync(join(opencodeDir, 'opencode.db'), 'not a database\n', 'utf8');
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(
+    stdout.includes(`${SAVED_WARN} opencode saved-permission store unreadable`),
+    `expected the warn, got:\n${stdout}`,
+  );
+  assert.equal(stdout.includes('[FAIL] ASK approval hygiene'), false, 'an unreadable store is never a FAIL');
+});
+
+test('doctor: in token mode the stale row WARNs the same way (the row is inert in every posture)', () => {
+  const home = fixtureDir('hwc-saved-token-');
+  const config = installAskOn(home);
+  delete config.permissions;
+  delete envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE;
+  saveOpencodeConfig(home, config);
+  seedSavedRow(home, {
+    projects: [{ id: 'p-demo', worktree: join(home, 'work', 'devkit-demo') }],
+    permissions: [{ id: 'psv_token_mode', projectId: 'p-demo', action: ASK_RULE_ACTION }],
+  });
+  const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'on' });
+  assert.ok(stdout.includes('[PASS] ASK approval posture (token mode)'), `token mode still passes, got:\n${stdout}`);
+  assert.ok(stdout.includes(SAVED_WARN), `the stale row is still named, got:\n${stdout}`);
 });

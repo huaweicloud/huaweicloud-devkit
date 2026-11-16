@@ -7,6 +7,8 @@ import {
   firstPlaceholderSecretArg,
   pinViewArgs,
   needsUserConfirmation,
+  quoteShellArg,
+  hcloudExecutableLines,
   type HcloudRunResult,
   type HcloudRunOptions,
 } from '../../hcloud-cli.ts';
@@ -37,9 +39,9 @@ import type { ApprovalSpec } from '../../approval-types.ts';
 // token lifecycle envelopes, the placeholder floor, and the args binding;
 // the handler keeps the pure runHcloud execution. The approval posture
 // resolves from DEVKIT_APPROVAL_MODE (src/lib/approval-mode.ts): 'token'
-// (default) keeps the out-of-band terminal gate; 'ask' makes the harness
-// client's own permission prompt the user's confirmation, so the plan
-// mints nothing and the run needs no token. The only allowWrites:true call
+// (default) keeps the out-of-band terminal gate; 'ask' moves the
+// confirmation onto the server-run gate (an elicitation form, or the T3
+// chat round-trip), so the plan mints nothing and the run needs no token. The only allowWrites:true call
 // sites in the codebase (the approved-run execution) live here, so trimming this pack
 // removes the CLI execution face and its approval tools together: a
 // configuration trimmed of this pack has no devkit-side hcloud CLI write
@@ -389,9 +391,15 @@ const listOperationsSchema = z.looseObject({
 });
 const runApprovedCommandSchema = z.looseObject({
   vendorConfirmed,
+  command: z
+    .string()
+    .optional()
+    .describe(
+      'Always send this: the exact full hcloud command line this call executes, for example "hcloud ECS DeleteServer --server_id=i-123". The plan result\'s command field (huaweicloud_plan_cli_command) is the display line: copy it and substitute the real values wherever it shows <redacted>, or send the args array spelled out as one line. The confirmation body shows it as the first thing the user reads, and the server checks it equals the line the args array spells: a mismatch is rejected without executing anything. Only a legacy caller that predates this field omits it, and the field is optional in the schema so such a call still reaches the gate instead of dying in validation.',
+    ),
   args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
   approvalToken: approvalTokenArg.describe(
-    'Required in token-approval mode (from huaweicloud_plan_cli_command); omit in ask mode where the harness client confirms at run time.',
+    'Required in token-approval mode (from huaweicloud_plan_cli_command); omit in ask mode, where the server-run gate confirms at run time.',
   ),
   approvedByUser: approvedByUserArg,
   timeoutMs: numericArg.optional().describe('Optional timeout in milliseconds. Defaults to 60000.'),
@@ -419,6 +427,7 @@ export const HUAWEICLOUD_CLI_APPROVAL_SPECS: Readonly<Record<'huaweicloud_run_ap
     flavor: 'always',
     tokenSource: 'plan-face',
     normalizeArgs: (args) => stripLeadingHcloudBinArgs(providedStringArgs(args)).args,
+    commandAnchor: (bindingValue) => hcloudExecutableLines(bindingValue as string[]),
     classify: (bindingValue) => (needsUserConfirmation(bindingValue as string[]) ? 'required' : 'none'),
     assertArgsExecutable: (bindingValue, mode) => assertNoPlaceholderSecret(bindingValue as string[], mode),
     summarize: (bindingValue) => {
@@ -430,10 +439,12 @@ export const HUAWEICLOUD_CLI_APPROVAL_SPECS: Readonly<Record<'huaweicloud_run_ap
       // elicitation form spread verbatim. pinViewArgs is the same redaction
       // vocabulary the pin view uses; an unredactable summary would leak
       // exactly what the pin view hides.
+      const redactedLine = ['hcloud', ...pinViewArgs(effective)].map((arg) => quoteShellArg(arg)).join(' ');
       return {
-        summary: `huaweicloud_run_approved_command: ${['hcloud', ...pinViewArgs(effective)].join(' ').slice(0, 200)}`,
+        summary: `huaweicloud_run_approved_command: ${redactedLine.slice(0, 200)}`,
         argsHash: hashArgs(effective),
         pinView: pinViewArgs(effective),
+        command: redactedLine,
       };
     },
   },
@@ -450,7 +461,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_plan_cli_command',
     description:
-      "Classify and plan a Huawei Cloud hcloud command without executing it. When the result's userConfirmation.needed is true, the command waits on user confirmation before huaweicloud_run_approved_command will accept it: in the default token mode the USER runs the userConfirmation.command line (npx huaweicloud-devkit approve <approvalToken>) in their own terminal, and under DEVKIT_APPROVAL_MODE=ask the harness client itself prompts the user on the run call — no token is needed. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
+      "Classify and plan a Huawei Cloud hcloud command without executing it. When the result's userConfirmation.needed is true, the command waits on user confirmation before huaweicloud_run_approved_command will accept it: in the default token mode the USER runs the userConfirmation.command line (npx huaweicloud-devkit approve <approvalToken>) in their own terminal, and under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself on the run call (an elicitation form, or an ASK_CONFIRMATION_REQUIRED chat round-trip) — no token is needed. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
     schema: planCliCommandSchema,
     handler: handlePlanCliCommand,
   },
@@ -471,7 +482,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_run_approved_command',
     description:
-      "Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user. In the default token mode the user must also confirm the plan token in their own terminal (npx huaweicloud-devkit approve <token>) — a non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Under DEVKIT_APPROVAL_MODE=ask the harness client's permission prompt on this call is the confirmation: pass the same args with approvedByUser: true and no approvalToken. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.",
+      'Run a write-capable hcloud command only after the exact command has been shown and explicitly approved by the user. In the default token mode the user must also confirm the plan token in their own terminal (npx huaweicloud-devkit approve <token>) — a non-read command without that terminal confirmation is rejected with USER_CONFIRMATION_REQUIRED and the token stays usable. Under DEVKIT_APPROVAL_MODE=ask the confirmation runs on the server: on a client that supports MCP elicitation the devkit raises a form during this call (approve runs it once; dismiss, decline, or the timeout cancels it), and on any other client the call returns ASK_CONFIRMATION_REQUIRED, whose envelope carries the command line — show it to the user in chat, then retry the same call with approvedByUser: true, which is model-relayed posture trust. In both modes always send command: it is the line the user reads, and the server rejects a line that does not match args (COMMAND_ARGS_MISMATCH). Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: runApprovedCommandSchema,
     handler: handleRunApprovedCommand,
   },

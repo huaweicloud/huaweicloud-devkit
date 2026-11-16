@@ -30,7 +30,7 @@ import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
 import { huaweiConfigBase } from './lib/state-dir.ts';
 import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
-import type { ApprovalSpec, ConsentDeliveryOutcome } from './approval-types.ts';
+import type { ApprovalSpec, ConsentDeliveryOutcome, ElicitFormRequest, ElicitOutcome } from './approval-types.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
 // consent stamp AND the seq the ask branch just wrote — round 15, finding
@@ -50,6 +50,55 @@ export const NO_SESSION_SEAM_ERROR =
 
 const GRANT_REQUIRED_NEXT_STEP =
   'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.';
+
+// The command-forward anchor (the operator-approved display field): a call
+// that carries the tool's `command` string must spell the exact line its args
+// execute, so the harness popup's first line is the command the user is
+// approving rather than a JSON args blob with self-attestation fields beside
+// it. The check runs in BOTH modes, before any mint, consent record, or
+// execution: a line that disagrees with the args is never what the user saw,
+// so nothing may run. The legacy args-only shape carries no field and is
+// untouched (the trunk battery drives exactly that shape), and a tool with no
+// executable line ignores the field.
+export const COMMAND_ARGS_MISMATCH = 'COMMAND_ARGS_MISMATCH';
+export const COMMAND_REQUIRES_ARGS = 'COMMAND_REQUIRES_ARGS';
+
+function commandAnchorRefusal(spec: ApprovalSpec, value: unknown, provided: unknown): Record<string, unknown> | null {
+  if (provided === undefined) return null; // the legacy args-only shape
+  const expected = spec.commandAnchor?.(value) ?? [];
+  if (expected.length === 0) return null; // this tool declares no executable line
+  if (typeof provided !== 'string' || provided.trim() === '') {
+    return {
+      status: 'rejected',
+      code: COMMAND_ARGS_MISMATCH,
+      reason: 'the command field must be the full command line, as a non-empty string.',
+      nextStep: 'Send command as the exact line the args execute, or omit it for the legacy args-only shape.',
+    };
+  }
+  const hasArgs = Array.isArray(value) && value.length > 0;
+  if (!hasArgs) {
+    return {
+      status: 'rejected',
+      code: COMMAND_REQUIRES_ARGS,
+      reason: `the command field is the display anchor for an args call and cannot stand alone (got "${provided.slice(0, 200)}").`,
+      nextStep: 'Send the args array together with the matching command line, or omit command entirely.',
+    };
+  }
+  if (!expected.includes(provided)) {
+    return {
+      status: 'rejected',
+      code: COMMAND_ARGS_MISMATCH,
+      reason:
+        `the command field does not match the requested args (got "${provided.slice(0, 200)}"). ` +
+        'The line the user reads in the popup must be the line that executes.',
+      expected,
+      nextStep:
+        "Send the exact command line: the plan result's command field, or the args array spelled out. " +
+        'Substitute real values where the plan shows <redacted>.',
+    };
+  }
+  return null;
+}
 
 function bindingValue(spec: ApprovalSpec, args: ToolArgs): unknown {
   return spec.normalizeArgs ? spec.normalizeArgs(args) : args;
@@ -282,6 +331,158 @@ function grantRequired(spec: ApprovalSpec, value: unknown, opts: CallToolOptions
   return spec.classify ? spec.classify(value, opts) === 'required' : true;
 }
 
+// The T3 envelope binding (interrogate round 2, finding 4): the chat
+// round-trip is the only tier where the line the user reads and the line the
+// gate executes are two messages, so the envelope's argsHash must be the
+// binding, not a decoration. Every envelope emission records
+// (session, tool, argsHash -> shownAt); an attested ask arrival executes only
+// when its OWN argsHash has a live record. A drifted retry (different args)
+// and a pre-attested first call (no record at all) both get the envelope for
+// the line they are asking about, so the ritual always precedes the
+// execution. TTL-bounded rather than single-use: the binding fact is "this
+// exact line was shown", which stays true for the same command, and a lost
+// record only costs one extra round-trip. Session-scoped through
+// opts.sessionId, exactly like the token custody store is state-scoped.
+export const ASK_ENVELOPE_TTL_MS = 30 * 60_000;
+const shownAskEnvelopes = new Map<string, Map<string, number>>();
+
+function askEnvelopeScope(sessionId: string, tool: string): string {
+  return `${sessionId}\u0000${tool}`;
+}
+
+/** Record that the T3 envelope for this exact line was shown in this session. */
+export function noteAskEnvelopeShown(sessionId: string, tool: string, argsHash: string, at: number = Date.now()): void {
+  const scope = askEnvelopeScope(sessionId, tool);
+  const live = shownAskEnvelopes.get(scope) ?? new Map<string, number>();
+  live.set(argsHash, at);
+  shownAskEnvelopes.set(scope, live);
+}
+
+/** True when this exact line's envelope was shown in this session and is live. */
+export function askEnvelopeLive(sessionId: string, tool: string, argsHash: string, at: number = Date.now()): boolean {
+  const scope = askEnvelopeScope(sessionId, tool);
+  const live = shownAskEnvelopes.get(scope);
+  if (!live) return false;
+  // Lazy prune: a session's expired records never accumulate (the map is the
+  // only growth surface of this mechanism).
+  for (const [hash, shownAt] of live) {
+    if (at - shownAt > ASK_ENVELOPE_TTL_MS) live.delete(hash);
+  }
+  if (live.size === 0) {
+    shownAskEnvelopes.delete(scope);
+    return false;
+  }
+  return live.has(argsHash);
+}
+
+// ── The server-run confirmation ladder (PR-1.5) ───────────────────────────
+//
+// Ask mode no longer trusts a client popup. On a client that declared the
+// elicitation form capability in its initialize params, the gate raises the
+// form itself (T1): the form body carries the command line and the redacted
+// summarize view, and one boolean field is the approval. On a client that
+// declared nothing, the gate refuses with a chat round-trip envelope (T3):
+// the model must show the command to the user and retry with the attestation,
+// which is model-relayed posture trust and every surface labels it so.
+// Token mode (T4) is untouched.
+export const ELICITATION_DECLINED = 'ELICITATION_DECLINED';
+export const ELICITATION_CANCELLED = 'ELICITATION_CANCELLED';
+export const ELICITATION_TIMEOUT = 'ELICITATION_TIMEOUT';
+export const ELICITATION_FAILED = 'ELICITATION_FAILED';
+export const ASK_CONFIRMATION_REQUIRED = 'ASK_CONFIRMATION_REQUIRED';
+
+// The explicit abstention bound. The SDK's 60 s default is the no-answer
+// bound the probe measured (-32001), and it is shorter than a human reading
+// a command line; five minutes leaves room to read and answer without
+// leaving an unresponsive client able to stall a call indefinitely.
+export const ELICITATION_TIMEOUT_MS = 300_000;
+
+// The form's one field: a boolean. Both probed harnesses render a boolean
+// as a Yes/No choice, and one field keeps the payload inside the restricted
+// top-level schema the form mode accepts.
+const ELICITATION_SCHEMA = {
+  type: 'object' as const,
+  properties: {
+    confirm: {
+      type: 'boolean',
+      title: 'Run this command',
+      description: 'Approve runs the command exactly once. Decline or dismiss cancels it.',
+    },
+  },
+  required: ['confirm'],
+};
+
+function elicitationRequest(commandLine: string, summary: string): ElicitFormRequest {
+  return {
+    message:
+      'HuaweiCloud DevKit is requesting your confirmation to run this command:\n\n' +
+      `${commandLine}\n\n` +
+      `${summary}\n\n` +
+      'Approve to run it once. Decline or dismiss to cancel without running anything.',
+    schema: ELICITATION_SCHEMA,
+    timeoutMs: ELICITATION_TIMEOUT_MS,
+  };
+}
+
+function elicitRefusal(outcome: ElicitOutcome, commandLine: string): Record<string, unknown> {
+  const nextStep = 'Nothing ran and nothing was approved. Retry the call when the user is ready to answer the form.';
+  if (outcome.decision === 'timeout') {
+    return {
+      status: 'rejected',
+      code: ELICITATION_TIMEOUT,
+      reason: `the confirmation form was not answered within ${Math.round(ELICITATION_TIMEOUT_MS / 1000)} s.`,
+      command: commandLine,
+      nextStep,
+    };
+  }
+  if (outcome.decision === 'error') {
+    return {
+      status: 'rejected',
+      code: ELICITATION_FAILED,
+      reason: `the client could not deliver the confirmation form (${outcome.detail ?? 'transport failure'}).`,
+      command: commandLine,
+      nextStep,
+    };
+  }
+  const cancelled = outcome.decision === 'cancel';
+  return {
+    status: 'rejected',
+    code: cancelled ? ELICITATION_CANCELLED : ELICITATION_DECLINED,
+    reason: cancelled
+      ? 'the user dismissed the confirmation form without approving.'
+      : 'the user declined the confirmation form.',
+    command: commandLine,
+    nextStep: 'Nothing ran. Do not retry the same command without a fresh approval from the user.',
+  };
+}
+
+// T3: the client cannot render a form, so the model is the relay. The
+// envelope names the command it must show and the exact retry that
+// continues; the refusals below and the ledger tier keep the posture
+// labelled where a later reader meets it.
+function askConfirmationEnvelope(
+  commandLine: string,
+  summary: string,
+  view: { argsHash: string },
+): Record<string, unknown> {
+  return {
+    status: 'rejected',
+    code: ASK_CONFIRMATION_REQUIRED,
+    userConfirmation: {
+      needed: true,
+      mode: 'chat',
+      command: commandLine,
+      summary,
+      instruction:
+        'Show this exact command to the user in chat and wait for their answer. If they approve, retry the same call ' +
+        "with approvedByUser: true. That retry is model-relayed posture trust: it is the user's word as you report it, " +
+        'not a mechanically verified answer.',
+    },
+    argsHash: view.argsHash,
+    nextStep: 'Retry with approvedByUser: true only after the user explicitly approves the command above.',
+  };
+}
+
 export async function runApprovalGate(
   name: ToolName,
   spec: ApprovalSpec,
@@ -296,14 +497,29 @@ export async function runApprovalGate(
     return { envelope: { ok: false, error: NO_SESSION_SEAM_ERROR } };
   }
 
-  // The approvedByUser attestation precedes every gate effect, exactly as
-  // it preceded the mode branch in the trunk handler: a call that fails it
-  // throws before anything is minted, recorded, or consumed.
-  if (args.approvedByUser !== true) {
+  // The approval posture resolves once, before any effect: a bogus
+  // DEVKIT_APPROVAL_MODE is boot fail-fast, never a silent fallback.
+  const approvalMode = approvalModeFromEnv(process.env);
+
+  // The approvedByUser attestation precedes every gate effect in token mode
+  // and on the legacy ask-mode shape (the trunk contract exactly as the
+  // hcloud battery pins it). Ask mode on the command-forward shape is the
+  // server-run ladder instead (PR-1.5): a capable client's call is confirmed
+  // by the form the gate raises, and a non-capable client's unattested call
+  // is answered with the T3 envelope that asks for the very attestation the
+  // retry then carries. Throwing here would silence both.
+  const serverRunArrival = approvalMode === 'ask' && args.command !== undefined;
+  if (args.approvedByUser !== true && !serverRunArrival) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
 
   const value = bindingValue(spec, args);
+
+  // The command-forward anchor precedes every mode effect (see the helper):
+  // a mismatched or malformed display line rejects with nothing minted,
+  // recorded, or executed.
+  const commandRefusal = commandAnchorRefusal(spec, value, args.command);
+  if (commandRefusal !== null) return { envelope: commandRefusal };
 
   // Classified flavor engages on content: a classify that says 'none'
   // needs no consent, so no mint, no ledger entry, no gate. The verdict is
@@ -313,36 +529,82 @@ export async function runApprovalGate(
   // skips consent machinery, never safety floors.
   const classifiedPass = spec.flavor === 'classified' && spec.classify?.(value, opts) === 'none';
 
-  const approvalMode = approvalModeFromEnv(process.env);
   if (approvalMode === 'ask') {
-    // The harness client's permission prompt on this very call is the
-    // user's confirmation: run the execution floors, record the arrival,
-    // then route to the handler with no token. The consent event's
-    // subject is the ARRIVAL, not the execution: the consent fact ("the
-    // user allowed this exact call") is fully known here, while the
-    // handler's outcome is a different fact the event does not claim —
-    // outcome below is the consent's outcome (a call that reached the gate
-    // with the attestation was allowed, hence 'granted'), the same
-    // arrival semantics ApprovalCoreConsent models as the human yes.
-    // Floors first, so a refused call is not a consent arrival; a
-    // classified pass-through sits after the floors and skips only the
-    // consent record.
+    // Floors first, so a refused call is not a consent arrival; a classified
+    // pass-through sits after the floors and skips only the consent record.
     assertNoCredentialPath(value, args);
     spec.assertArgsExecutable?.(value, 'ask');
     if (classifiedPass) return { pass: {} };
-    const arrival = recordAskModeConsent({
-      sessionId: opts.sessionId ?? 'default',
-      tool: name,
-      argsHash: hashArgs(value),
-      outcome: 'granted',
-      arrivalSeq: 0, // the ledger assigns the real counter on append
-    });
-    // The arrival's IDENTITY (round 15, finding 2): the stamp AND the seq —
-    // the dispatch layer threads both to the delivery recorder so the
-    // annotate binds the outcome line to EXACTLY the row this arrival
-    // wrote, never to a positional candidate (a same-ms twin compacted in
-    // behind used to steal the line).
-    return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
+
+    const view = spec.summarize(value);
+    // The display line: the validated command field when the caller sent it
+    // (the command-forward shape), else the summarize view's redacted echo
+    // (the legacy shape keeps executing, it just shows the redacted line).
+    const commandLine = typeof args.command === 'string' && args.command !== '' ? args.command : (view.command ?? '');
+    const consented = (evidence: 'elicitation' | 'posture'): ApprovalGateOutcome => {
+      const arrival = recordAskModeConsent({
+        sessionId: opts.sessionId ?? 'default',
+        tool: name,
+        argsHash: view.argsHash,
+        outcome: 'granted',
+        evidence,
+        evidenceFinal: true,
+        command: view.command,
+        arrivalSeq: 0, // the ledger assigns the real counter on append
+      });
+      // The arrival's IDENTITY (round 15, finding 2): the stamp AND the seq —
+      // the dispatch layer threads both to the delivery recorder so the
+      // annotate binds the outcome line to EXACTLY the row this arrival
+      // wrote, never to a positional candidate (a same-ms twin compacted in
+      // behind used to steal the line).
+      return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
+    };
+
+    // T1: the client declared elicitation.form, so the gate raises the form
+    // itself. The accept IS the confirmation (the attestation is not
+    // consulted: a human answered, which is strictly stronger). Any other
+    // answer — decline, dismiss, the explicit timeout, a transport failure,
+    // an accept that submitted No — refuses fail-closed: nothing executes,
+    // nothing mints, nothing is recorded.
+    const elicitation = opts.elicitation;
+    if (elicitation?.capable) {
+      const outcome = await elicitation.prompt(elicitationRequest(commandLine, view.summary));
+      const accepted = outcome.decision === 'accept' && outcome.content?.['confirm'] === true;
+      if (!accepted) {
+        const refusal = outcome.decision === 'accept' ? { ...outcome, decision: 'decline' as const } : outcome;
+        return { envelope: elicitRefusal(refusal, commandLine) };
+      }
+      return consented('elicitation');
+    }
+
+    // T3: no form capability. The attested path executes only when THIS
+    // line's envelope was shown in this session (see the binding state
+    // above): the args hash the envelope advertised is the binding, so a
+    // retry for different args — and a pre-attested first call — gets the
+    // envelope for the line they ask about instead of executing. The refusal
+    // teaches the ritual for the new line, so the proper envelope-then-retry
+    // still completes.
+    // The binding applies to the command-forward shape only: that is the
+    // shape whose unattested form emits this envelope, so a record can exist.
+    // The legacy args-only shape keeps PR-1's pinned contract exactly (its
+    // unattested form is the trunk attestation throw, so there is no envelope
+    // to bind to and an attested legacy arrival still executes on posture).
+    if (serverRunArrival) {
+      const sessionId = opts.sessionId ?? 'default';
+      const envelopeShown = askEnvelopeLive(sessionId, name, view.argsHash);
+      if (args.approvedByUser !== true || !envelopeShown) {
+        noteAskEnvelopeShown(sessionId, name, view.argsHash);
+        return { envelope: askConfirmationEnvelope(commandLine, view.summary, view) };
+      }
+      return consented('posture');
+    }
+    if (args.approvedByUser !== true) {
+      // Unreachable for this shape (the trunk attestation throw precedes the
+      // mode branch); kept as a belt for a spec that registers without the
+      // command requirement.
+      return { envelope: askConfirmationEnvelope(commandLine, view.summary, view) };
+    }
+    return consented('posture');
   }
 
   const token = typeof args.approvalToken === 'string' ? args.approvalToken : '';
@@ -374,8 +636,11 @@ export async function runApprovalGate(
         approvalToken: minted,
         userConfirmation: {
           needed: true,
-          command: `npx huaweicloud-devkit approve ${minted}`,
+          // Order matters: the summarize view carries its own `command`
+          // (the redacted executable line, PR-1.5), and spreading it after
+          // this line overwrote the approve command the user must run.
           ...view,
+          command: `npx huaweicloud-devkit approve ${minted}`,
         },
         nextStep: GRANT_REQUIRED_NEXT_STEP,
       },

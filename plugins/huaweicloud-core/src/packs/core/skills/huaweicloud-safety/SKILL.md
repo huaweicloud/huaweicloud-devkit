@@ -21,7 +21,7 @@ Use this skill before any Huawei Cloud action that may expose secrets, change re
    - IAM/security
    - cost/payment
    - public exposure
-5. For any non-read-only operation, follow the plan, confirm, run contract: plan with `huaweicloud_plan_cli_command`, show the user the command, then run with `huaweicloud_run_approved_command`. The confirm step follows the plan's `userConfirmation`: by default (token mode) show the terminal confirmation line and wait for the user to run it in their own terminal; when `userConfirmation.mode` is `ask`, call the run tool directly — the harness client prompts the user on that call. See `references/approvals.md`.
+5. For any non-read-only operation, follow the plan, confirm, run contract: plan with `huaweicloud_plan_cli_command`, show the user the command, then run with `huaweicloud_run_approved_command`. The confirm step follows the plan's `userConfirmation`: by default (token mode) show the terminal confirmation line and wait for the user to run it in their own terminal; when `userConfirmation.mode` is `ask`, call the run tool and let the SERVER ask the user — a capable client raises a form during the call, and any other client answers with `ASK_CONFIRMATION_REQUIRED` so you can show the command in chat and retry with `approvedByUser: true`. See `references/approvals.md`.
 6. Redact secrets from command output, errors, JSON, logs, and generated reports.
 7. If a command contains `adminPass`, `password`, token, or any secret-like field, warn that plaintext can remain in shell history. Prefer local-only input, runtime injection, or user-side execution.
 
@@ -35,12 +35,12 @@ Use this skill before any Huawei Cloud action that may expose secrets, change re
 
 1. Plan: call `huaweicloud_plan_cli_command`. The result echoes the exact command and carries `userConfirmation: { needed, command }` in the default token mode, or `userConfirmation: { needed, mode: "ask", note }` when the plan ran under `DEVKIT_APPROVAL_MODE=ask`.
 2. Confirm (token mode, the default): when `needed` is true, show the user the plan echo and the `userConfirmation.command` line (`npx huaweicloud-devkit approve <approvalToken>`), then wait. The USER runs that line in their own terminal, where a TTY check and a PIN gate the confirmation. First use: the user runs `npx huaweicloud-devkit pin` once in their own terminal to enroll the PIN.
-3. Confirm (ask mode): when `userConfirmation.mode` is `ask`, there is no terminal line and no token. Call `huaweicloud_run_approved_command` with the same args and `approvedByUser: true`; the harness client prompts the user on that call, and that prompt IS the confirmation.
-4. Run: call `huaweicloud_run_approved_command` with the same `args` and `approvedByUser: true`, plus the plan's `approvalToken` in token mode — no token in ask mode.
+3. Confirm (ask mode): when `userConfirmation.mode` is `ask`, there is no terminal line and no token. The FIRST unattested call to `huaweicloud_run_approved_command` (same args and the `command` field, no `approvedByUser`) makes the server ask: an elicitation-capable client renders a form, and any other client returns `ASK_CONFIRMATION_REQUIRED`, whose envelope carries the command — show it to the user in chat, then retry that same call with `approvedByUser: true`. That retry is model-relayed posture trust, labeled as such, and its envelope stays live for the session's TTL, so further identical retries of the SAME command execute without re-asking. Different args get their own envelope first.
+4. Run: in token mode call `huaweicloud_run_approved_command` with the same `args`, the `command` field, the plan's `approvalToken`, and `approvedByUser: true`. In ask mode the run call IS the confirmation (step 3): withhold `approvedByUser: true` on the FIRST call so the server asks, and send it only on the retry after the user answered in chat.
 
-In token mode, a non-read command without that terminal confirmation is rejected with `USER_CONFIRMATION_REQUIRED`. The refusal does not consume the token, so retry the same call after the user confirms. Re-running a write needs a fresh plan and a fresh confirmation. In ask mode there is no token to refuse or consume; a retried call prompts the user again.
+In token mode, a non-read command without that terminal confirmation is rejected with `USER_CONFIRMATION_REQUIRED`. The refusal does not consume the token, so retry the same call after the user confirms. Re-running a write needs a fresh plan and a fresh confirmation. In ask mode there is no token to refuse or consume: a new command line asks the user first, and a declined, dismissed, or timed-out form refuses fail-closed. Once the user has approved a line, its envelope stays live for the session's TTL, so retrying that same line does not ask again.
 
-Never run the approve or pin commands yourself; the hook denies both verbs on the agent's Bash face. The `approvedByUser: true` argument is not the terminal confirmation and never replaces it (in ask mode the harness client's own prompt is the confirmation the server trusts).
+Never run the approve or pin commands yourself; the hook denies both verbs on the agent's Bash face. The `approvedByUser: true` argument is not the terminal confirmation: in token mode the run tool still requires the terminal-confirmed grant, and in ask mode it is only the chat round-trip's retry marker, sent after the user answered (posture trust, which the server cannot verify).
 
 Without the devkit tools, show the reviewed command and let the user execute it in their own terminal. After a write, verify with `huaweicloud_run_readonly_command` or another read-only check.
 
@@ -63,6 +63,6 @@ Hook checks inspect the command or plan text that is available before execution.
 - Use redacted profile inspection instead of raw `hcloud configure show`.
 - Use runtime secret injection instead of fetching secret values into chat.
 - Use the encrypted secret vault for durable secrets: store values as `secret://<scope>/<name>` refs and pass refs, never values. See `references/secrets.md`.
-- Use the approval contract for writes: plan, user confirm, run — token mode by default, the harness client's permission prompt when `DEVKIT_APPROVAL_MODE=ask`. See `references/approvals.md`.
+- Use the approval contract for writes: plan, user confirm, run — token mode by default; under `DEVKIT_APPROVAL_MODE=ask` the server raises the confirmation itself (a form, or the chat round-trip when the client cannot render one). See `references/approvals.md`.
 - Use read-only verification after a write.
 - Prefer reviewed IaC for durable infrastructure changes.

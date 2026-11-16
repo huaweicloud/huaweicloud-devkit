@@ -600,6 +600,17 @@ test('the safety approvals reference exists and states its honest boundaries', (
       /V=approve; npx huaweicloud-devkit \$V/,
       `${label}: the variable-indirection hook residual is stated`,
     );
+    // The command-forward shape (PR-1.5): the reference teaches the field
+    // both confirmation tiers display, and the refusal a mismatch earns.
+    assert.match(text, /Always send `command`/, `${label}: the command-forward field is taught`);
+    assert.match(text, /COMMAND_ARGS_MISMATCH/, `${label}: the mismatch rejection code is taught`);
+    assert.match(text, /TOP-LEVEL `command` field/, `${label}: the plan field to forward is disambiguated`);
+    // The server-run ladder (PR-1.5 pivot): both tiers, their evidence tiers,
+    // and the demoted saved-row hygiene warning.
+    assert.match(text, /ASK_CONFIRMATION_REQUIRED/, `${label}: the chat round-trip envelope is taught`);
+    assert.match(text, /evidence: "elicitation"/, `${label}: the form's evidence tier is taught`);
+    assert.match(text, /evidence: "posture"/, `${label}: the retry's posture tier is labeled`);
+    assert.match(text, /opencode api DELETE \/api\/permission\/saved/, `${label}: the saved-row removal is taught`);
   }
 });
 
@@ -615,7 +626,8 @@ test('the cli-and-auth skill names both approval-mode confirm steps in the appro
     assert.match(text, /npx huaweicloud-devkit pin/, `${label}: first-use PIN enrollment is taught`);
     assert.match(text, /USER_CONFIRMATION_REQUIRED/, `${label}: the run-side refusal code is taught`);
     assert.match(text, /userConfirmation\.mode.*ask/, `${label}: the ask-mode branch is named by its plan field`);
-    assert.match(text, /harness client prompts the user/, `${label}: the ask-mode confirmation channel is taught`);
+    assert.match(text, /ASK_CONFIRMATION_REQUIRED/, `${label}: the server-run confirmation envelope is taught`);
+    assert.match(text, /elicitation-capable client renders a form/, `${label}: the form tier is taught`);
   }
 });
 

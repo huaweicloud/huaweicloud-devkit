@@ -81,12 +81,19 @@ export const approvalTokenArg = z
   .string()
   .optional()
   .describe(
-    "Required in token-approval mode (from the minting face — the plan tool, or the approval gate's USER_CONFIRMATION_REQUIRED envelope); omit in ask mode where the harness client confirms at run time.",
+    "Required in token-approval mode (from the minting face — the plan tool, or the approval gate's USER_CONFIRMATION_REQUIRED envelope); omit in ask mode, where the server-run gate confirms at run time.",
   );
 
-export const approvedByUserArg = booleanArg.describe(
-  'Must be true only after the user explicitly approves this exact call.',
-);
+// Optional in the schema for the same reason: in token mode the gate throws
+// the teaching rejection when it is absent, and in ask mode the server-run
+// confirmation owns the gate — the first arrival has no attestation yet (the
+// chat round-trip envelope asks for it), so a required field here would kill
+// the T3 flow in SDK validation before the gate ever saw it.
+export const approvedByUserArg = booleanArg
+  .optional()
+  .describe(
+    'Must be true only after the user explicitly approves this exact call. In token mode the gate requires it; in ask mode the server-run confirmation asks the user itself, and this flag is the chat round-trip retry marker (posture trust) when the client cannot render a form.',
+  );
 
 export const workspaceId = z
   .string()

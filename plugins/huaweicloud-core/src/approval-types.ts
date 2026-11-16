@@ -31,10 +31,14 @@ export type GateFlavor = 'always' | 'classified';
 export type ApprovalTokenSource = 'plan-face' | 'gate';
 
 // The consent channel a ledger entry records. 'terminal' is the approve CLI
-// (PIN-checked, the human's own TTY); 'elicitation' is a client-relayed
-// allow (PR-4 — client-relay evidence, never human-present by itself);
-// 'posture' is ask mode, where the harness client's permission prompt on
-// the very call is the confirmation.
+// (PIN-checked, the human's own TTY). 'elicitation' is the server-raised
+// form the gate sends from inside a tool call: the human answered the
+// client's own form UI, so the acceptance is machine-verified evidence of a
+// human answer (not human-PRESENT: the client relayed it). 'posture' is the
+// T3 chat round-trip's attested retry: the model reports that the user
+// approved in chat, with no mechanical proof a human answered — posture
+// trust, labeled as such on every teaching surface. Neither tier is a client
+// permission popup; the client's own rules no longer gate the call.
 export type ConsentEvidence = 'terminal' | 'elicitation' | 'posture';
 
 // The result a classified tool's pure classify function reports:
@@ -81,11 +85,72 @@ export interface ApprovalSpec {
   // token minted and no ledger entry (ApprovalCoreMint GateMintSeam's
   // disabled-guard posture).
   requiresSessionSeam?: boolean;
+  // The command-forward anchor (the operator-approved display field): the
+  // accepted executable lines for this call, derived from the binding
+  // value. A call that carries the tool's `command` field must match one of
+  // them exactly (the gate compares before any mint, consent record, or
+  // execution); a call that omits the field keeps the legacy shape and is
+  // untouched. Tools whose args carry no executable line (the later pack
+  // registrations) simply leave it out, and the field is then ignored.
+  commandAnchor?: (bindingValue: unknown) => string[];
   // The redacted popup view plus the pin-view binding: one or two short
   // lines naming the tool and the pinned arguments (never the raw argument
-  // stream — a popup must not leak secrets), the binding-value hash, and
-  // the pin view the mismatch path compares against the stored entry.
-  summarize: (bindingValue: unknown) => { summary: string; argsHash: string; pinView: unknown };
+  // stream — a popup must not leak secrets), the binding-value hash, the
+  // pin view the mismatch path compares against the stored entry, and —
+  // when the tool has an executable line — the redacted command string the
+  // consent row carries.
+  summarize: (bindingValue: unknown) => {
+    summary: string;
+    argsHash: string;
+    pinView: unknown;
+    command?: string;
+  };
+}
+
+// ── The server-run confirmation ladder (PR-1.5) ──────────────────────────
+//
+// The operator's 2026-11-15 pivot moves the ask-mode confirmation onto the
+// server. On a client that declares the MCP elicitation form capability, the
+// gate itself asks the human (T1): a form whose message carries the command
+// line and whose single boolean field is the approval. On a client that does
+// not declare it, the gate refuses with a chat round-trip envelope (T3) that
+// teaches the model to show the command and retry with the attestation.
+// Token mode (T4) is untouched. The types below are the transport-free seam:
+// the protocol layer implements ElicitationSeam over the SDK's elicitInput,
+// the gate consumes it, and tests inject a fake — no SDK import reaches the
+// gate, and the shapes stay zod-free.
+export type ElicitDecision = 'accept' | 'decline' | 'cancel' | 'timeout' | 'error';
+
+export interface ElicitOutcome {
+  decision: ElicitDecision;
+  /** The accepted form content (present on 'accept' only). */
+  content?: Record<string, unknown>;
+  /** Human-readable detail for a timeout or transport failure. */
+  detail?: string;
+}
+
+// The restricted top-level JSON Schema the elicitation form mode accepts
+// (flat properties, primitive values only). Kept structural so this module
+// needs no JSON-Schema dependency.
+export interface ElicitFormSchema {
+  type: 'object';
+  properties: Record<string, Record<string, unknown>>;
+  required?: string[];
+}
+
+export interface ElicitFormRequest {
+  /** The form body: the command line, the redacted summarize view, the effect. */
+  message: string;
+  schema: ElicitFormSchema;
+  /** The explicit bound (the SDK default is shorter than a human reading). */
+  timeoutMs: number;
+}
+
+export interface ElicitationSeam {
+  /** True when the client declared elicitation.form in its initialize params. */
+  capable: boolean;
+  /** Ask the human; resolves with the decision, never throws. */
+  prompt: (request: ElicitFormRequest) => Promise<ElicitOutcome>;
 }
 
 // The consent event the ledger stores (approval-ledger.ts). Ask-mode
@@ -149,6 +214,11 @@ export interface ConsentEvent {
   // the dispatch layer's follow-up lands, and on any follow-up that could
   // not be recorded best-effort.
   outcomeDetail?: ConsentDeliveryOutcome;
+  // The command-forward line the user allowed, as the summarize view
+  // rendered it (REDACTED by construction — the summarize contract never
+  // stores the raw argument stream). Absent on rows from tools with no
+  // executable line, and on every row written before the field landed.
+  command?: string;
 }
 
 // What became of the call a consent authorized, as observed by the

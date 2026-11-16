@@ -4,11 +4,13 @@
 // an approval token, the user confirms it in their own terminal
 // (`npx huaweicloud-devkit approve <uuid>`), and run_approved_command
 // consumes the token before executing. 'ask' moves the confirmation onto
-// the harness client's own permission prompt: the operator opts in via
-// the env var (normally written by the installer together with the
-// client's ask rule), and accepting that client prompt IS the user's
-// confirmation — no terminal trip, no UUID in the model's context; the
-// plan mints nothing and the run needs only approvedByUser.
+// the SERVER (PR-1.5): the operator opts in via the env var (normally
+// written by the installer together with the client's ask rule), and the
+// approval gate runs the confirmation itself inside the run call — an
+// elicitation form on a client that declared the form capability, or the
+// ASK_CONFIRMATION_REQUIRED chat round-trip whose retry carries
+// approvedByUser. No terminal trip and no UUID in the model's context; the
+// plan mints nothing.
 //
 // Resolution is exact-match and fail-loud, mirroring the DEVKIT_PACKS
 // unknown-id doctrine: a typo'd mode must not silently fall back to the
