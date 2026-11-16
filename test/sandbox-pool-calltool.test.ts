@@ -4,6 +4,8 @@ import { join } from 'node:path';
 
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
+import { withApprovalMode } from './approval-mode-harness.ts';
+import { elicitingSeam } from './eliciting-seam.ts';
 
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
@@ -12,6 +14,12 @@ process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 process.env.HUAWEICLOUD_DEVKIT_TELEMETRY = 'off';
 // 池缓存落盘路径隔离（fixtureDir 注册，进程退出回收）
 process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('sandbox-pool-calltool'), 'sandbox-pools.json');
+// PR-3a: connect/renew/watchdog ride the approval gate. This tier pins
+// DEVKIT_APPROVAL_MODE=ask for the whole file: every gated call answers the
+// injected accept-form seam (a direct callTool caller cannot play the
+// terminal half), and the benign classified exec pass-throughs stay
+// ungated. The approval battery owns the gate's own contract.
+process.env.DEVKIT_APPROVAL_MODE = 'ask';
 delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
 delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 
@@ -117,10 +125,45 @@ const CONNECTED_EPHEMERAL = {
 async function connectEphemeralDev1(): Promise<void> {
   const restore = withFetchResponse(CONNECTED_EPHEMERAL, { status: 200 });
   try {
-    await callTool('huaweicloud_sandbox_connect', { vendorConfirmed: VENDOR, pool_type: 'ephemeral' });
+    // PR-3a: connect rides the approval gate. These pool-cache preloads are
+    // the direct-callTool test tier's equivalents of a user-approved call —
+    // token mode with the attestation and no token would mint; ask mode
+    // would confirm. Pinning ask mode keeps the gate engaged (a pass-through
+    // registration change would still fail these tests loudly) while never
+    // needing a terminal half the harness cannot play here.
+    await withApprovalMode('ask', async () => {
+      const seam = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      await callTool(
+        'huaweicloud_sandbox_connect',
+        { vendorConfirmed: VENDOR, pool_type: 'ephemeral' },
+        {
+          sessionId: `pool-preload-${(poolPreloadSeq += 1)}`,
+          elicitation: seam.seam,
+        },
+      );
+    });
   } finally {
     restore();
   }
+}
+
+// The pool-cache test tier's ask-mode pin (see connectEphemeralDev1's note)
+// and the accept-answer seam every gated connect rides here.
+let poolPreloadSeq = 0;
+
+// One gated connect call through the ask-mode accept seam, the shape every
+// connect case in this file shares.
+async function gatedConnectCall(args: Record<string, unknown>, label: string): Promise<unknown> {
+  return withApprovalMode('ask', async () =>
+    callTool(
+      'huaweicloud_sandbox_connect',
+      { vendorConfirmed: VENDOR, ...args },
+      {
+        sessionId: `${label}-${(poolPreloadSeq += 1)}`,
+        elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+      },
+    ),
+  );
 }
 
 test('callTool connect: invalid pool_type returns structured guidance instead of a bare -32603 throw', async () => {
@@ -131,13 +174,19 @@ test('callTool connect: invalid pool_type returns structured guidance instead of
     throw new Error('must not be reached');
   };
   try {
-    const result = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'weird',
-    })) as unknown as StructuredFailure;
-    assert.equal(result.ok, false);
-    assert.equal(result.code, 'HDKIT_INVALID_POOL_TYPE');
-    assert.match(result.message, /invalid pool_type/);
+    let result: unknown;
+    await withApprovalMode('ask', async () => {
+      const seam = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      result = await callTool(
+        'huaweicloud_sandbox_connect',
+        { vendorConfirmed: VENDOR, pool_type: 'weird' },
+        { sessionId: `pool-invalid-${(poolPreloadSeq += 1)}`, elicitation: seam.seam },
+      );
+    });
+    const failure = result as unknown as StructuredFailure;
+    assert.equal(failure.ok, false);
+    assert.equal(failure.code, 'HDKIT_INVALID_POOL_TYPE');
+    assert.match(failure.message, /invalid pool_type/);
     assert.equal(fetchCalls, 0, 'invalid pool_type must fail locally, before any request');
   } finally {
     global.fetch = originalFetch;
@@ -151,10 +200,16 @@ async function connect429Structured(payload: unknown): Promise<StructuredFailure
     headers: { 'Content-Type': 'application/json', 'Retry-After': '60' },
   });
   try {
-    return (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as unknown as StructuredFailure;
+    return (await withApprovalMode('ask', async () =>
+      callTool(
+        'huaweicloud_sandbox_connect',
+        { vendorConfirmed: VENDOR, pool_type: 'ephemeral' },
+        {
+          sessionId: `pool-429-${(poolPreloadSeq += 1)}`,
+          elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+        },
+      ),
+    )) as unknown as StructuredFailure;
   } finally {
     restore();
   }
@@ -199,9 +254,16 @@ test('callTool connect: core-hours exhausted surfaces structured guidance', asyn
     { status: 502 },
   );
   try {
-    const result = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-    })) as unknown as StructuredFailure;
+    const result = (await withApprovalMode('ask', async () =>
+      callTool(
+        'huaweicloud_sandbox_connect',
+        { vendorConfirmed: VENDOR },
+        {
+          sessionId: `pool-corehours-${(poolPreloadSeq += 1)}`,
+          elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+        },
+      ),
+    )) as unknown as StructuredFailure;
     assert.equal(result.ok, false);
     assert.equal(result.coreHoursExhausted, true);
     assert.match(result.remediation?.hint ?? '', /核心时长/);
@@ -213,7 +275,19 @@ test('callTool connect: core-hours exhausted surfaces structured guidance', asyn
 test('callTool connect: unexpected server errors keep the throw path (rethrow passthrough, v2-authored)', async () => {
   const restore = withFetchResponse({ code: 'HDKIT_INTERNAL', message: '服务内部错误' }, { status: 500 });
   try {
-    await assert.rejects(callTool('huaweicloud_sandbox_connect', { vendorConfirmed: VENDOR }), /HDKIT_INTERNAL/);
+    await withApprovalMode('ask', async () =>
+      assert.rejects(
+        callTool(
+          'huaweicloud_sandbox_connect',
+          { vendorConfirmed: VENDOR },
+          {
+            sessionId: `pool-internal-${(poolPreloadSeq += 1)}`,
+            elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+          },
+        ),
+        /HDKIT_INTERNAL/,
+      ),
+    );
   } finally {
     restore();
   }
@@ -233,10 +307,7 @@ test('callTool connect: first connect broadcasts server-configured lifecycle', a
   );
   try {
     // 大小写归一化：EPHEMERAL → ephemeral（validatePoolType 链路）
-    const result = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'EPHEMERAL',
-    })) as ConnectResult;
+    const result = (await gatedConnectCall({ pool_type: 'EPHEMERAL' }, 'pool-broadcast')) as ConnectResult;
     assert.equal(result.pool_type, 'ephemeral');
     assert.equal(result.template_id, 'tpl-eph');
     assert.ok(result.pool, 'expected TTL broadcast block');
@@ -267,10 +338,7 @@ test('callTool connect: reuse is silent, wake-up re-announces, camelCase echo st
 
   let restore = withFetchResponse(payload(false), { status: 200 });
   try {
-    const first = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as ConnectResult;
+    const first = (await gatedConnectCall({ pool_type: 'ephemeral' }, 'pool-reuse-first')) as ConnectResult;
     assert.ok(first.pool, 'first connect must broadcast');
     assert.equal(poolContextFor('dev-reuse')?.poolMode, 'ephemeral');
   } finally {
@@ -279,10 +347,7 @@ test('callTool connect: reuse is silent, wake-up re-announces, camelCase echo st
 
   restore = withFetchResponse(payload(false), { status: 200 });
   try {
-    const second = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as ConnectResult;
+    const second = (await gatedConnectCall({ pool_type: 'ephemeral' }, 'pool-reuse-second')) as ConnectResult;
     assert.equal(second.pool, undefined, 'silent reuse must not repeat the lifecycle hint');
   } finally {
     restore();
@@ -290,10 +355,7 @@ test('callTool connect: reuse is silent, wake-up re-announces, camelCase echo st
 
   restore = withFetchResponse(payload(true), { status: 200 });
   try {
-    const woken = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as ConnectResult;
+    const woken = (await gatedConnectCall({ pool_type: 'ephemeral' }, 'pool-woken')) as ConnectResult;
     assert.ok(woken.pool, 'wake-up (started=true) must re-announce lifecycle');
   } finally {
     restore();
@@ -304,6 +366,9 @@ test('callTool exec stays clean; close_session clears the pool cache', async () 
   forgetWorkspacePool();
   await connectEphemeralDev1();
 
+  // Benign content: the classified exec pass-through runs with no
+  // confirmation surface (pinned in the approval battery; here it just
+  // needs to reach the handler).
   const execResult = (await callTool('huaweicloud_sandbox_exec_one_shot', {
     workspace_id: 'dev-1',
     command: 'echo hi',
@@ -332,19 +397,32 @@ test('callTool renew_tunnel and keepalive_watchdog stay clean (no per-call pool 
   forgetWorkspacePool();
   await connectEphemeralDev1();
 
-  const renewed = (await callTool('huaweicloud_sandbox_renew_tunnel', {
-    workspace_id: 'dev-1',
-    tunnel_id: 't-1',
-  })) as ExecResult;
-  assert.equal(renewed.ok, true);
-  assert.equal(renewed.poolMode, undefined);
-  assert.equal(renewed.persistenceHint, undefined);
+  // The always-flavor tunnel faces confirm per call in ask mode (the gate
+  // is the subject of the approval battery; these calls just need to reach
+  // the handlers).
+  await withApprovalMode('ask', async () => {
+    const renewed = (await callTool(
+      'huaweicloud_sandbox_renew_tunnel',
+      { workspace_id: 'dev-1', tunnel_id: 't-1' },
+      {
+        sessionId: `pool-renew-${(poolPreloadSeq += 1)}`,
+        elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+      },
+    )) as ExecResult;
+    assert.equal(renewed.ok, true);
+    assert.equal(renewed.poolMode, undefined);
+    assert.equal(renewed.persistenceHint, undefined);
 
-  const watched = (await callTool('huaweicloud_sandbox_keepalive_watchdog', {
-    workspace_id: 'dev-1',
-    tunnels: [{ tunnel_id: 't-1', url: 'https://stub.example' }],
-  })) as ExecResult;
-  assert.equal(watched.ok, true);
-  assert.equal(watched.poolMode, undefined);
-  assert.equal(watched.persistenceHint, undefined);
+    const watched = (await callTool(
+      'huaweicloud_sandbox_keepalive_watchdog',
+      { workspace_id: 'dev-1', tunnels: [{ tunnel_id: 't-1', url: 'https://stub.example' }] },
+      {
+        sessionId: `pool-watchdog-${(poolPreloadSeq += 1)}`,
+        elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+      },
+    )) as ExecResult;
+    assert.equal(watched.ok, true);
+    assert.equal(watched.poolMode, undefined);
+    assert.equal(watched.persistenceHint, undefined);
+  });
 });

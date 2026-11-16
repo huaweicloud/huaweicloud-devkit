@@ -9,38 +9,62 @@
 // ReadonlyArray<string> widens the key type to string and silently inerts
 // the compile-time closure (an interrogate-round-1 finding).
 //
-// PR-1 populates the roster with the hcloud pair's run face only; the pack
-// registrations land in PR-3. Two lists, not one, because the two flavors
-// need different downstream facts: always tools get client ask-rules and
-// _meta flags, classified tools additionally need a classify in their spec
-// (pinned by structure.test.ts: every APPROVAL_CLASSIFIED_TOOLS entry must
-// provide one).
+// PR-1 populated the roster with the hcloud pair's run face; PR-3a adds the
+// sandbox pack's eight mutating faces — connect, the two exec tools, the
+// three tunnel faces, sign_agreement, and credentials. Two lists, not one,
+// because the two flavors need different downstream facts: always tools get
+// client ask-rules and _meta flags, classified tools additionally need a
+// classify in their spec (pinned by structure.test.ts: every
+// APPROVAL_CLASSIFIED_TOOLS entry must provide one).
 
-export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;
+export const APPROVAL_TOOLS = [
+  'huaweicloud_run_approved_command',
+  'huaweicloud_sandbox_connect',
+  'huaweicloud_sandbox_exec_with_session',
+  'huaweicloud_sandbox_exec_one_shot',
+  'huaweicloud_sandbox_expose_tunnel',
+  'huaweicloud_sandbox_renew_tunnel',
+  'huaweicloud_sandbox_keepalive_watchdog',
+  'huaweicloud_sandbox_sign_agreement',
+  'huaweicloud_sandbox_credentials',
+] as const;
 
-export const APPROVAL_CLASSIFIED_TOOLS: readonly never[] = [];
+export const APPROVAL_CLASSIFIED_TOOLS = [
+  'huaweicloud_sandbox_exec_with_session',
+  'huaweicloud_sandbox_exec_one_shot',
+] as const;
 
 // Each roster member's MCP payload shape class (round 10, finding 3): the
 // hook exemption admits a roster-attributed payload only when it matches
 // ITS tool's row here. The run face carries its argv as an `args` array;
-// PR-3a's sandbox exec faces (exec_with_session, exec_one_shot) carry a
-// `command` string — a payload shape the round-1/round-2 exemption had
-// to reject on the run face's name (a command string there is the
-// Bash-shaped smuggle the shape test exists to block), so without this
-// table PR-3a's registrations could never reach the server gate on
-// hook-bearing harnesses. The Record is keyed by the roster tuple, so a
-// registration that widens APPROVAL_TOOLS fails the build until its
-// shape row lands with it. Rows go live with their registrations — until
-// PR-3a lands, only the run face is listed; the hook's fallback for a
-// roster member with no row (an older roster leaf, or the transition
-// window during PR-3's own landing) is documented in the hook itself.
+// the sandbox exec faces carry a `command` string — a payload shape the
+// round-1/round-2 exemption had to reject on the run face's name (a command
+// string there is the Bash-shaped smuggle the shape test exists to block),
+// so without this table the sandbox registrations could never reach the
+// server gate on hook-bearing harnesses. The Record is keyed by the roster
+// tuple, so a registration that widens APPROVAL_TOOLS fails the build until
+// its shape row lands with it. The hook's shape switch knows 'argsArray'
+// and 'commandString'; the six sandbox lifecycle faces carry an 'object'
+// row instead — their payloads have no command surface to skip, so the
+// row declares "no exemption applies" and the hook's fallback keeps full
+// classification in force for them (fail-closed, measured: their pinned
+// payload shapes classify clean, and any deny the classifier ever adds
+// still blocks the call at the hook layer).
 // The Record is keyed by the roster tuple inline (this module is
 // import-free — it cannot take ApprovalRosterName from the registry, so
 // the tuple is widened here the same way the registry widens it).
-export type ApprovalToolInputShape = 'argsArray' | 'commandString';
+export type ApprovalToolInputShape = 'argsArray' | 'commandString' | 'object';
 
 export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number], ApprovalToolInputShape> = {
   huaweicloud_run_approved_command: 'argsArray',
+  huaweicloud_sandbox_connect: 'object',
+  huaweicloud_sandbox_exec_with_session: 'commandString',
+  huaweicloud_sandbox_exec_one_shot: 'commandString',
+  huaweicloud_sandbox_expose_tunnel: 'object',
+  huaweicloud_sandbox_renew_tunnel: 'object',
+  huaweicloud_sandbox_keepalive_watchdog: 'object',
+  huaweicloud_sandbox_sign_agreement: 'object',
+  huaweicloud_sandbox_credentials: 'object',
 };
 
 // The client-facing permission action opencode namespaces a roster tool

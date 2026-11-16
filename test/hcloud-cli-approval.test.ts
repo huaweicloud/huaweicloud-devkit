@@ -16,6 +16,7 @@ import {
 import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
 import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
+import { withApprovalMode } from './approval-mode-harness.ts';
 import { callTool, type ToolArgs } from '../plugins/huaweicloud-core/src/tools.ts';
 
 // Deterministic-tier seam: disable the once-per-session first-assertion
@@ -110,20 +111,9 @@ async function withFakeHcloudBin<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
-// The ask-mode battery's env seam: set DEVKIT_APPROVAL_MODE for the body
-// and restore the previous posture either way, so a token-mode default in
-// the ambient environment never leaks into (or out of) a test.
-async function withApprovalMode<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
-  const previous = process.env.DEVKIT_APPROVAL_MODE;
-  if (value === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
-  else process.env.DEVKIT_APPROVAL_MODE = value;
-  try {
-    return await fn();
-  } finally {
-    if (previous === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
-    else process.env.DEVKIT_APPROVAL_MODE = previous;
-  }
-}
+// The ask-mode battery's env seam lives in approval-mode-harness.ts now
+// (one home for every approval battery — the gate battery and the PR-3a
+// sandbox battery share it); every assertion below is unchanged.
 
 // The confirmation battery needs a deterministic custody tier: the fixed env
 // master key the sibling approval tests use, layered over the fresh per-test

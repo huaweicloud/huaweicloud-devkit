@@ -37,6 +37,8 @@ import { seedStoreIn, withStoreDir, type SeedStore } from './opencode-saved-perm
 import { HUAWEICLOUD_CLI_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
 import { getToolSchema } from '../plugins/huaweicloud-core/src/tool-schemas.ts';
 import { upgradePackage } from '../plugins/huaweicloud-core/src/update-upgrade.ts';
+import { withApprovalMode, withVaultAuthHome } from './approval-mode-harness.ts';
+import { elicitingSeam } from './eliciting-seam.ts';
 import type {
   ApprovalSpec,
   ConsentEvent,
@@ -95,31 +97,6 @@ const WIN32_COLON_ALIAS_FIXTURE =
 // case-variant alias alike).
 const WIN32_BACKSLASH_NAME_FIXTURE =
   'win32: a filename embedding a backslash cannot exist there (backslash is the separator); win32 exercises the same matcher inputs natively through the seven floor tests and the unit driver';
-
-async function withVaultAuthHome(fn: (home: string) => Promise<void> | void): Promise<void> {
-  const previousKey = process.env.HW_VAULT_MASTER_KEY;
-  process.env.HW_VAULT_MASTER_KEY = TEST_MASTER_KEY;
-  clearCustodyCache();
-  try {
-    await withTempAuthHome(fn);
-  } finally {
-    clearCustodyCache();
-    if (previousKey === undefined) delete process.env.HW_VAULT_MASTER_KEY;
-    else process.env.HW_VAULT_MASTER_KEY = previousKey;
-  }
-}
-
-async function withApprovalMode<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
-  const previous = process.env.DEVKIT_APPROVAL_MODE;
-  if (value === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
-  else process.env.DEVKIT_APPROVAL_MODE = value;
-  try {
-    return await fn();
-  } finally {
-    if (previous === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
-    else process.env.DEVKIT_APPROVAL_MODE = previous;
-  }
-}
 
 // Stage the vault master key plus an innocuously named symlink alias to
 // it, under the isolated home — the round-2 symlink-floor shape.
@@ -727,7 +704,15 @@ test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-too
       try {
         const cfgArgs = { enable: ['core'], approvedByUser: true };
         const seam = { onPacksChanged: () => Promise.resolve() };
-        const result = (await callTool(name, cfgArgs, { sessionId: 's-core', ...seam })) as { ok: boolean };
+        // PR-3a widened the ask-mode ladder to every 'gate' registration, so
+        // the core tool's ask arrival confirms through the form on a capable
+        // client — the accept is what executes the call the outcome recorder
+        // then annotates (the T3 ritual would work equally: the subject is
+        // the recorder, not the tier).
+        const { seam: form } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+        const result = (await callTool(name, cfgArgs, { sessionId: 's-core', ...seam, elicitation: form })) as {
+          ok: boolean;
+        };
         assert.equal(result.ok, true, 'the packs_configure handler runs through the seam');
         const coreKey = hashArgs(cfgArgs);
         const rows = readConsentEvents().filter((row) => row.tool === name && row.argsHash === coreKey);
@@ -2000,24 +1985,8 @@ interface ElicitRecorder {
 // A fake confirmation client: `capable` may flip between calls so a case can
 // prove the gate reads the session record per arrival, and every form the
 // gate raises is captured for content assertions.
-function elicitingSeam(
-  answer: ElicitOutcome | ((request: ElicitFormRequest) => ElicitOutcome),
-  capable: boolean | (() => boolean) = true,
-): ElicitRecorder {
-  const requests: ElicitFormRequest[] = [];
-  return {
-    requests,
-    seam: {
-      get capable(): boolean {
-        return typeof capable === 'function' ? capable() : capable;
-      },
-      async prompt(request) {
-        requests.push(request);
-        return typeof answer === 'function' ? answer(request) : answer;
-      },
-    },
-  };
-}
+// The recorded elicitation seam now lives in eliciting-seam.ts (shared with
+// the PR-3a sandbox battery).
 
 // One ask-mode arrival against a seeded store: the isolated auth home, the
 // pinned store root, the marker fake, the ask posture, and the injected
@@ -2150,9 +2119,14 @@ test('T1: a capable client accepts the form, the call executes, and the ledger s
   assert.ok(form.timeoutMs > 60_000, 'the explicit timeout is longer than the SDK default');
   const fields = Object.keys(form.schema.properties);
   assert.ok(fields.length <= 4, 'the schema stays within four simple fields');
-  assert.equal(fields.length, 1);
+  assert.equal(fields.length, 2, 'the approval field plus the PR-3a standing-consent tick');
   assert.equal(form.schema.properties['confirm']!['type'], 'boolean', 'the approval field is a boolean');
-  assert.deepEqual(form.schema.required, ['confirm']);
+  assert.equal(
+    form.schema.properties['rememberForSession']!['type'],
+    'boolean',
+    'the standing-consent tick is a boolean',
+  );
+  assert.deepEqual(form.schema.required, ['confirm'], 'only the approval is required — the tick is optional');
 });
 
 test('T1: the form fires even when the model asserts the attestation (the human answers, not the model)', async () => {
@@ -2352,6 +2326,95 @@ test('T3 binding: an expired envelope record no longer authorizes', () => {
   assert.equal(askEnvelopeLive(session, 'huaweicloud_run_approved_command', hash), false, 'a stale record is dead');
   noteAskEnvelopeShown(session, 'huaweicloud_run_approved_command', hash);
   assert.equal(askEnvelopeLive(session, 'huaweicloud_run_approved_command', hash), true, 'a fresh record is live');
+});
+
+// ── The S1 retry memo (PR-3a) ─────────────────────────────────────────────
+// ApprovalCoreConsent's result-conditioned scope: a byte-identical repeat
+// after a non-delivered outcome reuses the prior consent — no second
+// confirmation surface — and the response names the reuse through the
+// approvedVia carrier. The memo is roster-wide (the consent ledger's rows
+// key it), so the run face's own legacy arrival arms it too; the sandbox
+// battery covers the form-tier and the T3 carve shapes.
+
+// The two memo tests share the failing-bin knob: pin the fake as HCLOUD_BIN
+// for the scope of one test, restore whatever the caller had.
+async function withFakeHcloudBin(source: string, fn: () => Promise<void>): Promise<void> {
+  const fake = fakeHcloudExecutable(source);
+  const prevBin = process.env.HCLOUD_BIN;
+  process.env.HCLOUD_BIN = fake;
+  try {
+    await fn();
+  } finally {
+    if (prevBin === undefined) delete process.env.HCLOUD_BIN;
+    else process.env.HCLOUD_BIN = prevBin;
+  }
+}
+
+test('the retry memo: a failed delivery on the run face reuses the prior consent, and the reuse inherits the tier', async () => {
+  // The fake bin ANSWERS with a failure (exit 1) — the non-delivered class
+  // the memo covers — so the byte-identical retry rides the memo with no
+  // fresh confirmation and carries approvedVia on the response.
+  await withFakeHcloudBin('process.exit(1);', async () => {
+    await withVaultAuthHome(async () => {
+      await withApprovalMode('ask', async () => {
+        const sessionId = 'memo-run-face';
+        const args = ['ECS', 'DeleteServer', '--server_id=i-1'];
+        const base = { args, approvedByUser: true, maxRetries: 0, vendorConfirmed: VENDOR };
+        const first = (await callTool('huaweicloud_run_approved_command', base, { sessionId })) as {
+          ok?: boolean;
+          approvedVia?: string;
+        };
+        assert.equal(first.ok, false, 'the child answered with a failure');
+        const rowsA = readConsentEvents().filter((event) => event.sessionId === sessionId);
+        assert.equal(rowsA.length, 1, 'the arrival wrote one consent row');
+        assert.equal(rowsA[0]!.evidence, 'posture', 'the legacy arrival is posture-grade');
+        assert.equal(rowsA[0]!.outcomeDetail, 'failed', 'the failure is the memo datum');
+        assert.equal(first.approvedVia, undefined, 'a fresh confirmation carries no reuse marker');
+
+        const retry = (await callTool('huaweicloud_run_approved_command', base, {
+          sessionId,
+        })) as { ok?: boolean; approvedVia?: string };
+        assert.equal(
+          retry.approvedVia,
+          'retry-uncertain',
+          'the byte-identical retry rides the memo and names it on the response',
+        );
+        const rowsB = readConsentEvents().filter((event) => event.sessionId === sessionId);
+        assert.equal(rowsB.length, 2, 'the reuse wrote its own consent row');
+        assert.equal(rowsB[1]!.evidence, 'posture', 'the reuse inherits the original tier, never upgrades it');
+        assert.equal(rowsB[1]!.outcomeDetail, 'failed', 'the reuse failed too — the memo stays armed');
+      });
+    });
+  });
+});
+
+test('the retry memo is key-scoped: different arguments never ride it', async () => {
+  await withFakeHcloudBin('process.exit(1);', async () => {
+    await withVaultAuthHome(async () => {
+      await withApprovalMode('ask', async () => {
+        const sessionId = 'memo-key-scope';
+        const args = ['ECS', 'DeleteServer', '--server_id=i-1'];
+        await callTool(
+          'huaweicloud_run_approved_command',
+          { args, approvedByUser: true, maxRetries: 0, vendorConfirmed: VENDOR },
+          { sessionId },
+        );
+        const other = ['ECS', 'DeleteServer', '--server_id=i-2'];
+        const second = (await callTool(
+          'huaweicloud_run_approved_command',
+          { args: other, approvedByUser: true, maxRetries: 0, vendorConfirmed: VENDOR },
+          { sessionId },
+        )) as { approvedVia?: string };
+        assert.equal(
+          second.approvedVia,
+          undefined,
+          'a different key never rides the memo — it is its own first arrival',
+        );
+        const rows = readConsentEvents().filter((event) => event.sessionId === sessionId);
+        assert.equal(rows.length, 2, 'the different key wrote its own fresh consent row');
+      });
+    });
+  });
 });
 
 test('a gate-source mint envelope keeps the approve line even when the view carries a command', async () => {

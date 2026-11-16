@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 
 import { buildCaseEnv, scrubSecrets } from './env-policy.ts';
 import { E2E_VAULT_MASTER_KEY, startApprovalsWatcher } from './approvals-watcher.ts';
+import { startPtyApprovalsWatcher } from './approve-pty.ts';
 import { evaluateCase, type CaseVerdict, type Recordings } from './evaluate.ts';
 import { HttpFake } from './http-fake.ts';
 import { WsFake } from './ws-fake/hwlink-server.ts';
@@ -72,8 +73,18 @@ export async function runCase(
     // the agent run so a plan minted in the first seconds is confirmed
     // before the model's run call lands (the LLM's plan→run turnaround is
     // seconds; the poll fires in milliseconds). Declared in the attempt
-    // scope so the finally can stop it on every exit path.
-    const approvalsWatcher = caseDef.autoConfirmApprovals ? startApprovalsWatcher(home) : null;
+    // scope so the finally can stop it on every exit path. The PTY seam
+    // (approve-pty.ts) is the same terminal half driven through the REAL
+    // TTY-gated CLI — enroll the PIN, then answer each minted token's
+    // approve prompt — so gated cases exercise the product's own door
+    // instead of bypassing it; its enrollment is awaited (one CLI boot)
+    // before the agent run starts.
+    let approvalsWatcher: { stop(): void } | null = null;
+    if (caseDef.ptyConfirmApprovals) {
+      approvalsWatcher = await startPtyApprovalsWatcher(home, bin);
+    } else if (caseDef.autoConfirmApprovals) {
+      approvalsWatcher = startApprovalsWatcher(home);
+    }
     try {
       // Ws fake first: its ephemeral port resolves the literal {wsUrl}
       // token inside the http script (the hwlink GET-poll returns it as
@@ -139,7 +150,9 @@ export async function runCase(
       const approvalCaseEnv: Record<string, string> = {
         ...caseDef.env,
         ...(caseDef.approvalMode ? { DEVKIT_APPROVAL_MODE: caseDef.approvalMode } : {}),
-        ...(caseDef.autoConfirmApprovals ? { HW_VAULT_MASTER_KEY: E2E_VAULT_MASTER_KEY } : {}),
+        ...((caseDef.autoConfirmApprovals || caseDef.ptyConfirmApprovals)
+          ? { HW_VAULT_MASTER_KEY: E2E_VAULT_MASTER_KEY }
+          : {}),
       };
       const env = buildCaseEnv({
         processEnv: process.env,

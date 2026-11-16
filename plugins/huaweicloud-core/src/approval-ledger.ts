@@ -22,18 +22,15 @@
 // the caller's evidence parameter is consulted only when no granted
 // original exists.
 //
-// PR-3a contract (round 10, G2, recorded for the landing PR — no code in
-// PR-1 beyond this note): the S3 session standing consent needs a
-// tier-safe writer this ledger does not export yet — recordAskModeConsent
-// hard-codes scope 'once' and takes no scope parameter, and
-// appendConsentEvent takes the scope but does no tier resolution, so a
-// standing grant or memo event routed through the latter would upgrade
-// unchecked. The standing writer PR-3a lands MUST resolve the tier
-// exactly the way recordAskModeConsent does (chronology, weakest-wins tie)
-// and take the scope as a parameter; and the gate's ask result must first
-// become a structured value carrying approvedVia (a gate-contract change
-// in approval-gate.ts AND tools.ts, the latter unlisted in PR-3a's file
-// list) before the memo can report what it reused.
+// PR-3a landed contract (round 10, G2, recorded here when PR-1 carried no
+// code for it): the tier-safe scoped writer is recordAskModeConsent's
+// scope parameter — 'once' for ordinary arrivals and memo reuses (the tier
+// resolution below applies identically), 'session' for the S3 standing
+// consent grant the elicitation form's "remember for this session" tick
+// writes. No writer routes through appendConsentEvent without tier
+// resolution. The gate's ask result is the structured approvedVia carrier
+// (approval-gate.ts, threaded through tools.ts), and the S1 memo's
+// readiness reads retryMemoCovers below.
 //
 // Write discipline (interrogate rounds 1-7): an append ADDS, it never
 // rewrites, and every committed append SURVIVES. The locked write path
@@ -1980,6 +1977,15 @@ export function recordAskModeConsent(params: {
   // by the spec's contract); written on the row so the consent record names
   // what the user allowed, not only its hash.
   command?: string;
+  // The consent's scope. 'once' (the default) is every ordinary arrival
+  // and every PR-3a memo reuse. 'session' is the S3 session standing
+  // consent grant (PR-3a): the elicitation form's "remember for this
+  // session" tick — the grant row the doctor lists and the gate's
+  // in-memory standing map keys rides. Tier resolution below applies
+  // identically to both scopes: a reuse inherits the original's tier and
+  // never upgrades (the PR-1 ledger rule; the round-10 G2 note's
+  // tier-safe-writer contract).
+  scope?: 'once' | 'session';
   // The caller knows WHICH channel answered this arrival and wants that
   // channel recorded (PR-1.5's ladder: an elicitation form answer is
   // `elicitation`, a chat-round-trip retry is `posture`). Without this the
@@ -2020,7 +2026,7 @@ export function recordAskModeConsent(params: {
     argsHash: params.argsHash,
     outcome: params.outcome,
     grantedAt,
-    scope: 'once',
+    scope: params.scope ?? 'once',
     evidence: 'posture', // resolved below, before the append
     arrivalSeq: 0, // appendConsentEvent assigns the real counter
   };
@@ -2118,6 +2124,48 @@ function newestGrantedStampOutsideStore(params: { sessionId: string; tool: strin
     consider(spoolLinesOf(file));
   }
   return newest;
+}
+
+// The S1 retry-memo readiness reader (PR-3a): a byte-identical repeat on a
+// consent key reuses the prior consent exactly when the last execution the
+// key saw did NOT deliver (ApprovalCoreConsent's result-conditioned scope:
+// 'uncertain' and 'failed' keep the memo covering, 'delivered' clears it,
+// and an outcome the best-effort annotate could not record reads as
+// delivery-unknown — the documented "the memo treats an absent
+// outcomeDetail as unknown", the same class as 'uncertain'). The deciding
+// row is the NEWEST granted row on the key, chronology by (arrivalSeq,
+// grantedAt) — the same ordering originalGrantedFor uses, newest-first, and
+// sentinel rows never decide: a row whose chronology is unreadable can
+// neither name an original (round 15) nor arbitrate a reuse. Denied rows
+// are invisible here by construction: a decline is not a consent, so it
+// can neither enable nor clear the memo. Fail-closed in every direction:
+// an unreadable store reads as not-ready, so the worst case is one extra
+// confirmation, never a silent reuse.
+export function retryMemoCovers(sessionId: string, tool: string, argsHash: string): boolean {
+  try {
+    let newest: ConsentEvent | undefined;
+    for (const event of readConsentEvents()) {
+      if (
+        event.sessionId !== sessionId ||
+        event.tool !== tool ||
+        event.argsHash !== argsHash ||
+        event.outcome !== 'granted' ||
+        event.arrivalSeq === SEQ_UNKNOWN
+      ) {
+        continue;
+      }
+      if (
+        newest === undefined ||
+        event.arrivalSeq > newest.arrivalSeq ||
+        (event.arrivalSeq === newest.arrivalSeq && event.grantedAt > newest.grantedAt)
+      ) {
+        newest = event;
+      }
+    }
+    return newest !== undefined && newest.outcomeDetail !== 'delivered';
+  } catch {
+    return false;
+  }
 }
 
 // The delivery-outcome side channel (round 12, finding 4): one JSON line

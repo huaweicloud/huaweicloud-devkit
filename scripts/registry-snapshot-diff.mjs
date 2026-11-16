@@ -131,6 +131,66 @@ const DELIBERATE_ADDITIONS = [
     reason:
       "The async-exec claim protocol's task identity: a path- and pgrep-safe id the caller reuses when retrying an uncertain start — the claim file blocks a second spawn; omitting it lets the tool generate one.",
   },
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers connect on the approval gate (always flavor, gate token source): the token the USER_CONFIRMATION_REQUIRED envelope mints spends the confirmation. Optional in the schema like the hcloud run face — the gate, not zod, is the enforcer, so a first no-token call must reach the gate to receive the mint envelope.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation: in token mode the call requires the agent's explicit statement that the user approved; in ask mode it is the T3 chat round-trip retry marker. Schema-optional because a required field would die in SDK validation before the gate could teach the confirmation ritual.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_with_session',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers the session exec face as a CLASSIFIED gate tool: a write-classified command confirms per call (mint → terminal approve → retry), a benign one passes through with no token at all. Schema-optional so both shapes reach the gate.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_with_session',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the session exec face: the token-mode statement of user approval, and the ask-mode chat round-trip retry marker. Schema-optional for the same reason as the run face's.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers the one-shot exec face as a CLASSIFIED gate tool (same contract as the session face): write-classified content confirms per call, benign content passes ungated.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the one-shot exec face: token-mode statement of user approval, ask-mode chat round-trip retry marker.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_sign_agreement',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers agreement signing on the approval gate (always flavor): a legal-agreement signature earns a human present per call, mechanically — the skill teaching that demanded explicit consent is now enforced, not requested.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_sign_agreement',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the agreement face: the token-mode statement of user approval and the ask-mode retry marker.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_credentials',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers credential injection on the approval gate (always flavor): injecting temporary AK/SK plus a long-lived DevBridge API key into a sandbox mutates its credential state, so it confirms per call.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_credentials',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the credentials face: the token-mode statement of user approval and the ask-mode retry marker.",
+  },
 ];
 
 // Deliberate optionals: properties the legacy snapshot carries as REQUIRED

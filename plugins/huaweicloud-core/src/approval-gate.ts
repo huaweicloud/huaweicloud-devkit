@@ -29,21 +29,27 @@ import type { ToolArgs, CallToolOptions } from './tools.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
 import { huaweiConfigBase } from './lib/state-dir.ts';
-import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
+import { annotateDispatchOutcome, recordAskModeConsent, retryMemoCovers } from './approval-ledger.ts';
 import type { ApprovalSpec, ConsentDeliveryOutcome, ElicitFormRequest, ElicitOutcome } from './approval-types.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
 // consent stamp AND the seq the ask branch just wrote — round 15, finding
 // 2) to the dispatch layer, which hands it to the delivery recorder — the
-// ownership-by-identity requirement (never by position or absence) and the
-// precursor of the approvedVia carrier the recorded PR-3a note schedules;
-// an envelope
+// ownership-by-identity requirement (never by position or absence) — and,
+// from PR-3a, the REUSE attribution: 'retry-uncertain' when a
+// byte-identical repeat rode the S1 retry memo, 'standing-session' when an
+// identical call rode the S3 standing grant the user ticked. The dispatch
+// layer attaches the carrier to the handler's result so the response names
+// what authorized it; an envelope
 // object is returned to the caller INSTEAD of the handler's value.
 // Approval-shaped refusals are results, not throws, so callTool's caller
 // (and the trace seam) see the same JSON shapes the pack handler returns
 // for them.
+export type ApprovalReuseVia = 'retry-uncertain' | 'standing-session';
+
 export type ApprovalGateOutcome =
-  { pass: { arrivalStamp?: number; arrivalSeq?: number } } | { envelope: Record<string, unknown> };
+  | { pass: { arrivalStamp?: number; arrivalSeq?: number; approvedVia?: ApprovalReuseVia } }
+  | { envelope: Record<string, unknown> };
 
 export const NO_SESSION_SEAM_ERROR =
   'Runtime pack configuration is available in stdio agent sessions only; this surface carries no session state.';
@@ -413,6 +419,40 @@ export function askEnvelopeLive(sessionId: string, tool: string, argsHash: strin
   return live.has(argsHash);
 }
 
+// ── S3 session standing consent (PR-3a) ────────────────────────────────────
+//
+// The elicitation form's "Remember for this session" tick grants standing
+// consent for the exact (session, tool, argsHash) key: identical later
+// executions ride the grant with no form, no envelope, and no new consent
+// row. The grant PERSISTS for the session — it is never consumed by a ride
+// (the first-use disappearance bug the ApprovalCoreConsent spec caught:
+// ElicitAllowStanding's later executions must keep riding), and it dies
+// only with the process, exactly like the T3 binding map above: a server
+// restart forgets it fail-closed, and the retry asks again. The durable
+// record is the scope:'session' consent row the tick writes through the
+// ledger's tier-safe scoped writer (the row the doctor lists); this map is
+// the ride check and the in-memory lifetime.
+const standingGrants = new Map<string, Map<string, number>>();
+
+function standingScope(sessionId: string, tool: string): string {
+  return `${sessionId}\u0000${tool}`;
+}
+
+/** Record the session standing-consent grant the form's tick just created. */
+export function noteStandingGrant(sessionId: string, tool: string, argsHash: string, at: number = Date.now()): void {
+  const scope = standingScope(sessionId, tool);
+  const live = standingGrants.get(scope) ?? new Map<string, number>();
+  live.set(argsHash, at);
+  standingGrants.set(scope, live);
+}
+
+/** True when the session's standing-consent grant covers this exact key. */
+export function standingGrantLive(sessionId: string, tool: string, argsHash: string): boolean {
+  const scope = standingScope(sessionId, tool);
+  const live = standingGrants.get(scope);
+  return live !== undefined && live.has(argsHash);
+}
+
 // ── The server-run confirmation ladder (PR-1.5) ───────────────────────────
 //
 // Ask mode no longer trusts a client popup. On a client that declared the
@@ -435,9 +475,10 @@ export const ASK_CONFIRMATION_REQUIRED = 'ASK_CONFIRMATION_REQUIRED';
 // leaving an unresponsive client able to stall a call indefinitely.
 export const ELICITATION_TIMEOUT_MS = 300_000;
 
-// The form's one field: a boolean. Both probed harnesses render a boolean
-// as a Yes/No choice, and one field keeps the payload inside the restricted
-// top-level schema the form mode accepts.
+// The form's fields: the boolean approval, and — from PR-3a — the session
+// standing-consent tick (S3). Both probed harnesses render a boolean as a
+// Yes/No choice, and two fields stay inside the restricted top-level
+// schema the form mode accepts.
 const ELICITATION_SCHEMA = {
   type: 'object' as const,
   properties: {
@@ -446,17 +487,30 @@ const ELICITATION_SCHEMA = {
       title: 'Run this command',
       description: 'Approve runs the command exactly once. Decline or dismiss cancels it.',
     },
+    rememberForSession: {
+      type: 'boolean',
+      title: 'Remember for this session',
+      description:
+        'Also allow identical later calls in this session without asking again. The grant lasts until the devkit server restarts.',
+    },
   },
   required: ['confirm'],
 };
 
 function elicitationRequest(commandLine: string, summary: string): ElicitFormRequest {
+  // A tool with an executable line shows it first (the command-forward
+  // doctrine); a tool without one (the six sandbox lifecycle faces,
+  // packs_configure) centers the redacted summary instead.
+  const head =
+    commandLine !== ''
+      ? `HuaweiCloud DevKit is requesting your confirmation to run this command:\n\n${commandLine}\n\n`
+      : 'HuaweiCloud DevKit is requesting your confirmation for this request:\n\n';
   return {
     message:
-      'HuaweiCloud DevKit is requesting your confirmation to run this command:\n\n' +
-      `${commandLine}\n\n` +
+      head +
       `${summary}\n\n` +
-      'Approve to run it once. Decline or dismiss to cancel without running anything.',
+      'Approve to run it once. Decline or dismiss to cancel without running anything. ' +
+      'Tick "Remember for this session" to also allow identical later calls in this session without asking again.',
     schema: ELICITATION_SCHEMA,
     timeoutMs: ELICITATION_TIMEOUT_MS,
   };
@@ -495,29 +549,33 @@ function elicitRefusal(outcome: ElicitOutcome, commandLine: string): Record<stri
 }
 
 // T3: the client cannot render a form, so the model is the relay. The
-// envelope names the command it must show and the exact retry that
-// continues; the refusals below and the ledger tier keep the posture
-// labelled where a later reader meets it.
+// envelope names the line it must show — the executable command when the
+// tool carries one, else the redacted summary (the six lifecycle faces
+// have no command string) — and the exact retry that continues; the
+// refusals below and the ledger tier keep the posture labelled where a
+// later reader meets it.
 function askConfirmationEnvelope(
   commandLine: string,
   summary: string,
   view: { argsHash: string },
 ): Record<string, unknown> {
+  const askLine =
+    commandLine !== '' ? 'Show this exact command to the user in chat' : 'Show this exact request to the user in chat';
   return {
     status: 'rejected',
     code: ASK_CONFIRMATION_REQUIRED,
     userConfirmation: {
       needed: true,
       mode: 'chat',
-      command: commandLine,
+      command: commandLine !== '' ? commandLine : undefined,
       summary,
       instruction:
-        'Show this exact command to the user in chat and wait for their answer. If they approve, retry the same call ' +
+        `${askLine} and wait for their answer. If they approve, retry the same call ` +
         "with approvedByUser: true. That retry is model-relayed posture trust: it is the user's word as you report it, " +
         'not a mechanically verified answer.',
     },
     argsHash: view.argsHash,
-    nextStep: 'Retry with approvedByUser: true only after the user explicitly approves the command above.',
+    nextStep: 'Retry with approvedByUser: true only after the user explicitly approves the request above.',
   };
 }
 
@@ -541,12 +599,17 @@ export async function runApprovalGate(
 
   // The approvedByUser attestation precedes every gate effect in token mode
   // and on the legacy ask-mode shape (the trunk contract exactly as the
-  // hcloud battery pins it). Ask mode on the command-forward shape is the
-  // server-run ladder instead (PR-1.5): a capable client's call is confirmed
-  // by the form the gate raises, and a non-capable client's unattested call
-  // is answered with the T3 envelope that asks for the very attestation the
-  // retry then carries. Throwing here would silence both.
-  const serverRunArrival = approvalMode === 'ask' && args.command !== undefined;
+  // hcloud battery pins it). Ask mode on a PR-3 'gate' registration is the
+  // server-run ladder instead (PR-1.5): EVERY arrival is server-run — the
+  // registration has no pre-ladder legacy contract to preserve, and its
+  // six no-command faces would otherwise die on the attestation throw
+  // before any form or envelope could fire. On the plan-face tool the
+  // ladder stays keyed to the command-forward shape exactly as PR-1.5
+  // pinned it: a capable client's call is confirmed by the form the gate
+  // raises, and a non-capable client's unattested call is answered with
+  // the T3 envelope that asks for the very attestation the retry then
+  // carries. Throwing here would silence both.
+  const serverRunArrival = approvalMode === 'ask' && (spec.tokenSource === 'gate' || args.command !== undefined);
   if (args.approvedByUser !== true && !serverRunArrival) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
@@ -577,18 +640,19 @@ export async function runApprovalGate(
     const view = spec.summarize(value);
     // The display line: the validated command field when the caller sent it
     // (the command-forward shape), else the summarize view's redacted echo
-    // (the legacy shape keeps executing, it just shows the redacted line).
+    // (the legacy shape keeps executing, it just shows the redacted line;
+    // the six no-command lifecycle faces show the summary alone).
     const commandLine = typeof args.command === 'string' && args.command !== '' ? args.command : (view.command ?? '');
+    const sessionId = opts.sessionId ?? 'default';
     const consented = (evidence: 'elicitation' | 'posture'): ApprovalGateOutcome => {
       const arrival = recordAskModeConsent({
-        sessionId: opts.sessionId ?? 'default',
+        sessionId,
         tool: name,
         argsHash: view.argsHash,
         outcome: 'granted',
         evidence,
         evidenceFinal: true,
         command: view.command,
-        arrivalSeq: 0, // the ledger assigns the real counter on append
       });
       // The arrival's IDENTITY (round 15, finding 2): the stamp AND the seq —
       // the dispatch layer threads both to the delivery recorder so the
@@ -597,6 +661,43 @@ export async function runApprovalGate(
       // behind used to steal the line).
       return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
     };
+
+    // S3 standing consent: a grant the user ticked covers identical later
+    // executions for the session. The ride writes NO new consent row (the
+    // grant row is the durable record; the TLA+ StandingRun models the ride,
+    // not a new consent) and never consumes the grant — the first-use
+    // disappearance bug the spec caught.
+    if (standingGrantLive(sessionId, name, view.argsHash)) {
+      return { pass: { approvedVia: 'standing-session' } };
+    }
+
+    // The S1 retry memo: a byte-identical repeat after a non-delivered
+    // outcome reuses the prior consent — no second form, no fresh envelope
+    // (the carve the T3 binding's arrival condition needed: an attested
+    // retry whose shown-envelope record expired rides the memo instead of
+    // silently degrading to a fresh chat round-trip). The reuse row
+    // inherits the original's evidence tier through the ledger's
+    // never-upgrade resolution (the caller's tier is only the no-original
+    // fallback, so the posture floor holds), and the arrival identity rides
+    // the pass so this dispatch's own outcome re-arms or clears the memo
+    // for the next identical call.
+    if (retryMemoCovers(sessionId, name, view.argsHash)) {
+      const arrival = recordAskModeConsent({
+        sessionId,
+        tool: name,
+        argsHash: view.argsHash,
+        outcome: 'granted',
+        evidence: 'posture',
+        command: view.command,
+      });
+      return {
+        pass: {
+          approvedVia: 'retry-uncertain',
+          arrivalStamp: arrival.grantedAt,
+          arrivalSeq: arrival.arrivalSeq,
+        },
+      };
+    }
 
     // T1: the client declared elicitation.form, so the gate raises the form
     // itself. The accept IS the confirmation (the attestation is not
@@ -612,6 +713,24 @@ export async function runApprovalGate(
         const refusal = outcome.decision === 'accept' ? { ...outcome, decision: 'decline' as const } : outcome;
         return { envelope: elicitRefusal(refusal, commandLine) };
       }
+      // The standing-consent tick: this execution is a fresh consent (the
+      // row carries the elicitation evidence and the session scope — the
+      // durable grant record the doctor lists), and the in-memory grant
+      // covers identical later executions until the process dies.
+      if (outcome.content?.['rememberForSession'] === true) {
+        noteStandingGrant(sessionId, name, view.argsHash);
+        const arrival = recordAskModeConsent({
+          sessionId,
+          tool: name,
+          argsHash: view.argsHash,
+          outcome: 'granted',
+          evidence: 'elicitation',
+          evidenceFinal: true,
+          command: view.command,
+          scope: 'session',
+        });
+        return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq } };
+      }
       return consented('elicitation');
     }
 
@@ -622,13 +741,13 @@ export async function runApprovalGate(
     // envelope for the line they ask about instead of executing. The refusal
     // teaches the ritual for the new line, so the proper envelope-then-retry
     // still completes.
-    // The binding applies to the command-forward shape only: that is the
-    // shape whose unattested form emits this envelope, so a record can exist.
-    // The legacy args-only shape keeps PR-1's pinned contract exactly (its
-    // unattested form is the trunk attestation throw, so there is no envelope
-    // to bind to and an attested legacy arrival still executes on posture).
+    // The binding applies to the command-forward shape and every 'gate'
+    // registration: both are the shapes whose unattested form emits this
+    // envelope. The legacy args-only shape keeps PR-1's pinned contract
+    // exactly (its unattested form is the trunk attestation throw, so
+    // there is no envelope to bind to and an attested legacy arrival still
+    // executes on posture).
     if (serverRunArrival) {
-      const sessionId = opts.sessionId ?? 'default';
       const envelopeShown = askEnvelopeLive(sessionId, name, view.argsHash);
       if (args.approvedByUser !== true || !envelopeShown) {
         noteAskEnvelopeShown(sessionId, name, view.argsHash);
