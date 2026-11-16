@@ -1,5 +1,87 @@
 # Changelog
 
+## 1.1.14-next.5 (2026-11-13)
+
+- feat(sandbox): 增加沙箱池选型门禁
+- fix(sandbox): 修复仅 session_id 时终端会话未关闭
+- feat(sandbox): 新增关机工具与持久化核时提示
+- fix(sandbox): 补齐模板配额错误码结构化出口与三码口径
+- fix(sandbox): 透传 HDKIT_TEMPLATE_QUOTA_EXCEEDED 提示
+
+## 1.1.14-next.4 (2026-11-12)
+
+- style(sandbox): format resource-pool table
+- fix(sandbox): align resource-pool lifetime wording
+- fix(sandbox): keep lifetime reminders out of the final report
+
+## 1.1.14-next.3 (2026-11-12)
+
+- fix(install): gate update on the node floor
+- fix(install): raise the Node floor to 22.19
+- fix(install): support the Node 22.5 floor without top-level sqlite
+
+## 1.1.14-next.2 (2026-11-10)
+
+- chore: set version override to 1.1.14 for next preview release
+- fix(update): keep upgrade backups and strip credentials from npx
+- style(update): prettier
+- docs(update): describe the write-set gate and full snapshot coverage (#1117)
+- fix(sandbox): pass the 409 version gate through every hdkit tool exit (#1117 optional #5)
+- fix(update): extract the real npm failure reason, not npm warn noise (#1117 optional #1)
+- fix(update): cover version manifests in the upgrade snapshot and verify real rewrites (#1117 R3)
+- fix(update): gate auto-upgrade on the update write set (#1117 R2)
+- fix(update): mask auto-upgrade in hdkitservice tests (#1117 R1)
+- feat(update): add silent auto-upgrade
+- feat(sandbox): only support pool_type in connect
+
+## 1.1.13-next.8 (2026-11-05)
+
+- feat(sandbox): auto-retry connect on gateway 502/504
+
+## 1.1.13-next.7 (2026-11-05)
+
+- feat(sandbox): structured guidance for the forced version gate
+
+## 1.1.13-next.6 (2026-11-05)
+
+- fix(sandbox): address devbridge cleanup review findings
+- test(sandbox): mock selective cleanup in the connect call-tool test
+- fix(sandbox): refresh the devbridge CLI token before cleanup listing
+- fix(sandbox): give devbridge cleanup execs enough time and retry transient terminal timeouts
+- fix(sandbox): prune ghost keepalive entries and skip cleanup on list failure
+- feat(sandbox): selective devbridge tunnel cleanup
+- fix(sandbox): validate devbridge keys with a real API call and heal renew failures
+- fix(sandbox): report the effective devbridge auth mode after auto-create
+
+## 1.1.13-next.5 (2026-11-04)
+
+- refactor(sandbox): use reclaimMinutes for consistent units
+- style(sandbox): apply prettier formatting
+- feat(sandbox): server-driven pool lifecycle hints on connect/expose
+
+## 1.1.13-next.4 (2026-11-04)
+
+- refactor(sandbox): 去掉孤儿清理的 last_used_at 检查（1+1 配额下过度设计）
+- fix(sandbox): QA 审查返修——AK/SK 残留清理 + 失效自愈接线 + 孤儿活跃检查
+- feat(sandbox): devbridge 认证固定 API Key——AK/SK 移除 + 自动创建 + 两池分流
+- fix(sandbox): deploy_nginx/probe 标记解析补齐 OSC 转义剥离（#946 漏网）
+
+## 1.1.13-next.3 (2026-11-03)
+
+- Release
+
+## 1.1.13-next.2 (2026-11-03)
+
+- fix(sandbox): 回显字段双读兜底——pool_type/poolType 命名漂移防御
+- fix(sandbox): QA 审查返修——remediation 穿透 MCP 边界 + 判断项五连
+- feat(sandbox): 两池 pool_type 客户端适配——透传/429 双码/TTL 播报/模式提示/烧核播报
+- style: fix prettier formatting (plugin manifests capabilities collapse, plan.md table align) #1071
+- docs(sandbox): #1071 spec/plan/task for resource pool finalized semantics
+- chore(release): #1071 bump 1.1.13-next.1
+- test(sandbox): #1071 acceptance guards for resource pool finalized semantics
+- feat(sandbox): #1071 quota/429+Retry-After semantics in sandbox tool descriptions
+- feat(sandbox): #1071 resource pool routing + lifecycle finalized semantics in skill
+
 ## 1.1.13-next.0 (2026-10-29)
 
 - chore: set version-override to 1.1.13 (#1050)
