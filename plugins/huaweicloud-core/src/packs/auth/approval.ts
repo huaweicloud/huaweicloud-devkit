@@ -1,6 +1,6 @@
 import { fingerprint } from '../../auth/reconcile.ts';
 import { readCodeArtsCredentials } from '../../auth/credentials.ts';
-import { readImportFile } from '../../lib/credentials.ts';
+import { peekImportFile } from '../../lib/credentials.ts';
 import { resolveSecretValue } from '../../lib/secret-vault/store.ts';
 import { hashArgs } from '../../lib/approval-tokens.ts';
 import type { ApprovalSpec } from '../../approval-types.ts';
@@ -18,27 +18,26 @@ import type { ToolArgs } from '../../tools.ts';
 // collapse here). auth_sync, auth_status, and check_account_type stay
 // unregistered — read or operator-configured faces.
 //
-// The binding value is the call's credential SUBSTANCE with the consent
-// plumbing (vendorConfirmed, approvalToken, approvedByUser, command)
-// normalized away, the same doctrine as the cli pack's normalizeArgs
-// binding the effective argv instead of the raw tool args. Two properties
-// ride on that: a chat-round-trip retry (the same call plus
-// approvedByUser) hashes identically to the arrival whose envelope was
-// shown, so the T3 binding resolves; and the vendor quote never lands in
-// the hash, the pin view, or the consent row.
+// The binding value is the call's RESOLVED CREDENTIAL SNAPSHOT with the
+// consent plumbing (vendorConfirmed, approvalToken, approvedByUser,
+// command) normalized away. Resolution mirrors the handler's channel
+// precedence exactly — the args pair wins when present, else the mode's
+// backing store (the import file for mode=import, the CodeArts injection
+// for mode=mcp-config), with secret:// refs resolved — and the backing
+// store is PEEKED, never read-for-wipe: the gate runs before any consent,
+// so a read with a side effect (the malformed-file wipe) would mutate the
+// user's state on the refusal path. The handler EXECUTES this snapshot
+// (threaded through dispatch as opts.approvedBinding), never a
+// post-consent re-read — interrogate round 1, finding 2: the account the
+// confirmation view named is the account that switches, and a rewrite of
+// the import file between the shown form and the accept lands nowhere.
+// Folding the resolved region and security token into the BINDING (not
+// just the display) extends the same doctrine to the full effect: a
+// same-fingerprint call with a different region or STS re-asks instead
+// of executing under the old approval (round 1, finding 3).
 //
-// The `account` field inside the binding is the fingerprint the product
-// already renders for account reconciliation (reconcile.ts's sha256
-// prefix), derived with the handler's own resolution precedence: the args
-// pair when present, else the backing store the mode names — with
-// secret:// refs resolved first, exactly as the handler resolves them.
-// Folding it into the BINDING (not just the display) is what makes the
-// confirmation answer "which account wins" binding: a swapped import
-// file between the shown envelope and the retry changes the hash, so the
-// retry gets a fresh envelope for the new account instead of executing
-// on the old approval. The cost is that normalizeArgs reads the backing
-// store at call time; the post-dispatch outcome recorder re-derives the
-// same value AFTER the handler wiped a consumed import file, so its
+// The cost of a resolved binding: the post-dispatch outcome recorder
+// re-derives it AFTER the handler wiped a consumed import file, so its
 // argsHash can miss the arrival row — the annotate is best-effort by
 // contract and a missing outcome line is the documented consequence.
 
@@ -46,64 +45,105 @@ function asStr(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-// The account the call switches to, as the 8-hex fingerprint. Mirrors the
-// handler's precedence: the args pair wins when it is present (the handler
-// ignores the backing store then), else the mode's backing store.
-function accountFingerprint(ak: string, sk: string, mode: string): string {
-  if (ak && sk) return fingerprint(resolveSecretValue(ak) ?? ak, resolveSecretValue(sk) ?? sk);
-  if (mode === 'import') {
-    const imported = readImportFile();
+function resolved(value: string): string {
+  return resolveSecretValue(value) ?? value;
+}
+
+// Shape guard for the dispatch-threaded snapshot: it comes from our own
+// gate, but the narrow keeps the handler's fallback honest against any
+// future binding-shape change.
+export function isApprovedSwitchSnapshot(value: unknown): value is ApprovedSwitchSnapshot {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.mode === 'string' &&
+    typeof v.action === 'string' &&
+    typeof v.ak === 'string' &&
+    typeof v.sk === 'string' &&
+    typeof v.securityToken === 'string' &&
+    typeof v.region === 'string' &&
+    typeof v.account === 'string' &&
+    typeof v.fromImport === 'boolean'
+  );
+}
+
+// The resolved credential record the switch handler executes, and the ONE
+// place the resolution precedence lives (the gate's normalizeArgs and the
+// handler's no-binding fallback both call this). Shape-guards in the
+// handler (isApprovedSwitchSnapshot) keep the threading an in-process
+// contract: it comes from our own gate, but the narrow costs nothing.
+export interface ApprovedSwitchSnapshot {
+  mode: string;
+  action: string;
+  ak: string;
+  sk: string;
+  securityToken: string;
+  region: string;
+  // The 8-hex fingerprint of the resolved account (display + pin view).
+  account: string;
+  // True when the import file supplied the values (the handler wipes it on
+  // non-replayable outcomes, exactly as its own read did).
+  fromImport: boolean;
+}
+
+// Resolve the switch substance with the handler's own precedence: the args
+// pair wins when present, else the mode's backing store (full replace for
+// the import channel; the CodeArts channel defaults region from the
+// injection and falls back to the args). Refs resolve to plaintext, the
+// same seam the handler resolved through.
+export function switchSnapshot(args: ToolArgs): ApprovedSwitchSnapshot {
+  const mode = args.mode || 'memory';
+  const action = args.action || 'temporary';
+  if (action === 'clear') {
+    return { mode, action: 'clear', ak: '', sk: '', securityToken: '', region: '', account: '', fromImport: false };
+  }
+  let ak = asStr(args.ak);
+  let sk = asStr(args.sk);
+  let securityToken = asStr(args.securityToken);
+  let region = asStr(args.region);
+  let fromImport = false;
+  if (mode === 'import' && (!ak || !sk)) {
+    const imported = peekImportFile();
     if (imported) {
-      return fingerprint(
-        resolveSecretValue(imported.ak) ?? imported.ak,
-        resolveSecretValue(imported.sk) ?? imported.sk,
-      );
+      ({ ak, sk, securityToken, region } = imported);
+      fromImport = true;
     }
   }
-  if (mode === 'mcp-config') {
+  if (mode === 'mcp-config' && (!ak || !sk)) {
     const cc = readCodeArtsCredentials();
     if (cc) {
-      return fingerprint(resolveSecretValue(cc.ak) ?? cc.ak, resolveSecretValue(cc.sk) ?? cc.sk);
+      ak = cc.ak;
+      sk = cc.sk;
+      securityToken = cc.securityToken || '';
+      region = cc.region || region;
     }
   }
-  return '';
-}
-
-function initSubstance(args: ToolArgs): Record<string, unknown> {
-  if (args.clear) return { clear: args.clear };
-  const ak = asStr(args.ak);
-  const sk = asStr(args.sk);
-  const region = asStr(args.region);
-  return {
-    ak,
-    sk,
-    ...(region ? { region } : {}),
-    account: accountFingerprint(ak, sk, 'memory'),
-  };
-}
-
-function switchSubstance(args: ToolArgs): Record<string, unknown> {
-  const action = args.action || 'temporary';
-  if (action === 'clear') return { action: 'clear' };
-  const mode = args.mode || 'memory';
-  const ak = asStr(args.ak);
-  const sk = asStr(args.sk);
-  const securityToken = asStr(args.securityToken);
-  const region = asStr(args.region);
+  const akValue = resolved(ak);
+  const skValue = resolved(sk);
+  const securityTokenValue = resolved(securityToken);
   return {
     mode,
     action,
-    ak,
-    sk,
-    ...(securityToken ? { securityToken } : {}),
-    ...(region ? { region } : {}),
-    account: accountFingerprint(ak, sk, mode),
+    ak: akValue,
+    sk: skValue,
+    securityToken: securityTokenValue,
+    region,
+    account: fingerprint(akValue, skValue),
+    fromImport,
   };
 }
 
-function accountOf(binding: Record<string, unknown>): string {
-  const fp = asStr(binding.account);
-  return fp || '(unknown)';
+function initSnapshot(args: ToolArgs): Record<string, unknown> {
+  if (args.clear) return { clear: true };
+  const ak = asStr(args.ak);
+  const sk = asStr(args.sk);
+  const region = asStr(args.region);
+  return {
+    ak,
+    sk,
+    ...(region ? { region } : {}),
+    account: fingerprint(ak, sk),
+  };
 }
 
 const SOURCE_LABELS: Record<string, string> = {
@@ -117,7 +157,7 @@ const SCOPE_LABELS: Record<string, string> = {
   temporary: 'temporary: this MCP process only',
 };
 
-function switchView(binding: Record<string, unknown>) {
+function switchView(binding: ApprovedSwitchSnapshot) {
   if (binding.action === 'clear') {
     return {
       summary: "huaweicloud_auth_switch: clear this session's runtime credentials (fall back to env/file/S1)",
@@ -126,22 +166,22 @@ function switchView(binding: Record<string, unknown>) {
       command: "huaweicloud_auth_switch (clear the session's runtime credentials)",
     };
   }
-  const account = accountOf(binding);
-  const mode = asStr(binding.mode) || 'memory';
-  const action = asStr(binding.action) || 'temporary';
-  const source = SOURCE_LABELS[mode] ?? mode;
-  const scope = SCOPE_LABELS[action] ?? action;
+  const account = binding.account || '(unknown)';
+  const source = SOURCE_LABELS[binding.mode] ?? binding.mode;
+  const scope = SCOPE_LABELS[binding.action] ?? binding.action;
+  const regionNote = binding.region ? `, region ${binding.region}` : '';
+  const stsNote = binding.securityToken ? ', session-scoped STS' : '';
   return {
-    summary: `huaweicloud_auth_switch: switch to account ${account} from ${source} (${scope})`,
+    summary: `huaweicloud_auth_switch: switch to account ${account} from ${source}${regionNote}${stsNote} (${scope})`,
     argsHash: hashArgs(binding),
     pinView: {
       account,
-      source: mode,
-      scope: action,
+      source: binding.mode,
+      scope: binding.action,
       ...(binding.region ? { region: binding.region } : {}),
       ...(binding.securityToken ? { sts: true } : {}),
     },
-    command: `huaweicloud_auth_switch (switch the account to ${account}, source ${mode}, ${action})`,
+    command: `huaweicloud_auth_switch (switch the account to ${account}, source ${binding.mode}${regionNote}${stsNote}, ${binding.action})`,
   };
 }
 
@@ -151,7 +191,26 @@ export const AUTH_APPROVAL_SPECS: Readonly<Record<'huaweicloud_auth_init' | 'hua
       domain: 'auth',
       flavor: 'always',
       tokenSource: 'gate',
-      normalizeArgs: initSubstance,
+      normalizeArgs: initSnapshot,
+      // NoDoomedToken (round 1, finding 4): the handler refuses a set call
+      // with no credential pair, so the gate refuses it before any mint —
+      // the user is never asked to approve a call the execution would
+      // reject.
+      assertArgsExecutable: (bindingValue) => {
+        const binding = (bindingValue ?? {}) as Record<string, unknown>;
+        if (binding.clear) return;
+        if (
+          typeof binding.ak !== 'string' ||
+          binding.ak === '' ||
+          typeof binding.sk !== 'string' ||
+          binding.sk === ''
+        ) {
+          throw new Error(
+            'ak and sk are required to set runtime credentials (secret:// vault refs are accepted). ' +
+              'Pass clear=true to clear the session\u2019s runtime credentials instead.',
+          );
+        }
+      },
       summarize: (bindingValue) => {
         const binding = (bindingValue ?? {}) as Record<string, unknown>;
         if (binding.clear) {
@@ -162,7 +221,7 @@ export const AUTH_APPROVAL_SPECS: Readonly<Record<'huaweicloud_auth_init' | 'hua
             command: "huaweicloud_auth_init (clear the session's runtime credentials)",
           };
         }
-        const account = accountOf(binding);
+        const account = asStr(binding.account) || '(unknown)';
         const region = asStr(binding.region);
         return {
           summary:
@@ -178,7 +237,29 @@ export const AUTH_APPROVAL_SPECS: Readonly<Record<'huaweicloud_auth_init' | 'hua
       domain: 'auth',
       flavor: 'always',
       tokenSource: 'gate',
-      normalizeArgs: switchSubstance,
-      summarize: (bindingValue) => switchView((bindingValue ?? {}) as Record<string, unknown>),
+      normalizeArgs: switchSnapshot,
+      // NoDoomedToken (round 1, finding 4): no mint for a switch with no
+      // resolvable target account (an absent or malformed import file, an
+      // empty injection), and no mint for a persist shape the handler
+      // rejects anyway (STS cannot persist, R3).
+      assertArgsExecutable: (bindingValue) => {
+        const binding = bindingValue as ApprovedSwitchSnapshot;
+        if (binding.action === 'clear') return;
+        if (
+          typeof binding.ak !== 'string' ||
+          binding.ak === '' ||
+          typeof binding.sk !== 'string' ||
+          binding.sk === ''
+        ) {
+          throw new Error(
+            'the account switch has no resolvable target account: pass ak/sk (mode=memory), ' +
+              'a valid creds-import.json (mode=import), or an injected mcp_settings.json (mode=mcp-config).',
+          );
+        }
+        if (binding.action === 'persist' && binding.securityToken !== '') {
+          throw new Error('Temporary STS credentials cannot be persisted (R3). Use action=temporary.');
+        }
+      },
+      summarize: (bindingValue) => switchView(bindingValue as ApprovedSwitchSnapshot),
     },
   };

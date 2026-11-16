@@ -40,7 +40,10 @@ import type { ApprovalSpec, ConsentDeliveryOutcome, ElicitFormRequest, ElicitOut
 // byte-identical repeat rode the S1 retry memo, 'standing-session' when an
 // identical call rode the S3 standing grant the user ticked. The dispatch
 // layer attaches the carrier to the handler's result so the response names
-// what authorized it; an envelope
+// what authorized it. The pass ALSO carries the APPROVED BINDING (the
+// spec's normalizeArgs value for this call, the resolved snapshot a
+// credential-consuming handler must execute — never a post-consent re-read
+// of its backing stores; PR-3b's TOCTOU finding); an envelope
 // object is returned to the caller INSTEAD of the handler's value.
 // Approval-shaped refusals are results, not throws, so callTool's caller
 // (and the trace seam) see the same JSON shapes the pack handler returns
@@ -744,6 +747,13 @@ export async function runApprovalGate(
         pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'once' },
         binding: value,
       };
+      // consuming handler executes the approved snapshot, never a post-
+      // consent re-read (interrogate round 1, finding 2 — the shown account
+      // is the executed account).
+      return {
+        pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'once' },
+        binding: value,
+      };
     };
 
     // S3 standing consent: a grant the user ticked covers identical later
@@ -952,6 +962,17 @@ export async function runApprovalGate(
     if (stored.secretsSubstitutable !== true) {
       throw new Error(
         'Secret values are pinned to the approved confirmation: get a fresh confirmation for the final values and retry with it.',
+        'Provided args do not match the approved call. Use the exact arguments the approval was shown — the plan result for plan-faced tools, the confirmation envelope for every other roster tool. ' +
+          'If the approval shows <redacted> for passwords or secrets, replace <redacted> with the actual values.',
+      );
+    }
+    // Views equal means ONLY secret values differ. The approved call carried
+    // real (non-placeholder) secrets → they are pinned: a different real
+    // secret rejects. A placeholder-bearing approval (secretsSubstitutable)
+    // keeps the documented substitution flow.
+    if (stored.secretsSubstitutable !== true) {
+      throw new Error(
+        'Secret values are pinned to the approved call: re-run the call with the final values and confirm again (huaweicloud_plan_cli_command first, for the hcloud pair).',
       );
     }
   }
@@ -961,6 +982,7 @@ export async function runApprovalGate(
   // recomputed resolution, which the hash comparison just proved equal to
   // the minted one, so the handler executes exactly what was approved —
   // never a post-consent re-read (PR-3b's TOCTOU finding).
+  // never a post-consent re-read (interrogate round 1, finding 2).
   return { pass: {}, binding: value };
 }
 

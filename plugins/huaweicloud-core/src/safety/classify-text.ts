@@ -858,6 +858,25 @@ export function classifyTextCommand(command: unknown, options: ClassifyOptions =
     };
   }
 
+  // The account-switch CLI verbs (interrogate round 1, finding 1): `auth
+  // init`/`auth sync` write S1, the OBS config, and the KooCLI profile —
+  // the same account switch the MCP tools gate behind a human present
+  // (PR-3b). The hook blocks raw `hcloud configure set`, but the devkit's
+  // own wrapper was an open bypass: an agent that shells out to
+  // `npx huaweicloud-devkit auth init` switches every downstream approved
+  // write's account with no confirmation at all. Same anchoring doctrine
+  // as approve/pin: the patterns require a devkit binary spelling, so an
+  // hcloud operation or a plain file named auth-init never trips, and the
+  // read-only `auth status` stays allowed for the agent.
+  if (shadowCandidates.some((candidate) => matchesAny(candidate, policy.blockedAccountSwitchCliPatterns))) {
+    return {
+      decision: 'deny',
+      risk: 'approval',
+      reason:
+        "Running the account-switch CLI from the agent Bash face is blocked: switching the Huawei Cloud account is approval-gated, and the devkit's own confirmation must come from the user's own interactive terminal. Ask the user to run the auth init / auth sync command themselves, or use the gated MCP tools (huaweicloud_auth_init / huaweicloud_auth_switch), which confirm the target account with the user before switching.",
+    };
+  }
+
   // Order-independent reveal pair: `echo secret get <ref> --stdout | xargs
   // npx huaweicloud-devkit` reorders the argv through xargs while every word
   // is literal in the text — the patterns above assume bin-before-

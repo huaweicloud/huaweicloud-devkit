@@ -13,13 +13,13 @@ import {
 import { fingerprint } from '../../auth/reconcile.ts';
 import {
   persistCredentials,
-  readImportFile,
   clearImportFile,
   pendingConfirms,
   consumedConfirms,
   refreshUserHashAfterAuthChange,
 } from '../../lib/credentials.ts';
 import { resolveSecretValue } from '../../lib/secret-vault/store.ts';
+import { isApprovedSwitchSnapshot, switchSnapshot, type ApprovedSwitchSnapshot } from './approval.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 
@@ -57,7 +57,7 @@ async function handleAuthInit(args: ToolArgs = {}, _opts: CallToolOptions = {}) 
   return { status: 'ok', message: 'Runtime credentials set for this MCP session.' };
 }
 
-async function handleAuthSwitch(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
+async function handleAuthSwitch(args: ToolArgs = {}, opts: CallToolOptions = {}) {
   const action = args.action || 'temporary';
   if (action === 'clear') {
     clearRuntimeCredentials();
@@ -65,38 +65,24 @@ async function handleAuthSwitch(args: ToolArgs = {}, _opts: CallToolOptions = {}
     return { status: 'cleared', message: 'Runtime credentials cleared. Fallback to env/file/S1.' };
   }
 
-  let ak = args.ak || '';
-  let sk = args.sk || '';
-  let securityToken = args.securityToken || '';
-  let region = args.region || '';
   const sourceChannel = args.mode || 'memory';
-  let importedFromFile = false;
 
-  if (sourceChannel === 'import' && (!ak || !sk)) {
-    const imported = readImportFile();
-    if (imported) {
-      ({ ak, sk, securityToken, region } = imported);
-      importedFromFile = true;
-    }
-  }
-  if (sourceChannel === 'mcp-config' && (!ak || !sk)) {
-    const cc = readCodeArtsCredentials();
-    if (cc) {
-      ak = cc.ak;
-      sk = cc.sk;
-      securityToken = cc.securityToken || '';
-      region = cc.region || region;
-    }
-  }
-
-  // Incoming values may be secret:// refs (mode=memory with refs, or an
-  // import file carrying them). Resolve before any comparison or fan-out:
-  // the conflict check and displayed fingerprints must compare plaintext,
-  // and persistCredentials' mirrors must never see a literal ref string.
-  // An unresolvable ref throws VaultError with its own remediation.
-  ak = resolveSecretValue(ak) ?? ak;
-  sk = resolveSecretValue(sk) ?? sk;
-  securityToken = resolveSecretValue(securityToken) ?? securityToken;
+  // The gate's approved snapshot (interrogate round 1, finding 2): the
+  // resolved credential substance from BEFORE the confirmation surface was
+  // shown, threaded through dispatch when the call passed the gate.
+  // Executing THIS record — never a post-consent re-read of the import
+  // file or the CodeArts injection — is what makes the shown account the
+  // executed account. Without a matching snapshot (a direct handler call,
+  // no dispatch gate in front), the same resolution runs inline through
+  // the spec's own snapshot function — one precedence, one seam.
+  const approved = isApprovedSwitchSnapshot(opts.approvedBinding)
+    ? opts.approvedBinding.mode === sourceChannel && opts.approvedBinding.action === action
+      ? opts.approvedBinding
+      : null
+    : null;
+  const resolved: ApprovedSwitchSnapshot = approved ?? switchSnapshot(args);
+  const { ak, sk, securityToken, region } = resolved;
+  const importedFromFile = resolved.fromImport;
 
   if (!ak || !sk) {
     throw new Error('ak and sk are required (or provide creds-import.json for mode=import).');

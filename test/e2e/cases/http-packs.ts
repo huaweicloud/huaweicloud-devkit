@@ -36,8 +36,19 @@ export const authCases: E2eCase[] = [
   {
     id: 'auth-switch-persist-writes-stores',
     pack: 'auth',
+    // The token posture is pinned (E2eCase.approvalMode) and the
+    // autoConfirmApprovals watcher plays the terminal half: the auth pair
+    // is approval-gated (PR-3b), so under the installer's natural ask
+    // posture a headless run could never execute — the gate's form has no
+    // interactive approver under `opencode run`. In token mode the first
+    // auth_switch call mints (USER_CONFIRMATION_REQUIRED + approvalToken),
+    // the watcher confirms the token through the product's own
+    // confirmApprovalToken, and the prompted token-retry persists — the
+    // same simulated-user doctrine as core-approval-positive.
+    approvalMode: 'token',
+    autoConfirmApprovals: true,
     prompt:
-      '把我的华为云凭证持久化到本地:AK 的字面值就是字符串 E2E_M3_AK,SK 的字面值就是字符串 E2E_M3_SK(直接把这两串字符作为凭证值传给工具参数,它们不是环境变量名,不要去查找 .env 或环境),区域 cn-north-4。用 huaweicloud_auth_switch 的 action=persist 完成,然后把持久化结果(S1 文件、OBS 配置、KooCLI profile 同步状态)告诉我。',
+      '我批准把我的华为云凭证持久化到本地(明确授权本次账号切换):AK 的字面值就是字符串 E2E_M3_AK,SK 的字面值就是字符串 E2E_M3_SK(直接把这两串字符作为凭证值传给工具参数,它们不是环境变量名,不要去查找 .env 或环境),区域 cn-north-4。流程:先用 huaweicloud_auth_switch 发起 action=persist;第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken,等用户在自己的终端确认后(确认已由测试完成),携带同一个 approvalToken 并把 approvedByUser 设为 true 重试同样的调用完成持久化,然后把持久化结果(S1 文件、OBS 配置、KooCLI profile 同步状态)告诉我。',
     fixtures: {
       home: {
         '.hcloud/config.json': KOOLCLI_SEED,

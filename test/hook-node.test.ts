@@ -531,6 +531,50 @@ test('node hook denies the pin enrollment verb on the agent Bash face (first use
   assert.equal(allowed.stdout.trim(), '', 'an hcloud operation named Pin must stay allowed');
 });
 
+test('node hook denies the account-switch CLI verbs on the agent Bash face (interrogate round 1, finding 1)', () => {
+  // The devkit's own `auth init` / `auth sync` write S1, the OBS config,
+  // and the KooCLI profile — the same account switch the MCP tools gate
+  // behind a human present (PR-3b). The hook blocks raw `hcloud configure
+  // set`, but the devkit wrapper was an open bypass: an agent shelling out
+  // to it switches every downstream approved write's account with no
+  // confirmation. The read-only `auth status` stays allowed, and the
+  // patterns anchor on a devkit binary spelling, so plain text and hcloud
+  // operations never trip.
+  const denied = [
+    'npx huaweicloud-devkit auth init',
+    'npx huaweicloud-devkit auth sync',
+    'npx huaweicloud-devkit auth setup',
+    'npx huaweicloud-devkit auth refresh',
+    'npx huaweicloud-devkit auth reconcile',
+    'npx huaweicloud-devkit@2.0.0 auth init',
+    'node dist/setup-cli.js auth init',
+    'node bin/setup.cjs auth init',
+    'node bin/setup.cjs auth sync',
+    'npm exec huaweicloud-devkit -- auth init',
+  ];
+  for (const command of denied) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
+    assert.match(
+      output.hookSpecificOutput.permissionDecisionReason,
+      /account-switch|account switch/i,
+      `${command}: the deny names the account-switch bypass`,
+    );
+  }
+  const allowed = [
+    'npx huaweicloud-devkit auth status',
+    'npx huaweicloud-devkit auth',
+    'echo auth init is printed in a message',
+  ];
+  for (const command of allowed) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+    assert.equal(result.stdout.trim(), '', `${command}: the read face and non-CLI text stay allowed`);
+  }
+});
+
 test('node hook denies Windows-script-wrapped hcloud writes (#731/#760)', () => {
   // Whichever module the wrapper loads (compiled dist/ when present —
   // stale dist fails this test on purpose — or the src/ fallback in a raw

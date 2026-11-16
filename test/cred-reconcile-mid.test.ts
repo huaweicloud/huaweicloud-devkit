@@ -101,18 +101,22 @@ test('16 restoreGlobalCredentialsBackup restores the previous S1', () => {
 
 test('17 persist with securityToken is rejected (R3) and S1 is not written (mode=memory)', async () => {
   await withTempHome(async () => {
-    const out = (await gatedAuthSwitchCall({
-      vendorConfirmed: 'test: vendor established by the harness',
-      mode: 'memory',
-      action: 'persist',
-      ak: 'E2E17_AK',
-      sk: 'E2E17_SK',
-      securityToken: 'E2E17_TOKEN',
-      region: 'cn-north-4',
-    })) as AuthSwitchResult;
-    assert.equal(out.status, 'error');
-    assert.equal(out.scope, 'rejected');
-    assert.match(out.error, /R3/);
+    // PR-3b NoDoomedToken: the gate refuses the STS-persist shape BEFORE
+    // any consent (the human is never asked to approve an unexecutable
+    // switch), so the R3 refusal is now a gate throw, not a handler answer.
+    await assert.rejects(
+      () =>
+        gatedAuthSwitchCall({
+          vendorConfirmed: 'test: vendor established by the harness',
+          mode: 'memory',
+          action: 'persist',
+          ak: 'E2E17_AK',
+          sk: 'E2E17_SK',
+          securityToken: 'E2E17_TOKEN',
+          region: 'cn-north-4',
+        }),
+      /R3/,
+    );
     assert.equal(existsSync(globalCredentialsPath()), false, 'S1 must not be written for STS credentials');
   });
 });
@@ -139,36 +143,39 @@ test('18 persist via mcp-config with platform STS token is rejected (R3) and S1 
     );
     process.env.CODEARTS_PROJECT_DIR = mcpDir;
 
-    const out = (await gatedAuthSwitchCall({
-      vendorConfirmed: 'test: vendor established by the harness',
-      mode: 'mcp-config',
-      action: 'persist',
-    })) as AuthSwitchResult;
-    assert.equal(out.status, 'error');
-    assert.equal(out.scope, 'rejected');
-    assert.match(out.error, /R3/);
+    await assert.rejects(
+      () =>
+        gatedAuthSwitchCall({
+          vendorConfirmed: 'test: vendor established by the harness',
+          mode: 'mcp-config',
+          action: 'persist',
+        }),
+      /R3/,
+    );
     assert.equal(existsSync(globalCredentialsPath()), false, 'S1 must not be written for platform STS token');
-
-    const stored = readGlobalCredentials();
-    assert.ok(!stored?.securityToken, 'no token may be at rest in S1');
   });
 });
 
-test('19 malformed creds-import.json is still wiped even though the import is rejected', async () => {
+test('19 malformed creds-import.json is refused before consent and survives (the gate peeks without wiping)', async () => {
   await withTempHome(async (dir) => {
     const importPath = join(dir, '.config', 'huaweicloud', 'creds-import.json');
     mkdirSync(dirname(importPath), { recursive: true });
     writeFileSync(importPath, '{not-valid-json', 'utf8');
 
+    // PR-3b: the gate resolves the import channel BEFORE any consent, and
+    // a read with a wipe side effect would mutate the user's state on the
+    // refusal path. The gate peeks (the malformed file stays,
+    // operator-visible) and refuses the mint for the unresolvable account;
+    // only the EXECUTION wipes a consumed file.
     await assert.rejects(
       gatedAuthSwitchCall({
         vendorConfirmed: 'test: vendor established by the harness',
         mode: 'import',
         action: 'temporary',
       }),
-      /ak and sk are required/,
+      /no resolvable target account/,
     );
-    assert.equal(existsSync(importPath), false, 'malformed import file must still be wiped');
+    assert.equal(existsSync(importPath), true, 'a malformed import file survives the gate\u2019s peek');
   });
 });
 

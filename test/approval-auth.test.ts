@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -11,6 +11,7 @@ import {
   hasRuntimeCredentials,
   clearRuntimeCredentials,
   readGlobalCredentials,
+  resolveCredentialsWithRuntime,
 } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
 import { fingerprint } from '../plugins/huaweicloud-core/src/auth/reconcile.ts';
 import { readConsentEvents } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
@@ -71,6 +72,20 @@ function approvalsFile(home: string): string {
   return join(home, '.config', 'huaweicloud', 'approvals.json');
 }
 
+// Seed (and, for the swap probes, rewrite) the import channel under the
+// isolated home — the shared preamble of every import-mode case below.
+function importChannel(home: string): { write: (ak: string, sk: string, region?: string) => void; path: string } {
+  const dir = join(home, '.config', 'huaweicloud');
+  mkdirSync(dir, { recursive: true });
+  const file = join(dir, 'creds-import.json');
+  return {
+    path: file,
+    write: (ak, sk, region) => {
+      writeFileSync(file, JSON.stringify(region ? { ak, sk, region } : { ak, sk }));
+    },
+  };
+}
+
 function authInit(overrides: Record<string, unknown> = {}, opts: Record<string, unknown> = {}) {
   return callTool('huaweicloud_auth_init', { vendorConfirmed: VENDOR, ak: AK, sk: SK, ...overrides }, opts);
 }
@@ -86,10 +101,13 @@ function authSwitch(overrides: Record<string, unknown> = {}, opts: Record<string
 // ── The roster and the registrations ────────────────────────────────────────
 
 test('the auth pair joins the roster as always-gated gate-source registrations, and no other auth tool does', () => {
-  assert.deepEqual(
-    [...APPROVAL_TOOLS],
-    ['huaweicloud_run_approved_command', 'huaweicloud_auth_init', 'huaweicloud_auth_switch'],
-  );
+  // Membership and spec shape, never a roster COUNT or an exact roster
+  // list (interrogate round 1, finding 7): the sibling registrations land
+  // serially after this PR, and their rebases must only append, never
+  // conflict here.
+  assert.ok(APPROVAL_TOOLS.includes('huaweicloud_auth_init'), 'auth_init joins the roster');
+  assert.ok(APPROVAL_TOOLS.includes('huaweicloud_auth_switch'), 'auth_switch joins the roster');
+  assert.ok(APPROVAL_TOOLS.includes('huaweicloud_run_approved_command'), 'the run face stays on the roster');
   for (const name of ['huaweicloud_auth_init', 'huaweicloud_auth_switch'] as const) {
     const spec = APPROVAL_SPECS[name];
     assert.ok(spec, `${name} has a spec in the registry merge`);
@@ -97,6 +115,11 @@ test('the auth pair joins the roster as always-gated gate-source registrations, 
     assert.equal(spec.tokenSource, 'gate', `${name} mints at the gate, not a plan face`);
     assert.equal(spec.commandAnchor, undefined, `${name} executes no command line, so it declares no anchor`);
     assert.equal(spec.classify, undefined, `${name} is not classified: the human is required on every call`);
+    assert.equal(
+      typeof spec.assertArgsExecutable,
+      'function',
+      `${name} refuses the no-account and STS-persist shapes before any mint (NoDoomedToken)`,
+    );
   }
   for (const unregistered of [
     'huaweicloud_auth_sync',
@@ -183,7 +206,7 @@ test('token mode: the same flow gates auth_switch, and the account swap on a con
           ak: 'AKOTHERACCOUNT',
           sk: 'sk-other-account-value-32chars!!',
         }),
-      /Provided args do not match the approved plan|Secret values are pinned/,
+      /Provided args do not match the approved call|Secret values are pinned/,
       'a different account on the same approval never switches',
     );
     assert.equal(readGlobalCredentials()?.ak, undefined, 'the refused swap wrote nothing');
@@ -313,13 +336,8 @@ test('ask mode: a caller-stuffed command field never becomes the confirmation li
 
 test('ask mode: an import-mode switch binds the import file\u2019s account — a swapped file re-asks instead of executing on the old approval', async () => {
   await withTempAuthHome(async (home) => {
-    const importDir = join(home, '.config', 'huaweicloud');
-    mkdirSync(importDir, { recursive: true });
-    const importFile = join(importDir, 'creds-import.json');
-    const writeImport = (ak: string, sk: string): void => {
-      writeFileSync(importFile, JSON.stringify({ ak, sk, region: 'cn-north-4' }));
-    };
-    writeImport('AKIMPORTONE', 'sk-import-one-value-32-chars!!!');
+    const channel = importChannel(home);
+    channel.write('AKIMPORTONE', 'sk-import-one-value-32-chars!!!', 'cn-north-4');
     const sessionId = `import-auth-${Date.now()}`;
     await withApprovalMode('ask', async () => {
       const first = (await authSwitch(
@@ -330,7 +348,7 @@ test('ask mode: an import-mode switch binds the import file\u2019s account — a
         first.userConfirmation.command.includes(fingerprint('AKIMPORTONE', 'sk-import-one-value-32-chars!!!')),
         'the envelope names the import file\u2019s account, so the human sees which account wins',
       );
-      writeImport('AKIMPORTTWO', 'sk-import-two-value-32-chars!!!');
+      channel.write('AKIMPORTTWO', 'sk-import-two-value-32-chars!!!', 'cn-north-4');
       const swapped = (await authSwitch(
         { mode: 'import', action: 'temporary', ak: undefined, sk: undefined, approvedByUser: true },
         { sessionId },
@@ -341,6 +359,179 @@ test('ask mode: an import-mode switch binds the import file\u2019s account — a
         'the fresh envelope names the new account',
       );
     });
+  });
+});
+
+// ── The shown account is the executed account (round 1, finding 2) ─────────
+
+test('TOCTOU: a file rewritten inside the form window never executes — the shown account switches', async () => {
+  // The seat's exact repro: the form shows account A (the import file's
+  // fingerprint), the attacker rewrites creds-import.json to account B
+  // while the human reads the form, the accept executes — and what lands
+  // is A, never B. The gate threads the PRE-FORM resolved snapshot into
+  // the handler, so the handler never re-reads the file after consent.
+  await withTempAuthHome(async (home) => {
+    const channel = importChannel(home);
+    const accountA = { ak: 'AKATTACKERA', sk: 'sk-attacker-a-value-32-chars!!' };
+    const accountB = { ak: 'AKATTACKERB', sk: 'sk-attacker-b-value-32-chars!!' };
+    const fpA = fingerprint(accountA.ak, accountA.sk);
+    const fpB = fingerprint(accountB.ak, accountB.sk);
+    channel.write(accountA.ak, accountA.sk, 'cn-north-4');
+
+    const requests: Array<{ message: string }> = [];
+    const seam: ElicitationSeam = {
+      capable: true,
+      prompt: async (request) => {
+        // The rewrite lands INSIDE the prompt window — after the form was
+        // raised with A on it, before the human answers.
+        assert.ok(request.message.includes(fpA), 'the form shows account A');
+        channel.write(accountB.ak, accountB.sk, 'cn-north-4');
+        requests.push(request);
+        return { decision: 'accept', content: { confirm: true } };
+      },
+    };
+    await withApprovalMode('ask', async () => {
+      const result = (await authSwitch(
+        { mode: 'import', action: 'temporary', ak: undefined, sk: undefined },
+        { elicitation: seam },
+      )) as {
+        status: string;
+      };
+      assert.equal(result.status, 'ok');
+      const runtime = resolveCredentialsWithRuntime({}) as { ak?: string; sk?: string };
+      assert.equal(runtime.ak, accountA.ak, 'the shown account A executed, never the rewritten B');
+      assert.equal(runtime.sk, accountA.sk);
+      const events = readConsentEvents();
+      assert.ok((events[0]!.command ?? '').includes(fpA), 'the consent row pins the account the human read');
+      assert.ok(!JSON.stringify(events[0]).includes(fpB), 'the rewritten account appears nowhere');
+      assert.ok(requests.length === 1);
+    });
+  });
+});
+
+test('TOCTOU: the mcp-config channel has the same fix — an injected-config rewrite inside the form window executes the shown account', async () => {
+  await withTempAuthHome(async (home) => {
+    const codeartsDir = join(home, 'codearts', '.codeartsdoer', 'mcp');
+    mkdirSync(codeartsDir, { recursive: true });
+    const settingsFile = join(codeartsDir, 'mcp_settings.json');
+    const writeSettings = (ak: string, sk: string): void => {
+      writeFileSync(
+        settingsFile,
+        JSON.stringify({
+          mcpServers: {
+            'huaweicloud-devkit': { env: { HW_ACCESS_KEY: ak, HW_SECRET_KEY: sk, HW_REGION: 'cn-north-4' } },
+          },
+        }),
+      );
+    };
+    const accountA = { ak: 'MCPSHOWNAK', sk: 'sk-mcp-shown-value-32-chars!!' };
+    const accountB = { ak: 'MCPHIDDENK', sk: 'sk-mcp-hidden-value-32-cha!' };
+    const fpA = fingerprint(accountA.ak, accountA.sk);
+    writeSettings(accountA.ak, accountA.sk);
+    const previousCodearts = process.env.CODEARTS_PROJECT_DIR;
+    process.env.CODEARTS_PROJECT_DIR = join(home, 'codearts');
+
+    const seam: ElicitationSeam = {
+      capable: true,
+      prompt: async (request) => {
+        assert.ok(request.message.includes(fpA), 'the form shows the injected account A');
+        writeSettings(accountB.ak, accountB.sk);
+        return { decision: 'accept', content: { confirm: true } };
+      },
+    };
+    try {
+      await withApprovalMode('ask', async () => {
+        await authSwitch(
+          { mode: 'mcp-config', action: 'temporary', ak: undefined, sk: undefined },
+          { elicitation: seam },
+        );
+        const runtime = resolveCredentialsWithRuntime({}) as { ak?: string };
+        assert.equal(runtime.ak, accountA.ak, 'the shown account executed, never the rewritten one');
+      });
+    } finally {
+      if (previousCodearts === undefined) delete process.env.CODEARTS_PROJECT_DIR;
+      else process.env.CODEARTS_PROJECT_DIR = previousCodearts;
+    }
+  });
+});
+
+test('finding 3: the resolved region and STS ride the binding — a same-fingerprint region swap re-asks instead of executing', async () => {
+  // Same account (fingerprint identical), different region: the binding
+  // folds the resolved region, so the shown approval is invalidated and
+  // the retry gets a fresh envelope naming the new region — never a
+  // region switch under the old approval.
+  await withTempAuthHome(async (home) => {
+    const channel = importChannel(home);
+    channel.write('AKREGIONBOUND', 'sk-region-bound-value-32!!', 'cn-north-4');
+    const sessionId = `region-auth-${Date.now()}`;
+    await withApprovalMode('ask', async () => {
+      const first = (await authSwitch(
+        { mode: 'import', action: 'temporary', ak: undefined, sk: undefined },
+        { sessionId },
+      )) as { userConfirmation: { command: string } };
+      assert.ok(
+        first.userConfirmation.command.includes('cn-north-4'),
+        'the envelope names the resolved region, so the human sees where the switch lands',
+      );
+      channel.write('AKREGIONBOUND', 'sk-region-bound-value-32!!', 'ap-southeast-1');
+      const swapped = (await authSwitch(
+        { mode: 'import', action: 'temporary', ak: undefined, sk: undefined, approvedByUser: true },
+        { sessionId },
+      )) as { code: string; userConfirmation: { command: string } };
+      assert.equal(swapped.code, 'ASK_CONFIRMATION_REQUIRED', 'a region swap invalidates the shown approval');
+      assert.ok(swapped.userConfirmation.command.includes('ap-southeast-1'), 'the fresh envelope names the new region');
+      assert.equal(hasRuntimeCredentials(), false, 'nothing executed on the stale approval');
+    });
+  });
+});
+
+// ── NoDoomedToken: no mint for shapes the execution would refuse (round 1, finding 4) ──
+
+test('no doomed mints: an ak-less auth_init refuses before any mint and nothing is approved', async () => {
+  await withTempAuthHome(async (home) => {
+    await assert.rejects(
+      () => authInit({ ak: undefined, sk: undefined }),
+      /ak and sk are required to set runtime credentials/,
+    );
+    assert.equal(existsSync(approvalsFile(home)), false, 'the refused call mints nothing');
+    assert.equal(readConsentEvents().length, 0, 'no consent row exists for a refused shape');
+    assert.equal(hasRuntimeCredentials(), false);
+  });
+});
+
+test('no doomed mints: a switch with no resolvable account refuses before any mint and the malformed import file survives', async () => {
+  await withTempAuthHome(async (home) => {
+    const channel = importChannel(home);
+    writeFileSync(channel.path, '{not-valid-json', 'utf8');
+    await assert.rejects(
+      () => authSwitch({ mode: 'import', action: 'temporary', ak: undefined, sk: undefined }),
+      /no resolvable target account/,
+    );
+    assert.equal(existsSync(approvalsFile(home)), false, 'the unresolvable switch mints nothing');
+    assert.equal(
+      existsSync(channel.path),
+      true,
+      'the gate peeks without wiping: a refused call never mutates the file',
+    );
+    assert.equal(hasRuntimeCredentials(), false);
+  });
+});
+
+test('no doomed mints: an STS persist refuses before any consent (R3), in both channels', async () => {
+  await withTempAuthHome(async (home) => {
+    await assert.rejects(
+      () => authSwitch({ action: 'persist', securityToken: 'STS-DOOMED-TOKEN', region: 'cn-north-4' }),
+      /R3/,
+    );
+    assert.equal(existsSync(approvalsFile(home)), false, 'the unexecutable persist mints nothing');
+    const channel = importChannel(home);
+    channel.write('AKDOOMEDSTS', 'sk-doomed-sts-value-32-chars!', 'cn-north-4');
+    // The STS token rides the import file the way the CLI accepts it.
+    const stored = JSON.parse(readFileSync(channel.path, 'utf8')) as Record<string, unknown>;
+    stored.securityToken = 'STS-DOOMED-2';
+    writeFileSync(channel.path, JSON.stringify(stored));
+    await assert.rejects(() => authSwitch({ mode: 'import', action: 'persist', ak: undefined, sk: undefined }), /R3/);
+    assert.equal(readConsentEvents().length, 0, 'the human was never asked to approve an unexecutable switch');
   });
 });
 

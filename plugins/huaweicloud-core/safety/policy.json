@@ -53,6 +53,11 @@
     "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+pin\\b",
     "setup\\.cjs(\\s+--)?\\s+pin\\b"
   ],
+  "blockedAccountSwitchCliPatterns": [
+    "huaweicloud-devkit(@[\\w.+-]+)?(\\.(js|cjs|mjs|exe|ts))?(\\s+--)?\\s+auth\\s+(init|setup|sync|refresh|reconcile)\\b",
+    "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+auth\\s+(init|setup|sync|refresh|reconcile)\\b",
+    "setup\\.cjs(\\s+--)?\\s+auth\\s+(init|setup|sync|refresh|reconcile)\\b"
+  ],
   "writeOperationPrefixes": [
     "Create",
     "BatchCreate",

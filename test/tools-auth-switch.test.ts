@@ -139,7 +139,7 @@ test('auth_switch temporary(mode=import) clears import file on success', async (
   });
 });
 
-test('auth_switch persist(mode=import) with STS token is rejected and clears import file', async () => {
+test('auth_switch persist(mode=import) with STS token is refused before consent (R3) and the import file survives', async () => {
   const home = fixtureDir('auth-import-sts-');
   const prevHome = process.env.HUAWEICLOUD_HOME;
   process.env.HUAWEICLOUD_HOME = home;
@@ -153,18 +153,23 @@ test('auth_switch persist(mode=import) with STS token is rejected and clears imp
       'utf8',
     );
 
-    const out = (await gatedAuthSwitchCall({
-      vendorConfirmed: 'test: vendor established by the harness',
-      mode: 'import',
-      action: 'persist',
-    })) as AuthSwitchResult;
-
-    assert.equal(out.status, 'error');
-    assert.equal(out.scope, 'rejected');
+    // PR-3b NoDoomedToken: the gate refuses the STS-persist shape before
+    // any consent, so the R3 answer is a gate throw and the peeked file
+    // stays — the same credentials remain replayable for action=temporary,
+    // where the STS token is legitimate.
+    await assert.rejects(
+      () =>
+        gatedAuthSwitchCall({
+          vendorConfirmed: 'test: vendor established by the harness',
+          mode: 'import',
+          action: 'persist',
+        }),
+      /R3/,
+    );
     assert.equal(
       existsSync(importFile),
-      false,
-      'unfixable STS import must be cleared — no replay value, and no plaintext token residual',
+      true,
+      'the gate peeks without wiping: a refused call leaves the import file for the temporary retry',
     );
   } finally {
     if (prevHome === undefined) delete process.env.HUAWEICLOUD_HOME;
