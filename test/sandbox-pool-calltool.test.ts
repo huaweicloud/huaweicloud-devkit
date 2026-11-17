@@ -522,6 +522,30 @@ test('callTool shutdown: session_id-only closes the returned workspace session',
   }
 });
 
+test('callTool shutdown: an empty devStageId echo falls through to the workspace chain (dev || semantics)', async () => {
+  const previousWs = currentWs;
+  currentWs = 'current-ws';
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      // 敌意/异常服务端回显空串：|| 链穿透到当前 workspace（interrogate
+      // port-pr6 F4 的回归钉——?? 链会让 closeSession 收到 '' 白跑一趟）
+      devStageId: '',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ session_id: 'sess-1' }, 'pool-shutdown-empty')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'current-ws', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
 test('callTool shutdown: workspace_id-only closes that workspace session', async () => {
   const previousWs = currentWs;
   currentWs = null;

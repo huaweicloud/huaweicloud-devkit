@@ -332,7 +332,10 @@ export const credentialsSchema = z.looseObject({
 export const shutdownSchema = z.looseObject({
   session_id: z.string().optional().describe('Session ID from huaweicloud_sandbox_connect (optional)'),
   dev_stage_id: z.string().optional().describe('DevStation environment ID (alternative to session_id)'),
-  workspace_id: workspaceId,
+  workspace_id: z
+    .string()
+    .optional()
+    .describe('Workspace ID; defaults to the current workspace (an alternative to session_id/dev_stage_id)'),
   username,
   approvalToken: approvalTokenArg,
   approvedByUser: approvedByUserArg,

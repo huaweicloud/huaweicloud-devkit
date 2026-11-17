@@ -221,9 +221,11 @@ export async function handleShutdown(args: ToolArgs = {}, _opts: CallToolOptions
   try {
     const shutdown = await hdkitShutdown(sessionId, devStageId);
     try {
-      // 3bfc1f53 终态：仅 session_id 时以服务端回传的 devStageId 关终端会话
-      //（id 检查已保证链上有真值；'' 为类型完备的防御尾）
-      const wsForClose = asString(shutdown.devStageId) ?? asString(workspaceId) ?? asString(sessionId) ?? '';
+      // 3bfc1f53 终态：仅 session_id 时以服务端回传的 devStageId 关终端会话。
+      // 与 dev 同形的 || 穿透（dev 3bfc1f53）：空串回显不截停链——asString 只
+      // 收窄类型，真值判定仍按 ||（id 检查已保证链上有真值，'' 尾仅为类型
+      // 完备）。
+      const wsForClose = asString(shutdown.devStageId) || asString(workspaceId) || asString(sessionId) || '';
       await closeSession(wsForClose, args.username || 'root');
     } catch {
       // best-effort: 关机已受理，终端会话随沙箱停止一并消亡

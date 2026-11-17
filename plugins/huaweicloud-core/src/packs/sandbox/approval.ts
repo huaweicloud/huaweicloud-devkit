@@ -170,7 +170,7 @@ function execSpec(toolShortName: 'exec_with_session' | 'exec_one_shot'): Approva
     // the args). The anchor exists so the no-anchor refusal shape (a
     // stuffed command on a tool that declares no displayable line) never
     // kills the exec faces after the serial landing (the anchor-collision
-    // decision): the exec calls are anchored, the six lifecycle faces are
+    // decision): the exec calls are anchored, the seven lifecycle faces are
     // not and refuse a stuffed command.
     commandAnchor: (bindingValue) => {
       const command = (bindingValue as Record<string, unknown>).command;
