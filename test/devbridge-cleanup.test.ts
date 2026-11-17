@@ -324,6 +324,10 @@ test('cleanup: state script refreshes the CLI token (40100) before listing', () 
   // custom-named tunnels the remediation's own flow creates.
   assert.match(script, /echo "DB_CLEANUP_PORTS_BEGIN"/);
   assert.match(script, /TUNNEL_PORTS_\$T=\$\(devbridge port list "\$T"/);
+  // Both noise postures stripped: the OSC 133 markers AND a CR tail — a
+  // single-field port row under CRLF leaves $1 as "8787\r" and the digit
+  // match silently empties the whole attribution (the A-r4-F1 shape).
+  assert.match(script, /gsub\(\/\\033\\\]133;C\\007\/, ""\); gsub\(\/\\r\/, ""\)/);
   assert.match(script, /echo "DB_CLEANUP_PORTS_END"/);
   // The candidate filter carries the OSC 133 strip (#946): integration-enabled
   // shells wrap every line, and a raw extraction hands the CLI glued IDs it

@@ -339,10 +339,14 @@ export function buildDevbridgeCleanupStateScript(): string {
     // auto-name shape `tunnel-<port>-` and miss custom-named tunnels (the
     // remediation's own `devbridge create <name>` flow). Query each tunnel's
     // real port list — the authoritative attribution, with the name-shape and
-    // keepalive-URL reads kept as fallbacks when the query is missing.
+    // keepalive-URL reads kept as fallbacks when the query is missing. The
+    // gsub pair strips BOTH noise postures: the OSC 133 markers (#946) and a
+    // CR tail — a single-field port row under CRLF leaves $1 as "8787\r",
+    // which fails the digit match and silently empties every TUNNEL_PORTS_
+    // line (the attribution collapse the wave's own noise doctrine names).
     `echo "DB_CLEANUP_PORTS_BEGIN"`,
     `for T in $(devbridge list 2>&1 | awk '${DEVBRIDGE_OSC_FILTER}'); do`,
-    `  echo "TUNNEL_PORTS_$T=$(devbridge port list "$T" 2>/dev/null | awk -v t="$T" '{gsub(/\\033\\]133;C\\007/, ""); if ($1 ~ /^[0-9]+$/) printf "%s,", $1}')";`,
+    `  echo "TUNNEL_PORTS_$T=$(devbridge port list "$T" 2>/dev/null | awk '{gsub(/\\033\\]133;C\\007/, ""); gsub(/\\r/, ""); if ($1 ~ /^[0-9]+$/) printf "%s,", $1}')";`,
     `done`,
     `echo "DB_CLEANUP_PORTS_END"`,
     `echo "DB_CLEANUP_HOSTS_BEGIN"`,
