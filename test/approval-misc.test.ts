@@ -9,6 +9,7 @@ import {
   runApprovalGate,
   NO_SESSION_SEAM_ERROR,
   COMMAND_ARGS_MISMATCH,
+  ASK_CONFIRMATION_REQUIRED,
 } from '../plugins/huaweicloud-core/src/approval-gate.ts';
 import { confirmApprovalToken, hashArgs } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
 import { readConsentEvents } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
@@ -148,7 +149,7 @@ test('obs website set: a retry with different content under the same token refus
             approvalToken: envelope.approvalToken,
             approvedByUser: true,
           }),
-          /Provided args do not match the approved plan/,
+          /Provided args do not match the approved confirmation/,
           'a different bucket under the same token never executes',
         );
       },
@@ -393,18 +394,35 @@ test('secret_delete: token mode names the ref in the view, the confirmed retry d
   });
 });
 
-test('secret_delete in ask mode: an attested arrival executes on posture and records it; an unattested one throws fail-closed', async () => {
+test('secret_delete in ask mode on the merged tree: the unattested first call returns the envelope, the attested retry executes on posture', async () => {
   await withVaultAuthHome(async () => {
     await callTool('huaweicloud_secret_set', { ref: 'secret://mcp/attested', channel: 'value', value: 'x' });
     await withApprovalMode('ask', async () => {
-      // The commandless ask arrival keeps the trunk contract: unattested
-      // throws the teaching error (no envelope to show — the recorded
-      // commandless residual), and the attested retry executes on posture
-      // trust, honestly labeled in the ledger.
-      await assert.rejects(
-        callTool('huaweicloud_secret_delete', { ref: 'secret://mcp/attested' }),
-        /approvedByUser must be true/,
-        'the unattested commandless arrival refuses before any gate effect',
+      // The merged-contract ladder (pr3a/pr3b landed the gate-source arm
+      // into serverRunArrival): a NON-CAPABLE client's unattested first
+      // call on a gate-source tool returns the ASK_CONFIRMATION_REQUIRED
+      // envelope — the display line is the summarize view (commandless,
+      // per the round-2 fix), never the old attestation throw.
+      const envelope = (await callTool(
+        'huaweicloud_secret_delete',
+        { ref: 'secret://mcp/attested' },
+        {
+          sessionId: 'pr3c-posture',
+        },
+      )) as {
+        code: string;
+        userConfirmation: { command?: string; summary: string };
+      };
+      assert.equal(envelope.code, ASK_CONFIRMATION_REQUIRED, 'the unattested first call returns the envelope');
+      assert.equal(
+        envelope.userConfirmation.command,
+        undefined,
+        'commandless: no command line in the envelope, the summary is the display content',
+      );
+      assert.match(
+        envelope.userConfirmation.summary,
+        /delete secret secret:\/\/mcp\/attested/,
+        'the summary names the ref',
       );
       const removed = (await callTool(
         'huaweicloud_secret_delete',
@@ -414,7 +432,7 @@ test('secret_delete in ask mode: an attested arrival executes on posture and rec
         },
         { sessionId: 'pr3c-posture' },
       )) as Record<string, unknown>;
-      assert.equal(removed.removed, 1);
+      assert.equal(removed.removed, 1, 'the attested retry after the shown envelope executes on posture trust');
     });
     const rows = readConsentEvents().filter((row) => row.tool === 'huaweicloud_secret_delete');
     assert.equal(rows.length, 1);
@@ -685,7 +703,11 @@ test('a command field on a commandless spec refuses with the real summarize show
       /set website config on bucket pr3c-bucket/,
       'the refusal shows the REAL summarize view, never the fabricated command',
     );
-    assert.match(String(refusal.reason ?? ''), /takes no command field/, 'the reason names the refusal class');
+    assert.match(
+      String(refusal.reason ?? ''),
+      /declares no displayable command line/,
+      'the reason names the refusal class',
+    );
     assert.equal(existsSync(approvalsPath(home)), false, 'the display-integrity refusal mints nothing');
 
     await withApprovalMode('ask', async () => {
@@ -722,8 +744,8 @@ test('a commandless confirmation leads with the summarize view, never a blank co
   );
   assert.match(
     message,
-    /requesting your confirmation to make this change:/,
-    'the heading names the change, not a command',
+    /requesting your confirmation for this request:/,
+    'the heading names the request, not a command',
   );
   assert.match(
     message,

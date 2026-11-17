@@ -112,7 +112,9 @@ function commandAnchorRefusal(spec: ApprovalSpec, value: unknown, provided: unkn
   // display field — the exec faces, which DO anchor their own command, and
   // the structured faces behave as their registrations say.
   if (spec.commandAnchor === undefined) {
-    return noAnchorRefusal('this tool declares no displayable command line, so a command field is not accepted for it.');
+    return noAnchorRefusal(
+      'this tool declares no displayable command line, so a command field is not accepted for it.',
+    );
   }
   const expected = spec.commandAnchor(value);
   if (expected.length === 0) {
