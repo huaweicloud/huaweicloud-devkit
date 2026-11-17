@@ -148,6 +148,16 @@ export function installCodex(): boolean {
     return false;
   }
 
+  // The client yield (PR-5) needs no step here: the per-tool approve blocks
+  // ship inside the plugin payload's own .mcp.json (the repo's
+  // plugins/huaweicloud-core/.mcp.json, which `codex plugin add` copies
+  // into its cache) — the file codex reads per-tool approval_mode from for
+  // a plugin-provided server (agents/codex-config.ts). The user's
+  // config.toml is never touched: a tools table under
+  // [mcp_servers.huaweicloud-devkit] would imply a config-declared server,
+  // and without a transport codex refuses to load the whole config
+  // (live-measured "invalid transport" on codex-cli 0.167.2).
+
   return true;
 }
 

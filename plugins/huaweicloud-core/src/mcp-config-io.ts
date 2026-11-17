@@ -20,6 +20,7 @@ import { applyUserDelta, extractUserDelta, mergeArgsStyle } from './mcp-config-m
 import { saveAgentDelta, takeAgentDelta } from './mcp-config-backup.ts';
 import { applyPacksToEntry } from './packs-policy.ts';
 import { copyDir, deployWord, PLUGIN_ROOT, type DeployMode } from './install-payload.ts';
+import { codexApprovalToolsBlock } from './agents/codex-config.ts';
 
 // openclaw and codex-desktop both ship a .mcp.json plus the .codex-plugin
 // manifest into their plugin dir — the codex-discoverable plugin-dir shape;
@@ -164,7 +165,22 @@ export function writeMcpServersFile(pluginDest: string, mcpPath: string, agentKe
     if (delta) finalEntry = asRecord(applyUserDelta(entry, delta, 'args'));
   }
   const packsChanged = applyPacksToEntry(finalEntry, 'env', agentKey === 'openclaw' ? 'OpenClaw' : 'Codex Desktop');
-  if (existing && !changed && !packsChanged) {
+  // The codex client yield (PR-5): the per-tool approve blocks inside the
+  // devkit-owned server entry — codex reads them from the plugin-provided
+  // server definition (the config.toml route is refused by codex's own
+  // bootstrap validation when the implied server has no transport; see
+  // agents/codex-config.ts). OpenClaw shares this writer but is not codex,
+  // so its .mcp.json stays block-free. The block is ours wholesale — the
+  // file is devkit-owned and regenerated — and a drift (an older deploy's
+  // missing or hand-stripped tools map) counts as a change so the next
+  // update heals it, same as the packs write above.
+  let toolsChanged = false;
+  if (agentKey !== 'openclaw') {
+    const wanted = codexApprovalToolsBlock();
+    toolsChanged = JSON.stringify(finalEntry.tools) !== JSON.stringify(wanted);
+    if (toolsChanged) finalEntry.tools = wanted;
+  }
+  if (existing && !changed && !packsChanged && !toolsChanged) {
     console.log(`  MCP Config unchanged: ${configPath}`);
     return;
   }

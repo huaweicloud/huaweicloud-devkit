@@ -199,7 +199,10 @@ export function uninstallCodexDesktop(): void {
     console.log('  Codex plugin cache cleaned');
   }
 
-  // Clean up old config.toml section from pre-marketplace era
+  // Clean up old config.toml section from pre-marketplace era. The sweep is
+  // deliberately wholesale (trunk behavior): the section is our own legacy
+  // install's, and the yield never lands in config.toml (agents/codex-config.ts
+  // records why), so no .tools subtable carve-out is needed.
   const configPath = join(homedir(), '.codex', 'config.toml');
   if (existsSync(configPath)) {
     const lines = readFileSync(configPath, 'utf8').split(/\r?\n/);
