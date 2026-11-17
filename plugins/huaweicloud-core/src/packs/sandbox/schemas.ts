@@ -296,9 +296,8 @@ export const connectSchema = z.looseObject({
     .enum(['ephemeral', 'persistent'])
     .optional()
     .describe(
-      'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1). Explicit template_id overrides pool_type.',
+      'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1); same-type requests reuse the existing instance. Custom templates are no longer supported.',
     ),
-  template_id: z.string().optional().describe('Template ID; overrides server default (only for new sandbox)'),
   flavor_id: z.string().optional().describe('Flavor ID; overrides server default (only for new sandbox)'),
   env: looseObject.optional().describe('Environment variables to set in the sandbox (only for new sandbox)'),
   git: gitConfig.optional().describe('Git repo config (only for new sandbox)'),

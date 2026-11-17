@@ -206,7 +206,7 @@ test('competition voucher claim carries its own fallback message on network fail
   }
 });
 
-// ── 两池：pool_type 透传与钉扎 ──
+// ── 两池：pool_type 透传（dev 8c1af52e：template_id 已下线，客户端不再上送）──
 
 // Body-capture stub for the connect request: records the JSON body and
 // replays a fixed 200 envelope.
@@ -253,12 +253,9 @@ async function captureConnectRejection(options: Record<string, unknown>): Promis
   return outcome as CapturedError;
 }
 
-test('hdkitConnect passes pool_type through without template pinning by default', async () => {
-  // T5 环境隔离：预删钉扎变量并保存宿主原值，结束恢复（宿主设了 HW_POOL_TEMPLATE_* 时本用例仍须成立）
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  const savedPer = process.env.HW_POOL_TEMPLATE_PERSISTENT;
-  delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
+test('hdkitConnect passes pool_type through and never sends template_id', async () => {
+  // 显式 template_id 入参被静默忽略不上送：自定义模板已下线，模板由服务端权威映射。
+  // 请求体断言与宿主 HW_POOL_TEMPLATE_* 环境变量无关（本用例不隔离它，退役后无读取路径）。
   const stub = stubConnectCapture({
     session_id: 's1',
     dev_stage_id: 'd1',
@@ -266,53 +263,50 @@ test('hdkitConnect passes pool_type through without template pinning by default'
     template_id: 'tplp',
   });
   try {
-    const result = await hdkitConnect({ pool_type: 'persistent' });
+    const result = await hdkitConnect({ pool_type: 'persistent', template_id: 'legacy-tpl' });
     const body = stub.body();
     assert.equal(body.pool_type, 'persistent');
-    assert.equal(body.template_id, undefined); // 未钉扎：模板由服务端权威映射
+    assert.equal(body.template_id, undefined); // 即使调用方传入也不上送
     assert.equal(result.pool_type, 'persistent');
   } finally {
     stub.restore();
+  }
+});
+
+// HW_POOL_TEMPLATE_* 钉扎已退役（dev 8c1af52e）：环境变量单独设置、以及与显式
+// template_id 入参叠加，两种到达形态的请求体都必须不含 template_id。保存/恢复
+// 宿主原值是测试卫生，不是功能路径。
+async function connectBodyUnderPinningEnv(options: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
+  const savedPer = process.env.HW_POOL_TEMPLATE_PERSISTENT;
+  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
+  process.env.HW_POOL_TEMPLATE_PERSISTENT = 'pinned-per-tpl';
+  let captured: Record<string, unknown> | undefined;
+  try {
+    const stub = stubConnectCapture({ session_id: 's1', dev_stage_id: 'd1' });
+    try {
+      await hdkitConnect(options);
+      captured = stub.body();
+    } finally {
+      stub.restore();
+    }
+  } finally {
     if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
     else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
     if (savedPer === undefined) delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
     else process.env.HW_POOL_TEMPLATE_PERSISTENT = savedPer;
   }
-});
+  return captured!;
+}
 
-test('hdkitConnect attaches pinned template when HW_POOL_TEMPLATE_* is configured', async () => {
-  // T5 环境隔离：保存宿主原值，结束恢复（而非无条件删除）
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
-  const stub = stubConnectCapture({ session_id: 's1', dev_stage_id: 'd1' });
-  try {
-    await hdkitConnect({ pool_type: 'ephemeral' });
-    const body = stub.body();
-    assert.equal(body.pool_type, 'ephemeral');
-    assert.equal(body.template_id, 'pinned-eph-tpl'); // 钉扎：附带映射模板（老服务端兼容）
-  } finally {
-    stub.restore();
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
-  }
-});
+test('hdkitConnect ignores HW_POOL_TEMPLATE_* pinning, with and without explicit template_id', async () => {
+  const envAlone = await connectBodyUnderPinningEnv({ pool_type: 'ephemeral' });
+  assert.equal(envAlone.pool_type, 'ephemeral');
+  assert.equal(envAlone.template_id, undefined); // 钉扎已退役：模板 ID 仅由服务端 POOL_TEMPLATE_* 权威维护
 
-// ── T6 显式 template_id 优先于钉扎 ──
-
-test('hdkitConnect keeps explicit template_id over pinned template', async () => {
-  const savedEph = process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-  process.env.HW_POOL_TEMPLATE_EPHEMERAL = 'pinned-eph-tpl';
-  const stub = stubConnectCapture({ session_id: 's1', dev_stage_id: 'd1' });
-  try {
-    await hdkitConnect({ pool_type: 'ephemeral', template_id: 'explicit-tpl' });
-    const body = stub.body();
-    assert.equal(body.template_id, 'explicit-tpl'); // 显式模板优先，钉扎不覆盖
-    assert.equal(body.pool_type, 'ephemeral');
-  } finally {
-    stub.restore();
-    if (savedEph === undefined) delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-    else process.env.HW_POOL_TEMPLATE_EPHEMERAL = savedEph;
-  }
+  const envPlusInput = await connectBodyUnderPinningEnv({ pool_type: 'ephemeral', template_id: 'explicit-tpl' });
+  assert.equal(envPlusInput.pool_type, 'ephemeral');
+  assert.equal(envPlusInput.template_id, undefined); // 无论入参、无论钉扎环境变量，请求体永不含 template_id
 });
 
 // ── 429 三错误码结构化处理 ──

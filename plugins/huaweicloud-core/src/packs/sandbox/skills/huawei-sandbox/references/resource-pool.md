@@ -7,8 +7,8 @@
 ## 机制
 
 - **池 = 平台预置模板**：非持久 `9a108ab1bc354bc4979b949b36e3c8c1` / 持久 `05860f507ee94930844907a3a136d1a7` / flavor 3U6G `23ebdfe3b2d34cc4b34a1aaf03d27c54`（服务端 `POOL_TEMPLATE_*` 环境变量维护）
-- 客户端传 `pool_type`（ephemeral/persistent），**服务端权威映射** template_id；显式 `template_id` 优先（自定义模板）
-- **无 persist_mode 请求参数**（需求方两次纠正）；闲置语义由平台按模板配置，上游参数面仅 name/template_id/flavor_id/source/env/git
+- 客户端只传 `pool_type`（ephemeral/persistent），**服务端权威映射** template_id；template_id/自定义模板已下线
+- **无 persist_mode 请求参数**；闲置语义由平台按模板配置；上游参数面有 template_id，但客户端不再传入
 - 实例名前缀即池归属：`hcdke*`（非持久）/ `hcdkp*`（持久）；同池才复用。遗留 `hcdk*` 老实例不参与池复用（老模板后续可能无对应资源池，处置待定）
 
 ## 两类沙箱
@@ -87,7 +87,7 @@
 - 429：配额满与模板配额满给 `remediation` 引导；容量不足只透传服务端最终文案 + `retryAfter`；模板配额不带 `retryAfter`
 - persistent 生命周期提示追加核时提醒：**如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。** ephemeral 不出现该提示
 - `sandbox_shutdown` 调 hdkitservice `POST /shutdown`（DevStation `close`，不 delete）；仅开发者明确要求时调用；返回 `stopped` / `shutting_down` / `already_stopped` / `close_requested`。非持久化沙箱也可关机，但不主动提示
-- 钉扎（可选，运维场景）：`HW_POOL_TEMPLATE_EPHEMERAL`/`HW_POOL_TEMPLATE_PERSISTENT` 环境变量——设置后客户端附带映射 template_id 上送；日常部署无需配置（模板 ID 由服务端权威维护）
+- 模板 ID 仅由服务端 `POOL_TEMPLATE_*` 权威维护；客户端不再支持 `HW_POOL_TEMPLATE_*` 钉扎或显式 template_id
 
 ## 平台侧关键依赖（G 清单，非 devkit 交付）
 
