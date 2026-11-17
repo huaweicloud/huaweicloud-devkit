@@ -169,8 +169,12 @@ export function parseKeepaliveTunnelsOutput(stdout: unknown): KeepaliveTunnel[] 
       const i = entry.indexOf(':');
       if (i <= 0) return null;
       let url = entry.slice(i + 1);
-      while (/:\d+$/.test(url)) url = url.slice(0, url.lastIndexOf(':'));
-      if (url.endsWith(':')) url = url.slice(0, -1);
+      // Strip every generated/legacy tail in one converging loop: digit tails
+      // and bare colons alike (the pre-fix shapes could leave one behind for a
+      // generation — a `:18082:` tail kept `:18082` after a single pass).
+      while (/:$/.test(url) || /:\d+$/.test(url)) {
+        url = url.slice(0, url.lastIndexOf(':'));
+      }
       return { tunnelId: entry.slice(0, i), url };
     })
     .filter((t): t is KeepaliveTunnel => t !== null);

@@ -195,9 +195,20 @@ test('devbridge host launch survives the exec session (#919/#922): setsid guard,
   // its own flow creates custom-named tunnels (`devbridge create <name>`), so a
   // `tunnel-<port>-` name match would no-op exactly on the tunnels the flow
   // itself creates (interrogate port-pr4 B-F1). `devbridge port list` exists in
-  // 0.2.x (verified on the real CLI); delete-all must never return here.
+  // 0.2.x (verified on the real CLI); delete-all must never return here. The
+  // awk carries the OSC 133 strip — integration-enabled terminals wrap every
+  // output line and the CLI rejects glued IDs (B-R2-1), so the strip is
+  // load-bearing, not cosmetic.
   assert.match(deployCheckSource, /devbridge port list "\$T"/);
-  assert.match(deployCheckSource, /awk -v P=\$\{port\} '\$1 == P \{f=1\} END \{exit f \? 0 : 1\}'/);
+  // The source file carries double backslashes (the TS template emits single
+  // ones to the shell); the runtime-string pins over in devbridge-cleanup's
+  // suite see the emitted form.
+  assert.match(deployCheckSource, /gsub\(\/\\\\033\\\\\]133;C\\\\007\/, ""\)/);
+  assert.match(
+    deployCheckSource,
+    /awk -v P=\$\{port\} '\{gsub\(\/\\\\033\\\\\]133;C\\\\007\/, ""\); if \(\$1 == P\) f=1\} END \{exit f \? 0 : 1\}'/,
+  );
+
   assert.doesNotMatch(deployCheckSource, /devbridge delete-all/);
   // Migration/quota verdicts are host-log facts read from dedicated fields —
   // never a whole-stdout scan that the echoed probe body (DB_TUNNEL_BODY)

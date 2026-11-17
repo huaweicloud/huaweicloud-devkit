@@ -9,6 +9,7 @@ import {
   cleanupDevbridgeTunnels,
   normalizeCleanupMode,
   parseDevbridgeHostProcesses,
+  parseDevbridgePortQueries,
   parseDevbridgeTunnelList,
   planDevbridgeCleanup,
   type DevbridgeHostProcess,
@@ -193,6 +194,56 @@ test('cleanup: quota ordering keys on the true expiry column, never a duration-s
   assert.deepEqual(quota.deleteIds, ['bbb22222'], 'the true oldest (2h) goes first; the 29-day tunnel survives');
 });
 
+test('cleanup: port queries parse behind OSC noise, multi-port rows, and junk tokens', () => {
+  const parsed = parseDevbridgePortQueries(
+    [
+      '\x1b]133;C\x07TUNNEL_PORTS_lw3bmxny=8787,9090,',
+      'TUNNEL_PORTS_ncwa54gr=18082,',
+      'TUNNEL_PORTS_junk=notaport,99999,',
+      'garbage line with no field shape',
+    ].join('\r\n'),
+  );
+  assert.deepEqual([...parsed.entries()], [
+    ['lw3bmxny', [8787, 9090]],
+    ['ncwa54gr', [18082]],
+    ['junk', []], // out-of-range tokens drop; the entry stays (empty port list)
+  ]);
+  assert.deepEqual([...parseDevbridgePortQueries('').entries()], []);
+});
+
+test('cleanup: same-port targeting keys on the queried port list — a custom-named, non-enrolled tunnel is replaced (B-R2-3)', () => {
+  // The list table has no port column; the name-shape read (`tunnel-<port>-`)
+  // and the keepalive-URL read both miss a custom-named, non-enrolled tunnel.
+  // Only the state script's per-tunnel port query sees it — without the ports
+  // attribution, every later expose on that port fails on a port conflict.
+  const tunnels: DevbridgeTunnelRecord[] = [
+    { id: 'lw3bmxny', name: 'kanban-board', port: null, expiryText: '30 days', expirySeconds: 30 * 86400, ports: [8787] },
+  ];
+  const hosts: DevbridgeHostProcess[] = [{ pid: 4242, id: 'lw3bmxny', port: 8787 }];
+  const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive: [], mode: 'stale', samePort: 8787 });
+  assert.deepEqual(plan.deleteIds, ['lw3bmxny']);
+  assert.deepEqual(plan.killPids, [4242]);
+  // Multi-port tunnels: a same-port match on ANY queried port deletes the record.
+  const multiPort = planDevbridgeCleanup({
+    tunnels: [{ ...tunnels[0]!, ports: [9090, 8787] }],
+    hosts,
+    keepalive: [],
+    mode: 'stale',
+    samePort: 8787,
+  });
+  assert.deepEqual(multiPort.deleteIds, ['lw3bmxny']);
+  // No query result: the fallback reads keep the tunnel (the gap-closing is
+  // the query, never an over-delete on a guess).
+  const fallback = planDevbridgeCleanup({
+    tunnels: [{ ...tunnels[0]!, ports: undefined, port: null }],
+    hosts,
+    keepalive: [],
+    mode: 'stale',
+    samePort: 8787,
+  });
+  assert.deepEqual(fallback.deleteIds, []);
+});
+
 test('cleanup: apply script validates IDs/PIDs and re-checks the process before killing', () => {
   const script = buildDevbridgeCleanupApplyScript({ deleteIds: ['aaaa2345'], killPids: [100, 200] });
   // state→apply can take minutes: a recycled PID must not hit an unrelated
@@ -223,6 +274,17 @@ test('cleanup: state script refreshes the CLI token (40100) before listing', () 
   assert.match(script, /echo "DB_CLEANUP_HOSTS_END"/);
   // The installed-watchdog read rides the same exec.
   assert.match(script, /DB_KEEPALIVE_TUNNELS=/);
+  // The authoritative port-attribution section (B-R2-3): per-tunnel port-list
+  // queries, emitted between the TUNNELS and HOSTS sections, OSC-stripped —
+  // the list table has no port column, and a name-shape read misses the
+  // custom-named tunnels the remediation's own flow creates.
+  assert.match(script, /echo "DB_CLEANUP_PORTS_BEGIN"/);
+  assert.match(script, /TUNNEL_PORTS_\$T=\$\(devbridge port list "\$T"/);
+  assert.match(script, /echo "DB_CLEANUP_PORTS_END"/);
+  // The candidate filter carries the OSC 133 strip (#946): integration-enabled
+  // shells wrap every line, and a raw extraction hands the CLI glued IDs it
+  // rejects — the delete would silently no-op (B-R2-1's shell-side sibling).
+  assert.match(script, /gsub\(\/\\033\\\]133;C\\007\/, ""\)/);
   // #999 anchor doctrine: the PATH export rides the token-refresh init line —
   // a standalone export first line is byte-identical to the auth probe's.
   assert.match(
@@ -256,6 +318,9 @@ interface CleanupState {
   tunnels: string;
   hosts: string;
   keepalive: string;
+  // Per-tunnel port-list queries (the state script's PORTS section) — the
+  // authoritative port attribution; omit for the fallback world.
+  ports?: string;
 }
 
 const TWO_PORT_STATE: CleanupState = {
@@ -278,6 +343,9 @@ function cleanupStateStdout(state: CleanupState): string {
     'DB_CLEANUP_TUNNELS_BEGIN',
     state.tunnels,
     'DB_CLEANUP_TUNNELS_END',
+    'DB_CLEANUP_PORTS_BEGIN',
+    ...(state.ports ? [state.ports] : []),
+    'DB_CLEANUP_PORTS_END',
     'DB_CLEANUP_HOSTS_BEGIN',
     state.hosts,
     'DB_CLEANUP_HOSTS_END',
@@ -433,6 +501,29 @@ test('cleanup: same-port replacement deletes only that port before an expose (fl
   assert.doesNotMatch(apply ?? '', /devbridge delete aaaa2345/);
   assert.match(apply ?? '', /kill 200/);
   assert.doesNotMatch(apply ?? '', /kill 100/);
+});
+
+test('cleanup: the state script port queries drive the merge — custom-named same-port tunnel replaced (B-R2-3, flow)', async () => {
+  // The remediation's own flow creates custom-named tunnels (devbridge create
+  // <name>) and does not enroll them; the name-shape and roster reads cannot
+  // see them. The state script's TUNNEL_PORTS_ queries must carry the port so
+  // the plan replaces the tunnel — or every later expose fails on the taken
+  // port.
+  const { commands, seam } = cleanupSeam({
+    tunnels:
+      'Tunnel ID  Name              Description  Tunnel Expiration  Port Count\r\n' +
+      'lw3bmxny   kanban-board      dev             30 days            1\r\n',
+    hosts: '4242 devbridge host lw3bmxny -p 8787\r\n',
+    keepalive: '',
+    ports: 'TUNNEL_PORTS_lw3bmxny=8787,',
+  });
+  const result = await runCleanup(seam, { mode: 'stale', samePort: 8787 });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.deleteIds, ['lw3bmxny']);
+  assert.deepEqual(result.killPids, [4242]);
+  const apply = commands.find((c) => c.includes('DB_CLEANUP_APPLY'));
+  assert.match(apply ?? '', /devbridge delete lw3bmxny/);
+  assert.match(apply ?? '', /kill 4242/);
 });
 
 test('cleanup: the lock is released even when the state exec fails (flow)', async () => {

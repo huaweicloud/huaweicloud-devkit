@@ -85,6 +85,7 @@ export {
   cleanupDevbridgeTunnels,
   normalizeCleanupMode,
   parseDevbridgeHostProcesses,
+  parseDevbridgePortQueries,
   parseDevbridgeTunnelList,
   planDevbridgeCleanup,
 } from './devbridge-cleanup.ts';

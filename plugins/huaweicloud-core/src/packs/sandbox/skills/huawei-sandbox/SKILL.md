@@ -453,10 +453,13 @@ devbridge auth status
 Run the web server and the tunnel in the background, then read the URL from the log; the app lives in the workspace mount, e.g. `/workspace/<repo-name>`:
 
 ```bash
-# 0. Pre-cleanup: replace ONLY the tunnel bound to <port>; keep other ports/sessions.
+# 0. Pre-cleanup: replace ONLY the tunnels bound to <port>; keep other ports/sessions.
 #    (huaweicloud_sandbox_expose_tunnel does this automatically with cleanup_mode=stale.)
-OLD_ID=$(devbridge list 2>/dev/null | awk '$2 ~ /^tunnel-<port>-/ {print $1; exit}')
-[ -n "$OLD_ID" ] && devbridge delete "$OLD_ID" >/dev/null 2>&1 || true
+#    Port-attributed, any tunnel name — a tunnel-<port>- name match would miss the
+#    custom-named tunnels `devbridge create <name>` makes. The gsub strips the OSC 133
+#    markers integration-enabled terminals wrap around every output line — without it
+#    devbridge rejects the glued tunnel IDs and the delete silently no-ops (#946).
+for T in $(devbridge list 2>/dev/null | awk '{gsub(/\033\]133;C\007/, ""); if ($1 !~ /^Tunnel/ && $1 !~ /^No$/) print $1}'); do devbridge port list "$T" 2>/dev/null | awk -v P=<port> '{gsub(/\033\]133;C\007/, ""); if ($1 == P) f=1} END {exit f ? 0 : 1}' && devbridge delete "$T" 2>/dev/null || true; done
 
 # 1. Start tunnel (setsid-detached so the host survives the exec session; -e 72 = 72h lifetime)
 if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & else nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & fi
@@ -474,9 +477,9 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
   echo "Tunnel verified: $TUNNEL_URL (HTTP $HTTP_CODE)"
 else
   echo "WARN: Tunnel URL unreachable (HTTP $HTTP_CODE). Rebuilding tunnel..."
-  # Rebuild only this port's tunnel; never kill/delete other ports or sessions.
-  OLD_ID=$(devbridge list 2>/dev/null | awk '$2 ~ /^tunnel-<port>-/ {print $1; exit}')
-  [ -n "$OLD_ID" ] && devbridge delete "$OLD_ID" >/dev/null 2>&1 || true
+  # Rebuild only this port's tunnels (port-attributed, any name); never touch other ports.
+  # The gsub strips OSC 133 markers so devbridge receives clean IDs (#946).
+  for T in $(devbridge list 2>/dev/null | awk '{gsub(/\033\]133;C\007/, ""); if ($1 !~ /^Tunnel/ && $1 !~ /^No$/) print $1}'); do devbridge port list "$T" 2>/dev/null | awk -v P=<port> '{gsub(/\033\]133;C\007/, ""); if ($1 == P) f=1} END {exit f ? 0 : 1}' && devbridge delete "$T" 2>/dev/null || true; done
   if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & else nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & fi
   disown 2>/dev/null || true
   sleep 10
