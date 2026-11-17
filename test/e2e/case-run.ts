@@ -150,7 +150,7 @@ export async function runCase(
       const approvalCaseEnv: Record<string, string> = {
         ...caseDef.env,
         ...(caseDef.approvalMode ? { DEVKIT_APPROVAL_MODE: caseDef.approvalMode } : {}),
-        ...((caseDef.autoConfirmApprovals || caseDef.ptyConfirmApprovals)
+        ...(caseDef.autoConfirmApprovals || caseDef.ptyConfirmApprovals
           ? { HW_VAULT_MASTER_KEY: E2E_VAULT_MASTER_KEY }
           : {}),
       };

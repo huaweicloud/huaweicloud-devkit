@@ -173,7 +173,8 @@ export const sandboxCases: E2eCase[] = [
     pack: 'sandbox',
     approvalMode: 'token',
     ptyConfirmApprovals: true,
-    prompt: '连接华为云沙箱(不需要配置 git 仓库),把返回的会话信息告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;若某工具返回 USER_CONFIRMATION_REQUIRED,等我在终端完成 approve 后,用返回的 approvalToken 重试同一调用。',
+    prompt:
+      '连接华为云沙箱(不需要配置 git 仓库),把返回的会话信息告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;若某工具返回 USER_CONFIRMATION_REQUIRED,等我在终端完成 approve 后,用返回的 approvalToken 重试同一调用。',
     fixtures: {
       home: {
         '.config/huaweicloud/credentials.json': S1_SEED,
@@ -215,7 +216,8 @@ export const sandboxCases: E2eCase[] = [
     pack: 'sandbox',
     approvalMode: 'token',
     ptyConfirmApprovals: true,
-    prompt: '给华为云沙箱工作区 dev_stage_id=ds-e2e-002 注入临时凭证(标准流程:先校验再注入),把注入结果告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;若某工具返回 USER_CONFIRMATION_REQUIRED,等我在终端完成 approve 后,用返回的 approvalToken 重试同一调用。',
+    prompt:
+      '给华为云沙箱工作区 dev_stage_id=ds-e2e-002 注入临时凭证(标准流程:先校验再注入),把注入结果告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;若某工具返回 USER_CONFIRMATION_REQUIRED,等我在终端完成 approve 后,用返回的 approvalToken 重试同一调用。',
     fixtures: {
       home: {
         '.config/huaweicloud/credentials.json': S1_SEED,

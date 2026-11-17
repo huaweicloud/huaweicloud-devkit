@@ -39,11 +39,7 @@ interface PtyRun {
 // raises. The child's stdin/stdout are the PTY slave through `script`, so
 // the CLI's isTTY gates read true; the seam writes the PIN when the
 // prompt's text appears, and waits for the expected success marker.
-function runInPty(
-  command: string,
-  home: string,
-  expect: RegExp,
-): Promise<PtyRun> {
+function runInPty(command: string, home: string, expect: RegExp): Promise<PtyRun> {
   return new Promise<PtyRun>((resolve) => {
     const child = spawn('script', ['-qec', command, '/dev/null'], {
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -110,10 +106,7 @@ export interface PtyApprovalsWatcher {
 // real approve CLI. Same polling doctrine as the blind watcher; the
 // per-token latency includes one node CLI boot (~1s), well inside the
 // model's plan-to-run turnaround.
-export async function startPtyApprovalsWatcher(
-  home: string,
-  bin: string,
-): Promise<PtyApprovalsWatcher> {
+export async function startPtyApprovalsWatcher(home: string, bin: string): Promise<PtyApprovalsWatcher> {
   const enrollment = await enrollApprovalsPinPty(bin, home);
   if (!enrollment.ok) {
     throw new Error(
