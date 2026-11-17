@@ -842,7 +842,7 @@ test('the exec self-anchor passes and a lifecycle tool refuses a stuffed command
       })) as { code: string; approvalToken?: string };
       assert.equal(mint.code, 'USER_CONFIRMATION_REQUIRED', 'the anchored exec call reaches the mint face');
 
-      // The six lifecycle faces declare no anchorable line: a command field
+      // The seven lifecycle faces declare no anchorable line: a command field
       // on them is a stuffed display field and refuses before any mint.
       const stuffed = (await callTool(
         'huaweicloud_sandbox_sign_agreement',

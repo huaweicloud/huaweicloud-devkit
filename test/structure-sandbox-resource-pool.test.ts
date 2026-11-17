@@ -678,6 +678,16 @@ test('huawei-sandbox teaches the shutdown doctrine and the persistent core-hours
     'the tool selection guide must carry the shutdown row',
   );
 
+  // round-2 seat-A F1：修正后的 workspace_id 描述钉（共享 part 的 "Required
+  // … HW_WORKSPACE_ID" 措辞对本工具双半皆错——workspace_id 是可选的第三定位
+  // 面，回退会静默绿，故钉 dev 口径文本）。
+  const schemas = readFileSync(join(pluginRoot, 'src', 'packs', 'sandbox', 'schemas.ts'), 'utf8');
+  assert.match(
+    schemas,
+    /workspace_id: z\s*\n?\s*\.string\(\)\s*\n?\s*\.optional\(\)\s*\n?\s*\.describe\('Workspace ID; defaults to the current workspace \(an alternative to session_id\/dev_stage_id\)'\)/,
+    "the shutdown schema's workspace_id must carry the dev-caliber description, not the shared part's Required wording",
+  );
+
   // frontmatter 触发面：lifecycle 覆盖列表加入 shutdown。
   assert.match(
     skill,
