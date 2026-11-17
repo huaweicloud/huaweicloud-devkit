@@ -184,6 +184,8 @@ export type ToolArgs = {
   rules?: unknown[];
   expiry_hours?: number;
   keepalive?: boolean;
+  // The expose_tunnel selective pre-clean mode (stale default / all / none).
+  cleanup_mode?: string;
   tunnel_id?: string;
   tunnels?: unknown[];
   ref?: string;

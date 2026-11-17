@@ -61,6 +61,7 @@ export function buildDevbridgeKeepaliveScript(tunnels: unknown): string {
   const body = [
     `#!/bin/bash`,
     `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
+    `export DBUS_SESSION_BUS_ADDRESS="\${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus-session}"`,
     `# entries: tunnelId:url (URLs are stable — tunnel IDs never change)`,
     `TUNNELS="${entries}"`,
     `declare -A LAST_RENEW`,
@@ -79,6 +80,29 @@ export function buildDevbridgeKeepaliveScript(tunnels: unknown): string {
     `        echo "$TS renew $ID ok (${DEVBRIDGE_RENEW_HOURS}h)" >> /tmp/tunnel-keepalive.log`,
     `      else`,
     `        echo "$TS renew $ID FAILED: $(head -1 /tmp/keepalive-last-update.log)" >> /tmp/tunnel-keepalive.log`,
+    // Self-heal (bde7ae56): a valid key can coexist with an expired CLI token
+    // (renew returns 40100 while auth status still prints Logged in) —
+    // re-login from keyring/file (never create a key) and retry once now;
+    // the next tick retries normally if even that fails.
+    `        DB_KEY=""`,
+    `        if command -v hwcloud >/dev/null 2>&1; then`,
+    `          DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `          case "$DB_KEY" in "devbridge_"*) : ;; *) DB_KEY="";; esac`,
+    `        fi`,
+    `        if [ -z "$DB_KEY" ] && [ -s /tmp/hw_api_key ]; then`,
+    `          source /tmp/hw_api_key 2>/dev/null || true`,
+    `          DB_KEY="\${HW_API_KEY:-}"`,
+    `        fi`,
+    `        if [ -n "$DB_KEY" ] && devbridge auth login --api-key "$DB_KEY" >/tmp/keepalive-auth.log 2>&1; then`,
+    `          if devbridge update "$ID" -e ${DEVBRIDGE_RENEW_HOURS} > /tmp/keepalive-last-update.log 2>&1; then`,
+    `            echo "$TS renew $ID ok after re-login (${DEVBRIDGE_RENEW_HOURS}h)" >> /tmp/tunnel-keepalive.log`,
+    `          else`,
+    `            echo "$TS renew $ID FAILED after re-login: $(head -1 /tmp/keepalive-last-update.log)" >> /tmp/tunnel-keepalive.log`,
+    `          fi`,
+    `        else`,
+    `          echo "$TS renew $ID AUTH_FAILED: no usable key; next expose_tunnel will auto-create" >> /tmp/tunnel-keepalive.log`,
+    `        fi`,
+    `        unset DB_KEY HW_API_KEY 2>/dev/null`,
     `      fi`,
     `      LAST_RENEW[$ID]=$NOW`,
     `    fi`,

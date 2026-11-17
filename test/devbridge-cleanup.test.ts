@@ -148,9 +148,11 @@ test('cleanup: quota mode removes all orphans then the oldest non-protected live
     quota.deleteIds.sort((a, b) => a.localeCompare(b)),
     ['bbbb2345', 'cccc2345'],
   );
+  // pid 300 is the orphan host (its record is gone) — quota mode removes it
+  // alongside the freed record's host.
   assert.deepEqual(
     quota.killPids.sort((a, b) => a - b),
-    [200],
+    [200, 300],
   );
 
   const quotaMore = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'quota', maxExtra: 2 });
@@ -160,7 +162,7 @@ test('cleanup: quota mode removes all orphans then the oldest non-protected live
   );
   assert.deepEqual(
     quotaMore.killPids.sort((a, b) => a - b),
-    [200, 400],
+    [200, 300, 400],
   );
 });
 

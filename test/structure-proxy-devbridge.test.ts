@@ -597,7 +597,7 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   );
   assert.match(
     sandbox,
-    /credential waterfall \(keyring → API-Key file → auto-created API Key\), pre-cleans stale tunnels/,
+    /credential waterfall \(keyring → API-Key file → auto-created API Key\), selectively cleans only same-port\/orphan tunnels/,
   );
   assert.doesNotMatch(sandbox, /keyring → AK\/SK/, 'the removed tier must not reappear in the Step 7 waterfall');
   assert.doesNotMatch(

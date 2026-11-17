@@ -1,4 +1,5 @@
-import { execOneShot, execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
+import { execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
+import { cleanupDevbridgeTunnels } from '../../sandbox/devbridge-tunnel.ts';
 import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../../lib/hdkit/hdkitservice-api.ts';
 import {
   MANUFACTURED_FAMILY,
@@ -150,10 +151,13 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     // 池归属 + 生命周期口径缓存（服务端回显优先，缺失时客户端默认兜底）。
     // 双读兜底与 devStageId 同型（防服务端 wire 命名漂移，QA #1082 配对复审教训）
     rememberWorkspacePool(devStageId, connectResult?.pool_type || connectResult?.poolType, connectResult || {});
+    // 连接后的选择性隧道清理（dev 97c4bc8a）：只清孤儿记录/宿主；保留其他
+    // 端口、其他会话与 keepalive 名单内的隧道。best-effort —— 清理失败不得
+    // 阻断 connect 本身。
     try {
-      await execOneShot(devStageId, 'devbridge delete-all 2>/dev/null || true', 'root', 15000);
+      await cleanupDevbridgeTunnels(devStageId, { mode: 'stale' });
     } catch {
-      // best-effort: a fresh sandbox may have no tunnels (or no devbridge) to delete
+      // best-effort: a fresh sandbox may have no tunnels (or no devbridge) to clean
     }
     try {
       // #999: /workspace/.local/bin first — the data-disk install survives

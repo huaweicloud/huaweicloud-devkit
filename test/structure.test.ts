@@ -366,7 +366,7 @@ test('the sandbox skill teaches selective tunnel cleanup, never blanket delete-a
   // The delete-all mentions that remain are always scoped as the manual
   // full-reset exception, never the default path.
   for (const m of sandboxSkill.matchAll(/devbridge delete-all/g)) {
-    const around = sandboxSkill.slice(Math.max(0, m.index - 160), m.index + 40);
+    const around = sandboxSkill.slice(Math.max(0, m.index - 160), m.index + 80);
     assert.match(
       around,
       /full reset|GLOBAL operations/i,

@@ -276,10 +276,12 @@ export const sandboxCases: E2eCase[] = [
 ];
 
 // ws-exec pair over the local hwlink fake. Connection-count arithmetic is
-// the mechanism proof: connect runs one one-shot (devbridge cleanup, its own
-// connection) plus the CACHED export-PATH session (a second connection) —
-// so two exec_with_session calls that REUSE the session leave the count at
-// 2, while a close_session in between forces a cache miss and a third.
+// the mechanism proof: connect's selective cleanup runs four one-shots
+// (lock, state list, watchdog read, unlock — each its own connection; the
+// delete-all wave collapsed all of it into one destructive exec) plus the
+// CACHED export-PATH session (a fifth connection) — so two exec_with_session
+// calls that REUSE the session leave the count at 5, while a close_session in
+// between forces a cache miss and a sixth.
 const WS_DEV_STAGE = 'ds-e2e-ws-001';
 
 // Shared expectation fragments for the ws trio (dedup, not abstraction):
@@ -366,10 +368,11 @@ export const wsSandboxCases: E2eCase[] = [
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,
-      // one-shot exec rides its own fresh ws connection (on top of
-      // connect's two), so the count is loose here — the precise pair is
-      // the reuse/close cases below.
-      { kind: 'wsConnections', times: { min: 2, max: 4 } },
+      // one-shot exec rides its own fresh ws connection (on top of connect's
+      // five — the selective cleanup's four one-shots plus the cached
+      // session), so the count is loose here (agent-initiated verification
+      // execs add more); the precise pair is the reuse/close cases below.
+      { kind: 'wsConnections', times: { min: 6, max: 8 } },
       { kind: 'ws', intent: 'echo', times: { min: 1, max: 1 } },
       // Fake-drift gate: every command the product sent must be one the
       // fake recognized — a script edit turns this red, never silent.
@@ -388,10 +391,11 @@ export const wsSandboxCases: E2eCase[] = [
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,
-      // Session-cache reuse IS the mechanism: connect's two connections
-      // (one-shot cleanup + cached session) plus ZERO more for the second
-      // exec. A reuse regression makes this 3+.
-      { kind: 'wsConnections', times: { min: 2, max: 2 } },
+      // Session-cache reuse IS the mechanism: connect's five connections
+      // (the selective cleanup's four one-shots — lock, state list, watchdog
+      // read, unlock — plus the cached export-PATH session) plus ZERO more
+      // for the second exec. A reuse regression makes this 6+.
+      { kind: 'wsConnections', times: { min: 5, max: 5 } },
       { kind: 'ws', intent: 'echo', times: { min: 2, max: 2 } },
       ZERO_UNKNOWN,
     ],
@@ -410,10 +414,10 @@ export const wsSandboxCases: E2eCase[] = [
       CONNECT_POST,
       { kind: 'toolCall', name: 'huaweicloud_sandbox_close_session', ok: true },
       // The close→reconnect delta vs the reuse case: the post-close exec
-      // is a cache miss, so a THIRD connection appears. close_session
-      // itself is client-only teardown — the connection count is what
-      // makes it observable.
-      { kind: 'wsConnections', times: { min: 3, max: 3 } },
+      // is a cache miss, so a SIXTH connection appears (connect's five +
+      // the fresh session). close_session itself is client-only teardown —
+      // the connection count is what makes it observable.
+      { kind: 'wsConnections', times: { min: 6, max: 6 } },
       { kind: 'ws', intent: 'echo', times: { min: 2, max: 2 } },
       ZERO_UNKNOWN,
     ],
