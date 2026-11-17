@@ -1225,6 +1225,7 @@ async function cmdUpdate(): Promise<void> {
   console.log(BANNER);
   resolvePacksFlag(); // fail fast on bogus --packs before any file is copied
   const target = parseTarget();
+  checkNode();
   await checkForUpdate();
   // Reconcile the native dirs only when this run will actually place the new
   // payload somewhere. A target whose server is absent gets "Not installed"
