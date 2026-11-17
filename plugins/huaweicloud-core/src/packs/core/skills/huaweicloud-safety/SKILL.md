@@ -27,7 +27,7 @@ Use this skill before any Huawei Cloud action that may expose secrets, change re
 
 ## Enforcement Layers
 
-- Hooks: `hooks/huaweicloud-safety.mjs` blocks risky Codex native hook calls without requiring Python; `hooks/huaweicloud-safety.py` remains for Hermes/Python hook compatibility. The hook also denies the `approve` and `pin` verbs on the agent Bash face.
+- Hooks: `hooks/huaweicloud-safety.mjs` blocks risky Codex native hook calls without requiring Python; `hooks/huaweicloud-safety.py` remains for Hermes/Python hook compatibility. The hook also denies the `approve`, `pin`, and account-switch (`auth init` / `auth sync`) verbs on the agent Bash face — those CLIs are the operator's own terminal surface, and the account switch is approval-gated on the MCP tools.
 - MCP wrapper: the Node MCP server applies the same safety policy for Codex/OpenCode paths that do not enforce hooks, and the run tool refuses a non-read command without the user's terminal confirmation.
 - Skills: this document teaches agents the rule before they act.
 
@@ -43,6 +43,10 @@ In token mode, a non-read command without that terminal confirmation is rejected
 Never run the approve or pin commands yourself; the hook denies both verbs on the agent's Bash face. The `approvedByUser: true` argument is not the terminal confirmation: in token mode the run tool still requires the terminal-confirmed grant, and in ask mode it is only the chat round-trip's retry marker, sent after the user answered (posture trust, which the server cannot verify).
 
 Without the devkit tools, show the reviewed command and let the user execute it in their own terminal. After a write, verify with `huaweicloud_run_readonly_command` or another read-only check.
+
+## Gate-source roster tools (no plan face)
+
+Beyond the hcloud plan/run pair, other registered tools carry the same gate with NO plan step — the gate itself mints the approval token. Today that is the account-switch pair, `huaweicloud_auth_init` and `huaweicloud_auth_switch`: every call confirms, and the confirmation view names the target account fingerprint and the credential source, because switching accounts is the step that can redirect every later approved write. In the default token mode the first call returns `USER_CONFIRMATION_REQUIRED` with a minted `approvalToken`; the user confirms it in their own terminal (`npx huaweicloud-devkit approve <token>`) and you retry the same call with the token. Under ask mode the ladder is the same as for hcloud writes: the form on a capable client, the `ASK_CONFIRMATION_REQUIRED` chat round-trip on the rest. Never switch accounts through the devkit CLI instead (`npx huaweicloud-devkit auth init` from Bash is hook-denied); the gate's confirmation is the only agent-side path, and the account the user confirmed is the account that switches.
 
 ## Proactive Hook Checks
 

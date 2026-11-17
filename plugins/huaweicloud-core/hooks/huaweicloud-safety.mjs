@@ -139,11 +139,14 @@ function readStdin() {
 //     the plan's PR-3a lanes) owns the whole command content; without
 //     the destructive skip the plan's own lane-2 command (rm -rf) could
 //     never reach the server gate the plan bets on.
-//   - structured tools (PR-3a's six lifecycle faces): NO exemption, by
-//     their shape row's declaration — a present row the hook does not
-//     exempt returns no class, and full classification stands, so a
-//     stuffed command string or args array on those names can never
-//     borrow an exempt class.
+//   - structured tools (PR-3a's lifecycle faces, PR-3b's auth pair): NO
+//     exemption, by their shape row's declaration — a present row the hook
+//     does not exempt returns no class, and full classification stands, so
+//     a stuffed command string or args array on those names can never
+//     borrow an exempt class. The auth pair rides the same class: its
+//     named credential fields are a no-command-surface payload, and the
+//     server gate does not classify that payload text, so the hook's text
+//     deny stays as a belt.
 // Every other deny — credential-file reads, secret reveals, invalid
 // input — stays in force for roster calls too, because the server gate
 // does not replicate them at the hook's breadth (interrogate round 1:
@@ -197,10 +200,11 @@ function rosterExemptionShape(toolName, toolInput) {
   if (shape === 'commandString') return matchesCommandStringShape(args) ? 'commandString' : undefined;
   if (shape === 'argsArray') return matchesArgsArrayShape(args) ? 'argsArray' : undefined;
   // A PRESENT row the hook does not exempt ('structured': a payload with
-  // no command surface) never falls through to the transition fallback —
-  // the fallback admits the two devkit shapes on the exact name, so a
-  // structured tool with a stuffed `command` string or `args` array must
-  // not be able to borrow an exempt class. Full classification stands.
+  // no command surface — PR-3a's lifecycle faces, PR-3b's auth pair) never
+  // falls through to the transition fallback — the fallback admits the two
+  // devkit shapes on the exact name, so a structured tool with a stuffed
+  // `command` string or `args` array must not be able to borrow an exempt
+  // class. Full classification stands.
   if (shape !== undefined) return undefined;
   // No shape row (an older roster leaf, or the transition window while
   // PR-3 lands): the two known devkit payload shapes, with the

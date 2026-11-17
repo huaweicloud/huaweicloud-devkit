@@ -50,6 +50,19 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['node bin/setup.cjs pin', 'deny'],
   ['npx huaweicloud-devkit@2.0.0 pin', 'deny'],
   ['hcloud Workspace Pin --x=1', 'allow'],
+  // The account-switch CLI verbs (PR-3b interrogate round 1, finding 1):
+  // the devkit's own auth init / auth sync write S1, OBS, and the KooCLI
+  // profile — the account switch the MCP tools gate behind a human
+  // present. Both layers must deny them on the agent Bash face, while the
+  // read-only auth status and plain text stay allowed.
+  ['npx huaweicloud-devkit auth init', 'deny'],
+  ['npx huaweicloud-devkit auth sync', 'deny'],
+  ['npx huaweicloud-devkit@2.0.0 auth init', 'deny'],
+  ['node dist/setup-cli.js auth init', 'deny'],
+  ['node bin/setup.cjs auth sync', 'deny'],
+  ['npx huaweicloud-devkit auth status', 'allow'],
+  ['npx huaweicloud-devkit auth', 'allow'],
+  ['echo run auth init yourself', 'allow'],
   // Write gate: separators, command positions, obfuscation.
   ['hcloud ECS CreateServers --server.name=x', 'deny'],
   ['hcloud ECS ListServers\nhcloud ECS CreateServers --server.name=x', 'deny'],

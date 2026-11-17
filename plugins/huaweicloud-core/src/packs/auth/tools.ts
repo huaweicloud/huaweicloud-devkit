@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { vendorConfirmed } from '../../lib/tool-schema-parts.ts';
+import { approvalTokenArg, approvedByUserArg, vendorConfirmed } from '../../lib/tool-schema-parts.ts';
 import { getAuthStatus, syncAuth } from '../../auth/service.ts';
 import { checkAccountType } from '../../auth/account-type.ts';
 import {
@@ -13,13 +13,18 @@ import {
 import { fingerprint } from '../../auth/reconcile.ts';
 import {
   persistCredentials,
-  readImportFile,
   clearImportFile,
   pendingConfirms,
   consumedConfirms,
   refreshUserHashAfterAuthChange,
 } from '../../lib/credentials.ts';
 import { resolveSecretValue } from '../../lib/secret-vault/store.ts';
+import {
+  isApprovedInitSnapshot,
+  isApprovedSwitchSnapshot,
+  switchSnapshot,
+  type ApprovedSwitchSnapshot,
+} from './approval.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 
@@ -36,7 +41,7 @@ async function handleAuthSync(args: ToolArgs = {}, _opts: CallToolOptions = {}) 
   return result;
 }
 
-async function handleAuthInit(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
+async function handleAuthInit(args: ToolArgs = {}, opts: CallToolOptions = {}) {
   if (args.clear) {
     clearRuntimeCredentials();
     refreshUserHashAfterAuthChange({ regenerate: false });
@@ -48,16 +53,21 @@ async function handleAuthInit(args: ToolArgs = {}, _opts: CallToolOptions = {}) 
   // Incoming values may be secret:// refs. Resolve them so the runtime store
   // carries usable credentials (same contract as auth_switch and the CLI's
   // auth init); an unresolvable ref throws VaultError with its own
-  // remediation.
-  const ak = resolveSecretValue(args.ak) ?? args.ak;
-  const sk = resolveSecretValue(args.sk) ?? args.sk;
-  const region = resolveSecretValue(args.region) ?? args.region;
+  // remediation. When the gate threaded its approved snapshot (round 2,
+  // the twin path), the handler executes the RESOLVED VALUES the
+  // confirmation surface was shown against — a vault swap behind the same
+  // refs cannot execute an account that appeared on no surface. Without a
+  // matching snapshot (a direct handler call), the trunk resolution runs.
+  const approved = isApprovedInitSnapshot(opts.approvedBinding) ? opts.approvedBinding : null;
+  const ak = approved ? approved.ak : (resolveSecretValue(args.ak) ?? args.ak);
+  const sk = approved ? approved.sk : (resolveSecretValue(args.sk) ?? args.sk);
+  const region = approved ? approved.region : (resolveSecretValue(args.region) ?? args.region);
   setRuntimeCredentials(ak, sk, undefined, region);
   refreshUserHashAfterAuthChange();
   return { status: 'ok', message: 'Runtime credentials set for this MCP session.' };
 }
 
-async function handleAuthSwitch(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
+async function handleAuthSwitch(args: ToolArgs = {}, opts: CallToolOptions = {}) {
   const action = args.action || 'temporary';
   if (action === 'clear') {
     clearRuntimeCredentials();
@@ -65,38 +75,24 @@ async function handleAuthSwitch(args: ToolArgs = {}, _opts: CallToolOptions = {}
     return { status: 'cleared', message: 'Runtime credentials cleared. Fallback to env/file/S1.' };
   }
 
-  let ak = args.ak || '';
-  let sk = args.sk || '';
-  let securityToken = args.securityToken || '';
-  let region = args.region || '';
   const sourceChannel = args.mode || 'memory';
-  let importedFromFile = false;
 
-  if (sourceChannel === 'import' && (!ak || !sk)) {
-    const imported = readImportFile();
-    if (imported) {
-      ({ ak, sk, securityToken, region } = imported);
-      importedFromFile = true;
-    }
-  }
-  if (sourceChannel === 'mcp-config' && (!ak || !sk)) {
-    const cc = readCodeArtsCredentials();
-    if (cc) {
-      ak = cc.ak;
-      sk = cc.sk;
-      securityToken = cc.securityToken || '';
-      region = cc.region || region;
-    }
-  }
-
-  // Incoming values may be secret:// refs (mode=memory with refs, or an
-  // import file carrying them). Resolve before any comparison or fan-out:
-  // the conflict check and displayed fingerprints must compare plaintext,
-  // and persistCredentials' mirrors must never see a literal ref string.
-  // An unresolvable ref throws VaultError with its own remediation.
-  ak = resolveSecretValue(ak) ?? ak;
-  sk = resolveSecretValue(sk) ?? sk;
-  securityToken = resolveSecretValue(securityToken) ?? securityToken;
+  // The gate's approved snapshot (interrogate round 1, finding 2): the
+  // resolved credential substance from BEFORE the confirmation surface was
+  // shown, threaded through dispatch when the call passed the gate.
+  // Executing THIS record — never a post-consent re-read of the import
+  // file or the CodeArts injection — is what makes the shown account the
+  // executed account. Without a matching snapshot (a direct handler call,
+  // no dispatch gate in front), the same resolution runs inline through
+  // the spec's own snapshot function — one precedence, one seam.
+  const approved = isApprovedSwitchSnapshot(opts.approvedBinding)
+    ? opts.approvedBinding.mode === sourceChannel && opts.approvedBinding.action === action
+      ? opts.approvedBinding
+      : null
+    : null;
+  const resolved: ApprovedSwitchSnapshot = approved ?? switchSnapshot(args);
+  const { ak, sk, securityToken, region } = resolved;
+  const importedFromFile = resolved.fromImport;
 
   if (!ak || !sk) {
     throw new Error('ak and sk are required (or provide creds-import.json for mode=import).');
@@ -225,6 +221,10 @@ const authInitSchema = z.looseObject({
   sk: z.string().optional().describe('Huawei Cloud Secret Key (required unless clear=true)'),
   region: z.string().optional().describe('Default region (optional)'),
   clear: z.boolean().optional().describe('Set to true to clear runtime credentials and revert to env/file'),
+  approvalToken: approvalTokenArg.describe(
+    'Required in token-approval mode (from the USER_CONFIRMATION_REQUIRED envelope this gate returns); omit in ask mode, where the server-run gate confirms at run time.',
+  ),
+  approvedByUser: approvedByUserArg,
 });
 
 const authSwitchSchema = z.looseObject({
@@ -235,6 +235,10 @@ const authSwitchSchema = z.looseObject({
   sk: z.string().optional().describe('Huawei Cloud Secret Key to switch this session to.'),
   securityToken: z.string().optional().describe('Security (STS) token when the new credentials are session-scoped.'),
   region: z.string().optional().describe('Optional default region applied with the switched credentials.'),
+  approvalToken: approvalTokenArg.describe(
+    'Required in token-approval mode (from the USER_CONFIRMATION_REQUIRED envelope this gate returns); omit in ask mode, where the server-run gate confirms at run time.',
+  ),
+  approvedByUser: approvedByUserArg,
 });
 
 const authConfirmSchema = z.looseObject({
@@ -278,14 +282,14 @@ export const AUTH_TOOLS = [
   {
     name: 'huaweicloud_auth_init',
     description:
-      'Set or clear runtime Huawei Cloud credentials (AK/SK) for this MCP session. Runtime credentials take highest priority over environment variables and config files for all subsequent API calls. Use when switching accounts within the same Agent session — call with AK/SK to switch, or with clear=true to fall back to env/file credentials. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Set or clear runtime Huawei Cloud credentials (AK/SK) for this MCP session. Runtime credentials take highest priority over environment variables and config files for all subsequent API calls. Use when switching accounts within the same Agent session — call with AK/SK to switch, or with clear=true to fall back to env/file credentials. Approval-gated: the account switch requires the user\u2019s explicit confirmation, and the confirmation view names the target account fingerprint — in the default token mode the first call returns USER_CONFIRMATION_REQUIRED with an approvalToken the user confirms in their own terminal (npx huaweicloud-devkit approve <token>); under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself (an elicitation form, or the ASK_CONFIRMATION_REQUIRED chat round-trip). Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: authInitSchema,
     handler: handleAuthInit,
   },
   {
     name: 'huaweicloud_auth_switch',
     description:
-      'Switch Huawei Cloud credentials within the current session. action=temporary keeps AK/SK in memory only (restart loses them; hcloud commands are unaffected and an A+C warning will be raised). action=persist writes S1 (single source of truth) with configuredBySession flag and propagates to S2 (KooCLI current profile) and S3 (OBS). action=clear resets runtime credentials. mode=import reads AK/SK from ~/.config/huaweicloud/creds-import.json then wipes it (SK never enters conversation). mode=memory passes AK/SK as tool arguments (SK is visible to model - prefer import). mode=mcp-config reads the injected mcp_settings environment. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Switch Huawei Cloud credentials within the current session. action=temporary keeps AK/SK in memory only (restart loses them; hcloud commands are unaffected and an A+C warning will be raised). action=persist writes S1 (single source of truth) with configuredBySession flag and propagates to S2 (KooCLI current profile) and S3 (OBS). action=clear resets runtime credentials. mode=import reads AK/SK from ~/.config/huaweicloud/creds-import.json then wipes it (SK never enters conversation). mode=memory passes AK/SK as tool arguments (SK is visible to model - prefer import). mode=mcp-config reads the injected mcp_settings environment. Approval-gated: the switch requires the user\u2019s explicit confirmation, and the confirmation view names the target account fingerprint and the credential source — in the default token mode the first call returns USER_CONFIRMATION_REQUIRED with an approvalToken the user confirms in their own terminal (npx huaweicloud-devkit approve <token>); under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself (an elicitation form, or the ASK_CONFIRMATION_REQUIRED chat round-trip). Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: authSwitchSchema,
     handler: handleAuthSwitch,
   },

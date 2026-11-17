@@ -682,6 +682,11 @@ test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-too
   // dispatch boundary: both legs, one wrapper. Staged exactly the way
   // the r12 seat's probe staged it and the way PR-3c lands it — a spec
   // entry on the registry merge — and driven through the real callTool.
+  // PR-3b's arrival change applies here: a gate-source registration in
+  // ask mode runs the server-run ladder (the attested arrival is no
+  // longer the execution), so the drive injects a capable confirmation
+  // client — the form accepts, the handler runs through the seam, and
+  // both the consent row and its delivery outcome land.
   await withTempAuthHome(async (home) => {
     await withApprovalMode('ask', async () => {
       const name = 'huaweicloud_packs_configure' as Parameters<typeof callTool>[0];
@@ -708,12 +713,18 @@ test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-too
         // the core tool's ask arrival confirms through the form on a capable
         // client — the accept is what executes the call the outcome recorder
         // then annotates (the T3 ritual would work equally: the subject is
-        // the recorder, not the tier).
-        const { seam: form } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+        // the recorder, not the tier). The requests capture pins that the
+        // gate-source arrival runs the ladder, not the bare attestation.
+        const { seam: form, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
         const result = (await callTool(name, cfgArgs, { sessionId: 's-core', ...seam, elicitation: form })) as {
           ok: boolean;
         };
         assert.equal(result.ok, true, 'the packs_configure handler runs through the seam');
+        assert.equal(
+          requests.length,
+          1,
+          'the gate-source arrival runs the server-run ladder, not the bare attestation',
+        );
         const coreKey = hashArgs(cfgArgs);
         const rows = readConsentEvents().filter((row) => row.tool === name && row.argsHash === coreKey);
         assert.equal(rows.length, 1, "the gate recorded the core tool's arrival");

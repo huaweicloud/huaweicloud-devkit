@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 
 import { fixtureDir } from './fixture-dir.ts';
-import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
+import { gatedAuthSwitchCall } from './cred-reconcile-harness.ts';
 import {
   clearRuntimeCredentials,
   resolveCredentialsWithRuntime,
@@ -33,7 +33,7 @@ test('auth_switch temporary sets runtime credentials for api path', async () => 
   delete process.env.HW_ACCESS_KEY;
   delete process.env.HW_SECRET_KEY;
   try {
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'memory',
       action: 'temporary',
@@ -59,7 +59,7 @@ test('auth_switch clear resets runtime', async () => {
   process.env.HUAWEICLOUD_HOME = isolatedHome;
   try {
     setRuntimeCredentials('A', 'B', undefined, 'cn-north-4');
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       action: 'clear',
     })) as AuthSwitchResult;
@@ -103,23 +103,28 @@ function seedImportFile(ak: string, sk: string): { cfgDir: string; importFile: s
   return { cfgDir, importFile };
 }
 
-test('auth_switch persist(mode=import) rejects missing region and keeps import file (#502)', async () => {
+test('auth_switch persist(mode=import) without a region refuses before consent and keeps the import file (#502)', async () => {
   await withImportHome(async () => {
     const { cfgDir, importFile } = seedImportFile('IMPORT_AK', 'IMPORT_SK');
 
-    const out = (await callTool('huaweicloud_auth_switch', {
-      vendorConfirmed: 'test: vendor established by the harness',
-      mode: 'import',
-      action: 'persist',
-    })) as AuthSwitchResult;
+    // Round 2 closed the recorded round-1 residual on the assert route:
+    // the regionless persist is a doomed shape, so the gate refuses it
+    // before any consent (NoDoomedToken) — the human is never asked to
+    // approve a call the handler answers invalid_region on. The import
+    // file survives the gate's peek, so the operator can add the region
+    // and retry.
+    await assert.rejects(
+      () =>
+        gatedAuthSwitchCall({
+          vendorConfirmed: 'test: vendor established by the harness',
+          mode: 'import',
+          action: 'persist',
+        }),
+      /region is required to persist credentials/,
+    );
 
-    assert.equal(out.status, 'error');
-    assert.equal(out.scope, 'invalid_region');
-    assert.match(out.error!, /region/);
-    // S1 must not be written on a rejected persist.
-    assert.equal(existsSync(join(cfgDir, 'credentials.json')), false);
-    // Import file must survive for replay.
-    assert.equal(existsSync(importFile), true);
+    assert.equal(existsSync(join(cfgDir, 'credentials.json')), false, 'S1 must not be written');
+    assert.equal(existsSync(importFile), true, 'import file must survive for replay (#502)');
   });
 });
 
@@ -127,7 +132,7 @@ test('auth_switch temporary(mode=import) clears import file on success', async (
   await withImportHome(async () => {
     const { importFile } = seedImportFile('TMP_AK', 'TMP_SK');
 
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'import',
       action: 'temporary',
@@ -139,7 +144,7 @@ test('auth_switch temporary(mode=import) clears import file on success', async (
   });
 });
 
-test('auth_switch persist(mode=import) with STS token is rejected and clears import file', async () => {
+test('auth_switch persist(mode=import) with STS token is refused before consent (R3) and the import file survives', async () => {
   const home = fixtureDir('auth-import-sts-');
   const prevHome = process.env.HUAWEICLOUD_HOME;
   process.env.HUAWEICLOUD_HOME = home;
@@ -153,18 +158,23 @@ test('auth_switch persist(mode=import) with STS token is rejected and clears imp
       'utf8',
     );
 
-    const out = (await callTool('huaweicloud_auth_switch', {
-      vendorConfirmed: 'test: vendor established by the harness',
-      mode: 'import',
-      action: 'persist',
-    })) as AuthSwitchResult;
-
-    assert.equal(out.status, 'error');
-    assert.equal(out.scope, 'rejected');
+    // PR-3b NoDoomedToken: the gate refuses the STS-persist shape before
+    // any consent, so the R3 answer is a gate throw and the peeked file
+    // stays — the same credentials remain replayable for action=temporary,
+    // where the STS token is legitimate.
+    await assert.rejects(
+      () =>
+        gatedAuthSwitchCall({
+          vendorConfirmed: 'test: vendor established by the harness',
+          mode: 'import',
+          action: 'persist',
+        }),
+      /R3/,
+    );
     assert.equal(
       existsSync(importFile),
-      false,
-      'unfixable STS import must be cleared — no replay value, and no plaintext token residual',
+      true,
+      'the gate peeks without wiping: a refused call leaves the import file for the temporary retry',
     );
   } finally {
     if (prevHome === undefined) delete process.env.HUAWEICLOUD_HOME;

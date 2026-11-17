@@ -112,7 +112,7 @@ test(
 );
 
 test(
-  'approve reports an expired token and asks for a re-plan',
+  'approve reports an expired token and asks the agent to make the call again',
   withVaultHome(async () => {
     const token = createApprovalToken(['ECS', 'DeleteServer', '--server_id=x']);
     const store = JSON.parse(readFileSync(approvalsFile(), 'utf8')) as Record<string, { createdAt: number }>;
@@ -122,7 +122,7 @@ test(
     const terminal = scriptedIo([]);
     assert.equal(await runApproveCommand([token], terminal.io), 1);
     assert.match(terminal.output(), /expired/);
-    assert.match(terminal.output(), /plan the command again/);
+    assert.match(terminal.output(), /make the approved call again/);
   }),
 );
 
@@ -245,7 +245,7 @@ test(
 
     assert.equal(await runApproveCommand([token], terminal.io), 0);
     assert.equal(entryState(token), 'user_confirmed');
-    assert.match(terminal.output(), /The agent may now run this command once/);
+    assert.match(terminal.output(), /The agent may now run this approved call once/);
   }),
 );
 

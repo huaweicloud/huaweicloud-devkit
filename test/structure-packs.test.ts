@@ -97,7 +97,10 @@ test('update pack registers version-update tools; registry carries the central d
     assert.doesNotMatch(tools, new RegExp(`case '${name}':`));
   }
   assert.match(tools, /isPackToolName\(name\)/);
-  assert.match(tools, /PACK_TOOL_HANDLERS\[name\]\(args, opts\)/);
+  // handlerOpts IS the call opts (the gate's approved binding is threaded
+  // onto a copy for roster tools, PR-3b) — the pin is that the handler
+  // receives the call's arguments and options, not raw argv.
+  assert.match(tools, /PACK_TOOL_HANDLERS\[name\]\(args, handlerOpts\)/);
 
   // Behavioral lockstep: the pack tool list equals the PACK_OF ownership for
   // 'update'. Descriptions are derived from UPDATE_TOOLS in

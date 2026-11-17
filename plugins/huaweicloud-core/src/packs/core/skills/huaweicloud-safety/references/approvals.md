@@ -15,6 +15,8 @@ One per line, append-shaped: a sibling registration adds its tools here without 
 - `huaweicloud_sandbox_keepalive_watchdog`
 - `huaweicloud_sandbox_sign_agreement`
 - `huaweicloud_sandbox_credentials`
+- `huaweicloud_auth_init`
+- `huaweicloud_auth_switch`
 
 ## The two gate flavors
 
@@ -34,6 +36,12 @@ The same destructive rows also deny on the agent's own Bash face through the saf
 - Changing the arguments rejects the call — the token pins the exact arguments and any real secret values in it.
 
 For the hcloud run face, `command` is the display anchor: the full hcloud command line, checked against the args array (a mismatch rejects with `COMMAND_ARGS_MISMATCH`, nothing executes). The plan result carries it as the TOP-LEVEL `command` field (the redacted echo; substitute real values wherever it shows `<redacted>`). The sandbox tools carry no anchor — their `command` field IS the content.
+
+## Registered tools beyond the hcloud pair
+
+The same gate covers every tool on the approval roster, not only the hcloud plan/run pair. A roster tool with no plan face mints its own token at the gate: the first call in the default token mode returns `USER_CONFIRMATION_REQUIRED` with a fresh `approvalToken` and a `userConfirmation` summary naming what the call does — the user confirms that token the same way (`npx huaweicloud-devkit approve <token>`), and the retry carries the token. In ask mode the same ladder as above applies: the form, or the `ASK_CONFIRMATION_REQUIRED` chat round-trip.
+
+The account-switch pair is registered (PR-3b): `huaweicloud_auth_init` and `huaweicloud_auth_switch` confirm on every call, and their confirmation views name the target account fingerprint and the credential source, because the account switch is the step that can redirect every later approved write to a different account. The confirmation binds the resolved snapshot — the account, region, and session token of the switch — so the account the user confirmed is the account that switches; a changed file or a changed region re-asks instead of executing. The devkit CLI verbs (`npx huaweicloud-devkit auth init`, `auth sync`) are the operator's own terminal surface: the hook denies them on the agent Bash face, so an agent cannot use the CLI to bypass the gate the MCP tools carry. `auth_confirm` (the persist-conflict reconciliation) and the read faces (`auth_status`, `check_account_type`, `auth_sync` on the MCP surface) stay ungated by this chain.
 
 ## Ask mode (DEVKIT_APPROVAL_MODE=ask): the server-run confirmation
 
@@ -65,6 +73,7 @@ The PIN record stores only a mac over the vault custody master key, never the pl
 ## What the agent must not do
 
 - Never run `npx huaweicloud-devkit approve` or `npx huaweicloud-devkit pin` yourself, in any spelling. The confirmation's value is that the user's own terminal records it, and the safety hook denies both verbs on the agent Bash face for exactly that reason.
+- Never run `npx huaweicloud-devkit auth init`, `auth sync`, or `auth reconcile` yourself, in any spelling. The account switch is approval-gated on the MCP tools, the CLI is the operator's own terminal surface, and the safety hook denies those verbs on the agent Bash face — shelling out to them would switch every later approved write's account with no confirmation.
 - Never treat `approvedByUser: true` as the confirmation. In token mode it is the agent's statement that the user approved the exact call and the tool still requires the terminal-confirmed grant; in ask mode it is the chat round-trip's retry marker, sent only after the user answered, and it never substitutes for the form or the round-trip.
 - Never ask the user for their PIN, and never enter a PIN on the user's behalf.
 - Never retry a call with different arguments under the same memo or token. The reuse covers the byte-identical call only; anything else confirms again.

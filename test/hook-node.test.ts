@@ -10,8 +10,10 @@ const hookPath = join(process.cwd(), 'plugins', 'huaweicloud-core', 'hooks', 'hu
 interface HookPayload {
   tool_name: string;
   // The roster exemption's payload carries the MCP tool's arguments array,
-  // not a Bash command string — both shapes reach the hook.
-  tool_input: { command?: string; args?: string[]; approvedByUser?: boolean };
+  // not a Bash command string — both shapes reach the hook. The named
+  // fields the PR-3b registrations carry (ak, sk, vendorConfirmed, ...)
+  // ride the index signature.
+  tool_input: { command?: string; args?: string[]; approvedByUser?: boolean; [key: string]: unknown };
 }
 
 function runHook(payload: HookPayload) {
@@ -529,6 +531,50 @@ test('node hook denies the pin enrollment verb on the agent Bash face (first use
   assert.equal(allowed.stdout.trim(), '', 'an hcloud operation named Pin must stay allowed');
 });
 
+test('node hook denies the account-switch CLI verbs on the agent Bash face (interrogate round 1, finding 1)', () => {
+  // The devkit's own `auth init` / `auth sync` write S1, the OBS config,
+  // and the KooCLI profile — the same account switch the MCP tools gate
+  // behind a human present (PR-3b). The hook blocks raw `hcloud configure
+  // set`, but the devkit wrapper was an open bypass: an agent shelling out
+  // to it switches every downstream approved write's account with no
+  // confirmation. The read-only `auth status` stays allowed, and the
+  // patterns anchor on a devkit binary spelling, so plain text and hcloud
+  // operations never trip.
+  const denied = [
+    'npx huaweicloud-devkit auth init',
+    'npx huaweicloud-devkit auth sync',
+    'npx huaweicloud-devkit auth setup',
+    'npx huaweicloud-devkit auth refresh',
+    'npx huaweicloud-devkit auth reconcile',
+    'npx huaweicloud-devkit@2.0.0 auth init',
+    'node dist/setup-cli.js auth init',
+    'node bin/setup.cjs auth init',
+    'node bin/setup.cjs auth sync',
+    'npm exec huaweicloud-devkit -- auth init',
+  ];
+  for (const command of denied) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', command);
+    assert.match(
+      output.hookSpecificOutput.permissionDecisionReason,
+      /account-switch|account switch/i,
+      `${command}: the deny names the account-switch bypass`,
+    );
+  }
+  const allowed = [
+    'npx huaweicloud-devkit auth status',
+    'npx huaweicloud-devkit auth',
+    'echo auth init is printed in a message',
+  ];
+  for (const command of allowed) {
+    const result = runHook({ tool_name: 'Bash', tool_input: { command } });
+    assert.equal(result.status, 0, `${command}: ${result.stderr}`);
+    assert.equal(result.stdout.trim(), '', `${command}: the read face and non-CLI text stay allowed`);
+  }
+});
+
 test('node hook denies Windows-script-wrapped hcloud writes (#731/#760)', () => {
   // Whichever module the wrapper loads (compiled dist/ when present —
   // stale dist fails this test on purpose — or the src/ fallback in a raw
@@ -636,6 +682,67 @@ test('node hook exemption is shape-scoped: a foreign server suffix with a Bash-s
   assert.equal(nearMiss.status, 0, nearMiss.stderr);
   const nearMissOutput = JSON.parse(nearMiss.stdout);
   assert.equal(nearMissOutput.hookSpecificOutput.permissionDecision, 'deny', 'a near-miss name stays classified');
+});
+
+test('node hook exempts nothing for the named-fields roster rows: the auth pair keeps full classification (PR-3b)', () => {
+  // The auth registrations' payload is named credential fields, and the
+  // server gate does not classify that payload text, so the "gate is
+  // strictly stronger" premise behind the exemption does not hold for
+  // them: their 'structured' row must skip NOTHING — neither directly
+  // nor through the per-tool fallback that would otherwise admit an
+  // args-array or command-string payload riding the auth names. (An
+  // exemption can only REMOVE a deny, never add one: write text buried
+  // in a field VALUE classifies as the JSON form, which the classifier
+  // reads as not_huaweicloud — that verdict is unchanged by this row and
+  // is not its business. The rows below are the shapes whose deny WOULD
+  // have been exempted without the arm.)
+  const denyRow = (payload: { tool_name: string; tool_input: Record<string, unknown> }, label: string): void => {
+    const result = runHook(payload);
+    assert.equal(result.status, 0, `${label}: ${result.stderr}`);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', label);
+  };
+
+  // A stuffed args-array payload (the run face's shape) on the auth name:
+  // the structured row must block the fallback's argsArray admission.
+  denyRow(
+    {
+      tool_name: 'mcp__huaweicloud-devkit_huaweicloud_auth_switch',
+      tool_input: { args: ['hcloud', 'ECS', 'DeleteServers', '--server.id=i-123'], approvedByUser: true },
+    },
+    'a stuffed args-array payload on the auth name',
+  );
+  // A stuffed command-string payload (the exec faces' shape) on the auth
+  // name: same, and this is the shape whose fallback admission would have
+  // skipped the DESTRUCTIVE class too.
+  denyRow(
+    {
+      tool_name: 'mcp__huaweicloud-devkit_huaweicloud_auth_init',
+      tool_input: { command: 'rm -rf /tmp/innocent' },
+    },
+    'a stuffed command-string payload on the auth name',
+  );
+  // The credential-file hard deny stands for the auth names as well.
+  denyRow(
+    {
+      tool_name: 'mcp__huaweicloud-devkit_huaweicloud_auth_switch',
+      tool_input: { vendorConfirmed: 'quote', ak: 'x', sk: 'cat ~/.config/huaweicloud/credentials.json' },
+    },
+    'a credential-path field value',
+  );
+  // Control: the fields payload that carries no deny text stays allowed —
+  // the auth tools' REAL call shape must reach the server gate unharmed.
+  const clean = runHook({
+    tool_name: 'mcp__huaweicloud-devkit_huaweicloud_auth_init',
+    tool_input: {
+      vendorConfirmed: 'the user asked for Huawei Cloud',
+      ak: 'AKQXEXAMPLE',
+      sk: 'sk-example',
+      region: 'cn-north-4',
+    },
+  });
+  assert.equal(clean.status, 0, clean.stderr);
+  assert.equal(clean.stdout.trim(), '', 'the auth pair\u2019s real payload shape reaches the server gate');
 });
 
 test('node hook exemption covers every key commandText classifies (round-2 finding 1)', () => {

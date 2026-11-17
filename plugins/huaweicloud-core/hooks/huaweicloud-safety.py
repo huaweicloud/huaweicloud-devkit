@@ -35,6 +35,7 @@ CONFIG_FILE_RE = None
 SECRET_READ_RE = None
 SECRET_CLI_RE = None
 APPROVAL_CLI_RE = None
+ACCOUNT_SWITCH_CLI_RE = None
 WRITE_OPERATION_RE = None
 WRITE_VOCAB_RE = None
 READ_OPERATION_RE = None
@@ -74,7 +75,7 @@ OBS_MARKER_RE = re.compile(r"\bOBS\b", re.I)
 
 
 def load_policy():
-    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, APPROVAL_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
+    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, APPROVAL_CLI_RE, ACCOUNT_SWITCH_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
     try:
         with POLICY_PATH.open("r", encoding="utf-8") as file_obj:
             policy = json.load(file_obj)
@@ -205,6 +206,20 @@ def load_policy():
                     # leaves APPROVAL_CLI_RE None instead of aborting the
                     # whole policy load.
                     APPROVAL_CLI_RE = None
+        # The account-switch CLI verbs (interrogate round 1, finding 1): the
+        # devkit's own auth init / auth sync write S1, OBS, and the KooCLI
+        # profile — the account switch the MCP tools gate behind a human
+        # present. Same anchoring doctrine as the approval patterns: a devkit
+        # binary spelling is required, so plain text or an hcloud operation
+        # never trips, and the read-only auth status stays allowed.
+        blocked_switch_cli = policy.get("blockedAccountSwitchCliPatterns", [])
+        if isinstance(blocked_switch_cli, list):
+            blocked_switch_cli = [p for p in blocked_switch_cli if isinstance(p, str)]
+            if blocked_switch_cli:
+                try:
+                    ACCOUNT_SWITCH_CLI_RE = re.compile("|".join(blocked_switch_cli), re.I)
+                except re.error:
+                    ACCOUNT_SWITCH_CLI_RE = None
     except Exception:
         pass
 
@@ -2620,6 +2635,14 @@ def evaluate(tool_name, tool_input):
         return "printing vault secrets into the agent context is blocked. Use secret exec so the value reaches only the child process environment."
     if APPROVAL_CLI_RE and any(APPROVAL_CLI_RE.search(candidate) for candidate in candidates):
         return "running the approval CLI from the agent Bash face is blocked: the confirmation must come from the user's own interactive terminal, where the PIN is checked. Ask the user to run the printed npx huaweicloud-devkit approve <token> line themselves (first use: npx huaweicloud-devkit pin, once), then retry the same call."
+    # The account-switch CLI verbs (interrogate round 1, finding 1): the
+    # devkit's own auth init / auth sync write S1, OBS, and the KooCLI
+    # profile — the account switch the MCP tools gate behind a human
+    # present. A devkit binary spelling is required, so plain text or an
+    # hcloud operation never trips, and the read-only auth status stays
+    # allowed.
+    if ACCOUNT_SWITCH_CLI_RE and any(ACCOUNT_SWITCH_CLI_RE.search(candidate) for candidate in candidates):
+        return "running the account-switch CLI from the agent Bash face is blocked: switching the Huawei Cloud account is approval-gated, and the devkit's own confirmation must come from the user's own interactive terminal. Ask the user to run the auth init / auth sync command themselves, or use the gated MCP tools (huaweicloud_auth_init / huaweicloud_auth_switch), which confirm the target account with the user before switching."
     # Order-independent reveal pair: xargs reorders the argv while every word
     # stays literal — a devkit bin plus a `secret get` pair anywhere is a
     # reveal regardless of order (both shadow candidates — the decoded one

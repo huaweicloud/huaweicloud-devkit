@@ -11,6 +11,7 @@ export interface Policy {
   blockedSecretOperations: string[];
   blockedSecretCliPatterns: string[];
   blockedApprovalCliPatterns: string[];
+  blockedAccountSwitchCliPatterns: string[];
   writeOperationPrefixes: string[];
   readOperationPrefixes: string[];
   readOperationExceptions: string[];
@@ -64,6 +65,10 @@ export function loadPolicy(path: string): Policy {
     blockedSecretOperations: toStringArray(raw.blockedSecretOperations, 'blockedSecretOperations'),
     blockedSecretCliPatterns: toStringArray(raw.blockedSecretCliPatterns, 'blockedSecretCliPatterns'),
     blockedApprovalCliPatterns: toStringArray(raw.blockedApprovalCliPatterns, 'blockedApprovalCliPatterns'),
+    blockedAccountSwitchCliPatterns: toStringArray(
+      raw.blockedAccountSwitchCliPatterns,
+      'blockedAccountSwitchCliPatterns',
+    ),
     writeOperationPrefixes,
     readOperationPrefixes: toStringArray(raw.readOperationPrefixes, 'readOperationPrefixes'),
     readOperationExceptions: toStringArray(raw.readOperationExceptions, 'readOperationExceptions'),

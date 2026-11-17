@@ -216,6 +216,14 @@ export interface CallToolOptions {
   // (force-token) and in every non-protocol construction, which is exactly
   // the non-capable T3 path.
   elicitation?: ElicitationSeam;
+  // The approval gate's binding value for THIS call, set by dispatchTool
+  // when a roster tool's call passed the gate (ask-mode consent, a consumed
+  // token, or a classified pass-through). The auth pack's switch and init
+  // handlers execute this resolved snapshot — never a post-consent re-read
+  // of their backing stores (PR-3b's TOCTOU finding: the shown account must
+  // be the executed account). Handlers of tools whose substance lives in
+  // the args alone ignore it.
+  approvedBinding?: unknown;
 }
 
 // Reject invalid numeric args up front instead of silently coercing them to
@@ -297,12 +305,17 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
   // exactly the roster names, compile-checked in packs/registry.ts). A
   // non-roster tool pays one table miss here and dispatches unchanged.
   // Envelopes are results, not throws, so a gated refusal reaches the
-  // caller as the same JSON the handler would have returned.
+  // caller as the same JSON the handler would have returned. On a pass
+  // the gate's binding rides the handler opts: the call's approved
+  // resolution, so credential-consuming handlers execute the snapshot the
+  // human confirmed — never a post-consent re-read (PR-3b's TOCTOU
+  // finding).
   const approvalSpec = (APPROVAL_SPECS as Partial<Record<ToolName, ApprovalSpec>>)[name];
   let arrivalStamp: number | undefined;
   let arrivalSeq: number | undefined;
   let approvedVia: ApprovalReuseVia | undefined;
   let consentScope: ApprovalConsentScope | undefined;
+  let handlerOpts: CallToolOptions = opts;
   if (approvalSpec) {
     const gated = await runApprovalGate(name, approvalSpec, args, opts);
     if (!('pass' in gated)) return gated.envelope;
@@ -310,6 +323,7 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
     arrivalSeq = gated.pass.arrivalSeq;
     approvedVia = gated.pass.approvedVia;
     consentScope = gated.pass.consentScope;
+    if (gated.binding !== undefined) handlerOpts = { ...opts, approvedBinding: gated.binding };
   }
   // The delivery-outcome recorder sits at the COMMON dispatch boundary
   // (round 12, finding 3): the gate covers every roster member — pack
@@ -322,8 +336,8 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
   // without a spec) and dispatch through unchanged.
   try {
     const result = isPackToolName(name)
-      ? await PACK_TOOL_HANDLERS[name](args, opts)
-      : await dispatchCoreTool(name, args, opts);
+      ? await PACK_TOOL_HANDLERS[name](args, handlerOpts)
+      : await dispatchCoreTool(name, args, handlerOpts);
     recordApprovalDispatchOutcome(
       name,
       approvalSpec,
