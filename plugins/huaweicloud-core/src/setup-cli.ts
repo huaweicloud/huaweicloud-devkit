@@ -36,6 +36,7 @@ import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.ts';
 import { readReceipt, removeReceipt } from './dep/receipts.ts';
 import { runSecretCommand } from './lib/secret-vault/cli.ts';
 import { createProcessApproveIo, runApproveCommand, runPinCommand } from './approvals-cli.ts';
+import { readConsentEvents } from './approval-ledger.ts';
 import { custodyReport } from './lib/secret-vault/custody.ts';
 import { vaultList } from './lib/secret-vault/store.ts';
 import { detectCodeartsSandbox } from './codearts-sandbox.ts';
@@ -1055,6 +1056,29 @@ async function cmdDoctor(): Promise<void> {
   if (installedPayload?.id === 'opencode') {
     opencodeDoctorSeam(ctx);
     opencodeDoctorAskRule(ctx);
+  }
+
+  // Session standing consents (PR-3a's S3): the "remember for this
+  // session" grants the elicitation form's tick recorded in the ask-mode
+  // consent ledger. Listing only, zero rows print nothing: a clean home's
+  // doctor output stays byte-identical. A row is a RECORD of a grant the
+  // user ticked — the grant's operative lifetime is the devkit server
+  // process (it forgets on restart, fail-closed), so the line names what
+  // was consented and when, never a live permission claim.
+  try {
+    const standing = readConsentEvents().filter((event) => event.scope === 'session');
+    if (standing.length > 0) {
+      ctx.info('Session standing consents recorded in the consent ledger (each dies with the devkit server process):');
+      for (const grant of standing) {
+        console.log(
+          `        ${grant.tool} — args hash ${grant.argsHash.slice(0, 16)}, granted ` +
+            `${new Date(grant.grantedAt).toISOString()}, evidence ${grant.evidence}`,
+        );
+      }
+    }
+  } catch {
+    // An unreadable ledger is not a health failure: doctor lists state, it
+    // never gates on it.
   }
 
   // Hermes MCP Python SDK (only checked when Hermes config is found).

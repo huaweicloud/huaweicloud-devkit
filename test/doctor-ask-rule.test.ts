@@ -55,6 +55,10 @@ function ourAllow(): Record<string, unknown> {
   return { action: ACTION, resource: '*', effect: 'allow' };
 }
 
+function ourAllowFor(action: string): Record<string, unknown> {
+  return { action, resource: '*', effect: 'allow' };
+}
+
 function ourAsk(): Record<string, unknown> {
   return { action: ACTION, resource: '*', effect: 'ask' };
 }
@@ -210,7 +214,19 @@ test('a user-owned rule on another resource is skipped by name, never silently o
   seedConfig(home, { permissions: [userRule] });
   const stdout = runInstall(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
   const config = loadOpencodeConfig(home);
-  assert.deepEqual(ruleEntries(config), [userRule], 'the user rule is untouched and no "*" rule is added');
+  // The user's rule is untouched; the user-owned ACTION is the one skip, and
+  // every OTHER roster action (PR-3a widened the roster to nine) gets its
+  // own allow rule — skipping by name never suppresses the rest.
+  assert.deepEqual(
+    ruleEntries(config),
+    [
+      userRule,
+      ...allowRuleActions()
+        .filter((action) => action !== ACTION)
+        .map((action) => ourAllowFor(action)),
+    ],
+    'the user rule is untouched and no "*" rule is added',
+  );
   assert.ok(stdout.includes(`already has an entry for ${ACTION}`), 'the installer warns by action');
   const doctorOut = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
   assert.ok(
@@ -528,4 +544,38 @@ test('doctor: in token mode the stale row WARNs the same way (the row is inert i
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
   assert.ok(stdout.includes(`[PASS] ${TOKEN_LABEL}`), `token mode still passes, got:\n${stdout}`);
   assert.ok(stdout.includes(SAVED_WARN), `the stale row is still named, got:\n${stdout}`);
+});
+
+test('doctor lists recorded session standing consents and stays silent on a clean home (PR-3a S3)', async () => {
+  // The elicitation form's "remember for this session" tick writes a
+  // scope:'session' consent row; the doctor lists those rows. A clean home
+  // prints nothing — the committed byte-exact goldens already pin the
+  // clean-home shape, so this half is the guard against a header leaking
+  // onto every run. The seeding goes through the product's own
+  // recordAskModeConsent (pinned to the fake home), then the REAL CLI
+  // reads it back.
+  const home = fixtureDir('hwc-ask-standing-');
+  const cleanRun = runDoctor(home);
+  assert.ok(!cleanRun.includes('Session standing consents'), 'a clean home lists nothing');
+
+  const previousHome = process.env.HUAWEICLOUD_HOME;
+  process.env.HUAWEICLOUD_HOME = home;
+  try {
+    const { recordAskModeConsent } = await import('../plugins/huaweicloud-core/src/approval-ledger.ts');
+    recordAskModeConsent({
+      sessionId: 'stdin',
+      tool: 'huaweicloud_sandbox_connect',
+      argsHash: 'a'.repeat(64),
+      outcome: 'granted',
+      evidence: 'elicitation',
+      evidenceFinal: true,
+      scope: 'session',
+    });
+  } finally {
+    if (previousHome === undefined) delete process.env.HUAWEICLOUD_HOME;
+    else process.env.HUAWEICLOUD_HOME = previousHome;
+  }
+  const seededRun = runDoctor(home);
+  assert.ok(seededRun.includes('Session standing consents'), 'the standing-consent header prints');
+  assert.ok(seededRun.includes('huaweicloud_sandbox_connect'), 'the listed grant names its tool');
 });

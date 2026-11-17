@@ -79,9 +79,25 @@ function withEnv<T>(overrides: Record<string, string | undefined>, fn: () => T):
 }
 
 test('the roster action comes from the roster leaf and matches the allow rule the installer writes', () => {
-  assert.deepEqual(savedAllowActions(), [savedAllowAction()]);
-  assert.equal(savedAllowAction(), ACTION);
-  assert.equal(APPROVAL_TOOLS.length, 1, 'PR-1.5 registers only the hcloud run face');
+  // No count literals: the roster's SIZE is the leaf's business — the
+  // sibling registrations (PR-3b and on) grow it, and a literal here would
+  // turn every landing into a test edit. What this test pins is the
+  // DERIVATION (the drift risk): the default action, the saved-store
+  // inventory, and the writer/reader action-set equality.
+  assert.ok(
+    (APPROVAL_TOOLS as ReadonlyArray<string>).includes('huaweicloud_run_approved_command'),
+    'the PR-1 run face stays on the roster',
+  );
+  assert.equal(
+    savedAllowAction(),
+    savedAllowAction(APPROVAL_TOOLS[0]),
+    'the default action names the first roster member',
+  );
+  assert.deepEqual(
+    savedAllowActions(),
+    APPROVAL_TOOLS.map((tool) => savedAllowAction(tool)),
+    'the saved-store inventory follows the roster leaf',
+  );
   // The client-rule writer and the saved-store reader must name the same
   // grant; a drift here would let the doctor hunt a row the client never
   // writes, or a rule the client never evaluates.

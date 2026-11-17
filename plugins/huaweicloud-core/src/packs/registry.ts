@@ -17,6 +17,7 @@ import { VOUCHER_TOOL_HANDLERS } from './voucher/tools.ts';
 import { DISCOVERY_TOOL_HANDLERS } from './discovery/tools.ts';
 import { HUAWEICLOUD_OPEN_MCP_TOOL_HANDLERS } from './huaweicloud-open-mcp/tools.ts';
 import { HUAWEICLOUD_CLI_TOOL_HANDLERS, HUAWEICLOUD_CLI_APPROVAL_SPECS } from './huaweicloud-cli/tools.ts';
+import { SANDBOX_APPROVAL_SPECS } from './sandbox/approval.ts';
 import { SECRETS_TOOL_HANDLERS } from './secrets/tools.ts';
 import type { ApprovalSpec } from '../approval-types.ts';
 import { APPROVAL_TOOLS } from '../approval-roster.ts';
@@ -148,6 +149,7 @@ export type ApprovalRosterName = (typeof APPROVAL_TOOLS)[number];
 
 export const APPROVAL_SPECS = {
   ...HUAWEICLOUD_CLI_APPROVAL_SPECS,
+  ...SANDBOX_APPROVAL_SPECS,
 } satisfies Record<ApprovalRosterName, ApprovalSpec>;
 
 // Per-pack tool lists invert PACK_OF instead of hand-writing name lists, so a

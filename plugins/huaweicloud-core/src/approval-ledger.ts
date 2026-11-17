@@ -22,18 +22,16 @@
 // the caller's evidence parameter is consulted only when no granted
 // original exists.
 //
-// PR-3a contract (round 10, G2, recorded for the landing PR — no code in
-// PR-1 beyond this note): the S3 session standing consent needs a
-// tier-safe writer this ledger does not export yet — recordAskModeConsent
-// hard-codes scope 'once' and takes no scope parameter, and
-// appendConsentEvent takes the scope but does no tier resolution, so a
-// standing grant or memo event routed through the latter would upgrade
-// unchecked. The standing writer PR-3a lands MUST resolve the tier
-// exactly the way recordAskModeConsent does (chronology, weakest-wins tie)
-// and take the scope as a parameter; and the gate's ask result must first
-// become a structured value carrying approvedVia (a gate-contract change
-// in approval-gate.ts AND tools.ts, the latter unlisted in PR-3a's file
-// list) before the memo can report what it reused.
+// PR-3a landed contract (round 10, G2, recorded here when PR-1 carried no
+// code for it): the tier-safe scoped writer is recordAskModeConsent's
+// scope parameter — 'once' for ordinary arrivals and memo reuses (the tier
+// resolution below applies identically), 'session' for the S3 standing
+// consent grant the elicitation form's "remember for this session" tick
+// writes. No writer routes through appendConsentEvent without tier
+// resolution. The gate's ask result is the structured approvedVia carrier
+// (approval-gate.ts, threaded through tools.ts); the S1 memo's state is
+// the gate's in-memory record, armed by the dispatch recorder from the
+// computed delivery outcome.
 //
 // Write discipline (interrogate rounds 1-7): an append ADDS, it never
 // rewrites, and every committed append SURVIVES. The locked write path
@@ -1980,6 +1978,15 @@ export function recordAskModeConsent(params: {
   // by the spec's contract); written on the row so the consent record names
   // what the user allowed, not only its hash.
   command?: string;
+  // The consent's scope. 'once' (the default) is every ordinary arrival
+  // and every PR-3a memo reuse. 'session' is the S3 session standing
+  // consent grant (PR-3a): the elicitation form's "remember for this
+  // session" tick — the grant row the doctor lists and the gate's
+  // in-memory standing map keys rides. Tier resolution below applies
+  // identically to both scopes: a reuse inherits the original's tier and
+  // never upgrades (the PR-1 ledger rule; the round-10 G2 note's
+  // tier-safe-writer contract).
+  scope?: 'once' | 'session';
   // The caller knows WHICH channel answered this arrival and wants that
   // channel recorded (PR-1.5's ladder: an elicitation form answer is
   // `elicitation`, a chat-round-trip retry is `posture`). Without this the
@@ -2020,7 +2027,7 @@ export function recordAskModeConsent(params: {
     argsHash: params.argsHash,
     outcome: params.outcome,
     grantedAt,
-    scope: 'once',
+    scope: params.scope ?? 'once',
     evidence: 'posture', // resolved below, before the append
     arrivalSeq: 0, // appendConsentEvent assigns the real counter
   };
@@ -2048,16 +2055,17 @@ export function recordAskModeConsent(params: {
   return { grantedAt, arrivalSeq: event.arrivalSeq };
 }
 
-// The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
-// PR-3a's memo datum): annotate the most recent granted consent row on a
-// key with what became of the call the consent authorized. The gate
-// records the ARRIVAL (recordAskModeConsent, above); the dispatch layer —
-// which is the only place that ever sees the handler's return or throw —
-// calls this best-effort follow-up after the handler ran. The ledger's
-// subject widens accordingly: the CONSENT's lifecycle (arrival + what
-// became of the call it authorized), never the handler's internal
-// execution. PR-3a's S1 memo keys reuse on this datum (uncertain /
-// failed → reuse the prior consent; delivered → no reuse).
+// The delivery-outcome follow-up (round 10, finding 4, both seats' shape):
+// annotate the most recent granted consent row on a key with what became of
+// the call the consent authorized. The gate records the ARRIVAL
+// (recordAskModeConsent, above); the dispatch layer — which is the only
+// place that ever sees the handler's return or throw — calls this
+// best-effort follow-up after the handler ran. The ledger's subject widens
+// accordingly: the CONSENT's lifecycle (arrival + what became of the call
+// it authorized), never the handler's internal execution. The annotation
+// is the AUDIT record of the delivery class; PR-3a's retry memo (the
+// gate's in-memory state, approval-gate.ts) keys on the dispatch layer's
+// COMPUTED outcome at dispatch time and never reads this annotation back.
 //
 // Best-effort in every direction, by design: the annotation is
 // LOCKLESS — it never takes the ledger lock (a wedged holder must not
@@ -2078,8 +2086,8 @@ export function recordAskModeConsent(params: {
 // rewriting a spool line stays forbidden (the unlocked read-rewrite
 // this ledger forbids, round 6), and so does rewriting another
 // arrival's store row. A skipped annotation leaves the row as the
-// arrival wrote it; the memo treats an absent outcomeDetail as unknown.
-// The recorded residual narrows to the RACING shape alone: concurrent
+// arrival wrote it; the AUDIT VIEW of an absent outcomeDetail reads as
+// delivery-unknown. The recorded residual narrows to the RACING shape alone: concurrent
 // same-key arrivals can interleave between this call's arrival and its
 // annotate so the newest store row is not provably this dispatch's own
 // — PR-3a's precise keyed join lands with the approvedVia carrier (the
@@ -2260,15 +2268,16 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
   applyOutcomeRows(seqRows, true);
 }
 
-// The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
-// PR-3a's memo datum): record what became of the call a consent
-// authorized, on the consent row that arrival created. The gate records
-// the ARRIVAL (recordAskModeConsent, which returns the identity it wrote —
-// the stamp and the seq); the dispatch layer — the only place that ever
-// sees the handler's return or throw — hands that identity here with the
-// delivery class. The ledger's subject is the CONSENT's lifecycle
-// (arrival + what became of the call it authorized), never the handler's
-// internal execution.
+// The delivery-outcome follow-up (round 10, finding 4, both seats' shape):
+// record what became of the call a consent authorized, on the consent row
+// that arrival created — the AUDIT record of the delivery class (the
+// retry memo's state is the gate's in-memory record, never this
+// annotation). The gate records the ARRIVAL (recordAskModeConsent, which
+// returns the identity it wrote — the stamp and the seq); the dispatch
+// layer — the only place that ever sees the handler's return or throw —
+// hands that identity here with the delivery class. The ledger's subject
+// is the CONSENT's lifecycle (arrival + what became of the call it
+// authorized), never the handler's internal execution.
 //
 // Ownership is proven by IDENTITY, never by position or absence (rounds
 // 12, 15, and 16): the annotate proceeds only when the store holds

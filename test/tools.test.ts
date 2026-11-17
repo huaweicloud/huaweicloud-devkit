@@ -147,10 +147,10 @@ test('callTool normalizes model-emitted string numbers for the sandbox port fami
   // model emitted "port": "8080" — the SDK zod (numericArg unions) passes
   // the string to callTool, and normalizeNumericArgs converts it before
   // dispatch (deploy-nginx's nodePort arithmetic reads port + 1; a string
-  // would concatenate). With no sandbox connected the workspace guard is
-  // the deterministic observable that the numeric layer passed the call
-  // through; a non-numeric or non-positive port still rejects with the
-  // #530 error shape.
+  // would concatenate). deploy_nginx is not on the approval roster, so the
+  // workspace guard is still the deterministic observable that the numeric
+  // layer passed the call through; a non-numeric or non-positive port still
+  // rejects with the #530 error shape.
   await assert.rejects(
     () =>
       callTool('huaweicloud_sandbox_deploy_nginx', {
@@ -183,8 +183,15 @@ test('callTool normalizes model-emitted string numbers for the sandbox port fami
   );
   await assert.rejects(
     () =>
-      callTool('huaweicloud_sandbox_expose_tunnel', {
+      // Same numeric family through an ungated tool (expose_tunnel joined
+      // the approval roster in PR-3a, so its numeric pass-through now sits
+      // behind the gate's attestation, and the workspace guard is no longer
+      // the first observable).
+      callTool('huaweicloud_sandbox_deploy_nginx', {
+        nginx_type: 'spa',
         port: '8080',
+        project: 'myproject',
+        output_dir: 'dist',
         expiry_hours: '72',
       } as unknown as ToolArgs),
     /workspace_id is required/,

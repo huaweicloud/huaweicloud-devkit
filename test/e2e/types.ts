@@ -242,6 +242,14 @@ export interface E2eCase {
   // in-chat half of the human is the prompt ("我批准…"), the terminal half
   // is this watcher.
   autoConfirmApprovals?: true;
+  // The REAL-CLI sibling of autoConfirmApprovals: the terminal half plays
+  // through the TTY-gated approve CLI inside a pseudo-terminal
+  // (approve-pty.ts, the PR-3a seam), so the PIN enrollment, the PIN
+  // prompt, and the custody grant all run for real instead of being
+  // played post-hoc through confirmApprovalToken. POSIX-only (script(1));
+  // a case using it runs where the seam exists. Same env-key injection as
+  // autoConfirmApprovals; pair it with approvalMode 'token'.
+  ptyConfirmApprovals?: true;
   fixtures: CaseFixtures;
   expect: Expectation[];
   softExpect?: Expectation[];

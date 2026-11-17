@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { APPROVAL_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
 import {
   PERMISSION_RULE_RESOURCE,
   allowRuleActions,
@@ -48,7 +49,7 @@ test('applyAllowPermissionRules writes one exact allow rule per roster tool on a
     ROSTER.map((action) => allow(action)),
     'the roster drives one exact rule per tool',
   );
-  assert.equal(ROSTER.length, 1, 'roster length is 1 at this PR; the mechanism is N-ready');
+  assert.equal(ROSTER.length, APPROVAL_TOOLS.length, 'the ask-rule roster mirrors the approval roster leaf');
 });
 
 test('the N-rule set is written when the roster carries several tools', () => {

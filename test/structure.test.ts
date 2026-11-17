@@ -98,13 +98,14 @@ test('the approval roster stays a const tuple so the registry closure cannot be 
       .map((element) => element.trim())
       .filter((element) => element.length > 0);
   };
-  const parseAllRosterTuples = (roster: string): Array<string[]> => {
+  const parseTuples = (roster: string, declaration: string): Array<string[]> => {
     const skeleton = skeletonOf(roster);
-    const occurrences = [...skeleton.matchAll(/export const APPROVAL_TOOLS = \[[\s\S]*?\] as const;/g)].map(
-      (match) => match[0],
-    );
+    const occurrences = [
+      ...skeleton.matchAll(new RegExp(`export const ${declaration} = \\[[\\s\\S]*?\\] as const;`, 'g')),
+    ].map((match) => match[0]);
     return occurrences.map((occurrence) => tupleElementsOf(occurrence));
   };
+  const parseAllRosterTuples = (roster: string): Array<string[]> => parseTuples(roster, 'APPROVAL_TOOLS');
   const cleanElements = (elements: string[]): boolean =>
     elements.length > 0 && elements.every((element) => /^'S+'$/.test(element));
   // allTuplesClean: at least one declaration-shaped occurrence exists, and
@@ -210,10 +211,36 @@ test('the approval roster stays a const tuple so the registry closure cannot be 
   // A same-length runtime-element swap is a clean shape by this pin; the
   // sibling value-level test (roster names real tools) is the guard for
   // that class.
-  assert.match(
-    skeletonOf(roster),
-    /export const APPROVAL_CLASSIFIED_TOOLS: readonly never\[\] = \[\];/,
-    'the classified-list declaration must be present with the pinned shape outside strings and comments',
+  //
+  // The classified list (PR-3a: the two sandbox exec faces) carries the
+  // same const-tuple discipline: it feeds structure guards (every member
+  // must provide a classify) and the gate's classifiedPass engagement, so
+  // widening it to a plain array would inert both silently. The masked
+  // parser runs over the classified declaration with the same
+  // every-occurrence rule and the runtime arity.
+  const classifiedTuples = parseTuples(roster, 'APPROVAL_CLASSIFIED_TOOLS');
+  assert.ok(
+    classifiedTuples.length > 0,
+    'the classified-list declaration must be present outside strings and comments',
+  );
+  assert.ok(
+    classifiedTuples.every(
+      (elements) => cleanElements(elements) && elements.length === APPROVAL_CLASSIFIED_TOOLS.length,
+    ),
+    'every classified-list occurrence must be a clean masked tuple of the runtime arity',
+  );
+  const classifiedClean = (text: string): boolean => {
+    const all = parseTuples(text, 'APPROVAL_CLASSIFIED_TOOLS');
+    return all.length > 0 && all.every((elements) => cleanElements(elements));
+  };
+  assert.ok(
+    classifiedClean("export const APPROVAL_CLASSIFIED_TOOLS = ['huaweicloud_sandbox_exec_one_shot'] as const;"),
+    'a clean classified tuple parses clean',
+  );
+  assert.equal(
+    classifiedClean('export const APPROVAL_CLASSIFIED_TOOLS: readonly string[] = [];'),
+    false,
+    'a widened classified list must fail the pin',
   );
 });
 
@@ -231,6 +258,94 @@ test('every registered classified tool provides a classify', () => {
       `classified tool ${name} must register a pure classify (classify-before-mint)`,
     );
   }
+});
+
+test('the sandbox and safety skills teach the registered approval gate (PR-3a)', () => {
+  // The teaching layer is a consent surface: eight sandbox tools gained a
+  // mechanical gate this PR, and a skill that still says "call connect" or
+  // "exec runs commands" without the gate contract teaches the model to
+  // fight the refusal instead of driving the confirmation. The guard pins
+  // the sandbox skill's gate section and the safety skill's
+  // registered-tools wording, the memo, and the standing consent. The
+  // roster list is DERIVED from the roster leaf (one line per member) so
+  // the sibling registrations' rebases must update it, never outgrow it.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /## Approval gate \(the eight mutating tools\)/);
+  assert.match(sandboxSkill, /USER_CONFIRMATION_REQUIRED/);
+  assert.match(sandboxSkill, /retry-uncertain/, 'the sandbox skill names the retry memo carrier');
+  assert.match(sandboxSkill, /standing-session/, 'the sandbox skill names the standing-consent carrier');
+  // The exec doctrine: benign runs ungated, the refusal coverage names the
+  // engine's real rows, and the boundary sentence states exactly what lies
+  // outside them — never an absolutist "outright"/"still CONFIRM"/"every
+  // target shape" claim.
+  assert.match(sandboxSkill, /NO confirmation surface at all/);
+  assert.match(sandboxSkill, /no confirmation able to unlock it/, 'the refusal coverage names its own boundary');
+  assert.match(
+    sandboxSkill,
+    /recursive forced rm in any combined-flag spelling/,
+    'the rm coverage is the combined-flag spelling, enumerated honestly',
+  );
+  assert.match(
+    sandboxSkill,
+    /The refusal set is those rows and nothing more/,
+    'the refusal set is the rows, stated honestly',
+  );
+  assert.match(
+    sandboxSkill,
+    /a command outside them is NOT silently stopped/,
+    'the outside-the-rows boundary is the honest sentence, never a blanket confirm claim',
+  );
+  assert.match(
+    sandboxSkill,
+    /after a restart the same command confirms again/,
+    'the memo carries its restart boundary',
+  );
+  // The operator-approved Bash-face widening is disclosed (round 4, F3).
+  assert.match(
+    sandboxSkill,
+    /Bash-face widening \(operator-approved\)/,
+    'the Bash-face widening carries its disclosure paragraph',
+  );
+  assert.match(sandboxSkill, /rm -rf node_modules/, 'the disclosure names the node_modules shape');
+  assert.match(
+    sandboxSkill,
+    /the hook gates the agent face only/,
+    'the disclosure scopes the change to the agent face',
+  );
+
+  const approvals = readSource(
+    join('src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'references', 'approvals.md'),
+  );
+  assert.match(approvals, /The registered tools today/, 'the approvals reference names the registered roster');
+  for (const tool of APPROVAL_TOOLS) {
+    assert.ok(approvals.includes(`\`${tool}\``), `the approvals reference lists ${tool} per the roster leaf`);
+  }
+  assert.match(approvals, /## The retry memo \(uncertain delivery\)/);
+  assert.match(approvals, /approvedVia: "retry-uncertain"/);
+  assert.match(approvals, /Remember for this session/);
+  assert.match(approvals, /approvedVia: "standing-session"/);
+  assert.match(approvals, /The refusal set is those rows and nothing more/, 'the refusal class is the enumerated one');
+  assert.match(
+    approvals,
+    /recursive forced rm in any combined-flag spelling/,
+    'the approvals rm coverage is the combined-flag spelling',
+  );
+  assert.match(
+    approvals,
+    /a command outside them is not silently stopped/,
+    'the outside-the-rows boundary carries the responsibility wording',
+  );
+  assert.match(approvals, /dies with it: after a restart the same command confirms again/, 'the memo restart boundary');
+  assert.match(
+    approvals,
+    /operator-approved widening/,
+    'the approvals reference carries the Bash-face widening disclosure',
+  );
+  assert.match(
+    approvals,
+    /the hook gates the agent face only/,
+    'the disclosure scopes the Bash-face change to the agent face',
+  );
 });
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {

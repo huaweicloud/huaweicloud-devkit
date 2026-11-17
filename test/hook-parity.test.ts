@@ -294,7 +294,11 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['bash <<EOF\nhcloud ECS ListServers\nEOF', 'allow'],
   ["python3 -c 'print(1+1)'", 'allow'],
   ["awk '{print $1}' file.txt", 'allow'],
-  ['find /tmp -name x.log -delete', 'allow'],
+  // PR-3a round 3: find with -delete denies on ANY start point (the
+  // hwc-sandbox-destructive-find-delete row) — the earlier root-anchored
+  // row let cwd sweeps through while the teaching claimed the family was
+  // covered.
+  ['find /tmp -name x.log -delete', 'deny'],
   // port-v2defects (interrogate round 13 + the coordinator's DESIGN PIVOT):
   // the vision tail closes by DENIAL, not enumeration — the carrier space
   // is unbounded, so the walk denies fail-closed when it cannot traverse

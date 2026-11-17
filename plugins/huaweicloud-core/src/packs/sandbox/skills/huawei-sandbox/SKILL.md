@@ -47,6 +47,19 @@ Hard rules:
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
 
+## Approval gate (the eight mutating tools)
+
+The mutating sandbox tools run through the devkit approval gate. Gated: `connect`, `exec_with_session`, `exec_one_shot`, `expose_tunnel`, `renew_tunnel`, `keepalive_watchdog`, `sign_agreement`, `credentials`. Not gated: `check_user`, `exec_poll`, `close_session`, `upload_file`, `upload_project`, `deploy_nginx`, `deploy_check`.
+
+- **connect / the tunnel faces / sign_agreement / credentials confirm on every call.** There is no content rule that exempts them. A first call returns `USER_CONFIRMATION_REQUIRED` with a minted `approvalToken` (token mode) or raises the confirmation form / chat envelope (ask mode). Tell the user the approve line (`npx huaweicloud-devkit approve <token>`), wait, then retry the same call with `approvalToken` and `approvedByUser: true`. Never sign the agreement or inject credentials without the user's explicit approval — the gate now enforces mechanically what this skill always demanded.
+- **The exec tools are content-classified.** A benign command (`ls`, `npm install`, `mkdir`, builds) runs with NO confirmation surface at all. A write-classified command (an `hcloud` write through the terminal, anything the text classifier marks write/execution) confirms on every call. The strict engine REFUSES, with the rule named and no confirmation able to unlock it, the families its rows cover: credential-file reads (`cat ~/.huaweicloud/config.json`, `env` dumps), recursive forced rm in any combined-flag spelling — `rm -rf`/`-fr`, flags interposed (`rm -v -rf x`) or after the target, `--`, quoted (`"dist"`/`'dist'`), glob (`dist/*`), `$VAR` (including `$PWD`), dot-prefixed names (`.git`, `.next`, `.cache`), `.`, `..`, `~`, `$HOME`, `*`, and `--no-preserve-root` — `find` with `-delete`, pipelines sweeping files into rm (`ls | xargs rm -rf`), downloads piped into a shell (`curl|wget … | bash|sh`), disk format, and shutdown commands. The refusal set is those rows and nothing more: a command outside them is NOT silently stopped, so prefer targeted deletions (rm with exact file names, no combined -rf flag) yourself — and treat any refusal as a boundary to rework, never a prompt to retry.
+- **The retry memo.** When an approved exec's delivery was uncertain (the call threw, completion unknowable), a byte-identical retry reuses the prior consent and the response carries `approvedVia: "retry-uncertain"` — no second confirmation. A delivered call clears the memo: the same command again confirms like any first call. Different arguments always confirm again. The memo lives in the devkit server process: after a restart the same command confirms again.
+- **Session standing consent (ask mode).** The confirmation form offers "Remember for this session"; when the user ticks it, identical later calls run without asking (`approvedVia: "standing-session"`) until the devkit server restarts.
+
+Never fabricate `approvedByUser: true`, never run the approve or pin verbs yourself, and never treat a strict-classification refusal as something a confirmation could unlock. The full contract: the safety skill's `references/approvals.md`.
+
+**Bash-face widening (operator-approved).** The same destructive rows also apply to the agent's own Bash face through the safety hook: unanchored recursive rm — any combined-flag spelling, including `rm -rf node_modules` and the quoted/glob/`$VAR` forms — and `find … -delete` now deny there too. The operator chose the safe direction: a false deny on the agent face costs one rephrased command, a miss costs the workspace. A human's own terminal is unaffected — the hook gates the agent face only.
+
 ## 两池沙箱（pool_type）
 
 > 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状；数值为服务端配置下发的默认口径，平台调参以服务端回显为准）。

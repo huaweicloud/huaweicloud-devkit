@@ -14,6 +14,8 @@ import {
   workspaceId,
   username,
   vendorConfirmed,
+  approvalTokenArg,
+  approvedByUserArg,
 } from '../../lib/tool-schema-parts.ts';
 
 // The sandbox pack's zod schema family, extracted from tools.ts in the
@@ -63,6 +65,8 @@ export const execWithSessionSchema = z.looseObject({
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_with_session})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const execOneShotSchema = z.looseObject({
@@ -86,6 +90,8 @@ export const execOneShotSchema = z.looseObject({
     .describe(
       `Execution timeout in milliseconds (sync default: ${SANDBOX_TIMEOUT_MS.exec_one_shot}; async bounds only the start exec, default ${SANDBOX_TIMEOUT_MS.exec_one_shot_async} — the async command itself is unbounded and outlives the exec)`,
     ),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const execPollSchema = z.looseObject({
@@ -221,6 +227,8 @@ export const exposeTunnelSchema = z.looseObject({
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.expose_tunnel})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const renewTunnelSchema = z.looseObject({
@@ -239,6 +247,8 @@ export const renewTunnelSchema = z.looseObject({
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.renew_tunnel})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const keepaliveWatchdogSchema = z.looseObject({
@@ -260,9 +270,14 @@ export const keepaliveWatchdogSchema = z.looseObject({
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.keepalive_watchdog})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
-export const signAgreementSchema = z.looseObject({});
+export const signAgreementSchema = z.looseObject({
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
+});
 
 export const connectSchema = z.looseObject({
   vendorConfirmed,
@@ -280,6 +295,8 @@ export const connectSchema = z.looseObject({
   flavor_id: z.string().optional().describe('Flavor ID; overrides server default (only for new sandbox)'),
   env: looseObject.optional().describe('Environment variables to set in the sandbox (only for new sandbox)'),
   git: gitConfig.optional().describe('Git repo config (only for new sandbox)'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const credentialsSchema = z.looseObject({
@@ -298,4 +315,6 @@ export const credentialsSchema = z.looseObject({
     .describe(
       'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. Also accepts a vault ref (secret://<scope>/<name>), resolved locally so the key never enters the conversation. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
     ),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
