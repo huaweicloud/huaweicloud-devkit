@@ -191,6 +191,25 @@ test('devbridge host launch survives the exec session (#919/#922): setsid guard,
     deployCheckSource,
     /devbridge host <tunnelId> -p \$\{port\} -e 72 > \/tmp\/host\.log 2>&1 < \/dev\/null & fi; disown/,
   );
+  // The remediation's same-port delete is port-attributed, never name-attributed:
+  // its own flow creates custom-named tunnels (`devbridge create <name>`), so a
+  // `tunnel-<port>-` name match would no-op exactly on the tunnels the flow
+  // itself creates (interrogate port-pr4 B-F1). `devbridge port list` exists in
+  // 0.2.x (verified on the real CLI); delete-all must never return here. The
+  // awk carries the OSC 133 strip — integration-enabled terminals wrap every
+  // output line and the CLI rejects glued IDs (B-R2-1), so the strip is
+  // load-bearing, not cosmetic.
+  assert.match(deployCheckSource, /devbridge port list "\$T"/);
+  // The source file carries double backslashes (the TS template emits single
+  // ones to the shell); the runtime-string pins over in devbridge-cleanup's
+  // suite see the emitted form.
+  assert.match(deployCheckSource, /gsub\(\/\\\\033\\\\\]133;C\\\\007\/, ""\)/);
+  assert.match(
+    deployCheckSource,
+    /awk -v P=\$\{port\} '\{gsub\(\/\\\\033\\\\\]133;C\\\\007\/, ""\); if \(\$1 == P\) f=1\} END \{exit f \? 0 : 1\}'/,
+  );
+
+  assert.doesNotMatch(deployCheckSource, /devbridge delete-all/);
   // Migration/quota verdicts are host-log facts read from dedicated fields —
   // never a whole-stdout scan that the echoed probe body (DB_TUNNEL_BODY)
   // could poison with app content. Count-robust (grep -c prints line counts).
@@ -597,7 +616,7 @@ test('devbridge 0.2.x flow: auth capability probe, version detection, in-place u
   );
   assert.match(
     sandbox,
-    /credential waterfall \(keyring → API-Key file → auto-created API Key\), pre-cleans stale tunnels/,
+    /credential waterfall \(keyring → API-Key file → auto-created API Key\), selectively cleans only same-port\/orphan tunnels/,
   );
   assert.doesNotMatch(sandbox, /keyring → AK\/SK/, 'the removed tier must not reappear in the Step 7 waterfall');
   assert.doesNotMatch(

@@ -94,6 +94,12 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts', {
       tunnelLog.push('watchdog');
       return { ok: true, scriptPath: '/tmp/tunnel-keepalive.sh', watchdogPid: '123', tunnels: [] };
     },
+    // connect 的选择性隧道清理（port-pr4）：记录入 tunnelLog 以保持 connect
+    // 用例的隧道层 mock 完整。
+    cleanupDevbridgeTunnels: async () => {
+      tunnelLog.push('cleanup');
+      return { ok: true, deleteIds: [], killPids: [] };
+    },
     validateTunnelId: () => {},
   },
 });

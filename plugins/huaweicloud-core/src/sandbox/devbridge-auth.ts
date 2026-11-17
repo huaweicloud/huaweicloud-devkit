@@ -54,8 +54,12 @@ function versionGateFailure(
 //           fallback (devbridge-key.ts) when keyring injection is unavailable.
 // AK/SK login (--access-key/--secret-key) was REMOVED: devbridge authentication is
 // now fixed to API Key only (定稿决策，2026-11-04).
-// Every tier performs a real `devbridge auth login --api-key` and verifies with
-// `auth status` (must print "Logged in"); on failure the waterfall falls through.
+// Every tier performs a real `devbridge auth login --api-key` (exit code checked),
+// then verifies with `auth status` AND a real authenticated API call
+// (`devbridge list`); on failure the waterfall falls through. The list check is
+// required because a stale key can leave a "Logged in" local token while
+// server-side calls return 40100 — without it the probe reports a usable auth
+// and the auto-create self-heal never triggers.
 // DB_ATTEMPT_* lines are non-sensitive diagnostics for support escalation.
 // The HOST orchestrates an auto-create fallback between probe rounds: when the
 // first probe returns NO_CREDENTIAL, the host calls ensureDevbridgeKey() and
@@ -75,7 +79,13 @@ export function buildDevbridgeAuthProbe(): string {
     `DB_VERSION=$(devbridge version 2>/dev/null | head -1)`,
     `echo "DB_VERSION=\${DB_VERSION}"`,
     `DB_OK=0`,
-    `db_login_ok() { devbridge auth status 2>/dev/null | grep -q "Logged in"; }`,
+    `db_login_ok() {`,
+    // 本地 token 可能仍显示 Logged in，但 API key 已在服务端失效（实测
+    // list/renew 返回 40100）。因此额外做一次真实鉴权 API 调用，确保探针
+    // 结果可用（否则 auto-create 自愈不会触发）。
+    `  devbridge auth status 2>/dev/null | grep -q "Logged in" || return 1`,
+    `  devbridge list >/dev/null 2>&1`,
+    `}`,
     `db_diag() { echo "DB_ATTEMPT_$1=$2"; }`,
     ``,
     `# ---- Tier 1: API Key from the sandbox keyring (platform auto-injection) ----`,
@@ -105,8 +115,7 @@ export function buildDevbridgeAuthProbe(): string {
     `  db_diag KEYRING "hwcloud-not-installed"`,
     `fi`,
     `if [ -n "$HW_DB_KEY" ]; then`,
-    `  devbridge auth login --api-key "$HW_DB_KEY" >/tmp/db_auth.log 2>&1`,
-    `  if db_login_ok; then`,
+    `  if devbridge auth login --api-key "$HW_DB_KEY" >/tmp/db_auth.log 2>&1 && db_login_ok; then`,
     `    echo "DB_AUTH_MODE=API_KEY_KEYRING"`,
     `    DB_OK=1`,
     `  else`,
@@ -120,8 +129,7 @@ export function buildDevbridgeAuthProbe(): string {
     `if [ "$DB_OK" -eq 0 ]; then`,
     `  source /tmp/hw_api_key 2>/dev/null`,
     `  if [ -n "$HW_API_KEY" ]; then`,
-    `    devbridge auth login --api-key "$HW_API_KEY" >/tmp/db_auth.log 2>&1`,
-    `    if db_login_ok; then`,
+    `    if devbridge auth login --api-key "$HW_API_KEY" >/tmp/db_auth.log 2>&1 && db_login_ok; then`,
     `      echo "DB_AUTH_MODE=API_KEY_FILE"`,
     `      DB_OK=1`,
     `    else`,

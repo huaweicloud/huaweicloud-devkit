@@ -208,8 +208,10 @@ Setup is a **plugin-side preflight** — the developer should be asked a questio
    sleep 1
    # Remove stale nginx configs from previous deployments
    sudo rm -f /etc/nginx/conf.d/*.conf /etc/nginx/conf.d/*.conf.bak 2>/dev/null
-   # Remove stale DevBridge tunnels
-   devbridge delete-all 2>/dev/null || true
+   # Remove stale DevBridge tunnels only (keep other ports/sessions):
+   # list and delete orphan IDs; the automated connect cleanup does this too.
+   devbridge list
+   # devbridge delete <orphan-id>
    # Reload nginx to apply
    sudo nginx -s reload 2>/dev/null || true
    ```
@@ -385,7 +387,7 @@ fi
 
 - `-s` (silent) is **required** in the sandbox — without it the installer blocks reading `/dev/tty`.
 - **Old tunnels do not survive the upgrade**: 0.1.x-created tunnels are not registered on the s2 gateway — always rebuild the tunnel after upgrading (the expose flow below does this via pre-cleanup).
-- If `10006: quota exceeded` appears after upgrading, stale pre-upgrade tunnels still count against the quota — `devbridge delete-all` and retry.
+- If `10006: quota exceeded` appears after upgrading, stale pre-upgrade tunnels still count against the quota — the expose tool now removes orphans first, then the oldest non-keepalive tunnel one at a time. Manually: `devbridge list` and `devbridge delete <id>` for stale entries; reserve `devbridge delete-all` for an explicit full reset.
 
 ### Sandbox filesystem persistence: what survives a reboot (#999)
 
@@ -451,10 +453,13 @@ devbridge auth status
 Run the web server and the tunnel in the background, then read the URL from the log; the app lives in the workspace mount, e.g. `/workspace/<repo-name>`:
 
 ```bash
-# 0. Pre-cleanup: kill old processes and stale tunnels
-pkill -f "devbridge host" 2>/dev/null || true
-sleep 2
-devbridge delete-all 2>/dev/null || true
+# 0. Pre-cleanup: replace ONLY the tunnels bound to <port>; keep other ports/sessions.
+#    (huaweicloud_sandbox_expose_tunnel does this automatically with cleanup_mode=stale.)
+#    Port-attributed, any tunnel name — a tunnel-<port>- name match would miss the
+#    custom-named tunnels `devbridge create <name>` makes. The gsub strips the OSC 133
+#    markers integration-enabled terminals wrap around every output line — without it
+#    devbridge rejects the glued tunnel IDs and the delete silently no-ops (#946).
+for T in $(devbridge list 2>/dev/null | awk '{gsub(/\033\]133;C\007/, ""); if ($1 !~ /^Tunnel/ && $1 !~ /^No$/) print $1}'); do devbridge port list "$T" 2>/dev/null | awk -v P=<port> '{gsub(/\033\]133;C\007/, ""); if ($1 == P) f=1} END {exit f ? 0 : 1}' && devbridge delete "$T" 2>/dev/null || true; done
 
 # 1. Start tunnel (setsid-detached so the host survives the exec session; -e 72 = 72h lifetime)
 if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & else nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & fi
@@ -472,8 +477,9 @@ if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "304" ]; then
   echo "Tunnel verified: $TUNNEL_URL (HTTP $HTTP_CODE)"
 else
   echo "WARN: Tunnel URL unreachable (HTTP $HTTP_CODE). Rebuilding tunnel..."
-  pkill -f "devbridge host" && sleep 2
-  devbridge delete-all 2>/dev/null || true
+  # Rebuild only this port's tunnels (port-attributed, any name); never touch other ports.
+  # The gsub strips OSC 133 markers so devbridge receives clean IDs (#946).
+  for T in $(devbridge list 2>/dev/null | awk '{gsub(/\033\]133;C\007/, ""); if ($1 !~ /^Tunnel/ && $1 !~ /^No$/) print $1}'); do devbridge port list "$T" 2>/dev/null | awk -v P=<port> '{gsub(/\033\]133;C\007/, ""); if ($1 == P) f=1} END {exit f ? 0 : 1}' && devbridge delete "$T" 2>/dev/null || true; done
   if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & else nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & fi
   disown 2>/dev/null || true
   sleep 10
@@ -494,8 +500,9 @@ fi
 #   0.2.x: `devbridge list` (plain table; data rows start with the 8-char tunnel ID)
 #   0.1.x (legacy): `devbridge list -j` (JSON)
 devbridge list
-# Step B: Remove all stale tunnels
-devbridge delete-all
+# Step B: Remove stale tunnels one by one (the expose tool already does
+#   orphans first, then oldest non-keepalive; keep keepalive-protected tunnels)
+# devbridge delete <stale-id>
 # Step C: Retry tunnel creation
 if command -v setsid > /dev/null 2>&1; then setsid nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & else nohup devbridge host -p <port> -e 72 > /tmp/host.log 2>&1 < /dev/null & fi
 disown 2>/dev/null || true
@@ -1000,7 +1007,7 @@ If the status code is not 2xx/3xx:
 
 ### Step 7: Expose via DevBridge [REQUIRED — deployment incomplete without this]
 
-**Preferred: call `huaweicloud_sandbox_expose_tunnel` with the ACTUAL port returned by `deploy_nginx` (`{"port": <port>}`)** — it authenticates automatically through the credential waterfall (keyring → API-Key file → auto-created API Key), pre-cleans stale tunnels, starts the host, extracts the public URL, and health-checks it before returning. If it reports `ok: false` with an API-Key hint, create the key and re-run `sandbox_credentials`, then call it again. The tool's returned `publicUrl` is the deployment result; an `ok: false` verdict (including a migrated-placeholder URL) means the deployment is NOT complete — never fabricate or reuse a dead URL.
+**Preferred: call `huaweicloud_sandbox_expose_tunnel` with the ACTUAL port returned by `deploy_nginx` (`{"port": <port>}`)** — it authenticates automatically through the credential waterfall (keyring → API-Key file → auto-created API Key), selectively cleans only same-port/orphan tunnels (other ports, other sessions and keepalive-protected tunnels are preserved), starts the host, extracts the public URL, and health-checks it before returning. If it reports `ok: false` with an API-Key hint, create the key and re-run `sandbox_credentials`, then call it again. The tool's returned `publicUrl` is the deployment result; an `ok: false` verdict (including a migrated-placeholder URL) means the deployment is NOT complete — never fabricate or reuse a dead URL.
 
 **Manual fallback** (only when the tool is unavailable or must be debugged by hand): follow the rest of this section.
 
@@ -1010,7 +1017,7 @@ Follow the standard [Expose the deployed app](#expose-the-deployed-app-public-ur
 
 Use `exec_with_session` for the Expose steps, and copy the guarded `setsid nohup … < /dev/null & disown` launch verbatim — the guard (not the exec flavor) is what makes the host survive the session. For SSR, DevBridge tunnels the nginx public port (not the Node port directly).
 
-**Pre-flight**: always run `devbridge delete-all` before creating a new tunnel to prevent `10006: quota exceeded` from accumulated stale tunnels. If you still get quota error, list tunnels with `devbridge list` (0.2.x plain table; 0.1.x legacy `-j` JSON), delete stale ones, and retry.
+**Pre-flight**: `huaweicloud_sandbox_expose_tunnel` now performs **selective cleanup** automatically (default `cleanup_mode=stale`): it removes orphan records/hosts and replaces the tunnel bound to the requested port; all other ports, other sessions and keepalive-protected tunnels are preserved (the same-port tunnel is the one documented exception — a port cannot have two tunnels). On `10006: quota exceeded` it removes all orphans first, then the oldest non-keepalive tunnel one at a time; keepalive-protected tunnels are never auto-deleted and a still-full quota returns `devbridge_tunnel_quota_exceeded`. `cleanup_mode=none` skips cleanup entirely (a stale same-port host can then conflict). For manual flows, prefer `devbridge list` + `devbridge delete <id>` for stale entries; use `devbridge delete-all` only for an explicit full reset (shared-sandbox warning below).
 
 > **Concurrency warning**: `devbridge delete-all` and `pkill -f "devbridge host"` are GLOBAL operations scoped to the whole sandbox — if multiple sessions share the same sandbox, pre-cleaning can kill tunnels published by other sessions and invalidate URLs you handed out earlier. For shared sandboxes, prefer `devbridge list` and delete only stale/your-own tunnels instead of blanket `delete-all`, and re-expose only after confirming the target port is still served.
 

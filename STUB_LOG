@@ -1,0 +1,4 @@
+ps -p 1000 -o args=
+grep -q devbridge host
+ps -p 1001 -o args=
+grep -q devbridge host
