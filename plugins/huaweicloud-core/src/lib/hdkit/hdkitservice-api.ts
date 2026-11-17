@@ -4,8 +4,27 @@ import { detectAgent } from '../../telemetry/agent-detect.ts';
 import { readInstalledVersion } from '../../update-check.ts';
 import { getCredentials } from './hwlink-api.ts';
 import { pinnedTemplateFor } from './sandbox-pool.ts';
+import {
+  MANUFACTURED_FAMILY,
+  VERSION_GATE_CODE,
+  manufacturedPrefixPattern,
+  applyVersionGate,
+  canonCode,
+  cleanMessage,
+  connectRetryDelaysMs,
+  decorateExhaustedConnect,
+  gateFoldPayload,
+  isErrorCarrier,
+  isGatewayTransient,
+  ownDataValue,
+  isNonRetryableBusinessError,
+  isVersionGateError,
+  safeMessageText,
+  safeReadField,
+  serializableRemediation,
+} from './hdkit-gate.ts';
 import { asRecord } from '../as-record.ts';
-import { asText } from '../as-text.ts';
+import { asString, asText } from '../as-text.ts';
 
 export interface HdkitError extends Error {
   code?: string;
@@ -14,6 +33,8 @@ export interface HdkitError extends Error {
   remediation?: { hint: string; steps: string[] };
   retryAfter?: string;
   coreHoursExhausted?: boolean;
+  clientVersion?: string;
+  minVersion?: string;
 }
 
 // Structural surface shared by the global and undici Response implementations;
@@ -27,6 +48,96 @@ interface HttpResponseLike {
 
 function getHdkitBaseUrl(): string {
   return process.env.HDKITSERVICE_ENDPOINT || 'https://devkit.huaweicloud.com/rest/developer/server/hdkitservice/';
+}
+
+// resp 接缝的安全读（round 17 建、round 18 补有限数窄化）：敌意响应对象
+// 的 status/ok/headers.get 都是 getter——裸读在各分支里把设计信封换成
+// TypeError。三读全部带卫队与窄化：status 只在有限数字时携带，ok 只在真
+// 布尔时按真处理（缺读按非 ok——不可确认的成功不是成功），Retry-After
+// 只在头读返回字符串时携带
+function safeRespStatus(resp: unknown): number | undefined {
+  const status = safeReadField(resp, 'status');
+  // 合法状态窄化（round 18 有限数、round 19 细则）：NaN/Infinity 之外，
+  // -1/-0/502.5 这类有限数也非服务器可签的状态——携带会伪造 HTTP_-1/
+  // HTTP_502.5 伪码；只有 100–599 的整数携带（其余按缺读：渲染"未知"、
+  // 无码可制造、不作瞬时判定输入）
+  return typeof status === 'number' && Number.isSafeInteger(status) && status >= 100 && status <= 599
+    ? status
+    : undefined;
+}
+
+function safeRespOk(resp: unknown): boolean {
+  return safeReadField(resp, 'ok') === true;
+}
+
+function safeRetryAfterHeader(resp: unknown): string | undefined {
+  try {
+    const headers = safeReadField(resp, 'headers');
+    if (headers !== null && typeof headers === 'object') {
+      const read = safeReadField(headers, 'get');
+      if (typeof read === 'function') {
+        const value = (read as (name: string) => unknown).call(headers, 'Retry-After');
+        // Retry-After 同过 200 码点上界（round 31/SHOULD 3）：头字符串是服务
+        // 器控制串——"every server-controlled string" 口径收口，8000 码点头不
+        // 再整段骑载（内容字段：截断而非缺失）
+        return typeof value === 'string' ? boundedServerText(value) : undefined;
+      }
+    }
+  } catch {
+    // 敌意头对象按缺失
+  }
+  return undefined;
+}
+
+// 服务器控制串的有界读取（round 29/MUST 1 建、round 31 升为模块级）：200 码
+// 点上界——先按 UTF-16 单元截头（slice 不物化全串），再按码点截断；星面区
+// 字符永不被切成孤立代理
+function boundedServerText(raw: unknown): string | undefined {
+  const text = asString(raw);
+  if (text === undefined) return undefined;
+  return [...text.slice(0, 400)].slice(0, 200).join('');
+}
+
+// 码字段的身份口径（round 31/MUST 1，adversary-2 F1）：截断的码即伪拼写——
+// 201-220 码点带内真码被切半（HDKIT_VERS…），要么逃过每个折叠（裸抛零指
+// 引）、要么纯填充头把码全推出界外（cleanMessage 洗成空——409 误折无码门
+// 禁）。超界视同缺失：界内（≤200 码点）可验证即保身份；界外即无码——409
+// 折无码门禁（操作员裁定：界内保身份、界外无码），非 409 照旧制造 HTTP_x
+// 而非发布假拼写。检测不物化全串：≤200 UTF-16 单元必 ≤200 码点（每码点至
+// 少 1 单元）全量返回；超 200 单元时取首 402 单元（≥402 单位即 ≥201 码点，
+// 必超界）码点计数判界
+function boundedServerCode(raw: unknown): string | undefined {
+  const text = asString(raw);
+  if (text === undefined) return undefined;
+  if (text.length <= 200) return text;
+  const head = [...text.slice(0, 402)];
+  return head.length <= 200 ? head.join('') : undefined;
+}
+
+// 传输层拒绝的统一包装（round 7 响应体 + round 8 fetch 层）：从清洗值构建
+// 抛出错误——空白/纯不可见原因落设计文案，真文本原样透传；原对象（含传输
+// 层自带的 code 属性，如 AbortError DOMException 的数值 20）不透传；
+// bodyUnreadable 标记供门禁折叠区分传输形态与服务端话术。
+// round 15 起来因形态也不可信：instanceof 在撤销代理上抛（[[GetPrototypeOf]]
+// 陷阱），message 读在抛出型 getter 上抛——包装口全部的意义就是不信任来因。
+// 原型检查与消息读都带防护，任一被拒按缺失（兜底文案）
+function transportReason(error: unknown, fallback: string): Error {
+  let reason = '';
+  try {
+    // 有界 Error 判定（round 25/SHOULD 6）：instanceof 的 OrdinaryHasInstance
+    // 无界走查——本模块唯一未设跳数的链走（实测 V8 内部 RangeError 兜底
+    // 87ms/111MB，界不归本模块定）；换 isErrorCarrier（visited+1024 跳，
+    // 与门禁走查同界），铸造陷阱毫秒级返回
+    if (isErrorCarrier(error)) {
+      const raw = (error as { message?: unknown }).message;
+      if (typeof raw === 'string') reason = raw;
+    } else if (typeof error === 'string') {
+      reason = error;
+    }
+  } catch {
+    reason = '';
+  }
+  return Object.assign(new Error(cleanMessage(reason) || fallback), { bodyUnreadable: true });
 }
 
 async function hdkitRequest(
@@ -60,6 +171,10 @@ async function hdkitRequest(
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+  // fetch 层中断（round 8，v2 标注分歧——dev 裸抛）：30s/300s 定时器的
+  // AbortError DOMException 携传输层 code 20，此前无响应可包——原对象从每个
+  // hdkit 出口裸抛。与响应体中断同缝守卫：从清洗值构建抛出错误，标记
+  // bodyUnreadable、不带 status（无响应即无网关信号，不重试、不门禁）。
   let resp: HttpResponseLike;
   try {
     resp = await fetchWithProxy(url, {
@@ -68,11 +183,53 @@ async function hdkitRequest(
       body: body ? JSON.stringify(body) : undefined,
       signal: controller.signal,
     });
+  } catch (error) {
+    throw transportReason(error, 'hdkitservice request failed (no response)');
   } finally {
     clearTimeout(timer);
   }
 
-  const text = await resp.text();
+  // 响应体读取中断同样携带 resp.status（round 4，v2 标注分歧——dev 裸抛）：
+  // 已收到 502/504 status 时重试契约照常适用。两分支统一从清洗值构建抛出
+  // 错误（round 7）：字符串与 Error 原因的清洗输出即为最终消息——边缘空白/
+  // 不可见字符不存活到 MCP 边界，原对象（含传输层自带的 code 属性，如
+  // DOMException 的 20）不透传；bodyUnreadable 标记供门禁折叠区分传输噪声
+  // 与服务端话术。
+  // 体读取的有界化（round 19）：fetch 的 abort 定时器在其 finally 里、体读
+  // 取之前清除——永不结算的 text() 此前无模块侧上界，工具调用悬挂。第二个
+  // 定时器跨体读取持续武装（真 Response 流随 controller.abort 拒绝），并经
+  // Promise.race 兜住不理会 abort 的敌意体：非结算体在 timeoutMs 内落进设
+  // 计 transportReason 包装。已知边界（台账）：自转 thenable（then 里再 resolve
+  // 自身）把微任务队列永远排满，任何定时器都上不了 CPU——无客户端方案可
+  // 界定，与全陷阱谎言同族的记录边界
+  let bodyTimer: ReturnType<typeof setTimeout> | undefined;
+  const bodyBound = new Promise<never>((_, reject) => {
+    bodyTimer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`hdkitservice response body read timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  let text: string;
+  try {
+    const raw: unknown = await Promise.race([resp.text() as unknown, bodyBound]);
+    // 敌意体收口（round 18）：text() 可 resolve 出任意值——非字符串先前在非
+    // JSON catch 里裸做 text.slice，原始 TypeError 顶替设计信封（409 门禁折
+    // 叠死、502 不再重试）。按不可读体处理：本 catch 的设计包装（清洗文案 +
+    // bodyUnreadable + 安全读 status），与 text() 拒绝孪生同形
+    if (typeof raw !== 'string') {
+      throw new TypeError(`hdkitservice response body is not text (typeof ${typeof raw})`);
+    }
+    text = raw;
+  } catch (error) {
+    // 状态读过安全卫队（round 16）：text() 拒绝 + 敌意 status getter 不得
+    // 在包装口自己的 catch 里引爆——无状态即无网关信号（不重试），标记照带
+    const wrapped = transportReason(error, 'hdkitservice response body read aborted');
+    const status = safeRespStatus(resp);
+    if (status !== undefined) Object.assign(wrapped, { status });
+    throw wrapped;
+  } finally {
+    if (bodyTimer !== undefined) clearTimeout(bodyTimer);
+  }
   let data: Record<string, unknown> | unknown[];
   try {
     // asRecord collapses arrays into {} — the list endpoints (api-keys) return
@@ -80,19 +237,65 @@ async function hdkitRequest(
     const parsed: unknown = JSON.parse(text);
     data = Array.isArray(parsed) ? parsed : asRecord(parsed);
   } catch {
-    throw new Error(`hdkitservice returned non-JSON (status ${resp.status}): ${text.slice(0, 200)}`);
+    // 非 JSON 页携带 status（round 17 起过安全读+窄化）：诚实的有限数字照带
+    // ——瞬时判定按 status 裁决（round 3 的教训：不带 status 的抛错会被消息
+    // 兜底误判）；敌意/非有限读按缺读处理——渲染"未知"、不携带（无状态即
+    // 无码可制造）。bodyUnreadable 同标记（round 6）。
+    // 片段按码点截断并过清洗口（round 10）：UTF-16 单元截断会把星面区对截成
+    // 孤立代理对，阻断所有清洗——不可见字符随片段骑进折叠消息
+    // 先按 UTF-16 单元截头部再按码点截断（round 11）：[...text] 会物化整个
+    // 响应体（40MB 页面实测 1.07GB 堆），400 单元保证覆盖 200 码点
+    const snippet = cleanMessage([...text.slice(0, 400)].slice(0, 200).join(''));
+    const nonJsonStatus = safeRespStatus(resp);
+    throw Object.assign(
+      new Error(`hdkitservice returned non-JSON (status ${nonJsonStatus ?? '未知'})${snippet ? `: ${snippet}` : ''}`),
+      { ...(nonJsonStatus !== undefined ? { status: nonJsonStatus } : {}), bodyUnreadable: true },
+    );
   }
 
-  if (!resp.ok) {
+  if (!safeRespOk(resp)) {
     const rec = asRecord(data);
+    // 服务器控制串的有界读取（round 29/MUST 1）：JSON 路径的 message/code/
+    // traceId/版本串在进入任何码点物化（cleanMessage/canonCode 的
+    // [...text] 展开）前先截断——round 11 只给非 JSON 片段设界，一条 40MB
+    // JSON message 在 512MB 预算下把整个 MCP 进程 OOM 杀死（8MB 即满载信封，
+    // 409 门禁 1.5s/耗尽 4.4s）。同 200 码点上界、同 round-11 手法：先按
+    // UTF-16 单元截头（slice 不物化全串），再按码点截断；信封恒携带有界副本
+    // （round 31：助手升为模块级——Retry-After 头同界（SHOULD 3），码字段
+    // 改用身份口径 boundedServerCode（MUST 1），消息/traceId/版本照截断——
+    // 它们是内容不是身份）
     const rawCode = rec.code;
-    const code = typeof rawCode === 'string' && rawCode ? rawCode : `HTTP_${resp.status}`;
-    const trace = rec.traceId ? ` [trace: ${asText(rec.traceId)}]` : '';
-    const err = new Error(`${code}: ${asText(rec.message || 'hdkitservice error')}${trace}`) as HdkitError;
+    // 码字段与消息/版本字段同过清洗口（round 7——此前唯一未窄化的边界读）：
+    // 纯空白/Cf 码视同缺失，409 走无码门禁折叠，其余状态照旧伪造 HTTP_x；
+    // 409 且无码/门禁码即门禁，带其他服务端码的 409 按其自身码处理
+    const serverCode = cleanMessage(boundedServerCode(rawCode));
+    // 状态读过卫队（round 17）：缺读不制造 "HTTP_undefined" 伪码——无状态即
+    // 无码，信封裸 message 兜底；409 语义照旧
+    const respStatus = safeRespStatus(resp);
+    const code =
+      serverCode || (respStatus === 409 ? undefined : respStatus !== undefined ? `HTTP_${respStatus}` : undefined);
+    const boundedTrace = boundedServerText(rec.traceId);
+    const trace = boundedTrace ? ` [trace: ${boundedTrace}]` : '';
+    // 消息构建口（round 4 + round 5）：空白与纯不可见字符（零宽空格等
+    // trim 不清除的 Cf 类）均视为缺失——设计好的 'hdkitservice error'
+    // 兜底在所有出口生效
+    const rawBoundedMessage = boundedServerText(rec.message);
+    const message = cleanMessage(rawBoundedMessage) || 'hdkitservice error';
+    // 前缀码只用亲署拼写（round 27/SHOULD 5）且非制造家族（round 31/MUST 2b）：
+    // canonCode 只作判等口径——原始拼写带空白渲染字符时，可见字符串渲染洗钱拼写
+    // （与 voucher/handler 的渲染谓词同判）；HTTP_x 是客户端为分类制造的拼写
+    // （round 8 教义），不得进入任何可见消息——此前四条裸抛出口（check_user/
+    // sign_agreement/connect/credentials）把 "HTTP_500: " 前缀直接放进 MCP 错
+    // 误消息；制造家族在此不组前缀，裸抛消息即净
+    const prefixCode =
+      typeof code === 'string' && code !== '' && canonCode(code) === code && !MANUFACTURED_FAMILY.test(code)
+        ? code
+        : undefined;
+    let err = new Error(prefixCode ? `${prefixCode}: ${message}${trace}` : `${message}${trace}`) as HdkitError;
     err.code = code;
-    err.status = resp.status;
-    err.traceId = rec.traceId;
-    if (code === 'HDKIT_CRED_INVALID') {
+    if (respStatus !== undefined) err.status = respStatus;
+    err.traceId = boundedTrace;
+    if (canonCode(code) === 'HDKIT_CRED_INVALID') {
       err.remediation = {
         hint: '已保存的凭证(S1)可能已失效。请执行以下操作之一：',
         steps: [
@@ -105,8 +308,8 @@ async function hdkitRequest(
     // 429 双错误码（两池配额契约）：配额满给出释放/复用引导；池容量不足只透传服务端
     // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
     // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
-    if (code === 'HDKIT_QUOTA_EXCEEDED') {
-      err.retryAfter = resp.headers.get('Retry-After') || undefined;
+    if (canonCode(code) === 'HDKIT_QUOTA_EXCEEDED') {
+      err.retryAfter = safeRetryAfterHeader(resp) || undefined;
       err.remediation = {
         hint: '沙箱并发配额已满（每账号最多 5 台、每类型 1 台），重试无效：',
         steps: [
@@ -116,15 +319,46 @@ async function hdkitRequest(
         ],
       };
     }
-    if (code === 'HDKIT_CAPACITY_INSUFFICIENT') {
-      err.retryAfter = resp.headers.get('Retry-After') || undefined;
-      // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）
-      err.message = asText(rec.message) || err.message;
+    if (canonCode(code) === 'HDKIT_CAPACITY_INSUFFICIENT') {
+      err.retryAfter = safeRetryAfterHeader(resp) || undefined;
+      // 该文案即最终展示内容（不带 "CODE: " 前缀、不附加引导）。
+      // cleanMessage 窄化（round 5）：undefined/空白/纯不可见字符均不覆盖——
+      // 保留构建口的代码前缀兜底（message 已有界，round 29/MUST 1；缺失时
+      // 不引入 'hdkitservice error' 兜底——保持原有语义）
+      err.message = cleanMessage(rawBoundedMessage) || err.message;
+    }
+    // 版本硬门禁（409 HDKIT_VERSION_TOO_OLD）：结构化升级引导，remediation 才能
+    // 穿透 MCP 边界（dev 501fd8b4）。烧核分支的 !err.remediation 守卫保持其排他性。
+    // asString 窄化（不用 asText：asText(undefined) === 'undefined' 是真值，
+    // `|| undefined` 兜底永不生效，字面量会流进用户可见文案）
+    // 无码 409 的版本搭载（round 29/DOC 3a 建、round 30/MUST 1 收窄范围）：
+    // 只挂门禁形态（409 且码为门禁码或无可用码）——无条件挂载会把版本加到非门禁
+    // 409 信封上（审计实测：voucher HDKIT_CRED_INVALID 的 409 携带了版本——加性泄漏）。门禁形态下服务端确实
+    // 发送了版本——connect 描述“服务端发送时携带”的承诺成立；无码门禁折叠渲染真实版本而非
+    // 未知/最新版兜底
+    const gateShape = respStatus === 409 && (canonCode(code) === VERSION_GATE_CODE || serverCode === '');
+    if (gateShape) {
+      const clientVersion = boundedServerText(rec.clientVersion);
+      const minVersion = boundedServerText(rec.minVersion);
+      if (clientVersion !== undefined) err.clientVersion = clientVersion;
+      if (minVersion !== undefined) err.minVersion = minVersion;
+    }
+    if (canonCode(code) === VERSION_GATE_CODE) {
+      // 返回值即生效载体（round 15）：请求层自建载体恒可写、就地装填返回原
+      // 对象；拒绝装饰的载体（仅导出面可达）返回装填好的克隆
+      err = applyVersionGate(err, {
+        clientVersion: boundedServerText(rec.clientVersion),
+        minVersion: boundedServerText(rec.minVersion),
+        message: boundedServerText(rec.message),
+      });
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
     // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。
     // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 双码/凭证指引）
-    if (!err.remediation && asText(rec.message || '').includes('HD.97520422')) {
+    // 烧核排除 409（round 30/MUST 2，操作员裁定）：409 是门禁的领地——门禁码形态下门禁
+    // 全胜、烧核块不慢行（一致控制行）；无码 409 此前两张信封混合（门禁折叠丢弃烧核指引、
+    // 转向读又把烧核标记骑上——升级+烧核同时说）。烧核块只在非 409（502/504 等）上生效
+    if (!err.remediation && respStatus !== 409 && asText(rec.message || '').includes('HD.97520422')) {
       err.coreHoursExhausted = true;
       err.remediation = {
         hint: '账号核心时长（核时）已耗尽，沙箱无法继续运行：',
@@ -175,6 +409,42 @@ export async function hdkitConnect(options: Record<string, unknown> = {}): Promi
   return asRecord(await hdkitRequest('POST', 'connect', body));
 }
 
+/**
+ * connect 专用网关 502/504 重试（dev e0c8700b）：编排期响应超时不是创建失败，
+ * 服务端可能已创建/启动实例，重试通常复用。有界重试、逐档退避，其余状态一律
+ * 不重试（含 409 版本门禁与配额/容量/凭证类客户端裁决码——不可重试裁决由
+ * hdkit-gate 的瞬时判定与裁决码集合独占）。
+ * 重试表经 HW_SANDBOX_CONNECT_RETRY_DELAYS_MS 针脚可覆写（v2 扩展）。
+ * 成功路径回显 connect_retries（v2 扩展；dev 仅在错误路径带尝试次数）。
+ */
+export async function hdkitConnectWithRetry(options: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+  const delays = connectRetryDelaysMs();
+  let retries = 0;
+  for (;;) {
+    try {
+      const result = await hdkitConnect(options);
+      if (retries > 0) result.connect_retries = retries;
+      return result;
+    } catch (error) {
+      const transient = isGatewayTransient(error) && !isNonRetryableBusinessError(error);
+      if (!transient || retries >= delays.length) {
+        // 写入带防护（round 10）：拒绝装饰的载体（冻结等）不在此抛 TypeError——
+        // 耗尽路径的克隆分支补 connectRetries，非耗尽路径原样抛出
+        try {
+          (error as { connectRetries?: number }).connectRetries = retries;
+        } catch {
+          // 请求层不会产生拒绝载体；此防御仅守导出面
+        }
+        // 耗尽装填返回待抛对象：常规载体即原错误，拒绝装饰的载体为克隆（round 9）
+        if (transient) throw decorateExhaustedConnect(error, retries);
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, delays[retries]));
+      retries += 1;
+    }
+  }
+}
+
 export async function hdkitCredentials(
   sessionId: unknown,
   devStageId: unknown,
@@ -218,12 +488,57 @@ export async function hdkitDeleteApiKey(keyId: string): Promise<Record<string, u
 // three endpoints share the fallback; only the service-unavailable wording
 // differs.
 function voucherFallback(error: unknown, unavailableMessage: string): Record<string, unknown> {
-  const err = error as { message?: unknown; code?: unknown; remediation?: unknown };
+  // 409 门禁（带码或无码）在此出口同折（round 6）：claimed:false 信封 + 门禁
+  // 字段——凭证/传输类错误才走 unavailable 文案
+  if (isVersionGateError(error)) {
+    return { claimed: false, ...gateFoldPayload(error) };
+  }
+  // 非门禁信封的字段读全过安全卫队与窄化（round 15 建、round 16 深验、
+  // round 17 嵌套上下文+快照往返、round 18 快照形态窄化）：抛出型 getter/
+  // 撤销代理按缺失，缺失的消息走 unavailable 文案；remediation 经
+  // serializableRemediation 深验——非对象、嵌套 BigInt、循环引用、判别器、
+  // 有状态换值、非对象 JSON 视图一并不骑信封
+  const rawCode = safeReadField(error, 'code');
+  const rawClientVersion = safeReadField(error, 'clientVersion');
+  const rawMinVersion = safeReadField(error, 'minVersion');
+  // remediation 改自有数据描述符读（round 27/SHOULD 5）：立着访问器不再注入钓鱼指引
+  const remediation = serializableRemediation(ownDataValue(error, 'remediation'));
+  // 非门禁信封同过清洗口（round 24/SHOULD 6 建、round 25 收口洗钱缝）：纯
+  // 空白/纯不可见版本字段视同缺失（round 6 出口信条）；码按拼写口径——服
+  // 务端亲署码不含空白渲染字符，原始拼写带空白渲染字符即非亲署：渲染其清
+  // 洗形会让伪造码洗成亲署拼写的字节等价物（HDKIT_CRED_INVA\u200bLID 洗成
+  // HDKIT_CRED_INVALID）——一律省略（比较口径的 canonCode 只作判等，不作
+  // 渲染；round-24 的"渲染清洗形"预期按本条取代）
+  const canonicalCode = typeof rawCode === 'string' ? canonCode(rawCode) : '';
+  // 伪造码不渲染（round 31/MUST 2a，round 8 教义在 voucher 半边落地）：无码
+  // 502/504/500 的 HTTP_x 是客户端制造的分类拼写——此前 voucher 的非门禁
+  // 臂把它渲染进 code 字段与可见消息前缀（adversary-2 F2：信封 code:"HTTP_502"
+  // 加 "HTTP_502: " 前缀）；与业务折叠同判：码字段省略、组成前缀循环剥除
+  // （页面消息可翻倍），服务器消息本体照透
+  const cleanedCode =
+    canonicalCode !== '' && canonicalCode === rawCode && !MANUFACTURED_FAMILY.test(canonicalCode) ? rawCode : undefined;
+  const cleanedClientVersion =
+    typeof rawClientVersion === 'string' ? cleanMessage(rawClientVersion) || undefined : undefined;
+  const cleanedMinVersion = typeof rawMinVersion === 'string' ? cleanMessage(rawMinVersion) || undefined : undefined;
+  let voucherMessage = cleanMessage(safeMessageText(error)) || '';
+  if (canonicalCode !== '' && MANUFACTURED_FAMILY.test(canonicalCode)) {
+    const stripPattern = manufacturedPrefixPattern(canonicalCode);
+    while (stripPattern) {
+      const hit = stripPattern.exec(voucherMessage);
+      if (!hit) break;
+      voucherMessage = voucherMessage.slice(hit[0].length);
+    }
+    voucherMessage = cleanMessage(voucherMessage);
+  }
   return {
     claimed: false,
-    message: typeof err.message === 'string' && err.message ? err.message : unavailableMessage,
-    code: err.code,
-    ...(err.remediation ? { remediation: err.remediation } : {}),
+    message: voucherMessage || unavailableMessage,
+    // dev voucherErrorResult 语义：非门禁错误自带的指引字段（如 CRED_INVALID
+    // 的 S1 修复引导）清洗后透传
+    ...(cleanedCode !== undefined ? { code: cleanedCode } : {}),
+    ...(cleanedClientVersion !== undefined ? { clientVersion: cleanedClientVersion } : {}),
+    ...(cleanedMinVersion !== undefined ? { minVersion: cleanedMinVersion } : {}),
+    ...(remediation ? { remediation } : {}),
   };
 }
 

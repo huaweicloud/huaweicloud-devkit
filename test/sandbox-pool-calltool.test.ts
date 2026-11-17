@@ -12,6 +12,10 @@ process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 process.env.HUAWEICLOUD_DEVKIT_TELEMETRY = 'off';
+// 连接重试表针脚置 0：本文件的烧核用例伪造 HTTP 502 JSON，但 round 29 起烧核
+// 裁决不重试（实测默认表下 1 fetch / 47ms），今天不置 0 也不会慢；保留针脚是
+// 为了让将来落进本文件的瞬时重试用例不必睡满默认 30s+45s 表。
+process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = '0';
 // 池缓存落盘路径隔离（fixtureDir 注册，进程退出回收）
 process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('sandbox-pool-calltool'), 'sandbox-pools.json');
 // PR-3a: connect/renew/watchdog ride the approval gate. This tier pins

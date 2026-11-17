@@ -56,6 +56,14 @@ export interface ExposeTunnelResult {
   // failure only): masked keys with last_used_at so the caller can pick what
   // to clean up in the console.
   currentKeys?: DevbridgeQuotaKeyHint[];
+  // The 409 version-gate fold (the HDKIT_VERSION_TOO_OLD relay failure only):
+  // the gate payload surfaced flat — `gateRemediation` keeps the structured
+  // {hint, steps} copy because `remediation` on this interface is the
+  // DevBridge 0.1.x install-migration string (expose-flow's Step-0 upgrade
+  // copy), not a structured remediation.
+  clientVersion?: string;
+  minVersion?: string;
+  gateRemediation?: { hint: string; steps: string[] };
 }
 
 // Start (or replace) a devbridge host bound to a single port, extract the public

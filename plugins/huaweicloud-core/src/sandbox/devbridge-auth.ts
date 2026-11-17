@@ -3,6 +3,40 @@ import { runOneShot } from './devbridge-exec.ts';
 import { evaluateDevbridgeVersion } from './devbridge-validation.ts';
 import type { ExposeTunnelResult } from './devbridge-expose.ts';
 import type { DevbridgeKeyResult, DevbridgeQuotaKeyHint } from './devbridge-key.ts';
+import {
+  canonCode,
+  cleanMessage,
+  gateFoldPayload,
+  isVersionGateError,
+  safeMessageText,
+  safeReadField,
+} from '../lib/hdkit/hdkit-gate.ts';
+
+// 409 门禁在 relay 出口的统一折叠（v2 扩展，台账记录）：三个 catch 位共用——
+// 自动创建、自愈重建、配额清单读取。authMode/attempts 保留（探测到的真实状态，
+// 与配额失败信封同款，台账记录该取舍）。
+function versionGateFailure(
+  error: unknown,
+  port: number,
+  authMode: string,
+  attempts: Record<string, string>,
+): { ok: false; failure: ExposeTunnelResult } {
+  const fold = gateFoldPayload(error);
+  return {
+    ok: false,
+    failure: {
+      ok: false,
+      port,
+      error: fold.message,
+      error_code: fold.code,
+      ...(fold.clientVersion ? { clientVersion: fold.clientVersion } : {}),
+      ...(fold.minVersion ? { minVersion: fold.minVersion } : {}),
+      gateRemediation: fold.remediation,
+      authMode: authMode || 'UNKNOWN',
+      attempts,
+    },
+  };
+}
 
 // The DevBridge auth waterfall, extracted from devbridge-tunnel so the auth
 // probe script, its stdout parser, and (with the devbridge-tunnel
@@ -232,8 +266,10 @@ export async function gateExposeAuth(
         if (isUsableAuthMode(healParsed.authMode)) {
           effectiveAuthMode = 'API_KEY_AUTO';
         }
-      } catch {
-        // 自愈失败 → 走泛化降级
+      } catch (error) {
+        // 409 门禁即时折叠：自愈 catch 原样吞掉会多跑一轮泛化 relay 调用才折
+        // 叠（round 3）；其余自愈失败仍走泛化降级
+        if (isVersionGateError(error)) return versionGateFailure(error, port, authMode, attempts);
       }
     }
     // keyring/文件均无 key → host 调 relay API 自动创建 → 注入沙箱 → 重跑 probe
@@ -247,15 +283,30 @@ export async function gateExposeAuth(
           effectiveAuthMode = 'API_KEY_AUTO';
         }
       } catch (error) {
-        // 自动创建失败（含配额满 13002）→ 结构化降级
-        if ((error as { code?: string }).code === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
-          const keysHint = await keyUpgrade.listKeysForQuotaHint();
+        // 门禁先裁（round 25/MUST 4）：配额比较此前先求值且自选分支——登记
+        // 过的载体 code 视图谎报配额码即被误路由进清 key 信封（配额 hint、空
+        // currentKeys、gateRemediation 丢失）。isVersionGateError 对登记载体零
+        // 读返回种类裁决（round 24），谎报视图无从介入；未登记载体照旧先经安
+        // 全读判配额——canonCode 读过卫队（round 14），抛出型 getter 按缺失
+        if (isVersionGateError(error)) return versionGateFailure(error, port, authMode, attempts);
+        if (canonCode(safeReadField(error, 'code')) === 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED') {
+          // 配额清单读取本身遭遇 409：门禁优先（清 key 引导拿不出 currentKeys）；
+          // 其余读取失败仍降级为空清单
+          let keysHint: Awaited<ReturnType<typeof keyUpgrade.listKeysForQuotaHint>> = [];
+          try {
+            keysHint = await keyUpgrade.listKeysForQuotaHint();
+          } catch (listError) {
+            if (isVersionGateError(listError)) return versionGateFailure(listError, port, authMode, attempts);
+          }
+          // 消息读同样过卫队与清洗口（round 14）：拒读/空白按缺失——字段缺省，
+          // 信封的 error_code/hint/currentKeys 不受影响
+          const quotaMessage = cleanMessage(safeMessageText(error));
           return {
             ok: false,
             failure: {
               ok: false,
               port,
-              error: (error as Error).message,
+              ...(quotaMessage ? { error: quotaMessage } : {}),
               error_code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
               authMode: authMode || 'UNKNOWN',
               attempts,
@@ -264,7 +315,8 @@ export async function gateExposeAuth(
             },
           };
         }
-        // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）
+        // 其他自动创建失败 → 继续走原有降级路径（可能 keyring/file 后续可用）；
+        // 门禁折叠已在本 catch 顶部先裁（round 25/MUST 4）
       }
     }
   }
