@@ -637,3 +637,88 @@ test('connect schema documents the pool_type parameter with its lifecycle semant
     'the pool_type description must state the explicit-template precedence',
   );
 });
+
+test('huawei-sandbox teaches the shutdown doctrine and the persistent core-hours hint (port-pr6)', () => {
+  // dev 5d89c880 + 3bfc1f53 移植的教义面：关机纪律（仅明确要求时调用、
+  // close ≠ delete、非持久化也可关机但不主动提示）、persistent 播报的核时
+  // 提醒、工具表与选型表的关机行、以及审批门第九个成员的教义同步。v2 的
+  // TTL 播报行带行尾锚（见上 test 的 line-anchored pin），核时提醒因此落为
+  // 独立 bullet，而非 dev 的行内追加——语义同源，形态 v2 适配。
+  const skill = readFileSync(skillPath, 'utf8');
+  const resourcePool = readFileSync(referencePath, 'utf8');
+  const approvals = readFileSync(
+    join(pluginRoot, 'src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'references', 'approvals.md'),
+    'utf8',
+  );
+
+  // 关机纪律（dev 逐字）：仅明确要求、调用前确认一次、绝不自动关机；
+  // 关机 ≠ 删除；非持久化也可关机但不主动提示；不提“控制台关机”。
+  assert.match(
+    skill,
+    /\*\*关机纪律\*\*：仅当开发者明确要求关机时调用 `huaweicloud_sandbox_shutdown`；调用前确认一次，绝不自动关机。关机 ≠ 删除：只 close，不 delete，实例与 EVS 数据盘保留，下次 connect 自动唤醒。非持久化沙箱也可关机，但不主动提示；不要向开发者提“控制台关机”。/,
+    'the shutdown-discipline bullet must pin the explicit-request-only contract and the close-not-delete fact',
+  );
+
+  // 核时提醒（v2 适配形态，独立 bullet）：persistent 播报追加，ephemeral 不出现。
+  assert.match(
+    skill,
+    /\*\*核时提醒（persistent 播报追加）\*\*：persistent 池的生命周期播报（connect 的 `pool\.ttl_hint` 与 expose_tunnel 的 `urlLifetimeHint`）追加「如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。」；ephemeral 播报不出现该提示/,
+    'the core-hours hint bullet must pin the persistent-only carriage and the hint text',
+  );
+
+  // 工具表与选型表的关机行（dev 逐字）。
+  assert.match(
+    skill,
+    /\| `huaweicloud_sandbox_shutdown`\s+\| Shut down a running sandbox \(close only; instance\/data disk retained; reconnect wakes it\)/,
+    'the lifecycle tool table must carry the shutdown row',
+  );
+  assert.match(
+    skill,
+    /\| 暂不使用 \/ 节省核时\s+\| `sandbox_shutdown`\s+\| 只关机不删除；数据盘保留，下次 connect 自动唤醒/,
+    'the tool selection guide must carry the shutdown row',
+  );
+
+  // frontmatter 触发面：lifecycle 覆盖列表加入 shutdown。
+  assert.match(
+    skill,
+    /Covers sandbox lifecycle \(check-user, sign-agreement, connect, shutdown, release\)/,
+    'the frontmatter description must name shutdown in the lifecycle coverage',
+  );
+
+  // 审批门第九个成员：标题、Gated 名单与确认语义句都点名 shutdown。
+  assert.match(skill, /## Approval gate \(the nine mutating tools\)/, 'the gate heading must count nine');
+  assert.match(
+    skill,
+    /Gated: `connect`, `exec_with_session`, `exec_one_shot`, `expose_tunnel`, `renew_tunnel`, `keepalive_watchdog`, `sign_agreement`, `credentials`, `shutdown`\./,
+    'the gated list must name shutdown',
+  );
+  assert.match(
+    skill,
+    /connect \/ shutdown \/ the tunnel faces \/ sign_agreement \/ credentials confirm on every call/,
+    'the always-flavor sentence must name shutdown',
+  );
+
+  // resource-pool 引用：核时提醒 bullet 与 shutdown 客户端行为（dev 逐字）。
+  assert.match(
+    resourcePool,
+    /- persistent 生命周期提示追加核时提醒：\*\*如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。\*\* ephemeral 不出现该提示/,
+    'the reference must pin the persistent core-hours reminder',
+  );
+  assert.match(
+    resourcePool,
+    /- `sandbox_shutdown` 调 hdkitservice `POST \/shutdown`（DevStation `close`，不 delete）；仅开发者明确要求时调用；返回 `stopped` \/ `shutting_down` \/ `already_stopped` \/ `close_requested`。非持久化沙箱也可关机，但不主动提示/,
+    'the reference must pin the shutdown client behavior and the status vocabulary',
+  );
+
+  // 名册派生面：safety skill 的审批参考必须随 roster leaf 登记 shutdown
+  // （structure.test.ts 的 roster 循环钉强制此行——漏行即结构守卫红）。
+  assert.ok(
+    approvals.includes('- `huaweicloud_sandbox_shutdown`'),
+    'the safety approvals reference must list shutdown per the roster leaf',
+  );
+  assert.match(
+    approvals,
+    /connect, shutdown, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands/,
+    "the approvals always-flavor sentence must name shutdown",
+  );
+});

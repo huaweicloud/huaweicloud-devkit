@@ -18,7 +18,7 @@ import type {
 } from '../plugins/huaweicloud-core/src/approval-types.ts';
 import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 
-// The PR-3a sandbox approval battery: the eight sandbox registrations in
+// The PR-3a sandbox approval battery: the nine sandbox registrations in
 // both gate modes, the classified deny after confirm, the retry memo's
 // reuse and its delivered-outcome refusal, and the session standing
 // consent. The gate contract is the subject; the sandbox handlers run
@@ -136,6 +136,13 @@ function withStubbedFetch(): () => void {
     if (url.includes('/credentials')) {
       return json({ ak: 'STS_AK', sk: 'STS_SK', securitytoken: 'STS_TOKEN', expiresAt: '2099-01-01T00:00:00Z' });
     }
+    if (url.includes('/shutdown')) {
+      return json({
+        devStageId: 'ds-gate',
+        status: 'shutting_down',
+        message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+      });
+    }
     return json({});
   }) as typeof fetch;
   return () => {
@@ -143,10 +150,11 @@ function withStubbedFetch(): () => void {
   };
 }
 
-// The eight registrations, each with its minimal valid args and the side
+// The nine registrations, each with its minimal valid args and the side
 // effect its executed handler produces. The exec faces carry a
 // write-classified command (measured: classifyTextCommand denies it as a
-// write), so the gate engages for them in both modes.
+// write), so the gate engages for them in both modes. The shutdown row is
+// the port-pr6 registration: an irreversible lifecycle face, always flavor.
 const WRITE_COMMAND = 'hcloud ECS DeleteServers --server_id=i-1 --cli-region=cn-north-4';
 const DESTRUCTIVE_COMMAND = 'rm -rf /tmp/x';
 
@@ -155,6 +163,9 @@ interface GatedTool {
   args: Record<string, unknown>;
   effect: () => number;
 }
+
+// 红态类型桥：实现提交把工具名并入 ToolName 后改回裸字面量。
+const SHUTDOWN_TOOL_NAME = 'huaweicloud_sandbox_shutdown' as unknown as ToolName;
 
 const EXEC_ONE_SHOT = {
   name: 'huaweicloud_sandbox_exec_one_shot' as ToolName,
@@ -194,6 +205,7 @@ const GATED_TOOLS: GatedTool[] = [
   },
   { name: 'huaweicloud_sandbox_sign_agreement', args: {}, effect: () => fetchLog.length },
   { name: 'huaweicloud_sandbox_credentials', args: { dev_stage_id: 'ds-gate' }, effect: () => fetchLog.length },
+  { name: SHUTDOWN_TOOL_NAME, args: { dev_stage_id: 'ds-gate' }, effect: () => fetchLog.length },
 ];
 
 let sessionSeq = 0;
@@ -233,7 +245,7 @@ function resetKnobs(): void {
   tunnelLog.length = 0;
 }
 
-// The eight-tool ask-mode loops' shared scaffolding: home, ask posture, and
+// The nine-tool ask-mode loops' shared scaffolding: home, ask posture, and
 // the fetch stub, torn down either way.
 async function withGatedAskCase(fn: () => Promise<void>): Promise<void> {
   await withSandboxHome(async () => {
@@ -248,14 +260,14 @@ async function withGatedAskCase(fn: () => Promise<void>): Promise<void> {
   });
 }
 
-// The eight-tool loops' shared per-tool case opener: reset the knobs, take
+// The nine-tool loops' shared per-tool case opener: reset the knobs, take
 // the side-effect baseline, and mint a session key no other case touches.
 function freshToolCase(tool: GatedTool): { before: number; sessionId: string } {
   resetKnobs();
   return { before: tool.effect(), sessionId: freshSessionId(String(tool.name)) };
 }
 
-// The eight-tool loops' shared retry assertion: the confirmed/attested retry
+// The nine-tool loops' shared retry assertion: the confirmed/attested retry
 // reaches the handler and its side effects grow.
 async function assertRetryExecutes(
   tool: GatedTool,
@@ -275,7 +287,7 @@ async function assertRetryExecutes(
   return retry;
 }
 
-test('token mode: each of the eight tools mints on the first no-token call and executes after the terminal confirm', async () => {
+test('token mode: each of the nine tools mints on the first no-token call and executes after the terminal confirm', async () => {
   await withSandboxHome(async () => {
     await withApprovalMode(undefined, async () => {
       const restore = withStubbedFetch();
@@ -320,7 +332,7 @@ test('token mode: each of the eight tools mints on the first no-token call and e
   });
 });
 
-test('ask mode: each of the eight tools answers an unattested arrival with the T3 chat envelope, records nothing, and executes on the attested retry', async () => {
+test('ask mode: each of the nine tools answers an unattested arrival with the T3 chat envelope, records nothing, and executes on the attested retry', async () => {
   await withGatedAskCase(async () => {
     for (const tool of GATED_TOOLS) {
       const { before, sessionId } = freshToolCase(tool);
