@@ -225,7 +225,7 @@ function stubConnectCapture(payload: unknown): { restore: () => void; body: () =
   };
 }
 
-// Fixed-envelope error stub: the 429 dual-code and burn-core faces.
+// Fixed-envelope error stub: the 429 three-code and burn-core faces.
 function stubErrorResponse(payload: unknown, init: ResponseInit): () => void {
   const originalFetch = global.fetch;
   global.fetch = async () =>

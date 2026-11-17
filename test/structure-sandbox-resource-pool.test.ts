@@ -523,8 +523,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     skill,
-    /- \[Resource Pool\]\(references\/resource-pool\.md\) — 资源池定稿口径/,
-    'the References list must link the resource-pool reference',
+    /- \[Resource Pool\]\(references\/resource-pool\.md\) — 资源池定稿口径：两沙箱类型、申请\/限流参数（持久 2U4G×300 \+ 4U8G×200、非持久 2U4G×1000、overlayer 5GB\/实例、EVS 300TB）、配额 1\/类型 与 429 三码（Retry-After 仅随配额满与容量不足）语义/,
+    'the References list must link the resource-pool reference with the three-code caliber on its index line',
+  );
+  assert.doesNotMatch(
+    skill,
+    /429\+Retry-After/,
+    'the blanket 429+Retry-After index claim must not survive (PR-7: the split is per code)',
   );
   // The late-flow catch-all surface: the warnings table carries the pool row
   // beside the two gate rows (the #1021 v2-wins precedent — the table is the
