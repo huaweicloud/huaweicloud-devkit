@@ -62,11 +62,17 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.ts', {
 
 // 隧道层 mock：renew_tunnel/keepalive_watchdog/expose_tunnel 走 devbridge-tunnel 面；
 // dev 的 mock 面携带同名 stub（renewTunnel/installKeepaliveWatchdog/exposeTunnel）。
+// connect 的隧道清理走 cleanupDevbridgeTunnels（选择性清理，dev 291ce371 同型）：
+// 记录入 execLog 以断言「清理确实下发 + 不再全局 delete-all」。
 mock.module('../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts', {
   namedExports: {
     exposeTunnel: async () => ({ ok: true, publicUrl: 'https://stub.example' }),
     renewTunnel: async () => ({ ok: true, renewedForHours: 720 }),
     installKeepaliveWatchdog: async () => ({ ok: true, pid: '123' }),
+    cleanupDevbridgeTunnels: async (ws: string, opts: Record<string, unknown>) => {
+      execLog.push(`${ws}:cleanup:${JSON.stringify(opts || {})}`);
+      return { ok: true, deleteIds: [], killPids: [] };
+    },
     validateTunnelId: () => {},
   },
 });
@@ -318,8 +324,11 @@ test('callTool connect: first connect broadcasts server-configured lifecycle', a
     assert.match(result.pool.ttl_hint, /45 分钟自动关机/);
     assert.match(result.pool.ttl_hint, /2 小时自动删除/);
     assert.equal(currentWs, 'dev-1');
-    // 连接后的沙箱预清理命令确实下发（session-manager mock 记录）
-    assert.ok(execLog.some((c) => c.includes('devbridge delete-all')));
+    // 连接后执行选择性清理（不再使用全局 delete-all，dev 291ce371/43fa459e 同型）：
+    // 只清孤儿记录/宿主，保留其他端口、其他会话与 keepalive 保护的隧道。
+    assert.ok(execLog.some((c) => c.startsWith('dev-1:cleanup:')));
+    assert.ok(execLog.includes('dev-1:cleanup:{"mode":"stale"}'));
+    assert.ok(!execLog.some((c) => c.includes('devbridge delete-all')));
     // 生命周期口径进入缓存（expose_tunnel 后续使用）
     assert.equal(poolContextFor('dev-1')?.poolLifecycle.idleShutdownMinutes, 45);
   } finally {

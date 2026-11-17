@@ -348,6 +348,33 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   );
 });
 
+test('the sandbox skill teaches selective tunnel cleanup, never blanket delete-all (port-pr4)', () => {
+  // The doctrine layer: the automated connect/expose paths run a selective
+  // cleanup (orphans + same-port only), and the skill must teach the same
+  // contract — the old "always run devbridge delete-all" pre-flight contradicted
+  // the concurrency warning one paragraph below it and killed keepalive-protected
+  // and other-sessions' tunnels when followed. delete-all survives only as the
+  // documented manual full-reset exception.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /selective cleanup/i);
+  assert.match(sandboxSkill, /cleanup_mode=stale/);
+  assert.match(sandboxSkill, /devbridge_tunnel_quota_exceeded/);
+  // The connect-time doctrine names what is preserved.
+  assert.match(sandboxSkill, /keep other ports\/sessions/i);
+  // The contradictory blanket pre-flight must not come back.
+  assert.doesNotMatch(sandboxSkill, /always run `devbridge delete-all`/);
+  // The delete-all mentions that remain are always scoped as the manual
+  // full-reset exception, never the default path.
+  for (const m of sandboxSkill.matchAll(/devbridge delete-all/g)) {
+    const around = sandboxSkill.slice(Math.max(0, m.index - 160), m.index + 40);
+    assert.match(
+      around,
+      /full reset|GLOBAL operations/i,
+      `every delete-all mention must be scoped as the manual exception (context: …${around.slice(-100)})`,
+    );
+  }
+});
+
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {
   // Since the sandbox pack's family split the handlers live in
   // src/packs/sandbox/handlers-*.ts with tools.ts as the re-export face, so

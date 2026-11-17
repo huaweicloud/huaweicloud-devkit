@@ -46,13 +46,19 @@ export function validateExpiryHours(hours: unknown): number {
   return n;
 }
 
+// The tunnel-ID charset as one shared pattern: validateTunnelId guards shell
+// splices with it, and the selective-cleanup parsers (devbridge-cleanup.ts)
+// recognize real IDs with it — real IDs may contain 0/1/8/9, so parsing must
+// not assume the base32 subset.
+export const DEVBRIDGE_TUNNEL_ID_PATTERN = /^[A-Za-z0-9_-]{4,32}$/;
+
 // Validate a DevBridge tunnel ID destined for shell interpolation in
 // `devbridge update <id>` / `devbridge host <id>` / pgrep patterns. IDs are
 // short lowercase base36 tokens (e.g. nv2dvv6w, kag7rozs); the strict charset
 // keeps shell metacharacters out of the splice.
 export function validateTunnelId(tunnelId: unknown): string {
   const id = asText(tunnelId ?? '');
-  if (!/^[A-Za-z0-9_-]{4,32}$/.test(id)) {
+  if (!DEVBRIDGE_TUNNEL_ID_PATTERN.test(id)) {
     throw new Error(
       `sandbox tunnel: invalid tunnel_id ${JSON.stringify(id.slice(0, 40))}. Expected the short ID from huaweicloud_sandbox_expose_tunnel's "tunnelId" field (URL-safe characters only).`,
     );
