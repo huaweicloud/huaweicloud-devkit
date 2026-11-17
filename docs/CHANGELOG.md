@@ -1,5 +1,10 @@
 # Changelog
 
+## Unported upstream waves (recorded 2026-11-17, port-program close-out)
+
+- deferred(sandbox): dev's silent auto-upgrade cluster (dev 36045514 + 9c2c0e08 + e010d59d + 4890d78c + bec48cf9 + d51a521c, PR #1118 on the dev line) is deliberately NOT ported to v2 as of this close-out — `runAutoUpgrade` / `checkUpgradableInstall` / `WRITE_SET_PLUGIN` / `BACKUP_FILE_RELS` / `UPGRADE_CREDENTIAL_ENV_KEYS` carry zero repo-wide reads (measured by scripts/lib/dev-port-scan.mjs at trunk 78ead57c). Rationale: v2's upgrade path is its own shape (update hint + manual `huaweicloud_upgrade`), and adopting a background silent self-upgrade is a product call the operator has not made. The wave's npm-failure semantics and credential-strip child-env work ARE ported (PR #7 of the port program, dev 7a36a7e8 + 4890d78c's strip content). Recording rule: this entry is superseded if and when the wave is ported; the scan tokens above flip to PRESENT at that point.
+- deferred(telemetry): the #1014 userHash pre-flush backfill (dev f38f69b9/e3e2c6c4 unit-test half) stays recorded-NOT-done with the initialize-prewarm rationale (ledger entry in the #1014 wave line above); the P0 sync flush and the exit-time spool ARE ported.
+
 ## 2.0.0-next.3 (2026-11-12)
 
 - fix(ux-report): close D-18 — describe the 11 bare top-level parameters on the raw stdio tools/list face (huaweicloud_hook_check_artifacts.artifacts; huaweicloud_explain_error service/errorCode/message/requestId; huaweicloud_auth_switch ak/sk/securityToken/region; huaweicloud_auth_confirm.decision; huaweicloud_run_readonly_command.args, the family text from plan_cli_command/run_approved_command), gated by a parameter-level description test in test/tools-definitions.test.ts; additive to the snapshot-diff gate (description is an IGNORED_KEYS member), so no fixture changes
