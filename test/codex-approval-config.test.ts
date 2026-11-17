@@ -357,7 +357,12 @@ test('cache candidates resolve from CODEX_HOME and stop at files named .mcp.json
     seedCachePayload(home);
     const paths = codexCacheMcpJsonPaths();
     assert.equal(paths.length, 1, 'one version dir, one candidate');
-    assert.match(paths[0]!, /plugins\/cache\/huaweicloud-devkit\/huaweicloud-devkit\/2\.0\.0-next\.3\/\.mcp\.json$/);
+    // win32 join() produces backslash separators; normalize before the
+    // forward-slash assertion so both platforms match the same shape.
+    assert.match(
+      paths[0]!.replaceAll('\\', '/'),
+      /plugins\/cache\/huaweicloud-devkit\/huaweicloud-devkit\/2\.0\.0-next\.3\/\.mcp\.json$/,
+    );
   });
 });
 
