@@ -66,12 +66,16 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     'the type table must keep the persistent row with the 1h idle shutdown and the 7-day reclaim cap',
   );
   // Selection-rules table rows: intent → pool_type mapping with the reason.
+  // dev b1ab4029 (PR-5): the DB row splits by intent — a DB-backed PREVIEW
+  // routes to ephemeral (stack is not a persistence trigger), only
+  // DB-with-cross-session-data-retention routes to persistent.
   for (const [intent, poolType] of [
     ['预览 / 试用 / demo', 'ephemeral'],
     ['一次性任务（跑完即弃）', 'ephemeral'],
     ['敏感内容（即焚）', 'ephemeral'],
+    ['带数据库但只是预览/演示', 'ephemeral'],
     ['开发工作台 / workbench', 'persistent'],
-    ['带数据库项目（DB-backed）', 'persistent'],
+    ['带数据库且需要跨会话保留数据', 'persistent'],
     ['跨日评审 / 展示', 'persistent'],
   ] as const) {
     assert.match(
@@ -87,8 +91,9 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     ['预览 / 试用 / demo', 'persistent'],
     ['一次性任务（跑完即弃）', 'persistent'],
     ['敏感内容（即焚）', 'persistent'],
+    ['带数据库但只是预览/演示', 'persistent'],
     ['开发工作台 / workbench', 'ephemeral'],
-    ['带数据库项目（DB-backed）', 'ephemeral'],
+    ['带数据库且需要跨会话保留数据', 'ephemeral'],
     ['跨日评审 / 展示', 'ephemeral'],
   ] as const) {
     assert.doesNotMatch(
@@ -97,11 +102,38 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
       `${intent} must never route to ${wrongType}`,
     );
   }
-  // Selection-rule leads (auto-select + override + per-type quota/reuse).
+  // The superseded DB-implies-persistent row must not survive anywhere in
+  // the section (the gate's never-rule 1 in table form).
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*带数据库项目（DB-backed）\s*\|/,
+    'the old DB-backed-implies-persistent row must not survive',
+  );
+  // The four gate-restatement bullets that follow the table (dev b1ab4029):
+  // the compact doctrine the pool-section reader meets before the full gate.
+  assert.match(poolSection, /预览\/一次性即使全栈\/DB 也用 `ephemeral`\*\*；技术栈不是持久化触发器/);
   assert.match(
     poolSection,
-    /agent 按意图自动选池，开发者可覆盖；意图不明确时呈现两类供选择/,
-    'the selection rules must state auto-select with developer override',
+    /`persistent` 只能来自明确长期意图，或推断后确认\*\*；不得仅因 full-stack\/DB 选 persistent/,
+  );
+  assert.match(
+    poolSection,
+    /同一任务沿用当前池\*\*；新任务重新选型；新预览默认 `ephemeral`，必要时问一次是否复用已有 persistent/,
+  );
+  assert.match(poolSection, /切换池数据不迁移\*\*\n/);
+  // Selection-rule leads: the selection defers to the gate (dev b1ab4029) —
+  // auto-select by intent with developer override, gate-executed, default
+  // ephemeral. The old intent-unclear-present-both lead is superseded by the
+  // gate's ask-once question with the ephemeral default.
+  assert.match(
+    poolSection,
+    /Selection rules（按意图自动选池；具体按 \[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\) 执行；默认 `ephemeral`，`persistent` 需明确长期意图或确认；开发者可覆盖）：/,
+    'the selection rules must defer to the Pool-Selection Gate with the ephemeral default',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /意图不明确时呈现两类供选择/,
+    'the pre-gate present-both-classes posture must not survive',
   );
   assert.match(
     poolSection,
@@ -177,23 +209,29 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   );
 });
 
-test('workflow sequences pool selection (Step 0.3) between the target gate and the stack gate (v3 caliber)', () => {
+test('workflow sequences the pool gate (Step 0.6) after the stack gate (port-pr5)', () => {
   const skill = readFileSync(skillPath, 'utf8');
 
-  // Position, not just presence: after the target gate resolves and before
-  // the stack gate opens code transfer, the pool choice is checked against
-  // the lifecycle window — both the anchor and the v3 lifecycle gloss must
-  // hold seam to seam.
+  // dev b1ab4029 reorder: the pool choice follows the stack gate (the stack
+  // is known before the pool is picked) and defers to the gate doctrine —
+  // position, not just presence: after the target gate resolves, the stack
+  // gate opens code transfer, then the pool choice is gated and checked
+  // against the lifecycle window.
   assert.match(
     skill,
-    /\*\*Step 0\.3 — Resource pool selection\*\*: once the target is sandbox, pick the pool type per the \[两池沙箱（pool_type）\]\(#两池沙箱pool_type\) selection rules \(auto by intent, developer may override; 1 instance per type, same type reuses\)\. Check the task survives the chosen type's lifecycle window \(ephemeral: idle 30min shutdown \+ 1h delete; persistent: 7-day idle reclaim cap\) before connecting\./,
-    'Step 0.3 must link the 两池 section at its real heading anchor with the v3 lifecycle window',
+    /\*\*Step 0\.6 — Pool-Selection Gate \(MANDATORY\)\*\*: once the target is sandbox and the stack is known, select the pool per the \[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\)\. Default `ephemeral`; use `persistent` only with explicit long-term intent or after confirmation\. Same task reuses the current pool; a new task is re-evaluated\. Check the task survives the chosen type's lifecycle window \(ephemeral: idle 30min shutdown \+ 1h delete; persistent: 7-day idle reclaim cap\) before connecting\./,
+    'Step 0.6 must link the gate at its real heading anchor with the lifecycle window',
   );
   const step0 = skill.indexOf('**Step 0 — Target-Selection Gate (MANDATORY)**');
-  const step03 = skill.indexOf('**Step 0.3 — Resource pool selection**');
   const step05 = skill.indexOf('**Step 0.5 — Stack-Selection Gate (MANDATORY)**');
-  assert.ok(step0 !== -1 && step03 !== -1 && step0 < step03, 'Step 0.3 must follow Step 0');
-  assert.ok(step05 !== -1 && step03 < step05, 'Step 0.3 must precede Step 0.5');
+  const step06 = skill.indexOf('**Step 0.6 — Pool-Selection Gate (MANDATORY)**');
+  assert.ok(step0 !== -1 && step05 !== -1 && step0 < step05, 'Step 0.5 must follow Step 0');
+  assert.ok(step06 !== -1 && step05 < step06, 'Step 0.6 must follow Step 0.5 (stack before pool, dev b1ab4029)');
+  assert.equal(
+    skill.includes('**Step 0.3 — Resource pool selection**'),
+    false,
+    'the pre-stack pool-selection step must not survive',
+  );
 
   // Step 10 的 URL 交付纪律（dev 5c09d225）：每次交付 URL 必须附带 sandbox 存活期提示。
   assert.match(
@@ -245,6 +283,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     resourcePool,
     /\| 维度\s+\| 非持久化 \(ephemeral\)\s+\| 持久化 \(persistent\)/,
     'the type table columns must stay ephemeral-then-persistent',
+  );
+  // dev b1ab4029 (PR-5): the attribution row drops DB-as-a-trigger from the
+  // persistent side and scopes it to cross-session data retention.
+  assert.match(
+    resourcePool,
+    /\| 定位\s+\| 预览\/试用\/一次性任务\/敏感即焚（含全栈\/DB 预览）\s+\| 开发工作台\/需要跨会话保留数据的项目\/跨日评审展示\s*\|/,
+    'the attribution row must route DB previews to ephemeral and persistent to cross-session retention',
   );
   assert.match(
     resourcePool,
@@ -369,6 +414,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /`sandbox_connect` 传 `pool_type`；非法值本地即报错（不发无效请求）；未传由服务端默认 ephemeral/,
     'the client must validate pool_type locally and defer absence to the server',
   );
+  // dev b1ab4029: the selection belongs to the skill's gate; the client only
+  // validates and passes pool_type through.
+  assert.match(
+    resourcePool,
+    /选型由 skill 的 Pool-Selection Gate 决定；客户端只校验\/透传 `pool_type`，不自行推断/,
+    'the client contract must defer selection to the skill gate',
+  );
   // dev 5c09d225 终态客户端行为：播报时机两处、口径落盘缓存、429 差异化透传。
   assert.match(
     resourcePool,
@@ -448,13 +500,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   const warningsRow = skill.split('\n').find((line) => line.includes('Pool type fixes durability')) ?? '';
   assert.match(
     warningsRow,
-    /预览\/试用\/即焚 requests belong on the `ephemeral` pool — idle 30min auto-shutdown \+ 1h auto-delete \(平台定时任务，已实测\), nothing survives it, data dies with the box; 工作台\/带数据库\/跨日 requests belong on the `persistent` pool \(EVS 32G mounted, survives reboots, idle reclaim within 7 days max\)\./,
-    'the warnings row must route each intent family to its pool with the v3 lifecycle facts',
+    /预览\/试用\/即焚 requests belong on the `ephemeral` pool — idle 30min auto-shutdown \+ 1h auto-delete \(平台定时任务，已实测\), nothing survives it, data dies with the box; 工作台\/需要跨会话保留数据\/跨日 requests belong on the `persistent` pool \(EVS 32G mounted, survives reboots, idle reclaim within 7 days max\)\./,
+    'the warnings row must route each intent family to its pool with the v3 lifecycle facts (port-pr5: DB alone is not a persistent trigger)',
   );
   assert.match(
     warningsRow,
-    /Pick per the 两池沙箱（pool_type） selection rules \(Step 0\.3\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox\./,
-    'the warnings row must carry the Step 0.3 gate sentence',
+    /Pick per the \[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\) \(Step 0\.6\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox\./,
+    'the warnings row must carry the Pool-Selection Gate sentence (Step 0.6)',
   );
   assert.match(
     warningsRow,
