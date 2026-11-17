@@ -140,13 +140,15 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     /\*\*配额\*\*：每用户每类型 1 台（1\+1 可并存）；同池 connect 自动复用已有实例/,
     'the per-type quota bullet must state the 1+1 model with same-pool reuse',
   );
-  // The 429 dual-code doctrine: the two codes with their opposite remedies,
-  // plus the Retry-After arrival — a code-to-remedy swap reds the gate.
+  // The 429 three-code doctrine (dev 45dd4f99 终态；PR-7): each code with its
+  // own remedy, and the Retry-After split (quota/capacity carry it, template
+  // quota does not) — a code-to-remedy swap or a Retry-After collapse reds the
+  // gate.
   // dev 5c09d225 终态：capacity 由服务端返回最终文案，客户端不再附加引导。
   assert.match(
     poolSection,
-    /\*\*429 双错误码\*\*：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放\/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`/,
-    'the 429 dual-code bullet must map each code to its distinct remedy with the Retry-After arrival',
+    /\*\*429 三错误码\*\*：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放\/复用）；`HDKIT_TEMPLATE_QUOTA_EXCEEDED`（当前账号此类型沙箱运行中实例达上限，需关机\/释放同类型实例后重试，无 `Retry-After`）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。`HDKIT_QUOTA_EXCEEDED` \/ `HDKIT_CAPACITY_INSUFFICIENT` 响应带 `Retry-After: 60`/,
+    'the 429 three-code bullet must map each code to its distinct remedy with the per-code Retry-After split',
   );
   assert.doesNotMatch(
     poolSection,
@@ -160,8 +162,30 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   );
   assert.doesNotMatch(
     poolSection,
+    /HDKIT_TEMPLATE_QUOTA_EXCEEDED`（账号配额满/,
+    'template-quota-exceeded must never carry the account-quota remedy',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /HDKIT_TEMPLATE_QUOTA_EXCEEDED`（池容量不足/,
+    'template-quota-exceeded must never carry the capacity remedy',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /HDKIT_CAPACITY_INSUFFICIENT`（当前账号此类型沙箱/,
+    'capacity-insufficient must never carry the template-quota remedy',
+  );
+  assert.doesNotMatch(
+    poolSection,
     /HDKIT_CAPACITY_INSUFFICIENT`（池容量不足→建议错峰重试/,
     'the client-side off-peak remediation must not survive (server copy is final)',
+  );
+  // dev dff5df91: the old account-level guidance ("每账号最多 5 台") must not
+  // ride the template-quota sentence — it names the wrong cap.
+  assert.doesNotMatch(
+    poolSection,
+    /HDKIT_TEMPLATE_QUOTA_EXCEEDED`（[^）]*每账号最多 5 台/,
+    'the superseded account-level quota guidance must not ride the template-quota sentence',
   );
   // TTL broadcast duty (dev 5c09d225 终态)：播报只出现在 connect（首次/唤醒）与
   // expose_tunnel 两个时机；URL 交付时必须转述 urlLifetimeHint/warnings。
@@ -381,8 +405,9 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /实际池 flavor 为 \*\*3U6G\*\*（需求方 2026-11-02 指定，尾号 54），上述 2U4G\/4U8G 为原始申请口径，容量数字需按 3U6G 重新核算/,
     'the 3U6G re-check note must stay attached to the original-application table',
   );
-  // Quota and error codes: the per-type quota, account cap, dual 429 codes
-  // with upstream code mappings, and the burn-core code.
+  // Quota and error codes: the per-type quota, account cap, three 429 codes
+  // with upstream code mappings, and the burn-core code. PR-7 adds the
+  // template-level running cap (HD.98320082) as the third code.
   assert.match(
     resourcePool,
     /每用户每类型 1 台（同类复用，ephemeral \+ persistent 可并存 1\+1）；账号并发上限 5/,
@@ -390,8 +415,18 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
+    /429 三错误码（`HDKIT_QUOTA_EXCEEDED` \/ `HDKIT_CAPACITY_INSUFFICIENT` 带 `Retry-After: 60`；`HDKIT_TEMPLATE_QUOTA_EXCEEDED` 不带）：/,
+    'the 429 code block must carry the per-code Retry-After split',
+  );
+  assert.match(
+    resourcePool,
     /`HDKIT_QUOTA_EXCEEDED`：用户配额满（上游 `HD\.98320022`）→ 重试无效，引导释放\/复用已有实例/,
     'quota-exceeded must map to its upstream code and release/reuse remedy',
+  );
+  assert.match(
+    resourcePool,
+    /`HDKIT_TEMPLATE_QUOTA_EXCEEDED`：当前账号此类型沙箱运行中实例达上限（上游 `HD\.98320082`）→ 需关机\/释放同类型实例后重试/,
+    'template-quota-exceeded must map to its upstream code and the same-type free-up remedy',
   );
   assert.match(
     resourcePool,
@@ -434,8 +469,8 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /429：配额满给 `remediation` 引导；容量不足只透传服务端最终文案 \+ `retryAfter`/,
-    'the 429 split must pin quota remediation vs capacity passthrough',
+    /429：配额满与模板配额满给 `remediation` 引导；容量不足只透传服务端最终文案 \+ `retryAfter`；模板配额不带 `retryAfter`/,
+    'the 429 split must pin quota/template-quota remediation vs capacity passthrough',
   );
   assert.doesNotMatch(
     resourcePool,
@@ -495,7 +530,7 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   // beside the two gate rows (the #1021 v2-wins precedent — the table is the
   // surface an agent consults last). The v2-authored row is the one surface
   // with no verbatim dev source of truth, so its doctrine body is pinned in
-  // its reconciled v3 form: the 429 dual-code discriminator, the routing
+  // its reconciled v3 form: the 429 three-code discriminator, the routing
   // tails, the lifecycle facts, and the gate sentence.
   const warningsRow = skill.split('\n').find((line) => line.includes('Pool type fixes durability')) ?? '';
   assert.match(
@@ -510,8 +545,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     warningsRow,
-    /A rejected connect returns HTTP 429 with a Retry-After header and a dual error code — the CODE, not the status, separates the two failure classes: HDKIT_QUOTA_EXCEEDED \(quota — 1 instance per pool type; release or reuse, retry useless\) vs HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak\)\./,
-    'the warnings row must state the full 429 dual-code arrival contract',
+    /A rejected connect returns HTTP 429 with one of three codes — the CODE, not the status, separates the failure classes: HDKIT_QUOTA_EXCEEDED \(quota — 1 instance per pool type; release or reuse, retry useless; Retry-After 60\), HDKIT_TEMPLATE_QUOTA_EXCEEDED \(the running instances of this account for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After\), or HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak; Retry-After 60\)\./,
+    'the warnings row must state the full 429 three-code arrival contract with its per-code remedies',
+  );
+  assert.doesNotMatch(
+    warningsRow,
+    /dual error code/,
+    'the superseded dual-code wording must not survive in the warnings row (PR-7)',
   );
   // dev e0c8700b + 501fd8b4 + e1255a4b 的门禁/重试 doctrine 行（v2 自著面）：
   // 502/504 与 409 两类相反处置钉在同一行，互换即红门；autoUpgrade 不存活
@@ -548,7 +588,7 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
 });
 
-test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics (v3 caliber)', () => {
+test('sandbox tool descriptions carry the pool_type and 429 three-code semantics (v3 caliber + PR-7)', () => {
   const tools = readFileSync(toolsPath, 'utf8');
 
   const connectDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_connect');
@@ -564,8 +604,13 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   assert.match(
     connectDesc,
-    /On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED \(retry useless — release or reuse the existing instance\) vs HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak\)\./,
-    'connect must state the full 429 arrival and dual-code-to-remedy contract',
+    /On quota exhaustion the API returns HTTP 429 with one of three codes: HDKIT_QUOTA_EXCEEDED \(retry useless — release or reuse the existing instance; Retry-After 60\), HDKIT_TEMPLATE_QUOTA_EXCEEDED \(the running instances of this account for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After\), or HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak; Retry-After 60\)\./,
+    'connect must state the full 429 arrival and the three-code-to-remedy contract',
+  );
+  assert.doesNotMatch(
+    connectDesc,
+    /dual error code/,
+    'the superseded dual-code wording must not survive on the connect description (PR-7)',
   );
   // dev e0c8700b + 501fd8b4 + e1255a4b：网关 502/504 有界重试与 409 版本门禁。
   // 映射承载钉：502/504 → 瞬时重试+复用语义；409 → 门禁+升级引导——两类相反

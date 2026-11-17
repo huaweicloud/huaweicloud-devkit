@@ -209,7 +209,7 @@ test('callTool connect: invalid pool_type returns structured guidance instead of
   }
 });
 
-// 429 双码结构化用例共用：stub 429 Retry-After 信封，connect(ephemeral) 走结构化返回
+// 429 三码结构化用例共用：stub 429 Retry-After 信封，connect(ephemeral) 走结构化返回
 async function connect429Structured(payload: unknown): Promise<StructuredFailure> {
   const restore = withFetchResponse(payload, {
     status: 429,
@@ -259,6 +259,25 @@ test('callTool connect: capacity-insufficient shows exactly the server message (
   assert.equal(result.message, finalCopy);
   assert.equal(result.remediation, undefined, 'capacity copy must not be wrapped in remediation');
   assert.equal(result.retryAfter, '60');
+});
+
+test('callTool connect: template-quota-exceeded returns a structured envelope with remediation and no retryAfter', async () => {
+  const finalCopy = '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+  const result = await connect429Structured({
+    code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED',
+    message: finalCopy,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+  assert.equal(result.message, finalCopy);
+  assert.equal(result.retryAfter, undefined, 'template quota has no Retry-After');
+  assert.ok(result.remediation, 'remediation must reach the tool result (lost on throw path)');
+  assert.match(result.remediation!.hint, /上限/);
+  assert.match(result.remediation!.steps.join(' '), /huaweicloud_sandbox_shutdown/);
+  // MCP 边界等价：JSON-RPC 出口会整体序列化 result——字段必须可序列化不丢
+  const json = JSON.parse(JSON.stringify(result)) as StructuredFailure;
+  assert.equal(json.remediation?.hint, result.remediation!.hint);
+  assert.equal(json.retryAfter, undefined);
 });
 
 test('callTool connect: core-hours exhausted surfaces structured guidance', async () => {
