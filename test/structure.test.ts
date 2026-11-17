@@ -375,6 +375,27 @@ test('the sandbox skill teaches selective tunnel cleanup, never blanket delete-a
   }
 });
 
+test('the sandbox skill gates pool selection on task intent, never on tech stack (port-pr5)', () => {
+  // dev b1ab4029: the pool choice is a doctrine gate beside the target and
+  // stack gates — the key sentences an agent must meet before
+  // huaweicloud_sandbox_connect. The four semantic rules and the scenario
+  // table are pinned by the acceptance port in
+  // structure-sandbox-pool-selection.test.ts; this guard pins the gate
+  // posture plus the anchor every cross-reference must resolve.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /^## Pool-Selection Gate \(MANDATORY — do not skip\)$/m);
+  assert.match(sandboxSkill, /select the pool by \*\*task intent\*\*, not by tech stack/);
+  assert.match(sandboxSkill, /Default is `ephemeral`/);
+  assert.match(sandboxSkill, /Never select `persistent` merely because the project is full-stack or DB-backed\./);
+  assert.match(sandboxSkill, /Never switch pool silently mid-task\./);
+  assert.match(sandboxSkill, /Never ask the pool question when the intent is already explicit\./);
+  assert.match(
+    sandboxSkill,
+    /\[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\)/,
+    'the gate anchor must be linked from at least one cross-reference surface',
+  );
+});
+
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {
   // Since the sandbox pack's family split the handlers live in
   // src/packs/sandbox/handlers-*.ts with tools.ts as the re-export face, so

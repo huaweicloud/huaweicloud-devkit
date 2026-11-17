@@ -442,15 +442,16 @@ test('huawei-sandbox carries the Stack-Selection Gate (workbench ⇒ PostgREST d
     'the NOT-for exclusions must stay intact beside the widened triggers',
   );
 
-  // The workflow sequences the stack gate before any code can land, linking
-  // the gate section at its real heading anchor — position, not just
-  // presence: after Step 0 (the target gate) and before the whole numbered
-  // preflight (whose Connect step can already transfer code via the `git`
-  // parameter, ahead of the explicit upload step).
+  // The workflow sequences the stack gate before the pool pick and any code
+  // can land, linking the gate section at its real heading anchor —
+  // position, not just presence: after Step 0 (the target gate), before
+  // Step 0.6 (the pool gate, dev b1ab4029's own lead), and before the whole
+  // numbered preflight (whose Connect step can already transfer code via
+  // the `git` parameter, ahead of the explicit upload step).
   assert.match(
     skill,
-    /Step 0\.5 — Stack-Selection Gate \(MANDATORY\)\*\*: before uploading or writing any application code, confirm the backend stack via the \[Stack-Selection Gate\]\(#stack-selection-gate-mandatory--do-not-skip\)/,
-    'workflow must sequence the stack gate before code upload, linking the gate at its real anchor',
+    /Step 0\.5 — Stack-Selection Gate \(MANDATORY\)\*\*: before selecting a pool or uploading application code, confirm the backend stack via the \[Stack-Selection Gate\]\(#stack-selection-gate-mandatory--do-not-skip\)/,
+    'workflow must sequence the stack gate before pool selection and code upload, linking the gate at its real anchor (dev b1ab4029 lead)',
   );
   const step0 = skill.indexOf('**Step 0 — Target-Selection Gate (MANDATORY)**');
   const step05 = skill.indexOf('**Step 0.5 — Stack-Selection Gate (MANDATORY)**');

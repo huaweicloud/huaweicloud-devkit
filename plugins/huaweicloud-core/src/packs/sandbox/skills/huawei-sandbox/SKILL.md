@@ -43,6 +43,40 @@ Hard rules:
 - **Pre-code checkpoint (MANDATORY)**: before uploading or writing ANY application code, verify the backend choice matches this gate. If an SPA-only deployment already started and persistence turns out to be implied, STOP, tell the developer, and redirect to the full-stack path — do not paper over it with a bolted-on static backend.
 - After the choice: PostgREST → follow [Full-Stack: REST API over PostgreSQL](#full-stack-rest-api-over-postgresql-postgrest) **FIRST** (backend before any frontend code), then continue with the web deployment steps; 自带后端 / 纯静态 → continue with [Web Application Deployment](#web-application-deployment).
 
+## Pool-Selection Gate (MANDATORY — do not skip)
+
+Before `huaweicloud_sandbox_connect`, select the pool by **task intent**, not by tech stack. Default is `ephemeral`.
+
+### 1. Default ephemeral
+
+- Preview / demo / trial / one-off / sensitive burn-after-use → `ephemeral`, even for full-stack or DB-backed projects.
+- A DB/full-stack stack is only a capability hint; it does not by itself require persistence.
+
+### 2. Persistent only with explicit or confirmed long-term intent
+
+Use `persistent` only when:
+
+- the developer explicitly says long-term / cross-day / resume later / keep data / development workbench; or
+- you infer a workbench/long-term task from the conversation, but the developer did not say it explicitly → ask once before connecting.
+
+If the intent is ambiguous, ask exactly one question:
+
+> 这个任务需要跨会话保留数据吗？① 临时预览/一次性（默认，非持久化） ② 长期/跨天继续（持久化）
+
+### 3. Task continuity
+
+- Same task / same deployment follow-up: keep the current pool; do not re-evaluate mid-task.
+- New task: re-evaluate. A new preview stays `ephemeral` even if a persistent sandbox already exists.
+- If the new preview might reuse the existing environment/data, ask once:
+  > 已有持久化沙箱，是否直接复用（保留现有环境/数据），还是新建临时预览环境？
+- Switching pools does not migrate data; tell the developer.
+
+### 4. Never
+
+- Never select `persistent` merely because the project is full-stack or DB-backed.
+- Never switch pool silently mid-task.
+- Never ask the pool question when the intent is already explicit.
+
 ## Overview
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
@@ -66,22 +100,29 @@ Never fabricate `approvedByUser: true`, never run the approve or pin verbs yours
 
 `huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
 
+> 下表生命周期数值仅用于内部选池与诊断：persistent 只播报沙箱生命周期与核时提醒；ephemeral 数值只在下文 **TTL 播报** 的时机与口径内提示，其余场合不向开发者播报。
+
 | pool_type           | 语义               | 生命周期（平台策略）                                         | 适用                        |
 | ------------------- | ------------------ | ------------------------------------------------------------ | --------------------------- |
 | `ephemeral`（默认） | 非持久沙箱         | 闲置 30 分钟自动关机 + 闲置 1 小时自动删除（平台定时任务）   | 临时运行/预览，勿存重要数据 |
 | `persistent`        | 持久沙箱（EVS 盘） | 数据跨关机保留；闲置 1 小时自动关机；闲置回收保留期上限 7 天 | 需要跨会话保留数据          |
 
-Selection rules（agent 按意图自动选池，开发者可覆盖；意图不明确时呈现两类供选择）：
+Selection rules（按意图自动选池；具体按 [Pool-Selection Gate](#pool-selection-gate-mandatory--do-not-skip) 执行；默认 `ephemeral`，`persistent` 需明确长期意图或确认；开发者可覆盖）：
 
-| 意图 / 场景               | pool_type  | 理由                                |
-| ------------------------- | ---------- | ----------------------------------- |
-| 预览 / 试用 / demo        | ephemeral  | 用完即弃，无需保留状态              |
-| 一次性任务（跑完即弃）    | ephemeral  | 结果带出沙箱；实例随闲置回收        |
-| 敏感内容（即焚）          | ephemeral  | 闲置 1 小时自动删除，数据随实例消亡 |
-| 开发工作台 / workbench    | persistent | 会话跨天；状态需跨关机保留          |
-| 带数据库项目（DB-backed） | persistent | 数据落在挂载的 EVS 盘（32G）        |
-| 跨日评审 / 展示           | persistent | 评审者后续日期回访；实例保留        |
+| 意图 / 场景                  | pool_type  | 理由                                   |
+| ---------------------------- | ---------- | -------------------------------------- |
+| 预览 / 试用 / demo           | ephemeral  | 用完即弃，无需保留状态                 |
+| 一次性任务（跑完即弃）       | ephemeral  | 结果带出沙箱；实例随闲置回收           |
+| 敏感内容（即焚）             | ephemeral  | 闲置 1 小时自动删除，数据随实例消亡    |
+| 带数据库但只是预览/演示      | ephemeral  | 预览可重建数据；技术栈不是持久化触发器 |
+| 开发工作台 / workbench       | persistent | 会话跨天；状态需跨关机保留             |
+| 带数据库且需要跨会话保留数据 | persistent | 数据落在挂载的 EVS 盘（32G）           |
+| 跨日评审 / 展示              | persistent | 评审者后续日期回访；实例保留           |
 
+- **预览/一次性即使全栈/DB 也用 `ephemeral`**；技术栈不是持久化触发器
+- **`persistent` 只能来自明确长期意图，或推断后确认**；不得仅因 full-stack/DB 选 persistent
+- **同一任务沿用当前池**；新任务重新选型；新预览默认 `ephemeral`，必要时问一次是否复用已有 persistent
+- **切换池数据不迁移**
 - **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
 - **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`
 - **TTL 播报**：仅 connect（会话首次连接 / 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须转述 `urlLifetimeHint` / `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底
@@ -184,9 +225,9 @@ Poll verdicts: `done` (exitCode, logTail), `running` (logTail — keep polling),
 
 **Step 0 — Target-Selection Gate (MANDATORY)**: before any sandbox lifecycle tool, confirm the target. If the developer asked to deploy/host/publish a site without naming a target, STOP and run the [Target-Selection Gate](#target-selection-gate-mandatory--do-not-skip) first; do NOT call `huaweicloud_sandbox_connect` until it is resolved. Proceed with this workflow only if the target is already confirmed as sandbox (or a temporary runtime).
 
-**Step 0.3 — Resource pool selection**: once the target is sandbox, pick the pool type per the [两池沙箱（pool_type）](#两池沙箱pool_type) selection rules (auto by intent, developer may override; 1 instance per type, same type reuses). Check the task survives the chosen type's lifecycle window (ephemeral: idle 30min shutdown + 1h delete; persistent: 7-day idle reclaim cap) before connecting.
+**Step 0.5 — Stack-Selection Gate (MANDATORY)**: before selecting a pool or uploading application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
 
-**Step 0.5 — Stack-Selection Gate (MANDATORY)**: before uploading or writing any application code, confirm the backend stack via the [Stack-Selection Gate](#stack-selection-gate-mandatory--do-not-skip). 工作台/workbench/全栈/full-stack/CRUD/持久化 ⇒ full-stack (PostgreSQL + PostgREST default) — do NOT start an SPA-only deployment for a workbench request.
+**Step 0.6 — Pool-Selection Gate (MANDATORY)**: once the target is sandbox and the stack is known, select the pool per the [Pool-Selection Gate](#pool-selection-gate-mandatory--do-not-skip). Default `ephemeral`; use `persistent` only with explicit long-term intent or after confirmation. Same task reuses the current pool; a new task is re-evaluated. Check the task survives the chosen type's lifecycle window (ephemeral: idle 30min shutdown + 1h delete; persistent: 7-day idle reclaim cap) before connecting.
 
 Setup is a **plugin-side preflight** — the developer should be asked a question only once, when the agreement actually needs signing:
 
@@ -1094,7 +1135,7 @@ Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.
 | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Target not confirmed                    | "部署到华为云" without a named target is NOT a go signal. You MUST run the Target-Selection Gate and get an explicit choice before calling any sandbox lifecycle tool. Skipping it and defaulting to the sandbox is a violation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | Stack not confirmed (workbench ⇒ SPA)   | 工作台/全栈/full-stack/CRUD/数据库/持久化 requests are full-stack workbench deployments (PostgreSQL + PostgREST default) even when no database is mentioned. NEVER infer or default the stack to SPA — run the Stack-Selection Gate (Step 0.5) before uploading or writing ANY application code; an SPA-only deployment that already started with persistence implied must be STOPped and redirected to the full-stack path, not papered over with a bolted-on static backend.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| Pool type fixes durability              | 预览/试用/即焚 requests belong on the `ephemeral` pool — idle 30min auto-shutdown + 1h auto-delete (平台定时任务，已实测), nothing survives it, data dies with the box; 工作台/带数据库/跨日 requests belong on the `persistent` pool (EVS 32G mounted, survives reboots, idle reclaim within 7 days max). Pick per the 两池沙箱（pool_type） selection rules (Step 0.3) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox. A rejected connect returns HTTP 429 with a Retry-After header and a dual error code — the CODE, not the status, separates the two failure classes: HDKIT_QUOTA_EXCEEDED (quota — 1 instance per pool type; release or reuse, retry useless) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak).                                                                                                                                                                                                                                                                                                |
+| Pool type fixes durability              | 预览/试用/即焚 requests belong on the `ephemeral` pool — idle 30min auto-shutdown + 1h auto-delete (平台定时任务，已实测), nothing survives it, data dies with the box; 工作台/需要跨会话保留数据/跨日 requests belong on the `persistent` pool (EVS 32G mounted, survives reboots, idle reclaim within 7 days max). Pick per the [Pool-Selection Gate](#pool-selection-gate-mandatory--do-not-skip) (Step 0.6) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox. A rejected connect returns HTTP 429 with a Retry-After header and a dual error code — the CODE, not the status, separates the two failure classes: HDKIT_QUOTA_EXCEEDED (quota — 1 instance per pool type; release or reuse, retry useless) vs HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak).                                                                                                                                                                                                                                                         |
 | Gateway 502/504 vs the 409 version gate | A connect answered by gateway 502/504 is a transient orchestration timeout, NOT a failed create: Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it; on exhaustion the result is ok:false with the attempt count, and the remediation follows the failing answer — a gateway page carries the transient-class copy, while a business-coded 502 that carries its own remediation keeps it (one without its own copy falls to the transient copy). A 409 `HDKIT_VERSION_TOO_OLD` is the client-version gate — a different failure, not transient: follow the returned remediation (npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or call `huaweicloud_upgrade`); retrying connect cannot clear it. The same gate fires on the expose relay's auto-create, surfacing error_code HDKIT_VERSION_TOO_OLD with the upgrade remediation instead of a credential failure. Do not debug either as a credential or deployment issue. |
 | Agreement required first                | `sandbox_connect` fails if the agreement isn't signed; the `sandbox_check_user` preflight detects this, so surface it to the developer only when signing is needed                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Real-name required                      | `sandbox_connect` fails if `realnameVerified=false`; tell the developer once and stop, don't loop on connect                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
