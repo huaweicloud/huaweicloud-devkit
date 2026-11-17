@@ -212,12 +212,12 @@ test('the approval roster stays a const tuple so the registry closure cannot be 
   // sibling value-level test (roster names real tools) is the guard for
   // that class.
   //
-  // The classified list (PR-3a: the two sandbox exec faces) carries the
-  // same const-tuple discipline: it feeds structure guards (every member
-  // must provide a classify) and the gate's classifiedPass engagement, so
-  // widening it to a plain array would inert both silently. The masked
-  // parser runs over the classified declaration with the same
-  // every-occurrence rule and the runtime arity.
+  // The classified list (PR-3a: the two sandbox exec faces; PR-3c adds the
+  // obs pair) carries the same const-tuple discipline: it feeds structure
+  // guards (every member must provide a classify) and the gate's
+  // classifiedPass engagement, so widening it to a plain array would inert
+  // both silently. The masked parser runs over the classified declaration
+  // with the same every-occurrence rule and the runtime arity.
   const classifiedTuples = parseTuples(roster, 'APPROVAL_CLASSIFIED_TOOLS');
   assert.ok(
     classifiedTuples.length > 0,

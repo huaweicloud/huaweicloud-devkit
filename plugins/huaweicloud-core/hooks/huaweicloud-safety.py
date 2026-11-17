@@ -36,6 +36,7 @@ SECRET_READ_RE = None
 SECRET_CLI_RE = None
 APPROVAL_CLI_RE = None
 ACCOUNT_SWITCH_CLI_RE = None
+GATED_CLI_RE = None
 WRITE_OPERATION_RE = None
 WRITE_VOCAB_RE = None
 READ_OPERATION_RE = None
@@ -75,7 +76,7 @@ OBS_MARKER_RE = re.compile(r"\bOBS\b", re.I)
 
 
 def load_policy():
-    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, APPROVAL_CLI_RE, ACCOUNT_SWITCH_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
+    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, APPROVAL_CLI_RE, ACCOUNT_SWITCH_CLI_RE, GATED_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
     try:
         with POLICY_PATH.open("r", encoding="utf-8") as file_obj:
             policy = json.load(file_obj)
@@ -220,6 +221,19 @@ def load_policy():
                     ACCOUNT_SWITCH_CLI_RE = re.compile("|".join(blocked_switch_cli), re.I)
                 except re.error:
                     ACCOUNT_SWITCH_CLI_RE = None
+        # The gated-mutation CLI twins (update/upgrade, secret rm, packs
+        # enable/disable/all): the same mutations the MCP approval gate
+        # mediates, with no gate on this path. Same degradation posture as
+        # the approval family above — a malformed pattern list leaves
+        # GATED_CLI_RE None, never aborts the load.
+        blocked_gated_cli = policy.get("blockedGatedCliPatterns", [])
+        if isinstance(blocked_gated_cli, list):
+            blocked_gated_cli = [p for p in blocked_gated_cli if isinstance(p, str)]
+            if blocked_gated_cli:
+                try:
+                    GATED_CLI_RE = re.compile("|".join(blocked_gated_cli), re.I)
+                except re.error:
+                    GATED_CLI_RE = None
     except Exception:
         pass
 
@@ -2643,6 +2657,11 @@ def evaluate(tool_name, tool_input):
     # allowed.
     if ACCOUNT_SWITCH_CLI_RE and any(ACCOUNT_SWITCH_CLI_RE.search(candidate) for candidate in candidates):
         return "running the account-switch CLI from the agent Bash face is blocked: switching the Huawei Cloud account is approval-gated, and the devkit's own confirmation must come from the user's own interactive terminal. Ask the user to run the auth init / auth sync command themselves, or use the gated MCP tools (huaweicloud_auth_init / huaweicloud_auth_switch), which confirm the target account with the user before switching."
+    # The gated-mutation CLI twins (interrogate round 1, finding 1): the
+    # same mutations the MCP approval gate mediates, with no gate on this
+    # path.
+    if GATED_CLI_RE and any(GATED_CLI_RE.search(candidate) for candidate in candidates):
+        return "running the devkit update/upgrade, secret rm, and packs enable/disable CLI verbs from the agent Bash face is blocked: they perform the same mutations the MCP approval gate mediates (huaweicloud_upgrade, huaweicloud_secret_delete, huaweicloud_packs_configure), with no confirmation on this path. Call the MCP tool instead, or let the user run the CLI command in their own terminal."
     # Order-independent reveal pair: xargs reorders the argv while every word
     # stays literal — a devkit bin plus a `secret get` pair anywhere is a
     # reveal regardless of order (both shadow candidates — the decoded one

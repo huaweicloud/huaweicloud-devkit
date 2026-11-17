@@ -215,7 +215,37 @@ const DELIBERATE_ADDITIONS = [
     reason:
       'PR-3b approval-chain registration: the attestation the chat round-trip retry carries in ask mode (and the token-mode attestation), optional in the schema on purpose so a missing value reaches the gate and its teaching refusal instead of dying in SDK validation.',
   },
+  {
+    tool: 'huaweicloud_obs_set_website_config',
+    property: 'approvalToken',
+    reason:
+      'PR-3c approval registration: the gate-source token parameter the approval gate mints on a no-token call. Optional in the schema ON PURPOSE (the gate, not zod, is the enforcer): a no-token call must reach the gate to receive the USER_CONFIRMATION_REQUIRED envelope.',
+  },
+  {
+    tool: 'huaweicloud_obs_set_website_config',
+    property: 'approvedByUser',
+    reason:
+      'PR-3c approval registration: the attestation parameter — token mode requires it beside the token; in ask mode it is the T3 chat round-trip retry marker.',
+  },
+  {
+    tool: 'huaweicloud_upgrade',
+    property: 'approvalToken',
+    reason:
+      'PR-3c approval registration (the mechanical gate replaces the description-level consent): the gate-source token parameter, same optional-in-schema doctrine as the obs pair.',
+  },
+  {
+    tool: 'huaweicloud_upgrade',
+    property: 'approvedByUser',
+    reason: 'PR-3c approval registration: the attestation parameter, same mode-conditional doctrine as the obs pair.',
+  },
 ];
+
+// The other three PR-3c registrations (huaweicloud_obs_set_cors,
+// huaweicloud_secret_delete, huaweicloud_packs_configure) sit in
+// EXEMPT_TOOLS above: the snapshot has no legacy entry for them, so the
+// comparison loop skips them before it ever consults this list — their
+// approval parts are exercised by the structure and approval batteries
+// instead, and no DELIBERATE_ADDITIONS row could ever fire for them.
 
 // Deliberate optionals: properties the legacy snapshot carries as REQUIRED
 // that a reviewed change made mode-conditional. Same reasoning as

@@ -4,6 +4,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { createLinkedDevkitServers } from '../plugins/huaweicloud-core/src/mcp-protocol.ts';
+import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
 import { fixtureDir } from './fixture-dir.ts';
 import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 
@@ -68,13 +69,26 @@ test('secrets pack: set/list/delete through callTool, values never in results', 
     assert.equal(JSON.stringify(list).includes(PLAINTEXT), false);
     assert.equal(JSON.stringify(list).includes('rotated-value'), false);
 
-    const removed = (await callTool('huaweicloud_secret_delete', { ref: 'secret://mcp/one' })) as {
-      removed: number;
+    // secret_delete is approval-gated (PR-3c): each delete runs the
+    // attested mint → terminal confirm → retry cycle, then the handler
+    // answers on the far side of the gate.
+    const deleteSecret = async (ref: string): Promise<{ removed: number }> => {
+      const envelope = (await callTool('huaweicloud_secret_delete', { ref, approvedByUser: true })) as {
+        code: string;
+        approvalToken: string;
+      };
+      assert.equal(envelope.code, 'USER_CONFIRMATION_REQUIRED', 'the tokenless delete mints');
+      assert.equal(confirmApprovalToken(envelope.approvalToken).status, 'confirmed');
+      return (await callTool('huaweicloud_secret_delete', {
+        ref,
+        approvalToken: envelope.approvalToken,
+        approvedByUser: true,
+      })) as { removed: number };
     };
+
+    const removed = await deleteSecret('secret://mcp/one');
     assert.equal(removed.removed, 1);
-    const removedAgain = (await callTool('huaweicloud_secret_delete', { ref: 'secret://mcp/one' })) as {
-      removed: number;
-    };
+    const removedAgain = await deleteSecret('secret://mcp/one');
     assert.equal(removedAgain.removed, 0);
   } finally {
     delete process.env.HUAWEICLOUD_HOME;
@@ -165,7 +179,19 @@ test('secrets pack: the envVar channel refuses credential-family names', async (
       envVar: 'E2E_BENIGN_VALUE',
     })) as SetResult;
     assert.equal(set.status, 'set');
-    await callTool('huaweicloud_secret_delete', { ref: 'secret://mcp/benign' });
+    // Cleanup through the approval-gated delete (PR-3c): mint, confirm, retry.
+    const envelope = (await callTool('huaweicloud_secret_delete', {
+      ref: 'secret://mcp/benign',
+      approvedByUser: true,
+    })) as { code: string; approvalToken: string };
+    assert.equal(envelope.code, 'USER_CONFIRMATION_REQUIRED');
+    assert.equal(confirmApprovalToken(envelope.approvalToken).status, 'confirmed');
+    const removed = (await callTool('huaweicloud_secret_delete', {
+      ref: 'secret://mcp/benign',
+      approvalToken: envelope.approvalToken,
+      approvedByUser: true,
+    })) as { removed: number };
+    assert.equal(removed.removed, 1);
   } finally {
     delete process.env.HW_SECRET_KEY;
     delete process.env.E2E_BENIGN_VALUE;

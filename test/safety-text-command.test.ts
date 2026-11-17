@@ -183,5 +183,9 @@ test('classifyTextCommand allows the vault non-reveal subcommands', () => {
     classifyTextCommand('npx huaweicloud-devkit secret set secret://user/ak --file /tmp/key.txt').decision,
     'allow',
   );
-  assert.equal(classifyTextCommand('npx huaweicloud-devkit secret rm secret://user/ak').decision, 'allow');
+  // `secret rm` is the CLI twin of the approval-gated MCP tool
+  // (huaweicloud_secret_delete, PR-3c): it deletes a vault entry with no
+  // gate at all, so the Bash face denies it — interrogate round 1's
+  // finding 1 flipped this from the pre-registration allow.
+  assert.equal(classifyTextCommand('npx huaweicloud-devkit secret rm secret://user/ak').decision, 'deny');
 });

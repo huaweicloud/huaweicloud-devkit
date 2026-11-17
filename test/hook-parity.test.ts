@@ -1369,3 +1369,48 @@ test('roster MCP calls skip hook text classification on both twins', () => {
   assert.equal(bare.status, 0);
   assert.equal(bare.stdout.trim(), '', 'the bare roster name exempts like the prefixed one');
 });
+
+test('the gated-mutation CLI twins deny on the Bash face on both twins (interrogate r1 finding 1)', () => {
+  // `npx huaweicloud-devkit update|upgrade`, `secret rm`, and
+  // `packs enable|disable|all` perform the exact mutations the MCP
+  // approval gate mediates (huaweicloud_upgrade, secret_delete,
+  // packs_configure) with no gate at all on the CLI path — the agent
+  // Bash face must deny them on both twins. The controls stay allowed:
+  // packs status (read-only), the devkit doctor verb, and a plain
+  // hcloud read. The OBS write control keeps its deny (the hcloud class).
+  const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } });
+  const twins = (payload: unknown): [string, string] => {
+    const mjs = spawnMjsHook(payload);
+    assert.equal(mjs.status, 0, `mjs hook crashed: ${mjs.stderr.slice(0, 200)}`);
+    const py = spawnPyHook(payload);
+    const pyUnavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+    return [
+      mjs.stdout.trim() === '' ? 'allow' : 'deny',
+      pyUnavailable ? 'skip' : py.stdout.trim() === '' ? 'allow' : 'deny',
+    ];
+  };
+  for (const command of [
+    'npx huaweicloud-devkit update',
+    'npx huaweicloud-devkit upgrade --target opencode',
+    'node bin/setup.cjs upgrade',
+    'npx huaweicloud-devkit secret rm secret://user/hw-sk',
+    'npx huaweicloud-devkit packs enable sandbox,obs',
+    'npx huaweicloud-devkit packs disable obs',
+    'npx huaweicloud-devkit packs all',
+  ]) {
+    const [mjs, py] = twins(bash(command));
+    assert.equal(mjs, 'deny', `the mjs twin must deny the gated-mutation twin: ${command}`);
+    if (py !== 'skip') assert.equal(py, 'deny', `the py twin must deny the gated-mutation twin: ${command}`);
+  }
+  for (const [mjs, py] of [
+    twins(bash('npx huaweicloud-devkit packs status')),
+    twins(bash('npx huaweicloud-devkit doctor')),
+    twins(bash('hcloud ECS ListServersDetails')),
+  ]) {
+    assert.equal(mjs, 'allow', 'the read-only devkit verbs and hcloud reads stay allowed');
+    if (py !== 'skip') assert.equal(py, 'allow', 'the py twin allows the same controls');
+  }
+  const [obsMjs, obsPy] = twins(bash('hcloud OBS cp obs://my-bucket/x /tmp/x -f'));
+  assert.equal(obsMjs, 'deny', 'the hcloud OBS write control keeps its deny');
+  if (obsPy !== 'skip') assert.equal(obsPy, 'deny', 'the py twin keeps the OBS write deny');
+});

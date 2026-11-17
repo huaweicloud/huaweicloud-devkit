@@ -213,12 +213,12 @@ test('a user-owned rule on another resource is skipped by name, never silently o
   const userRule = { action: ACTION, resource: '/tmp/**', effect: 'allow' };
   seedConfig(home, { permissions: [userRule] });
   const stdout = runInstall(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
-  const config = loadOpencodeConfig(home);
-  // The user's rule is untouched; the user-owned ACTION is the one skip, and
-  // every OTHER roster action (PR-3a widened the roster to nine) gets its
-  // own allow rule — skipping by name never suppresses the rest.
+  const entries = ruleEntries(loadOpencodeConfig(home));
+  // The user's rule is untouched in place; the user-owned ACTION is the one
+  // skip, and every OTHER roster action (the merged tree's 16) gets its own
+  // allow rule — skipping by name never suppresses the rest.
   assert.deepEqual(
-    ruleEntries(config),
+    entries,
     [
       userRule,
       ...allowRuleActions()

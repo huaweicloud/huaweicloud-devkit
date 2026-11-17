@@ -14,7 +14,6 @@ import {
   planHcloudCommand,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
-import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import { createLinkedDevkitServers } from '../plugins/huaweicloud-core/src/mcp-protocol.ts';
 import { readConsentEvents, recordAskModeConsent } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
 import {
@@ -64,7 +63,6 @@ import { spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 
 const VENDOR = 'test: vendor established by the harness';
-const TEST_MASTER_KEY = Buffer.alloc(32, 0x33).toString('base64');
 
 // PR-2.5 win32 accommodations, one per failure class (CI 43807877421). The
 // credential-floor gap it reported — the gate's isCredentialResolvedPath
@@ -692,7 +690,10 @@ test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-too
       const name = 'huaweicloud_packs_configure' as Parameters<typeof callTool>[0];
       // Staged the way PR-3c lands it: an entry on the registry merge (a
       // runtime-added spec — the r12 F2 invariant in structure.test.ts is a
-      // different process, and the entry is deleted in the finally below).
+      // different process). The REAL registration now exists at load time
+      // (PR-3c), so the probe saves the real spec and restores it in the
+      // finally — a delete would leave the roster member spec-less for the
+      // rest of this process.
       const registration = {
         domain: 'packs',
         flavor: 'always',
@@ -705,6 +706,7 @@ test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-too
         }),
       };
       const registry = APPROVAL_SPECS as Partial<Record<Parameters<typeof callTool>[0], unknown>>;
+      const realSpec = registry[name];
       registry[name] = registration;
       try {
         const cfgArgs = { enable: ['core'], approvedByUser: true };
@@ -734,7 +736,7 @@ test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-too
           "the dispatch layer recorded the CORE leg's delivery outcome",
         );
       } finally {
-        delete registry[name];
+        registry[name] = realSpec;
       }
     });
   });
@@ -911,10 +913,11 @@ test('the packs_configure ordering rule: a no-seam call refuses before any mint 
     );
     assert.deepEqual(readConsentEvents(), [], 'a no-seam refusal writes no ledger entry');
 
-    // The same call through callTool reaches the handler's own identical
-    // refusal when the gate spec is not registered — packs_configure joins
-    // the roster in PR-3c, and until then the handler's refusal stands
-    // unchanged. Both refusals carry the same load-bearing text.
+    // The same call through callTool reaches the gate's identical refusal
+    // now that PR-3c registers the spec — the seam precheck mirrors the
+    // handler's own stdio-only refusal, so both routes carry the same
+    // load-bearing text (the gate's, before any mint; the handler's, as
+    // the belt behind it).
     const handlerRefusal = (await callTool('huaweicloud_packs_configure', { enable: ['sandbox'] })) as {
       ok: boolean;
       error: string;

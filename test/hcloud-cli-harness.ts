@@ -1,10 +1,8 @@
 // The fake-hcloud harness for the KooCLI execution tests, extracted from
 // hcloud-cli.test.ts: the deterministic vendor-challenge seam, the temp
 // auth-home isolation, and the fake binary/script/meta-repo builders.
-import assert from 'node:assert/strict';
 import { chmodSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import test from 'node:test';
 
 import { type HcloudRunResult } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { clearRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
@@ -17,6 +15,10 @@ import { fixtureDir } from './fixture-dir.ts';
 // (tools.test.ts's gate test drives the dance; the selfcheck drives it on
 // the wire); the real-model e2e tier never sets this seam.
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
+
+// The approval-mode pin and the vault-keyed auth home live in
+// approval-mode-harness.ts (PR-3a's shared home for every approval
+// battery) — imported from there, not re-declared here.
 
 export const isWin = process.platform === 'win32';
 
@@ -72,6 +74,9 @@ export async function withTempAuthHome(fn: (home: string) => Promise<void> | voi
     rmSync(home, { recursive: true, force: true });
   }
 }
+
+// The vault-tier auth home lives in approval-mode-harness.ts with the
+// approval-mode pin (PR-3a's shared home) — imported from there.
 
 export function fakeHcloudScript(source: string) {
   const dir = fixtureDir('huaweicloud-toolkit-');

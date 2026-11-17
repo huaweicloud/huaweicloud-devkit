@@ -14,10 +14,17 @@
 // the three tunnel faces, sign_agreement, credentials); PR-3b adds the auth
 // account-switch pair — the account switch can redirect every downstream
 // approved write to a different account, so it earns a human present on
-// every call. Two lists, not one, because the two flavors need different
-// downstream facts: always tools get client allow rules on install (the
-// yield posture), classified tools additionally need a classify in their
-// spec (pinned by structure.test.ts: every APPROVAL_CLASSIFIED_TOOLS entry
+// every call; PR-3c adds the obs pair as the first classified members
+// (action=get is a signed read and must never confirm) and the three
+// always tools (upgrade replaces its description-level consent with the
+// mechanical gate; secret_delete is destructive with no version history;
+// packs_configure widens the disclosure face). secret_set stays OFF the
+// roster — the user is the plaintext source and is therefore present —
+// and setup_obs_config stays off as the flagged boundary item. Two
+// lists, not one, because the two flavors need different downstream
+// facts: always tools get client allow rules on install (the yield
+// posture), classified tools additionally need a classify in their spec
+// (pinned by structure.test.ts: every APPROVAL_CLASSIFIED_TOOLS entry
 // must provide one).
 
 export const APPROVAL_TOOLS = [
@@ -32,11 +39,23 @@ export const APPROVAL_TOOLS = [
   'huaweicloud_sandbox_credentials',
   'huaweicloud_auth_init',
   'huaweicloud_auth_switch',
+  'huaweicloud_obs_set_website_config',
+  'huaweicloud_obs_set_cors',
+  'huaweicloud_upgrade',
+  'huaweicloud_secret_delete',
+  'huaweicloud_packs_configure',
 ] as const;
 
+// The classified members: PR-3a's exec pair and PR-3c's obs pair. A const
+// tuple by the same round-1..5 widening doctrine as APPROVAL_TOOLS (the
+// compile-time classified-provides-classify consumers key on the runtime
+// list, and a widened element would inert them) — structure.test.ts pins
+// the shape.
 export const APPROVAL_CLASSIFIED_TOOLS = [
   'huaweicloud_sandbox_exec_with_session',
   'huaweicloud_sandbox_exec_one_shot',
+  'huaweicloud_obs_set_website_config',
+  'huaweicloud_obs_set_cors',
 ] as const;
 
 // Each roster member's MCP payload shape class (round 10, finding 3): the
@@ -63,6 +82,11 @@ export const APPROVAL_CLASSIFIED_TOOLS = [
 // The Record is keyed by the roster tuple inline (this module is
 // import-free — it cannot take ApprovalRosterName from the registry, so
 // the tuple is widened here the same way the registry widens it).
+// PR-3c's registrations (obs config, upgrade, secret_delete,
+// packs_configure) ride 'structured' like PR-3a's lifecycle faces and
+// PR-3b's auth pair: plain argument payloads, no command surface, no
+// exemption (measured: every real payload classifies allow, so the calls
+// reach the server gate with full hook classification standing).
 export type ApprovalToolInputShape = 'argsArray' | 'commandString' | 'structured';
 
 export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number], ApprovalToolInputShape> = {
@@ -77,6 +101,11 @@ export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number],
   huaweicloud_sandbox_credentials: 'structured',
   huaweicloud_auth_init: 'structured',
   huaweicloud_auth_switch: 'structured',
+  huaweicloud_obs_set_website_config: 'structured',
+  huaweicloud_obs_set_cors: 'structured',
+  huaweicloud_upgrade: 'structured',
+  huaweicloud_secret_delete: 'structured',
+  huaweicloud_packs_configure: 'structured',
 };
 
 // The client-facing permission action opencode namespaces a roster tool

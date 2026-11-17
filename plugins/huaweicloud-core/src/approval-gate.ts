@@ -93,22 +93,38 @@ export const COMMAND_REQUIRES_ARGS = 'COMMAND_REQUIRES_ARGS';
 
 function commandAnchorRefusal(spec: ApprovalSpec, value: unknown, provided: unknown): Record<string, unknown> | null {
   if (provided === undefined) return null; // the legacy args-only shape
-  // A tool that declares no anchorable line refuses a `command` field
-  // outright: the field exists to carry the line the user reads, and on a
-  // no-anchor tool it is a stuffed display field (the serial landing's
-  // no-anchor refusal, adopted here so the exec faces — which DO anchor
-  // their own command — and the six lifecycle faces behave as their
-  // registrations say from this PR on).
-  if (spec.commandAnchor === undefined) {
+  // The refusal envelope's shared content: the REAL summarize view, so the
+  // confirmation surface can only ever carry real content (interrogate
+  // round 2, fix-in-pass iv) — never a fabricated display line.
+  const noAnchorRefusal = (reason: string): Record<string, unknown> => {
+    const view = spec.summarize(value);
     return {
       status: 'rejected',
       code: COMMAND_ARGS_MISMATCH,
-      reason: 'this tool declares no displayable command line, so a command field is not accepted for it.',
-      nextStep: 'Remove the command field and send the call as the schema defines it.',
+      reason,
+      summary: view.summary,
+      nextStep: 'Remove the command field. This tool\u2019s confirmation view is its summarized request.',
     };
+  };
+  // A tool that declares no anchorable line refuses a `command` field
+  // outright (the serial landing's no-anchor refusal): the field exists to
+  // carry the line the user reads, and on a no-anchor tool it is a stuffed
+  // display field — the exec faces, which DO anchor their own command, and
+  // the structured faces behave as their registrations say.
+  if (spec.commandAnchor === undefined) {
+    return noAnchorRefusal(
+      'this tool declares no displayable command line, so a command field is not accepted for it.',
+    );
   }
   const expected = spec.commandAnchor(value);
-  if (expected.length === 0) return null; // this call declares no executable line
+  if (expected.length === 0) {
+    // This call declares no executable line even though the spec anchors:
+    // a provided one is a fabricated display line the user would read as
+    // "the approved command" while the real request executes underneath.
+    return noAnchorRefusal(
+      'this tool takes no command field for this call: it has no executable line to anchor, and a fabricated line must never display as the approved content.',
+    );
+  }
   if (typeof provided !== 'string' || provided.trim() === '') {
     return {
       status: 'rejected',
@@ -574,8 +590,10 @@ const ELICITATION_SCHEMA = {
 
 function elicitationRequest(commandLine: string, summary: string): ElicitFormRequest {
   // A tool with an executable line shows it first (the command-forward
-  // doctrine); a tool without one (the six sandbox lifecycle faces,
-  // packs_configure) centers the redacted summary instead.
+  // doctrine); a tool without one (the sandbox lifecycle faces, the auth
+  // pair, PR-3c's registrations) centers the redacted summary instead —
+  // never a blank command slot under a command heading (interrogate
+  // round 2, fix-in-pass ii, adopted by the serial landing).
   const head =
     commandLine !== ''
       ? `HuaweiCloud DevKit is requesting your confirmation to run this command:\n\n${commandLine}\n\n`
@@ -591,14 +609,14 @@ function elicitationRequest(commandLine: string, summary: string): ElicitFormReq
   };
 }
 
-function elicitRefusal(outcome: ElicitOutcome, commandLine: string): Record<string, unknown> {
+function elicitRefusal(outcome: ElicitOutcome, displayLine: string): Record<string, unknown> {
   const nextStep = 'Nothing ran and nothing was approved. Retry the call when the user is ready to answer the form.';
   if (outcome.decision === 'timeout') {
     return {
       status: 'rejected',
       code: ELICITATION_TIMEOUT,
       reason: `the confirmation form was not answered within ${Math.round(ELICITATION_TIMEOUT_MS / 1000)} s.`,
-      command: commandLine,
+      command: displayLine,
       nextStep,
     };
   }
@@ -607,7 +625,7 @@ function elicitRefusal(outcome: ElicitOutcome, commandLine: string): Record<stri
       status: 'rejected',
       code: ELICITATION_FAILED,
       reason: `the client could not deliver the confirmation form (${outcome.detail ?? 'transport failure'}).`,
-      command: commandLine,
+      command: displayLine,
       nextStep,
     };
   }
@@ -618,17 +636,17 @@ function elicitRefusal(outcome: ElicitOutcome, commandLine: string): Record<stri
     reason: cancelled
       ? 'the user dismissed the confirmation form without approving.'
       : 'the user declined the confirmation form.',
-    command: commandLine,
-    nextStep: 'Nothing ran. Do not retry the same command without a fresh approval from the user.',
+    command: displayLine,
+    nextStep: 'Nothing ran. Do not retry the same call without a fresh approval from the user.',
   };
 }
 
 // T3: the client cannot render a form, so the model is the relay. The
 // envelope names the line it must show — the executable command when the
-// tool carries one, else the redacted summary (the six lifecycle faces
-// have no command string) — and the exact retry that continues; the
-// refusals below and the ledger tier keep the posture labelled where a
-// later reader meets it.
+// tool carries one, else the redacted summary (the commandless faces have
+// no command string) — and the exact retry that continues; the refusals
+// below and the ledger tier keep the posture labelled where a later
+// reader meets it.
 function askConfirmationEnvelope(
   commandLine: string,
   summary: string,
@@ -720,8 +738,9 @@ export async function runApprovalGate(
     // view.command — the same redaction the pin view carries — never the
     // raw args.command the anchor validated (interrogate F1: the form head
     // and the T3 envelope echoed a plaintext secret from the raw field).
-    // The legacy args-only shape keeps its redacted echo; the six
-    // no-command lifecycle faces show the summary alone.
+    // The legacy args-only shape keeps its redacted echo; the no-command
+    // faces show the summary alone (never a blank command slot,
+    // interrogate round 2 fix-in-pass ii).
     const commandLine = view.command ?? '';
     const sessionId = opts.sessionId ?? 'default';
     const consented = (evidence: 'elicitation' | 'posture'): ApprovalGateOutcome => {

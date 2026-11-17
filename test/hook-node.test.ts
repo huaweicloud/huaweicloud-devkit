@@ -326,6 +326,82 @@ test('the roster exemption admits each roster member by its OWN payload shape: t
   }
 });
 
+test('the structured rows exempt nothing for the PR-3c names either: real payloads pass by classification, stuffed shapes keep the floor', () => {
+  // PR-3a's test above drives the sandbox names; this one pins the same
+  // doctrine on PR-3c's five (obs config, upgrade, secret_delete,
+  // packs_configure): plain argument payloads classify allow (measured),
+  // so the calls reach the server gate with full classification standing,
+  // and a stuffed command/argv ride-along denies on its TEXT.
+  const structured = (toolName: string, toolInput: Record<string, unknown>): string => {
+    const out = spawnSync(process.execPath, [hookPath], {
+      input: JSON.stringify({ tool_name: toolName, tool_input: toolInput }),
+      encoding: 'utf8',
+    });
+    assert.equal(out.status, 0, `hook crashed: ${out.stderr.slice(0, 200)}`);
+    if (out.stdout.trim() === '') return 'allow';
+    return JSON.parse(out.stdout).hookSpecificOutput.permissionDecision;
+  };
+
+  // The real payloads reach the server gate: bare and devkit-prefixed
+  // spellings, one per registration family.
+  assert.equal(
+    structured('huaweicloud_secret_delete', { ref: 'secret://user/hw-sk', approvedByUser: true }),
+    'allow',
+    'the vault delete payload is inert command text',
+  );
+  assert.equal(
+    structured('mcp__huaweicloud-devkit__huaweicloud_packs_configure', { enable: ['obs'], approvedByUser: true }),
+    'allow',
+    'the prefixed packs_configure payload passes',
+  );
+  assert.equal(
+    structured('huaweicloud_obs_set_website_config', {
+      action: 'set',
+      bucket: 'my-bucket',
+      region: 'cn-north-4',
+      indexDocument: 'index.html',
+      approvedByUser: true,
+    }),
+    'allow',
+    'the obs set payload passes',
+  );
+  assert.equal(
+    structured('huaweicloud_upgrade', { version: 'latest', approvedByUser: true }),
+    'allow',
+    'the upgrade payload passes',
+  );
+
+  // The inert ride-along shapes the transition fallback used to admit: an
+  // args array or a command string on a structured name denies on its
+  // TEXT, because the present row never falls through to the fallback.
+  assert.equal(
+    structured('huaweicloud_secret_delete', {
+      args: ['hcloud', 'ECS', 'DeleteServer', '--server_id=i-1'],
+      approvedByUser: true,
+    }),
+    'deny',
+    'an args-array ride-along on a structured name keeps the write deny (the row preempts the fallback)',
+  );
+  assert.equal(
+    structured('huaweicloud_obs_set_cors', {
+      command: 'rm -rf /tmp/x',
+      action: 'set',
+      bucket: 'b',
+      region: 'r',
+    }),
+    'deny',
+    'a command-string ride-along on a structured name keeps the destructive deny',
+  );
+  assert.equal(
+    structured('huaweicloud_packs_configure', {
+      command: 'cat ~/.config/huaweicloud/credentials.json',
+      enable: ['obs'],
+    }),
+    'deny',
+    'the credential class survives on every name, structured included',
+  );
+});
+
 test('the structured shape rows never fall to the transition fallback: a present row means no exemption (PR-3a F3)', () => {
   // Both seats drove the smuggle: a present-but-unknown shape row fell to
   // the transition fallback, which ADMITS the two devkit payload classes
