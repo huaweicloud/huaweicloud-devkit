@@ -212,11 +212,18 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     /\*\*删除纪律\*\*：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删/,
     'the deletion-discipline bullet must state the no-API rule, the double confirm, and no deferred deletes',
   );
-  // Explicit template_id wins over pool_type (custom template scenario).
+  // Custom templates are retired (dev 8c1af52e): the client sends pool_type
+  // only and the server owns the mapping — the explicit-priority doctrine is
+  // gone.
   assert.match(
     poolSection,
-    /显式 `template_id` 优先于 `pool_type`（自定义模板场景）/,
-    'explicit template_id must be documented as taking precedence',
+    /不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`/,
+    'the template_id retirement must be documented in the selection rules',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /显式 `template_id` 优先/,
+    'the explicit-priority doctrine must not come back',
   );
   assert.match(
     poolSection,
@@ -288,13 +295,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /客户端传 `pool_type`（ephemeral\/persistent），\*\*服务端权威映射\*\* template_id；显式 `template_id` 优先（自定义模板）/,
-    'the client/server mapping split must be stated',
+    /客户端只传 `pool_type`（ephemeral\/persistent），\*\*服务端权威映射\*\* template_id；template_id\/自定义模板已下线/,
+    'the client/server mapping split must state the client-side retirement',
   );
   assert.match(
     resourcePool,
-    /\*\*无 persist_mode 请求参数\*\*（需求方两次纠正）/,
-    'the no-persist_mode fact must be stated',
+    /\*\*无 persist_mode 请求参数\*\*；闲置语义由平台按模板配置；上游参数面有 template_id，但客户端不再传入/,
+    'the no-persist_mode fact must state the client-side retirement',
   );
   assert.match(
     resourcePool,
@@ -479,8 +486,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /钉扎（可选，运维场景）：`HW_POOL_TEMPLATE_EPHEMERAL`\/`HW_POOL_TEMPLATE_PERSISTENT` 环境变量——设置后客户端附带映射 template_id 上送；日常部署无需配置（模板 ID 由服务端权威维护）/,
-    'the pinning contract must be stated with its optional-ops posture',
+    /模板 ID 仅由服务端 `POOL_TEMPLATE_\*` 权威维护；客户端不再支持 `HW_POOL_TEMPLATE_\*` 钉扎或显式 template_id/,
+    'the retirement of pinning and explicit template_id must be stated',
+  );
+  assert.doesNotMatch(
+    resourcePool,
+    /设置后客户端附带映射 template_id 上送/,
+    'the pinning teaching must not come back',
   );
   // G list: G1's mapping drives the 7-day cap the deletion doctrine cites.
   assert.match(
@@ -650,9 +662,10 @@ test('sandbox tool descriptions carry the pool_type and 429 three-code semantics
     'the connect description must attribute the EVS retention, 1h shutdown, and 7-day cap to the persistent pool',
   );
   // dev 5c09d225/ef9e977b 终态：服务端配置字段（分钟口径）、started 字段、播报时机。
+  // dev 8c1af52e：回显是服务端解析出的模板（response 字段），不再是请求参数。
   assert.match(
     connectDesc,
-    /pool_type\/template_id echo, server-configured lifecycle numbers \(pool_idle_shutdown_minutes \/ pool_idle_delete_minutes \/ pool_reclaim_minutes\) and started \(true when a reused instance was woken from shutdown\)\./,
+    /pool_type\/resolved template_id echo, server-configured lifecycle numbers \(pool_idle_shutdown_minutes \/ pool_idle_delete_minutes \/ pool_reclaim_minutes\) and started \(true when a reused instance was woken from shutdown\)\./,
     'the connect description must promise the server-configured minute-based lifecycle echo and the started field',
   );
   assert.match(
@@ -667,8 +680,8 @@ test('sandbox tool descriptions carry the pool_type and 429 three-code semantics
   );
   assert.match(
     connectDesc,
-    /pool_type\/template_id echo/,
-    'the connect description must promise the pool_type/template_id echo',
+    /pool_type\/resolved template_id echo/,
+    'the connect description must promise the resolved (server-side) echo, never a request parameter',
   );
   // v2 divergence: the vendor-gate seam stays on the connect description.
   assert.match(connectDesc, /Vendor-gated \(vendorConfirmed\)/, 'connect must keep the vendor-gate sentence');
@@ -733,10 +746,16 @@ test('connect schema documents the pool_type parameter with its lifecycle semant
     /Sandbox pool type \(default ephemeral\)\. ephemeral = non-persistent: idle auto-shutdown 30min \+ auto-delete 1h \(platform scheduled task, verified\) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days\./,
     'the pool_type description must state both lifecycle calibers',
   );
+  // dev 8c1af52e：自定义模板下线，pool_type 是唯一的选池参数。
   assert.match(
     connectSchemaBlock,
-    /Explicit template_id overrides pool_type\./,
-    'the pool_type description must state the explicit-template precedence',
+    /Custom templates are no longer supported\./,
+    'the pool_type description must state the custom-template retirement',
+  );
+  assert.doesNotMatch(
+    connectSchemaBlock,
+    /template_id/,
+    'connectSchema must not declare or describe a template_id property',
   );
 });
 
