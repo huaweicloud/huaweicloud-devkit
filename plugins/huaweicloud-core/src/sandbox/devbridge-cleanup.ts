@@ -253,8 +253,23 @@ export function planDevbridgeCleanup({
   }
 
   for (const h of hosts) {
+    // A host id-attributed to a record we are KEEPING is never a kill target,
+    // even when some deleted record's port claim matches the host's port (the
+    // structural guard makes the live-host invariant independent of the
+    // gateway's one-port-one-record doctrine). A host whose own record IS in
+    // the delete set still dies.
+    if (h.id && mappedPids.has(h.pid) && !deleteSet.has(h.id)) continue;
     if (h.id && deleteSet.has(h.id)) killPids.add(h.pid);
-    else if (h.port != null && [...deleteSet].some((id) => hasPort(id, h.port!))) killPids.add(h.pid);
+    else if (h.port != null) {
+      // A port-only host (the expose launch form, `devbridge host -p <port>`)
+      // cannot be attributed to a specific record. When ANY surviving record
+      // still claims the host's port, we cannot prove the host belongs to a
+      // deleted record — never kill on that guess; the next cleanup after the
+      // survivor is gone (or a same-port expose that replaced every same-port
+      // record) still fires.
+      const survivorClaimsPort = [...tunnelIds].some((id) => !deleteSet.has(id) && hasPort(id, h.port!));
+      if (!survivorClaimsPort && [...deleteSet].some((id) => hasPort(id, h.port!))) killPids.add(h.pid);
+    }
   }
 
   return { deleteIds: [...deleteSet], killPids: [...killPids] };

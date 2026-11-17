@@ -244,6 +244,50 @@ test('cleanup: same-port targeting keys on the queried port list — a custom-na
   assert.deepEqual(fallback.deleteIds, []);
 });
 
+test('cleanup: a host mapped to a KEPT record is never a kill target, even when a deleted record claims its port', () => {
+  // The two-records-one-port co-state the gateway's own doctrine says cannot
+  // exist; the structural guard makes the live-host invariant hold regardless
+  // (a one-record port claim must not kill another record's live host).
+  const tunnels: DevbridgeTunnelRecord[] = [
+    { id: 'lw3bmxny', name: 'kanban-board', port: 8787, expiryText: '30 days', expirySeconds: 30 * 86400, ports: [8787] },
+    { id: 'ppcq44gr', name: 'tunnel-8787-2', port: 8787, expiryText: '1 day', expirySeconds: 86400, ports: [8787] }, // orphan record, same port claim
+  ];
+  const hosts: DevbridgeHostProcess[] = [{ pid: 23073, id: 'lw3bmxny', port: 8787 }];
+  const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive: [], mode: 'stale' });
+  assert.ok(plan.deleteIds.includes('ppcq44gr'), 'the orphan record goes');
+  assert.ok(!plan.deleteIds.includes('lw3bmxny'), 'the live record stays');
+  assert.ok(!plan.killPids.includes(23073), 'the LIVE record\'s host is never killed by a same-port claim');
+  assert.deepEqual(plan.killPids, []);
+
+  // The port-only host form (the expose launch form, no tunnel id): a
+  // surviving record's port claim shields it too — the host cannot be
+  // attributed, so it is never killed on a guess.
+  const portOnlyHosts: DevbridgeHostProcess[] = [{ pid: 500, id: null, port: 8787 }];
+  const quotaPlan = planDevbridgeCleanup({
+    tunnels,
+    hosts: portOnlyHosts,
+    keepalive: [],
+    mode: 'quota',
+    maxExtra: 1,
+  });
+  assert.ok(quotaPlan.deleteIds.includes('ppcq44gr'), 'quota frees the oldest non-protected record');
+  assert.ok(!quotaPlan.deleteIds.includes('lw3bmxny'), 'the protected/oldest survivor stays');
+  assert.deepEqual(quotaPlan.killPids, [], 'the unattributable port-only host is shielded by the survivor\'s port claim');
+
+  // The same-port replacement doctrine still kills: expose replaces EVERY
+  // same-port record, so no survivor claims the port and the launch-form host
+  // on it dies with them.
+  const exposePlan = planDevbridgeCleanup({
+    tunnels,
+    hosts: portOnlyHosts,
+    keepalive: [],
+    mode: 'stale',
+    samePort: 8787,
+  });
+  assert.ok(exposePlan.deleteIds.includes('lw3bmxny') && exposePlan.deleteIds.includes('ppcq44gr'));
+  assert.deepEqual(exposePlan.killPids, [500], 'with no survivor on the port, the launch-form host is killed');
+});
+
 test('cleanup: apply script validates IDs/PIDs and re-checks the process before killing', () => {
   const script = buildDevbridgeCleanupApplyScript({ deleteIds: ['aaaa2345'], killPids: [100, 200] });
   // state→apply can take minutes: a recycled PID must not hit an unrelated

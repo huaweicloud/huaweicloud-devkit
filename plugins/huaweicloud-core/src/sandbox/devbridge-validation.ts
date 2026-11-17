@@ -48,8 +48,12 @@ export function validateExpiryHours(hours: unknown): number {
 
 // The tunnel-ID charset as one shared pattern: validateTunnelId guards shell
 // splices with it, and the selective-cleanup parsers (devbridge-cleanup.ts)
-// recognize real IDs with it — real IDs may contain 0/1/8/9, so parsing must
-// not assume the base32 subset.
+// recognize real IDs with it. The real CLI accepts only lowercase base32
+// (a-z2-7, length 8); this superset over-accepts by design — parsing and
+// shell-splice guarding fail SAFE on junk (the CLI's own validation rejects
+// any phantom delete; a phantom matching a real hostless tunnel is a
+// documented orphan-delete), while a strict pattern would silently DROP real
+// IDs on any charset drift.
 export const DEVBRIDGE_TUNNEL_ID_PATTERN = /^[A-Za-z0-9_-]{4,32}$/;
 
 // Validate a DevBridge tunnel ID destined for shell interpolation in
