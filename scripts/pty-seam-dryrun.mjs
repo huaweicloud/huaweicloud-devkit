@@ -106,5 +106,36 @@ if (replay.outcome !== 'already_processed') {
 }
 watcher.stop();
 console.log('replay answered already_processed — single use holds');
-console.log('PTY SEAM DRY RUN: PASS (mint → real approve → consume → single-use)');
+
+// 6. The terminal-line probe (round 3, F1): mint a token whose command
+// carries the SPACE-separated secret spelling and drive the real approve
+// verb; the CLI's Confirming line renders the STORE entry, so the terminal
+// must show the folded form, never the plaintext.
+const { approveTokenPty } =
+  await import('/home/yanchengyu/.herdr/worktrees/HuaweiCloud-Devkit/pr3a/test/e2e/approve-pty.ts');
+const secretMint = await callTool('huaweicloud_sandbox_exec_one_shot', {
+  command: 'hcloud ECS DeleteServers --password pty-hunter2-secret --server_id=i-1 --cli-region=cn-north-4',
+  approvedByUser: true,
+});
+if (secretMint.code !== 'USER_CONFIRMATION_REQUIRED' || !secretMint.approvalToken) {
+  console.error('FAIL: expected the space-form mint envelope, got', JSON.stringify(secretMint).slice(0, 200));
+  process.exit(1);
+}
+const approve = await approveTokenPty(bin, home, secretMint.approvalToken);
+if (!approve.ok || !approve.output.includes('Confirming:')) {
+  console.error('FAIL: the approve verb did not run:', JSON.stringify(approve.output.slice(-400)));
+  process.exit(1);
+}
+if (approve.output.includes('pty-hunter2-secret')) {
+  console.error('FAIL: the terminal Confirming line leaked the space-form secret');
+  console.error(approve.output);
+  process.exit(1);
+}
+if (!approve.output.includes('<redacted>')) {
+  console.error('FAIL: the terminal Confirming line does not show the folded form');
+  console.error(approve.output);
+  process.exit(1);
+}
+console.log('terminal Confirming line clean: the space-form secret folded to <redacted>');
+console.log('PTY SEAM DRY RUN: PASS (mint → real approve → consume → single-use → terminal line clean)');
 console.log('store:', ptyWatcherStorePath(home));

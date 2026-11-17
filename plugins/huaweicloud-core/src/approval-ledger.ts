@@ -2055,16 +2055,17 @@ export function recordAskModeConsent(params: {
   return { grantedAt, arrivalSeq: event.arrivalSeq };
 }
 
-// The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
-// PR-3a's memo datum): annotate the most recent granted consent row on a
-// key with what became of the call the consent authorized. The gate
-// records the ARRIVAL (recordAskModeConsent, above); the dispatch layer —
-// which is the only place that ever sees the handler's return or throw —
-// calls this best-effort follow-up after the handler ran. The ledger's
-// subject widens accordingly: the CONSENT's lifecycle (arrival + what
-// became of the call it authorized), never the handler's internal
-// execution. PR-3a's S1 memo keys reuse on this datum (uncertain /
-// failed → reuse the prior consent; delivered → no reuse).
+// The delivery-outcome follow-up (round 10, finding 4, both seats' shape):
+// annotate the most recent granted consent row on a key with what became of
+// the call the consent authorized. The gate records the ARRIVAL
+// (recordAskModeConsent, above); the dispatch layer — which is the only
+// place that ever sees the handler's return or throw — calls this
+// best-effort follow-up after the handler ran. The ledger's subject widens
+// accordingly: the CONSENT's lifecycle (arrival + what became of the call
+// it authorized), never the handler's internal execution. The annotation
+// is the AUDIT record of the delivery class; PR-3a's retry memo (the
+// gate's in-memory state, approval-gate.ts) keys on the dispatch layer's
+// COMPUTED outcome at dispatch time and never reads this annotation back.
 //
 // Best-effort in every direction, by design: the annotation is
 // LOCKLESS — it never takes the ledger lock (a wedged holder must not
@@ -2085,8 +2086,8 @@ export function recordAskModeConsent(params: {
 // rewriting a spool line stays forbidden (the unlocked read-rewrite
 // this ledger forbids, round 6), and so does rewriting another
 // arrival's store row. A skipped annotation leaves the row as the
-// arrival wrote it; the memo treats an absent outcomeDetail as unknown.
-// The recorded residual narrows to the RACING shape alone: concurrent
+// arrival wrote it; the AUDIT VIEW of an absent outcomeDetail reads as
+// delivery-unknown. The recorded residual narrows to the RACING shape alone: concurrent
 // same-key arrivals can interleave between this call's arrival and its
 // annotate so the newest store row is not provably this dispatch's own
 // — PR-3a's precise keyed join lands with the approvedVia carrier (the
@@ -2267,15 +2268,16 @@ function applyOutcomeLines(out: ConsentEvent[], storeRowCount: number): void {
   applyOutcomeRows(seqRows, true);
 }
 
-// The delivery-outcome follow-up (round 10, finding 4, both seats' shape;
-// PR-3a's memo datum): record what became of the call a consent
-// authorized, on the consent row that arrival created. The gate records
-// the ARRIVAL (recordAskModeConsent, which returns the identity it wrote —
-// the stamp and the seq); the dispatch layer — the only place that ever
-// sees the handler's return or throw — hands that identity here with the
-// delivery class. The ledger's subject is the CONSENT's lifecycle
-// (arrival + what became of the call it authorized), never the handler's
-// internal execution.
+// The delivery-outcome follow-up (round 10, finding 4, both seats' shape):
+// record what became of the call a consent authorized, on the consent row
+// that arrival created — the AUDIT record of the delivery class (the
+// retry memo's state is the gate's in-memory record, never this
+// annotation). The gate records the ARRIVAL (recordAskModeConsent, which
+// returns the identity it wrote — the stamp and the seq); the dispatch
+// layer — the only place that ever sees the handler's return or throw —
+// hands that identity here with the delivery class. The ledger's subject
+// is the CONSENT's lifecycle (arrival + what became of the call it
+// authorized), never the handler's internal execution.
 //
 // Ownership is proven by IDENTITY, never by position or absence (rounds
 // 12, 15, and 16): the annotate proceeds only when the store holds

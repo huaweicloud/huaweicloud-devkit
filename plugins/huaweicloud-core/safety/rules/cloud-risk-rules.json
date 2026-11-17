@@ -550,7 +550,7 @@
     },
     {
       "id": "hwc-sandbox-destructive-unanchored-rm",
-      "title": "Recursive forced rm against an unanchored target",
+      "title": "Recursive forced rm against a non-named target",
       "category": "destructive",
       "severity": "deny",
       "stages": ["command"],
@@ -558,28 +558,40 @@
         "any": [
           {
             "field": "text",
-            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+\\*(?:\\s|$)"
+            "regex": "\\brm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+\\*(?:\\s|$)"
           },
           {
             "field": "text",
-            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+\\.(?:/|\\s|$)"
+            "regex": "\\brm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+\\.(?:/|\\s|$)"
           },
           {
             "field": "text",
-            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+~"
+            "regex": "\\brm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+\\.\\.(?:/|\\s|$)"
           },
           {
             "field": "text",
-            "regex": "rm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+[\"']?\\$\\{?HOME\\}?[\"']?"
+            "regex": "\\brm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+~"
+          },
+          {
+            "field": "text",
+            "regex": "\\brm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+[\"']?\\$\\{?HOME\\}?[\"']?"
+          },
+          {
+            "field": "text",
+            "regex": "\\brm\\s+-(?:r[\\w]*f|f[\\w]*r)[\\w]*\\s+[A-Za-z_][\\w./-]*(?:\\s|$)"
+          },
+          {
+            "field": "text",
+            "regex": "--no-preserve-root"
           }
         ]
       },
-      "message": "A recursive forced rm targets the whole working tree, the current directory, or the user's home instead of a named path.",
-      "remediation": "Delete named paths only. Never rm -rf a glob, dot, tilde, or $HOME target; list what will be removed first."
+      "message": "A recursive forced rm targets the working tree, a relative path, the user's home, or the filesystem root instead of a named absolute path — or spells out --no-preserve-root.",
+      "remediation": "Recursive forced rm is refused for every target shape. Delete named absolute paths one by one, or use targeted deletions (rm with the exact file names); list what will be removed first."
     },
     {
       "id": "hwc-sandbox-destructive-find-delete",
-      "title": "Root-anchored find with -delete",
+      "title": "find with -delete",
       "category": "destructive",
       "severity": "deny",
       "stages": ["command"],
@@ -587,7 +599,7 @@
         "all": [
           {
             "field": "text",
-            "regex": "\\bfind\\s+/\\s"
+            "regex": "\\bfind\\b"
           },
           {
             "field": "text",
@@ -595,8 +607,25 @@
           }
         ]
       },
-      "message": "find starting at the filesystem root with -delete walks and removes everything it matches.",
-      "remediation": "Scope the find to a named directory under the workspace and test the match set with -print before adding -delete."
+      "message": "find with -delete walks and removes everything it matches, from whatever start point it is given.",
+      "remediation": "Test the match set with -print first; remove files by exact name instead of a find -delete sweep."
+    },
+    {
+      "id": "hwc-sandbox-pipe-to-xargs-rm",
+      "title": "Pipeline sweeping files into rm",
+      "category": "destructive",
+      "severity": "deny",
+      "stages": ["command"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "\\|\\s*xargs\\s+rm\\b"
+          }
+        ]
+      },
+      "message": "A pipeline sweeps its matches into rm through xargs, deleting whatever the left side prints.",
+      "remediation": "Print the match set first and remove files by exact name; never pipe a listing straight into rm."
     },
     {
       "id": "hwc-sandbox-pipe-to-shell",

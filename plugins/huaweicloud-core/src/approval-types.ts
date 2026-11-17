@@ -164,8 +164,10 @@ export interface ElicitationSeam {
 // the call the consent authorized, in outcomeDetail. `outcome` is the
 // consent's own outcome — 'granted' when the call was allowed, 'denied'
 // when the popup was declined; `outcomeDetail` is the dispatch result of
-// the approved call ('delivered' | 'uncertain' | 'failed'), the datum
-// PR-3a's retry memo keys reuse on. Neither field claims anything about
+// the approved call ('delivered' | 'uncertain' | 'failed') — the AUDIT
+// record of the delivery class. The retry memo's state is the gate's
+// in-memory record, keyed on the same class as computed at dispatch time,
+// never on this stored field. Neither field claims anything about
 // the handler's internal execution beyond that delivery class.
 export interface ConsentEvent {
   sessionId: string;
@@ -210,8 +212,10 @@ export interface ConsentEvent {
   // normalization covers corruption, pre-field rows, and the ceiling band.
   arrivalSeq: number;
   // The dispatch outcome of the call this consent authorized (round 10,
-  // finding 4 — PR-3a's memo datum). Absent on every row written before
-  // the dispatch layer's follow-up lands, and on any follow-up that could
+  // finding 4) — the AUDIT record of the delivery class; the gate's
+  // in-memory retry memo keys on the computed class at dispatch time,
+  // never on this stored field. Absent on every row written before the
+  // dispatch layer's follow-up lands, and on any follow-up that could
   // not be recorded best-effort.
   outcomeDetail?: ConsentDeliveryOutcome;
   // The command-forward line the user allowed, as the summarize view
@@ -226,6 +230,8 @@ export interface ConsentEvent {
 // returned an ok result, 'failed' when it returned a not-ok result (the
 // non-delivered class — the child answered with a failure), 'uncertain'
 // when the handler threw and whether the call completed is unknowable.
-// PR-3a's S1 memo reuses a prior consent exactly when this is 'uncertain'
-// or 'failed' (ApprovalCoreConsent's result-conditioned scope).
+// The stored annotation is the audit record; the gate's in-memory retry
+// memo keys on the same class as computed at dispatch time
+// (ApprovalCoreConsent's result-conditioned scope) and never reads the
+// stored field back.
 export type ConsentDeliveryOutcome = 'delivered' | 'uncertain' | 'failed';

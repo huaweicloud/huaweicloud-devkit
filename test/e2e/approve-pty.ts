@@ -92,8 +92,9 @@ async function enrollApprovalsPinPty(bin: string, home: string): Promise<PtyRun>
 
 // Confirm one approval token in the case home through the real `approve`
 // verb — the exact line the gate's USER_CONFIRMATION_REQUIRED envelope
-// taught the agent to relay to the user.
-async function approveTokenPty(bin: string, home: string, token: string): Promise<PtyRun> {
+// taught the agent to relay to the user. Exported for the PTY dry run's
+// terminal-line probe (the watcher consumes it internally too).
+export async function approveTokenPty(bin: string, home: string, token: string): Promise<PtyRun> {
   return runInPty(`"${process.execPath}" "${bin}" approve ${token}`, home, /The agent may now run this command once\./);
 }
 

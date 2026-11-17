@@ -274,14 +274,25 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   assert.match(sandboxSkill, /USER_CONFIRMATION_REQUIRED/);
   assert.match(sandboxSkill, /retry-uncertain/, 'the sandbox skill names the retry memo carrier');
   assert.match(sandboxSkill, /standing-session/, 'the sandbox skill names the standing-consent carrier');
-  // The exec doctrine: benign runs ungated, and the refusal coverage is
-  // the ENGINE's real enumeration — never an "outright" overclaim.
+  // The exec doctrine: benign runs ungated, the refusal coverage names the
+  // engine's real rows, and the boundary sentence states exactly what lies
+  // outside them — never an absolutist "outright"/"still CONFIRM" claim.
   assert.match(sandboxSkill, /NO confirmation surface at all/);
   assert.match(sandboxSkill, /no confirmation able to unlock it/, 'the refusal coverage names its own boundary');
   assert.match(
     sandboxSkill,
-    /Other destructive-shaped commands the engine does not enumerate still CONFIRM/,
-    'the un-enumerated destructive class confirms, never overclaimed as refused',
+    /The refusal set is those rows and nothing more/,
+    'the refusal set is the rows, stated honestly',
+  );
+  assert.match(
+    sandboxSkill,
+    /a command outside them is NOT silently stopped/,
+    'the outside-the-rows boundary is the honest sentence, never a blanket confirm claim',
+  );
+  assert.match(
+    sandboxSkill,
+    /after a restart the same command confirms again/,
+    'the memo carries its restart boundary',
   );
 
   const approvals = readSource(
@@ -295,8 +306,13 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   assert.match(approvals, /approvedVia: "retry-uncertain"/);
   assert.match(approvals, /Remember for this session/);
   assert.match(approvals, /approvedVia: "standing-session"/);
-  assert.match(approvals, /no confirmation unlocks those/, 'the refusal class is the enumerated one');
-  assert.match(approvals, /still confirm per call/, 'the un-enumerated destructive class confirms');
+  assert.match(approvals, /The refusal set is those rows and nothing more/, 'the refusal class is the enumerated one');
+  assert.match(
+    approvals,
+    /a command outside them is not silently stopped/,
+    'the outside-the-rows boundary carries the responsibility wording',
+  );
+  assert.match(approvals, /dies with it: after a restart the same command confirms again/, 'the memo restart boundary');
 });
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {

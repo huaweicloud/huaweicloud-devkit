@@ -244,22 +244,22 @@ const credentialsSpec: ApprovalSpec = {
   ...sandboxBinding(),
   flavor: 'always',
   summarize: (bindingValue) => {
-    // Name the api_key's delivery channel — never its value (interrogate
-    // F6): a vault ref is itself conversation-safe (that is the ref
-    // doctrine), the parameter channel is named with the value redacted by
-    // the pin-view pass, and the environment channel is named when the
-    // handler's preferred tier is set. The substance the user confirms is
-    // WHICH credential enters the sandbox, and a ref or a channel is that
-    // fact.
+    // Name the api_key channel the HANDLER will actually use, never the
+    // value (interrogate F1 round 3, F2): handlers-credentials resolves
+    // env-first (process.env.HW_API_KEY || args.api_key), so the view
+    // mirrors that precedence — an env tier set makes the parameter or ref
+    // beside it a dead letter the confirmation must not claim. A vault ref
+    // is itself conversation-safe (that is the ref doctrine), and the
+    // parameter channel is named with the value redacted by the pin-view
+    // pass.
     const rawApiKey = asText(asRecordView(bindingValue).api_key ?? '');
-    const channel =
-      rawApiKey !== ''
+    const channel = process.env.HW_API_KEY
+      ? 'api_key via environment (value redacted)'
+      : rawApiKey !== ''
         ? isSecretRef(rawApiKey)
           ? `api_key via vault ref ${rawApiKey}`
           : 'api_key via parameter (value redacted)'
-        : process.env.HW_API_KEY
-          ? 'api_key via environment'
-          : '';
+        : '';
     return viewOf(bindingValue, (view) => {
       const target = fieldEcho(view, ['session_id', 'dev_stage_id', 'enable_sts']);
       const scope = target !== '' ? ` (${target})` : '';

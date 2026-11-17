@@ -16,6 +16,7 @@
 import { classifyHcloudArgs, redactSecrets, stripExecutable, type ClassifyOptions } from './safety-policy.ts';
 import { isHcloudToken } from './safety/tokens.ts';
 import { createApprovalToken } from './lib/approval-tokens.ts';
+import { foldSecretTokens, SECRET_KEY_TOKEN_RE, secretSegments } from './lib/supplemental-redaction.ts';
 import type { ApprovalMode } from './lib/approval-mode.ts';
 import type { RiskDecision } from './risk-rule-engine.ts';
 import { obsWriteHint } from './hcloud-obs-redact.ts';
@@ -225,32 +226,13 @@ function leadingBinWarning(stripped: string): string {
 // pinning message no longer claims a reason. Free-form JSON bodies with
 // real secrets should go through plan→approve with literal values (hash
 // path), not the substitution flow.
-const SECRET_KEY_ALT =
-  'access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?key|secret[_-]?string|secret[_-]?binary|security[_-]?token|x[_-]?auth[_-]?token|token|password|passwd|admin[_-]?pass|credential|input[_-]?value|user[_-]?data|metadata|private[_-]?key|authorization';
-// A bare key token (`--password`, `--server.adminPass`, `--dbpassword`): the
-// value rides the NEXT argv element. The optional prefix must end on a
-// separator char, or `--task` would parse as the SK key token.
-const SECRET_KEY_TOKEN_RE = new RegExp('^(?:--?[A-Za-z0-9_.-]*[._-])?(?:' + SECRET_KEY_ALT + '|AK|SK)$', 'i');
+// The secret-token fold's primitives (the key vocabulary, the scanner, the
+// argv fold) live in lib/supplemental-redaction.ts since PR-3a round 3 —
+// one canonical home shared with the exec views and the token store, which
+// cannot import this module's face (approval-tokens ← hcloud-cli would be
+// a value cycle). The detector comments below describe THEIR semantics and
+// stay authoritative for the substitution flow.
 const PLACEHOLDER_SECRET_VALUE_RE = /^["']?<{1,2}[A-Za-z0-9_ -]{1,40}>{1,2}["']?/;
-
-// Shared key+separator scanner (loop round 8): ONE global split drives every
-// consumer. The value segment of a key runs to the NEXT key occurrence — a
-// multi-key body (`{"token":"<x>","password":"Real"}`) yields one segment
-// per key, so a mixed placeholder/real body can no longer hide a real value
-// behind a lazy first match (loop round 7, seat-1 B1).
-const SECRET_KEY_SEP_RE = new RegExp(
-  '((?:(?:' + SECRET_KEY_ALT + ')|\\b(?:AK|SK))["\'\\\\]*\\s*(?:[=:]|\\s|(?=["\']))\\s*)',
-  'gi',
-);
-
-function secretSegments(arg: string): Array<{ sep: string; value: string }> {
-  const parts = String(arg).split(SECRET_KEY_SEP_RE);
-  const segments: Array<{ sep: string; value: string }> = [];
-  for (let i = 1; i < parts.length; i += 2) {
-    segments.push({ sep: parts[i] ?? '', value: parts[i + 1] ?? '' });
-  }
-  return segments;
-}
 
 function placeholderShaped(value: string): boolean {
   return PLACEHOLDER_SECRET_VALUE_RE.test(value.trim());
@@ -307,34 +289,12 @@ export function firstPlaceholderSecretArg(args: string[]): string | null {
 // the map-only version dropped the two-token branch and let cross-form
 // swaps through). The redactor's own output cannot serve here — it never
 // folds the two-token/glued forms, so the substitution flow dead-ended in
-// a mismatch (loop round 4, seat-1 B2).
+// a mismatch (loop round 4, seat-1 B2). Since PR-3a round 3 the fold body
+// lives in the shared leaf (lib/supplemental-redaction.ts) with the exec
+// views and the token store as its co-consumers; this export keeps the
+// run face's canonical name.
 export function pinViewArgs(args: string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = String(args[i]);
-    const segments = secretSegments(arg);
-    if (segments.length > 0) {
-      const parts = String(arg).split(SECRET_KEY_SEP_RE);
-      let folded = parts[0] ?? '';
-      for (let j = 1; j < parts.length; j += 2) {
-        folded += parts[j] + '<redacted>';
-      }
-      out.push(folded);
-      continue;
-    }
-    const next = i + 1 < args.length ? String(args[i + 1]) : undefined;
-    if (SECRET_KEY_TOKEN_RE.test(arg) && next !== undefined && !SECRET_KEY_TOKEN_RE.test(next)) {
-      // Bare key token with its value riding the next argv element — fold
-      // the value, keep the key. A CHAINED bare key (`--password --token x`)
-      // is left for its own iteration so no real value hides behind the
-      // skip (loop round 7, seat-1 residual).
-      out.push(arg, '<redacted>');
-      i += 1;
-      continue;
-    }
-    out.push(arg);
-  }
-  return out;
+  return foldSecretTokens(args) as string[];
 }
 
 function validateRequiredParams(args: string[]): { valid: boolean; missing: string[]; hints: string[] } {
