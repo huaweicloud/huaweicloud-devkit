@@ -1,0 +1,6 @@
+(node:2565710) Warning: first warning gets the footer
+(Use `node --trace-warnings ...` to show where the warning was created)
+(node:2565710) Warning: maintenance notice follows
+the previous build failed and the fallback toolchain is experimental
+(node:2565710) Warning: third adjacent warning
+node-gyp: toolchain file for this host was not found in the registry

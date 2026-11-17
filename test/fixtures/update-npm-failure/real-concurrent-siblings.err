@@ -1,0 +1,23 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:15276/outer-probe-f 41ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:15276/outer-probe-f/-/outer-probe-f-1.0.0.tgz 26ms (cache miss)
+npm info run outer-probe-f@1.0.0 postinstall node_modules/outer-probe-f node post.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:15276/slow-side 45ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:15276/slow-side/-/slow-side-1.0.0.tgz 21ms (cache miss)
+npm info run slow-side@1.0.0 postinstall node_modules/slow-side node ok.js
+slow-side A: build failed once, recovered
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:15276/slow-side 47ms (cache updated)
+npm http fetch GET 200 http://127.0.0.1:15276/slow-side/-/slow-side-1.0.0.tgz 24ms (cache updated)
+npm info run slow-side@1.0.0 postinstall node_modules/slow-side node ok.js
+slow-side B: build failed once, recovered
+npm info run slow-side@1.0.0 postinstall { code: 0, signal: null }
+npm info ok
+npm info run slow-side@1.0.0 postinstall { code: 0, signal: null }
+npm info ok
+outer probe failed hard, giving up
+npm info run outer-probe-f@1.0.0 postinstall { code: 7, signal: null }

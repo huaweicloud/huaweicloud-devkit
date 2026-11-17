@@ -1,0 +1,4 @@
+npm error code E404
+npm error syscall open
+npm error path /x/-debug-0.log
+npm error errno E404

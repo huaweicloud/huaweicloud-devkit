@@ -1,0 +1,3 @@
+AUDIT registry probe: dns ok
+EAI_AGAIN: Temporary failure in name resolution
+AUDIT fallback channel failed, ignored

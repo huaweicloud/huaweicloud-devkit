@@ -1,0 +1,8 @@
+npm error code 1
+npm error path /home/op/node_modules/info-probe
+npm error command failed
+npm error command sh -c node fail.js
+npm error Downloading prebuilt binary for linux-x64
+npm error verifying cached artifact
+npm error Error: prebuilt binary download failed: 404 Not Found
+npm error A complete log of this run can be found in: /home/op/captures-info/cache/_logs/2026-11-11T08_45_27_866Z-debug-0.log

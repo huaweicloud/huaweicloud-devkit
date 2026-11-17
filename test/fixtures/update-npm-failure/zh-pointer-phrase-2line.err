@@ -1,0 +1,3 @@
+cp: cannot create regular file '/home/op/x': Permission denied
+完整的运行日志可在以下位置找到:
+    /home/op/logs/2026-11-11T11_17_16_480Z-debug-0.log

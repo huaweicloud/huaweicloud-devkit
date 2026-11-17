@@ -1,0 +1,31 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:42065/npm 33ms
+npm http fetch GET 404 http://127.0.0.1:42065/npm 7ms
+npm http fetch GET 200 http://127.0.0.1:42065/aa-runner 19ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:42065/zz-lockpkg 7ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:42065/zz-lockpkg/-/zz-lockpkg-1.0.0.tgz 24ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:42065/aa-runner/-/aa-runner-1.0.0.tgz 23ms (cache miss)
+npm info run aa-runner@1.0.0 postinstall node_modules/aa-runner node run.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:42065/npm 27ms
+npm http fetch GET 404 http://127.0.0.1:42065/npm 3ms
+npm http fetch GET 200 http://127.0.0.1:42065/zz-lockpkg 20ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:42065/zz-lockpkg/-/zz-lockpkg-1.0.0.tgz 20ms (cache miss)
+npm info run zz-lockpkg@1.0.0 postinstall node_modules/zz-lockpkg node lock.js
+npm info run aa-runner@1.0.0 postinstall { code: 0, signal: null }
+npm info run zz-lockpkg@1.0.0 postinstall node_modules/zz-lockpkg node lock.js
+FATAL: build lock held by concurrent run
+npm info run zz-lockpkg@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/capB/proj/node_modules/zz-lockpkg
+npm error command failed
+npm error command sh -c node lock.js
+npm error A complete log of this run can be found in: /home/op/capB/cache-outer/_logs/2026-11-12T16_24_48_949Z-debug-0.log
+npm info run zz-lockpkg@1.0.0 postinstall { code: 0, signal: null }
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   zz-lockpkg@1.0.0 (postinstall: node lock.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+npm info ok

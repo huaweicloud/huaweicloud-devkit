@@ -1,0 +1,6 @@
+⠙[1G[0K⠹[1G[0K[1mnpm[22m [31merror[39m [94mcode[39m [33m7[39m
+⠹[1G[0K[1mnpm[22m [31merror[39m [94mpath[39m /home/op/install-proj/node_modules/pr3-r9-fx-pkg-silent
+⠹[1G[0K[1mnpm[22m [31merror[39m command failed
+⠹[1G[0K[1mnpm[22m [31merror[39m [94mcommand[39m sh -c node ./silent.mjs
+⠹[1G[0K[1mnpm[22m [31merror[39m A complete log of this run can be found in: /home/op/npm-cache/_logs/2026-11-11T14_46_58_141Z-debug-0.log
+⠹[1G[0K

@@ -1,0 +1,208 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/bin/npm
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm install probe-main
+npm verbose argv "install" "probe-main" "--registry" "http://127.0.0.1:4888" "--no-audit" "--no-fund" "--foreground-scripts" "--loglevel" "verbose"
+npm verbose logfile logs-max:10 dir:/home/op/.npm/_logs/2026-11-12T04_00_11_003Z-
+npm verbose logfile /home/op/.npm/_logs/2026-11-12T04_00_11_003Z-debug-0.log
+npm http fetch GET 200 http://127.0.0.1:4888/probe-main 48ms (cache updated)
+npm http fetch GET 200 http://127.0.0.1:4888/tiny-dep 10ms (cache updated)
+npm http cache tiny-dep@http://127.0.0.1:4888/tiny-dep/-/tiny-dep-1.0.0.tgz 0ms (cache hit)
+npm http cache probe-main@http://127.0.0.1:4888/probe-main/-/probe-main-1.0.0.tgz 0ms (cache hit)
+npm info run probe-main@1.0.0 install node_modules/probe-main node-gyp rebuild
+gyp info it worked if it ends with ok
+gyp verb cli [
+gyp verb cli '/home/op/.nvm/versions/node/v26.13.0/bin/node',
+gyp verb cli '/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js',
+gyp verb cli 'rebuild'
+gyp verb cli ]
+gyp info using node-gyp@12.4.0
+gyp info using node@26.13.0 | linux | arm64
+gyp verb clean removing "build" directory
+gyp verb find Python --python was not set on the command line
+gyp verb find Python Python is not set from environment variable PYTHON
+gyp verb find Python checking if "python3" can be used
+gyp verb find Python - executing "python3" to get executable path
+gyp verb find Python - executable path is "/usr/bin/python3"
+gyp verb find Python - executing "/usr/bin/python3" to get version
+gyp verb find Python - version is "3.12.3"
+gyp info find Python using Python version 3.12.3 found at "/usr/bin/python3"
+gyp verb get node dir no --target version specified, falling back to host node version: 26.13.0
+gyp verb install input version string "26.13.0"
+gyp verb install installing version: 26.13.0
+gyp verb install --ensure was passed, so won't reinstall if already installed
+gyp verb install version is already installed, need to check "installVersion"
+gyp verb got "installVersion" 11
+gyp verb needs "installVersion" 11
+gyp verb install version is good
+gyp verb get node dir target node version installed: 26.13.0
+gyp verb build dir attempting to create "build" dir: /home/op/runs/sameturn-real/node_modules/probe-main/build
+gyp verb build dir "build" dir needed to be created? Yes
+gyp verb build/config.gypi creating config file
+gyp verb build/config.gypi writing out config file: /home/op/runs/sameturn-real/node_modules/probe-main/build/config.gypi
+gyp verb config.gypi checking for gypi file: /home/op/runs/sameturn-real/node_modules/probe-main/config.gypi
+gyp verb common.gypi checking for gypi file: /home/op/runs/sameturn-real/node_modules/probe-main/common.gypi
+gyp verb gyp gyp format was not specified; forcing "make"
+gyp info spawn /usr/bin/python3
+gyp info spawn args [
+gyp info spawn args '/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp/gyp/gyp_main.py',
+gyp info spawn args 'binding.gyp',
+gyp info spawn args '-f',
+gyp info spawn args 'make',
+gyp info spawn args '-I',
+gyp info spawn args '/home/op/runs/sameturn-real/node_modules/probe-main/build/config.gypi',
+gyp info spawn args '-I',
+gyp info spawn args '/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp/addon.gypi',
+gyp info spawn args '-I',
+gyp info spawn args '/home/op/.cache/node-gyp/26.13.0/include/node/common.gypi',
+gyp info spawn args '-Dlibrary=shared_library',
+gyp info spawn args '-Dvisibility=default',
+gyp info spawn args '-Dnode_root_dir=/home/op/.cache/node-gyp/26.13.0',
+gyp info spawn args '-Dnode_gyp_dir=/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp',
+gyp info spawn args '-Dnode_lib_file=/home/op/.cache/node-gyp/26.13.0/<(target_arch)/node.lib',
+gyp info spawn args '-Dmodule_root_dir=/home/op/runs/sameturn-real/node_modules/probe-main',
+gyp info spawn args '-Dnode_engine=v8',
+gyp info spawn args '--depth=.',
+gyp info spawn args '--no-parallel',
+gyp info spawn args '--generator-output',
+gyp info spawn args 'build',
+gyp info spawn args '-Goutput_dir=.'
+gyp info spawn args ]
+gyp verb build type Release
+gyp verb architecture arm64
+gyp verb node dev dir /home/op/.cache/node-gyp/26.13.0
+gyp verb python /usr/bin/python3
+gyp verb `which` succeeded for `make` /usr/bin/make
+gyp verb bin symlinks created symlink to "/usr/bin/python3" in "/home/op/runs/sameturn-real/node_modules/probe-main/build/node_gyp_bins" and added to PATH
+gyp info spawn make
+gyp info spawn args [ 'V=1', 'BUILDTYPE=Release', '-C', 'build' ]
+gyp info ok 
+npm info run probe-main@1.0.0 install { code: 0, signal: null }
+npm info run probe-main@1.0.0 postinstall node_modules/probe-main node post.js
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/bin/npm
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm install definitely-missing-pkg@9.9.9
+npm verbose argv "install" "--no-audit" "--no-fund" "--foreground-scripts" "--registry" "http://127.0.0.1:4888" "--prefix" "/home/op/inner-cache "definitely-missing-pkg@9.9.9"
+npm verbose logfile logs-max:10 dir:/home/op/.npm/_logs/2026-11-12T04_00_12_263Z-
+npm verbose logfile /home/op/.npm/_logs/2026-11-12T04_00_12_263Z-debug-0.log
+npm http fetch GET 404 http://127.0.0.1:4888/definitely-missing-pkg 26ms (cache skip)
+npm verbose stack HttpErrorGeneral: 404 Not Found - GET http://127.0.0.1:4888/definitely-missing-pkg - not found
+npm verbose stack     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:103:15
+npm verbose stack     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+npm verbose stack     at async RegistryFetcher.packument (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:90:19)
+npm verbose stack     at async RegistryFetcher.manifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:128:23)
+npm verbose stack     at async #fetchManifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1362:20)
+npm verbose stack     at async #nodeFromEdge (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1178:19)
+npm verbose stack     at async #buildDepStep (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1015:15)
+npm verbose stack     at async Arborist.buildIdealTree (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:180:7)
+npm verbose stack     at async Promise.all (index 1)
+npm verbose stack     at async Arborist.reify (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/reify.js:118:5)
+npm verbose statusCode 404
+npm verbose pkgid definitely-missing-pkg@9.9.9
+npm error code E404
+npm error 404 Not Found - GET http://127.0.0.1:4888/definitely-missing-pkg - not found
+npm error 404
+npm error 404  The requested resource 'definitely-missing-pkg@9.9.9' could not be found or you do not have permission to access it.
+npm error 404
+npm error 404 Note that you can also install from a
+npm error 404 tarball, folder, http url, or git url.
+npm verbose cwd /home/op/runs/sameturn-real/node_modules/probe-main
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 1
+npm verbose code 1
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T04_00_12_263Z-debug-0.log
+gyp info it worked if it ends with ok
+gyp verb cli [
+gyp verb cli '/home/op/.nvm/versions/node/v26.13.0/bin/node',
+gyp verb cli '/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js',
+gyp verb cli 'rebuild'
+gyp verb cli ]
+gyp info using node-gyp@12.4.0
+gyp info using node@26.13.0 | linux | arm64
+gyp verb clean removing "build" directory
+gyp verb find Python --python was not set on the command line
+gyp verb find Python Python is not set from environment variable PYTHON
+gyp verb find Python checking if "python3" can be used
+gyp verb find Python - executing "python3" to get executable path
+gyp verb find Python - executable path is "/usr/bin/python3"
+gyp verb find Python - executing "/usr/bin/python3" to get version
+gyp verb find Python - version is "3.12.3"
+gyp info find Python using Python version 3.12.3 found at "/usr/bin/python3"
+gyp verb get node dir no --target version specified, falling back to host node version: 26.13.0
+gyp verb install input version string "26.13.0"
+gyp verb install installing version: 26.13.0
+gyp verb install --ensure was passed, so won't reinstall if already installed
+gyp verb install version is already installed, need to check "installVersion"
+gyp verb got "installVersion" 11
+gyp verb needs "installVersion" 11
+gyp verb install version is good
+gyp verb get node dir target node version installed: 26.13.0
+gyp verb build dir attempting to create "build" dir: /home/op/runs/sameturn-real/node_modules/probe-main/build
+gyp verb build dir "build" dir needed to be created? Yes
+gyp verb build/config.gypi creating config file
+gyp verb build/config.gypi writing out config file: /home/op/runs/sameturn-real/node_modules/probe-main/build/config.gypi
+gyp verb config.gypi checking for gypi file: /home/op/runs/sameturn-real/node_modules/probe-main/config.gypi
+gyp verb common.gypi checking for gypi file: /home/op/runs/sameturn-real/node_modules/probe-main/common.gypi
+gyp verb gyp gyp format was not specified; forcing "make"
+gyp info spawn /usr/bin/python3
+gyp info spawn args [
+gyp info spawn args '/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp/gyp/gyp_main.py',
+gyp info spawn args 'binding.gyp',
+gyp info spawn args '-f',
+gyp info spawn args 'make',
+gyp info spawn args '-I',
+gyp info spawn args '/home/op/runs/sameturn-real/node_modules/probe-main/build/config.gypi',
+gyp info spawn args '-I',
+gyp info spawn args '/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp/addon.gypi',
+gyp info spawn args '-I',
+gyp info spawn args '/home/op/.cache/node-gyp/26.13.0/include/node/common.gypi',
+gyp info spawn args '-Dlibrary=shared_library',
+gyp info spawn args '-Dvisibility=default',
+gyp info spawn args '-Dnode_root_dir=/home/op/.cache/node-gyp/26.13.0',
+gyp info spawn args '-Dnode_gyp_dir=/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/node-gyp',
+gyp info spawn args '-Dnode_lib_file=/home/op/.cache/node-gyp/26.13.0/<(target_arch)/node.lib',
+gyp info spawn args '-Dmodule_root_dir=/home/op/runs/sameturn-real/node_modules/probe-main',
+gyp info spawn args '-Dnode_engine=v8',
+gyp info spawn args '--depth=.',
+gyp info spawn args '--no-parallel',
+gyp info spawn args '--generator-output',
+gyp info spawn args 'build',
+gyp info spawn args '-Goutput_dir=.'
+gyp info spawn args ]
+gyp verb build type Release
+gyp verb architecture arm64
+gyp verb node dev dir /home/op/.cache/node-gyp/26.13.0
+gyp verb python /usr/bin/python3
+gyp verb `which` succeeded for `make` /usr/bin/make
+gyp verb bin symlinks created symlink to "/usr/bin/python3" in "/home/op/runs/sameturn-real/node_modules/probe-main/build/node_gyp_bins" and added to PATH
+gyp info spawn make
+gyp info spawn args [ 'V=1', 'BUILDTYPE=Release', '-C', 'build' ]
+gyp info ok 
+postinstall: link step aborted after a successful build
+npm info run probe-main@1.0.0 postinstall { code: 7, signal: null }
+npm verbose stack Error: command failed
+npm verbose stack     at promiseSpawn (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js:22:22)
+npm verbose stack     at spawnWithShell (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js:124:10)
+npm verbose stack     at promiseSpawn (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js:12:12)
+npm verbose stack     at runScriptPkg (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/run-script-pkg.js:79:13)
+npm verbose stack     at runScript (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/run-script.js:9:12)
+npm verbose stack     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/rebuild.js:348:17
+npm verbose stack     at run (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/promise-call-limit/dist/commonjs/index.js:67:22)
+npm verbose stack     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/promise-call-limit/dist/commonjs/index.js:84:9
+npm verbose stack     at new Promise (<anonymous>)
+npm verbose stack     at callLimit (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/promise-call-limit/dist/commonjs/index.js:35:69)
+npm verbose pkgid probe-main@1.0.0
+npm error code 7
+npm error path /home/op/runs/sameturn-real/node_modules/probe-main
+npm error command failed
+npm error command sh -c node post.js
+npm verbose cwd /home/op/runs/sameturn-real
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T04_00_11_003Z-debug-0.log

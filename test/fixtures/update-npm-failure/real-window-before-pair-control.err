@@ -1,0 +1,32 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:40529/npm 34ms
+npm http fetch GET 404 http://127.0.0.1:40529/npm 8ms
+npm http fetch GET 200 http://127.0.0.1:40529/pkg-a 19ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:40529/pkg-c 6ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:40529/pkg-a/-/pkg-a-1.0.0.tgz 24ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:40529/pkg-c/-/pkg-c-1.0.0.tgz 23ms (cache miss)
+npm info run pkg-a@1.0.0 postinstall node_modules/pkg-a node slow.js
+pkg-a sidecar: transient build error, recovered
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:40529/npm 27ms
+npm http fetch GET 404 http://127.0.0.1:40529/npm 9ms
+npm http fetch GET 200 http://127.0.0.1:40529/pkg-b 18ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:40529/pkg-b/-/pkg-b-1.0.0.tgz 20ms (cache miss)
+npm info run pkg-b@1.0.0 postinstall node_modules/pkg-b node post.js
+outer probe failed hard, giving up
+npm info run pkg-a@1.0.0 postinstall { code: 0, signal: null }
+npm info run pkg-c@1.0.0 postinstall node_modules/pkg-c node fail.js
+npm info run pkg-c@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/projects/s1-control-chatter-early/node_modules/pkg-c
+npm error command failed
+npm error command sh -c node fail.js
+npm error A complete log of this run can be found in: /home/op/caches/s1-control-chatter-early/_logs/2026-11-12T13_32_20_677Z-debug-0.log
+npm info run pkg-b@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/projects/s1-control-chatter-early/nested/node_modules/pkg-b
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/caches/s1-control-chatter-early-nested/_logs/2026-11-12T13_32_21_277Z-debug-0.log

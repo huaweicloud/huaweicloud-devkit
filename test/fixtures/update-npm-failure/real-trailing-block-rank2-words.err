@@ -1,0 +1,14 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:32923/npm 47ms
+npm http fetch GET 404 http://127.0.0.1:32923/npm 8ms
+npm http fetch GET 200 http://127.0.0.1:32923/huaweicloud-devkit 23ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:32923/huaweicloud-devkit/-/huaweicloud-devkit-5.0.0.tgz 29ms (cache miss)
+npm info run huaweicloud-devkit@5.0.0 postinstall node_modules/huaweicloud-devkit node post.js
+OUTER-POSTINSTALL: cache locked
+npm info run huaweicloud-devkit@5.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/cap6/project/node_modules/huaweicloud-devkit
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/cap6/cache/_logs/2026-11-12T13_16_26_604Z-debug-0.log

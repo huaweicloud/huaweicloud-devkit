@@ -1,0 +1,27 @@
+npm ERR! code ERESOLVE
+npm ERR! ERESOLVE unable to resolve dependency tree
+npm ERR! 
+npm ERR! While resolving: probe@1.0.0
+npm ERR! Found: react@17.0.2
+npm ERR! node_modules/react
+npm ERR!   react@"17" from the root project
+npm ERR! 
+npm ERR! Could not resolve dependency:
+npm ERR! peer react@"^18.3.1" from react-dom@18.3.1
+npm ERR! node_modules/react-dom
+npm ERR!   react-dom@"18" from the root project
+npm ERR! 
+npm ERR! Fix the upstream dependency conflict, or retry
+npm ERR! this command with --force or --legacy-peer-deps
+npm ERR! to accept an incorrect (and potentially broken) dependency resolution.
+npm ERR! 
+npm ERR! 
+npm ERR! For a full report see:
+npm ERR! /home/op/.npm/_logs/2026-11-11T05_29_38_599Z-eresolve-report.txt
+
+npm ERR! A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T05_29_38_599Z-debug-0.log
+npm notice
+npm notice New major version of npm available! 11.20.0 -> 12.2.2
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.2.2
+npm notice To update run: npm install -g npm@12.2.2
+npm notice

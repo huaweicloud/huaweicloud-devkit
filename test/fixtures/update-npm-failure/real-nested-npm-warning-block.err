@@ -1,0 +1,18 @@
+(node:2720270) Warning: integrity report follows
+the mirror answered with a stale manifest
+    at Object.<anonymous> (/home/op/project/pkgdep/post.js:1:9)
+    at Module._compile (node:internal/modules/cjs/loader:1968:14)
+    at Object..js (node:internal/modules/cjs/loader:2108:10)
+    at Module.load (node:internal/modules/cjs/loader:1690:32)
+    at Module._load (node:internal/modules/cjs/loader:1480:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:33:47
+gyp ERR! stack Error: cannot find the toolchain for host
+gyp ERR! stack     at ChildProcess.<anonymous> (details withheld)
+see the build notes for the retry policy
+npm error code 7
+npm error path /home/op/project/pkgdep
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

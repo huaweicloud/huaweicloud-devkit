@@ -1,0 +1,17 @@
+npm info run native-broken@1.0.0 install node-gyp rebuild
+make: *** No rule to make target 'Release/obj.target/x/missing.o', needed by 'Release/obj.target/x.node'.  Stop.
+gyp ERR! build error 
+gyp ERR! stack Error: `make` failed with exit code: 2
+gyp ERR! stack     at ChildProcess.<anonymous> (/home/op/node_modules/node-gyp/lib/build.js:219:23)
+gyp ERR! System Linux 6.8.0-106-generic
+gyp ERR! command "/usr/bin/node" "/home/op/node_modules/node-gyp/bin/node-gyp.js" "rebuild"
+gyp ERR! cwd /home/op/broken-native
+gyp ERR! node -v v26.13.0
+gyp ERR! node-gyp -v v12.4.0
+gyp ERR! not ok 
+npm info run native-broken@1.0.0 install { code: 1, signal: null }
+npm error code 1
+npm error path /home/op/native
+npm error command failed
+npm error command sh -c node-gyp rebuild
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

@@ -1,0 +1,5 @@
+npm ERR! code ELIFECYCLE
+npm ERR! errno 1
+npm ERR! syscall spawn
+npm ERR! Please include the following file with any support request:
+npm ERR!     /home/op/.npm/_logs/2026-11-11T11_17_16_480Z-debug-0.log

@@ -1,0 +1,4 @@
+npm info run probe-root@1.0.0 postinstall node_modules/probe-root node build.js
+build failed hard, cache locked
+gyp info ok
+npm info run probe-root@1.0.0 postinstall { code: 7, signal: null }

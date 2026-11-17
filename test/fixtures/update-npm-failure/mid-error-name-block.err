@@ -1,0 +1,4 @@
+npm error code 1
+npm error Downloading prebuilt binary for linux-x64
+npm error verifying cached artifact
+npm error Cannot install: TypeError: Cannot read properties of undefined (reading 'mcpServers')

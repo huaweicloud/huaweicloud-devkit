@@ -1,0 +1,4 @@
+npm info run pkg@1.0.0 postinstall node_modules/pkg node post.js
+npm info run pkg@1.0.0 postinstall node_modules/pkg/inner node inner.js
+npm info run pkg@1.0.0 postinstall { code: 0, signal: null }
+npm info run pkg@1.0.0 postinstall { code: 7, signal: null }

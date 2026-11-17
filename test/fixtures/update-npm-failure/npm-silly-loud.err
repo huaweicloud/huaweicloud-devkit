@@ -1,0 +1,79 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm silly config load:file:/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/npmrc
+npm silly config load:file:/home/op/.npmrc
+npm silly config load:file:/home/op/.npmrc
+npm silly config load:file:/home/op/.nvm/versions/node/v26.13.0/etc/npmrc
+npm verbose title npm exec pr3-r11-regloud@1.0.0
+npm verbose argv "exec" "--registry" "http://127.0.0.1:8123" "--loglevel" "silly" "--yes" "--foreground-scripts" "--" "pr3-r11-regloud@1.0.0"
+npm verbose logfile logs-max:10 dir:/home/op/caps/fresh-cache-12/_logs/2026-11-11T16_47_16_692Z-
+npm verbose logfile /home/op/caps/fresh-cache-12/_logs/2026-11-11T16_47_16_692Z-debug-0.log
+npm silly logfile done cleaning log files
+npm http fetch GET 404 http://127.0.0.1:8123/npm 25ms
+npm silly packumentCache heap:4395630592 maxSize:1098907648 maxEntrySize:549453824
+npm http fetch GET 404 http://127.0.0.1:8123/npm 10ms
+npm verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+npm http fetch GET 200 http://127.0.0.1:8123/pr3-r11-regloud 20ms (cache miss)
+npm silly packumentCache heap:4395630592 maxSize:1098907648 maxEntrySize:549453824
+npm silly packumentCache heap:4395630592 maxSize:1098907648 maxEntrySize:549453824
+npm silly idealTree buildDeps
+npm silly fetch manifest pr3-r11-regloud@1.0.0
+npm silly packumentCache full:http://127.0.0.1:8123/pr3-r11-regloud cache-miss
+npm http fetch GET 200 http://127.0.0.1:8123/pr3-r11-regloud 10ms (cache miss)
+npm silly packumentCache full:http://127.0.0.1:8123/pr3-r11-regloud set size:271 disposed:false
+npm silly placeDep ROOT pr3-r11-regloud@1.0.0 OK for:  want: 1.0.0
+npm silly reify moves {}
+npm silly audit bulk request { 'pr3-r11-regloud': [ '1.0.0' ] }
+npm http fetch POST 501 http://127.0.0.1:8123/-/npm/v1/security/advisories/bulk 9ms
+npm verbose audit error HttpErrorGeneral: 501 Unsupported method ('POST') - POST http://127.0.0.1:8123/-/npm/v1/security/advisories/bulk
+npm verbose audit error     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:103:15
+npm verbose audit error     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+npm verbose audit error     at async #getReport (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:334:19)
+npm verbose audit error     at async AuditReport.run (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:101:19) {
+npm verbose audit error   headers: [Object: null prototype] {
+npm verbose audit error     server: [ 'SimpleHTTP/0.6 Python/3.12.3' ],
+npm verbose audit error     date: [ 'Wed, 11 Nov 2026 16:47:17 GMT' ],
+npm verbose audit error     connection: [ 'close' ],
+npm verbose audit error     'content-type': [ 'text/html;charset=utf-8' ],
+npm verbose audit error     'content-length': [ '357' ],
+npm verbose audit error     'x-fetch-attempts': [ '1' ]
+npm verbose audit error   },
+npm verbose audit error   statusCode: 501,
+npm verbose audit error   code: 'E501',
+npm verbose audit error   method: 'POST',
+npm verbose audit error   uri: 'http://127.0.0.1:8123/-/npm/v1/security/advisories/bulk',
+npm verbose audit error   body: <Buffer 3c 21 44 4f 43 54 59 50 45 20 48 54 4d 4c 3e 0a 3c 68 74 6d 6c 20 6c 61 6e 67 3d 22 65 6e 22 3e 0a 20 20 20 20 3c 68 65 61 64 3e 0a 20 20 20 20 20 20 ... 307 more bytes>,
+npm verbose audit error   pkgid: undefined
+npm verbose audit error }
+npm silly audit error <!DOCTYPE HTML>
+npm silly audit error <html lang="en">
+npm silly audit error     <head>
+npm silly audit error         <meta charset="utf-8">
+npm silly audit error         <title>Error response</title>
+npm silly audit error     </head>
+npm silly audit error     <body>
+npm silly audit error         <h1>Error response</h1>
+npm silly audit error         <p>Error code: 501</p>
+npm silly audit error         <p>Message: Unsupported method ('POST').</p>
+npm silly audit error         <p>Error code explanation: 501 - Server does not support this operation.</p>
+npm silly audit error     </body>
+npm silly audit error </html>
+npm silly audit error
+npm silly audit report null
+npm http fetch GET 200 http://127.0.0.1:8123/pr3-r11-regloud-1.0.0.tgz 30ms (cache miss)
+npm info run pr3-r11-regloud@1.0.0 postinstall node_modules/pr3-r11-regloud node ./build.js
+native build failed: missing libfoo. rebuild aborted.
+npm info run pr3-r11-regloud@1.0.0 postinstall { code: 7, signal: null }
+npm silly unfinished npm timer reify 1794415637233
+npm silly unfinished npm timer reify:build 1794415637310
+npm silly unfinished npm timer build 1794415637310
+npm silly unfinished npm timer build:deps 1794415637311
+npm silly unfinished npm timer build:run:postinstall 1794415637315
+npm silly unfinished npm timer build:run:postinstall:node_modules/pr3-r11-regloud 1794415637315
+npm verbose cwd /home/op/work
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7

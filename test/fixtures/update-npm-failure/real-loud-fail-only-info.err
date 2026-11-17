@@ -1,0 +1,15 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:14887/npm 24ms
+npm http fetch GET 404 http://127.0.0.1:14887/npm 8ms
+npm http fetch GET 200 http://127.0.0.1:14887/huaweicloud-devkit 17ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14887/huaweicloud-devkit 9ms (cache miss)
+npm http fetch POST 404 http://127.0.0.1:14887/-/npm/v1/security/advisories/bulk 8ms
+npm http cache huaweicloud-devkit@http://127.0.0.1:14887/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 0ms (cache hit)
+npm http fetch GET 200 http://127.0.0.1:14887/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 20ms (cache miss)
+npm info run huaweicloud-devkit@9.9.9 preinstall node_modules/huaweicloud-devkit node pre.js
+build failed, retrying with the bundled toolchain
+preinstall: recovered with the bundled toolchain
+npm info run huaweicloud-devkit@9.9.9 preinstall { code: 0, signal: null }
+npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node post.js
+npm info run huaweicloud-devkit@9.9.9 postinstall { code: 7, signal: null }

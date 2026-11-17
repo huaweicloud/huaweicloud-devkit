@@ -1,0 +1,5 @@
+npm info run side@1.0.0 postinstall node_modules/side node side.js
+side: build failed once, recovered
+npm info run side@1.0.0 postinstall { code: 0, signal: null }
+build failed hard, cache locked
+{ code: 7, signal: null }

@@ -1,0 +1,35 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:14927/npm 31ms
+npm http fetch GET 404 http://127.0.0.1:14927/npm 3ms
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit 19ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit 10ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit/-/huaweicloud-devkit-1.0.0.tgz 22ms (cache miss)
+npm info run huaweicloud-devkit@1.0.0 preinstall node_modules/huaweicloud-devkit node pre.js
+helper failed once, retrying
+npm info run huaweicloud-devkit@1.0.0 preinstall { code: 0, signal: null }
+npm info run huaweicloud-devkit@1.0.0 postinstall node_modules/huaweicloud-devkit node post.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:14927/ok-dep 41ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14927/ok-dep/-/ok-dep-1.0.0.tgz 19ms (cache miss)
+npm info run ok-dep@1.0.0 postinstall node_modules/ok-dep node ok.js
+
+> ok-dep@1.0.0 postinstall
+> node ok.js
+
+ok-dep: nested install recovered
+npm info run ok-dep@1.0.0 postinstall { code: 0, signal: null }
+
+added 1 package in 516ms
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   ok-dep@1.0.0 (postinstall: node ok.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+npm info ok
+build failed hard, cache locked
+npm info run huaweicloud-devkit@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/captures/r28c-stderr-dying-words/project/node_modules/huaweicloud-devkit
+npm error command failed
+npm error command sh -c node post.js

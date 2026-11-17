@@ -1,0 +1,7 @@
+inner build error: EPERM
+npm error code 6
+npm error path /home/op/cache
+npm error command failed
+npm error command sh -c node run.js
+npm error A complete log of this run can be found in: /home/op/sc-c1i/cap/npm-cache/_logs/2026-11-12T18_11_54_197Z-debug-0.log
+FATAL: failed to recover

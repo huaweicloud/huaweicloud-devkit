@@ -1,0 +1,4 @@
+npm error code ELIFECYCLE
+npm error phase: EXTRACT (step 2/4)
+npm error Error: npm install failed in /home/op/x: 404 tarball, folder, http url, or git url.
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

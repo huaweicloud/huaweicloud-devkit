@@ -1,0 +1,8 @@
+gyp ERR! stack Error: `make` failed with exit code: 2
+gyp ERR! build error 
+gyp ERR! not ok 
+npm error code 1
+npm error path /home/op/broken-native
+npm error command failed
+npm error command sh -c node-gyp rebuild
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

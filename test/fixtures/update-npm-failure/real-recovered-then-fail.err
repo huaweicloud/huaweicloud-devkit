@@ -1,0 +1,105 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm exec huaweicloud-devkit@latest update --target opencode
+npm verbose argv "exec" "--yes" "--foreground-scripts" "--" "huaweicloud-devkit@latest" "update" "--target" "opencode"
+npm verbose logfile logs-max:10 dir:/home/op/npx-cache/_logs/2026-11-12T01_32_32_219Z-
+npm verbose logfile /home/op/npx-cache/_logs/2026-11-12T01_32_32_219Z-debug-0.log
+npm http fetch GET 404 http://127.0.0.1:4887/npm 33ms
+npm http fetch GET 404 http://127.0.0.1:4887/npm 7ms
+npm verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+npm http fetch GET 200 http://127.0.0.1:4887/huaweicloud-devkit 19ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:4887/huaweicloud-devkit 9ms (cache miss)
+npm http fetch POST 404 http://127.0.0.1:4887/-/npm/v1/security/advisories/bulk 9ms
+npm verbose audit error HttpErrorGeneral: 404 Not Found - POST http://127.0.0.1:4887/-/npm/v1/security/advisories/bulk - not found
+npm verbose audit error     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:103:15
+npm verbose audit error     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+npm verbose audit error     at async #getReport (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:334:19)
+npm verbose audit error     at async AuditReport.run (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/audit-report.js:101:19) {
+npm verbose audit error   headers: [Object: null prototype] {
+npm verbose audit error     'content-type': [ 'application/json' ],
+npm verbose audit error     date: [ 'Thu, 12 Nov 2026 01:32:32 GMT' ],
+npm verbose audit error     connection: [ 'keep-alive' ],
+npm verbose audit error     'keep-alive': [ 'timeout=5' ],
+npm verbose audit error     'transfer-encoding': [ 'chunked' ],
+npm verbose audit error     'x-fetch-attempts': [ '1' ]
+npm verbose audit error   },
+npm verbose audit error   statusCode: 404,
+npm verbose audit error   code: 'E404',
+npm verbose audit error   method: 'POST',
+npm verbose audit error   uri: 'http://127.0.0.1:4887/-/npm/v1/security/advisories/bulk',
+npm verbose audit error   body: { error: 'not found', url: '/-/npm/v1/security/advisories/bulk' },
+npm verbose audit error   pkgid: undefined
+npm verbose audit error }
+npm http fetch GET 200 http://127.0.0.1:4887/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 20ms (cache miss)
+npm info run huaweicloud-devkit@9.9.9 preinstall node_modules/huaweicloud-devkit node pre.js
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/bin/npm
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose logfile could not create logs-dir: Error: EACCES: permission denied, mkdir '/home/op/ro-cache/_logs'
+npm verbose title npm install
+npm verbose argv "install" "--no-audit" "--no-fund" "--registry" "http://127.0.0.1:4887" "--prefix" "/home/op/inner-pkg4" "--cache" "/home/op/ro-cache"
+npm verbose logfile logs-max:10 dir:/home/op/ro-cache/_logs/2026-11-12T01_32_32_965Z-
+npm verbose logfile could not be created: Error: ENOENT: no such file or directory, open '/home/op/ro-cache/_logs/2026-11-12T01_32_32_965Z-debug-0.log'
+npm verbose logfile no logfile created
+npm verbose logfile error cleaning log files Error: ENOENT: no such file or directory, scandir '/home/op/ro-cache/_logs'
+npm verbose logfile     at async Object.readdir (node:internal/fs/promises:1786:18)
+npm verbose logfile     at async #cleanLogs (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/lib/utils/log-file.js:194:19) {
+npm verbose logfile   errno: -2,
+npm verbose logfile   code: 'ENOENT',
+npm verbose logfile   syscall: 'scandir',
+npm verbose logfile   path: '/home/op/ro-cache/_logs'
+npm verbose logfile }
+npm http fetch GET 404 http://127.0.0.1:4887/npm 31ms
+npm http fetch GET 404 http://127.0.0.1:4887/npm 6ms
+npm http fetch GET 200 http://127.0.0.1:4887/tiny-dep 12ms (cache miss)
+npm verbose FetchError: Invalid response body while trying to fetch http://127.0.0.1:4887/tiny-dep: EACCES: permission denied, mkdir '/home/op/ro-cache/_cacache'
+    at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/minipass-fetch/lib/body.js:174:15
+    at async Response.json (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/minipass-fetch/lib/body.js:75:17)
+    at async RegistryFetcher.packument (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:98:25)
+    at async RegistryFetcher.manifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:128:23)
+    at async #fetchManifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1362:20)
+    at async #nodeFromEdge (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1178:19)
+    at async #buildDepStep (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1015:15)
+    at async Arborist.buildIdealTree (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:180:7)
+    at async Promise.all (index 1)
+    at async Arborist.reify (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/reify.js:118:5)
+npm verbose type system
+npm verbose stack FetchError: Invalid response body while trying to fetch http://127.0.0.1:4887/tiny-dep: EACCES: permission denied, mkdir '/home/op/ro-cache/_cacache'
+npm verbose stack     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/minipass-fetch/lib/body.js:174:15
+npm verbose stack     at async Response.json (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/minipass-fetch/lib/body.js:75:17)
+npm verbose stack     at async RegistryFetcher.packument (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:98:25)
+npm verbose stack     at async RegistryFetcher.manifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:128:23)
+npm verbose stack     at async #fetchManifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1362:20)
+npm verbose stack     at async #nodeFromEdge (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1178:19)
+npm verbose stack     at async #buildDepStep (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1015:15)
+npm verbose stack     at async Arborist.buildIdealTree (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:180:7)
+npm verbose stack     at async Promise.all (index 1)
+npm verbose stack     at async Arborist.reify (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/reify.js:118:5)
+npm error code EACCES
+npm error syscall mkdir
+npm error path /home/op/ro-cache/_cacache
+npm error errno EACCES
+npm error
+npm error Your cache folder contains root-owned files, due to a bug in previous versions of npm which has since been addressed.
+npm error
+npm error To permanently fix this problem, please run:
+npm error   sudo chown -R 1002:1002 "/home/op/ro-cache"
+npm verbose cwd /home/op/npx-cache/_npx/2876c8997196d27e/node_modules/huaweicloud-devkit
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 1
+npm verbose code 1
+npm error Log files were not written due to an error writing to the directory: /home/op/ro-cache/_logs
+npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+npm info run huaweicloud-devkit@9.9.9 preinstall { code: 0, signal: null }
+npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node post.js
+postinstall boom
+npm info run huaweicloud-devkit@9.9.9 postinstall { code: 7, signal: null }
+npm verbose cwd /home/op
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7

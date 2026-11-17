@@ -1,0 +1,5 @@
+npm error code 1
+npm error Downloading prebuilt binary for linux-x64
+npm error verifying cached artifact
+npm error Cannot install: TypeError: Cannot read properties of undefined (reading 'mcpServers')
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

@@ -1,0 +1,26 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:38607/npm 35ms
+npm http fetch GET 404 http://127.0.0.1:38607/npm 8ms
+npm http fetch GET 200 http://127.0.0.1:38607/pkg-a 20ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:38607/pkg-a/-/pkg-a-1.0.0.tgz 19ms (cache miss)
+npm info run pkg-a@1.0.0 postinstall node_modules/pkg-a node post.js
+npm info run pkg-a@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/projects/s4-orphan-after-summary/node_modules/pkg-a
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/caches/s4-orphan-after-summary/_logs/2026-11-12T13_46_06_188Z-debug-0.log
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:38607/npm 28ms
+npm http fetch GET 404 http://127.0.0.1:38607/npm 10ms
+npm http fetch GET 200 http://127.0.0.1:38607/pkg-z 19ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:38607/pkg-z/-/pkg-z-1.0.0.tgz 19ms (cache miss)
+npm info run pkg-z@1.0.0 postinstall node_modules/pkg-z node z.js
+npm info run pkg-z@1.0.0 postinstall { code: 3, signal: null }
+npm error code 3
+npm error path /home/op/projects/s4-orphan-after-summary/nested/node_modules/pkg-z
+npm error command failed
+npm error command sh -c node z.js
+npm error A complete log of this run can be found in: /home/op/caches/s4-orphan-after-summary-nested/_logs/2026-11-12T13_46_06_774Z-debug-0.log

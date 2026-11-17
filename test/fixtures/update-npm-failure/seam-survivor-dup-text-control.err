@@ -1,0 +1,5 @@
+child failed (exit 3)
+{ code: 0, signal: null }
+/other/file.js:9
+totally different snippet text
+    ^
