@@ -74,7 +74,7 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
   try {
     connectResult = await hdkitConnectWithRetry(connectArgs);
   } catch (error) {
-    // 业务预期失败（429 双码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
+    // 业务预期失败（429 三码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
     // 其余错误维持抛出（MCP 层透传 code+message）。
     // 409 版本门禁（dev e1255a4b）与网关 502/504 重试耗尽（v2 扩展）同样在此折叠。
     const err = error as HdkitError;
@@ -125,6 +125,7 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
     const coreHoursExhausted = chainDataValue(error, 'coreHoursExhausted');
     if (
       businessCode === 'HDKIT_QUOTA_EXCEEDED' ||
+      businessCode === 'HDKIT_TEMPLATE_QUOTA_EXCEEDED' ||
       businessCode === 'HDKIT_CAPACITY_INSUFFICIENT' ||
       businessCode === 'HDKIT_CRED_INVALID' ||
       coreHoursExhausted

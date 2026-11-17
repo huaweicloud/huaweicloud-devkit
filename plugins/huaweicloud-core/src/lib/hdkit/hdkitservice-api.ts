@@ -305,9 +305,12 @@ async function hdkitRequest(
         ],
       };
     }
-    // 429 双错误码（两池配额契约）：配额满给出释放/复用引导；池容量不足只透传服务端
-    // 最终文案（“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），
-    // 不再附加额外引导——该文案即最终展示内容。两者均携带服务端 Retry-After。
+    // 429 三错误码（两池配额契约 + 用户级模板 running 上限，dev dff5df91 + 45dd4f99）：
+    // 配额满与模板上限给出各自的引导；池容量不足只透传服务端最终文案
+    // （“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”），不再附加
+    // 额外引导——该文案即最终展示内容。HDKIT_QUOTA_EXCEEDED /
+    // HDKIT_CAPACITY_INSUFFICIENT 携带服务端 Retry-After；模板上限不带（原地重试
+    // 不推进，只有腾出同类型实例才放开）。
     if (canonCode(code) === 'HDKIT_QUOTA_EXCEEDED') {
       err.retryAfter = safeRetryAfterHeader(resp) || undefined;
       err.remediation = {
@@ -316,6 +319,22 @@ async function hdkitRequest(
           '确认已有实例是否够用：connect 对同池实例自动复用，无需重复创建',
           '释放不再使用的沙箱（控制台或平台回收）后重试',
           '如需两种生命周期语义并存：ephemeral 与 persistent 各可持有 1 台',
+        ],
+      };
+    }
+    if (canonCode(code) === 'HDKIT_TEMPLATE_QUOTA_EXCEEDED') {
+      // 服务端文案即最终展示内容（dev dff5df91）：原样透传，客户端的 "CODE: "
+      // 前缀随之丢弃；缺失/空白走设计兜底（dev 45dd4f99）。remediation 与 409
+      // 门同形：设计引导挂在错误上，connect 出口折叠后穿透 MCP 边界。旧
+      // “每账号最多 5 台”是账号并发口径，不是本码的模板级 running 上限
+      // （HD.98320082），不得附加。
+      err.message = cleanMessage(rawBoundedMessage) || '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+      err.remediation = {
+        hint: '当前账号在此类型沙箱的运行中实例已达上限（该类池每用户 1 台），需先腾出同类型实例：',
+        steps: [
+          '关机不再使用的同类型沙箱：调用 huaweicloud_sandbox_shutdown（实例与数据盘保留，下次 connect 自动唤醒）',
+          '或释放该同类型实例（二次确认后），再重新 connect',
+          '原地重试无效：该码不带 Retry-After；也可等平台闲置策略自动关机（ephemeral 闲置 30 分钟）后再试',
         ],
       };
     }
@@ -354,7 +373,7 @@ async function hdkitRequest(
     }
     // 烧核播报（缺口#5 代码层）：账号核心时长耗尽——上游码 HD.97520422 经
     // hdkitservice 以 HDKIT_UPSTREAM_ERROR 包装透传，客户端按消息内错误码识别。
-    // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 双码/凭证指引）
+    // 仅在前面的分支未设置 remediation 时生效（else-if 语义：烧核不覆盖 429 三码/凭证指引）
     // 烧核排除 409（round 30/MUST 2，操作员裁定）：409 是门禁的领地——门禁码形态下门禁
     // 全胜、烧核块不慢行（一致控制行）；无码 409 此前两张信封混合（门禁折叠丢弃烧核指引、
     // 转向读又把烧核标记骑上——升级+烧核同时说）。烧核块只在非 409（502/504 等）上生效

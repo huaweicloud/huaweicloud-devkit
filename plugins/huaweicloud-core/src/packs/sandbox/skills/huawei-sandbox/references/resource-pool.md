@@ -1,6 +1,6 @@
 # 两池沙箱资源池口径（v3，2026-11 定稿）
 
-> 权威实现：hdkitservice（pool_type 服务端权威解析 + 池感知复用 + 429 双错误码）+ 本插件 `sandbox-pool.ts`。
+> 权威实现：hdkitservice（pool_type 服务端权威解析 + 池感知复用 + 429 三错误码）+ 本插件 `sandbox-pool.ts`。
 > 本文件是口径快照，与实现冲突时以最新实测为准（基调：一切以实测为准，口头支持不作数）。
 > 本版合并并取代 #1071 旧口径（非持久 3h 固定 / 持久 14 天保留 / 三信号 / 关机前通知均已作废）。
 
@@ -68,8 +68,9 @@
 ## 配额与错误码
 
 - 每用户每类型 1 台（同类复用，ephemeral + persistent 可并存 1+1）；账号并发上限 5
-- 429 双错误码（均带 `Retry-After: 60`）：
+- 429 三错误码（`HDKIT_QUOTA_EXCEEDED` / `HDKIT_CAPACITY_INSUFFICIENT` 带 `Retry-After: 60`；`HDKIT_TEMPLATE_QUOTA_EXCEEDED` 不带）：
   - `HDKIT_QUOTA_EXCEEDED`：用户配额满（上游 `HD.98320022`）→ 重试无效，引导释放/复用已有实例
+  - `HDKIT_TEMPLATE_QUOTA_EXCEEDED`：当前账号此类型沙箱运行中实例达上限（上游 `HD.98320082`）→ 需关机/释放同类型实例后重试
   - `HDKIT_CAPACITY_INSUFFICIENT`：池容量不足（上游 `HD.99003001`/`HD.99008001`/`HD.98330021`）→ 服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端原样透传不再附加引导
 - 烧核：`HD.97520422` = 账号核心时长耗尽（沙箱运行消耗核时；客户端对含该码的错误输出友好播报）
 
@@ -83,7 +84,7 @@
 - 选型由 skill 的 Pool-Selection Gate 决定；客户端只校验/透传 `pool_type`，不自行推断
 - 生命周期提示只在两个时机播报：connect（会话首次连接，或复用实例被唤醒 `started=true`）与 `expose_tunnel`（交付地址时，返回 `urlLifetimeHint` + `warnings`）；其余 exec/upload/deploy 工具不逐次播报
 - connect 返回值富化 `pool` 块（数值取服务端回显，缺失时用默认口径）；生命周期口径按 workspace 缓存到 `~/.config/huaweicloud/sandbox-pools.json`（0600，7 天过期），进程重启后仍可播报
-- 429：配额满给 `remediation` 引导；容量不足只透传服务端最终文案 + `retryAfter`
+- 429：配额满与模板配额满给 `remediation` 引导；容量不足只透传服务端最终文案 + `retryAfter`；模板配额不带 `retryAfter`
 - persistent 生命周期提示追加核时提醒：**如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。** ephemeral 不出现该提示
 - `sandbox_shutdown` 调 hdkitservice `POST /shutdown`（DevStation `close`，不 delete）；仅开发者明确要求时调用；返回 `stopped` / `shutting_down` / `already_stopped` / `close_requested`。非持久化沙箱也可关机，但不主动提示
 - 钉扎（可选，运维场景）：`HW_POOL_TEMPLATE_EPHEMERAL`/`HW_POOL_TEMPLATE_PERSISTENT` 环境变量——设置后客户端附带映射 template_id 上送；日常部署无需配置（模板 ID 由服务端权威维护）
