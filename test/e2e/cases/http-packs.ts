@@ -140,7 +140,7 @@ export const voucherCases: E2eCase[] = [
 ];
 
 // PR-3a gate note: every case whose flow calls connect, credentials, or
-// expose_tunnel hits the approval gate (the eight sandbox registrations).
+// expose_tunnel hits the approval gate (the nine sandbox registrations).
 // The posture is pinned to token and the user's terminal half plays through
 // the REAL TTY-gated CLI (the PTY seam, ptyConfirmApprovals) — each case's
 // prompt pre-authorizes the calls, so the mint → approve → consume chain is

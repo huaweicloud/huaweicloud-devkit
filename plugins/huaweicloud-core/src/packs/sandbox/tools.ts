@@ -14,13 +14,14 @@ import {
   signAgreementSchema,
   connectSchema,
   credentialsSchema,
+  shutdownSchema,
 } from './schemas.ts';
 import { handleExecWithSession, handleExecOneShot, handleCloseSession } from './handlers-session.ts';
 import { handleHwexecPoll } from './handlers-hwexec.ts';
 import { handleUploadFile, handleUploadProject } from './handlers-upload.ts';
 import { handleDeployNginx, handleDeployCheck } from './handlers-deploy.ts';
 import { handleExposeTunnel, handleRenewTunnel, handleKeepaliveWatchdog } from './handlers-tunnel.ts';
-import { handleCheckUser, handleSignAgreement, handleConnect } from './handlers-account.ts';
+import { handleCheckUser, handleSignAgreement, handleConnect, handleShutdown } from './handlers-account.ts';
 import { handleCredentials } from './handlers-credentials.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 
@@ -149,6 +150,13 @@ export const SANDBOX_TOOLS = [
     schema: credentialsSchema,
     handler: handleCredentials,
   },
+  {
+    name: 'huaweicloud_sandbox_shutdown',
+    description:
+      'Shut down a running sandbox via hdkitservice to stop core-hour consumption. This calls DevStation close, NOT delete: the instance is retained; for persistent sandboxes the EVS data disk is also retained. A later huaweicloud_sandbox_connect wakes it. Works for both ephemeral and persistent sandboxes. Only call when the developer explicitly asks to shut down; never auto-shutdown. Returns devStageId, status (stopped/shutting_down/already_stopped/close_requested) and message.',
+    schema: shutdownSchema,
+    handler: handleShutdown,
+  },
 ] as const satisfies readonly PackToolDefinition[];
 
 export type SandboxToolName = (typeof SANDBOX_TOOLS)[number]['name'];
@@ -172,6 +180,7 @@ export const SANDBOX_TOOL_SCHEMAS: Readonly<Record<SandboxToolName, LooseToolSch
   huaweicloud_sandbox_sign_agreement: signAgreementSchema,
   huaweicloud_sandbox_connect: connectSchema,
   huaweicloud_sandbox_credentials: credentialsSchema,
+  huaweicloud_sandbox_shutdown: shutdownSchema,
 };
 
 // Dispatch map merged into PACK_TOOL_HANDLERS in packs/registry.ts. Typed over
@@ -193,4 +202,5 @@ export const SANDBOX_TOOL_HANDLERS: Readonly<Record<SandboxToolName, PackToolDef
   huaweicloud_sandbox_sign_agreement: handleSignAgreement,
   huaweicloud_sandbox_connect: handleConnect,
   huaweicloud_sandbox_credentials: handleCredentials,
+  huaweicloud_sandbox_shutdown: handleShutdown,
 };

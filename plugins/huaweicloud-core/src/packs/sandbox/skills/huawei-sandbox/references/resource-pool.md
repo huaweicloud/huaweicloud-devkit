@@ -84,6 +84,8 @@
 - 生命周期提示只在两个时机播报：connect（会话首次连接，或复用实例被唤醒 `started=true`）与 `expose_tunnel`（交付地址时，返回 `urlLifetimeHint` + `warnings`）；其余 exec/upload/deploy 工具不逐次播报
 - connect 返回值富化 `pool` 块（数值取服务端回显，缺失时用默认口径）；生命周期口径按 workspace 缓存到 `~/.config/huaweicloud/sandbox-pools.json`（0600，7 天过期），进程重启后仍可播报
 - 429：配额满给 `remediation` 引导；容量不足只透传服务端最终文案 + `retryAfter`
+- persistent 生命周期提示追加核时提醒：**如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。** ephemeral 不出现该提示
+- `sandbox_shutdown` 调 hdkitservice `POST /shutdown`（DevStation `close`，不 delete）；仅开发者明确要求时调用；返回 `stopped` / `shutting_down` / `already_stopped` / `close_requested`。非持久化沙箱也可关机，但不主动提示
 - 钉扎（可选，运维场景）：`HW_POOL_TEMPLATE_EPHEMERAL`/`HW_POOL_TEMPLATE_PERSISTENT` 环境变量——设置后客户端附带映射 template_id 上送；日常部署无需配置（模板 ID 由服务端权威维护）
 
 ## 平台侧关键依赖（G 清单，非 devkit 交付）

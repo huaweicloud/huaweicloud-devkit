@@ -7,10 +7,10 @@ import { isSecretRef } from '../../lib/secret-vault/refs.ts';
 import type { ApprovalSpec } from '../../approval-types.ts';
 import type { ToolArgs } from '../../tools.ts';
 
-// The sandbox pack's approval spec table. Eight tools join the gate: the two
+// The sandbox pack's approval spec table. Nine tools join the gate: the two
 // exec faces are CLASSIFIED (content decides — a benign command runs with no
 // confirmation surface at all, a write-classified one confirms on every
-// call), the six mutating lifecycle faces are ALWAYS (a human present per
+// call), the seven mutating lifecycle faces are ALWAYS (a human present per
 // call, no content rule ever exempts them). The strict classification runs
 // on the exec faces' `command` argument through the SAME engines the Bash
 // face uses — classifyTextCommand plus the cloud-risk-rules catalog — so a
@@ -170,7 +170,7 @@ function execSpec(toolShortName: 'exec_with_session' | 'exec_one_shot'): Approva
     // the args). The anchor exists so the no-anchor refusal shape (a
     // stuffed command on a tool that declares no displayable line) never
     // kills the exec faces after the serial landing (the anchor-collision
-    // decision): the exec calls are anchored, the six lifecycle faces are
+    // decision): the exec calls are anchored, the seven lifecycle faces are
     // not and refuse a stuffed command.
     commandAnchor: (bindingValue) => {
       const command = (bindingValue as Record<string, unknown>).command;
@@ -271,6 +271,18 @@ const credentialsSpec: ApprovalSpec = {
   },
 };
 
+// 关机（port-pr6）：不可逆生命周期面，always。确认视图点名目标 id 与
+// close-not-delete 事实——确认面显示的是开发者要关哪台沙箱，不是参数流。
+const shutdownSpec: ApprovalSpec = {
+  ...sandboxBinding(),
+  flavor: 'always',
+  summarize: (bindingValue) =>
+    viewOf(bindingValue, (view) => {
+      const target = fieldEcho(view, ['session_id', 'dev_stage_id', 'workspace_id']);
+      return `huaweicloud_sandbox_shutdown: shut down the sandbox (close only — instance retained, reconnect wakes it)${target !== '' ? ` (${target})` : ''}`;
+    }),
+};
+
 export const SANDBOX_APPROVAL_SPECS = {
   huaweicloud_sandbox_connect: connectSpec,
   huaweicloud_sandbox_exec_with_session: execSpec('exec_with_session'),
@@ -280,4 +292,5 @@ export const SANDBOX_APPROVAL_SPECS = {
   huaweicloud_sandbox_keepalive_watchdog: keepaliveWatchdogSpec,
   huaweicloud_sandbox_sign_agreement: signAgreementSpec,
   huaweicloud_sandbox_credentials: credentialsSpec,
+  huaweicloud_sandbox_shutdown: shutdownSpec,
 } as const satisfies Record<string, ApprovalSpec>;

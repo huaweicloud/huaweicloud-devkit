@@ -11,7 +11,9 @@
 //
 // PR-1 populated the roster with the hcloud pair's run face; PR-3a added
 // the sandbox pack's eight mutating faces (connect, the two exec tools,
-// the three tunnel faces, sign_agreement, credentials); PR-3b adds the auth
+// the three tunnel faces, sign_agreement, credentials); the port-pr6 wave
+// added shutdown — the irreversible core-hour stop (an unrostered shutdown
+// is a safety hole: the tool exists but nothing gates it); PR-3b adds the auth
 // account-switch pair — the account switch can redirect every downstream
 // approved write to a different account, so it earns a human present on
 // every call; PR-3c adds the obs pair as the first classified members
@@ -37,6 +39,7 @@ export const APPROVAL_TOOLS = [
   'huaweicloud_sandbox_keepalive_watchdog',
   'huaweicloud_sandbox_sign_agreement',
   'huaweicloud_sandbox_credentials',
+  'huaweicloud_sandbox_shutdown',
   'huaweicloud_auth_init',
   'huaweicloud_auth_switch',
   'huaweicloud_obs_set_website_config',
@@ -86,7 +89,9 @@ export const APPROVAL_CLASSIFIED_TOOLS = [
 // packs_configure) ride 'structured' like PR-3a's lifecycle faces and
 // PR-3b's auth pair: plain argument payloads, no command surface, no
 // exemption (measured: every real payload classifies allow, so the calls
-// reach the server gate with full hook classification standing).
+// reach the server gate with full hook classification standing). The
+// port-pr6 shutdown row rides 'structured' the same way — plain id
+// fields (session_id/dev_stage_id/workspace_id), no command surface.
 export type ApprovalToolInputShape = 'argsArray' | 'commandString' | 'structured';
 
 export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number], ApprovalToolInputShape> = {
@@ -99,6 +104,7 @@ export const APPROVAL_TOOL_INPUT_SHAPES: Record<(typeof APPROVAL_TOOLS)[number],
   huaweicloud_sandbox_keepalive_watchdog: 'structured',
   huaweicloud_sandbox_sign_agreement: 'structured',
   huaweicloud_sandbox_credentials: 'structured',
+  huaweicloud_sandbox_shutdown: 'structured',
   huaweicloud_auth_init: 'structured',
   huaweicloud_auth_switch: 'structured',
   huaweicloud_obs_set_website_config: 'structured',

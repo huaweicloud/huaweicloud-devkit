@@ -227,7 +227,7 @@ export const exposeTunnelSchema = z.looseObject({
     .enum(['stale', 'all', 'none'])
     .optional()
     .describe(
-      'Tunnel cleanup before exposing. stale (default): delete same-port tunnels + orphan records/hosts; preserve other ports, other sessions and keepalive-protected tunnels — except a tunnel bound to THIS port, which is always replaced. all: wipe every tunnel/host (manual full reset only — a shared sandbox loses every session\'s tunnels). none: no cleanup (a stale same-port host can then conflict).',
+      "Tunnel cleanup before exposing. stale (default): delete same-port tunnels + orphan records/hosts; preserve other ports, other sessions and keepalive-protected tunnels — except a tunnel bound to THIS port, which is always replaced. all: wipe every tunnel/host (manual full reset only — a shared sandbox loses every session's tunnels). none: no cleanup (a stale same-port host can then conflict).",
     ),
   workspace_id: workspaceId,
   username,
@@ -322,6 +322,21 @@ export const credentialsSchema = z.looseObject({
     .describe(
       'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. Also accepts a vault ref (secret://<scope>/<name>), resolved locally so the key never enters the conversation. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
     ),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
+});
+
+// 关机（dev 5d89c880）：不可逆写类工具，走审批门（always 面）；token 与
+// attestation 与其余门面工具同型——schema 可选，门是执行者，首个无 token
+// 调用必须能到达门以领取 mint 信封。
+export const shutdownSchema = z.looseObject({
+  session_id: z.string().optional().describe('Session ID from huaweicloud_sandbox_connect (optional)'),
+  dev_stage_id: z.string().optional().describe('DevStation environment ID (alternative to session_id)'),
+  workspace_id: z
+    .string()
+    .optional()
+    .describe('Workspace ID; defaults to the current workspace (an alternative to session_id/dev_stage_id)'),
+  username,
   approvalToken: approvalTokenArg,
   approvedByUser: approvedByUserArg,
 });

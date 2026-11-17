@@ -262,7 +262,8 @@ test('every registered classified tool provides a classify', () => {
 
 test('the sandbox and safety skills teach the registered approval gate (PR-3a)', () => {
   // The teaching layer is a consent surface: eight sandbox tools gained a
-  // mechanical gate this PR, and a skill that still says "call connect" or
+  // mechanical gate in PR-3a (shutdown joined as the ninth in the port-pr6
+  // wave), and a skill that still says "call connect" or
   // "exec runs commands" without the gate contract teaches the model to
   // fight the refusal instead of driving the confirmation. The guard pins
   // the sandbox skill's gate section and the safety skill's
@@ -270,7 +271,7 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   // roster list is DERIVED from the roster leaf (one line per member) so
   // the sibling registrations' rebases must update it, never outgrow it.
   const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
-  assert.match(sandboxSkill, /## Approval gate \(the eight mutating tools\)/);
+  assert.match(sandboxSkill, /## Approval gate \(the nine mutating tools\)/);
   assert.match(sandboxSkill, /USER_CONFIRMATION_REQUIRED/);
   assert.match(sandboxSkill, /retry-uncertain/, 'the sandbox skill names the retry memo carrier');
   assert.match(sandboxSkill, /standing-session/, 'the sandbox skill names the standing-consent carrier');

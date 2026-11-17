@@ -40,6 +40,7 @@ const EXEMPT_TOOLS = new Set([
   'huaweicloud_sandbox_renew_tunnel',
   'huaweicloud_sandbox_keepalive_watchdog',
   'huaweicloud_sandbox_exec_poll',
+  'huaweicloud_sandbox_shutdown',
 ]);
 
 // Declared, intentional drifts from the legacy literals. Each entry names the

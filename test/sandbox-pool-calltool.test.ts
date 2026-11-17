@@ -36,6 +36,9 @@ after(() => {
 
 let currentWs: string | null = null;
 const execLog: string[] = [];
+// 3bfc1f53 形态：closeSession 记录入参——仅 session_id 的关机用例要断言
+// 终端会话以服务端回传的 devStageId 关闭，而非 session_id 字符串。
+const closeLog: Array<{ ws: unknown; username: unknown }> = [];
 
 // 模块 mock 必须先于 tools.ts 导入注册（按解析后 URL 拦截嵌套 import）
 mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.ts', {
@@ -48,7 +51,10 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.ts', {
       execLog.push(`${ws}:${cmd}`);
       return { stdout: 'STUB', exitCode: 0 };
     },
-    closeSession: async () => true,
+    closeSession: async (ws: unknown, username: unknown) => {
+      closeLog.push({ ws, username });
+      return true;
+    },
     uploadFileWithSession: async () => ({ ok: true, remote_path: 'stub' }),
     uploadProjectWithSession: async () => ({ ok: true }),
     deployNginx: async () => ({ ok: true, port: 8080 }),
@@ -438,4 +444,147 @@ test('callTool renew_tunnel and keepalive_watchdog stay clean (no per-call pool 
     assert.equal(watched.poolMode, undefined);
     assert.equal(watched.persistenceHint, undefined);
   });
+});
+
+// ── callTool shutdown（dev 5d89c880 + 3bfc1f53 终态；写类工具走审批门）──
+
+interface ShutdownResult {
+  ok?: boolean;
+  code?: string;
+  message?: string;
+  devStageId?: string;
+  status?: string;
+}
+
+// 关机是门面工具：与 connect 同型，ask 姿态 + 接受表单缝（本文件的直调
+// 层无法扮演终端半边）。
+async function gatedShutdownCall(args: Record<string, unknown>, label: string): Promise<unknown> {
+  return withApprovalMode('ask', async () =>
+    callTool('huaweicloud_sandbox_shutdown', args, {
+      sessionId: `${label}-${(poolPreloadSeq += 1)}`,
+      elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+    }),
+  );
+}
+
+test('callTool shutdown: closes via hdkitservice and returns status', async () => {
+  const restore = withFetchResponse(
+    { devStageId: 'ws1', status: 'shutting_down', message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒' },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ dev_stage_id: 'ws1' }, 'pool-shutdown')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    assert.equal(result.devStageId, 'ws1');
+    assert.equal(result.status, 'shutting_down');
+    assert.equal(result.message, '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒');
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: not-found returns structured code', async () => {
+  const restore = withFetchResponse(
+    { code: 'HDKIT_SANDBOX_NOT_FOUND', message: '环境不存在或已被删除' },
+    { status: 404, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ dev_stage_id: 'ws1' }, 'pool-shutdown-404')) as ShutdownResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_SANDBOX_NOT_FOUND');
+    assert.match(result.message ?? '', /环境不存在或已被删除/);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: session_id-only closes the returned workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = 'current-ws';
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-session',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ session_id: 'sess-1' }, 'pool-shutdown-sess')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    // 3bfc1f53：仅 session_id 时 closeSession 以服务端回传的 devStageId 为准
+    //（此前的 devStageId || sessionId 拼法把 session_id 字符串当 workspace 用）
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-session', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: an empty devStageId echo falls through to the workspace chain (dev || semantics)', async () => {
+  const previousWs = currentWs;
+  currentWs = 'current-ws';
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      // 敌意/异常服务端回显空串：|| 链穿透到当前 workspace（interrogate
+      // port-pr6 F4 的回归钉——?? 链会让 closeSession 收到 '' 白跑一趟）
+      devStageId: '',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ session_id: 'sess-1' }, 'pool-shutdown-empty')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'current-ws', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: workspace_id-only closes that workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = null;
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-fallback',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ workspace_id: 'ws-fallback' }, 'pool-shutdown-ws')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-fallback', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: no id and no current workspace returns structured guidance', async () => {
+  const previousWs = currentWs;
+  currentWs = null;
+  const originalFetch = global.fetch;
+  let fetchCalls = 0;
+  global.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('must not be reached');
+  };
+  try {
+    const result = (await gatedShutdownCall({}, 'pool-shutdown-noid')) as ShutdownResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_INVALID_REQUEST');
+    assert.match(result.message ?? '', /session_id or dev_stage_id is required/);
+    assert.equal(fetchCalls, 0, 'an id-less call must fail locally, before any request');
+  } finally {
+    global.fetch = originalFetch;
+    currentWs = previousWs;
+  }
 });
