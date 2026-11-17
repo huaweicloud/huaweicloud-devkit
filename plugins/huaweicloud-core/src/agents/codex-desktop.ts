@@ -200,9 +200,13 @@ export function uninstallCodexDesktop(): void {
   }
 
   // Clean up old config.toml section from pre-marketplace era. The sweep is
-  // deliberately wholesale (trunk behavior): the section is our own legacy
-  // install's, and the yield never lands in config.toml (agents/codex-config.ts
-  // records why), so no .tools subtable carve-out is needed.
+  // wholesale trunk behavior: EVERY [mcp_servers.huaweicloud-devkit…] table
+  // goes, including user-authored subtables under our server name (a user
+  // tools block vanishes with ours, and the doctor never sees it after the
+  // uninstall). The devkit's own yield never lands in config.toml at all
+  // (agents/codex-config.ts records why), so this pass removes legacy
+  // server sections plus whatever users placed under that name — nothing
+  // the current installer writes.
   const configPath = join(homedir(), '.codex', 'config.toml');
   if (existsSync(configPath)) {
     const lines = readFileSync(configPath, 'utf8').split(/\r?\n/);

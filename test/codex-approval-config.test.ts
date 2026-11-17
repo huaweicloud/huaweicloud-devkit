@@ -11,6 +11,7 @@ import {
   codexCacheMcpJsonPaths,
   codexDoctorApprovalRow,
   codexElicitPolicyOff,
+  codexOverridesUnparseableDialect,
   codexPluginCacheDir,
   readCodexApprovalBlocks,
   readMcpJsonApprovalStates,
@@ -112,11 +113,45 @@ test('readCodexApprovalBlocks reads the user override channel, pinned to our ser
   assert.equal(states.length, APPROVAL_TOOLS.length);
 });
 
-test('the elicit-policy detector matches only the false spelling of the granular key', () => {
+test('the elicit-policy detector matches both accepted spellings of the false granular key', () => {
   assert.equal(codexElicitPolicyOff('[approval_policy.granular]\nmcp_elicitations = false\n'), true);
+  // The inline-table spelling is the machine the line-anchored detector
+  // missed (root-reproduced): doctor PASS with zero WARN while every
+  // roster call fails closed.
+  assert.equal(
+    codexElicitPolicyOff(
+      'approval_policy = { granular = { mcp_elicitations = false, sandbox_approval = false, rules = false } }\n',
+    ),
+    true,
+  );
   assert.equal(codexElicitPolicyOff('mcp_elicitations = true\n'), false);
+  assert.equal(codexElicitPolicyOff('approval_policy = { granular = { mcp_elicitations = true } }\n'), false);
   assert.equal(codexElicitPolicyOff('model = "gpt"\n'), false);
   assert.equal(codexElicitPolicyOff('allow_mcp_elicitations = false\n'), false, 'lookalike keys never trip it');
+});
+
+test('the override-dialect detector flags the dotted-key and inline-table spellings codex honors', () => {
+  const dotted = `mcp_servers.${APPROVAL_MCP_SERVER}.tools.huaweicloud_upgrade.approval_mode = "prompt"\n`;
+  const inline = `[mcp_servers.${APPROVAL_MCP_SERVER}]\ntools = { huaweicloud_upgrade = { approval_mode = "prompt" } }\n`;
+  assert.equal(codexOverridesUnparseableDialect(dotted), true, 'dotted keys win over the payload (live-verified)');
+  assert.equal(codexOverridesUnparseableDialect(inline), true, 'inline tables win over the payload');
+  assert.equal(codexOverridesUnparseableDialect('model = "gpt"\n'), false);
+  assert.equal(
+    codexOverridesUnparseableDialect(
+      `[mcp_servers.${APPROVAL_MCP_SERVER}.tools.huaweicloud_upgrade]\napproval_mode = "prompt"\n`,
+    ),
+    false,
+    'the header form is parsed by readCodexApprovalBlocks, never flagged',
+  );
+  assert.equal(
+    codexOverridesUnparseableDialect('mcp_servers.other-server.tools.x.approval_mode = "prompt"\n'),
+    false,
+    'a foreign server is user territory',
+  );
+  assert.equal(
+    codexOverridesUnparseableDialect('[mcp_servers.other-server]\ntools = { x = { approval_mode = "prompt" } }\n'),
+    false,
+  );
 });
 
 test('the never detector reads top-level keys only, before the first table header', () => {
@@ -244,12 +279,34 @@ test('doctor row warns on a user config.toml override, which wins over the paylo
 });
 
 test('doctor row names the policy flip on the elicit-off machine even with a healthy payload', () => {
-  const config = `${'[approval_policy.granular]\n'}mcp_elicitations = false\n`;
-  const lines = rowOver((home) => seedCachePayload(home), { configToml: config });
-  assert.equal(lines.length, 1);
-  assert.match(lines[0]!, /mcp_elicitations = false/);
-  assert.match(lines[0]!, /fails closed at the devkit gate until the policy is on/);
-  assert.match(lines[0]!, /set mcp_elicitations = true/);
+  // Both accepted spellings: the [approval_policy.granular] table and the
+  // inline table the line-anchored detector missed (root-reproduced).
+  const configs = [
+    '[approval_policy.granular]\nmcp_elicitations = false\n',
+    'approval_policy = { granular = { mcp_elicitations = false, sandbox_approval = false, rules = false } }\n',
+  ];
+  for (const config of configs) {
+    const lines = rowOver((home) => seedCachePayload(home), { configToml: config });
+    assert.equal(lines.length, 1, config);
+    assert.match(lines[0]!, /mcp_elicitations = false/);
+    assert.match(lines[0]!, /fails closed at the devkit gate until the policy is on/);
+    assert.match(lines[0]!, /set mcp_elicitations = true/);
+  }
+});
+
+test('doctor row warns on override spellings it cannot parse, never reading them as absence', () => {
+  const dotted = `mcp_servers.${APPROVAL_MCP_SERVER}.tools.huaweicloud_upgrade.approval_mode = "prompt"\n`;
+  const inline = `[mcp_servers.${APPROVAL_MCP_SERVER}]\ntools = { huaweicloud_upgrade = { approval_mode = "prompt" } }\n`;
+  for (const [label, config] of [
+    ['dotted key', dotted],
+    ['inline table', inline],
+  ] as const) {
+    const lines = rowOver((home) => seedCachePayload(home), { configToml: config });
+    assert.equal(lines.length, 1, label);
+    assert.match(lines[0]!, /dialect this doctor cannot parse/);
+    assert.match(lines[0]!, /winning values cannot be verified/);
+    assert.ok(!lines[0]!.includes('[FAIL'), 'WARN is the ceiling');
+  }
 });
 
 test('doctor row names the never direction', () => {
@@ -401,4 +458,38 @@ test('the real doctor stays silent on a codex config with no devkit footprint', 
   // devkit has no codex relationship with.
   const out = runDoctor(home, { PATH: '' });
   assert.ok(!out.includes('Codex approval posture'), 'no codex relationship means no row');
+});
+
+// The three doctor-shape drives, through the real CLI (a real codex-desktop
+// install seeds the payload; the config.toml carries the policy spelling):
+// inline-table → WARN, header → WARN, clean → PASS. The inline spelling is
+// the one the line-anchored detector missed (root-reproduced).
+test('the real doctor: inline-table policy WARNs, header policy WARNs, clean passes', () => {
+  const home = fixtureDir('codex-approval-policy-');
+  const cwd = fixtureDir('codex-approval-cwd-');
+  const env = fakeCodexEnv(cwd);
+  assert.equal(run('codex-desktop', home, cwd, 'install').status, 0);
+  const configToml = join(home, '.codex', 'config.toml');
+  mkdirSync(join(home, '.codex'), { recursive: true });
+
+  writeFileSync(
+    configToml,
+    'approval_policy = { granular = { mcp_elicitations = false, sandbox_approval = false, rules = false } }\n',
+    'utf8',
+  );
+  const inlineOut = runDoctor(home, env);
+  assert.match(inlineOut, /\[WARN\] Codex approval posture: /);
+  assert.match(inlineOut, /mcp_elicitations = false/);
+  assert.match(inlineOut, /fails closed at the devkit gate until the policy is on/);
+  assert.match(inlineOut, /set mcp_elicitations = true/);
+
+  writeFileSync(configToml, '[approval_policy.granular]\nmcp_elicitations = false\n', 'utf8');
+  const headerOut = runDoctor(home, env);
+  assert.match(headerOut, /\[WARN\] Codex approval posture: /);
+  assert.match(headerOut, /set mcp_elicitations = true/);
+
+  writeFileSync(configToml, '# user codex config\n', 'utf8');
+  const cleanOut = runDoctor(home, env);
+  assert.match(cleanOut, /\[PASS\] Codex approval posture \(16 per-tool approve blocks in the devkit payload\)/);
+  assert.ok(!/\[WARN\] Codex approval posture/.test(cleanOut));
 });

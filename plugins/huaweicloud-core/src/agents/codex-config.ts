@@ -149,11 +149,16 @@ export function readCodexApprovalBlocks(text: string, tools: readonly string[] =
 // codex's granular approval policy, measured on 0.167.2: with
 // `mcp_elicitations = false` codex auto-declines every server form and
 // substitutes its built-in gate, so every roster call fails CLOSED at the
-// devkit gate until the policy is on. The key name exists only under
-// approval_policy.granular, so a whole-file match on the false spelling is
-// the detector; `true` is the healthy granular spelling and never trips it.
+// devkit gate until the policy is on. codex accepts TWO spellings of the
+// value (both live-measured): the [approval_policy.granular] table and
+// the inline table `approval_policy = { granular = { mcp_elicitations =
+// false, … } }` — the inline spelling is exactly the machine the
+// remediation-naming contract exists for, so the detector is a whole-file
+// match on the false spelling. The negative lookbehind keeps lookalike
+// keys (`allow_mcp_elicitations = false`) from tripping it; `true` is the
+// healthy granular spelling and never does.
 export function codexElicitPolicyOff(text: string): boolean {
-  return /^\s*mcp_elicitations\s*=\s*false\s*(#.*)?$/m.test(text);
+  return /(?<![A-Za-z_])mcp_elicitations\s*=\s*false\b/.test(text);
 }
 
 // A top-level `approval_policy = "never"` blocks MCP tool calls outright,
@@ -164,6 +169,32 @@ export function codexApprovalPolicyNever(text: string): boolean {
   for (const line of text.split(/\r?\n/)) {
     if (ANY_TABLE_RE.test(line)) return false;
     if (/^\s*approval_policy\s*=\s*"never"\s*(#.*)?$/.test(line)) return true;
+  }
+  return false;
+}
+
+// The user-override spellings codex honors that this doctor cannot parse
+// (a full TOML parser is deliberately out of scope): dotted keys
+// (mcp_servers.<server>.tools.<tool>.approval_mode = "…") and inline
+// tables (tools = { <tool> = { approval_mode = "…" } } inside our server's
+// section). Both live-verified to win over the payload, so a value in
+// either shape must never read as absence — the doctor reports the
+// dialect instead, the same honesty as the unreadable-config WARN.
+export function codexOverridesUnparseableDialect(text: string): boolean {
+  let inOurServer = false;
+  for (const line of text.split(/\r?\n/)) {
+    const header = /^\s*\[mcp_servers\.([A-Za-z0-9_-]+)[.\]]/.exec(line);
+    if (header) {
+      inOurServer = header[1] === APPROVAL_MCP_SERVER;
+      continue;
+    }
+    if (ANY_TABLE_RE.test(line)) {
+      inOurServer = false;
+      continue;
+    }
+    const dotted = /^\s*mcp_servers\.([A-Za-z0-9_-]+)\.tools\./.exec(line);
+    if (dotted && dotted[1] === APPROVAL_MCP_SERVER) return true;
+    if (inOurServer && /^\s*tools\s*=\s*\{/.test(line)) return true;
   }
   return false;
 }
@@ -309,9 +340,16 @@ export function codexDoctorApprovalRow(ctx: DoctorReporter, desktopRegistered: b
   // 2. The user override half (config.toml) — a value here WINS over the
   //    payload (the config layer resolves first, upstream source), so it
   //    decides the machine's actual posture; WARN, never FAIL: no client
-  //    value fails anything open.
+  //    value fails anything open. Overrides in a dialect this doctor cannot
+  //    parse (dotted keys, inline tables) get the dialect WARN, never
+  //    silence — reading them as absence would hide the winning value.
   const overrideWarns: string[] = [];
   if (configText !== null) {
+    if (codexOverridesUnparseableDialect(configText)) {
+      overrideWarns.push(
+        `the user's config.toml carries per-tool overrides in a dialect this doctor cannot parse (dotted keys or inline tables), so the winning values cannot be verified — codex's own approval gate may fire ahead of the devkit's confirmation`,
+      );
+    }
     const { prompt, auto, foreign } = toolsInStates(readCodexApprovalBlocks(configText));
     if (prompt) {
       overrideWarns.push(
