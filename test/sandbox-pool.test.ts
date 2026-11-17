@@ -11,7 +11,6 @@ process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('sandbox-pool-cache'), 
 
 const {
   validatePoolType,
-  pinnedTemplateFor,
   rememberWorkspacePool,
   forgetWorkspacePool,
   poolContextFor,
@@ -37,38 +36,6 @@ test('validatePoolType normalizes case and whitespace', () => {
 test('validatePoolType rejects invalid values with guidance', () => {
   assert.throws(() => validatePoolType('weird'), /invalid pool_type/);
   assert.throws(() => validatePoolType('persist_mode'), /invalid pool_type/);
-});
-
-// ── pinnedTemplateFor（运维钉扎，环境变量）──
-
-const POOL_TEMPLATE_ENV_KEYS = ['HW_POOL_TEMPLATE_EPHEMERAL', 'HW_POOL_TEMPLATE_PERSISTENT'] as const;
-
-function withPinnedTemplateEnv(env: Partial<Record<(typeof POOL_TEMPLATE_ENV_KEYS)[number], string>>, fn: () => void) {
-  const saved: Partial<Record<(typeof POOL_TEMPLATE_ENV_KEYS)[number], string | undefined>> = {};
-  for (const key of POOL_TEMPLATE_ENV_KEYS) {
-    saved[key] = process.env[key];
-    if (env[key] === undefined) delete process.env[key];
-    else process.env[key] = env[key];
-  }
-  try {
-    fn();
-  } finally {
-    for (const key of POOL_TEMPLATE_ENV_KEYS) {
-      if (saved[key] === undefined) delete process.env[key];
-      else process.env[key] = saved[key]!;
-    }
-  }
-}
-
-test('pinnedTemplateFor reads env and is empty by default', () => {
-  withPinnedTemplateEnv({}, () => {
-    assert.equal(pinnedTemplateFor('ephemeral'), '');
-    assert.equal(pinnedTemplateFor(null), '');
-  });
-  withPinnedTemplateEnv({ HW_POOL_TEMPLATE_EPHEMERAL: 'tpl-e', HW_POOL_TEMPLATE_PERSISTENT: 'tpl-p' }, () => {
-    assert.equal(pinnedTemplateFor('ephemeral'), 'tpl-e');
-    assert.equal(pinnedTemplateFor('persistent'), 'tpl-p');
-  });
 });
 
 // ── workspace 池缓存与上下文 ──
@@ -200,11 +167,11 @@ test('enrichConnectResult suppresses the hint when announce=false (reuse)', () =
   assert.equal(result.pool, undefined);
 });
 
-test('enrichConnectResult adds nothing without server pool echo (custom template / old server)', () => {
-  const custom = enrichConnectResult<Record<string, unknown>>({ session_id: 's1', template_id: 'custom' }) as {
+test('enrichConnectResult adds nothing without server pool echo (old server)', () => {
+  const oldServerNoEcho = enrichConnectResult<Record<string, unknown>>({ session_id: 's1', template_id: 'custom' }) as {
     pool?: unknown;
   };
-  assert.equal(custom.pool, undefined);
+  assert.equal(oldServerNoEcho.pool, undefined);
 
   const oldServer = enrichConnectResult<Record<string, unknown>>({ session_id: 's1' }) as { pool?: unknown };
   assert.equal(oldServer.pool, undefined);

@@ -397,6 +397,44 @@ test('the sandbox skill gates pool selection on task intent, never on tech stack
   );
 });
 
+test('connect retires template_id: pool_type only, no pinning, no schema field (port-pr8)', () => {
+  // dev 8c1af52e: custom templates are retired; the server owns the
+  // pool_type → template mapping. The client must not expose, send, or
+  // teach template_id on connect — no schema field, no request-body key
+  // (explicit input or HW_POOL_TEMPLATE_* pinning), no doctrine granting
+  // explicit priority. The connect tool description keeps naming the
+  // server's RESOLVED template_id echo, a response field, never a request
+  // parameter. The HW_POOL_TEMPLATE_* names survive only outside the
+  // request path: update-upgrade's env-preserve list (the upgrade path is
+  // outside this wave's boundary) and the hdkitservice-api tests flipping
+  // the env's retirement — neither is a read path the request can reach.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /客户端不再支持传 template_id/, 'the skill teaches the retired parameter face');
+  assert.match(sandboxSkill, /不支持传 `template_id`；自定义模板已下线/, 'the selection rules name the retirement');
+  assert.doesNotMatch(sandboxSkill, /显式 `template_id` 优先/, 'the explicit-priority doctrine must not come back');
+  const resourcePool = readSource(
+    join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'references', 'resource-pool.md'),
+  );
+  assert.match(resourcePool, /但客户端不再传入/);
+  assert.match(resourcePool, /钉扎或显式 template_id/);
+  assert.doesNotMatch(resourcePool, /显式 `template_id` 优先/, 'the reference retires the explicit-priority line');
+  assert.doesNotMatch(resourcePool, /附带映射 template_id 上送/, 'the pinning teaching must not come back');
+  const schemas = readSource(join('src', 'packs', 'sandbox', 'schemas.ts'));
+  assert.doesNotMatch(schemas, /template_id/, 'the connect schema exposes no template_id property or description');
+  const apiFace = readSource(join('src', 'lib', 'hdkit', 'hdkitservice-api.ts'));
+  assert.doesNotMatch(apiFace, /pinnedTemplateFor|HW_POOL_TEMPLATE/, 'the pinning read path is gone from the api face');
+  assert.doesNotMatch(apiFace, /body\.template_id|options\.template_id/, 'no code path sends template_id');
+  const poolFace = readSource(join('src', 'lib', 'hdkit', 'sandbox-pool.ts'));
+  assert.doesNotMatch(poolFace, /pinnedTemplateFor|HW_POOL_TEMPLATE/, 'the pinning reader stays deleted');
+  const approval = readSource(join('src', 'packs', 'sandbox', 'approval.ts'));
+  assert.doesNotMatch(approval, /template_id/, 'the confirmation view echoes no dead parameter');
+  const toolArgs = readSource(join('src', 'tools.ts'));
+  assert.doesNotMatch(toolArgs, /template_id/, 'the raw-args face declares no template_id');
+  const connectDescription = readSource(join('src', 'packs', 'sandbox', 'tools.ts'));
+  assert.match(connectDescription, /resolved template_id echo/, 'the description names the response echo only');
+  assert.doesNotMatch(connectDescription, /template_id overrides pool_type/);
+});
+
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {
   // Since the sandbox pack's family split the handlers live in
   // src/packs/sandbox/handlers-*.ts with tools.ts as the re-export face, so

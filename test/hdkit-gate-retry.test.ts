@@ -28,8 +28,6 @@ process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('hdkit-gate-retry'), 's
 // PR-3a 基线后 connect/sign_agreement/credentials 先走分发层审批门：本文件的
 // ask 到达会写审批台账，状态树钉进 fixture 目录，不碰开发者真实配置树。
 process.env.HUAWEICLOUD_STATE_DIR = join(fixtureDir('hdkit-gate-retry'), 'state');
-delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 
 // 409 版本门禁 + 502/504 连接重试（dev e0c8700b + 501fd8b4 + e1255a4b 移植）：
 // API 层重试语义与 callTool 层各出口的结构化门禁折叠。

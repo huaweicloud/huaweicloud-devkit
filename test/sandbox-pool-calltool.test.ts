@@ -24,8 +24,6 @@ process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('sandbox-pool-calltool'
 // terminal half), and the benign classified exec pass-throughs stay
 // ungated. The approval battery owns the gate's own contract.
 process.env.DEVKIT_APPROVAL_MODE = 'ask';
-delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 
 // callTool 级行为测试：validate → hdkitConnect（真实实现 + fetch mock）→ 播报判定 →
 // rememberWorkspacePool 全链路；终端层走 session-manager 模块 mock，不触真实 DevStation。
