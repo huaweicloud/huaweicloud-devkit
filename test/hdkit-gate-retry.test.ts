@@ -9,6 +9,8 @@ import type { ToolName } from '../plugins/huaweicloud-core/src/tools.ts';
 import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
 import { standingAccessor, swallowOnceProxy, landedThenFlippedCarrier } from './hdkit-gate-fixtures.ts';
+import { withApprovalMode } from './approval-mode-harness.ts';
+import { elicitingSeam } from './eliciting-seam.ts';
 
 // 源树派生路径（round 5）：structure-helpers 的 pluginRoot 在模块加载时断言
 // 生成 skills 树，单文件 node --test 在未构建检出上会死于该断言；这里只读
@@ -23,6 +25,9 @@ process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 process.env.HUAWEICLOUD_DEVKIT_TELEMETRY = 'off';
 // 池缓存落盘路径隔离（fixtureDir 注册，进程退出回收）
 process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('hdkit-gate-retry'), 'sandbox-pools.json');
+// PR-3a 基线后 connect/sign_agreement/credentials 先走分发层审批门：本文件的
+// ask 到达会写审批台账，状态树钉进 fixture 目录，不碰开发者真实配置树。
+process.env.HUAWEICLOUD_STATE_DIR = join(fixtureDir('hdkit-gate-retry'), 'state');
 delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
 delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 
@@ -50,9 +55,24 @@ const {
   transientExhaustionResult,
   gateFoldPayload,
 } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
-const { callTool } = await import('../plugins/huaweicloud-core/src/tools.ts');
+const { callTool: callToolUngated } = await import('../plugins/huaweicloud-core/src/tools.ts');
 
 const VENDOR = 'test: vendor established by the harness';
+
+// PR-3a 落地的分发层审批门把 connect/sign_agreement/credentials 挂在 always
+// 档，位置在 hdkit 折叠之前。本文件钉的是门下游的 409 门与瞬时折叠，所以
+// 每次调用都带一次 ask 模式 + accept 表单到达（harness 扮不了终端半边）；
+// 审批门自身的契约归审批电池。非入册工具（check_user、voucher_status）不经
+// 该门，包装对它们无行为副作用。
+let approvalSeq = 0;
+async function callTool(tool: ToolName, args: Record<string, unknown>): Promise<unknown> {
+  return withApprovalMode('ask', () =>
+    callToolUngated(tool, args, {
+      sessionId: `hdkit-gate-${(approvalSeq += 1)}`,
+      elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+    }),
+  );
+}
 
 const VERSION_GATE_409 = {
   code: 'HDKIT_VERSION_TOO_OLD',
