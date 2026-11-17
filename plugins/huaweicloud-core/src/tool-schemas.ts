@@ -3,7 +3,14 @@ import { z } from 'zod';
 import type { ToolName } from './tools.ts';
 import type { LooseToolSchema } from './lib/pack-types.ts';
 import { PACK_IDS } from './lib/pack-types.ts';
-import { looseObject, vendorConfirmed, approvalTokenArg, approvedByUserArg } from './lib/tool-schema-parts.ts';
+import {
+  looseObject,
+  vendorConfirmed,
+  approvalTokenArg,
+  approvedByUserArg,
+  confirmLanguageArg,
+} from './lib/tool-schema-parts.ts';
+import { APPROVAL_TOOLS } from './approval-roster.ts';
 import { UPDATE_TOOL_SCHEMAS } from './packs/update/tools.ts';
 import { HUAWEICLOUD_OPEN_MCP_TOOL_SCHEMAS } from './packs/huaweicloud-open-mcp/tools.ts';
 import { HUAWEICLOUD_CLI_TOOL_SCHEMAS } from './packs/huaweicloud-cli/tools.ts';
@@ -161,6 +168,24 @@ const TOOL_SCHEMAS = {
     approvedByUser: approvedByUserArg,
   }),
 } satisfies Record<ToolName, LooseToolSchema>;
+
+// The confirm-language hint rides every roster tool — the approval
+// domain's parameter, injected HERE rather than in any pack's schema
+// (the field belongs to the roster concept, which is cross-pack; the pack
+// files stay untouched and the pack-boundaries guard stays clean). The
+// roster is a zod-free leaf (approval-roster.ts), so this import adds no
+// pack edge. The extend preserves each schema's loose catchall
+// (probe-verified on zod 4.6.7), so the #530 pass-through leniency is
+// unchanged; the field stays optional everywhere (a missing value must
+// reach the gate, same doctrine as the other approval args). The legacy
+// registry snapshot gate consults DELIBERATE_ADDITIONS for this property
+// on every non-exempt roster tool.
+for (const name of APPROVAL_TOOLS) {
+  const base = TOOL_SCHEMAS[name] as LooseToolSchema;
+  (TOOL_SCHEMAS as Record<ToolName, LooseToolSchema>)[name] = base.extend({
+    confirmLanguage: confirmLanguageArg,
+  });
+}
 
 export type ToolSchemaMap = typeof TOOL_SCHEMAS;
 export type ToolSchemaEntry = ToolSchemaMap[ToolName];

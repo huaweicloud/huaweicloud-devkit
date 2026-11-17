@@ -7,6 +7,7 @@ import { fixtureDir } from './fixture-dir.ts';
 import { TOOL_DEFINITIONS } from '../plugins/huaweicloud-core/src/tools.ts';
 import { runVersionCheck } from '../plugins/huaweicloud-core/src/packs/huaweicloud-cli/tools.ts';
 import { getToolSchema, TOOL_SCHEMAS } from '../plugins/huaweicloud-core/src/tool-schemas.ts';
+import { APPROVAL_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
 import { getKooCliVersion } from '../plugins/huaweicloud-core/src/koocli-version.ts';
 
 test('runVersionCheck uses hcloud version instead of --version', async () => {
@@ -149,4 +150,36 @@ test('every top-level parameter on every tool schema carries a description', () 
     }
   }
   assert.deepEqual(missing, [], 'every agent-facing parameter must be described on the raw tools/list face');
+});
+
+test('every roster tool advertises the optional confirmLanguage hint, and nothing else grows it', () => {
+  // The confirm-language hint is injected roster-wide (src/tool-schemas.ts
+  // extends the APPROVAL_TOOLS schemas with the shared part): the model —
+  // the only context observer, the server never sees the chat — relays the
+  // conversation language so the human-facing form localizes. Optional
+  // everywhere (a missing value must reach the gate, same doctrine as the
+  // other approval args), and confined to the roster: a non-roster tool
+  // carrying it would be drift.
+  for (const name of APPROVAL_TOOLS) {
+    const js = getToolSchema(name).toJSONSchema() as {
+      properties?: Record<string, Record<string, unknown>>;
+      required?: string[];
+    };
+    const prop = js.properties?.['confirmLanguage'];
+    assert.ok(prop, `${name} advertises confirmLanguage`);
+    assert.equal(prop['type'], 'string', `${name}.confirmLanguage is a string`);
+    assert.match(String(prop['description']), /conversation language/, `${name}'s hint teaches its purpose`);
+    assert.equal(
+      (js.required ?? []).includes('confirmLanguage'),
+      false,
+      `${name}.confirmLanguage stays optional — the gate, not zod, owns the refusal teaching`,
+    );
+  }
+  const rosterSet = new Set<string>(APPROVAL_TOOLS);
+  const nonRoster = Object.keys(TOOL_SCHEMAS).filter((name) => !rosterSet.has(name));
+  const leaked = nonRoster.filter((name) => {
+    const js = getToolSchema(name as never).toJSONSchema() as { properties?: Record<string, unknown> };
+    return 'confirmLanguage' in (js.properties ?? {});
+  });
+  assert.deepEqual(leaked, [], "the hint is the approval domain's parameter alone");
 });

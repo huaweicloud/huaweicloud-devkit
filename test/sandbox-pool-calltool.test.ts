@@ -132,7 +132,7 @@ async function connectEphemeralDev1(): Promise<void> {
     // registration change would still fail these tests loudly) while never
     // needing a terminal half the harness cannot play here.
     await withApprovalMode('ask', async () => {
-      const seam = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      const seam = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
       await callTool(
         'huaweicloud_sandbox_connect',
         { vendorConfirmed: VENDOR, pool_type: 'ephemeral' },
@@ -160,7 +160,7 @@ async function gatedConnectCall(args: Record<string, unknown>, label: string): P
       { vendorConfirmed: VENDOR, ...args },
       {
         sessionId: `${label}-${(poolPreloadSeq += 1)}`,
-        elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+        elicitation: elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }).seam,
       },
     ),
   );
@@ -176,7 +176,7 @@ test('callTool connect: invalid pool_type returns structured guidance instead of
   try {
     let result: unknown;
     await withApprovalMode('ask', async () => {
-      const seam = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      const seam = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
       result = await callTool(
         'huaweicloud_sandbox_connect',
         { vendorConfirmed: VENDOR, pool_type: 'weird' },
@@ -206,7 +206,7 @@ async function connect429Structured(payload: unknown): Promise<StructuredFailure
         { vendorConfirmed: VENDOR, pool_type: 'ephemeral' },
         {
           sessionId: `pool-429-${(poolPreloadSeq += 1)}`,
-          elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+          elicitation: elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }).seam,
         },
       ),
     )) as unknown as StructuredFailure;
@@ -260,7 +260,7 @@ test('callTool connect: core-hours exhausted surfaces structured guidance', asyn
         { vendorConfirmed: VENDOR },
         {
           sessionId: `pool-corehours-${(poolPreloadSeq += 1)}`,
-          elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+          elicitation: elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }).seam,
         },
       ),
     )) as unknown as StructuredFailure;
@@ -282,7 +282,7 @@ test('callTool connect: unexpected server errors keep the throw path (rethrow pa
           { vendorConfirmed: VENDOR },
           {
             sessionId: `pool-internal-${(poolPreloadSeq += 1)}`,
-            elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+            elicitation: elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }).seam,
           },
         ),
         /HDKIT_INTERNAL/,
@@ -406,7 +406,7 @@ test('callTool renew_tunnel and keepalive_watchdog stay clean (no per-call pool 
       { workspace_id: 'dev-1', tunnel_id: 't-1' },
       {
         sessionId: `pool-renew-${(poolPreloadSeq += 1)}`,
-        elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+        elicitation: elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }).seam,
       },
     )) as ExecResult;
     assert.equal(renewed.ok, true);
@@ -418,7 +418,7 @@ test('callTool renew_tunnel and keepalive_watchdog stay clean (no per-call pool 
       { workspace_id: 'dev-1', tunnels: [{ tunnel_id: 't-1', url: 'https://stub.example' }] },
       {
         sessionId: `pool-watchdog-${(poolPreloadSeq += 1)}`,
-        elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
+        elicitation: elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }).seam,
       },
     )) as ExecResult;
     assert.equal(watched.ok, true);

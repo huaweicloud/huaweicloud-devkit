@@ -28,6 +28,7 @@ import {
   ELICITATION_CANCELLED,
   ELICITATION_DECLINED,
   ELICITATION_FAILED,
+  ELICITATION_INVALID_CONTENT,
   ELICITATION_TIMEOUT,
   ELICITATION_TIMEOUT_MS,
 } from '../plugins/huaweicloud-core/src/approval-gate.ts';
@@ -158,6 +159,23 @@ function runApprovedForward(command: string | undefined, token: string | undefin
   });
 }
 
+// The server-run ladder's ritual for ask-mode trunk-parity calls: the
+// commandless bare-attestation pass-through is closed, so an executing
+// attested arrival needs its line's envelope shown in the session first.
+// The priming call is unattested (the envelope refusal — no consent row),
+// then the attested call executes on posture. Refusal sites stay
+// single-call: the floor refuses before any ladder state exists.
+async function askTrunkExecute(args: string[], opts: { cwd?: string } = {}): Promise<unknown> {
+  const base = {
+    args,
+    maxRetries: 0,
+    vendorConfirmed: VENDOR,
+    ...(opts.cwd ? { cwd: opts.cwd } : {}),
+  };
+  await callTool('huaweicloud_run_approved_command', { ...base });
+  return callTool('huaweicloud_run_approved_command', { ...base, approvedByUser: true });
+}
+
 test('token mode: a no-token call returns the trunk CONFIRM_TOKEN_NOT_FOUND envelope and mints nothing', async () => {
   await withTempAuthHome(async (home) => {
     const result = (await runApproved(undefined, ['ECS', 'ListServersDetails'])) as {
@@ -241,8 +259,8 @@ test('ask mode: the gate routes to the handler with no token and records a postu
     process.env.HCLOUD_BIN = fake;
     try {
       await withApprovalMode('ask', async () => {
-        const result = (await runApproved(undefined, ['ECS', 'DeleteServer', '--server_id=i-1'])) as ApprovedRunResult;
-        assert.equal(result.approved, true, 'ask mode executes on the harness prompt as the confirmation');
+        const result = (await askTrunkExecute(['ECS', 'DeleteServer', '--server_id=i-1'])) as ApprovedRunResult;
+        assert.equal(result.approved, true, 'the ritual-completing attested arrival executes on posture');
 
         const events = readConsentEvents();
         assert.equal(events.length, 1, 'one ask-mode arrival, one consent event');
@@ -275,7 +293,7 @@ test('ask mode: the dispatch layer records what became of the approved call — 
     try {
       await withApprovalMode('ask', async () => {
         const args = ['ECS', 'ListServersDetails'];
-        const failedRun = (await runApproved(undefined, args)) as ApprovedRunResult;
+        const failedRun = (await askTrunkExecute(args)) as ApprovedRunResult;
         assert.equal(failedRun.ok, false, 'the failing handler returns a not-ok result');
         let events = readConsentEvents();
         assert.equal(events.length, 1, 'one arrival, one row');
@@ -717,7 +735,7 @@ test('the delivery-outcome recorder covers the CORE dispatch leg too: a core-too
         // then annotates (the T3 ritual would work equally: the subject is
         // the recorder, not the tier). The requests capture pins that the
         // gate-source arrival runs the ladder, not the bare attestation.
-        const { seam: form, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+        const { seam: form, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
         const result = (await callTool(name, cfgArgs, { sessionId: 's-core', ...seam, elicitation: form })) as {
           ok: boolean;
         };
@@ -1233,29 +1251,30 @@ test("benign operations trunk executed pass the floor: URIs, suffixed names, and
           { leaf: './credentials.json', label: "the cwd's own credentials file has no hcloud segment above it" },
         ];
         for (const { leaf, label } of benign) {
-          const result = (await callTool('huaweicloud_run_approved_command', {
-            args: ['OBS', 'cp', leaf, 'obs://my-bucket/x'],
-            cwd: work,
-            approvedByUser: true,
-            maxRetries: 0,
-            vendorConfirmed: VENDOR,
-          })) as { approved: boolean };
+          const result = (await askTrunkExecute(['OBS', 'cp', leaf, 'obs://my-bucket/x'], { cwd: work })) as {
+            approved: boolean;
+          };
           assert.equal(result.approved, true, `${label}: ${leaf} must execute as trunk did`);
         }
         // Trunk parity on the two rows the HANDLER classifier itself denies
         // (both trees, unchanged): ./deploy/huaweicloud/config.yaml and the
         // obs://templates/hcloud/config key hit the argv classifier's own
         // credential rule after the gate floor passes them — the floor is
-        // not the denying layer for these.
+        // not the denying layer for these. The ritual first (the gate's own
+        // envelope would otherwise preempt the handler layer this pins).
         for (const leaf of ['./deploy/huaweicloud/config.yaml', 'obs://templates/hcloud/config/base.yaml']) {
+          const denyArgs = {
+            args: ['OBS', 'cp', leaf, 'obs://my-bucket/x'],
+            cwd: work,
+            maxRetries: 0,
+            vendorConfirmed: VENDOR,
+          };
+          await callTool('huaweicloud_run_approved_command', { ...denyArgs });
           await assert.rejects(
             () =>
               callTool('huaweicloud_run_approved_command', {
-                args: ['OBS', 'cp', leaf, 'obs://my-bucket/x'],
-                cwd: work,
+                ...denyArgs,
                 approvedByUser: true,
-                maxRetries: 0,
-                vendorConfirmed: VENDOR,
               }),
             /credential or profile files into the agent context/,
             `${leaf}: the handler classifier's own deny, unchanged from trunk`,
@@ -1426,13 +1445,10 @@ test(
         );
         // The cloud-object spelling stays skipped: an obs:// key containing
         // huaweicloud/secrets executes (round-3 parity).
-        const executed = (await callTool('huaweicloud_run_approved_command', {
-          args: ['OBS', 'cp', 'obs://team-bucket/huaweicloud/secrets/x', join(work, 'downloaded.txt')],
-          cwd: work,
-          approvedByUser: true,
-          maxRetries: 0,
-          vendorConfirmed: VENDOR,
-        })) as { approved: boolean };
+        const executed = (await askTrunkExecute(
+          ['OBS', 'cp', 'obs://team-bucket/huaweicloud/secrets/x', join(work, 'downloaded.txt')],
+          { cwd: work },
+        )) as { approved: boolean };
         assert.equal(executed.approved, true, 'an obs:// key is never a local path');
       });
     });
@@ -1521,13 +1537,7 @@ test('=-embedded values resolve: -config=<alias> and --cli-jsonInput=<credential
         ['ECS', 'ShowServer', '--cli-jsonInput=spec.json'],
         ['ECS', 'DeleteServer', '--server.id=i-123'],
       ]) {
-        const executed = (await callTool('huaweicloud_run_approved_command', {
-          args,
-          cwd: work,
-          approvedByUser: true,
-          maxRetries: 0,
-          vendorConfirmed: VENDOR,
-        })) as { approved: boolean };
+        const executed = (await askTrunkExecute(args, { cwd: work })) as { approved: boolean };
         assert.equal(executed.approved, true, `${args.at(-1)}: a benign =-value stays clean`);
       }
     });
@@ -1725,12 +1735,8 @@ test(
             // The drift is rule-shaped, never blanket: the same embedded
             // separator with no rule match still executes, and the marker
             // proves the spawn probe really ran (not a vacuous green).
-            const executed = (await callTool('huaweicloud_run_approved_command', {
-              args: ['OBS', 'cp', 'deploy\\config.yaml', 'obs://my-bucket/x'],
+            const executed = (await askTrunkExecute(['OBS', 'cp', 'deploy\\config.yaml', 'obs://my-bucket/x'], {
               cwd: work,
-              approvedByUser: true,
-              maxRetries: 0,
-              vendorConfirmed: VENDOR,
             })) as ApprovedRunResult;
             assert.equal(executed.approved, true, 'an embedded separator with no rule match still executes');
             assert.equal(existsSync(marker), true, 'the benign control really ran the child');
@@ -1763,12 +1769,11 @@ test('a relative HUAWEICLOUD_STATE_DIR never fails an approved ask-mode call thr
         const previous = process.env.HUAWEICLOUD_STATE_DIR;
         process.env.HUAWEICLOUD_STATE_DIR = 'relative-state';
         try {
-          const result = (await callTool('huaweicloud_run_approved_command', {
-            args: ['ECS', 'ListServersDetails', '--cli-security-token=t'],
-            approvedByUser: true,
-            maxRetries: 0,
-            vendorConfirmed: VENDOR,
-          })) as ApprovedRunResult;
+          const result = (await askTrunkExecute([
+            'ECS',
+            'ListServersDetails',
+            '--cli-security-token=t',
+          ])) as ApprovedRunResult;
           assert.equal(result.approved, true, 'the call executes like trunk; the ledger failure degrades to a no-op');
         } finally {
           if (previous === undefined) delete process.env.HUAWEICLOUD_STATE_DIR;
@@ -1810,13 +1815,10 @@ test(
         }
         // The lowercase cloud spelling still executes: a whole obs:// leaf is
         // a cloud object key, never a local file.
-        const executed = (await callTool('huaweicloud_run_approved_command', {
-          args: ['OBS', 'cp', join(work, 'notes.txt'), 'obs://team-bucket/huaweicloud/secrets/x'],
-          cwd: work,
-          approvedByUser: true,
-          maxRetries: 0,
-          vendorConfirmed: VENDOR,
-        })) as { approved: boolean };
+        const executed = (await askTrunkExecute(
+          ['OBS', 'cp', join(work, 'notes.txt'), 'obs://team-bucket/huaweicloud/secrets/x'],
+          { cwd: work },
+        )) as { approved: boolean };
         assert.equal(executed.approved, true, 'a lowercase obs:// operand stays skipped');
       });
     });
@@ -1878,13 +1880,7 @@ test('empty =-values and bare empty leaves never manufacture refusals (round-5 f
         ['OBS', 'cp', join(home, 'file.txt'), 'obs://b/k', '--cli-jsonInput='],
         ['OBS', 'cp', join(home, 'file.txt'), 'obs://b/k', ''],
       ]) {
-        const result = (await callTool('huaweicloud_run_approved_command', {
-          args,
-          cwd: credCwd,
-          approvedByUser: true,
-          maxRetries: 0,
-          vendorConfirmed: VENDOR,
-        })) as { approved: boolean };
+        const result = (await askTrunkExecute(args, { cwd: credCwd })) as { approved: boolean };
         assert.equal(result.approved, true, `${JSON.stringify(args.at(-1))} executes: no file is dereferenced`);
       }
     });
@@ -1909,12 +1905,15 @@ test('a wedged ledger holder never stalls the approved ask-mode call past the ca
         await waitForLedgerClaim(home, 'wedged holder');
         await new Promise((resolve) => setTimeout(resolve, 300)); // mid-section
         await withApprovalMode('ask', async () => {
+          // The ladder's ritual first (the commandless pass-through is
+          // closed): the priming envelope refusal is ledger-free, so the
+          // timed section below measures ONLY the approved call's ledger cap.
+          const ritualArgs = { args: ['ECS', 'ListServersDetails'], maxRetries: 0, vendorConfirmed: VENDOR };
+          await callTool('huaweicloud_run_approved_command', { ...ritualArgs });
           const started = Date.now();
           const result = (await callTool('huaweicloud_run_approved_command', {
-            args: ['ECS', 'ListServersDetails'],
+            ...ritualArgs,
             approvedByUser: true,
-            maxRetries: 0,
-            vendorConfirmed: VENDOR,
           })) as ApprovedRunResult;
           const waited = Date.now() - started;
           assert.equal(result.approved, true, 'the approved call executes despite the wedged holder');
@@ -1989,6 +1988,8 @@ interface SeededAskOptions {
   seam?: ElicitationSeam;
   /** The session id the arrivals run in (the envelope binding is session-scoped). */
   sessionId?: string;
+  /** The confirm-language hint the model relays (lib/confirm-language.ts tier 2). */
+  confirmLanguage?: string;
 }
 
 interface ElicitRecorder {
@@ -2024,12 +2025,14 @@ async function seededAskRun(seed: SeedStore, args: string[], options: SeededAskO
           };
           const baseArgs: Record<string, unknown> = { args, maxRetries: 0, vendorConfirmed: VENDOR };
           if (options.command !== undefined) baseArgs.command = options.command;
+          if (options.confirmLanguage !== undefined) baseArgs.confirmLanguage = options.confirmLanguage;
           // The T3 binding (round 2, finding 4): an attested arrival executes
           // only when its own line's envelope was shown in this session, so
-          // the realistic default runs the ritual first. `primed: false` is
+          // the realistic default runs the ritual first — for EVERY shape now
+          // (the commandless pass-through is closed), capable clients excepted
+          // (their confirmation is the form, no ritual). `primed: false` is
           // the pre-attested first call the finding pins as a refusal.
-          const needsRitual =
-            options.command !== undefined && options.attested !== false && !(options.seam?.capable ?? false);
+          const needsRitual = options.attested !== false && !(options.seam?.capable ?? false);
           if (needsRitual && options.prime !== false) {
             await callTool('huaweicloud_run_approved_command', { ...baseArgs }, callOpts);
           }
@@ -2067,7 +2070,7 @@ test('guard demotion: a saved "always allow" row changes nothing in the ask arri
   assert.equal(withRow.events[0]!.evidence, 'posture', 'an attested legacy arrival keeps the posture tier');
 
   // And with a capable client the form fires regardless of the row.
-  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
   const elicited = await seededAskRun(seedWithRow, ['ECS', 'DeleteServer', '--server_id=i-1'], {
     attested: false,
     command: 'hcloud ECS DeleteServer --server_id=i-1',
@@ -2111,7 +2114,7 @@ const LADDER_COMMAND = 'hcloud ECS DeleteServer --server_id=i-1';
 const LADDER_PROJECTS: SeedStore = { projects: [{ id: 'p', worktree: process.cwd() }] };
 
 test('T1: a capable client accepts the form, the call executes, and the ledger stamps elicitation', async () => {
-  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
   const { result, executed, events, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
     command: LADDER_COMMAND,
     attested: false,
@@ -2132,19 +2135,19 @@ test('T1: a capable client accepts the form, the call executes, and the ledger s
   assert.equal(form.timeoutMs, ELICITATION_TIMEOUT_MS);
   assert.ok(form.timeoutMs > 60_000, 'the explicit timeout is longer than the SDK default');
   const fields = Object.keys(form.schema.properties);
-  assert.ok(fields.length <= 4, 'the schema stays within four simple fields');
-  assert.equal(fields.length, 2, 'the approval field plus the PR-3a standing-consent tick');
-  assert.equal(form.schema.properties['confirm']!['type'], 'boolean', 'the approval field is a boolean');
-  assert.equal(
-    form.schema.properties['rememberForSession']!['type'],
-    'boolean',
-    'the standing-consent tick is a boolean',
+  assert.equal(fields.length, 1, 'the enum reshaping: one field carries the whole decision');
+  const decision = form.schema.properties['decision']!;
+  assert.equal(decision['type'], 'string', 'the decision field is the enum carrier');
+  assert.deepEqual(
+    decision['enum'],
+    ['decline', 'approve-once', 'approve-session'],
+    'the three-choice enum, decline first so a preselecting client defaults to the refusal',
   );
-  assert.deepEqual(form.schema.required, ['confirm'], 'only the approval is required — the tick is optional');
+  assert.deepEqual(form.schema.required, ['decision'], 'the decision is required — no optional half-answered shape');
 });
 
 test('T1: the form fires even when the model asserts the attestation (the human answers, not the model)', async () => {
-  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
   const { result } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, seam });
   assert.equal((result as ApprovedRunResult).approved, true);
   assert.equal(requests.length, 1, 'the capable client is always asked');
@@ -2203,8 +2206,8 @@ test('T1: a transport failure refuses as ELICITATION_FAILED, never as an execute
   assert.equal(executed, false);
 });
 
-test('T1: an accept that submitted No refuses as a decline', async () => {
-  const { seam } = elicitingSeam({ decision: 'accept', content: { confirm: false } });
+test('T1: an accept that chose decline refuses as a decline (the enum made the refusal a first-class answer)', async () => {
+  const { seam } = elicitingSeam({ decision: 'accept', content: { decision: 'decline' } });
   const { result, executed, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
     command: LADDER_COMMAND,
     attested: false,
@@ -2213,6 +2216,133 @@ test('T1: an accept that submitted No refuses as a decline', async () => {
   assert.equal((result as { code: string }).code, ELICITATION_DECLINED);
   assert.equal(executed, false);
   assert.equal(consents, 0);
+});
+
+test('T1: an accept with no valid decision value refuses with its own code (the hermes shape)', async () => {
+  // hermes answers the form path with accept and EMPTY content (measured in
+  // its source: the approval panel never synthesizes answers from the schema
+  // it was shown), so the wire accept carries no decision. That must fail
+  // closed with a diagnosable code naming the client behavior — never a
+  // generic transport failure, never an execution.
+  const { seam } = elicitingSeam({ decision: 'accept', content: {} });
+  const { result, executed, consents } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  const refusal = result as { code: string; reason: string };
+  assert.equal(refusal.code, ELICITATION_INVALID_CONTENT);
+  assert.match(refusal.reason, /no valid decision value/);
+  assert.equal(executed, false);
+  assert.equal(consents, 0);
+});
+
+test('T1: an accept with an unknown decision value refuses with the invalid-content code', async () => {
+  const { seam } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-forever' } });
+  const { result, executed } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+    command: LADDER_COMMAND,
+    attested: false,
+    seam,
+  });
+  assert.equal((result as { code: string }).code, ELICITATION_INVALID_CONTENT);
+  assert.equal(executed, false);
+});
+
+// The locale pair: the form's DISPLAY strings follow the user's locale (the
+// form is the human-facing surface), while the enum VALUES stay the English
+// wire vocabulary in both. Env pins both ways — the suite must not depend on
+// the host's LANG.
+async function withUiLocale(locale: string, fn: () => Promise<void>): Promise<void> {
+  const prev = [process.env.LC_ALL, process.env.LC_MESSAGES, process.env.LANG, process.env.LANGUAGE];
+  process.env.LC_ALL = locale;
+  process.env.LANG = locale;
+  delete process.env.LC_MESSAGES;
+  delete process.env.LANGUAGE;
+  try {
+    await fn();
+  } finally {
+    const [all, messages, lang, language] = prev;
+    if (all === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = all;
+    if (messages === undefined) delete process.env.LC_MESSAGES;
+    else process.env.LC_MESSAGES = messages;
+    if (lang === undefined) delete process.env.LANG;
+    else process.env.LANG = lang;
+    if (language === undefined) delete process.env.LANGUAGE;
+    else process.env.LANGUAGE = language;
+  }
+}
+
+test('T1: a zh locale renders the form in Chinese, enumNames carrying the labels, values still English', async () => {
+  await withUiLocale('zh_CN.UTF-8', async () => {
+    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
+    const { result, executed } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+      command: LADDER_COMMAND,
+      attested: false,
+      seam,
+    });
+    assert.equal((result as ApprovedRunResult).approved, true, 'the English wire value executes in the zh locale');
+    assert.equal(executed, true);
+    const form = requests[0]!;
+    assert.ok(form.message.includes('请求你确认运行此命令'), 'the zh head renders');
+    assert.ok(form.message.includes(LADDER_COMMAND), 'the command line rides the zh message unchanged');
+    const decision = form.schema.properties['decision']!;
+    assert.deepEqual(decision['enum'], ['decline', 'approve-once', 'approve-session'], 'the values never localize');
+    assert.deepEqual(decision['enumNames'], ['拒绝', '批准本次', '批准并记住本次会话'], 'the labels localize');
+    assert.equal(decision['title'], '运行此命令？');
+  });
+});
+
+test('T1: a non-zh locale renders the English form with no enumNames', async () => {
+  await withUiLocale('en_US.UTF-8', async () => {
+    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
+    await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, attested: false, seam });
+    const form = requests[0]!;
+    assert.ok(form.message.includes('requesting your confirmation'), 'the English head renders');
+    assert.equal('enumNames' in form.schema.properties['decision']!, false, 'no labels in the en form');
+  });
+});
+
+test('T1: the confirmLanguage hint overrides the machine locale — the model is the context observer', async () => {
+  await withUiLocale('en_US.UTF-8', async () => {
+    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
+    const { result } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+      command: LADDER_COMMAND,
+      attested: false,
+      seam,
+      confirmLanguage: 'zh',
+    });
+    assert.equal((result as ApprovedRunResult).approved, true, 'the English wire value executes as ever');
+    const form = requests[0]!;
+    assert.ok(form.message.includes('请求你确认运行此命令'), 'the hint beats the en locale');
+    assert.deepEqual(
+      form.schema.properties['decision']!['enum'],
+      ['decline', 'approve-once', 'approve-session'],
+      'the values stay English in the hint-driven zh form',
+    );
+  });
+});
+
+test('T1: the operator DEVKIT_CONFIRM_LANG pin overrides the hint and the locale both', async () => {
+  const prev = process.env.DEVKIT_CONFIRM_LANG;
+  process.env.DEVKIT_CONFIRM_LANG = 'en';
+  try {
+    await withUiLocale('zh_CN.UTF-8', async () => {
+      const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
+      await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+        command: LADDER_COMMAND,
+        attested: false,
+        seam,
+        confirmLanguage: 'zh',
+      });
+      const form = requests[0]!;
+      assert.ok(form.message.includes('requesting your confirmation'), 'the pin beats both lower tiers');
+      assert.equal('enumNames' in form.schema.properties['decision']!, false);
+    });
+  } finally {
+    if (prev === undefined) delete process.env.DEVKIT_CONFIRM_LANG;
+    else process.env.DEVKIT_CONFIRM_LANG = prev;
+  }
 });
 
 test('T3: a non-capable client gets the chat envelope, and the attested retry executes with posture evidence', async () => {
@@ -2247,7 +2377,7 @@ test('the ladder never fabricates an upgrade: a chat retry after a form answer r
   // the channel that actually answered instead of claiming a form nobody
   // answered for that arrival.
   let capable = true;
-  const { seam } = elicitingSeam({ decision: 'accept', content: { confirm: true } }, () => capable);
+  const { seam } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }, () => capable);
   const first = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, attested: false, seam });
   assert.equal(first.events[0]!.evidence, 'elicitation');
   capable = false;
@@ -2374,6 +2504,14 @@ test('the retry memo: a failed delivery on the run face reuses the prior consent
         const sessionId = 'memo-run-face';
         const args = ['ECS', 'DeleteServer', '--server_id=i-1'];
         const base = { args, approvedByUser: true, maxRetries: 0, vendorConfirmed: VENDOR };
+        // The server-run ladder's ritual (the commandless pass-through is
+        // closed): the unattested arrival shows the chat envelope in this
+        // session, which the attested call below then answers.
+        await callTool(
+          'huaweicloud_run_approved_command',
+          { args, maxRetries: 0, vendorConfirmed: VENDOR },
+          { sessionId },
+        );
         const first = (await callTool('huaweicloud_run_approved_command', base, { sessionId })) as {
           ok?: boolean;
           approvedVia?: string;
@@ -2408,12 +2546,24 @@ test('the retry memo is key-scoped: different arguments never ride it', async ()
       await withApprovalMode('ask', async () => {
         const sessionId = 'memo-key-scope';
         const args = ['ECS', 'DeleteServer', '--server_id=i-1'];
+        // The ritual per key (the commandless pass-through is closed): each
+        // key's envelope is shown before its attested arrival.
+        await callTool(
+          'huaweicloud_run_approved_command',
+          { args, maxRetries: 0, vendorConfirmed: VENDOR },
+          { sessionId },
+        );
         await callTool(
           'huaweicloud_run_approved_command',
           { args, approvedByUser: true, maxRetries: 0, vendorConfirmed: VENDOR },
           { sessionId },
         );
         const other = ['ECS', 'DeleteServer', '--server_id=i-2'];
+        await callTool(
+          'huaweicloud_run_approved_command',
+          { args: other, maxRetries: 0, vendorConfirmed: VENDOR },
+          { sessionId },
+        );
         const second = (await callTool(
           'huaweicloud_run_approved_command',
           { args: other, approvedByUser: true, maxRetries: 0, vendorConfirmed: VENDOR },
@@ -2463,7 +2613,10 @@ test('a gate-source mint envelope keeps the approve line even when the view carr
 
 test('the capability is read per arrival from the session record (no re-probe, no caching)', async () => {
   let capable = true;
-  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } }, () => capable);
+  const { seam, requests } = elicitingSeam(
+    { decision: 'accept', content: { decision: 'approve-once' } },
+    () => capable,
+  );
   const first = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { command: LADDER_COMMAND, attested: false, seam });
   assert.equal((first.result as ApprovedRunResult).approved, true, 'the capable arrival elicits');
   capable = false;
@@ -2472,7 +2625,10 @@ test('the capability is read per arrival from the session record (no re-probe, n
   assert.equal(requests.length, 1, 'the T3 arrival raised no form');
 });
 
-test('the ask-mode legacy shape keeps the trunk attestation throw (the hcloud battery pins it)', async () => {
+test('the token-mode trunk keeps the attestation throw (the hcloud battery pins it)', async () => {
+  // Token mode only: ask mode runs the server-run ladder for every arrival
+  // (the commandless bare-attestation pass-through is closed), so the pinned
+  // attestation throw is the token trunk's contract.
   await withTempAuthHome(async () => {
     await assert.rejects(
       () =>
@@ -2488,10 +2644,11 @@ test('the ask-mode legacy shape keeps the trunk attestation throw (the hcloud ba
 
 // ── The command-forward call shape (operator-approved addendum) ───────────
 // The run tool's input carries a `command` string beside `args`, so the
-// harness permission popup shows the command line the user is approving
-// instead of a JSON args blob. The gate requires equality whenever the field
-// is present, refuses only-command as malformed, and leaves the legacy
-// args-only shape untouched (the trunk battery drives that shape unchanged).
+// form/envelope shows the exact line the user is approving instead of a
+// JSON args blob. The gate requires equality whenever the field is present
+// and refuses only-command as malformed; the commandless shape rides the
+// same server-run ladder with the summarize view's derived redacted line
+// (the bare-attestation pass-through is closed).
 
 test('command-forward: an ask-mode call carrying the exact command line executes and the consent row records it', async () => {
   const args = ['ECS', 'DeleteServer', '--server_id=i-1'];
@@ -2704,14 +2861,49 @@ test('command-forward: a non-string command is malformed, never coerced', async 
   });
 });
 
-test('command-forward: the legacy args-only shape executes unchanged', async () => {
-  const { result, executed, consents } = await seededAskRun({ projects: [{ id: 'p', worktree: process.cwd() }] }, [
-    'ECS',
-    'ListServersDetails',
-  ]);
-  assert.equal((result as ApprovedRunResult).approved, true, 'the trunk shape executes unchanged');
-  assert.equal(executed, true);
-  assert.equal(consents, 1);
+test('commandless arrivals ride the same server-run ladder (the bare-attestation pass-through is closed)', async () => {
+  // T3, non-capable client: the unattested first call shows the envelope —
+  // the derived redacted line, since the caller sent no command field — and
+  // the attested retry executes on posture. The pre-fix pass-through let a
+  // commandless attested arrival execute with NO confirmation surface at
+  // all (no form, no envelope): the live incident's posture rows.
+  const first = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { attested: false });
+  const envelope = first.result as { code: string; userConfirmation: { command?: string; summary: string } };
+  assert.equal(envelope.code, ASK_CONFIRMATION_REQUIRED, 'the commandless unattested call shows the envelope');
+  assert.equal(
+    envelope.userConfirmation.command,
+    'hcloud ECS DeleteServer --server_id=i-1',
+    'the derived redacted line is the display content',
+  );
+  assert.equal(first.executed, false, 'nothing executes before the human answers');
+  assert.equal(first.consents, 0);
+
+  const retry = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {});
+  assert.equal((retry.result as ApprovedRunResult).approved, true, 'the ritual-completing retry executes');
+  assert.equal(retry.executed, true);
+  assert.equal(retry.events[0]!.evidence, 'posture', 'the chat round-trip is posture-tier evidence');
+
+  // T1, capable client: the form fires for the commandless shape too, with
+  // the same derived line.
+  const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
+  const elicited = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { attested: false, seam });
+  assert.equal((elicited.result as ApprovedRunResult).approved, true, 'the form accept executes the call');
+  assert.equal(requests.length, 1, 'the gate raised the form for the commandless arrival');
+  assert.ok(
+    requests[0]!.message.includes('hcloud ECS DeleteServer --server_id=i-1'),
+    'the form shows the derived line',
+  );
+  assert.equal(elicited.events[0]!.evidence, 'elicitation');
+
+  // A pre-attested first call (no envelope was ever shown) still refuses.
+  const pre = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, { prime: false, sessionId: 'cmdless-preattest' });
+  assert.equal(
+    (pre.result as { code: string }).code,
+    ASK_CONFIRMATION_REQUIRED,
+    'pre-attestation alone executes nothing',
+  );
+  assert.equal(pre.executed, false);
+  assert.equal(pre.consents, 0);
 });
 
 test('command-forward: the summarize view carries the redacted command string and never the raw secret', () => {

@@ -14,6 +14,7 @@ import {
   type HcloudRunResult,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
+import { ASK_CONFIRMATION_REQUIRED } from '../plugins/huaweicloud-core/src/approval-gate.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
 import { withApprovalMode, withVaultAuthHome } from './approval-mode-harness.ts';
 import { callTool, type ToolArgs } from '../plugins/huaweicloud-core/src/tools.ts';
@@ -286,6 +287,17 @@ function runAsk(args: string[]): Promise<unknown> {
   return callTool('huaweicloud_run_approved_command', {
     args,
     approvedByUser: true,
+    maxRetries: 0,
+    vendorConfirmed: 'test: vendor established by the harness',
+  });
+}
+
+// The server-run ladder's ritual: the commandless pass-through is closed, so
+// an executing attested arrival needs its line's envelope shown first (the
+// priming call is the unattested envelope refusal — no consent row).
+function primeAsk(args: string[]): Promise<unknown> {
+  return callTool('huaweicloud_run_approved_command', {
+    args,
     maxRetries: 0,
     vendorConfirmed: 'test: vendor established by the harness',
   });
@@ -743,31 +755,30 @@ test('ask mode: plan mints no token, names no approve line, writes no approvals 
   });
 });
 
-test('ask mode: run executes a write with no token and reports the ask posture', async () => {
+test('ask mode: run executes a write after the ritual and reports the ask posture', async () => {
   await withTempAuthHome(async () => {
     await withApprovalMode('ask', async () => {
       await withFakeHcloudBin(async () => {
-        const result = (await runAsk(['ECS', 'DeleteServer', '--server_id=i-123'])) as ApprovedRunResult;
-        assert.equal(result.approved, true, 'the client prompt is the confirmation: no token needed');
+        const args = ['ECS', 'DeleteServer', '--server_id=i-123'];
+        await primeAsk(args);
+        const result = (await runAsk(args)) as ApprovedRunResult;
+        assert.equal(result.approved, true, 'the ritual-completing attested arrival executes: no token needed');
         assert.equal(result.plan?.userConfirmation.mode, 'ask', 'the embedded plan reports the ask posture');
       });
     });
   });
 });
 
-test('ask mode: run without the approvedByUser attestation still throws', async () => {
+test('ask mode: run without the attestation shows the chat envelope (the throw is token-mode-only)', async () => {
   await withTempAuthHome(async () => {
     await withApprovalMode('ask', async () => {
       await withFakeHcloudBin(async () => {
-        await assert.rejects(
-          () =>
-            callTool('huaweicloud_run_approved_command', {
-              args: ['ECS', 'DeleteServer', '--server_id=i-123'],
-              maxRetries: 0,
-              vendorConfirmed: 'test: vendor established by the harness',
-            }),
-          /approvedByUser must be true/,
-        );
+        const envelope = (await callTool('huaweicloud_run_approved_command', {
+          args: ['ECS', 'DeleteServer', '--server_id=i-123'],
+          maxRetries: 0,
+          vendorConfirmed: 'test: vendor established by the harness',
+        })) as { code: string };
+        assert.equal(envelope.code, ASK_CONFIRMATION_REQUIRED, 'the unattested arrival asks, never executes');
       });
     });
   });
@@ -796,11 +807,11 @@ test('ask mode: a secret-classified command still denies through the strict clas
     await withApprovalMode('ask', async () => {
       await withFakeHcloudBin(async () => {
         // The canonical secret-deny vector (safety-hcloud-args.test.ts):
-        // no approval posture can unlock a secret read.
-        await assert.rejects(
-          () => runAsk(['CSMS', 'ShowSecret', '--secret_name', 'prod/db']),
-          /Direct secret value reads are blocked/,
-        );
+        // no approval posture can unlock a secret read — the ritual
+        // completes, and the strict classification STILL denies.
+        const secretArgs = ['CSMS', 'ShowSecret', '--secret_name', 'prod/db'];
+        await primeAsk(secretArgs);
+        await assert.rejects(() => runAsk(secretArgs), /Direct secret value reads are blocked/);
       });
     });
   });

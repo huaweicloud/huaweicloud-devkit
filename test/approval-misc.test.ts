@@ -74,7 +74,9 @@ function elicitingSeam(decision: 'accept' | 'decline', requests: ElicitFormReque
     capable: true,
     prompt: async (request) => {
       requests.push(request);
-      return decision === 'accept' ? { decision: 'accept', content: { confirm: true } } : { decision: 'decline' };
+      return decision === 'accept'
+        ? { decision: 'accept', content: { decision: 'approve-once' } }
+        : { decision: 'decline' };
     },
   };
 }

@@ -5,7 +5,8 @@
       "args": ["./dist/mcp-server.js"],
       "cwd": ".",
       "env": {
-        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local"
+        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local",
+        "DEVKIT_APPROVAL_MODE": "ask"
       },
       "tools": {
         "huaweicloud_run_approved_command": {

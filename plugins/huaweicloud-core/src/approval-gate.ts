@@ -30,7 +30,14 @@ import { approvalModeFromEnv } from './lib/approval-mode.ts';
 import { createApprovalToken, consumeApprovalToken, hashArgs, inspectApprovalToken } from './lib/approval-tokens.ts';
 import { huaweiConfigBase } from './lib/state-dir.ts';
 import { annotateDispatchOutcome, recordAskModeConsent } from './approval-ledger.ts';
-import type { ApprovalSpec, ConsentDeliveryOutcome, ElicitFormRequest, ElicitOutcome } from './approval-types.ts';
+import type {
+  ApprovalSpec,
+  ConsentDeliveryOutcome,
+  ElicitFormRequest,
+  ElicitFormSchema,
+  ElicitOutcome,
+} from './approval-types.ts';
+import { resolveConfirmLanguage, type ConfirmLanguage } from './lib/confirm-language.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
 // consent stamp AND the seq the ask branch just wrote — round 15, finding
@@ -558,6 +565,7 @@ export const ELICITATION_DECLINED = 'ELICITATION_DECLINED';
 export const ELICITATION_CANCELLED = 'ELICITATION_CANCELLED';
 export const ELICITATION_TIMEOUT = 'ELICITATION_TIMEOUT';
 export const ELICITATION_FAILED = 'ELICITATION_FAILED';
+export const ELICITATION_INVALID_CONTENT = 'ELICITATION_INVALID_CONTENT';
 export const ASK_CONFIRMATION_REQUIRED = 'ASK_CONFIRMATION_REQUIRED';
 
 // The explicit abstention bound. The SDK's 60 s default is the no-answer
@@ -566,45 +574,74 @@ export const ASK_CONFIRMATION_REQUIRED = 'ASK_CONFIRMATION_REQUIRED';
 // leaving an unresponsive client able to stall a call indefinitely.
 export const ELICITATION_TIMEOUT_MS = 300_000;
 
-// The form's fields: the boolean approval, and — from PR-3a — the session
-// standing-consent tick (S3). Both probed harnesses render a boolean as a
-// Yes/No choice, and two fields stay inside the restricted top-level
-// schema the form mode accepts.
-const ELICITATION_SCHEMA = {
-  type: 'object' as const,
-  properties: {
-    confirm: {
-      type: 'boolean',
-      title: 'Run this command',
-      description: 'Approve runs the command exactly once. Decline or dismiss cancels it.',
-    },
-    rememberForSession: {
-      type: 'boolean',
-      title: 'Remember for this session',
-      description:
-        'Also allow identical later calls in this session without asking again. The grant lasts until the devkit server restarts.',
-    },
-  },
-  required: ['confirm'],
-};
+// The enum's VALUES are wire vocabulary and never localize: the gate
+// matches them, the ledger and the tests pin them, and a client that
+// ignores enumNames (codex renders raw values) still shows the English
+// spelling the description teaches. The pre-enum shape was two booleans
+// (confirm + rememberForSession), and three measured facts forced the
+// merge: codex renders one field per screen, so two booleans were two
+// interactions for one decision; the boolean pair admitted a meaningless
+// confirm:false + remember:true submission the gate had to silently
+// ignore; and opencode's Submit always answers accept, so with a boolean
+// the refusal only existed as the unticked default — the #58184 wire
+// measurement. The enum makes the refusal an explicit choice, keeps the
+// once/session grant one click away, and stays inside the restricted flat
+// schema the form mode accepts (string + enum). 'decline' is listed FIRST
+// so a client that preselects the first option defaults to the refusal.
+const ELICITATION_DECISIONS = ['decline', 'approve-once', 'approve-session'] as const;
 
-function elicitationRequest(commandLine: string, summary: string): ElicitFormRequest {
+// The form is the one surface the HUMAN reads, so its display language
+// follows the resolved tier ladder (lib/confirm-language.ts): the
+// operator's DEVKIT_CONFIRM_LANG pin, the model's per-call
+// confirmLanguage relay of the conversation's language, or the machine
+// locale as the floor. A zh resolution renders the form in Simplified
+// Chinese; the refusal envelopes and the T3 instruction stay English,
+// being model- and log-facing wire vocabulary. enumNames is a
+// first-class SDK 1.32.1 keyword (LegacyTitledEnumSchemaSchema carries it,
+// probe-verified to round-trip intact) that opencode renders as the
+// choice labels (source-verified in toElicitationField); a client that
+// ignores the extension falls back to the English enum value.
+function elicitSchema(language: ConfirmLanguage): ElicitFormSchema {
+  const decision: Record<string, unknown> = {
+    type: 'string',
+    enum: [...ELICITATION_DECISIONS],
+  };
+  if (language === 'zh') {
+    decision['enumNames'] = ['拒绝', '批准本次', '批准并记住本次会话'];
+    decision['title'] = '运行此命令？';
+    decision['description'] =
+      'approve-once：仅运行这一次。approve-session：同一会话内后续相同调用不再询问（授权持续到 devkit 服务器重启）。decline：拒绝，不执行任何操作。';
+  } else {
+    decision['title'] = 'Run this command?';
+    decision['description'] =
+      'approve-once runs it exactly once. approve-session also covers identical later calls in this session (the grant lasts until the devkit server restarts). decline cancels it.';
+  }
+  return { type: 'object', properties: { decision }, required: ['decision'] };
+}
+
+function elicitationRequest(commandLine: string, summary: string, language: ConfirmLanguage): ElicitFormRequest {
   // A tool with an executable line shows it first (the command-forward
   // doctrine); a tool without one (the sandbox lifecycle faces, the auth
   // pair, PR-3c's registrations) centers the redacted summary instead —
   // never a blank command slot under a command heading (interrogate
-  // round 2, fix-in-pass ii, adopted by the serial landing).
+  // round 2, fix-in-pass ii, adopted by the serial landing). The display
+  // strings follow the resolved language (see lib/confirm-language.ts);
+  // the brand and the decision vocabulary stay English.
+  const zh = language === 'zh';
   const head =
     commandLine !== ''
-      ? `HuaweiCloud DevKit is requesting your confirmation to run this command:\n\n${commandLine}\n\n`
-      : 'HuaweiCloud DevKit is requesting your confirmation for this request:\n\n';
+      ? zh
+        ? `HuaweiCloud DevKit 请求你确认运行此命令：\n\n${commandLine}\n\n`
+        : `HuaweiCloud DevKit is requesting your confirmation to run this command:\n\n${commandLine}\n\n`
+      : zh
+        ? 'HuaweiCloud DevKit 请求你确认此操作：\n\n'
+        : 'HuaweiCloud DevKit is requesting your confirmation for this request:\n\n';
+  const tail = zh
+    ? '选择 approve-once 仅运行这一次；选择 approve-session 同时覆盖本会话内后续相同调用（授权持续到 devkit 服务器重启）；拒绝或关闭表单则不执行任何操作。'
+    : 'Choose approve-once to run it exactly once, or approve-session to also cover identical later calls in this session (the grant lasts until the devkit server restarts). Decline or dismiss cancels without running anything.';
   return {
-    message:
-      head +
-      `${summary}\n\n` +
-      'Approve to run it once. Decline or dismiss to cancel without running anything. ' +
-      'Tick "Remember for this session" to also allow identical later calls in this session without asking again.',
-    schema: ELICITATION_SCHEMA,
+    message: head + `${summary}\n\n` + tail,
+    schema: elicitSchema(language),
     timeoutMs: ELICITATION_TIMEOUT_MS,
   };
 }
@@ -697,16 +734,15 @@ export async function runApprovalGate(
   // demands it (the trunk contract the hcloud battery pins), and EVERY
   // tool demands it once a token rides the call — the token's spend is the
   // confirmed execution, so the agent's statement is part of that
-  // contract. A gate-source tool's FIRST no-token call is exempt, so the
-  // mint envelope the teaching promises (USER_CONFIRMATION_REQUIRED with
-  // the approve line) is what the first caller actually receives. Ask
-  // mode keeps the server-run ladder's own contract untouched: a
-  // command-forward or gate-source arrival is confirmed by the form or
-  // the envelope the gate raises, and the legacy plan-face shape keeps its
-  // pinned attestation throw.
+  // contract. Ask mode demands nothing: EVERY arrival there is server-run
+  // confirmed — the form on a capable client, the chat envelope on the
+  // rest — and the human's answer is the confirmation the attestation only
+  // claims, so the bare pass-through that once let a commandless attested
+  // arrival execute with no confirmation surface at all is closed (the
+  // live incident: run rows with posture evidence, zero forms, zero
+  // envelopes). The throw below is therefore token-mode-only.
   const attestationRequired = spec.tokenSource === 'plan-face' || token !== '';
-  const serverRunArrival = approvalMode === 'ask' && (spec.tokenSource === 'gate' || args.command !== undefined);
-  if (args.approvedByUser !== true && attestationRequired && !serverRunArrival) {
+  if (args.approvedByUser !== true && attestationRequired && approvalMode !== 'ask') {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
 
@@ -811,24 +847,66 @@ export async function runApprovalGate(
     // itself. The accept IS the confirmation (the attestation is not
     // consulted: a human answered, which is strictly stronger). Any other
     // answer — decline, dismiss, the explicit timeout, a transport failure,
-    // an accept that submitted No — refuses fail-closed: nothing executes,
-    // nothing mints, nothing is recorded.
+    // an accept that chose decline, or an accept whose content carries no
+    // valid decision value — refuses fail-closed: nothing executes, nothing
+    // mints, nothing is recorded.
+    // The form's display language resolves per arrival (the operator pin,
+    // the model's confirmLanguage relay, the machine locale — in that
+    // order; lib/confirm-language.ts owns the ladder).
+    const language: ConfirmLanguage = resolveConfirmLanguage(args, process.env);
     const elicitation = opts.elicitation;
     if (elicitation?.capable) {
-      const outcome = await elicitation.prompt(elicitationRequest(commandLine, view.summary));
-      const accepted = outcome.decision === 'accept' && outcome.content?.['confirm'] === true;
-      if (!accepted) {
-        const refusal = outcome.decision === 'accept' ? { ...outcome, decision: 'decline' as const } : outcome;
-        return { envelope: elicitRefusal(refusal, commandLine) };
+      const outcome = await elicitation.prompt(elicitationRequest(commandLine, view.summary, language));
+      // The enum's three values map the ladder: decline is the explicit
+      // refusal; approve-once is a fresh single consent; approve-session
+      // additionally arms the S3 standing grant. An accept with a MISSING or
+      // unknown decision value gets its own refusal code: hermes answers the
+      // form path with accept and empty content (measured in its source —
+      // its panel never synthesizes answers from the schema it was shown),
+      // and that shape must be diagnosable from the refusal alone instead
+      // of reading as a generic transport failure.
+      const decision = outcome.decision === 'accept' ? outcome.content?.['decision'] : undefined;
+      if (
+        decision === undefined ||
+        typeof decision !== 'string' ||
+        !(ELICITATION_DECISIONS as readonly string[]).includes(decision)
+      ) {
+        if (outcome.decision !== 'accept') return { envelope: elicitRefusal(outcome, commandLine) };
+        return {
+          envelope: {
+            status: 'rejected',
+            code: ELICITATION_INVALID_CONTENT,
+            reason:
+              'the client answered accept but the submitted form content carries no valid decision value — the client did not answer the form schema it was shown.',
+            command: commandLine,
+            nextStep:
+              'Nothing ran and nothing was approved. The client must submit one of: decline, approve-once, approve-session.',
+          },
+        };
       }
-      // The standing-consent tick: this execution is a fresh consent (the
+      if (decision === 'decline') {
+        // The explicit refusal choice maps to the same fail-closed envelope
+        // as the wire-level decline (the pre-enum shape reached this branch
+        // through the confirm:false rewrite; the enum makes it a first-class
+        // answer).
+        return {
+          envelope: {
+            status: 'rejected',
+            code: ELICITATION_DECLINED,
+            reason: 'the user declined the confirmation form.',
+            command: commandLine,
+            nextStep: 'Nothing ran. Do not retry the same call without a fresh approval from the user.',
+          },
+        };
+      }
+      // The standing-consent choice: this execution is a fresh consent (the
       // row carries the elicitation evidence and the session scope — the
       // durable grant record the doctor lists), and the in-memory grant
       // covers identical later executions until the process dies. The
       // scope-'session' pass is the recorder's memo-exclusion signal: the
-      // tick's delivery outcome is the grant's own lifecycle, never memo
+      // grant's own delivery outcome is the grant's lifecycle, never memo
       // fuel (round-2 F4).
-      if (outcome.content?.['rememberForSession'] === true) {
+      if (decision === 'approve-session') {
         noteStandingGrant(sessionId, name, view.argsHash);
         const arrival = recordAskModeConsent({
           sessionId,
@@ -854,25 +932,13 @@ export async function runApprovalGate(
     // retry for different args — and a pre-attested first call — gets the
     // envelope for the line they ask about instead of executing. The refusal
     // teaches the ritual for the new line, so the proper envelope-then-retry
-    // still completes.
-    // The binding applies to the command-forward shape and every 'gate'
-    // registration: both are the shapes whose unattested form emits this
-    // envelope. The legacy args-only shape keeps PR-1's pinned contract
-    // exactly (its unattested form is the trunk attestation throw, so
-    // there is no envelope to bind to and an attested legacy arrival still
-    // executes on posture).
-    if (serverRunArrival) {
-      const envelopeShown = askEnvelopeLive(sessionId, name, view.argsHash);
-      if (args.approvedByUser !== true || !envelopeShown) {
-        noteAskEnvelopeShown(sessionId, name, view.argsHash);
-        return { envelope: askConfirmationEnvelope(commandLine, view.summary, view) };
-      }
-      return consented('posture');
-    }
-    if (args.approvedByUser !== true) {
-      // Unreachable for this shape (the trunk attestation throw precedes the
-      // mode branch); kept as a belt for a spec that registers without the
-      // command requirement.
+    // still completes. The binding covers EVERY ask arrival — the
+    // commandless bare-attestation pass-through (once this block's skipped
+    // shape, executing with no confirmation surface at all) is the hole
+    // this doctrine closed.
+    const envelopeShown = askEnvelopeLive(sessionId, name, view.argsHash);
+    if (args.approvedByUser !== true || !envelopeShown) {
+      noteAskEnvelopeShown(sessionId, name, view.argsHash);
       return { envelope: askConfirmationEnvelope(commandLine, view.summary, view) };
     }
     return consented('posture');

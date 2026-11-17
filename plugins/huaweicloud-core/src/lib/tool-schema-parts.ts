@@ -95,6 +95,21 @@ export const approvedByUserArg = booleanArg
     'Must be true only after the user explicitly approves this exact call. In token mode the gate requires it; in ask mode the server-run confirmation asks the user itself, and this flag is the chat round-trip retry marker (posture trust) when the client cannot render a form.',
   );
 
+// The confirm-language hint, injected on every roster tool by
+// src/tool-schemas.ts (the approval domain's parameter, not any pack's).
+// The model relays the user's conversation language so the human-facing
+// confirmation form renders its display text in it — the MCP server never
+// sees the chat, so the model is the only context observer. Optional and
+// soft-failing by design (lib/confirm-language.ts): an unrecognized value
+// falls through to the operator's DEVKIT_CONFIRM_LANG pin, then the machine
+// locale; the enum VALUES and every refusal stay English in both languages.
+export const confirmLanguageArg = z
+  .string()
+  .optional()
+  .describe(
+    "Optional: the user's conversation language, 'zh' (Chinese) or 'en' — the approval confirmation form renders its display text in that language.",
+  );
+
 export const workspaceId = z
   .string()
   .optional()

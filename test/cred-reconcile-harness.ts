@@ -29,7 +29,7 @@ export async function gatedAuthSwitchCall(args: Record<string, unknown>): Promis
     return await callTool('huaweicloud_auth_switch', args, {
       elicitation: {
         capable: true,
-        prompt: async () => ({ decision: 'accept', content: { confirm: true } }),
+        prompt: async () => ({ decision: 'accept', content: { decision: 'approve-once' } }),
       },
     });
   } finally {

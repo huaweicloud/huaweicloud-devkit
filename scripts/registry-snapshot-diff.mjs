@@ -96,6 +96,18 @@ const INTENTIONAL_DRIFTS = [
   },
 ];
 
+// The confirm-language hint rows share one reason (the addition is one
+// feature across the roster, not ten): the model relays the user's
+// conversation language so the human-facing confirmation form renders its
+// display text in it — the MCP server never sees the chat, so the model is
+// the only context observer. Optional and soft-failing (an unrecognized
+// value falls through to the operator's DEVKIT_CONFIRM_LANG pin, then the
+// machine locale; lib/confirm-language.ts owns the ladder). Injected on
+// every roster tool by src/tool-schemas.ts; the six roster tools absent
+// here sit in EXEMPT_TOOLS above, where no row can fire.
+const confirmLanguageAdditionReason =
+  "The confirm-language hint (the approval domain's parameter, injected roster-wide by src/tool-schemas.ts): the model relays the user's conversation language so the confirmation form's display text localizes to it; optional and soft-failing, resolved by lib/confirm-language.ts's tier ladder (operator env pin, then the hint, then the machine locale).";
+
 // Deliberate additive properties. The legacy snapshot is the pre-migration
 // contract, so features ported after it add properties the fixture can never
 // carry (same reasoning as EXEMPT_TOOLS: the fixture is history, not a live
@@ -237,6 +249,56 @@ const DELIBERATE_ADDITIONS = [
     tool: 'huaweicloud_upgrade',
     property: 'approvedByUser',
     reason: 'PR-3c approval registration: the attestation parameter, same mode-conditional doctrine as the obs pair.',
+  },
+  {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_with_session',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_sign_agreement',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_credentials',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_auth_init',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_auth_switch',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_obs_set_website_config',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_upgrade',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
   },
 ];
 
