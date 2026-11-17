@@ -141,6 +141,17 @@ const INTENT_TABLE: IntentRow[] = [
     }),
   },
   {
+    // The selective cleanup's apply one-shot (kill + delete + the DB_CLEANUP_*
+    // echoes). Its own row so a future world-with-tunnels case never falls
+    // through to the generic export-path row, which answers '' — the silent
+    // degradation the zero-unknown doctrine exists to prevent (interrogate
+    // port-pr4 A-F4). Unreachable in today's empty world (the plan is always
+    // empty, the apply never sent on the e2e legs).
+    intent: 'devbridge-cleanup-apply',
+    pattern: /^export PATH="\/workspace\/.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; echo "DB_CLEANUP_APPLY"$/,
+    run: () => ({ stdout: 'DB_CLEANUP_DELETED=\nDB_CLEANUP_KILLED=\n' }),
+  },
+  {
     // The selective cleanup's lock release (the orchestration's finally
     // block) — its own row so it never degrades to 'unknown'.
     intent: 'devbridge-cleanup-unlock',

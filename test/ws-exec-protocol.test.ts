@@ -28,6 +28,7 @@ import {
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.ts';
 import {
   buildDevbridgeAuthProbe,
+  buildDevbridgeCleanupApplyScript,
   buildDevbridgeCleanupLockScript,
   buildDevbridgeCleanupStateScript,
   buildDevbridgeExposeScript,
@@ -302,6 +303,11 @@ test('devbridge fake rows recognize the real scripts (first-line anchors)', () =
   assert.match(cleanupState.stdout, /DB_CLEANUP_TUNNELS_BEGIN/);
   assert.match(cleanupState.stdout, /No tunnels found/);
   assert.match(cleanupState.stdout, /DB_KEEPALIVE_TUNNELS=/);
+  // The apply one-shot has its OWN row — falling through to the generic
+  // export-path row would answer '' silently, the exact degradation the
+  // zero-unknown gate exists to prevent (interrogate port-pr4 A-F4).
+  const cleanupApply = runShellCommand(buildDevbridgeCleanupApplyScript({ deleteIds: [], killPids: [] }), fs);
+  assert.equal(cleanupApply.intent, 'devbridge-cleanup-apply');
   const cleanupUnlock = runShellCommand('rmdir /tmp/devbridge-cleanup.lock 2>/dev/null || true', fs);
   assert.equal(cleanupUnlock.intent, 'devbridge-cleanup-unlock');
   // The #998 version read-back one-shot — its own row, not the generic

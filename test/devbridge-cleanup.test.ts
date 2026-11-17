@@ -31,9 +31,13 @@ test('cleanup: parses tunnel list and host processes behind OSC/CRLF noise', () 
     '\u001b]133;C\u0007ncwa54gr   tunnel-18082-6097               30 days            1\r\n' +
     'tun0l1s9   tunnel-18086-111                29 days            1\r\n' +
     'up5kfkbb   tunnel-18084-789                23 hours           1\r\n' +
+    // The expiry read is column-anchored: a description that itself reads like
+    // a duration (1minute — descriptions reject spaces, so the zero-space form
+    // is legal) must not poison the expirySeconds (interrogate port-pr4 B-F2).
+    'aaaa9999   my-app            1minute         29 days            1\r\n' +
     'No tunnels found.\r\n';
   const tunnels = parseDevbridgeTunnelList(list);
-  assert.equal(tunnels.length, 3);
+  assert.equal(tunnels.length, 4);
   assert.deepEqual(
     tunnels.map((t) => ({ id: t.id, port: t.port, expirySeconds: t.expirySeconds })),
     [
@@ -41,8 +45,11 @@ test('cleanup: parses tunnel list and host processes behind OSC/CRLF noise', () 
       // IDs may contain 0/1/8/9; parsing must not assume the base32 subset.
       { id: 'tun0l1s9', port: 18086, expirySeconds: 29 * 86400 },
       { id: 'up5kfkbb', port: 18084, expirySeconds: 23 * 3600 },
+      // The true expiry column wins over the duration-shaped description.
+      { id: 'aaaa9999', port: null, expirySeconds: 29 * 86400 },
     ],
   );
+  assert.equal(tunnels[3]!.expiryText, '29 days');
 
   const hosts =
     '\u001b]133;C\u00077962 devbridge host -p 18085 -e 1\r\n' +
@@ -142,7 +149,6 @@ test('cleanup: quota mode removes all orphans then the oldest non-protected live
     ],
     [{ pid: 400, id: null, port: 18086 }],
   );
-
   const quota = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'quota', maxExtra: 1 });
   assert.deepEqual(
     quota.deleteIds.sort((a, b) => a.localeCompare(b)),
@@ -164,6 +170,27 @@ test('cleanup: quota mode removes all orphans then the oldest non-protected live
     quotaMore.killPids.sort((a, b) => a - b),
     [200, 300, 400],
   );
+});
+
+test('cleanup: quota ordering keys on the true expiry column, never a duration-shaped description', () => {
+  // The poison shape (interrogate port-pr4 B-F2): a description like `1minute`
+  // (legal — descriptions reject spaces) must not flip the oldest-first
+  // targeting, or the quota retry deletes the FRESHER live tunnel and a
+  // still-live developer tunnel loses its URL.
+  const keepalive = [{ tunnelId: 'zzzz1111', url: 'https://zzzz1111-18099.devbridge-s2.hwtunnel.com' }];
+  const tunnels = parseDevbridgeTunnelList(
+    [
+      'Tunnel ID  Name              Description  Tunnel Expiration  Port Count',
+      'aaa11111   tunnel-18081-1     1minute         29 days            1',
+      'bbb22222   tunnel-18082-2     app             2 hours           1',
+    ].join('\r\n'),
+  );
+  const hosts = [
+    { pid: 10, id: 'aaa11111', port: null },
+    { pid: 20, id: 'bbb22222', port: null },
+  ];
+  const quota = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'quota', maxExtra: 1 });
+  assert.deepEqual(quota.deleteIds, ['bbb22222'], 'the true oldest (2h) goes first; the 29-day tunnel survives');
 });
 
 test('cleanup: apply script validates IDs/PIDs and re-checks the process before killing', () => {
@@ -384,6 +411,10 @@ test('cleanup: ghost keepalive entries (deleted records) are pruned from the wat
   assert.ok(install, 'the watchdog is re-installed with the pruned roster');
   assert.match(install ?? '', /aaaa2345:https:\/\/aaaa2345-18082\.devbridge-s2\.hwtunnel\.com:18082/);
   assert.doesNotMatch(install ?? '', /cccc2345/, 'the ghost entry is pruned');
+  // Round-trip pin (interrogate port-pr4 A-F1): the re-installed entry carries
+  // the generated three-field shape exactly — a parsed URL that kept its
+  // :port tail would grow one field per roster rewrite.
+  assert.doesNotMatch(install ?? '', /:18082:18082/, 'the port tail must not double through the sync round trip');
 });
 
 test('cleanup: same-port replacement deletes only that port before an expose (flow)', async () => {

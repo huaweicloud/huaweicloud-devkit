@@ -150,7 +150,14 @@ export function buildKeepaliveTunnelsReadScript(): string {
 }
 
 // Parse the raw stdout of buildKeepaliveTunnelsReadScript. Empty output (no
-// watchdog installed yet) yields [].
+// watchdog installed yet) yields []. Entries are the generated three-field
+// `id:url:port` form (plus the two-field legacy form): the tunnel URL's last
+// segment is the domain, so a trailing `:<digits>` (or the empty port field's
+// bare `:`) is never part of the URL — strip every tail, including the legacy
+// double tails the pre-fix round trip wrote. A kept tail mangles the watchdog's
+// health-check target and grows one field per roster rewrite (interrogate
+// port-pr4 A-F1; the parse shape predates this port — the fix lands with the
+// cleanup sync, the second roster-rewrite path, so both round trips are stable).
 export function parseKeepaliveTunnelsOutput(stdout: unknown): KeepaliveTunnel[] {
   const text = stripTerminalEscapes(stdout);
   const m = text.match(/^DB_KEEPALIVE_TUNNELS=(.*)$/m);
@@ -160,7 +167,11 @@ export function parseKeepaliveTunnelsOutput(stdout: unknown): KeepaliveTunnel[] 
     .split(/\s+/)
     .map((entry) => {
       const i = entry.indexOf(':');
-      return i > 0 ? { tunnelId: entry.slice(0, i), url: entry.slice(i + 1) } : null;
+      if (i <= 0) return null;
+      let url = entry.slice(i + 1);
+      while (/:\d+$/.test(url)) url = url.slice(0, url.lastIndexOf(':'));
+      if (url.endsWith(':')) url = url.slice(0, -1);
+      return { tunnelId: entry.slice(0, i), url };
     })
     .filter((t): t is KeepaliveTunnel => t !== null);
 }

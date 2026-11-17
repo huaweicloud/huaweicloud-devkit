@@ -98,6 +98,33 @@ test('parseKeepaliveTunnelsOutput: empty = no watchdog; entries parse (U16 + #94
   assert.equal(parsed[1]!.url, 'https://bbbb2222-80.devbridge-s2.hwtunnel.com');
 });
 
+test('parseKeepaliveTunnelsOutput: the generated :port tail never rides the parsed URL (round-trip pin)', () => {
+  // The generated roster entry is three-field (id:url:port) — the URL's last
+  // segment is the domain, so a trailing :<digits> is the port field, never
+  // part of the URL. A parsed URL that keeps the tail grows one field per
+  // roster rewrite (enroll-merge and the cleanup sync alike) and sends the
+  // watchdog's health check at the wrong target (interrogate port-pr4 A-F1).
+  const threeField = parseKeepaliveTunnelsOutput(
+    'DB_KEEPALIVE_TUNNELS=aaaa2345:https://aaaa2345-18082.devbridge-s2.hwtunnel.com:18082\n',
+  );
+  assert.equal(threeField[0]!.url, 'https://aaaa2345-18082.devbridge-s2.hwtunnel.com');
+  // Legacy double tails (written by the pre-fix round trip) strip fully.
+  const legacy = parseKeepaliveTunnelsOutput(
+    'DB_KEEPALIVE_TUNNELS=aaaa2345:https://aaaa2345-18082.devbridge-s2.hwtunnel.com:18082:18082\n',
+  );
+  assert.equal(legacy[0]!.url, 'https://aaaa2345-18082.devbridge-s2.hwtunnel.com');
+  // The no-port generated form (trailing bare colon) parses clean too.
+  const noPort = parseKeepaliveTunnelsOutput(
+    'DB_KEEPALIVE_TUNNELS=aaaa2345:https://aaaa2345-18082.devbridge-s2.hwtunnel.com:\n',
+  );
+  assert.equal(noPort[0]!.url, 'https://aaaa2345-18082.devbridge-s2.hwtunnel.com');
+  // Two-field legacy entries are unchanged.
+  const twoField = parseKeepaliveTunnelsOutput(
+    'DB_KEEPALIVE_TUNNELS=aaaa2345:https://aaaa2345-18082.devbridge-s2.hwtunnel.com\n',
+  );
+  assert.equal(twoField[0]!.url, 'https://aaaa2345-18082.devbridge-s2.hwtunnel.com');
+});
+
 test('renewTunnel returns the parsed verdict end to end (U16 seam)', async () => {
   let renewScript = '';
   _setOneShotForTests(async (_ws, command) => {

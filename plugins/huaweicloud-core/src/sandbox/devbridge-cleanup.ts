@@ -91,7 +91,16 @@ export function parseDevbridgeTunnelList(stdout: unknown): DevbridgeTunnelRecord
     const rest = m[2]!;
     const name = rest.trim().split(/\s{2,}|\t+/)[0] || '';
     const portMatch = rest.match(/tunnel-(\d+)-/);
-    const expMatch = rest.match(/(\d+)\s*(day|days|hour|hours|minute|minutes)/i);
+    // The expiry read is anchored to the expiry column by the trailing Port
+    // Count (lookahead, so the matched text stays the clean "N unit"): a
+    // description that itself reads like a duration — `1minute`, `5days`,
+    // legal because descriptions reject spaces — must not poison the
+    // quota-mode oldest-first targeting (interrogate port-pr4 B-F2; dev's
+    // 97c4bc8a/43fa459e scan the whole row tail unanchored — deliberate
+    // v2 hardening now that the quota wiring makes the expiry load-bearing).
+    // A row whose shape no longer matches reads as null → sorts last in quota
+    // mode (fail-safe: never deleted on a guess).
+    const expMatch = rest.match(/(\d+)\s*(day|days|hour|hours|minute|minutes)(?=\s+\d+\s*$)/i);
     const unit = expMatch ? expMatch[2]!.toLowerCase() : '';
     const multiplier = { day: 86400, days: 86400, hour: 3600, hours: 3600, minute: 60, minutes: 60 }[unit];
     tunnels.push({
