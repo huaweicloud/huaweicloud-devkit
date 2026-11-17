@@ -505,7 +505,7 @@
     },
     {
       "id": "hwc-sandbox-destructive-command",
-      "title": "Destructive command in sandbox terminal",
+      "title": "Destructive command in terminal",
       "category": "destructive",
       "severity": "deny",
       "stages": ["command"],
@@ -517,10 +517,6 @@
           },
           {
             "field": "text",
-            "regex": "mkfs"
-          },
-          {
-            "field": "text",
             "regex": "dd\\s+if="
           },
           {
@@ -529,24 +525,28 @@
           },
           {
             "field": "text",
-            "regex": "\\bshutdown\\b"
+            "regex": "(?:(?:^|[\\n\\r;&|]|\\$\\()\\s*|\\b(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*)(?:(?:(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*|nohup\\s+|env\\s+|nice\\s+|stdbuf\\s+|setsid\\s+|ionice\\s+|time\\s+|exec\\s+|command\\s+|busybox\\s+|watch\\s+|xargs(?:\\s+-\\S+)*\\s+|timeout\\s+\\S+\\s+){0,3})(?:/(?:usr/)?s?bin/)?(?:systemctl\\s+(?:--\\w[\\w-]*\\s+){0,2})?(?:shutdown|reboot|halt|poweroff|fdisk)(?![\\w.\\-=])"
           },
           {
             "field": "text",
-            "regex": "\\breboot\\b"
+            "regex": "(?:(?:^|[\\n\\r;&|]|\\$\\()\\s*|\\b(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*)(?:(?:(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*|nohup\\s+|env\\s+|nice\\s+|stdbuf\\s+|setsid\\s+|ionice\\s+|time\\s+|exec\\s+|command\\s+|busybox\\s+|watch\\s+|xargs(?:\\s+-\\S+)*\\s+|timeout\\s+\\S+\\s+){0,3})(?:/(?:usr/)?s?bin/)?(?:tel)?init\\s+[06]\\b"
           },
           {
             "field": "text",
-            "regex": "\\binit\\s+[06]\\b"
+            "regex": "(?:(?:^|[\\n\\r;&|]|\\$\\()\\s*|\\b(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*)(?:(?:(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*|nohup\\s+|env\\s+|nice\\s+|stdbuf\\s+|setsid\\s+|ionice\\s+|time\\s+|exec\\s+|command\\s+|busybox\\s+|watch\\s+|xargs(?:\\s+-\\S+)*\\s+|timeout\\s+\\S+\\s+){0,3})mkfs(?![\\w-])"
           },
           {
             "field": "text",
-            "regex": "\\bfdisk\\b"
+            "regex": "\\b(?:ba|da|z|k)?sh(?:\\.exe)?\\b(?:\\s+-{1,2}[\\w-]+(?=\\s)){0,4}\\s+-\\w*c\\b\\s*[\\x22\\u0027\\x60]{0,2}\\s*(?:(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*)?(?:systemctl\\s+)?(?:(?:shutdown|reboot|halt|poweroff|fdisk)(?![\\w.\\-=])|mkfs(?![\\w-])|init\\s+[06]\\b)"
+          },
+          {
+            "field": "text",
+            "regex": "\\beval\\s+[\\x22\\u0027\\x60]{0,2}\\s*(?:(?:sudo|doas)\\s+(?:(?:-u|--user|-g|-p|-C|-U|-r|-t|-D)\\s+(?!-)\\S+\\s+|-(?:n|E|v|k|K|i|s|l|A|b|e)\\s+)*)?(?:(?:shutdown|reboot|halt|poweroff|fdisk)(?![\\w.\\-=])|mkfs(?![\\w-])|init\\s+[06]\\b)"
           }
         ]
       },
-      "message": "The sandbox terminal command is destructively dangerous and could destroy the workspace.",
-      "remediation": "Use targeted deletions instead of recursive root removal. Avoid disk format, fork bombs, and system shutdown commands in sandbox terminals."
+      "message": "This terminal command is destructively dangerous (root deletion, disk wipe or format, fork bomb, or system shutdown/reboot) and could destroy the workspace or host.",
+      "remediation": "Use targeted deletions instead of recursive root removal, and keep disk format and shutdown/reboot operations out of agent-run terminals; use the approved cloud API path for intentional restarts."
     },
     {
       "id": "hwc-sandbox-destructive-unanchored-rm",

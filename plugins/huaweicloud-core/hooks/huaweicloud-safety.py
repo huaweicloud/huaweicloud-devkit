@@ -473,7 +473,9 @@ def load_cloud_risk_rules():
             catalog = json.load(file_obj)
         return catalog.get("rules", [])
     except Exception:
-        return []
+        # Unreadable rules are not "no rules": the .mjs twin denies
+        # fail-closed on the same condition (hook-node.test.ts pin).
+        return None
 
 
 def condition_matches(condition, text):
@@ -500,7 +502,13 @@ def rule_matches(rule, text):
 
 
 def first_denied_command_rule(text):
-    for rule in load_cloud_risk_rules():
+    rules = load_cloud_risk_rules()
+    if rules is None:
+        return {
+            "message": "the cloud risk rules failed to load; commands are denied fail-closed",
+            "remediation": "Reinstall the huaweicloud-devkit plugin.",
+        }
+    for rule in rules:
         if "command" not in rule.get("stages", []):
             continue
         if rule.get("severity") != "deny":

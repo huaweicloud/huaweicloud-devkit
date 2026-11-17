@@ -394,6 +394,131 @@ test('the fork-bomb pattern matches real fork bombs without pathological backtra
   }
 });
 
+test('the sandbox destructive rule anchors shutdown/reboot verbs at command position, not mentions', () => {
+  // The reboot-parameter incident: bare \\breboot\\b matched the REQUIRED
+  // --reboot.servers.[N].id / --reboot.type parameter names and denied an
+  // approved `hcloud ECS BatchRebootServers` after confirmation. The
+  // OS-verb arms now match the verb at a command position only (line
+  // head, a ; & | $() boundary, or a bounded wrapper stack); the rm, dd,
+  // and fork-bomb arms keep their original substring/bounded shapes.
+  const denies = (cmd: string) => {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', cmd);
+    assert.ok(
+      result.findings.some((f) => f.ruleId === 'hwc-sandbox-destructive-command'),
+      cmd,
+    );
+  };
+  const allows = (cmd: string) => {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'allow', cmd);
+  };
+
+  for (const cmd of [
+    'sudo reboot',
+    'reboot',
+    'shutdown -h now',
+    'poweroff',
+    'sudo halt',
+    'halt',
+    'telinit 6',
+    'init 0',
+    'sudo init 6',
+    '/sbin/reboot',
+    'sudo -u root reboot',
+    'sudo -n reboot',
+    'sudo -n systemctl reboot',
+    'systemctl reboot',
+    'systemctl --no-block reboot',
+    'sudo systemctl poweroff',
+    'systemctl halt',
+    'nohup reboot &',
+    'echo hi | xargs reboot',
+    'watch reboot',
+    'timeout 30 reboot',
+    'busybox reboot',
+    'cd /tmp && reboot',
+    'echo a||poweroff',
+    'setsid reboot',
+    'foo;\n reboot',
+    '$(reboot)',
+    'bash -c "reboot"',
+    'bash -ic "reboot"',
+    "bash -e -c 'reboot'",
+    'zsh -c "init 0"',
+    'eval "poweroff"',
+    'bash -c "echo hi; sudo reboot"',
+    'sh -c "sudo -u root reboot"',
+    'mkfs.ext4 /dev/vdb',
+    'sudo mkfs.ext4 /dev/vdb',
+    'fdisk /dev/sda',
+    'sudo fdisk /dev/sda',
+  ]) {
+    denies(cmd);
+  }
+
+  // The incident argv and the mention classes stay allow at the rule level
+  // (the argv face denies the unapproved form through the write gate, not
+  // through this rule).
+  for (const cmd of [
+    'hcloud ECS BatchRebootServers --reboot.servers.1.id=i --reboot.type=SOFT',
+    'grep -rn reboot docs/',
+    'git log --grep=reboot',
+    'echo "deploy after reboot"',
+    'man reboot',
+    'cat notes/reboot.md',
+    'reboot.txt',
+    'env reboot=false',
+    'command -v reboot',
+    'reboot-now --dry-run',
+    'sudo -u reboot id',
+    'sudo grep reboot docs/',
+    'xargs -I{} echo reboot',
+    'timeout reboot',
+    'git init',
+    'initdb',
+    'nice -n 5 reboot',
+    'halt-check.sh',
+    'systemctl restart reboot-daemon',
+    'docker exec ctr init 0',
+    'bash -c "grep reboot /var/log"',
+    'grep "(reboot)" crontab.txt',
+    'grep "mkfs" docs/',
+    'man mkfs',
+    'cat mkfs-notes.md',
+    'mkfs-helper --dry-run',
+  ]) {
+    allows(cmd);
+  }
+
+  // Deliberate over-deny faces, pinned so the trade stays a decision: the
+  // sudo-anywhere arm keeps `ssh … "sudo reboot"` deniable, and the rm/dd
+  // substring arms keep their mention catch (grep "dd if=" docs/ denies).
+  denies('ssh -i k root@1.2.3.4 "sudo reboot"');
+  denies('echo "sudo reboot done"');
+  denies('grep "sudo reboot" runbook.md');
+  denies('grep "dd if=" docs/');
+});
+
+test('the anchored arms stay linear under adversarial padding', () => {
+  const deny = (cmd: string) => evaluateCommandRisk(cmd).decision;
+  const t0 = () => Date.now();
+  const bounded = (pad: string, build: () => string) => {
+    const before = t0();
+    deny(build());
+    const elapsed = t0() - before;
+    assert.ok(elapsed < 250, `${pad} took ${elapsed}ms — backtracking crept back in`);
+  };
+  bounded('sudo value-flag stack', () => 'sudo -u x '.repeat(2000) + 'reboot');
+  bounded('sudo bare-flag stack', () => 'sudo -n '.repeat(5000) + 'reboot');
+  bounded('carrier separator flood', () => 'bash -c "a;'.repeat(20000));
+  bounded('env assignment stack', () => 'env A=b '.repeat(4000) + 'reboot');
+  bounded('xargs flag stack', () => 'xargs -a '.repeat(5000) + 'reboot');
+  bounded('command-substitution flood', () => '$('.repeat(3000));
+  bounded('verb word flood', () => 'fdisk'.repeat(30000));
+  bounded('systemctl option stack', () => 'systemctl --no-block '.repeat(3000) + 'reboot');
+});
+
 test('evaluateCommandRisk fails closed on malformed input (#564)', () => {
   for (const bad of [null, undefined, 12345, { cmd: 'x' }, '', '   ']) {
     const result = evaluateCommandRisk(bad);

@@ -43,6 +43,36 @@ test('cloud risk rules are present and public-safe', () => {
   }
 });
 
+test('the destructive-terminal rule never returns to bare-word matching (the reboot-parameter incident)', () => {
+  // Behavioral pin, not a byte pin: the anchored arms may be rewritten
+  // freely, but a mention of the words must never deny again. The old bare
+  // \breboot\b matched the REQUIRED --reboot.servers.[N].id / --reboot.type
+  // parameter names and vetoed an approved BatchRebootServers.
+  const catalog = readJson(join(pluginRoot, 'safety', 'rules', 'cloud-risk-rules.json')) as RiskRulesCatalog;
+  const rule = catalog.rules.find((entry) => entry.id === 'hwc-sandbox-destructive-command');
+  assert.ok(rule, 'the destructive-terminal rule must exist');
+  const asConditions = (value: unknown): Array<{ regex: string }> =>
+    Array.isArray(value) ? (value as Array<{ regex: string }>) : [];
+  const conditions = [...asConditions(rule.match.any), ...asConditions(rule.match.all)];
+  assert.ok(conditions.length > 0);
+  for (const mention of [
+    'grep -rn reboot docs/',
+    'hcloud ECS BatchRebootServers --reboot.servers.1.id=i --reboot.type=SOFT',
+    'cat docs/fdisk-guide.md',
+    'env reboot=false',
+    'man mkfs',
+    'grep "mkfs" docs/',
+  ]) {
+    for (const condition of conditions) {
+      assert.equal(
+        new RegExp(condition.regex, 'ims').test(mention),
+        false,
+        `${condition.regex} must not match the mention: ${mention}`,
+      );
+    }
+  }
+});
+
 test('the py hook derives the obfuscation gate write vocabulary from policy.json (prefixes), with the OBS half marker-gated', () => {
   // port-v2defects (interrogate round): WRITE_VOCAB_RE was a hardcoded
   // 20-word alternation whose comment claimed to mirror policy.json's 37

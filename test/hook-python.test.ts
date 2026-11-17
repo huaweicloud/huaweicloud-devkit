@@ -113,6 +113,36 @@ test('python hook allows safe commands under Hermes context', () => {
   assert.equal(result.stdout.trim(), '', 'safe commands should produce no output');
 });
 
+test('python hook denies fail-closed when the risk rules catalog is unreadable', () => {
+  // The .mjs twin denies on a corrupt cloud-risk-rules.json (the
+  // hook-node.test.ts pin); the py hook used to swallow the parse error as
+  // "no rules" and let the command run. Copy the hook into a fixture with a
+  // truncated catalog and pin the deny.
+  const dir = fixtureDir('py-hook-corrupt-rules');
+  mkdirSync(join(dir, 'hooks'), { recursive: true });
+  mkdirSync(join(dir, 'safety', 'rules'), { recursive: true });
+  copyFileSync(hookPath, join(dir, 'hooks', 'huaweicloud-safety.py'));
+  const policySrc = join(process.cwd(), 'plugins', 'huaweicloud-core', 'safety', 'policy.json');
+  copyFileSync(policySrc, join(dir, 'safety', 'policy.json'));
+  writeFileSync(join(dir, 'safety', 'rules', 'cloud-risk-rules.json'), '{"rules": [trunc', 'utf8');
+
+  const result = spawnSync(pythonBin, [join(dir, 'hooks', 'huaweicloud-safety.py')], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'ls -la' } }),
+    encoding: 'utf8',
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+  });
+  if (pythonUnavailable(result)) return;
+
+  assertDenyWithReason(result, /cloud risk rules failed to load/);
+});
+
+function assertDenyWithReason(result: { status: number | null; stdout: string }, pattern: RegExp) {
+  assert.equal(result.status, 0);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny');
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, pattern);
+}
+
 function runEvaluate(toolName: string, toolInput: { command: string }) {
   const probe = [
     'import importlib.util, json',
@@ -347,14 +377,32 @@ test('python hook: positional write gate, newline payloads, and OBS writes', () 
 // isolation must keep unrelated corruption (a bad credentialFilePatterns
 // regex) from triggering the fail-closed arms while the vocabularies are
 // intact.
+// Ships the shipped rules catalog into a copy-fixture's safety/ sibling so
+// the fixture measures the degradation it claims (a missing/corrupt POLICY,
+// or a specific field), not the rules file. A missing RULES file is its own
+// fail-closed doctrine (parity with the .mjs hook-node pin) and has its own
+// test below — under it the hook denies everything, so every "allow" pin in
+// a policy-degradation fixture would silently become a rules-degradation
+// pin instead.
+function copySafetyRules(dir: string) {
+  mkdirSync(join(dir, 'safety', 'rules'), { recursive: true });
+  copyFileSync(
+    join(process.cwd(), 'plugins', 'huaweicloud-core', 'safety', 'rules', 'cloud-risk-rules.json'),
+    join(dir, 'safety', 'rules', 'cloud-risk-rules.json'),
+  );
+}
+
 test('python hook fails closed when the policy vocabulary is unavailable (degraded-mode doctrine)', () => {
   // The copies mirror the deployed layout (hooks/ under the plugin dir,
   // safety/ its sibling) so the hook's parents[1] resolves inside the
-  // fixture, not the surrounding tmpdir.
+  // fixture, not the surrounding tmpdir. No policy.json sibling: every
+  // policy-derived regex stays None (the rules catalog stays present so
+  // this measures policy degradation, not rules degradation).
   const dir = fixtureDir('hook-degraded-');
   mkdirSync(join(dir, 'hooks'), { recursive: true });
   const hookCopy = join(dir, 'hooks', 'huaweicloud-safety.py');
   copyFileSync(hookPath, hookCopy);
+  copySafetyRules(dir);
   const runDegraded = (command: string) =>
     spawnSync(pythonBin, [hookCopy], {
       input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
@@ -412,6 +460,7 @@ test('python hook fails closed when the policy vocabulary is unavailable (degrad
   const isolated = fixtureDir('hook-isolated-');
   mkdirSync(join(isolated, 'hooks'), { recursive: true });
   mkdirSync(join(isolated, 'safety'), { recursive: true });
+  copySafetyRules(isolated);
   const policy = JSON.parse(
     readFileSync(join(process.cwd(), 'plugins', 'huaweicloud-core', 'safety', 'policy.json'), 'utf8'),
   );
@@ -456,6 +505,7 @@ test('python safety hook labels canonical writes cli:write (per-word write searc
   mkdirSync(join(dir, 'hooks'), { recursive: true });
   mkdirSync(join(dir, 'safety'), { recursive: true });
   copyFileSync(hookPath, join(dir, 'hooks', 'huaweicloud-safety.py'));
+  copySafetyRules(dir);
   copyFileSync(
     join(process.cwd(), 'plugins', 'huaweicloud-core', 'safety', 'policy.json'),
     join(dir, 'safety', 'policy.json'),

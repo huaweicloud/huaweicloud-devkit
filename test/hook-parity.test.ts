@@ -992,6 +992,29 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['hcloud', 'allow'],
   ['sudo hcloud', 'allow'],
   ['hcloud --', 'allow'],
+  // The reboot-parameter incident and the anchored destructive arms. The
+  // deny rows pin the verbs at command position (plus the deliberate
+  // over-deny faces of the sudo-anywhere and dd arms); the allow rows pin
+  // the mention classes the old bare \bwords\b used to catch. The incident
+  // command denies through the WRITE gate here — the destructive rule must
+  // no longer have an opinion about --reboot.* parameter names.
+  ['sudo reboot', 'deny'],
+  ['reboot', 'deny'],
+  ['systemctl reboot', 'deny'],
+  ['systemctl --no-block reboot', 'deny'],
+  ['sudo -u root reboot', 'deny'],
+  ['sudo init 6', 'deny'],
+  ['bash -c "reboot"', 'deny'],
+  ['rm -rf /', 'deny'],
+  ['ssh -i k root@1.2.3.4 "sudo reboot"', 'deny'],
+  ['echo "sudo reboot done"', 'deny'],
+  ['grep "dd if=" docs/', 'deny'],
+  ['grep -rn reboot docs/', 'allow'],
+  ['echo "reboot soon"', 'allow'],
+  ['git log --grep=reboot', 'allow'],
+  ['grep "(reboot)" crontab.txt', 'allow'],
+  ['hcloud ECS BatchRebootServers --reboot.servers.1.id=i --reboot.type=SOFT', 'deny'],
+  ['hcloud ECS BatchStartServers --os-start.servers.1.id=i', 'deny'],
 ];
 
 // One python3 process runs the whole battery in-process through the real
