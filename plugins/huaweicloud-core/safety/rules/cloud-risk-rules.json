@@ -583,11 +583,15 @@
           {
             "field": "text",
             "regex": "--no-preserve-root"
+          },
+          {
+            "field": "text",
+            "regex": "\\brm\\s+(?:--?[\\w-]*\\s+)*-(?:r[\\w]*f|f[\\w]*r)[\\w-]*(?=[\\s;|&)#>]|$)"
           }
         ]
       },
-      "message": "A recursive forced rm targets the working tree, a relative path, the user's home, or the filesystem root instead of a named absolute path — or spells out --no-preserve-root.",
-      "remediation": "Recursive forced rm is refused for every target shape. Delete named absolute paths one by one, or use targeted deletions (rm with the exact file names); list what will be removed first."
+      "message": "A recursive forced rm in any combined-flag spelling — rm -rf, -fr, flags interposed or after the target, quoted, glob, $VAR, or dot-prefixed targets, --no-preserve-root.",
+      "remediation": "Recursive forced rm is refused in every combined-flag spelling, whatever the target. Delete files by exact name (rm with the file names, no combined -rf/-fr flags), or use targeted deletions; list what will be removed first."
     },
     {
       "id": "hwc-sandbox-destructive-find-delete",

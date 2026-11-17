@@ -276,9 +276,15 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   assert.match(sandboxSkill, /standing-session/, 'the sandbox skill names the standing-consent carrier');
   // The exec doctrine: benign runs ungated, the refusal coverage names the
   // engine's real rows, and the boundary sentence states exactly what lies
-  // outside them — never an absolutist "outright"/"still CONFIRM" claim.
+  // outside them — never an absolutist "outright"/"still CONFIRM"/"every
+  // target shape" claim.
   assert.match(sandboxSkill, /NO confirmation surface at all/);
   assert.match(sandboxSkill, /no confirmation able to unlock it/, 'the refusal coverage names its own boundary');
+  assert.match(
+    sandboxSkill,
+    /recursive forced rm in any combined-flag spelling/,
+    'the rm coverage is the combined-flag spelling, enumerated honestly',
+  );
   assert.match(
     sandboxSkill,
     /The refusal set is those rows and nothing more/,
@@ -293,6 +299,18 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
     sandboxSkill,
     /after a restart the same command confirms again/,
     'the memo carries its restart boundary',
+  );
+  // The operator-approved Bash-face widening is disclosed (round 4, F3).
+  assert.match(
+    sandboxSkill,
+    /Bash-face widening \(operator-approved\)/,
+    'the Bash-face widening carries its disclosure paragraph',
+  );
+  assert.match(sandboxSkill, /rm -rf node_modules/, 'the disclosure names the node_modules shape');
+  assert.match(
+    sandboxSkill,
+    /the hook gates the agent face only/,
+    'the disclosure scopes the change to the agent face',
   );
 
   const approvals = readSource(
@@ -309,10 +327,25 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   assert.match(approvals, /The refusal set is those rows and nothing more/, 'the refusal class is the enumerated one');
   assert.match(
     approvals,
+    /recursive forced rm in any combined-flag spelling/,
+    'the approvals rm coverage is the combined-flag spelling',
+  );
+  assert.match(
+    approvals,
     /a command outside them is not silently stopped/,
     'the outside-the-rows boundary carries the responsibility wording',
   );
   assert.match(approvals, /dies with it: after a restart the same command confirms again/, 'the memo restart boundary');
+  assert.match(
+    approvals,
+    /operator-approved widening/,
+    'the approvals reference carries the Bash-face widening disclosure',
+  );
+  assert.match(
+    approvals,
+    /the hook gates the agent face only/,
+    'the disclosure scopes the Bash-face change to the agent face',
+  );
 });
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {

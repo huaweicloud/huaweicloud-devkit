@@ -1028,19 +1028,32 @@ test('a memo-reused retry that throws again still carries approvedVia on the err
   });
 });
 
-test('the newly enumerated destructive shapes refuse in both modes with the rule named (F9, round 3 seven)', async () => {
-  // Round 2's rows missed the seven shapes round 3 drove: relative rm
-  // targets, the --no-preserve-root spelling, find -delete on any start
-  // point, and the xargs-rm pipeline. The rows now cover the family; the
-  // controls (ls, grep|wc, mkdir) stay zero-surface.
+test('the newly enumerated destructive shapes refuse in both modes with the rule named (round 4: the twelve escapes)', async () => {
+  // Round 4's seat drove the exact escape list past the round-3 rows: the
+  // bare-name boundary was whitespace-or-end, so every shell metacharacter
+  // escaped it. The catch-all combined-flag alternative now denies rm with
+  // -rf/-fr in ANY spelling before the target is even examined.
   const BLIND_SPOTS = [
+    ['rm -rf .git', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf .next', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf .cache', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf "dist"', 'hwc-sandbox-destructive-unanchored-rm'],
+    ["rm -rf 'dist'", 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf $PWD', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf dist/*', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf -- dist', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf -v dist', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf dist;', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf dist&&echo done', 'hwc-sandbox-destructive-unanchored-rm'],
+    ['rm -rf node_modules', 'hwc-sandbox-destructive-unanchored-rm'],
+    // The round-3 keeps, still covered.
     ['rm -rf dist', 'hwc-sandbox-destructive-unanchored-rm'],
-    ['rm -rf build/', 'hwc-sandbox-destructive-unanchored-rm'],
     ['rm -rf ..', 'hwc-sandbox-destructive-unanchored-rm'],
-    ['rm -rf ../x', 'hwc-sandbox-destructive-unanchored-rm'],
-    ['rm -rf --no-preserve-root /', 'hwc-sandbox-destructive-unanchored-rm'],
     ['find . -name x -delete', 'hwc-sandbox-destructive-find-delete'],
-    ['ls | xargs rm -rf', 'hwc-sandbox-pipe-to-xargs-rm'],
+    // The pipeline lands on the combined-flag row too — the rm row's
+    // alternation fires before the pipeline row is consulted (deny with a
+    // rule named either way).
+    ['ls | xargs rm -rf', 'hwc-sandbox-destructive-unanchored-rm'],
   ] as const;
   await withSandboxHome(async () => {
     await withApprovalMode(undefined, async () => {

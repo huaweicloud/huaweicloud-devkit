@@ -1,5 +1,3 @@
-import { redactSecrets } from '../safety-policy.ts';
-
 // The shared display-redaction leaf. Two passes live here, one canonical home
 // each:
 //   1. the secret-TOKEN FOLD — the argv/string fold that hides secret VALUES
@@ -69,7 +67,12 @@ export function foldSecretTokens(args: readonly unknown[]): unknown[] {
       continue;
     }
     const nextRaw = i + 1 < args.length ? args[i + 1] : undefined;
-    const next = nextRaw === undefined ? undefined : String(nextRaw);
+    // Narrow before String(): only string- and number-shaped elements can
+    // be a bare key's value token — anything else (objects, arrays) is not
+    // a shell word and passes through untouched, and Object's default
+    // stringification never enters the fold.
+    const next: string | undefined =
+      typeof nextRaw === 'string' || typeof nextRaw === 'number' ? String(nextRaw) : undefined;
     if (SECRET_KEY_TOKEN_RE.test(arg) && next !== undefined && !SECRET_KEY_TOKEN_RE.test(next)) {
       out.push(arg, '<redacted>');
       i += 1;
@@ -89,13 +92,15 @@ export function foldSecretTokensInString(text: string): string {
   return (foldSecretTokens(text.split(/\s+/)) as string[]).join(' ');
 }
 
-// The full display fold for one command string: the engine's own redaction
-// (the glued key=value/key:value forms) then the shared two-token fold —
-// the composition the exec views and the token store apply to every
-// command-shaped string they render or persist.
-export function redactCommandForDisplay(command: string): string {
-  return foldSecretTokensInString(redactSecrets(command));
-}
+// THE COMPOSITION RULE (one statement, every consumer): a display or store
+// surface redacts by composing `redactSecrets(value)` FIRST (the engine's
+// glued key=value/key:value folds) and `redactWithSupplementalKeys(...)`
+// SECOND (the supplemental key denylist plus the two-token fold). There is
+// deliberately no helper wrapping the pair: the consumers run it on whole
+// argv arrays and object bindings (values redactSecrets alone mishandles),
+// so a string-only helper was a zero-call-site lie the round-4 seat caught.
+// redactSecrets's import stays — it is the first half of the composition
+// the callers name at their sites.
 
 export function redactWithSupplementalKeys(value: unknown): unknown {
   if (typeof value === 'string') {

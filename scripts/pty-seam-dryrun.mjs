@@ -111,8 +111,7 @@ console.log('replay answered already_processed — single use holds');
 // carries the SPACE-separated secret spelling and drive the real approve
 // verb; the CLI's Confirming line renders the STORE entry, so the terminal
 // must show the folded form, never the plaintext.
-const { approveTokenPty } =
-  await import('/home/yanchengyu/.herdr/worktrees/HuaweiCloud-Devkit/pr3a/test/e2e/approve-pty.ts');
+const { approveTokenPty } = await import(new URL('../test/e2e/approve-pty.ts', import.meta.url).href);
 const secretMint = await callTool('huaweicloud_sandbox_exec_one_shot', {
   command: 'hcloud ECS DeleteServers --password pty-hunter2-secret --server_id=i-1 --cli-region=cn-north-4',
   approvedByUser: true,
