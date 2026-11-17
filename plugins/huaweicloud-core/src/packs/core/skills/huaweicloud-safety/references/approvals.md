@@ -15,12 +15,13 @@ One per line, append-shaped: a sibling registration adds its tools here without 
 - `huaweicloud_sandbox_keepalive_watchdog`
 - `huaweicloud_sandbox_sign_agreement`
 - `huaweicloud_sandbox_credentials`
+- `huaweicloud_sandbox_shutdown`
 - `huaweicloud_auth_init`
 - `huaweicloud_auth_switch`
 
 ## The two gate flavors
 
-- **Always.** The call confirms on every invocation — connect, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands. No content rule ever exempts them.
+- **Always.** The call confirms on every invocation — connect, shutdown, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands. No content rule ever exempts them.
 - **Classified.** The two sandbox exec faces classify the `command` string first (the same engines the Bash safety face uses). A benign command runs with NO confirmation surface at all — no form, no envelope, no token. A write-classified command confirms on every call. The strict engine refuses some content with the rule named and no confirmation unlocks it — the families its rows cover: credential-file reads, environment dumps, recursive forced rm in any combined-flag spelling (`rm -rf`/`-fr`, flags interposed or after the target, `--`, quoted, glob, `$VAR`, dot-prefixed names, `.`, `..`, `~`, `$HOME`, `*`, `--no-preserve-root`), `find` with `-delete`, pipelines sweeping files into rm, downloads piped into a shell, disk format, and shutdown commands. The refusal set is those rows and nothing more: a command outside them is not silently stopped, so prefer targeted deletions (rm with exact file names, no combined -rf flag), and treat any refusal as a boundary to rework.
 
 The same destructive rows also deny on the agent's own Bash face through the safety hook (the operator-approved widening): unanchored recursive rm — any combined-flag spelling, including `rm -rf node_modules` and the quoted/glob/`$VAR` forms — and `find … -delete` now refuse there too. The operator chose the safe direction: a false deny on the agent face costs one rephrased command, a miss costs the workspace. A human's own terminal is unaffected — the hook gates the agent face only.

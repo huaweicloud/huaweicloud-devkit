@@ -203,6 +203,10 @@ export const TOOL_DEFINITIONS_LITERALS = [
     description: packDescription('huaweicloud_sandbox_credentials'),
   },
   {
+    name: 'huaweicloud_sandbox_shutdown',
+    description: packDescription('huaweicloud_sandbox_shutdown'),
+  },
+  {
     name: 'huaweicloud_voucher_status',
     description: packDescription('huaweicloud_voucher_status'),
   },

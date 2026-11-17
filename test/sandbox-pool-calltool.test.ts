@@ -6,7 +6,6 @@ import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
 import { fixtureDir } from './fixture-dir.ts';
 import { withApprovalMode } from './approval-mode-harness.ts';
 import { elicitingSeam } from './eliciting-seam.ts';
-import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 
 process.env.HW_ACCESS_KEY = 'TESTAK';
 process.env.HW_SECRET_KEY = 'TESTSK';
@@ -458,13 +457,10 @@ interface ShutdownResult {
 }
 
 // 关机是门面工具：与 connect 同型，ask 姿态 + 接受表单缝（本文件的直调
-// 层无法扮演终端半边）。红态类型桥：工具名尚未入 ToolName 联合，实现提交
-// 落地后改回裸字面量。
-const SHUTDOWN_NAME = 'huaweicloud_sandbox_shutdown' as unknown as ToolName;
-
+// 层无法扮演终端半边）。
 async function gatedShutdownCall(args: Record<string, unknown>, label: string): Promise<unknown> {
   return withApprovalMode('ask', async () =>
-    callTool(SHUTDOWN_NAME, args, {
+    callTool('huaweicloud_sandbox_shutdown', args, {
       sessionId: `${label}-${(poolPreloadSeq += 1)}`,
       elicitation: elicitingSeam({ decision: 'accept', content: { confirm: true } }).seam,
     }),

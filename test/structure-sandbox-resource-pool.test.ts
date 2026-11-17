@@ -719,6 +719,6 @@ test('huawei-sandbox teaches the shutdown doctrine and the persistent core-hours
   assert.match(
     approvals,
     /connect, shutdown, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands/,
-    "the approvals always-flavor sentence must name shutdown",
+    'the approvals always-flavor sentence must name shutdown',
   );
 });

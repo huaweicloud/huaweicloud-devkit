@@ -421,6 +421,10 @@ mock.module(API_SPEC, {
     },
     hdkitCheckUser: async () => ({}),
     hdkitSignAgreement: async () => ({}),
+    // port-pr6：handlers-account 图新增的关机导出——mock 面必须随行补齐，
+    // 否则 HANDLERS_SPEC 的链接期即失败（hdkitShutdown 缺失 → 整组 fold 用例
+    // 拿不到 handleConnect）。本文件的用例不触关机路径，桩返回空信封即可。
+    hdkitShutdown: async () => ({}),
   },
 } as unknown as Parameters<typeof mock.module>[1]);
 const { handleConnect } = await import(HANDLERS_SPEC);

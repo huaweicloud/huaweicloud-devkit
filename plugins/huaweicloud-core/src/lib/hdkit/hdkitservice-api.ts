@@ -461,6 +461,23 @@ export async function hdkitCredentials(
   return asRecord(await hdkitRequest('POST', 'credentials', body));
 }
 
+/**
+ * 关机（dev 5d89c880）：DevStation `close`，不 delete——实例保留（持久池
+ * EVS 数据盘随之保留），下次 connect 自动唤醒。停止核时消耗的唯一主动面。
+ * 120s 超时：关机编排与 connect 同量级，慢网关日需要余量。
+ */
+export async function hdkitShutdown(sessionId: unknown, devStageId: unknown): Promise<Record<string, unknown>> {
+  const body: Record<string, unknown> = {};
+  if (sessionId) body.session_id = sessionId;
+  if (devStageId) body.dev_stage_id = devStageId;
+
+  if (!sessionId && !devStageId) {
+    throw new Error('session_id or dev_stage_id is required');
+  }
+
+  return asRecord(await hdkitRequest('POST', 'shutdown', body, 120000));
+}
+
 // ── DevBridge API Key relay 代理（经 hdkitservice 透传 DevStation relay 接口）──
 // 凭证由 hdkitRequest 内部 getCredentials() 统一解析，调用方无需传
 

@@ -164,9 +164,6 @@ interface GatedTool {
   effect: () => number;
 }
 
-// 红态类型桥：实现提交把工具名并入 ToolName 后改回裸字面量。
-const SHUTDOWN_TOOL_NAME = 'huaweicloud_sandbox_shutdown' as unknown as ToolName;
-
 const EXEC_ONE_SHOT = {
   name: 'huaweicloud_sandbox_exec_one_shot' as ToolName,
   args: { command: WRITE_COMMAND, workspace_id: 'ws-gate', username: 'root' },
@@ -205,7 +202,7 @@ const GATED_TOOLS: GatedTool[] = [
   },
   { name: 'huaweicloud_sandbox_sign_agreement', args: {}, effect: () => fetchLog.length },
   { name: 'huaweicloud_sandbox_credentials', args: { dev_stage_id: 'ds-gate' }, effect: () => fetchLog.length },
-  { name: SHUTDOWN_TOOL_NAME, args: { dev_stage_id: 'ds-gate' }, effect: () => fetchLog.length },
+  { name: 'huaweicloud_sandbox_shutdown', args: { dev_stage_id: 'ds-gate' }, effect: () => fetchLog.length },
 ];
 
 let sessionSeq = 0;

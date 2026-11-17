@@ -1,6 +1,6 @@
 ---
 name: huawei-sandbox
-description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a Huawei Cloud task needs a temporary runtime to deploy, run, or preview a web application. A request that names no cloud vendor is not thereby a Huawei Cloud task: when the vendor is unknown and cannot be inferred, ask which cloud the user means before routing here — deployment/website vocabulary alone is not vendor evidence. Cloud-facing tools take a vendorConfirmed parameter — pass the user’s establishing words, never an invented quote. Covers sandbox lifecycle (check-user, sign-agreement, connect, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, backend service, 工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
+description: 'Use when creating, connecting, or managing Huawei Cloud Sandbox instances and workspace terminals, or when a Huawei Cloud task needs a temporary runtime to deploy, run, or preview a web application. A request that names no cloud vendor is not thereby a Huawei Cloud task: when the vendor is unknown and cannot be inferred, ask which cloud the user means before routing here — deployment/website vocabulary alone is not vendor evidence. Cloud-facing tools take a vendorConfirmed parameter — pass the user’s establishing words, never an invented quote. Covers sandbox lifecycle (check-user, sign-agreement, connect, shutdown, release), session-based terminal execution, and credential injection. Triggers on: sandbox, workspace, terminal, web app deployment, deploy web app, preview app, deploy github, github repo, deploy repo, website, static site, web application, backend service, 工作台, workbench, full-stack, 全栈, CRUD 应用, database-backed REST API, PostgREST, postgres, hwlink, devstation, hdkitservice, remote exec. NOT for: ECS instances (use huawei-ecs), CCE clusters (use huawei-cce).'
 version: 1
 ---
 
@@ -47,11 +47,11 @@ Hard rules:
 
 Domain expertise for Huawei Cloud Sandbox (DevStation) instances and workspace terminal execution. Covers sandbox lifecycle via hdkitservice API and remote terminal command execution via hwlink protocol.
 
-## Approval gate (the eight mutating tools)
+## Approval gate (the nine mutating tools)
 
-The mutating sandbox tools run through the devkit approval gate. Gated: `connect`, `exec_with_session`, `exec_one_shot`, `expose_tunnel`, `renew_tunnel`, `keepalive_watchdog`, `sign_agreement`, `credentials`. Not gated: `check_user`, `exec_poll`, `close_session`, `upload_file`, `upload_project`, `deploy_nginx`, `deploy_check`.
+The mutating sandbox tools run through the devkit approval gate. Gated: `connect`, `exec_with_session`, `exec_one_shot`, `expose_tunnel`, `renew_tunnel`, `keepalive_watchdog`, `sign_agreement`, `credentials`, `shutdown`. Not gated: `check_user`, `exec_poll`, `close_session`, `upload_file`, `upload_project`, `deploy_nginx`, `deploy_check`.
 
-- **connect / the tunnel faces / sign_agreement / credentials confirm on every call.** There is no content rule that exempts them. A first call returns `USER_CONFIRMATION_REQUIRED` with a minted `approvalToken` (token mode) or raises the confirmation form / chat envelope (ask mode). Tell the user the approve line (`npx huaweicloud-devkit approve <token>`), wait, then retry the same call with `approvalToken` and `approvedByUser: true`. Never sign the agreement or inject credentials without the user's explicit approval — the gate now enforces mechanically what this skill always demanded.
+- **connect / shutdown / the tunnel faces / sign_agreement / credentials confirm on every call.** There is no content rule that exempts them. A first call returns `USER_CONFIRMATION_REQUIRED` with a minted `approvalToken` (token mode) or raises the confirmation form / chat envelope (ask mode). Tell the user the approve line (`npx huaweicloud-devkit approve <token>`), wait, then retry the same call with `approvalToken` and `approvedByUser: true`. Never sign the agreement or inject credentials without the user's explicit approval — the gate now enforces mechanically what this skill always demanded.
 - **The exec tools are content-classified.** A benign command (`ls`, `npm install`, `mkdir`, builds) runs with NO confirmation surface at all. A write-classified command (an `hcloud` write through the terminal, anything the text classifier marks write/execution) confirms on every call. The strict engine REFUSES, with the rule named and no confirmation able to unlock it, the families its rows cover: credential-file reads (`cat ~/.huaweicloud/config.json`, `env` dumps), recursive forced rm in any combined-flag spelling — `rm -rf`/`-fr`, flags interposed (`rm -v -rf x`) or after the target, `--`, quoted (`"dist"`/`'dist'`), glob (`dist/*`), `$VAR` (including `$PWD`), dot-prefixed names (`.git`, `.next`, `.cache`), `.`, `..`, `~`, `$HOME`, `*`, and `--no-preserve-root` — `find` with `-delete`, pipelines sweeping files into rm (`ls | xargs rm -rf`), downloads piped into a shell (`curl|wget … | bash|sh`), disk format, and shutdown commands. The refusal set is those rows and nothing more: a command outside them is NOT silently stopped, so prefer targeted deletions (rm with exact file names, no combined -rf flag) yourself — and treat any refusal as a boundary to rework, never a prompt to retry.
 - **The retry memo.** When an approved exec's delivery was uncertain (the call threw, completion unknowable), a byte-identical retry reuses the prior consent and the response carries `approvedVia: "retry-uncertain"` — no second confirmation. A delivered call clears the memo: the same command again confirms like any first call. Different arguments always confirm again. The memo lives in the devkit server process: after a restart the same command confirms again.
 - **Session standing consent (ask mode).** The confirmation form offers "Remember for this session"; when the user ticks it, identical later calls run without asking (`approvedVia: "standing-session"`) until the devkit server restarts.
@@ -85,7 +85,9 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 - **配额**：每用户每类型 1 台（1+1 可并存）；同池 connect 自动复用已有实例
 - **429 双错误码**：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`
 - **TTL 播报**：仅 connect（会话首次连接 / 复用被唤醒 `started=true`）与 expose_tunnel（交付地址时）返回生命周期提示；其余执行类工具不逐次播报。**ephemeral 池部署的公网地址会随沙箱闲置关机失效**，向开发者交付 URL 时必须转述 `urlLifetimeHint` / `warnings` 中的存活期提示（隧道有效期 ≠ 沙箱存活期）。数值以服务端回显为准，缺失时用默认口径兜底
+- **核时提醒（persistent 播报追加）**：persistent 池的生命周期播报（connect 的 `pool.ttl_hint` 与 expose_tunnel 的 `urlLifetimeHint`）追加「如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。」；ephemeral 播报不出现该提示
 - **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
+- **关机纪律**：仅当开发者明确要求关机时调用 `huaweicloud_sandbox_shutdown`；调用前确认一次，绝不自动关机。关机 ≠ 删除：只 close，不 delete，实例与 EVS 数据盘保留，下次 connect 自动唤醒。非持久化沙箱也可关机，但不主动提示；不要向开发者提“控制台关机”。
 - **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
 - 显式 `template_id` 优先于 `pool_type`（自定义模板场景）
 - 完整口径、容量规划与 G 清单：[references/resource-pool.md](references/resource-pool.md)
@@ -121,6 +123,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | --------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
 | `huaweicloud_sandbox_connect`     | Connect to sandbox (one instance per user per pool; `pool_type` selects ephemeral/persistent, default ephemeral) |
 | `huaweicloud_sandbox_credentials` | Inject temporary AK/SK into a running sandbox                                                                    |
+| `huaweicloud_sandbox_shutdown`    | Shut down a running sandbox (close only; instance/data disk retained; reconnect wakes it)                        |
 
 ### Tunnel Persistence (public URL lifetime)
 
@@ -157,6 +160,7 @@ Selection rules（agent 按意图自动选池，开发者可覆盖；意图不�
 | Deployment completeness check      | `deploy_check`                         | Verifies nginx, DevBridge, URL, QR before reporting success                 |
 | Tunnel lifetime renewal            | `renew_tunnel`                         | Rolling-window renewal, same URL stays alive                                |
 | URL must outlive the session       | `keepalive_watchdog`                   | Unattended host re-attach + daily renewal + health check                    |
+| 暂不使用 / 节省核时                | `sandbox_shutdown`                     | 只关机不删除；数据盘保留，下次 connect 自动唤醒                             |
 | Single file upload (<1MB)          | `upload_file`                          | Base64 chunked, reliable for small files                                    |
 | Project directory upload (>1MB)    | `upload_project`                       | HTTP tunnel, much faster than base64 for multi-file projects                |
 

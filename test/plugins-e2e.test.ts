@@ -23,16 +23,16 @@ test('MCP tools/list includes all required core tools with valid schemas', async
     for (const required of REQUIRED_TOOLS) {
       assert.ok(toolNames.includes(required), `Missing tool: ${required}`);
     }
-    // Plus every optional-pack tool: tools/list must carry the full 54
+    // Plus every optional-pack tool: tools/list must carry the full 55
     // (the P2 packs' 53, +1 for the async-exec claim protocol's
-    // huaweicloud_sandbox_exec_poll).
+    // huaweicloud_sandbox_exec_poll, +1 for the port-pr6 shutdown).
     const perPackNames = Object.values(PER_PACK_TOOLS).flat();
     for (const name of perPackNames) {
       assert.ok(toolNames.includes(name), `Missing tool: ${name}`);
     }
     assert.equal(
       REQUIRED_TOOLS.length + perPackNames.length,
-      54,
+      55,
       'always-on + per-pack lists must cover the full registry',
     );
     assert.ok(toolNames.length >= 25, `Expected >= 25 tools, got ${toolNames.length}`);
@@ -68,8 +68,8 @@ test('MCP tools/list includes all required core tools with valid schemas', async
 // the opted-in pack registers fully, every other pack is absent). Extracted
 // because the sandbox and open-mcp scenarios are token-identical otherwise.
 
-test('DEVKIT_PACKS=sandbox trims tools/list to core 12 + sandbox 15', async () => {
-  await assertTrimmedToolsList('sandbox', 27, 'core 12 + sandbox 15');
+test('DEVKIT_PACKS=sandbox trims tools/list to core 12 + sandbox 16', async () => {
+  await assertTrimmedToolsList('sandbox', 28, 'core 12 + sandbox 16');
 });
 
 test('DEVKIT_PACKS=huaweicloud-open-mcp trims tools/list to core 12 + gateway 3', async () => {

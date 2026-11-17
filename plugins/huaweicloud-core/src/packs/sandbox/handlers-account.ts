@@ -1,6 +1,11 @@
-import { execWithSession, setWorkspaceId } from '../../sandbox/session-manager.ts';
+import { execWithSession, closeSession, getCurrentWorkspaceId, setWorkspaceId } from '../../sandbox/session-manager.ts';
 import { cleanupDevbridgeTunnels } from '../../sandbox/devbridge-tunnel.ts';
-import { hdkitCheckUser, hdkitSignAgreement, hdkitConnectWithRetry } from '../../lib/hdkit/hdkitservice-api.ts';
+import {
+  hdkitCheckUser,
+  hdkitSignAgreement,
+  hdkitConnectWithRetry,
+  hdkitShutdown,
+} from '../../lib/hdkit/hdkitservice-api.ts';
 import {
   MANUFACTURED_FAMILY,
   manufacturedPrefixPattern,
@@ -15,6 +20,7 @@ import {
   versionGateResult,
 } from '../../lib/hdkit/hdkit-gate.ts';
 import type { HdkitError } from '../../lib/hdkit/hdkitservice-api.ts';
+import { asString } from '../../lib/as-text.ts';
 import {
   validatePoolType,
   rememberWorkspacePool,
@@ -24,11 +30,12 @@ import {
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { transferGitRepo } from './git-transfer.ts';
 
-// Account/session-gate handlers (check_user, sign_agreement, connect) for
-// the sandbox pack, extracted verbatim from tools.ts in the within-pack
-// split for the jscpd complex-file bar; the tools.ts face imports them for
-// SANDBOX_TOOL_HANDLERS. handleConnect owns the git repo transfer chain
-// invocation (git-transfer.ts).
+// Account/session-gate handlers (check_user, sign_agreement, connect,
+// shutdown) for the sandbox pack, extracted verbatim from tools.ts in the
+// within-pack split for the jscpd complex-file bar; the tools.ts face imports
+// them for SANDBOX_TOOL_HANDLERS. handleConnect owns the git repo transfer
+// chain invocation (git-transfer.ts); handleShutdown owns the DevStation
+// close face (dev 5d89c880 + 3bfc1f53 tip state).
 
 export async function handleCheckUser(_args: ToolArgs = {}, _opts: CallToolOptions = {}) {
   try {
@@ -175,4 +182,54 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
   }
   // 生命周期提示：仅首次连接 / 关机唤醒时播报（服务端回显 pool_type 才生成）
   return enrichConnectResult(connectResult, { announce: announceConnect });
+}
+
+// 关机错误的结构化折叠（dev 5d89c880 的 toVersionGateResult 面，去掉 v2 未
+// 移植的 autoUpgrade 字段）：MCP 错误信封只携带 code+message，指引与版本字段
+// 必须展开为结构化返回才能穿透边界——404 HDKIT_SANDBOX_NOT_FOUND、烧核、
+// 版本门禁与传输层失败一律 ok:false 返回，不再裸抛。
+function shutdownErrorResult(error: unknown): Record<string, unknown> {
+  const err = error as HdkitError;
+  return {
+    ok: false,
+    code: err.code,
+    message: err instanceof Error ? err.message : String(error),
+    ...(err.retryAfter !== undefined ? { retryAfter: err.retryAfter } : {}),
+    ...(err.coreHoursExhausted ? { coreHoursExhausted: true } : {}),
+    ...(err.clientVersion ? { clientVersion: err.clientVersion } : {}),
+    ...(err.minVersion ? { minVersion: err.minVersion } : {}),
+    ...(err.remediation ? { remediation: err.remediation } : {}),
+  };
+}
+
+export async function handleShutdown(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
+  const sessionId = args.session_id;
+  // 3bfc1f53：workspaceId 与 devStageId 分开解析。仅 session_id 时 devStageId
+  // 留空（不把 session_id 字符串当 workspace 用），终端会话以服务端回传的
+  // devStageId 为准关闭。
+  const workspaceId = args.dev_stage_id || args.workspace_id || getCurrentWorkspaceId();
+  const devStageId = args.dev_stage_id || args.workspace_id || (sessionId ? undefined : workspaceId);
+  const id = sessionId || devStageId;
+  if (!id) {
+    return {
+      ok: false,
+      code: 'HDKIT_INVALID_REQUEST',
+      message:
+        'session_id or dev_stage_id is required. No sandbox connected — call huaweicloud_sandbox_connect first, or pass workspace_id.',
+    };
+  }
+  try {
+    const shutdown = await hdkitShutdown(sessionId, devStageId);
+    try {
+      // 3bfc1f53 终态：仅 session_id 时以服务端回传的 devStageId 关终端会话
+      //（id 检查已保证链上有真值；'' 为类型完备的防御尾）
+      const wsForClose = asString(shutdown.devStageId) ?? asString(workspaceId) ?? asString(sessionId) ?? '';
+      await closeSession(wsForClose, args.username || 'root');
+    } catch {
+      // best-effort: 关机已受理，终端会话随沙箱停止一并消亡
+    }
+    return { ok: true, ...shutdown };
+  } catch (error) {
+    return shutdownErrorResult(error);
+  }
 }
