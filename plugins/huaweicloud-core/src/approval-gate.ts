@@ -37,6 +37,7 @@ import type {
   ElicitFormSchema,
   ElicitOutcome,
 } from './approval-types.ts';
+import { resolveConfirmLanguage, type ConfirmLanguage } from './lib/confirm-language.ts';
 
 // The gate result: a structured pass carries the arrival's identity (the
 // consent stamp AND the seq the ask branch just wrote — round 15, finding
@@ -590,25 +591,22 @@ export const ELICITATION_TIMEOUT_MS = 300_000;
 const ELICITATION_DECISIONS = ['decline', 'approve-once', 'approve-session'] as const;
 
 // The form is the one surface the HUMAN reads, so its display language
-// follows the user's locale: a zh locale (LC_ALL / LC_MESSAGES / LANG /
-// LANGUAGE containing 'zh') renders the form in Simplified Chinese — the
-// refusal envelopes and the T3 instruction stay English, being model- and
-// log-facing wire vocabulary. enumNames is a first-class SDK 1.32.1
-// keyword (LegacyTitledEnumSchemaSchema carries it, probe-verified to
-// round-trip intact) that opencode renders as the choice labels
-// (source-verified in toElicitationField); a client that ignores the
-// extension falls back to the English enum value.
-function zhConfirmUi(): boolean {
-  const locales = [process.env.LC_ALL, process.env.LC_MESSAGES, process.env.LANG, process.env.LANGUAGE];
-  return locales.some((locale) => typeof locale === 'string' && /zh/i.test(locale));
-}
-
-function elicitSchema(): ElicitFormSchema {
+// follows the resolved tier ladder (lib/confirm-language.ts): the
+// operator's DEVKIT_CONFIRM_LANG pin, the model's per-call
+// confirmLanguage relay of the conversation's language, or the machine
+// locale as the floor. A zh resolution renders the form in Simplified
+// Chinese; the refusal envelopes and the T3 instruction stay English,
+// being model- and log-facing wire vocabulary. enumNames is a
+// first-class SDK 1.32.1 keyword (LegacyTitledEnumSchemaSchema carries it,
+// probe-verified to round-trip intact) that opencode renders as the
+// choice labels (source-verified in toElicitationField); a client that
+// ignores the extension falls back to the English enum value.
+function elicitSchema(language: ConfirmLanguage): ElicitFormSchema {
   const decision: Record<string, unknown> = {
     type: 'string',
     enum: [...ELICITATION_DECISIONS],
   };
-  if (zhConfirmUi()) {
+  if (language === 'zh') {
     decision['enumNames'] = ['拒绝', '批准本次', '批准并记住本次会话'];
     decision['title'] = '运行此命令？';
     decision['description'] =
@@ -621,15 +619,15 @@ function elicitSchema(): ElicitFormSchema {
   return { type: 'object', properties: { decision }, required: ['decision'] };
 }
 
-function elicitationRequest(commandLine: string, summary: string): ElicitFormRequest {
+function elicitationRequest(commandLine: string, summary: string, language: ConfirmLanguage): ElicitFormRequest {
   // A tool with an executable line shows it first (the command-forward
   // doctrine); a tool without one (the sandbox lifecycle faces, the auth
   // pair, PR-3c's registrations) centers the redacted summary instead —
   // never a blank command slot under a command heading (interrogate
   // round 2, fix-in-pass ii, adopted by the serial landing). The display
-  // strings follow the locale (see zhConfirmUi); the brand and the
-  // decision vocabulary stay English.
-  const zh = zhConfirmUi();
+  // strings follow the resolved language (see lib/confirm-language.ts);
+  // the brand and the decision vocabulary stay English.
+  const zh = language === 'zh';
   const head =
     commandLine !== ''
       ? zh
@@ -643,7 +641,7 @@ function elicitationRequest(commandLine: string, summary: string): ElicitFormReq
     : 'Choose approve-once to run it exactly once, or approve-session to also cover identical later calls in this session (the grant lasts until the devkit server restarts). Decline or dismiss cancels without running anything.';
   return {
     message: head + `${summary}\n\n` + tail,
-    schema: elicitSchema(),
+    schema: elicitSchema(language),
     timeoutMs: ELICITATION_TIMEOUT_MS,
   };
 }
@@ -852,9 +850,13 @@ export async function runApprovalGate(
     // an accept that chose decline, or an accept whose content carries no
     // valid decision value — refuses fail-closed: nothing executes, nothing
     // mints, nothing is recorded.
+    // The form's display language resolves per arrival (the operator pin,
+    // the model's confirmLanguage relay, the machine locale — in that
+    // order; lib/confirm-language.ts owns the ladder).
+    const language: ConfirmLanguage = resolveConfirmLanguage(args, process.env);
     const elicitation = opts.elicitation;
     if (elicitation?.capable) {
-      const outcome = await elicitation.prompt(elicitationRequest(commandLine, view.summary));
+      const outcome = await elicitation.prompt(elicitationRequest(commandLine, view.summary, language));
       // The enum's three values map the ladder: decline is the explicit
       // refusal; approve-once is a fresh single consent; approve-session
       // additionally arms the S3 standing grant. An accept with a MISSING or

@@ -1988,6 +1988,8 @@ interface SeededAskOptions {
   seam?: ElicitationSeam;
   /** The session id the arrivals run in (the envelope binding is session-scoped). */
   sessionId?: string;
+  /** The confirm-language hint the model relays (lib/confirm-language.ts tier 2). */
+  confirmLanguage?: string;
 }
 
 interface ElicitRecorder {
@@ -2023,6 +2025,7 @@ async function seededAskRun(seed: SeedStore, args: string[], options: SeededAskO
           };
           const baseArgs: Record<string, unknown> = { args, maxRetries: 0, vendorConfirmed: VENDOR };
           if (options.command !== undefined) baseArgs.command = options.command;
+          if (options.confirmLanguage !== undefined) baseArgs.confirmLanguage = options.confirmLanguage;
           // The T3 binding (round 2, finding 4): an attested arrival executes
           // only when its own line's envelope was shown in this session, so
           // the realistic default runs the ritual first — for EVERY shape now
@@ -2298,6 +2301,48 @@ test('T1: a non-zh locale renders the English form with no enumNames', async () 
     assert.ok(form.message.includes('requesting your confirmation'), 'the English head renders');
     assert.equal('enumNames' in form.schema.properties['decision']!, false, 'no labels in the en form');
   });
+});
+
+test('T1: the confirmLanguage hint overrides the machine locale — the model is the context observer', async () => {
+  await withUiLocale('en_US.UTF-8', async () => {
+    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
+    const { result } = await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+      command: LADDER_COMMAND,
+      attested: false,
+      seam,
+      confirmLanguage: 'zh',
+    });
+    assert.equal((result as ApprovedRunResult).approved, true, 'the English wire value executes as ever');
+    const form = requests[0]!;
+    assert.ok(form.message.includes('请求你确认运行此命令'), 'the hint beats the en locale');
+    assert.deepEqual(
+      form.schema.properties['decision']!['enum'],
+      ['decline', 'approve-once', 'approve-session'],
+      'the values stay English in the hint-driven zh form',
+    );
+  });
+});
+
+test('T1: the operator DEVKIT_CONFIRM_LANG pin overrides the hint and the locale both', async () => {
+  const prev = process.env.DEVKIT_CONFIRM_LANG;
+  process.env.DEVKIT_CONFIRM_LANG = 'en';
+  try {
+    await withUiLocale('zh_CN.UTF-8', async () => {
+      const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
+      await seededAskRun(LADDER_PROJECTS, LADDER_ARGS, {
+        command: LADDER_COMMAND,
+        attested: false,
+        seam,
+        confirmLanguage: 'zh',
+      });
+      const form = requests[0]!;
+      assert.ok(form.message.includes('requesting your confirmation'), 'the pin beats both lower tiers');
+      assert.equal('enumNames' in form.schema.properties['decision']!, false);
+    });
+  } finally {
+    if (prev === undefined) delete process.env.DEVKIT_CONFIRM_LANG;
+    else process.env.DEVKIT_CONFIRM_LANG = prev;
+  }
 });
 
 test('T3: a non-capable client gets the chat envelope, and the attested retry executes with posture evidence', async () => {
