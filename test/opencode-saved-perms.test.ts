@@ -88,10 +88,7 @@ test('the roster action comes from the roster leaf and matches the allow rule th
     (APPROVAL_TOOLS as ReadonlyArray<string>).includes('huaweicloud_run_approved_command'),
     'the PR-1 run face stays on the roster',
   );
-  assert.ok(
-    (APPROVAL_TOOLS as ReadonlyArray<string>).includes('huaweicloud_auth_init'),
-    'PR-3b registers auth_init',
-  );
+  assert.ok((APPROVAL_TOOLS as ReadonlyArray<string>).includes('huaweicloud_auth_init'), 'PR-3b registers auth_init');
   assert.ok(
     (APPROVAL_TOOLS as ReadonlyArray<string>).includes('huaweicloud_auth_switch'),
     'PR-3b registers auth_switch',

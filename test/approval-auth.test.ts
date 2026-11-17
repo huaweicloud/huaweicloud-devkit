@@ -220,7 +220,7 @@ test('token mode: the same flow gates auth_switch, and the account swap on a con
           ak: 'AKOTHERACCOUNT',
           sk: 'sk-other-account-value-32chars!!',
         }),
-      /Provided args do not match the approved call|Secret values are pinned/,
+      /Provided args do not match the approved confirmation|Secret values are pinned/,
       'a different account on the same approval never switches',
     );
     assert.equal(readGlobalCredentials()?.ak, undefined, 'the refused swap wrote nothing');
@@ -333,17 +333,27 @@ test('ask mode: a non-capable client gets the T3 envelope naming the account, an
   });
 });
 
-test('ask mode: a caller-stuffed command field never becomes the confirmation line for a no-anchor tool', async () => {
+test('ask mode: a caller-stuffed command field is refused outright for a no-anchor tool (the merged stricter gate)', async () => {
   await withTempAuthHome(async () => {
     const { seam, requests } = elicitingSeam({ decision: 'decline' });
     await withApprovalMode('ask', async () => {
-      await authInit({ command: 'rm -rf /tmp/innocent' }, { elicitation: seam });
-      const form = requests[0]!;
-      assert.ok(
-        !form.message.includes('rm -rf'),
-        'a stuffed command string must not pose as the approved action for a tool that executes no command',
+      // The merged tree is stricter than round 0's fix (which only kept the
+      // stuffed command from becoming the display line): a `command` field
+      // on a tool that declares no executable lines refuses with
+      // COMMAND_ARGS_MISMATCH before any confirmation surface — the form is
+      // never raised, so nothing the user never saw can execute.
+      const result = (await authInit({ command: 'rm -rf /tmp/innocent' }, { elicitation: seam })) as {
+        status: string;
+        code: string;
+      };
+      assert.equal(result.status, 'rejected');
+      assert.equal(
+        result.code,
+        'COMMAND_ARGS_MISMATCH',
+        'a stuffed command string on a no-anchor tool never reaches a surface',
       );
-      assert.ok(form.message.includes(ACCOUNT), 'the form shows the account switch, the real effect');
+      assert.equal(requests.length, 0, 'no confirmation form was ever raised');
+      assert.equal(hasRuntimeCredentials(), false, 'nothing executed');
     });
   });
 });
@@ -425,7 +435,7 @@ test('TOCTOU: a vault swap behind the init refs never executes — the shown acc
             approvalToken: minted.approvalToken,
             approvedByUser: true,
           }),
-        /do not match the approved call|Secret values are pinned/,
+        /do not match the approved confirmation|Secret values are pinned/,
         'the vault swap behind the same refs invalidates the approval',
       );
       assert.equal(hasRuntimeCredentials(), false, 'the unseen account never executed');

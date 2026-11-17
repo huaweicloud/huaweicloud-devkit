@@ -821,7 +821,10 @@ export async function runApprovalGate(
           command: view.command,
           scope: 'session',
         });
-        return { pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'session' }, binding: value };
+        return {
+          pass: { arrivalStamp: arrival.grantedAt, arrivalSeq: arrival.arrivalSeq, consentScope: 'session' },
+          binding: value,
+        };
       }
       return consented('elicitation');
     }
