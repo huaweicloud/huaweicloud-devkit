@@ -225,7 +225,7 @@ function stubConnectCapture(payload: unknown): { restore: () => void; body: () =
   };
 }
 
-// Fixed-envelope error stub: the 429 dual-code and burn-core faces.
+// Fixed-envelope error stub: the 429 three-code and burn-core faces.
 function stubErrorResponse(payload: unknown, init: ResponseInit): () => void {
   const originalFetch = global.fetch;
   global.fetch = async () =>
@@ -315,7 +315,7 @@ test('hdkitConnect keeps explicit template_id over pinned template', async () =>
   }
 });
 
-// ── 429 双错误码结构化处理 ──
+// ── 429 三错误码结构化处理 ──
 
 test('HDKIT_QUOTA_EXCEEDED carries retryAfter and release-oriented remediation', async () => {
   const restore = stubErrorResponse(
@@ -334,6 +334,47 @@ test('HDKIT_QUOTA_EXCEEDED carries retryAfter and release-oriented remediation',
     assert.match(err.remediation.hint, /配额已满/);
     assert.ok(Array.isArray(err.remediation.steps));
     assert.match(err.remediation.steps.join(' '), /复用/); // 引导复用/释放，而非重试
+  } finally {
+    restore();
+  }
+});
+
+test('HDKIT_TEMPLATE_QUOTA_EXCEEDED passes the server copy through with the designed remediation', async () => {
+  const finalCopy = '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+  const restore = stubErrorResponse(
+    { code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED', message: finalCopy },
+    { status: 429, headers: { 'Retry-After': '60' } },
+  );
+  try {
+    const err = await captureConnectRejection({ pool_type: 'ephemeral' });
+    assert.equal(err.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+    assert.equal(err.status, 429);
+    // dev dff5df91 终态：服务端文案即最终展示内容，不带 "CODE: " 前缀
+    assert.equal(err.message, finalCopy);
+    // 该码不带 Retry-After（即使网关/服务端附加了头，也不能骑上信封）
+    assert.equal(err.retryAfter, undefined, 'template quota carries no Retry-After');
+    assert.ok(err.remediation, 'the designed remediation must survive the request layer');
+    assert.match(err.remediation!.hint, /上限/);
+    const steps = err.remediation!.steps.join(' ');
+    assert.match(steps, /huaweicloud_sandbox_shutdown/, 'the remedy names the shutdown tool');
+    assert.match(steps, /重试/, 'the remedy names the retry act');
+    assert.doesNotMatch(steps, /每账号最多 5 台/, 'the old account-level quota guidance must not ride');
+  } finally {
+    restore();
+  }
+});
+
+test('HDKIT_TEMPLATE_QUOTA_EXCEEDED falls back to the designed copy when the server message is blank', async () => {
+  const restore = stubErrorResponse(
+    { code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED', message: '   ' },
+    { status: 429, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const err = await captureConnectRejection({ pool_type: 'ephemeral' });
+    assert.equal(err.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+    assert.equal(err.message, '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱');
+    assert.doesNotMatch(err.message!, /^HDKIT_TEMPLATE_QUOTA_EXCEEDED:/);
+    assert.ok(err.remediation, 'the designed remediation also rides the fallback copy');
   } finally {
     restore();
   }

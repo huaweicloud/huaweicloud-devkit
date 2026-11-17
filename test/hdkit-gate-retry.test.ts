@@ -540,7 +540,12 @@ test('a gate payload arriving under a 502 status is not retried against its own 
 
 test('quota-class client-verdict payloads under a 502 status are never retried', async () => {
   const restoreSeam = withRetrySeam('5,5');
-  for (const code of ['HDKIT_QUOTA_EXCEEDED', 'HDKIT_CAPACITY_INSUFFICIENT', 'HDKIT_CRED_INVALID'] as const) {
+  for (const code of [
+    'HDKIT_QUOTA_EXCEEDED',
+    'HDKIT_TEMPLATE_QUOTA_EXCEEDED',
+    'HDKIT_CAPACITY_INSUFFICIENT',
+    'HDKIT_CRED_INVALID',
+  ] as const) {
     const stub = stubConnectSequence([() => jsonEnvelope({ code, message: '沙箱并发配额已满' }, { status: 502 })]);
     try {
       const err = await captureConnectRejection({});

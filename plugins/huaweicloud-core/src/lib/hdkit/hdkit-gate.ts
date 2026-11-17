@@ -345,6 +345,9 @@ export function isGatewayTransient(error: unknown): boolean {
 const NON_RETRYABLE_CLIENT_CODES: ReadonlySet<string> = new Set([
   VERSION_GATE_CODE,
   'HDKIT_QUOTA_EXCEEDED',
+  // 模板级 running 上限（PR-7）：网关把 429 改写成 502/504 时也不能退避重试——
+  // 只有腾出同类型实例才放开，立即重试不推进（同 QUOTA 的裁决类）。
+  'HDKIT_TEMPLATE_QUOTA_EXCEEDED',
   'HDKIT_CAPACITY_INSUFFICIENT',
   'HDKIT_CRED_INVALID',
   'HDKIT_NOT_REALNAME',
