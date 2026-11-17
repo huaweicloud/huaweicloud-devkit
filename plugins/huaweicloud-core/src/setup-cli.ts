@@ -116,6 +116,7 @@ import {
   uninstallCodex,
 } from './agents/codex.ts';
 import { codexDesktopDoctorMcpConfigured, deployCodexDesktop, uninstallCodexDesktop } from './agents/codex-desktop.ts';
+import { codexDoctorApprovalRow } from './agents/codex-config.ts';
 import { deployDsh, dshStatus, uninstallDsh } from './agents/dsh.ts';
 import { dshDoctorMcpConfigured, dshPayloadDoctorSection } from './agents/dsh-patch.ts';
 import {
@@ -1057,6 +1058,15 @@ async function cmdDoctor(): Promise<void> {
     opencodeDoctorSeam(ctx);
     opencodeDoctorAskRule(ctx);
   }
+
+  // The codex client yield (PR-5): the per-tool approval_mode blocks the
+  // devkit payload's .mcp.json carries (agents/codex-config.ts records why
+  // the yield lives there, never in the user's config.toml). The row gates
+  // itself on the machine's codex relationship (no payload, no plugin, no
+  // desktop registration → silent), so it adds nothing to a codex-less
+  // doctor run. The desktop registration bit comes from the candidate the
+  // shell already probed above — passed in so the row never probes twice.
+  codexDoctorApprovalRow(ctx, codexDesktopDoctorMcpConfigured() !== null);
 
   // Session standing consents (PR-3a's S3): the "remember for this
   // session" grants the elicitation form's tick recorded in the ask-mode
