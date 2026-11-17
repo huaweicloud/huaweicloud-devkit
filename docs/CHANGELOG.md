@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.15-next.1 (2026-11-17)
+
+- Release
+
 ## 1.1.15-next.0 (2026-11-17)
 
 - chore: set version override to 1.1.15 for next preview release
