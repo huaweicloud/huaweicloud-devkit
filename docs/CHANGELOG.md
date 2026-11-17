@@ -1,5 +1,9 @@
 # Changelog
 
+## 1.1.15-next.0 (2026-11-17)
+
+- chore: set version override to 1.1.15 for next preview release
+
 ## 1.1.14-next.5 (2026-11-13)
 
 - feat(sandbox): 增加沙箱池选型门禁
