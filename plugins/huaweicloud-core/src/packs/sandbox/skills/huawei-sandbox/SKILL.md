@@ -98,7 +98,7 @@ Never fabricate `approvedByUser: true`, never run the approve or pin verbs yours
 
 > 口径基调：一切以实测为准，口头支持不作数（下表生命周期为实测/平台侧现状；数值为服务端配置下发的默认口径，平台调参以服务端回显为准）。
 
-`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**——上游参数面仅 template_id/flavor_id）：
+`huaweicloud_sandbox_connect` 用 `pool_type` 选择资源池（服务端权威映射模板；**没有 persist_mode 参数**；客户端不再支持传 template_id/自定义模板）：
 
 > 下表生命周期数值仅用于内部选池与诊断：persistent 只播报沙箱生命周期与核时提醒；ephemeral 数值只在下文 **TTL 播报** 的时机与口径内提示，其余场合不向开发者播报。
 
@@ -130,7 +130,7 @@ Selection rules（按意图自动选池；具体按 [Pool-Selection Gate](#pool-
 - **烧核播报口径**：沙箱运行消耗核时，播报用「平台赠送 + 活动赚取」口径（非直接计费）；账号核时耗尽（`HD.97520422`）时工具返回值给出友好引导
 - **关机纪律**：仅当开发者明确要求关机时调用 `huaweicloud_sandbox_shutdown`；调用前确认一次，绝不自动关机。关机 ≠ 删除：只 close，不 delete，实例与 EVS 数据盘保留，下次 connect 自动唤醒。非持久化沙箱也可关机，但不主动提示；不要向开发者提“控制台关机”。
 - **删除纪律**：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删
-- 显式 `template_id` 优先于 `pool_type`（自定义模板场景）
+- 不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`
 - 完整口径、容量规划与 G 清单：[references/resource-pool.md](references/resource-pool.md)
 
 ## Activation

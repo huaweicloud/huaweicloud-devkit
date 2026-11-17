@@ -185,7 +185,7 @@ const connectSpec: ApprovalSpec = {
   flavor: 'always',
   summarize: (bindingValue) =>
     viewOf(bindingValue, (view) => {
-      const target = fieldEcho(view, ['pool_type', 'template_id']);
+      const target = fieldEcho(view, ['pool_type']);
       return `huaweicloud_sandbox_connect: connect a sandbox${target !== '' ? ` (${target})` : ''}`;
     }),
 };
