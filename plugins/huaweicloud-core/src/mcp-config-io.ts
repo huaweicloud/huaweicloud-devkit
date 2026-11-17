@@ -20,7 +20,7 @@ import { applyUserDelta, extractUserDelta, mergeArgsStyle } from './mcp-config-m
 import { saveAgentDelta, takeAgentDelta } from './mcp-config-backup.ts';
 import { applyPacksToEntry } from './packs-policy.ts';
 import { copyDir, deployWord, PLUGIN_ROOT, type DeployMode } from './install-payload.ts';
-import { codexApprovalToolsBlock } from './agents/codex-config.ts';
+import { codexApprovalEnv, codexApprovalToolsBlock, CODEX_APPROVAL_MODE_ENV } from './agents/codex-config.ts';
 
 // openclaw and codex-desktop both ship a .mcp.json plus the .codex-plugin
 // manifest into their plugin dir — the codex-discoverable plugin-dir shape;
@@ -175,12 +175,22 @@ export function writeMcpServersFile(pluginDest: string, mcpPath: string, agentKe
   // missing or hand-stripped tools map) counts as a change so the next
   // update heals it, same as the packs write above.
   let toolsChanged = false;
+  let envChanged = false;
   if (agentKey !== 'openclaw') {
     const wanted = codexApprovalToolsBlock();
     toolsChanged = JSON.stringify(finalEntry.tools) !== JSON.stringify(wanted);
     if (toolsChanged) finalEntry.tools = wanted;
+    // The ask-mode env half rides the same codex-only condition as the tools
+    // block (openclaw is not codex and stays both block- and env-free). The
+    // env is ours wholesale too — same doctrine, same drift healing: a stale
+    // or hand-edited copy is a change, so the next update restores it.
+    const entryEnv = asRecord(finalEntry.env);
+    if (entryEnv.DEVKIT_APPROVAL_MODE !== CODEX_APPROVAL_MODE_ENV) {
+      finalEntry.env = { ...entryEnv, ...codexApprovalEnv() };
+      envChanged = true;
+    }
   }
-  if (existing && !changed && !packsChanged && !toolsChanged) {
+  if (existing && !changed && !packsChanged && !toolsChanged && !envChanged) {
     console.log(`  MCP Config unchanged: ${configPath}`);
     return;
   }

@@ -298,7 +298,7 @@ test('the stdio transport forwards client responses to server-initiated requests
   await transport.start();
 
   stdin.write(
-    `${JSON.stringify({ jsonrpc: '2.0', id: 7, result: { action: 'accept', content: { confirm: true } } })}\n`,
+    `${JSON.stringify({ jsonrpc: '2.0', id: 7, result: { action: 'accept', content: { decision: 'approve-once' } } })}\n`,
   );
   stdin.write(`${JSON.stringify({ jsonrpc: '2.0', id: 8 })}\n`);
   await new Promise((resolve) => setTimeout(resolve, 50));

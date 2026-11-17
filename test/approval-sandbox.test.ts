@@ -214,7 +214,7 @@ function acceptingSeam(label: string): {
   sessionId: string;
 } {
   return {
-    ...elicitingSeam({ decision: 'accept', content: { confirm: true } }),
+    ...elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }),
     sessionId: freshSessionId(label),
   };
 }
@@ -352,7 +352,7 @@ test('ask mode: a capable client answers the form, the ledger stamps elicitation
       const { before, sessionId } = freshToolCase(tool);
       const { seam, requests } = elicitingSeam({
         decision: 'accept',
-        content: { confirm: true, rememberForSession: true },
+        content: { decision: 'approve-session' },
       });
       const first = (await callTool(tool.name, { ...tool.args }, { sessionId, elicitation: seam })) as Record<
         string,
@@ -486,7 +486,10 @@ test('the memo carve: a memo-covered attested arrival rides the memo even when n
       // shown-envelope record, so without the memo check sitting BEFORE the
       // binding it would silently degrade to a fresh chat round-trip.
       let capable = true;
-      const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } }, () => capable);
+      const { seam, requests } = elicitingSeam(
+        { decision: 'accept', content: { decision: 'approve-once' } },
+        () => capable,
+      );
       const sessionId = freshSessionId('memo-carve');
 
       execThrows = true;
@@ -558,7 +561,7 @@ test('classified benign content never mints and executes with no confirmation su
 
     await withApprovalMode('ask', async () => {
       resetKnobs();
-      const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
       const sessionId = freshSessionId('benign-ask');
       const result = (await callTool(EXEC_ONE_SHOT.name, benign, {
         sessionId,
@@ -652,7 +655,7 @@ test('strict classification denies destructive content before any mint, and the 
     // what the classification refuses.
     await withApprovalMode('ask', async () => {
       resetKnobs();
-      const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
       const sessionId = freshSessionId('deny-ask');
       await assert.rejects(
         () => callTool(EXEC_ONE_SHOT.name, destructive, { sessionId, elicitation: seam }),
@@ -738,7 +741,7 @@ test('every confirmation surface shows the redacted command, never the raw args.
     await withApprovalMode('ask', async () => {
       for (const command of [GLUED_FORM, SPACE_FORM]) {
         resetKnobs();
-        const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+        const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
         await callTool(
           EXEC_ONE_SHOT.name,
           { ...EXEC_ONE_SHOT.args, command },
@@ -958,7 +961,7 @@ test('the retry memo arms and clears from the computed outcome, and the standing
       // retry re-confirms (the battery pins the behavior; this pins the
       // state seam the in-memory design owns).
       resetKnobs();
-      const { seam: memoSeam } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      const { seam: memoSeam } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
       const sessionId = freshSessionId('memo-state');
       const args = { ...EXEC_ONE_SHOT.args };
       const view = await callTool(EXEC_ONE_SHOT.name, args, { sessionId, elicitation: memoSeam });
@@ -981,7 +984,7 @@ test('the retry memo arms and clears from the computed outcome, and the standing
       const sessionId3 = freshSessionId('memo-standing');
       const { seam: tickSeam } = elicitingSeam({
         decision: 'accept',
-        content: { confirm: true, rememberForSession: true },
+        content: { decision: 'approve-session' },
       });
       await callTool(EXEC_ONE_SHOT.name, args, { sessionId: sessionId3, elicitation: tickSeam });
       assert.equal(
@@ -1003,7 +1006,7 @@ test('a memo-reused retry that throws again still carries approvedVia on the err
   await withSandboxHome(async () => {
     await withApprovalMode('ask', async () => {
       resetKnobs();
-      const { seam: memoSeam2 } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+      const { seam: memoSeam2 } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
       const sessionId = freshSessionId('memo-error');
       const args = { ...EXEC_ONE_SHOT.args };
 
@@ -1092,7 +1095,7 @@ test('the newly enumerated destructive shapes refuse in both modes with the rule
     await withApprovalMode('ask', async () => {
       for (const command of ['ls -la /workspace', 'grep ERROR app.log | wc -l', 'mkdir -p dist']) {
         resetKnobs();
-        const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+        const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
         const sessionId = freshSessionId('f9-allow');
         const result = (await callTool(
           EXEC_ONE_SHOT.name,

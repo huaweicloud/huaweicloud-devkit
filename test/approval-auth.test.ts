@@ -267,7 +267,7 @@ test('token mode: a missing approvedByUser attestation is refused before any min
 
 test('ask mode: a capable client answers the gate-raised form naming the account, and the accept executes with elicitation evidence', async () => {
   await withTempAuthHome(async () => {
-    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
     await withApprovalMode('ask', async () => {
       // The first ask-mode arrival carries no attestation: the gate, not a
       // prior chat, owns the confirmation.
@@ -477,7 +477,7 @@ test('TOCTOU: the init ask-mode window closes the same way — a vault swap insi
           assert.ok(request.message.includes(fpA), 'the form shows the resolved account A');
           vaultSet(AK_REF, accountB.ak);
           vaultSet(SK_REF, accountB.sk);
-          return { decision: 'accept', content: { confirm: true } };
+          return { decision: 'accept', content: { decision: 'approve-once' } };
         },
       };
       await withApprovalMode('ask', async () => {
@@ -559,7 +559,7 @@ test('TOCTOU: a file rewritten inside the form window never executes — the sho
         assert.ok(request.message.includes(fpA), 'the form shows account A');
         channel.write(accountB.ak, accountB.sk, 'cn-north-4');
         requests.push(request);
-        return { decision: 'accept', content: { confirm: true } };
+        return { decision: 'accept', content: { decision: 'approve-once' } };
       },
     };
     await withApprovalMode('ask', async () => {
@@ -608,7 +608,7 @@ test('TOCTOU: the mcp-config channel has the same fix — an injected-config rew
       prompt: async (request) => {
         assert.ok(request.message.includes(fpA), 'the form shows the injected account A');
         writeSettings(accountB.ak, accountB.sk);
-        return { decision: 'accept', content: { confirm: true } };
+        return { decision: 'accept', content: { decision: 'approve-once' } };
       },
     };
     try {
@@ -760,7 +760,7 @@ test('auth_confirm stays ungated: its pendingConfirms flow is the only confirmat
     assert.deepEqual(result, { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' });
     // In ask mode with a capable seam the gate would have raised a form;
     // the seam records nothing because no approval gate covers this tool.
-    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { confirm: true } });
+    const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
     await withApprovalMode('ask', async () => {
       const asked = (await callTool(
         'huaweicloud_auth_confirm',

@@ -6,6 +6,8 @@ import test from 'node:test';
 import { APPROVAL_MCP_SERVER, APPROVAL_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
 import {
   CODEX_APPROVAL_MODE,
+  CODEX_APPROVAL_MODE_ENV,
+  codexApprovalEnv,
   codexApprovalToolsBlock,
   codexApprovalPolicyNever,
   codexCacheMcpJsonPaths,
@@ -48,10 +50,12 @@ test('the tools block is roster-driven: one approve entry per roster tool', () =
   }
 });
 
-test('the committed repo .mcp.json carries exactly the roster tools block', () => {
+test('the committed repo .mcp.json carries exactly the roster tools block and the ask env', () => {
   // The codex CLI marketplace flow copies this file into codex's cache, so
-  // it is the CLI install's source of truth for the yield. The guard keeps
-  // a roster change from silently outgrowing it.
+  // it is the CLI install's source of truth for the yield AND the ask env
+  // (codex passes the plugin-provided env to the MCP child, live-measured on
+  // codex-cli 0.167.2). The guard keeps a roster change from silently
+  // outgrowing it.
   const cfg = JSON.parse(readFileSync(CONFIG_PATH, 'utf8')) as Record<string, unknown>;
   const entry = (cfg.mcpServers as Record<string, Record<string, unknown>>)[APPROVAL_MCP_SERVER]!;
   assert.deepEqual(entry.tools, codexApprovalToolsBlock(), 'the committed tools map mirrors the roster block');
@@ -59,6 +63,13 @@ test('the committed repo .mcp.json carries exactly the roster tools block', () =
     readMcpJsonApprovalStates(cfg),
     APPROVAL_TOOLS.map(() => 'approve'),
   );
+  const env = entry.env as Record<string, string>;
+  assert.equal(env.DEVKIT_APPROVAL_MODE, CODEX_APPROVAL_MODE_ENV, 'the payload carries the ask-mode server env');
+  assert.equal(env.HUAWEICLOUD_AGENT_TOOLKIT_MODE, 'local', 'the trunk env key survives beside it');
+});
+
+test('codexApprovalEnv is the single-key ask env, mergeable beside operator keys', () => {
+  assert.deepEqual(codexApprovalEnv(), { DEVKIT_APPROVAL_MODE: CODEX_APPROVAL_MODE_ENV });
 });
 
 test('readMcpJsonApprovalStates classifies the measured values, foreign spellings, and absence', () => {
@@ -196,11 +207,19 @@ function withCodexHome(home: string, fn: () => void): void {
 
 // Seeds a cache-version .mcp.json carrying the payload yield, the way a
 // real `codex plugin add` copies the repo payload into its cache.
-function seedCachePayload(home: string, tools: Record<string, unknown> = codexApprovalToolsBlock()): string {
+function seedCachePayload(
+  home: string,
+  tools: Record<string, unknown> = codexApprovalToolsBlock(),
+  // null is the no-env sentinel: an explicit undefined would trigger the
+  // healthy default (JS default-parameter semantics), never the stale shape.
+  env: Record<string, string> | null = codexApprovalEnv(),
+): string {
   const versionDir = join(codexPluginCacheDir(), '2.0.0-next.3');
   mkdirSync(versionDir, { recursive: true });
   const path = join(versionDir, '.mcp.json');
-  writeFileSync(path, JSON.stringify({ mcpServers: { [APPROVAL_MCP_SERVER]: { command: 'node', tools } } }), 'utf8');
+  const entry: Record<string, unknown> = { command: 'node', tools };
+  if (env !== null) entry.env = env;
+  writeFileSync(path, JSON.stringify({ mcpServers: { [APPROVAL_MCP_SERVER]: entry } }), 'utf8');
   return versionDir;
 }
 
@@ -229,11 +248,27 @@ function rowOver(
   return capture.lines;
 }
 
-test('doctor row passes on the healthy payload and names the block count', () => {
+test('doctor row passes on the healthy payload and names the block count and the env half', () => {
   const lines = rowOver((home) => seedCachePayload(home));
   assert.deepEqual(lines, [
-    `PASS Codex approval posture (${APPROVAL_TOOLS.length} per-tool approve blocks in the devkit payload)`,
+    `PASS Codex approval posture (${APPROVAL_TOOLS.length} per-tool approve blocks + DEVKIT_APPROVAL_MODE="${CODEX_APPROVAL_MODE_ENV}" in the devkit payload)`,
   ]);
+});
+
+test('doctor row warns on a payload copy that lost the ask env (a stale pre-ask deploy)', () => {
+  // The env half is posture-bearing: without it the devkit runs its default
+  // token mode under codex (the live probe measured the passthrough — a
+  // roster call returned ELICITATION_DECLINED, the headless auto-decline of
+  // the server-raised form). A copy missing it is drift, healable by the
+  // same re-run.
+  const lines = rowOver((home) => {
+    seedCachePayload(home, codexApprovalToolsBlock(), null);
+  });
+  assert.equal(lines.length, 1);
+  assert.match(lines[0]!, /WARN/);
+  assert.match(lines[0]!, /does not set DEVKIT_APPROVAL_MODE="ask"/);
+  assert.match(lines[0]!, /token mode under codex/);
+  assert.match(lines[0]!, /re-run: npx huaweicloud-devkit install --target codex/);
 });
 
 test('doctor row verifies every cached copy, not just the newest', () => {
@@ -368,7 +403,7 @@ test('cache candidates resolve from CODEX_HOME and stop at files named .mcp.json
 
 // ── The deploy writer and the real doctor ──
 
-test('codex-desktop install writes the tools block into its payload .mcp.json', () => {
+test('codex-desktop install writes the tools block and the ask env into its payload .mcp.json', () => {
   const home = fixtureDir('codex-approval-desktop-');
   const cwd = fixtureDir('codex-approval-cwd-');
   assert.equal(run('codex-desktop', home, cwd, 'install').status, 0);
@@ -379,10 +414,17 @@ test('codex-desktop install writes the tools block into its payload .mcp.json', 
     states.every((state) => state === 'approve'),
     'the desktop payload carries the full yield',
   );
+  const envOf = (): Record<string, string> =>
+    (JSON.parse(readFileSync(path, 'utf8')).mcpServers as Record<string, Record<string, unknown>>)[APPROVAL_MCP_SERVER]!
+      .env as Record<string, string>;
+  assert.equal(envOf().DEVKIT_APPROVAL_MODE, CODEX_APPROVAL_MODE_ENV, 'the desktop payload carries the ask env');
   // An update over a hand-stripped tools map heals it (the drift counts as
-  // a change, same as the packs write).
+  // a change, same as the packs write); the removed env half heals the
+  // same way.
   const cfg = JSON.parse(readFileSync(path, 'utf8'));
-  delete (cfg.mcpServers[APPROVAL_MCP_SERVER] as Record<string, unknown>).tools;
+  const entry = cfg.mcpServers[APPROVAL_MCP_SERVER] as Record<string, unknown>;
+  delete entry.tools;
+  delete entry.env;
   writeFileSync(path, JSON.stringify(cfg, null, 2), 'utf8');
   assert.equal(run('codex-desktop', home, cwd, 'update').status, 0);
   const healed = readMcpJsonApprovalStates(JSON.parse(readFileSync(path, 'utf8')));
@@ -390,9 +432,10 @@ test('codex-desktop install writes the tools block into its payload .mcp.json', 
     healed.every((state) => state === 'approve'),
     'update restores the stripped tools map',
   );
+  assert.equal(envOf().DEVKIT_APPROVAL_MODE, CODEX_APPROVAL_MODE_ENV, 'update restores the stripped ask env');
 });
 
-test('the openclaw deploy shares the writer but never gets the codex blocks', () => {
+test('the openclaw deploy shares the writer but never gets the codex blocks or the ask env', () => {
   const home = fixtureDir('codex-approval-openclaw-');
   const cwd = fixtureDir('codex-approval-cwd-');
   assert.equal(run('openclaw', home, cwd, 'install').status, 0);
@@ -401,6 +444,11 @@ test('the openclaw deploy shares the writer but never gets the codex blocks', ()
     APPROVAL_MCP_SERVER
   ]!;
   assert.equal(entry.tools, undefined, 'openclaw is not codex — its .mcp.json stays block-free');
+  assert.equal(
+    (entry.env as Record<string, string> | undefined)?.DEVKIT_APPROVAL_MODE,
+    undefined,
+    'openclaw never gets the codex ask env either — the env rides the same codex-only condition',
+  );
 });
 
 test('codex install leaves the user config.toml byte-identical (the yield never lands there)', () => {
@@ -431,7 +479,10 @@ test('the real doctor passes the healthy payload and warns on every direction, n
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, 'config.toml'), '# user codex config\n', 'utf8');
   const out = runDoctor(home, env);
-  assert.match(out, /\[PASS\] Codex approval posture \(16 per-tool approve blocks in the devkit payload\)/);
+  assert.match(
+    out,
+    /\[PASS\] Codex approval posture \(16 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
+  );
 
   // A user override in config.toml: the doctor WARNs the winning value.
   const override = [`[mcp_servers.${APPROVAL_MCP_SERVER}.tools.huaweicloud_upgrade]`, 'approval_mode = "prompt"'].join(
@@ -495,6 +546,9 @@ test('the real doctor: inline-table policy WARNs, header policy WARNs, clean pas
 
   writeFileSync(configToml, '# user codex config\n', 'utf8');
   const cleanOut = runDoctor(home, env);
-  assert.match(cleanOut, /\[PASS\] Codex approval posture \(16 per-tool approve blocks in the devkit payload\)/);
+  assert.match(
+    cleanOut,
+    /\[PASS\] Codex approval posture \(16 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
+  );
   assert.ok(!/\[WARN\] Codex approval posture/.test(cleanOut));
 });

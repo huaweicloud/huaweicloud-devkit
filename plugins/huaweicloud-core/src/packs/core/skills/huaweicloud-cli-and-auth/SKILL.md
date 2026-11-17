@@ -100,7 +100,7 @@ curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/lat
 9. For write operations, follow the approval contract:
    - Call `huaweicloud_plan_cli_command` and read `userConfirmation`. When `needed` is true, show the user the command echo.
    - Token mode (the default): show the `userConfirmation.command` line; the user runs `npx huaweicloud-devkit approve <approvalToken>` in their own terminal. Never run it yourself. First use: the user runs `npx huaweicloud-devkit pin` once in their own terminal to enroll the approvals PIN. Then call `huaweicloud_run_approved_command` with that token; an unconfirmed non-read command is rejected with `USER_CONFIRMATION_REQUIRED`, and the token stays usable, so retry the same call after the user confirms.
-   - Ask mode (`userConfirmation.mode` is `ask`): no terminal line and no token — call `huaweicloud_run_approved_command` with the same args and the `command` field. The server runs the confirmation: an elicitation-capable client renders a form during the call, and any other client answers with `ASK_CONFIRMATION_REQUIRED` (show the command in chat, then retry with `approvedByUser: true`).
+   - Ask mode (`userConfirmation.mode` is `ask`): no terminal line and no token — call `huaweicloud_run_approved_command` with the same args (the `command` display field is recommended but optional: without it the confirmation shows the derived redacted line). The server runs the confirmation for every call shape: an elicitation-capable client renders a form during the call, and any other client answers with `ASK_CONFIRMATION_REQUIRED` (show the command in chat, then retry with `approvedByUser: true`).
 
 ## KooCLI Syntax Notes
 

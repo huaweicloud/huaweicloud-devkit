@@ -65,6 +65,16 @@ import type { DoctorReporter } from '../doctor-report.ts';
 // remediation shapes for the policy-off branch, taught by the doctor only.
 export const CODEX_APPROVAL_MODE = 'approve';
 
+// The ask-mode env the payload .mcp.json carries beside the yield: codex
+// passes the plugin-provided server entry's env to the MCP child (live-
+// measured on codex-cli 0.167.2 — a roster call returned ELICITATION_DECLINED,
+// the headless auto-decline of the server-raised form, proving both the
+// passthrough and the capable-client ladder). The payload is the devkit-owned
+// channel: there is no codex-side override for plugin-provided env, so an
+// operator wanting token mode on codex edits their cached copy (and re-runs
+// the install to restore it) — the doctor flags the drift.
+export const CODEX_APPROVAL_MODE_ENV = 'ask';
+
 // The `tools` map the payload .mcp.json carries inside the devkit's server
 // entry — one per-tool block per roster tool, roster-driven so a
 // registration PR widens the yield with the roster, not by hand. JSON
@@ -72,6 +82,13 @@ export const CODEX_APPROVAL_MODE = 'approve';
 // should compare structurally, not by serialization.
 export function codexApprovalToolsBlock(): Record<string, { approval_mode: string }> {
   return Object.fromEntries(APPROVAL_TOOLS.map((tool) => [tool, { approval_mode: CODEX_APPROVAL_MODE }]));
+}
+
+// The ask-mode env half of the payload posture, as a record for entry writes
+// (writeMcpServersFile merges it under the same `agentKey !== 'openclaw'`
+// condition as the tools block, with the same wholesale drift healing).
+export function codexApprovalEnv(): Record<string, string> {
+  return { DEVKIT_APPROVAL_MODE: CODEX_APPROVAL_MODE_ENV };
 }
 
 // ── Reading the yield ──
@@ -275,12 +292,25 @@ function payloadDriftWarns(payloadPaths: readonly string[]): string[] {
     return warns;
   }
   for (const path of payloadPaths) {
+    let config: Record<string, unknown>;
     let states: CodexApprovalState[];
     try {
-      states = readMcpJsonApprovalStates(asRecord(JSON.parse(readFileSync(path, 'utf8'))));
+      config = asRecord(JSON.parse(readFileSync(path, 'utf8')));
+      states = readMcpJsonApprovalStates(config);
     } catch {
       warns.push(`${path} is unparseable, so its yield cannot be verified (${RERUN})`);
       continue;
+    }
+    // The env half: a copy that carries our server entry but not the ask env
+    // runs the devkit in token mode (a stale pre-ask payload) — drift,
+    // healable by the same re-run.
+    if (
+      asRecord(asRecord(asRecord(config.mcpServers)[APPROVAL_MCP_SERVER]).env).DEVKIT_APPROVAL_MODE !==
+      CODEX_APPROVAL_MODE_ENV
+    ) {
+      warns.push(
+        `${path} does not set DEVKIT_APPROVAL_MODE="${CODEX_APPROVAL_MODE_ENV}" in the server env, so the devkit runs its default token mode under codex (${RERUN})`,
+      );
     }
     if (states.every((state) => state === 'approve')) continue;
     const { prompt, auto, foreign, absent } = toolsInStates(states);
@@ -392,7 +422,7 @@ export function codexDoctorApprovalRow(ctx: DoctorReporter, desktopRegistered: b
   const warns = [...payloadWarns, ...overrideWarns, ...policyWarns];
   if (warns.length === 0) {
     ctx.check(
-      `${CODEX_POSTURE_LABEL} (${APPROVAL_TOOLS.length} per-tool approve blocks in the devkit payload)`,
+      `${CODEX_POSTURE_LABEL} (${APPROVAL_TOOLS.length} per-tool approve blocks + DEVKIT_APPROVAL_MODE="${CODEX_APPROVAL_MODE_ENV}" in the devkit payload)`,
       true,
       '',
     );

@@ -322,7 +322,12 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   }
   assert.match(approvals, /## The retry memo \(uncertain delivery\)/);
   assert.match(approvals, /approvedVia: "retry-uncertain"/);
-  assert.match(approvals, /Remember for this session/);
+  assert.match(approvals, /`approve-session`/, 'the form enum offers the standing-consent choice');
+  assert.match(
+    approvals,
+    /ELICITATION_INVALID_CONTENT/,
+    'the refusal class names the invalid-content shape (the empty-accept clients)',
+  );
   assert.match(approvals, /approvedVia: "standing-session"/);
   assert.match(approvals, /The refusal set is those rows and nothing more/, 'the refusal class is the enumerated one');
   assert.match(
