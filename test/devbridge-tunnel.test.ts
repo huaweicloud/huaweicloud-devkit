@@ -43,8 +43,13 @@ test('gateway 404 "tunnel not found" retries once, then returns ok:false — nev
   assert.match(result.error ?? '', /gateway reports the fresh tunnel URL as dead/);
   assert.match(result.error ?? '', /tunnel not found/);
   assert.equal(result.httpCode, '404');
-  // auth → expose (404) → cleanup → expose (404) → ok:false; no verify is spent.
-  assert.equal(calls.length, 4);
+  // auth → pre-clean lock → expose (404) → retry-cleanup lock → expose (404) →
+  // ok:false; no verify is spent. The naive seam answers no LOCK_OK, so each
+  // selective cleanup is exactly one lock exec and nothing is deleted.
+  assert.equal(calls.length, 5);
+  assert.ok(calls[1]!.startsWith('LOCK='));
+  assert.ok(calls[3]!.startsWith('LOCK='));
+  assert.ok(!calls.some((c) => c.includes('devbridge delete-all')));
 });
 
 test('v2 deviation: a final unreachable attempt returns ok:false, never ok:true with a dead URL', async () => {
@@ -57,20 +62,20 @@ test('v2 deviation: a final unreachable attempt returns ok:false, never ok:true 
     if (command.includes('nohup devbridge host')) {
       return { stdout: exposeStdout('', '000'), exitCode: 0 };
     }
-    return { stdout: '', exitCode: 0 }; // cleanup call
+    return { stdout: '', exitCode: 0 }; // cleanup lock
   });
   const result = await exposeViaSeam(seam, 8080, { keepalive: false });
+  assert.equal(result.httpCode, '000');
   assert.equal(result.ok, false);
   assert.equal(result.publicUrl, undefined);
-  assert.equal(result.httpCode, '000');
   // #998 taxonomy: an empty URL is the host-did-not-start class.
   assert.equal(result.error_code, 'no_tunnel_url');
   assert.match(result.error ?? '', /no Tunnel URL/);
-  // auth → expose (attempt 1) → cleanup → expose (attempt 2) → #998 version
-  // read-back (empty URL on the final attempt)
-  assert.equal(calls.length, 5);
-  assert.ok(calls[1]!.includes('pkill -f "devbridge host"'));
-  assert.ok(calls[3]!.includes('pkill -f "devbridge host"'));
+  // auth → pre-clean lock → expose (attempt 1) → retry-cleanup lock → expose
+  // (attempt 2) → #998 version read-back (empty URL on the final attempt)
+  assert.equal(calls.length, 6);
+  assert.ok(calls[1]!.startsWith('LOCK='));
+  assert.ok(calls[3]!.startsWith('LOCK='));
 });
 
 test('v2 deviation: a migrated-gateway placeholder (HTTP 200 + dead URL) is unusable', async () => {
@@ -110,7 +115,7 @@ test('an app body that merely contains the migration marker is NOT a migration p
   assert.equal(appMarker.warnings, undefined);
 });
 
-test('quota (10006) on the final attempt also returns ok:false with the quota warning', async () => {
+test('quota (10006) with no freed record returns the structured quota-exceeded failure', async () => {
   const { calls, seam } = recordingSeam(async (_ws, command) => {
     if (command.includes('DB_AUTH_MODE')) {
       return { stdout: 'DB_AUTH_MODE=API_KEY_FILE\n', exitCode: 0 };
@@ -120,9 +125,14 @@ test('quota (10006) on the final attempt also returns ok:false with the quota wa
   });
   const result = await exposeViaSeam(seam, '8081', { keepalive: false });
   assert.equal(result.ok, false);
-  assert.match(result.warnings ?? '', /10006/);
+  // The selective-cleanup contract (dev 43fa459e): a still-full quota is an
+  // honest structured failure — keepalive-protected tunnels were preserved and
+  // the caller learns exactly that, instead of a generic no_tunnel_url.
+  assert.equal(result.error_code, 'devbridge_tunnel_quota_exceeded');
+  assert.match(result.error ?? '', /10006/);
+  assert.match(result.error ?? '', /Keepalive-protected tunnels are preserved/);
   assert.equal(result.port, 8081);
-  assert.equal(calls.length, 4); // auth → expose ×2 (no cleanup between quota retries) → #998 version read-back
+  assert.ok(!calls.some((c) => c.includes('devbridge delete-all')));
 });
 
 test('validateExpiryHours accepts 1..720 and rejects everything else (U16)', () => {
@@ -182,9 +192,20 @@ test('buildDevbridgeKeepaliveScript: 3-layer loop, hardcoded URLs, --noproxy hea
   assert.match(script, /pgrep -f "devbridge host \$ID"/);
   assert.match(script, /pgrep -f "devbridge host -p \$PORT"/, 'the -p form expose launched must be probed too');
   assert.match(script, /setsid nohup devbridge host "\$ID"/);
-  // Layer 2: daily 720h renewal.
+  // Layer 2: daily 720h renewal, with re-login self-heal on failure — a
+  // valid key can coexist with an expired CLI token, so a failed renew
+  // re-logins from keyring/file and retries once before giving up (bde7ae56).
   assert.match(script, /devbridge update "\$ID" -e 720/);
-  assert.match(script, /86400/);
+  assert.match(script, /-ge 86400/);
+  assert.match(script, /keepalive-auth\.log/);
+  assert.match(script, /after re-login/);
+  assert.match(script, /AUTH_FAILED/);
+  assert.match(script, /DBUS_SESSION_BUS_ADDRESS/);
+  // The self-heal re-login uses the same two-tier key sources as the probe
+  // (keyring with the devbridge_ prefix filter, then the /tmp file channel)
+  // and never creates a key.
+  assert.match(script, /hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 \|\| true/);
+  assert.match(script, /"devbridge_"\*\) : ;; \*\) DB_KEY="";; esac/);
   // Layer 3: 5-min health check with the U11 landmine fix.
   assert.match(script, /HC=\$\(curl -s --noproxy '\*' -o \/dev\/null/);
   assert.match(script, /sleep 300/);

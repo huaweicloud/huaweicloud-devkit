@@ -1,0 +1,3 @@
+AUDIT registry probe: dns ok, tls ok
+AUDIT fallback channel: unused
+E404: package huaweicloud-devkit not present in the mirror index

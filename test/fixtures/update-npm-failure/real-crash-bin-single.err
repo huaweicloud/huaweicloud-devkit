@@ -1,0 +1,11 @@
+file:///home/op/cache/_npx/87e7c2b47427189c/node_modules/cap-crash-single/crash.js:2
+const x = error;
+          ^
+
+ReferenceError: error is not defined
+    at file:///home/op/cache/_npx/87e7c2b47427189c/node_modules/cap-crash-single/crash.js:2:11
+    at ModuleJob.run (node:internal/modules/esm/module_job:569:25)
+    at async node:internal/modules/esm/loader:650:26
+    at async asyncRunEntryPointWithESMLoader (node:internal/modules/run_main:105:5)
+
+Node.js v26.13.0

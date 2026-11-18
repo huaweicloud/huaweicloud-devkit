@@ -22,7 +22,7 @@ import { installPrefix, npmPackTarball } from './pack-install.ts';
 import { runCase } from './case-run.ts';
 import { selfcheck } from './selfcheck.ts';
 import { emptyRecordings } from './recordings.ts';
-import { pruneReports, runnerErrorVerdict, scrubbedStack } from './report.ts';
+import { pruneReports, runnerErrorVerdict, scrubbedStack, isWireDeadAttempt } from './report.ts';
 
 const DRIVERS: Record<DriverId, AgentDriver> = {
   opencode: opencodeDriver,
@@ -130,6 +130,9 @@ async function main(): Promise<void> {
     let failures = 0;
     let skips = 0;
     let runnerErrors = 0;
+    // Failures whose every attempt died at the model wire (gateway infra),
+    // not in the product: counted for the summary and the exit-code class.
+    let wireDeadFailures = 0;
     let consecutiveRunnerErrors = 0;
     let consecutiveDeadAgents = 0;
     let aborted = false;
@@ -195,23 +198,42 @@ async function main(): Promise<void> {
         continue;
       }
       consecutiveRunnerErrors = 0;
-      // Mode-aware liveness text: boundary cases died with no boundary
-      // activity; disclosure cases (whose expected outcome IS zero
-      // boundary activity) died short of the handshake or the model turn
-      // (non-zero exit) — the same suffix for both would send triage to
-      // the wrong channel.
-      const livenessSuffix = outcome.verdict.liveness
-        ? ''
-        : caseDef.liveness === 'disclosure'
-          ? ' (liveness: no handshake disclosures or the agent exited non-zero)'
-          : ' (liveness: no boundary activity recorded)';
-      out(`  FAIL  ${caseDef.id}${livenessSuffix}`);
+      // Wire-dead classification (the 2026-11-13/14 nightly codex legs:
+      // 24 red cases whose every upstream request died with gateway
+      // "Internal error" — read as product regressions until the dump was
+      // hand-mined). A case is wire-dead only when EVERY attempt's wire
+      // was terminal-failed with zero completions — one live attempt that
+      // went red on expectations stays a product red (the model got its
+      // chance and misbehaved; the flake noise around it is recorded but
+      // does not reclassify it).
+      const wireDeadCase =
+        outcome.report.attempts.length > 0 && outcome.report.attempts.every((a) => isWireDeadAttempt(a.wireStats));
+      if (wireDeadCase) {
+        wireDeadFailures++;
+        const last = outcome.report.attempts[outcome.report.attempts.length - 1]?.wireStats;
+        out(
+          `  FAIL  ${caseDef.id} (model wire dead: every upstream response failed on every attempt` +
+            ` — ${last ? `${last.failed}/${last.requests}` : '?'} on the last; gateway/infra, not a product red)`,
+        );
+      } else {
+        // Mode-aware liveness text: boundary cases died with no boundary
+        // activity; disclosure cases (whose expected outcome IS zero
+        // boundary activity) died short of the handshake or the model turn
+        // (non-zero exit) — the same suffix for both would send triage to
+        // the wrong channel.
+        const livenessSuffix = outcome.verdict.liveness
+          ? ''
+          : caseDef.liveness === 'disclosure'
+            ? ' (liveness: no handshake disclosures or the agent exited non-zero)'
+            : ' (liveness: no boundary activity recorded)';
+        out(`  FAIL  ${caseDef.id}${livenessSuffix}`);
+      }
       for (const v of outcome.verdict.expectations) {
         // The console evidence rides the CI job log (the workflow tees
         // runner stdout), so it scrubs like the report artifact.
         if (!v.pass) out(`    expectation failed: ${JSON.stringify(v.expectation)} — ${scrubSecrets(v.evidence)}`);
       }
-      if (!outcome.verdict.liveness) {
+      if (!outcome.verdict.liveness || wireDeadCase) {
         consecutiveDeadAgents++;
         // A dead-agent streak with a live start probe means the gateway (or
         // the key's quota) died mid-suite: re-probe once at three, and abort
@@ -232,13 +254,16 @@ async function main(): Promise<void> {
       }
     }
     if (!aborted) {
-      // Pure infra red (every failure a runner error) exits 2, the runner's
-      // infra class — distinguishable from product red without reading the
-      // report body.
-      process.exitCode = failures > 0 ? (runnerErrors === failures ? 2 : 1) : 0;
+      // Pure infra red (every failure a runner error or a wire-dead case)
+      // exits 2, the runner's infra class — distinguishable from product
+      // red without reading the report body.
+      const infraFailures = runnerErrors + wireDeadFailures;
+      process.exitCode = failures > 0 ? (infraFailures === failures ? 2 : 1) : 0;
       out(
         `[runner] ${selected.length - failures - skips}/${selected.length} cases passed` +
-          `${skips > 0 ? `, ${skips} skipped` : ''}${failures > 0 ? `, ${failures} failed` : ''}`,
+          `${skips > 0 ? `, ${skips} skipped` : ''}` +
+          `${failures > 0 ? `, ${failures} failed` : ''}` +
+          `${wireDeadFailures > 0 ? ` (${wireDeadFailures} model-wire-dead — gateway/infra, not product)` : ''}`,
       );
     }
   } catch (error) {

@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { parseCoreSkillNames } from '../plugins/huaweicloud-core/src/lib/skill-manifest.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
@@ -35,6 +36,7 @@ function makeEnv(home: string, _cwd: string) {
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
     HUAWEICLOUD_HOME: home,
+    ...npmCacheEnv(),
   };
   // cleanupNativeDirs() runs inside every install and reconciles EVERY
   // target's native dir (not just codearts), each resolved from its own

@@ -1,0 +1,4 @@
+npm error code 1
+npm error command failed
+npm error command sh -c npm test
+npm error install failed: see /home/op/logs/2026-11-11T00_00_00_000Z-debug-0.log

@@ -9,6 +9,7 @@ import test from 'node:test';
 import { getCodexPluginName, getMarketplaceName } from '../plugins/huaweicloud-core/src/codex-probe.ts';
 import { parseCoreSkillNames } from '../plugins/huaweicloud-core/src/lib/skill-manifest.ts';
 import { skillTreeEquals } from '../plugins/huaweicloud-core/src/lib/skill-tree.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 export const root = fileURLToPath(new URL('..', import.meta.url));
 export const setupCli = join(root, 'bin', 'setup.cjs');
@@ -22,6 +23,7 @@ export function makeEnv(home: string, extra: Record<string, string | undefined> 
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
     HERMES_HOME: join(home, '.hermes'),
+    ...npmCacheEnv(),
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
   // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);

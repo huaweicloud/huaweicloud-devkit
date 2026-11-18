@@ -1,7 +1,7 @@
 {
   "name": "huaweicloud-devkit",
   "mcpName": "io.github.huaweicloud/huaweicloud-devkit",
-  "version": "2.0.0-next.3",
+  "version": "2.0.0-next.4",
   "kooCliVersion": "7.3.12",
   "description": "Agent toolkit that helps coding agents use Huawei Cloud Skills, KooCLI, APIs, SDKs, and future MCP capabilities safely and accurately.",
   "type": "module",
@@ -42,6 +42,8 @@
     "prepack": "npm run build && node ./scripts/sync-skills.mjs --check",
     "skills:sync": "node ./scripts/sync-skills.mjs --write",
     "test": "node --experimental-test-module-mocks --test \"test/*.test.ts\"",
+    "pretest:quick": "npm run build",
+    "test:quick": "node scripts/test-quick.mjs",
     "test:e2e": "node test/e2e/runner.ts",
     "format": "prettier --write .",
     "format:check": "prettier --check .",

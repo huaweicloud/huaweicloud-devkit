@@ -2,10 +2,13 @@ import { execWithSession, execOneShot, closeSession, getCurrentWorkspaceId } fro
 import { forgetWorkspacePool } from '../../lib/hdkit/sandbox-pool.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
 import { SANDBOX_TIMEOUT_MS } from './schemas.ts';
+import { startHwexecTask } from './handlers-hwexec.ts';
 
 // Session/exec handlers for the sandbox pack, extracted verbatim from
 // tools.ts in the within-pack split for the jscpd complex-file bar; the
-// tools.ts face imports them for SANDBOX_TOOL_HANDLERS.
+// tools.ts face imports them for SANDBOX_TOOL_HANDLERS. The exec_one_shot
+// async branch (mode: "async", the claim protocol) delegates to
+// handlers-hwexec.ts — the poll tool handler lives there whole.
 
 export async function handleExecWithSession(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
   const sandboxWsId2 = args.workspace_id || getCurrentWorkspaceId();
@@ -33,6 +36,13 @@ export async function handleExecOneShot(args: ToolArgs = {}, _opts: CallToolOpti
     );
   }
   const sandboxUser3 = args.username || 'root';
+  // mode: "async" routes into the claim protocol (claim + detached spawn +
+  // receipt, then huaweicloud_sandbox_exec_poll); every other mode value
+  // (the default sync, or a direct callTool caller's omission) runs the
+  // synchronous exec below unchanged.
+  if (args.mode === 'async') {
+    return startHwexecTask(args, sandboxWsId3, sandboxUser3);
+  }
   const sandboxTimeout3 = args.timeout_ms || SANDBOX_TIMEOUT_MS.exec_one_shot;
   const sandboxResult3 = await execOneShot(sandboxWsId3, args.command || '', sandboxUser3, sandboxTimeout3);
   return {

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { clientToolNamespaces, restoreNamespaces, startGatewayProxy } from './e2e/drivers/gateway-proxy.ts';
+import { isWireDeadAttempt } from './e2e/report.ts';
 import { fixtureDir } from './fixture-dir.ts';
 
 // The proxy's dump contract, both halves: the client stream stays
@@ -394,4 +395,77 @@ test('a stalled client at high frame counts does not tear the stream down', asyn
   } finally {
     await done();
   }
+});
+
+// The wire-stats accounting (the 2026-11-13/14 nightly codex legs: 24 red
+// cases were gateway "Internal error" deaths, unreadable as such until the
+// proxy dump was hand-mined). Terminal frames classify each request; a
+// stream that ends without a terminal frame (client kill, cut) counts as
+// neither, and the unreachable-upstream 502 path counts as failed — the
+// classifier then names the attempt wire-dead only when EVERY request
+// terminal-failed with zero completions.
+test('wire stats classify terminal outcomes and feed the dead-wire classifier', async () => {
+  const upstream = http.createServer((req, res) => {
+    const chunks: Buffer[] = [];
+    req.on('data', (c) => chunks.push(c as Buffer));
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { mark?: string };
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      if (body.mark === 'good') {
+        res.end('data: {"type":"response.created"}\n\ndata: {"type":"response.completed"}\n\n');
+      } else if (body.mark === 'bad') {
+        res.end('data: {"type":"error","code":"internal_error","message":"Internal error"}\n\n');
+      } else {
+        // EOF without any terminal frame: the cut class.
+        res.end('data: {"type":"response.created"}\n\n');
+      }
+    });
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', () => resolve()));
+  const upstreamPort = (upstream.address() as { port: number }).port;
+  const proxy = await startGatewayProxy(`http://127.0.0.1:${upstreamPort}`);
+  // An unreachable-upstream proxy for the 502 path.
+  const deadProxy = await startGatewayProxy('http://127.0.0.1:1');
+  try {
+    const post = async (port: number, mark: string): Promise<void> => {
+      const resp = await fetch(`http://127.0.0.1:${port}/v1/responses`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mark, input: [], stream: true }),
+      });
+      await resp.arrayBuffer();
+    };
+    await post(proxy.port, 'good');
+    await post(proxy.port, 'bad');
+    await post(proxy.port, 'cut');
+    await post(deadProxy.port, 'anything');
+    const stats = proxy.stats();
+    assert.deepEqual(
+      stats,
+      { requests: 3, completed: 1, failed: 1 },
+      'completed/failed classify by terminal frame; the cut stream counts as neither',
+    );
+    assert.equal(isWireDeadAttempt(stats), false, 'a completed request keeps the attempt out of the dead class');
+    const deadStats = deadProxy.stats();
+    assert.deepEqual(deadStats, { requests: 1, completed: 0, failed: 1 }, 'the 502 path counts as failed');
+    assert.equal(isWireDeadAttempt(deadStats), true, 'an unreachable upstream is wire-dead');
+  } finally {
+    await proxy.close();
+    await deadProxy.close();
+    upstream.closeAllConnections?.();
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+  }
+});
+
+test('the dead-wire classifier stays honest about ambiguity', () => {
+  // Zero requests: no evidence either way.
+  assert.equal(isWireDeadAttempt(undefined), false);
+  assert.equal(isWireDeadAttempt({ requests: 0, completed: 0, failed: 0 }), false);
+  // A cut request among the failures: failed < requests, not wire-dead.
+  assert.equal(isWireDeadAttempt({ requests: 2, completed: 0, failed: 1 }), false);
+  // All failed, none completed: wire-dead (the nightly shape — e.g.
+  // 7/7 requests terminal-failed on an attempt).
+  assert.equal(isWireDeadAttempt({ requests: 7, completed: 0, failed: 7 }), true);
+  // A completed request among the failures: the model got its turns.
+  assert.equal(isWireDeadAttempt({ requests: 7, completed: 1, failed: 6 }), false);
 });

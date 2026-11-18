@@ -1,0 +1,8 @@
+attempt 1 failed, retrying from snapshot
+retry ok
+cannot find module './build-config'
+npm error code 1
+npm error path /home/op/cases/pkgs/case-c4d-retry-default/proj/node_modules/cfgfail-pkg
+npm error command failed
+npm error command sh -c node cfg.js
+npm error A complete log of this run can be found in: /home/op/cases/pkgs/case-c4d-retry-default/cache/_logs/2026-11-12T18_16_32_409Z-debug-0.log

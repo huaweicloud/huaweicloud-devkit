@@ -28,6 +28,10 @@
 import { appendFileSync, existsSync, writeFileSync } from 'node:fs';
 
 import { redactSecrets } from '../safety-policy.ts';
+// The supplemental-key pass (api_key/apiKey/value): one shared leaf so
+// every redaction consumer — the trace here, the approval gate's pin views —
+// runs the same vocabulary.
+import { redactWithSupplementalKeys } from './supplemental-redaction.ts';
 
 const TRACE_ENV = 'HUAWEICLOUD_DEVKIT_TRACE';
 const TRACE_VERSION = 1;
@@ -58,24 +62,10 @@ export type TraceRecord = ToolCallTraceRecord | DisclosureTraceRecord;
 // gateway_call toolArgs) and the secrets pack's set tool carries the
 // plaintext itself under value (channel=value) — no other tool schema uses
 // that arg name, so the denylist entry is collision-free. Trace redaction
-// must be a superset of the product's, so these get their own pass here.
-const SUPPLEMENTAL_SECRET_KEYS = new Set(['api_key', 'apikey', 'value']);
-
-function redactSupplemental(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map((item) => redactSupplemental(item));
-  if (value && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, val]) => [
-        key,
-        SUPPLEMENTAL_SECRET_KEYS.has(key.toLowerCase()) ? '<redacted>' : redactSupplemental(val),
-      ]),
-    );
-  }
-  return value;
-}
-
+// must be a superset of the product's, so the supplemental keys get their
+// own pass (imported above from the shared leaf).
 export function redactForTrace(args: unknown): unknown {
-  return redactSupplemental(redactSecrets(args));
+  return redactWithSupplementalKeys(redactSecrets(args));
 }
 
 export function traceEnabled(): boolean {

@@ -5,7 +5,61 @@
       "args": ["./dist/mcp-server.js"],
       "cwd": ".",
       "env": {
-        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local"
+        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local",
+        "DEVKIT_APPROVAL_MODE": "ask"
+      },
+      "tools": {
+        "huaweicloud_run_approved_command": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_connect": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_exec_with_session": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_exec_one_shot": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_expose_tunnel": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_renew_tunnel": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_keepalive_watchdog": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_sign_agreement": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_credentials": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_sandbox_shutdown": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_auth_init": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_auth_switch": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_obs_set_website_config": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_obs_set_cors": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_upgrade": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_secret_delete": {
+          "approval_mode": "approve"
+        },
+        "huaweicloud_packs_configure": {
+          "approval_mode": "approve"
+        }
       }
     }
   }

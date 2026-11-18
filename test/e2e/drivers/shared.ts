@@ -65,11 +65,22 @@ export function resolveCommand(name: string): string | null {
 // route, or an unlisted model otherwise costs a full all-red suite whose
 // only signature is a dead agent — measured 2026-10-22 on the CI codex leg
 // (zero tool calls, zero agent hcloud calls on every case). Non-2xx, a
-// fetch failure, or an SSE error frame in the first chunk fails the probe;
-// network errors and 5xx get one retry (a blip at nightly o'clock must not
-// void the whole run). Node's global fetch ignores proxy env vars, so the
-// probe goes direct — a proxied local network where only proxy-aware agent
+// fetch failure, or an SSE error frame fails the probe; network errors and
+// 5xx get one retry round (a blip at nightly o'clock must not void the
+// whole run). Node's global fetch ignores proxy env vars, so the probe
+// goes direct — a proxied local network where only proxy-aware agent
 // stacks reach the gateway is the accepted false-negative residual.
+//
+// One sample cannot see a body-routed backend pool: the 2026-11-13/14
+// nightly codex legs died 312/374 requests with gateway "Internal error"
+// while the START probe (one tiny body) passed and the sibling chat wire
+// stayed healthy — identical retries of one body all fail while sibling
+// bodies (same size, same shape, fresh session ids) succeed, i.e. the
+// failure is deterministic per request body and random per fresh body.
+// Five distinct payloads sample that distribution: a healthy gateway
+// passes 5/5, tonight's ~35%-healthy pool passes 4-of-5 with probability
+// ~6%, and the lane then fails fast at the probe instead of burning 29
+// minutes producing red noise that reads as a product regression.
 export interface WireProbeInput {
   baseUrl: string;
   model: string;
@@ -90,13 +101,22 @@ const WIRE_ROUTES: Record<WireProbeInput['wire'], string> = {
   chat: '/chat/completions',
 };
 
-async function probeModelWireOnce(input: WireProbeInput): Promise<WireProbeResult> {
+// Distinct probe payloads per sample: the ping suffix varies so a
+// body-routed pool (hash- or content-keyed routing) gets independent
+// samples instead of five hits on one worker.
+const WIRE_PROBE_SAMPLES = 5;
+
+async function probeModelWireOnce(input: WireProbeInput, sample: number): Promise<WireProbeResult> {
   const route = WIRE_ROUTES[input.wire];
   const url = `${input.baseUrl.replace(/\/+$/, '')}${route}`;
   const body =
     input.wire === 'responses'
-      ? JSON.stringify({ model: input.model, input: 'ping', stream: true })
-      : JSON.stringify({ model: input.model, messages: [{ role: 'user', content: 'ping' }], max_tokens: 1 });
+      ? JSON.stringify({ model: input.model, input: `ping ${sample}`, stream: true })
+      : JSON.stringify({
+          model: input.model,
+          messages: [{ role: 'user', content: `ping ${sample}` }],
+          max_tokens: 1,
+        });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
@@ -116,21 +136,38 @@ async function probeModelWireOnce(input: WireProbeInput): Promise<WireProbeResul
     }
     if (input.wire === 'responses') {
       // Streamed 200 can still open with an error frame (gateway accepted,
-      // then rejected auth/model mid-handshake): read the first chunk only.
+      // then rejected auth/model mid-handshake — or, on a flaky pool, the
+      // terminal failure lands a chunk or two after response.created). Read
+      // until a terminal frame, EOF, or a short deadline: an error or
+      // response.failed frame fails the sample; running out of deadline
+      // without one passes (slow generation is health, not wire failure).
       const reader = res.body?.getReader();
-      if (reader) {
-        const { value } = await reader.read();
-        const chunk = value ? Buffer.from(value).toString('utf8') : '';
-        await reader.cancel().catch(() => {});
-        if (chunk.includes('"type":"error"')) {
-          return {
-            ok: false,
-            retryable: false,
-            detail: `error frame from POST ${route} — ${scrubSecrets(chunk.slice(0, 200))}`,
-          };
-        }
-      } else {
+      if (!reader) {
         await res.body?.cancel().catch(() => {});
+        return { ok: true, retryable: false, detail: `model wire verified (HTTP 200, POST ${route})` };
+      }
+      let timedOut = false;
+      const deadlineTimer = setTimeout(() => {
+        timedOut = true;
+        void reader.cancel().catch(() => {});
+      }, 3_000);
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done || timedOut) break;
+          const chunk = Buffer.from(value).toString('utf8');
+          if (chunk.includes('"type":"error"') || chunk.includes('"type":"response.failed"')) {
+            return {
+              ok: false,
+              retryable: false,
+              detail: `error frame from POST ${route} — ${scrubSecrets(chunk.slice(0, 200))}`,
+            };
+          }
+          if (chunk.includes('"type":"response.completed"')) break;
+        }
+      } finally {
+        clearTimeout(deadlineTimer);
+        await reader.cancel().catch(() => {});
       }
       return { ok: true, retryable: false, detail: `model wire verified (HTTP 200, POST ${route})` };
     }
@@ -150,13 +187,52 @@ async function probeModelWireOnce(input: WireProbeInput): Promise<WireProbeResul
   }
 }
 
+async function probeSampleRound(
+  input: WireProbeInput,
+): Promise<{ okCount: number; failures: string[]; retryable: boolean }> {
+  let okCount = 0;
+  const failures: string[] = [];
+  let retryable = false;
+  for (let sample = 1; sample <= WIRE_PROBE_SAMPLES; sample++) {
+    const result = await probeModelWireOnce(input, sample);
+    if (result.ok) okCount++;
+    else {
+      failures.push(result.detail);
+      retryable = retryable || result.retryable;
+    }
+  }
+  return { okCount, failures, retryable };
+}
+
+// The probe passes when at least WIRE_PROBE_SAMPLES - 1 of the samples
+// came back clean — one bad sample is the same blip the old single retry
+// absorbed. When every failing sample is in the transient class (network
+// error, 5xx), one full retry round runs after a 2s backoff, preserving
+// the old doctrine that a blip at probe time gets a second chance while
+// deterministic failures (4xx, error frames) fail without the wait.
 export async function probeModelWire(input: WireProbeInput): Promise<WireProbeResult> {
-  const first = await probeModelWireOnce(input);
-  if (first.ok || !first.retryable) return first;
-  await new Promise((resolve) => setTimeout(resolve, 2_000));
-  const second = await probeModelWireOnce(input);
-  if (second.ok) return second;
-  return { ok: false, retryable: false, detail: `${first.detail}; retry: ${second.detail}` };
+  const route = WIRE_ROUTES[input.wire];
+  let round = await probeSampleRound(input);
+  let retried = false;
+  if (round.okCount < WIRE_PROBE_SAMPLES - 1 && round.retryable) {
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    const second = await probeSampleRound(input);
+    retried = true;
+    if (second.okCount > round.okCount) round = second;
+  }
+  if (round.okCount >= WIRE_PROBE_SAMPLES - 1) {
+    return {
+      ok: true,
+      retryable: false,
+      detail: `model wire verified (HTTP 200, POST ${route}, ${round.okCount}/${WIRE_PROBE_SAMPLES} samples${retried ? ', after retry' : ''})`,
+    };
+  }
+  const extra = round.failures.length > 1 ? ` (+${round.failures.length - 1} more sample failure(s))` : '';
+  return {
+    ok: false,
+    retryable: false,
+    detail: `model wire unhealthy${retried ? ' after retry' : ''}: ${round.okCount}/${WIRE_PROBE_SAMPLES} samples ok — ${round.failures[0] ?? 'no failure detail'}${extra}`,
+  };
 }
 
 // The leg-facing wrapper every wire consumer uses (both drivers' probe()

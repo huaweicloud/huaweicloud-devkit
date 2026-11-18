@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { getCodexPluginName, getMarketplaceName } from '../../../plugins/huaweicloud-core/src/codex-probe.ts';
-import { startGatewayProxy } from './gateway-proxy.ts';
+import { startGatewayProxy, type GatewayWireStats } from './gateway-proxy.ts';
 import { MCP_ENV_LOADER_SOURCE, requiredModelEnv, runHeadlessAgent, verifyLegWire } from './shared.ts';
 import type { AgentDriver, DriverContext, DriverProbe, RunRequest, RunResult } from './types.ts';
 
@@ -266,6 +266,7 @@ export const codexDriver: AgentDriver = {
     const base = new URL(process.env.E2E_PROVIDER_BASEURL!);
     const proxy = await startGatewayProxy(base.origin);
     let run: Awaited<ReturnType<typeof runHeadlessAgent>>;
+    let wireStats: GatewayWireStats;
     try {
       // The local base mirrors the real base's pathname, so codex requests
       // <pathname>/responses and the proxy's origin + req.url reconstructs
@@ -314,6 +315,9 @@ export const codexDriver: AgentDriver = {
         req,
       );
     } finally {
+      // The snapshot precedes close so the attempt's evidence survives the
+      // teardown — stats() returns a plain copy either way.
+      wireStats = proxy.stats();
       await proxy.close();
     }
     // The -o file is the clean final message. No stdout fallback: the
@@ -322,6 +326,6 @@ export const codexDriver: AgentDriver = {
     // an absent or empty file yields null and the soft channel honestly
     // records nothing. Diagnostics still ride the recorded stdout.
     const finalText = existsSync(finalFile) ? readFileSync(finalFile, 'utf8').trim() || null : null;
-    return { ...run, finalText };
+    return { ...run, finalText, wireStats };
   },
 };

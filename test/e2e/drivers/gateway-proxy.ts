@@ -170,9 +170,24 @@ export function restoreNamespaces(line: string, namespaces: Map<string, string>)
   }
 }
 
+export interface GatewayWireStats {
+  // Total proxied requests (every request that reached the handler).
+  requests: number;
+  // Requests whose stream carried a response.completed frame.
+  completed: number;
+  // Requests whose stream carried an error / response.failed frame, or
+  // never got an upstream response at all (the 502 path).
+  failed: number;
+}
+
 export interface GatewayProxy {
   port: number;
   close(): Promise<void>;
+  // The wire-failure evidence for the attempt this proxy served: a
+  // request stream cut before any terminal frame (client timeout, tree
+  // kill) counts as neither completed nor failed, so the classifier
+  // (all requests failed, none completed) stays honest about aborts.
+  stats(): GatewayWireStats;
 }
 
 interface InFlight {
@@ -192,6 +207,7 @@ function appendDumpLine(file: string, line: string): void {
 
 export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy> {
   const inFlight = new Set<InFlight>();
+  const stats: GatewayWireStats = { requests: 0, completed: 0, failed: 0 };
   return new Promise((resolveStart, rejectStart) => {
     let listening = false;
     const server = http.createServer((req, res) => {
@@ -206,10 +222,37 @@ export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy>
       if (!listening) rejectStart(new Error(`gateway proxy listen failed: ${String(error)}`));
     });
 
+    // Terminal-frame detection for the attempt's wire stats: the event
+    // type string lives only in `data:` frames, and the function_call
+    // restore fast path never touches these frames (a terminal frame
+    // never carries "function_call"), so the two per-line checks are
+    // disjoint. A stream that saw both (never observed) counts completed.
+    const terminalOf = (line: string): 'completed' | 'failed' | null => {
+      if (!line.startsWith('data:')) return null;
+      if (line.includes('"type":"response.completed"')) return 'completed';
+      if (line.includes('"type":"response.failed"') || line.includes('"type":"error"')) return 'failed';
+      return null;
+    };
+
     async function handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
       const controller = new AbortController();
       const entry: InFlight = { controller };
       inFlight.add(entry);
+      stats.requests++;
+      // The terminal classification of THIS request's stream — recorded
+      // exactly once per request on the paths below.
+      let sawCompleted = false;
+      let sawFailed = false;
+      const noteTerminal = (line: string): void => {
+        if (sawCompleted || sawFailed) return;
+        const terminal = terminalOf(line);
+        if (terminal === 'completed') sawCompleted = true;
+        else if (terminal === 'failed') sawFailed = true;
+      };
+      const recordTerminal = (): void => {
+        if (sawCompleted) stats.completed++;
+        else if (sawFailed) stats.failed++;
+      };
       // The client dying (case-budget tree kill, codex crash) must abort the
       // upstream pull instead of streaming into a dead socket until close().
       res.on('close', () => controller.abort());
@@ -292,17 +335,20 @@ export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy>
               outbound.push(out === text ? line : Buffer.from(out, 'utf8'));
               outbound.push(NEWLINE);
               if (dumpFile) appendDumpLine(dumpFile, out);
+              noteTerminal(out);
             }
             if (outbound.length) res.write(Buffer.concat(outbound));
           }
           if (carry.length) {
             const text = carry.toString('utf8');
             const out = restoreNamespaces(text, namespaces);
-            res.write(out === text ? carry : out);
+            res.write(out === text ? carry : Buffer.from(out, 'utf8'));
             if (dumpFile) appendDumpLine(dumpFile, out);
+            noteTerminal(out);
           }
         }
         res.end();
+        recordTerminal();
       } catch {
         // Headers-sent guard: writeHead after a flushed response throws
         // ERR_HTTP_HEADERS_SENT, which would otherwise escape as an
@@ -310,8 +356,12 @@ export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy>
         if (!res.headersSent) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: 'gateway proxy upstream error' } }));
+          // No upstream response at all is the wire-failure class itself.
+          stats.failed++;
         } else {
           res.destroy();
+          // Frames already relayed: classify by what the stream showed.
+          recordTerminal();
         }
       } finally {
         inFlight.delete(entry);
@@ -324,6 +374,7 @@ export function startGatewayProxy(upstreamOrigin: string): Promise<GatewayProxy>
       const port = typeof address === 'object' && address ? address.port : 0;
       resolveStart({
         port,
+        stats: () => ({ ...stats }),
         close: () => {
           for (const entry of inFlight) entry.controller.abort();
           server.closeIdleConnections();

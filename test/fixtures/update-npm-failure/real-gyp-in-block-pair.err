@@ -1,0 +1,7 @@
+npm error code EACCES
+npm error path /home/op/a
+npm error command failed
+npm error code 1
+npm error gyp ERR! build error
+npm error gyp ERR! stack Error: `make` failed with exit code: 2
+npm error command sh -c node-gyp rebuild

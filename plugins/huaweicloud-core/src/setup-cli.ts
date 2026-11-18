@@ -36,6 +36,7 @@ import { removeKooCli, removeObsConfig } from './sandbox/uninstall-cleanup.ts';
 import { readReceipt, removeReceipt } from './dep/receipts.ts';
 import { runSecretCommand } from './lib/secret-vault/cli.ts';
 import { createProcessApproveIo, runApproveCommand, runPinCommand } from './approvals-cli.ts';
+import { readConsentEvents } from './approval-ledger.ts';
 import { custodyReport } from './lib/secret-vault/custody.ts';
 import { vaultList } from './lib/secret-vault/store.ts';
 import { detectCodeartsSandbox } from './codearts-sandbox.ts';
@@ -115,6 +116,7 @@ import {
   uninstallCodex,
 } from './agents/codex.ts';
 import { codexDesktopDoctorMcpConfigured, deployCodexDesktop, uninstallCodexDesktop } from './agents/codex-desktop.ts';
+import { codexDoctorApprovalRow } from './agents/codex-config.ts';
 import { deployDsh, dshStatus, uninstallDsh } from './agents/dsh.ts';
 import { dshDoctorMcpConfigured, dshPayloadDoctorSection } from './agents/dsh-patch.ts';
 import {
@@ -179,7 +181,7 @@ async function checkForUpdate(): Promise<void> {
     // optional chain never short-circuits a reachable path.
     const tag = distTags?.next && semverCompare(target, distTags.next) === 0 ? 'next' : 'latest';
     console.log(
-      `\n\x1b[33mℹ️ 检测到新版本：${target}（当前 ${pkgVersion}，${tag} 频道）。建议运行 \`npx --yes huaweicloud-devkit@${tag} update\` 更新。\x1b[0m`,
+      `\n\x1b[33mℹ️ 检测到新版本：${target}（当前 ${pkgVersion}，${tag} 频道）。建议运行 \`npx --yes --foreground-scripts huaweicloud-devkit@${tag} update\` 更新。\x1b[0m`,
     );
   }
 }
@@ -1057,6 +1059,38 @@ async function cmdDoctor(): Promise<void> {
     opencodeDoctorAskRule(ctx);
   }
 
+  // The codex client yield (PR-5): the per-tool approval_mode blocks the
+  // devkit payload's .mcp.json carries (agents/codex-config.ts records why
+  // the yield lives there, never in the user's config.toml). The row gates
+  // itself on the machine's codex relationship (no payload, no plugin, no
+  // desktop registration → silent), so it adds nothing to a codex-less
+  // doctor run. The desktop registration bit comes from the candidate the
+  // shell already probed above — passed in so the row never probes twice.
+  codexDoctorApprovalRow(ctx, codexDesktopDoctorMcpConfigured() !== null);
+
+  // Session standing consents (PR-3a's S3): the "remember for this
+  // session" grants the elicitation form's tick recorded in the ask-mode
+  // consent ledger. Listing only, zero rows print nothing: a clean home's
+  // doctor output stays byte-identical. A row is a RECORD of a grant the
+  // user ticked — the grant's operative lifetime is the devkit server
+  // process (it forgets on restart, fail-closed), so the line names what
+  // was consented and when, never a live permission claim.
+  try {
+    const standing = readConsentEvents().filter((event) => event.scope === 'session');
+    if (standing.length > 0) {
+      ctx.info('Session standing consents recorded in the consent ledger (each dies with the devkit server process):');
+      for (const grant of standing) {
+        console.log(
+          `        ${grant.tool} — args hash ${grant.argsHash.slice(0, 16)}, granted ` +
+            `${new Date(grant.grantedAt).toISOString()}, evidence ${grant.evidence}`,
+        );
+      }
+    }
+  } catch {
+    // An unreadable ledger is not a health failure: doctor lists state, it
+    // never gates on it.
+  }
+
   // Hermes MCP Python SDK (only checked when Hermes config is found).
   hermesDoctorSdkCheck(ctx, mcpCfgTarget);
 
@@ -1176,6 +1210,9 @@ async function cmdDoctor(): Promise<void> {
   }
   if (fail > 0) {
     console.log('\x1b[33mFix failures above, then restart your session.\x1b[0m');
+    // A FAIL line is the command's verdict, so CI and scripts can gate on the
+    // exit code: a doctor that prints [FAIL] and exits 0 is not a check.
+    process.exitCode = 1;
   }
   if (fail === 0 && mcpConfigured) {
     console.log('\n\x1b[32mAll checks passed.\x1b[0m You can now describe your Huawei Cloud task');
@@ -1198,6 +1235,7 @@ async function cmdUpdate(): Promise<void> {
   console.log(BANNER);
   resolvePacksFlag(); // fail fast on bogus --packs before any file is copied
   const target = parseTarget();
+  checkNode();
   await checkForUpdate();
   // Reconcile the native dirs only when this run will actually place the new
   // payload somewhere. A target whose server is absent gets "Not installed"

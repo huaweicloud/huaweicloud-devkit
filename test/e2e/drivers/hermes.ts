@@ -25,7 +25,7 @@ import { MCP_ENV_LOADER_SOURCE, requiredModelEnv, runHeadlessAgent, verifyLegWir
 // - The providers: map (NOT the legacy custom_providers list) carries the
 //   model config; key_env E2E_APIKEY with the E2E_TEST_API_KEY bridge.
 // - tools.tool_search.enabled "off" pins the eager tool listing: hermes's
-//   default progressive disclosure would hide the 56 devkit tools behind
+//   default progressive disclosure would hide the 57 devkit tools behind
 //   tool_search/tool_describe/tool_call bridges, a posture the cases'
 //   prompts do not model.
 

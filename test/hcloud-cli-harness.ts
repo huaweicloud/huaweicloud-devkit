@@ -1,10 +1,8 @@
 // The fake-hcloud harness for the KooCLI execution tests, extracted from
 // hcloud-cli.test.ts: the deterministic vendor-challenge seam, the temp
 // auth-home isolation, and the fake binary/script/meta-repo builders.
-import assert from 'node:assert/strict';
 import { chmodSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import test from 'node:test';
 
 import { type HcloudRunResult } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { clearRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
@@ -17,6 +15,10 @@ import { fixtureDir } from './fixture-dir.ts';
 // (tools.test.ts's gate test drives the dance; the selfcheck drives it on
 // the wire); the real-model e2e tier never sets this seam.
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
+
+// The approval-mode pin and the vault-keyed auth home live in
+// approval-mode-harness.ts (PR-3a's shared home for every approval
+// battery) — imported from there, not re-declared here.
 
 export const isWin = process.platform === 'win32';
 
@@ -41,10 +43,20 @@ export async function withTempAuthHome(fn: (home: string) => Promise<void> | voi
     HW_SECRET_KEY: process.env.HW_SECRET_KEY,
     HW_SECURITY_TOKEN: process.env.HW_SECURITY_TOKEN,
     HW_STS_EXPIRES_AT: process.env.HW_STS_EXPIRES_AT,
+    XDG_DATA_HOME: process.env.XDG_DATA_HOME,
+    OPENCODE_DB: process.env.OPENCODE_DB,
   };
   process.env.HUAWEICLOUD_HOME = home;
   process.env.HCLOUD_CONFIG_PATH = join(home, '.hcloud', 'config.json');
   process.env.HCLOUD_OBS_CONFIG_PATH = join(home, '.obsutilconfig');
+  // The doctor reads opencode's saved-permission store from the client's data
+  // root; pin it under the fixture home (and drop an ambient OPENCODE_DB) so
+  // the machine's real store, and any "always allow" row in it, can never
+  // leak into a test's doctor output. The approval gate itself never reads
+  // this store (the confirmation runs server-side). A test that seeds a store
+  // sets its own XDG_DATA_HOME/OPENCODE_DB inside the callback.
+  process.env.XDG_DATA_HOME = join(home, '.local', 'share');
+  delete process.env.OPENCODE_DB;
   delete process.env.HW_ACCESS_KEY;
   delete process.env.HW_SECRET_KEY;
   delete process.env.HW_SECURITY_TOKEN;
@@ -63,6 +75,9 @@ export async function withTempAuthHome(fn: (home: string) => Promise<void> | voi
   }
 }
 
+// The vault-tier auth home lives in approval-mode-harness.ts with the
+// approval-mode pin (PR-3a's shared home) — imported from there.
+
 export function fakeHcloudScript(source: string) {
   const dir = fixtureDir('huaweicloud-toolkit-');
   const script = join(dir, 'fake-hcloud.mjs');
@@ -73,14 +88,46 @@ export function fakeHcloudScript(source: string) {
 // POSIX-only shape: this writes an extension-less shebang script, which
 // Windows cannot exec — a shell:false spawn of it fails before the child
 // runs (SPAWN_ERROR, observed on the windows lanes, run 42979717544).
-// Windows callers must guard with a win32 skip or assert spawn-indifferent
-// outcomes (the approval battery's approved:true shape).
+// Windows callers route through activateFakeHcloudBin instead, guard with
+// a win32 skip, or assert spawn-indifferent outcomes (the approval
+// battery's approved:true shape).
 export function fakeHcloudExecutable(source: string) {
   const dir = fixtureDir('huaweicloud-toolkit-bin-');
   const script = join(dir, 'fake-hcloud');
   writeFileSync(script, `#!/usr/bin/env node\n${source}`, 'utf8');
   chmodSync(script, 0o755);
   return script;
+}
+
+// Activate a fake hcloud for tests that drive the real spawn path through
+// callTool and must observe the child's effects. POSIX keeps the shebang
+// shape as HCLOUD_BIN; win32 cannot exec it through the run path's
+// shell:false spawn, so the same source rides node itself through the
+// resolution chain's env tier — HCLOUD_BIN = <node> with
+// HCLOUD_BIN_ARGS_JSON = [<script.mjs>] (resolveHcloudCommand). The source
+// must be ESM: the win32 twin runs it as .mjs. Returns the restore
+// function; nested activations restore in LIFO order.
+export function activateFakeHcloudBin(source: string): () => void {
+  const previousBin = process.env.HCLOUD_BIN;
+  if (process.platform === 'win32') {
+    const previousArgs = process.env.HCLOUD_BIN_ARGS_JSON;
+    const dir = fixtureDir('huaweicloud-toolkit-bin-');
+    const script = join(dir, 'fake-hcloud.mjs');
+    writeFileSync(script, source, 'utf8');
+    process.env.HCLOUD_BIN = process.execPath;
+    process.env.HCLOUD_BIN_ARGS_JSON = JSON.stringify([script]);
+    return () => {
+      if (previousArgs === undefined) delete process.env.HCLOUD_BIN_ARGS_JSON;
+      else process.env.HCLOUD_BIN_ARGS_JSON = previousArgs;
+      if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = previousBin;
+    };
+  }
+  process.env.HCLOUD_BIN = fakeHcloudExecutable(source);
+  return () => {
+    if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+    else process.env.HCLOUD_BIN = previousBin;
+  };
 }
 
 export function withMetaRepo(files: Record<string, unknown[]>) {

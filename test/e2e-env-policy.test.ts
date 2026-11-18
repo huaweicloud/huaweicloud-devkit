@@ -25,6 +25,10 @@ const FROZEN_STRIP_FLOOR_PROXY_AND_CREDS = [
   'HUAWEICLOUD_REGION',
   'HCLOUD_CONFIG_PATH',
   'HCLOUD_OBS_CONFIG_PATH',
+  // The vault custody master key is a live host credential (the approval
+  // grants and secret store of the developer's real vault): a host value
+  // keying a case session is the same leak class as the AK/SK pair.
+  'HW_VAULT_MASTER_KEY',
 ];
 const FROZEN_STRIP_FLOOR_AGENT_STATE = [
   'DSH_HOME',

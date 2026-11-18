@@ -55,7 +55,7 @@ function printRefusal(io: ApproveIo, inspectionState: string): number {
     io.write('No pending approval matches that token.\n');
   } else if (inspectionState === 'expired') {
     io.write(
-      'That approval expired. A confirmation must happen within 5 minutes of the plan; ask the agent to plan the command again.\n',
+      'That approval expired. A confirmation must happen within 5 minutes of the mint; ask the agent to make the approved call again for a fresh approval.\n',
     );
   } else {
     io.write('This approval was already used.\n');
@@ -103,17 +103,17 @@ function printConfirmResult(
 ): number {
   switch (status) {
     case 'confirmed':
-      io.write('Confirmed. The agent may now run this command once.\n');
+      io.write('Confirmed. The agent may now run this approved call once.\n');
       return 0;
     case 'already_confirmed':
-      io.write('This approval was already confirmed. The agent may run this command once.\n');
+      io.write('This approval was already confirmed. The agent may run this approved call once.\n');
       return 0;
     case 'already_consumed':
       io.write('This approval was already used.\n');
       return 0;
     case 'expired':
       io.write(
-        'That approval expired. A confirmation must happen within 5 minutes of the plan; ask the agent to plan the command again.\n',
+        'That approval expired. A confirmation must happen within 5 minutes of the mint; ask the agent to make the approved call again for a fresh approval.\n',
       );
       return 1;
     case 'custody_unavailable':

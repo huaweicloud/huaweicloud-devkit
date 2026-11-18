@@ -39,6 +39,8 @@ const EXEMPT_TOOLS = new Set([
   'huaweicloud_check_account_type',
   'huaweicloud_sandbox_renew_tunnel',
   'huaweicloud_sandbox_keepalive_watchdog',
+  'huaweicloud_sandbox_exec_poll',
+  'huaweicloud_sandbox_shutdown',
 ]);
 
 // Declared, intentional drifts from the legacy literals. Each entry names the
@@ -95,6 +97,18 @@ const INTENTIONAL_DRIFTS = [
   },
 ];
 
+// The confirm-language hint rows share one reason (the addition is one
+// feature across the roster, not ten): the model relays the user's
+// conversation language so the human-facing confirmation form renders its
+// display text in it — the MCP server never sees the chat, so the model is
+// the only context observer. Optional and soft-failing (an unrecognized
+// value falls through to the operator's DEVKIT_CONFIRM_LANG pin, then the
+// machine locale; lib/confirm-language.ts owns the ladder). Injected on
+// every roster tool by src/tool-schemas.ts; the six roster tools absent
+// here sit in EXEMPT_TOOLS above, where no row can fire.
+const confirmLanguageAdditionReason =
+  "The confirm-language hint (the approval domain's parameter, injected roster-wide by src/tool-schemas.ts): the model relays the user's conversation language so the confirmation form's display text localizes to it; optional and soft-failing, resolved by lib/confirm-language.ts's tier ladder (operator env pin, then the hint, then the machine locale).";
+
 // Deliberate additive properties. The legacy snapshot is the pre-migration
 // contract, so features ported after it add properties the fixture can never
 // carry (same reasoning as EXEMPT_TOOLS: the fixture is history, not a live
@@ -112,7 +126,189 @@ const DELIBERATE_ADDITIONS = [
     reason:
       '2026-11-05 UX report #11: `code` was the silent-failure alias agents actually sent (the loose schema already passed it through to the handler); declaring it documents the accepted alias instead of leaving the drop implicit.',
   },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'mode',
+    reason:
+      'The async-exec claim protocol (TLA+-verified as HwExecClaim): mode "async" claims a task directory and spawns the command detached, so long build-class commands stop hitting the synchronous timeout cliff; the pre-migration contract only knew the sync exec.',
+  },
+  {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'command',
+    reason:
+      'The operator-approved command-forward shape: the harness permission popup renders the tool input, so a top-level command line makes the command the first thing the user reads. Optional in the schema ON PURPOSE (the gate, not zod, is the enforcer): an args-only legacy call must still reach the gate, and the gate checks equality whenever the field is present.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'task_id',
+    reason:
+      "The async-exec claim protocol's task identity: a path- and pgrep-safe id the caller reuses when retrying an uncertain start — the claim file blocks a second spawn; omitting it lets the tool generate one.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers connect on the approval gate (always flavor, gate token source): the token the USER_CONFIRMATION_REQUIRED envelope mints spends the confirmation. Optional in the schema like the hcloud run face — the gate, not zod, is the enforcer, so a first no-token call must reach the gate to receive the mint envelope.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation: in token mode the call requires the agent's explicit statement that the user approved; in ask mode it is the T3 chat round-trip retry marker. Schema-optional because a required field would die in SDK validation before the gate could teach the confirmation ritual.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_with_session',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers the session exec face as a CLASSIFIED gate tool: a write-classified command confirms per call (mint → terminal approve → retry), a benign one passes through with no token at all. Schema-optional so both shapes reach the gate.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_with_session',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the session exec face: the token-mode statement of user approval, and the ask-mode chat round-trip retry marker. Schema-optional for the same reason as the run face's.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers the one-shot exec face as a CLASSIFIED gate tool (same contract as the session face): write-classified content confirms per call, benign content passes ungated.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the one-shot exec face: token-mode statement of user approval, ask-mode chat round-trip retry marker.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_sign_agreement',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers agreement signing on the approval gate (always flavor): a legal-agreement signature earns a human present per call, mechanically — the skill teaching that demanded explicit consent is now enforced, not requested.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_sign_agreement',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the agreement face: the token-mode statement of user approval and the ask-mode retry marker.",
+  },
+  {
+    tool: 'huaweicloud_sandbox_credentials',
+    property: 'approvalToken',
+    reason:
+      'PR-3a registers credential injection on the approval gate (always flavor): injecting temporary AK/SK plus a long-lived DevBridge API key into a sandbox mutates its credential state, so it confirms per call.',
+  },
+  {
+    tool: 'huaweicloud_sandbox_credentials',
+    property: 'approvedByUser',
+    reason:
+      "PR-3a's gate attestation on the credentials face: the token-mode statement of user approval and the ask-mode retry marker.",
+  },
+  {
+    tool: 'huaweicloud_auth_init',
+    property: 'approvalToken',
+    reason:
+      'PR-3b registers the account-switch pair on the approval chain (gate tokenSource): a no-token call returns the USER_CONFIRMATION_REQUIRED envelope carrying this minted token, so the property is part of the gate contract the legacy snapshot predates.',
+  },
+  {
+    tool: 'huaweicloud_auth_init',
+    property: 'approvedByUser',
+    reason:
+      'PR-3b approval-chain registration: the attestation the chat round-trip retry carries in ask mode (and the token-mode attestation), optional in the schema on purpose so a missing value reaches the gate and its teaching refusal instead of dying in SDK validation.',
+  },
+  {
+    tool: 'huaweicloud_auth_switch',
+    property: 'approvalToken',
+    reason:
+      'PR-3b registers the account-switch pair on the approval chain (gate tokenSource): a no-token call returns the USER_CONFIRMATION_REQUIRED envelope carrying this minted token, so the property is part of the gate contract the legacy snapshot predates.',
+  },
+  {
+    tool: 'huaweicloud_auth_switch',
+    property: 'approvedByUser',
+    reason:
+      'PR-3b approval-chain registration: the attestation the chat round-trip retry carries in ask mode (and the token-mode attestation), optional in the schema on purpose so a missing value reaches the gate and its teaching refusal instead of dying in SDK validation.',
+  },
+  {
+    tool: 'huaweicloud_obs_set_website_config',
+    property: 'approvalToken',
+    reason:
+      'PR-3c approval registration: the gate-source token parameter the approval gate mints on a no-token call. Optional in the schema ON PURPOSE (the gate, not zod, is the enforcer): a no-token call must reach the gate to receive the USER_CONFIRMATION_REQUIRED envelope.',
+  },
+  {
+    tool: 'huaweicloud_obs_set_website_config',
+    property: 'approvedByUser',
+    reason:
+      'PR-3c approval registration: the attestation parameter — token mode requires it beside the token; in ask mode it is the T3 chat round-trip retry marker.',
+  },
+  {
+    tool: 'huaweicloud_upgrade',
+    property: 'approvalToken',
+    reason:
+      'PR-3c approval registration (the mechanical gate replaces the description-level consent): the gate-source token parameter, same optional-in-schema doctrine as the obs pair.',
+  },
+  {
+    tool: 'huaweicloud_upgrade',
+    property: 'approvedByUser',
+    reason: 'PR-3c approval registration: the attestation parameter, same mode-conditional doctrine as the obs pair.',
+  },
+  {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_with_session',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_exec_one_shot',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_sign_agreement',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_sandbox_credentials',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_auth_init',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_auth_switch',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_obs_set_website_config',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
+  {
+    tool: 'huaweicloud_upgrade',
+    property: 'confirmLanguage',
+    reason: confirmLanguageAdditionReason,
+  },
 ];
+
+// The other three PR-3c registrations (huaweicloud_obs_set_cors,
+// huaweicloud_secret_delete, huaweicloud_packs_configure) sit in
+// EXEMPT_TOOLS above: the snapshot has no legacy entry for them, so the
+// comparison loop skips them before it ever consults this list — their
+// approval parts are exercised by the structure and approval batteries
+// instead, and no DELIBERATE_ADDITIONS row could ever fire for them.
 
 // Deliberate optionals: properties the legacy snapshot carries as REQUIRED
 // that a reviewed change made mode-conditional. Same reasoning as
@@ -125,6 +321,27 @@ const DELIBERATE_OPTIONALS = [
     tool: 'huaweicloud_run_approved_command',
     property: 'approvalToken',
     reason: 'DEVKIT_APPROVAL_MODE=ask makes the harness client the confirmation, so the token becomes mode-conditional',
+  },
+  {
+    tool: 'huaweicloud_run_approved_command',
+    property: 'approvedByUser',
+    reason:
+      'PR-1.5 server-run confirmation: the attestation is the T3 chat round-trip retry marker, so the first ask-mode arrival carries none and must reach the gate (a schema-required field would die in SDK validation). Token mode still throws the teaching rejection when it is absent.',
+  },
+];
+
+// Deliberate removals: properties the legacy snapshot carries that a reviewed
+// change removed from the live contract. Same reasoning as
+// DELIBERATE_ADDITIONS — the fixture is history, not a live render — but the
+// drift direction is removal, so an entry is consulted by the missingProps
+// check only; every other check (types, enums, nested shapes) still applies
+// to every remaining property in full.
+const DELIBERATE_REMOVALS = [
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'template_id',
+    reason:
+      'dev 8c1af52e: custom templates retired — connect only supports pool_type, the server owns the pool_type → template mapping, and the client neither sends nor exposes template_id (HW_POOL_TEMPLATE_* pinning dropped with it)',
   },
 ];
 
@@ -193,7 +410,11 @@ for (const tool of TOOL_DEFINITIONS) {
 
   const legacyProps = propKeys(normLegacy);
   const renderedProps = propKeys(normRendered);
-  const missingProps = [...legacyProps].filter((k) => !renderedProps.has(k));
+  const missingProps = [...legacyProps].filter(
+    (k) =>
+      !renderedProps.has(k) &&
+      !DELIBERATE_REMOVALS.some((removal) => removal.tool === tool.name && removal.property === k),
+  );
   if (missingProps.length) {
     failures.push(`${tool.name}: properties missing in zod render: ${missingProps.join(', ')}`);
   }

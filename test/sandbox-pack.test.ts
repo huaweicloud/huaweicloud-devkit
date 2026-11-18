@@ -10,14 +10,18 @@ import {
 // The schema text is the interface agents see on tools/list: it must
 // document the default the handler actually applies, and it must not
 // promise fallback behavior the implementation removed.
-const TIMEOUT_TOOLS: Array<[SandboxToolName, number]> = [
-  ['huaweicloud_sandbox_exec_with_session', SANDBOX_TIMEOUT_MS.exec_with_session],
-  ['huaweicloud_sandbox_exec_one_shot', SANDBOX_TIMEOUT_MS.exec_one_shot],
-  ['huaweicloud_sandbox_upload_file', SANDBOX_TIMEOUT_MS.upload_file],
-  ['huaweicloud_sandbox_upload_project', SANDBOX_TIMEOUT_MS.upload_project],
-  ['huaweicloud_sandbox_deploy_nginx', SANDBOX_TIMEOUT_MS.deploy_nginx],
-  ['huaweicloud_sandbox_deploy_check', SANDBOX_TIMEOUT_MS.deploy_check],
-  ['huaweicloud_sandbox_expose_tunnel', SANDBOX_TIMEOUT_MS.expose_tunnel],
+const TIMEOUT_TOOLS: Array<[SandboxToolName, string]> = [
+  ['huaweicloud_sandbox_exec_with_session', `default: ${SANDBOX_TIMEOUT_MS.exec_with_session}\\)`],
+  // exec_one_shot documents two mode-specific defaults (sync wait, async
+  // start exec) — both must be pinned so neither can drift from the table.
+  ['huaweicloud_sandbox_exec_one_shot', `sync default: ${SANDBOX_TIMEOUT_MS.exec_one_shot}`],
+  ['huaweicloud_sandbox_exec_one_shot', `default ${SANDBOX_TIMEOUT_MS.exec_one_shot_async}`],
+  ['huaweicloud_sandbox_exec_poll', `default: ${SANDBOX_TIMEOUT_MS.exec_poll}`],
+  ['huaweicloud_sandbox_upload_file', `default: ${SANDBOX_TIMEOUT_MS.upload_file}\\)`],
+  ['huaweicloud_sandbox_upload_project', `default: ${SANDBOX_TIMEOUT_MS.upload_project}\\)`],
+  ['huaweicloud_sandbox_deploy_nginx', `default: ${SANDBOX_TIMEOUT_MS.deploy_nginx}\\)`],
+  ['huaweicloud_sandbox_deploy_check', `default: ${SANDBOX_TIMEOUT_MS.deploy_check}\\)`],
+  ['huaweicloud_sandbox_expose_tunnel', `default: ${SANDBOX_TIMEOUT_MS.expose_tunnel}\\)`],
 ];
 
 test('sandbox schema text documents the handler timeout defaults', () => {
@@ -29,7 +33,7 @@ test('sandbox schema text documents the handler timeout defaults', () => {
     assert.ok(described, `${name} schema has no timeout_ms field`);
     assert.match(
       described.description ?? '',
-      new RegExp(`default: ${expected}\\)$`),
+      new RegExp(expected),
       `${name} schema text must document the applied default`,
     );
   }

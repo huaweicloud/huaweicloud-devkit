@@ -858,6 +858,46 @@ export function classifyTextCommand(command: unknown, options: ClassifyOptions =
     };
   }
 
+  // The account-switch CLI verbs (interrogate round 1, finding 1): `auth
+  // init`/`auth sync` write S1, the OBS config, and the KooCLI profile —
+  // the same account switch the MCP tools gate behind a human present
+  // (PR-3b). The hook blocks raw `hcloud configure set`, but the devkit's
+  // own wrapper was an open bypass: an agent that shells out to
+  // `npx huaweicloud-devkit auth init` switches every downstream approved
+  // write's account with no confirmation at all. Same anchoring doctrine
+  // as approve/pin: the patterns require a devkit binary spelling, so an
+  // hcloud operation or a plain file named auth-init never trips, and the
+  // read-only `auth status` stays allowed for the agent.
+  if (shadowCandidates.some((candidate) => matchesAny(candidate, policy.blockedAccountSwitchCliPatterns))) {
+    return {
+      decision: 'deny',
+      risk: 'approval',
+      reason:
+        "Running the account-switch CLI from the agent Bash face is blocked: switching the Huawei Cloud account is approval-gated, and the devkit's own confirmation must come from the user's own interactive terminal. Ask the user to run the auth init / auth sync command themselves, or use the gated MCP tools (huaweicloud_auth_init / huaweicloud_auth_switch), which confirm the target account with the user before switching.",
+    };
+  }
+
+  // The devkit's gated-mutation CLI twins (interrogate round 1, finding 1):
+  // `update`/`upgrade` rewrite the installed package, `secret rm` deletes a
+  // vault entry, and `packs enable|disable|all` rewrites the operator
+  // DEVKIT_PACKS posture — the exact mutations the MCP approval gate
+  // mediates on huaweicloud_upgrade, huaweicloud_secret_delete, and
+  // huaweicloud_packs_configure. The CLI path carries no gate at all, so an
+  // agent shelling to it performs the mutation with zero confirmation —
+  // the same bypass class the auth verbs established. The row shape mirrors
+  // the approve/pin family (a devkit bin spelling must be present, so a
+  // Huawei Cloud operation or a benign sentence containing the verb never
+  // trips), matched against the same two shadows. A human at their own
+  // terminal is unaffected: this is the agent Bash face.
+  if (shadowCandidates.some((candidate) => matchesAny(candidate, policy.blockedGatedCliPatterns))) {
+    return {
+      decision: 'deny',
+      risk: 'approval',
+      reason:
+        'Running the devkit update/upgrade, secret rm, and packs enable/disable CLI verbs from the agent Bash face is blocked: they perform the same mutations the MCP approval gate mediates (huaweicloud_upgrade, huaweicloud_secret_delete, huaweicloud_packs_configure), with no confirmation on this path. Call the MCP tool instead — its gate raises the confirmation (token, form, or chat round-trip) — or let the user run the CLI command in their own terminal.',
+    };
+  }
+
   // Order-independent reveal pair: `echo secret get <ref> --stdout | xargs
   // npx huaweicloud-devkit` reorders the argv through xargs while every word
   // is literal in the text — the patterns above assume bin-before-

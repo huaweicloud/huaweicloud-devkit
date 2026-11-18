@@ -1,0 +1,2 @@
+Error: npm install failed in /home/op/x: 404 tarball, folder, http url, or git url.
+hint: ESBUILD_BINARY_PATH=/opt/x/esbuild resolved, spawning rebuild

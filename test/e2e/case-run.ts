@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 import { buildCaseEnv, scrubSecrets } from './env-policy.ts';
+import { E2E_VAULT_MASTER_KEY, startApprovalsWatcher } from './approvals-watcher.ts';
+import { startPtyApprovalsWatcher } from './approve-pty.ts';
 import { evaluateCase, type CaseVerdict, type Recordings } from './evaluate.ts';
 import { HttpFake } from './http-fake.ts';
 import { WsFake } from './ws-fake/hwlink-server.ts';
@@ -67,6 +69,22 @@ export async function runCase(
     const workdir = mkdtempSync(join(tmpdir(), `${TEMP_PREFIX}work-`));
     const wsFake = caseDef.fixtures.ws ? new WsFake() : null;
     let httpFake: HttpFake | null = null;
+    // The simulated user's terminal (approvals-watcher.ts): started before
+    // the agent run so a plan minted in the first seconds is confirmed
+    // before the model's run call lands (the LLM's plan→run turnaround is
+    // seconds; the poll fires in milliseconds). Declared in the attempt
+    // scope so the finally can stop it on every exit path. The PTY seam
+    // (approve-pty.ts) is the same terminal half driven through the REAL
+    // TTY-gated CLI — enroll the PIN, then answer each minted token's
+    // approve prompt — so gated cases exercise the product's own door
+    // instead of bypassing it; its enrollment is awaited (one CLI boot)
+    // before the agent run starts.
+    let approvalsWatcher: { stop(): void } | null = null;
+    if (caseDef.ptyConfirmApprovals) {
+      approvalsWatcher = await startPtyApprovalsWatcher(home, bin);
+    } else if (caseDef.autoConfirmApprovals) {
+      approvalsWatcher = startApprovalsWatcher(home);
+    }
     try {
       // Ws fake first: its ephemeral port resolves the literal {wsUrl}
       // token inside the http script (the hwlink GET-poll returns it as
@@ -108,13 +126,40 @@ export async function runCase(
           'hcloud-fake-install.log',
         ),
       });
+      // A case-pinned approval posture must ride the INSTALL too: the
+      // opencode ask gate writes the ask halves (the permission ask rule +
+      // DEVKIT_APPROVAL_MODE=ask in the mcp entry's environment), and the
+      // entry's environment beats the agent process env on the MCP child
+      // (measured on opencode 2.2.7). Turning the gate off for this case's
+      // throwaway home is the runner's deliberate per-case override — the
+      // same channel doctrine as install --packs, not a host leak (the
+      // env-policy strip keeps ambient values out of this decision).
+      if (caseDef.approvalMode) {
+        installEnv.HUAWEICLOUD_OPENCODE_ASK_RULE = 'off';
+      }
       runInstall(bin, home, workdir, installEnv, driver.installTarget, caseDef.installPacks);
+      // The run half of the pin: DEVKIT_APPROVAL_MODE reaches the MCP child
+      // through the codex env loader directly, and through opencode's
+      // parent-env inheritance once the gate-off install stopped overriding
+      // it in the entry's environment. Absent cases never set it: their
+      // posture is the installer's natural one (ask on opencode at or
+      // above the seam floor — core-approval-negative's teaching).
+      // The autoConfirm pin also injects the pinned env-tier custody key:
+      // the MCP server child must resolve the SAME master key as the
+      // watcher's confirm or the grant MAC never verifies.
+      const approvalCaseEnv: Record<string, string> = {
+        ...caseDef.env,
+        ...(caseDef.approvalMode ? { DEVKIT_APPROVAL_MODE: caseDef.approvalMode } : {}),
+        ...(caseDef.autoConfirmApprovals || caseDef.ptyConfirmApprovals
+          ? { HW_VAULT_MASTER_KEY: E2E_VAULT_MASTER_KEY }
+          : {}),
+      };
       const env = buildCaseEnv({
         processEnv: process.env,
         home,
         driverVars: driver.prepare({ home, workdir, platform: process.platform }),
         seamVars: seamVars(home, scriptPath, kooCliVersion, httpFake, caseDef.fixtures, pathShimDir),
-        caseEnv: caseDef.env,
+        caseEnv: approvalCaseEnv,
         relaxFixed: caseDef.fixtures.updateCheck ? ['HUAWEICLOUD_DEVKIT_SKIP_UPDATE'] : undefined,
       });
       if (caseDef.fixtures.updateCheck) {
@@ -164,6 +209,10 @@ export async function runCase(
         httpCalls: summarizeHttpCalls(recordings.http),
         gatewayCalls: summarizeGatewayCalls(recordings.gateway),
         wsCalls: summarizeWsCalls(recordings.ws),
+        // The wire evidence rides the artifact even on green attempts: a
+        // pass over a 90%-dead wire is exactly the flake the summary should
+        // be able to name later.
+        wireStats: run.wireStats,
         // The recorded transcript can echo anything the agent printed; the
         // model keys ride the session env (both legs), so their values are
         // scrubbed before the report exists — the report is a CI artifact.
@@ -194,6 +243,7 @@ export async function runCase(
       });
       lastVerdict = lastVerdict ?? verdict;
     } finally {
+      approvalsWatcher?.stop();
       await httpFake?.stop();
       await wsFake?.stop();
       rmSync(home, { recursive: true, force: true });

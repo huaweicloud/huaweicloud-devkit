@@ -33,7 +33,7 @@ test('koocli lang G4: approval token still rejects args that differ from the app
         approvalToken: plan.approvalToken,
         approvedByUser: true,
       }),
-      /do not match the approved plan/,
+      /do not match the approved confirmation/,
     );
   });
 });

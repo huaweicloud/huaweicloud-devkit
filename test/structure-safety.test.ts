@@ -43,6 +43,36 @@ test('cloud risk rules are present and public-safe', () => {
   }
 });
 
+test('the destructive-terminal rule never returns to bare-word matching (the reboot-parameter incident)', () => {
+  // Behavioral pin, not a byte pin: the anchored arms may be rewritten
+  // freely, but a mention of the words must never deny again. The old bare
+  // \breboot\b matched the REQUIRED --reboot.servers.[N].id / --reboot.type
+  // parameter names and vetoed an approved BatchRebootServers.
+  const catalog = readJson(join(pluginRoot, 'safety', 'rules', 'cloud-risk-rules.json')) as RiskRulesCatalog;
+  const rule = catalog.rules.find((entry) => entry.id === 'hwc-sandbox-destructive-command');
+  assert.ok(rule, 'the destructive-terminal rule must exist');
+  const asConditions = (value: unknown): Array<{ regex: string }> =>
+    Array.isArray(value) ? (value as Array<{ regex: string }>) : [];
+  const conditions = [...asConditions(rule.match.any), ...asConditions(rule.match.all)];
+  assert.ok(conditions.length > 0);
+  for (const mention of [
+    'grep -rn reboot docs/',
+    'hcloud ECS BatchRebootServers --reboot.servers.1.id=i --reboot.type=SOFT',
+    'cat docs/fdisk-guide.md',
+    'env reboot=false',
+    'man mkfs',
+    'grep "mkfs" docs/',
+  ]) {
+    for (const condition of conditions) {
+      assert.equal(
+        new RegExp(condition.regex, 'ims').test(mention),
+        false,
+        `${condition.regex} must not match the mention: ${mention}`,
+      );
+    }
+  }
+});
+
 test('the py hook derives the obfuscation gate write vocabulary from policy.json (prefixes), with the OBS half marker-gated', () => {
   // port-v2defects (interrogate round): WRITE_VOCAB_RE was a hardcoded
   // 20-word alternation whose comment claimed to mirror policy.json's 37
@@ -450,15 +480,21 @@ test('real-hook spawns gate the shared spool writes (the #1040 windows-CI flood)
   // splices only BATCH_SIZE=100 — the #1040 flush pin's tool event
   // (enqueued last) missed its round on the windows CI legs twice
   // (2026-10-29, runs 40841747815 / 40849117055; reproduced red-first on
-  // Linux with a staged 120-line spool). Every REAL-hook spawn (the
-  // [hookPath] argument — copies like [hookCopy] redirect their writes
-  // into their own fixtures and need no gate) must carry the
-  // HUAWEICLOUD_DEVKIT_TELEMETRY=off gate. A new ungated spawn site
+  // Linux with a staged 120-line spool). Every REAL-hook spawn must carry
+  // the HUAWEICLOUD_DEVKIT_TELEMETRY=off gate, in BOTH shapes: the direct
+  // form (the [hookPath] argument) and the batched battery driver (the
+  // PY_BATTERY_DRIVER importlib load — the 2026-11-14 interrogate round
+  // proved an ungated batch floods 252 spool rows while a [hookPath]-only
+  // pin stays green, so the marker list below covers both). Hook COPIES
+  // (hookCopy, isolatedHook, staged dir variants) redirect their writes
+  // into their own fixtures and need no gate. A new ungated spawn site
   // re-opens the class — this pin makes it a named failure.
   for (const file of ['hook-parity.test.ts', 'hook-python.test.ts']) {
     const body = readFileSync(join(root, 'test', file), 'utf8');
     const spawnBlocks = body.split('spawnSync(').slice(1);
-    const realHookBlocks = spawnBlocks.filter((block) => block.includes('[hookPath]'));
+    const realHookBlocks = spawnBlocks.filter(
+      (block) => block.includes('[hookPath]') || block.includes('PY_BATTERY_DRIVER'),
+    );
     assert.ok(realHookBlocks.length > 0, `${file} lost its real-hook spawns — stale pin?`);
     for (const block of realHookBlocks) {
       assert.ok(

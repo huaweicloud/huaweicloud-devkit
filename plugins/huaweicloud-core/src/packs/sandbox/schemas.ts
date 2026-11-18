@@ -1,12 +1,21 @@
 import { z } from 'zod';
 
 import {
+  HWEXEC_POLL_HEADROOM_MS,
+  HWEXEC_TAIL_BYTES_DEFAULT,
+  HWEXEC_TAIL_BYTES_MAX,
+  HWEXEC_TASK_ID_PATTERN,
+  HWEXEC_WAIT_MS_MAX,
+} from '../../sandbox/hwexec-task.ts';
+import {
   numericArg,
   looseObject,
   gitConfig,
   workspaceId,
   username,
   vendorConfirmed,
+  approvalTokenArg,
+  approvedByUserArg,
 } from '../../lib/tool-schema-parts.ts';
 
 // The sandbox pack's zod schema family, extracted from tools.ts in the
@@ -22,6 +31,16 @@ import {
 export const SANDBOX_TIMEOUT_MS = {
   exec_with_session: 120000,
   exec_one_shot: 120000,
+  // The async start's exec budget: the start script itself is fast (claim +
+  // spawn + receipt echo); a timeout here folds into the 'uncertain'
+  // receipt — the claim may have landed, and the same-task_id retry is
+  // structurally safe, so the short bound is honest, not lossy.
+  exec_one_shot_async: 30000,
+  // The poll's exec budget floor: the bounded wait loop (wait_ms, capped at
+  // 60000) plus the field round-trips must sit inside the timeout — the
+  // handler folds wait_ms + 15000 headroom via resolveHwexecPollTimeoutMs
+  // (the devbridge-expose-flow A2 doctrine), never below this floor.
+  exec_poll: 30000,
   upload_file: 120000,
   upload_project: 120000,
   deploy_nginx: 60000,
@@ -30,10 +49,11 @@ export const SANDBOX_TIMEOUT_MS = {
   // of dying as a ws-exec timeout (the pre-probing 30s default did not).
   deploy_check: 60000,
   // The expose script's A2 (#935) bounded waits can spend ~63s in one exec
-  // (2s settle + up to 9s URL-extraction retries + 4 × 10s probes + 3 × 5s
-  // backoff) plus the delete-all round-trip — the headroom exists for the
-  // slow-gateway days the probe loop exists for, and a timeout still folds
-  // into the structured unreachable envelope (never a raw ws error).
+  // (up to 9s URL-extraction retries + 4 × 10s probes + 3 × 5s backoff) — the
+  // headroom exists for the slow-gateway days the probe loop exists for, and
+  // a timeout still folds into the structured unreachable envelope (never a
+  // raw ws error). The selective pre-clean execs run outside this budget,
+  // each with its own bounded one-shot (devbridge-cleanup.ts).
   expose_tunnel: 90000,
   renew_tunnel: 60000,
   keepalive_watchdog: 60000,
@@ -46,15 +66,54 @@ export const execWithSessionSchema = z.looseObject({
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_with_session})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const execOneShotSchema = z.looseObject({
   command: z.string().describe('The shell command to execute on the remote workspace'),
+  mode: z
+    .enum(['sync', 'async'])
+    .optional()
+    .describe(
+      'sync (default): this exec waits for the command and returns its output. async: claim a per-task directory and spawn the command detached (it survives the exec session), return {started, taskId, taskDir} immediately, then poll with huaweicloud_sandbox_exec_poll. Use async for build/install-class commands that can outlive the sync timeout. Retry ladder: started:"uncertain" (start exec timed out, the claim may be placed) → retry the SAME task_id — the claim file blocks a second spawn; started:"dup" + verdict "never" → start over with a NEW task_id.',
+    ),
+  task_id: z
+    .string()
+    .optional()
+    .describe(
+      `async mode: the task id to claim, ${HWEXEC_TASK_ID_PATTERN.source} (path- and pgrep-safe). Defaults to a generated id. Reuse the SAME task_id when retrying an uncertain start — the claim file blocks a second copy.`,
+    ),
   workspace_id: workspaceId,
   username,
   timeout_ms: numericArg
     .optional()
-    .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_one_shot})`),
+    .describe(
+      `Execution timeout in milliseconds (sync default: ${SANDBOX_TIMEOUT_MS.exec_one_shot}; async bounds only the start exec, default ${SANDBOX_TIMEOUT_MS.exec_one_shot_async} — the async command itself is unbounded and outlives the exec)`,
+    ),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
+});
+
+export const execPollSchema = z.looseObject({
+  task_id: z
+    .string()
+    .describe(`The task id from huaweicloud_sandbox_exec_one_shot async mode, ${HWEXEC_TASK_ID_PATTERN.source}.`),
+  workspace_id: workspaceId,
+  username,
+  wait_ms: numericArg
+    .optional()
+    .describe(
+      `Bounded in-poll wait: sleep-2 intervals checking the task status file, 0-${HWEXEC_WAIT_MS_MAX} (default 0 — snapshot only). The exec timeout auto-raises to wait_ms + ${HWEXEC_POLL_HEADROOM_MS} so the wait always fits.`,
+    ),
+  tail_bytes: numericArg
+    .optional()
+    .describe(`Log tail size in bytes, 1-${HWEXEC_TAIL_BYTES_MAX} (default: ${HWEXEC_TAIL_BYTES_DEFAULT}).`),
+  timeout_ms: numericArg
+    .optional()
+    .describe(
+      `Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.exec_poll}; auto-raised to wait_ms + ${HWEXEC_POLL_HEADROOM_MS} headroom, never below the default)`,
+    ),
 });
 
 export const closeSessionSchema = z.looseObject({
@@ -164,11 +223,19 @@ export const exposeTunnelSchema = z.looseObject({
     .describe(
       'Enroll the tunnel into the keepalive watchdog (default true — pass false to opt out). Returns keepalive.enrolled/tunnelCount/watchdogPid.',
     ),
+  cleanup_mode: z
+    .enum(['stale', 'all', 'none'])
+    .optional()
+    .describe(
+      "Tunnel cleanup before exposing. stale (default): delete same-port tunnels + orphan records/hosts; preserve other ports, other sessions and keepalive-protected tunnels — except a tunnel bound to THIS port, which is always replaced. all: wipe every tunnel/host (manual full reset only — a shared sandbox loses every session's tunnels). none: no cleanup (a stale same-port host can then conflict).",
+    ),
   workspace_id: workspaceId,
   username,
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.expose_tunnel})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const renewTunnelSchema = z.looseObject({
@@ -187,6 +254,8 @@ export const renewTunnelSchema = z.looseObject({
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.renew_tunnel})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const keepaliveWatchdogSchema = z.looseObject({
@@ -208,9 +277,14 @@ export const keepaliveWatchdogSchema = z.looseObject({
   timeout_ms: numericArg
     .optional()
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.keepalive_watchdog})`),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
-export const signAgreementSchema = z.looseObject({});
+export const signAgreementSchema = z.looseObject({
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
+});
 
 export const connectSchema = z.looseObject({
   vendorConfirmed,
@@ -222,12 +296,13 @@ export const connectSchema = z.looseObject({
     .enum(['ephemeral', 'persistent'])
     .optional()
     .describe(
-      'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1). Explicit template_id overrides pool_type.',
+      'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1); same-type requests reuse the existing instance. Custom templates are no longer supported.',
     ),
-  template_id: z.string().optional().describe('Template ID; overrides server default (only for new sandbox)'),
   flavor_id: z.string().optional().describe('Flavor ID; overrides server default (only for new sandbox)'),
   env: looseObject.optional().describe('Environment variables to set in the sandbox (only for new sandbox)'),
   git: gitConfig.optional().describe('Git repo config (only for new sandbox)'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 export const credentialsSchema = z.looseObject({
@@ -246,4 +321,21 @@ export const credentialsSchema = z.looseObject({
     .describe(
       'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. Also accepts a vault ref (secret://<scope>/<name>), resolved locally so the key never enters the conversation. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
     ),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
+});
+
+// 关机（dev 5d89c880）：不可逆写类工具，走审批门（always 面）；token 与
+// attestation 与其余门面工具同型——schema 可选，门是执行者，首个无 token
+// 调用必须能到达门以领取 mint 信封。
+export const shutdownSchema = z.looseObject({
+  session_id: z.string().optional().describe('Session ID from huaweicloud_sandbox_connect (optional)'),
+  dev_stage_id: z.string().optional().describe('DevStation environment ID (alternative to session_id)'),
+  workspace_id: z
+    .string()
+    .optional()
+    .describe('Workspace ID; defaults to the current workspace (an alternative to session_id/dev_stage_id)'),
+  username,
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });

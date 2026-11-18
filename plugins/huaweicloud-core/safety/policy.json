@@ -53,6 +53,22 @@
     "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+pin\\b",
     "setup\\.cjs(\\s+--)?\\s+pin\\b"
   ],
+  "blockedAccountSwitchCliPatterns": [
+    "huaweicloud-devkit(@[\\w.+-]+)?(\\.(js|cjs|mjs|exe|ts))?(\\s+--)?\\s+auth\\s+(init|setup|sync|refresh|reconcile)\\b",
+    "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+auth\\s+(init|setup|sync|refresh|reconcile)\\b",
+    "setup\\.cjs(\\s+--)?\\s+auth\\s+(init|setup|sync|refresh|reconcile)\\b"
+  ],
+  "blockedGatedCliPatterns": [
+    "huaweicloud-devkit(@[\\w.+-]+)?(\\.(js|cjs|mjs|exe|ts))?(\\s+--)?\\s+(update|upgrade)\\b",
+    "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+(update|upgrade)\\b",
+    "setup\\.cjs(\\s+--)?\\s+(update|upgrade)\\b",
+    "huaweicloud-devkit(@[\\w.+-]+)?(\\.(js|cjs|mjs|exe|ts))?(\\s+--)?\\s+secret\\s+rm\\b",
+    "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+secret\\s+rm\\b",
+    "setup\\.cjs(\\s+--)?\\s+secret\\s+rm\\b",
+    "huaweicloud-devkit(@[\\w.+-]+)?(\\.(js|cjs|mjs|exe|ts))?(\\s+--)?\\s+packs\\s+(enable|disable|all)\\b",
+    "setup-cli\\.(js|mjs|ts)(\\s+--)?\\s+packs\\s+(enable|disable|all)\\b",
+    "setup\\.cjs(\\s+--)?\\s+packs\\s+(enable|disable|all)\\b"
+  ],
   "writeOperationPrefixes": [
     "Create",
     "BatchCreate",
@@ -110,19 +126,10 @@
     "CheckMigrateLogicDb"
   ],
   "safeTextReadCommands": ["rg", "grep", "findstr", "git", "ls", "dir", "Get-ChildItem"],
-  "blockedSandboxCommands": [
-    "rm\\s+-rf\\s+/",
-    "mkfs",
-    "dd\\s+if=",
-    ":\\(\\)\\{:\\|:&\\};:",
-    "shutdown",
-    "reboot",
-    "init\\s+[06]",
-    "fdisk"
-  ],
   "sandboxWriteTools": [
     "huaweicloud_sandbox_connect",
     "huaweicloud_sandbox_credentials",
-    "huaweicloud_sandbox_upload_file"
+    "huaweicloud_sandbox_upload_file",
+    "huaweicloud_sandbox_shutdown"
   ]
 }

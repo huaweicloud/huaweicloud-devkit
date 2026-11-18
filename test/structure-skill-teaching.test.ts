@@ -473,6 +473,27 @@ test('huawei-voucher covers HDKIT_COMPETITION_NOT_CONFIGURED', () => {
   assert.match(voucher, /HDKIT_COMPETITION_NOT_CONFIGURED/);
   assert.match(voucher, /服务端活动参数未配置/);
   assert.match(voucher, /告知赛事代金券暂未开放，稍后再试/);
+  // 版本门禁行（round 5，PR-1 移植波）：claimed:false + HDKIT_VERSION_TOO_OLD
+  // 是客户端过旧，不是未领取——两处判定面（先查后提示 + 流程返回解读）都
+  // 必须教"绝不提示领券"。
+  assert.match(
+    voucher,
+    /`claimed=false` 且 `code=HDKIT_VERSION_TOO_OLD` → \*\*客户端版本过旧\*\*（不是未领取）：转述 remediation 升级引导（npx --yes huaweicloud-devkit@latest update --target <agent>、重启会话，或调用 huaweicloud_upgrade），\*\*绝不提示领券\*\*/,
+    'the first-answer gate row must route the version gate to the upgrade act, never a coupon offer',
+  );
+  assert.match(
+    voucher,
+    /`claimed=false` \+ `code=HDKIT_VERSION_TOO_OLD` → 客户端版本过旧：转述升级 remediation，\*\*绝不提示领券\*\*（与上表判定规则同款）/,
+    'the flow status-reading row must carry the same never-offer-a-coupon rule',
+  );
+  // 工具描述同款句（round 5）：voucher_status 的 agent 可见面必须把
+  // claimed:false + HDKIT_VERSION_TOO_OLD 从"可领券"歧义里摘出来
+  const voucherTools = readFileSync(join(pluginRoot, 'src', 'packs', 'voucher', 'tools.ts'), 'utf8');
+  assert.match(
+    voucherTools,
+    /claimed=false 且 code=HDKIT_VERSION_TOO_OLD 表示客户端版本过旧——转述 remediation 升级引导，绝不提示领券。/,
+    'the voucher_status tool description must discriminate the version gate from a claimable state',
+  );
   // The 1.1.11/1.1.12-next wave (ported from main, version 5): the real-name
   // dedup doctrine, the claimed-prefix widening, and the three new code rows.
   // The config-error rows must appear in BOTH tables (incentive + competition)
@@ -600,6 +621,17 @@ test('the safety approvals reference exists and states its honest boundaries', (
       /V=approve; npx huaweicloud-devkit \$V/,
       `${label}: the variable-indirection hook residual is stated`,
     );
+    // The command-forward shape (PR-1.5): the reference teaches the field
+    // both confirmation tiers display, and the refusal a mismatch earns.
+    assert.match(text, /Always send `command`/, `${label}: the command-forward field is taught`);
+    assert.match(text, /COMMAND_ARGS_MISMATCH/, `${label}: the mismatch rejection code is taught`);
+    assert.match(text, /TOP-LEVEL `command` field/, `${label}: the plan field to forward is disambiguated`);
+    // The server-run ladder (PR-1.5 pivot): both tiers, their evidence tiers,
+    // and the demoted saved-row hygiene warning.
+    assert.match(text, /ASK_CONFIRMATION_REQUIRED/, `${label}: the chat round-trip envelope is taught`);
+    assert.match(text, /evidence: "elicitation"/, `${label}: the form's evidence tier is taught`);
+    assert.match(text, /evidence: "posture"/, `${label}: the retry's posture tier is labeled`);
+    assert.match(text, /opencode api DELETE \/api\/permission\/saved/, `${label}: the saved-row removal is taught`);
   }
 });
 
@@ -615,6 +647,28 @@ test('the cli-and-auth skill names both approval-mode confirm steps in the appro
     assert.match(text, /npx huaweicloud-devkit pin/, `${label}: first-use PIN enrollment is taught`);
     assert.match(text, /USER_CONFIRMATION_REQUIRED/, `${label}: the run-side refusal code is taught`);
     assert.match(text, /userConfirmation\.mode.*ask/, `${label}: the ask-mode branch is named by its plan field`);
-    assert.match(text, /harness client prompts the user/, `${label}: the ask-mode confirmation channel is taught`);
+    assert.match(text, /ASK_CONFIRMATION_REQUIRED/, `${label}: the server-run confirmation envelope is taught`);
+    assert.match(text, /elicitation-capable client renders a form/, `${label}: the form tier is taught`);
+  }
+});
+
+test('the troubleshooting skill teaches the codex unsupported-call signature as a harness failure', () => {
+  // Measured (2026-11-13, live codex 0.167.2 session, reproduced against
+  // the same custom OpenAI-compatible provider): codex dispatches MCP
+  // tools only through the function_call `namespace` field; a provider
+  // that drops it answers `unsupported call: <tool>` for every call after
+  // the first (690 of 692, none reaching the devkit). The teaching pins
+  // the three load-bearing facts: the error is a harness failure, not a
+  // Huawei Cloud error; the call never reached the devkit; retrying the
+  // identical call cannot succeed.
+  const surfaces = [
+    ['source', readSource(join('src', 'packs', 'core', 'skills', 'huaweicloud-troubleshooting', 'SKILL.md'))],
+    ['generated', readFileSync(join(pluginRoot, 'skills', 'huaweicloud-troubleshooting', 'SKILL.md'), 'utf8')],
+  ] as const;
+  for (const [label, text] of surfaces) {
+    assert.match(text, /unsupported call/, `${label}: the signature is taught by its literal`);
+    assert.match(text, /namespace/, `${label}: the namespace mechanism is named`);
+    assert.match(text, /never reached the devkit/, `${label}: the never-reached-the-devkit fact is stated`);
+    assert.match(text, /Do not retry|Stop retrying/, `${label}: the no-retry rule is taught`);
   }
 });

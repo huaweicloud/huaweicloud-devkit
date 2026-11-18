@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { parseCoreSkillNames } from '../plugins/huaweicloud-core/src/lib/skill-manifest.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
@@ -30,6 +31,7 @@ function makeEnv(home: string, dshHome: string) {
     HOMEPATH: home.slice(2),
     DSH_HOME: dshHome,
     HUAWEICLOUD_DEVKIT_SKIP_DSH_PLUGIN_INSTALL: '1',
+    ...npmCacheEnv(),
   };
   // cleanupNativeDirs() runs inside every install and reconciles EVERY
   // target's native dir (not just dsh), each resolved from its own ambient

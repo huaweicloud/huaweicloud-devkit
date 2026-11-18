@@ -26,6 +26,13 @@ export const STRIP_ENV_KEYS: readonly string[] = [
   'HUAWEICLOUD_REGION',
   'HCLOUD_CONFIG_PATH',
   'HCLOUD_OBS_CONFIG_PATH',
+  // The vault custody master key is a live credential for the host's real
+  // vault: a host value would key a case session's vault (approval grants,
+  // secret store) with the developer's production key — and on the
+  // approval-watcher cases the injected pinned test key must be the only
+  // value in play (caseEnv lands after this strip, so the injection is
+  // unaffected).
+  'HW_VAULT_MASTER_KEY',
   // Ambient agent-home overrides (real-agents sandboxEnv precedent): a
   // host value would redirect the installer, the spawned server, or the
   // opencode config root out of the throwaway home.

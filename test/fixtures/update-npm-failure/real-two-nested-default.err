@@ -1,0 +1,33 @@
+npm error code ECONNREFUSED
+npm error syscall connect
+npm error errno ECONNREFUSED
+npm error FetchError: request to http://127.0.0.1:5999/tiny-dep failed, reason: connect ECONNREFUSED 127.0.0.1:5999
+npm error     at ClientRequest.<anonymous> (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/minipass-fetch/lib/index.js:130:14)
+npm error     at ClientRequest.emit (node:events:514:20)
+npm error     at emitErrorEvent (node:_http_client:115:11)
+npm error     at _destroy (node:_http_client:1198:9)
+npm error     at onSocketNT (node:_http_client:1219:5)
+npm error     at process.processTicksAndRejections (node:internal/process/task_queues:91:21) {
+npm error   code: 'ECONNREFUSED',
+npm error   errno: 'ECONNREFUSED',
+npm error   syscall: 'connect',
+npm error   address: '127.0.0.1',
+npm error   port: 5999,
+npm error   type: 'system',
+npm error   requiredBy: '.'
+npm error }
+npm error
+npm error If you are behind a proxy, please make sure that the 'proxy' config is set properly.  See: 'npm help config'
+npm error A complete log of this run can be found in: /home/op/cache-npx/_logs/2026-11-12T04_18_40_050Z-debug-0.log
+npm error code EACCES
+npm error syscall mkdir
+npm error path /home/op/ro-cache/_cacache
+npm error errno EACCES
+npm error
+npm error Your cache folder contains root-owned files, due to a bug in previous versions of npm which has since been addressed.
+npm error
+npm error To permanently fix this problem, please run:
+npm error   sudo chown -R 1002:1002 "/home/op/ro-cache"
+npm error Log files were not written due to an error writing to the directory: /home/op/ro-cache/_logs
+npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+runtime dependency refresh skipped

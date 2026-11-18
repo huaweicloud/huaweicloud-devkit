@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import test from 'node:test';
 
+import { npmCacheEnv } from './npm-cache.ts';
+
 // The post-install `packs` command family through the real installer
 // (bin/setup.cjs): status mirrors doctor's pack block, enable/disable do set
 // math on the stored DEVKIT_PACKS seed (the one write path allowed to
@@ -34,6 +36,7 @@ function makeEnv(home: string) {
     // OfficeAce detection probes the real Windows registry / Program Files,
     // which would leak a real install into these fake-HOME tests (#654).
     HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT: '1',
+    ...npmCacheEnv(),
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
   // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);

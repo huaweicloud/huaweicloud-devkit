@@ -8,6 +8,7 @@ import { scrubSecrets } from './env-policy.ts';
 import type { CaseVerdict, GatewayRecording } from './evaluate.ts';
 import type { HttpRecording } from './http-fake.ts';
 import type { WsConnectionRecording } from './ws-fake/hwlink-server.ts';
+import type { GatewayWireStats } from './drivers/gateway-proxy.ts';
 import { readHcloudLog } from './recordings.ts';
 
 export interface AttemptReport {
@@ -21,9 +22,21 @@ export interface AttemptReport {
   httpCalls: string[];
   gatewayCalls: string[];
   wsCalls: string[];
+  // Model-wire terminal outcomes for this attempt; absent when the driver
+  // sits off the wire (no proxy) or the attempt crashed before a run.
+  wireStats?: GatewayWireStats;
   stdout: string;
   stderr: string;
   verdict: CaseVerdict;
+}
+
+// The attempt's model wire was dead: at least one upstream request, every
+// one of them terminal-failed, none completed. Requests cut before any
+// terminal frame (case-budget tree kill, agent crash) count as neither, so
+// they keep an ambiguous attempt OUT of this class — the honest reading is
+// "no evidence the wire failed", not "wire dead".
+export function isWireDeadAttempt(stats: GatewayWireStats | undefined): boolean {
+  return !!stats && stats.requests > 0 && stats.completed === 0 && stats.failed === stats.requests;
 }
 
 export interface CaseRunReport {

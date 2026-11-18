@@ -6,6 +6,8 @@ import { clearRuntimePacksOverride, resolveEnabledPacks } from '../plugins/huawe
 import { PACKS } from '../plugins/huaweicloud-core/src/packs/registry.ts';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { createLinkedDevkitServers } from '../plugins/huaweicloud-core/src/mcp-protocol.ts';
+import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
+import { withTempAuthHome } from './hcloud-cli-harness.ts';
 import type { PackId } from '../plugins/huaweicloud-core/src/lib/pack-types.ts';
 
 const ALL_IDS = PACKS.map((pack) => pack.id);
@@ -271,22 +273,34 @@ test('list_skills follows the session override, not just the env posture', async
   // The runtime override wins over env unconditionally (enable.ts), so this
   // is the seam a shared-file env-pinned test could silently lose to; the
   // finally restores the override before any later test reads enablement.
-  try {
-    const configured = (await callTool(
-      'huaweicloud_packs_configure',
-      { disable: ['huaweicloud-cli'] },
-      { onPacksChanged: () => {} },
-    )) as { ok: boolean; changed: boolean };
-    assert.equal(configured.ok, true);
-    assert.equal(configured.changed, true);
+  // packs_configure is approval-gated (PR-3c): the mint/confirm cycle runs
+  // inside an isolated auth home so the token never touches the machine's
+  // real approvals store.
+  await withTempAuthHome(async () => {
+    try {
+      const envelope = (await callTool(
+        'huaweicloud_packs_configure',
+        { disable: ['huaweicloud-cli'], approvedByUser: true },
+        { onPacksChanged: () => {} },
+      )) as { status: string; code: string; approvalToken: string };
+      assert.equal(envelope.code, 'USER_CONFIRMATION_REQUIRED');
+      assert.equal(confirmApprovalToken(envelope.approvalToken).status, 'confirmed');
+      const configured = (await callTool(
+        'huaweicloud_packs_configure',
+        { disable: ['huaweicloud-cli'], approvalToken: envelope.approvalToken, approvedByUser: true },
+        { onPacksChanged: () => {} },
+      )) as { ok: boolean; changed: boolean };
+      assert.equal(configured.ok, true);
+      assert.equal(configured.changed, true);
 
-    const result = (await callTool('huaweicloud_list_skills', {})) as ListSkillsPayload;
-    assert.equal(result.ok, true);
-    const names = new Set(result.skills.map((skill) => skill.name));
-    assert.ok(!names.has('huawei-ecs'), 'the override must gate the catalog even with env unset');
-    assert.ok(!result.skills.some((skill) => skill.pack === 'huaweicloud-cli'));
-    assert.ok(names.has('huawei-obs'), 'an enabled pack\u2019s skills must stay catalogued under the override');
-  } finally {
-    clearRuntimePacksOverride();
-  }
+      const result = (await callTool('huaweicloud_list_skills', {})) as ListSkillsPayload;
+      assert.equal(result.ok, true);
+      const names = new Set(result.skills.map((skill) => skill.name));
+      assert.ok(!names.has('huawei-ecs'), 'the override must gate the catalog even with env unset');
+      assert.ok(!result.skills.some((skill) => skill.pack === 'huaweicloud-cli'));
+      assert.ok(names.has('huawei-obs'), 'an enabled pack\u2019s skills must stay catalogued under the override');
+    } finally {
+      clearRuntimePacksOverride();
+    }
+  });
 });

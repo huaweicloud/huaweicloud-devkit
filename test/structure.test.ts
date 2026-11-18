@@ -5,8 +5,440 @@ import { join, relative } from 'node:path';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
+import { APPROVAL_TOOLS, APPROVAL_CLASSIFIED_TOOLS } from '../plugins/huaweicloud-core/src/approval-roster.ts';
+import { APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/registry.ts';
+import { TOOL_DEFINITIONS } from '../plugins/huaweicloud-core/src/tools.ts';
 import type { JscpdBaseline, JscpdConfig, JscpdReport, PackageJson, PackageLock } from './structure-helpers.ts';
 import { readJson, readSource, root } from './structure-helpers.ts';
+
+test('the approval roster only names real tools and the classified list is a subset of it', () => {
+  // The roster is a const string tuple by contract (the .mjs hook and
+  // PR-2's opencode writer import it without the registry graph), so
+  // nothing at compile time forces its entries to be tool names — this
+  // runtime pin does. A roster entry that names no tool silently gates
+  // nothing; a classified entry that is not on the roster silently
+  // bypasses the gate.
+  const known = new Set(TOOL_DEFINITIONS.map((tool) => tool.name));
+  for (const name of APPROVAL_TOOLS) {
+    assert.ok(known.has(name as (typeof TOOL_DEFINITIONS)[number]['name']), `roster names unknown tool ${name}`);
+  }
+  for (const name of APPROVAL_CLASSIFIED_TOOLS) {
+    assert.ok(
+      (APPROVAL_TOOLS as ReadonlyArray<string>).includes(name),
+      `classified tool ${name} must also be on the approval roster`,
+    );
+  }
+});
+
+test('every approval spec is rostered: the spread-merge direction the satisfies check cannot see (round-10 finding 2)', () => {
+  // The registry's satisfies closure holds for INLINE object literals
+  // only: a spec added through a spread merge ({ ...A, ...B } — the shape
+  // PR-3 uses for its per-pack spec tables) carries extra keys past the
+  // excess-property check without failing the build. A spec-only
+  // registration silently GATES its tool (the dispatch gate resolves
+  // specs from the merged table) while remaining invisible to every
+  // roster consumer — the hook exemption, _meta, PR-2's ask-rule
+  // writer — so in ask mode the tool executes on a prompt the user was
+  // never shown and records a granted/posture consent the user never
+  // gave. This runtime invariant is the mirror of the
+  // roster-names-real-tools pin: the merged table's keys must be a
+  // subset of the roster tuple, so any roster/spec drift fails the
+  // battery loud instead of silently gating.
+  const roster = new Set(APPROVAL_TOOLS as ReadonlyArray<string>);
+  for (const key of Object.keys(APPROVAL_SPECS)) {
+    assert.ok(
+      roster.has(key),
+      `approval spec ${key} is not on the roster — the gate would silently engage for an unrostered tool`,
+    );
+  }
+});
+
+test('the approval roster stays a const tuple so the registry closure cannot be inert', () => {
+  // Interrogate rounds 1-5: typing the roster as a plain
+  // ReadonlyArray<string> widens ApprovalRosterName to string and
+  // silently inerts the registry's satisfies Record<ApprovalRosterName,
+  // ApprovalSpec> — the adversary added a roster entry with no spec and
+  // typecheck stayed green. The const tuple is what makes the compile-time
+  // coupling real. A text regex proved too weak four times: `as const` with
+  // a cast element matched the spelling pin; a comment inside the array
+  // became a phantom element; a '// ] as const;' comment terminated the
+  // capture before a widening; and round 5's shape — a STRING LITERAL
+  // earlier in the file carrying a clean declaration spelling — fed the
+  // pin a decoy while the real tuple was widened (verified end to end: the
+  // defeated pin plus a removed run-spec let unattested writes, credential
+  // exfil operands, and placeholder secrets all execute).
+  //
+  // The parser therefore runs ONE left-to-right scan that masks string
+  // literal CONTENTS (quote kept, every inner char becomes 'S') and
+  // removes comments as it goes: a decoy inside a string is invisible to
+  // the pattern, a comment cannot smuggle text. Round 6 closed the last
+  // extraction hole: a REGEX LITERAL is neither a string nor a comment,
+  // passes the skeleton verbatim, and first-match extraction read the
+  // decoy's clean tuple while the real declaration was widened (verified
+  // end to end: the attacked tree passed every static guard while a
+  // roster member ran with no spec, no gate, no attestation). The pin now
+  // requires EVERY occurrence of the declaration pattern in the skeleton
+  // to be a clean masked tuple of exactly the runtime arity: a decoy
+  // regex carrying a clean shape is itself an occurrence and must satisfy
+  // the rules, and the widened real declaration beside it fails them —
+  // there is no "first" match to hide behind. Spelling validity (what a
+  // masked element cannot show) stays with the sibling test that checks
+  // the runtime values against TOOL_DEFINITIONS.
+  const skeletonOf = (text: string): string =>
+    text.replace(
+      /(['"`])((?:\\[\s\S]|(?!\1)[\s\S])*?)\1|\/\/[^\n]*|\/\*[\s\S]*?\*\//g,
+      (match, quote: string, body: string) => (quote ? quote + body.replace(/[\s\S]/g, 'S') + quote : ''),
+    );
+  const tupleElementsOf = (occurrence: string): string[] => {
+    const body = occurrence.replace(/^.*?=\s*(\[[\s\S]*?\]) as const;[\s\S]*$/, '$1');
+    return body
+      .replace(/^\[/, '')
+      .replace(/\]$/, '')
+      .split(',')
+      .map((element) => element.trim())
+      .filter((element) => element.length > 0);
+  };
+  const parseTuples = (roster: string, declaration: string): Array<string[]> => {
+    const skeleton = skeletonOf(roster);
+    const occurrences = [
+      ...skeleton.matchAll(new RegExp(`export const ${declaration} = \\[[\\s\\S]*?\\] as const;`, 'g')),
+    ].map((match) => match[0]);
+    return occurrences.map((occurrence) => tupleElementsOf(occurrence));
+  };
+  const parseAllRosterTuples = (roster: string): Array<string[]> => parseTuples(roster, 'APPROVAL_TOOLS');
+  const cleanElements = (elements: string[]): boolean =>
+    elements.length > 0 && elements.every((element) => /^'S+'$/.test(element));
+  // allTuplesClean: at least one declaration-shaped occurrence exists, and
+  // every one is a clean masked tuple (no widening anywhere — zero
+  // occurrences fails closed). allTuplesSafe additionally pins every
+  // occurrence to the runtime arity — the strict form the real file must
+  // satisfy: the real declaration cannot be dirty, no decoy can hide it,
+  // and a clean decoy of any other arity is rejected outright (fail-closed;
+  // the current tree carries exactly one occurrence).
+  const allTuplesClean = (text: string): boolean => {
+    const all = parseAllRosterTuples(text);
+    return all.length > 0 && all.every((elements) => cleanElements(elements));
+  };
+  const allTuplesSafe = (text: string): boolean => {
+    const all = parseAllRosterTuples(text);
+    return (
+      all.length > 0 && all.every((elements) => cleanElements(elements) && elements.length === APPROVAL_TOOLS.length)
+    );
+  };
+  const roster = readSource(join('src', 'approval-roster.ts'));
+  const tuples = parseAllRosterTuples(roster);
+  assert.ok(tuples.length > 0, 'the roster declaration must be present outside strings and comments');
+  assert.ok(
+    allTuplesSafe(roster),
+    'every declaration-shaped occurrence must be a clean masked tuple of the runtime arity',
+  );
+  // The parser itself is pinned against every adversarial shape the rounds
+  // demonstrated. Clean shapes stay green; every widening goes red — and
+  // round 6's decoy shapes must fail through EVERY occurrence being clean.
+  assert.ok(allTuplesClean("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;"));
+  assert.ok(
+    allTuplesClean(
+      "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // the run face\n  /* PR-3a */ 'huaweicloud_sandbox_connect',\n] as const;",
+    ),
+    'commented elements parse clean',
+  );
+  assert.equal(
+    allTuplesClean("export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command' as string] as const;"),
+    false,
+    'an element-level cast must fail the element check',
+  );
+  assert.equal(
+    allTuplesClean("export const APPROVAL_TOOLS: ReadonlyArray<string> = ['x'];"),
+    false,
+    'a type annotation must fail the as-const requirement',
+  );
+  assert.equal(
+    allTuplesClean(
+      "export const APPROVAL_TOOLS = [\n  'huaweicloud_run_approved_command', // ] as const;\n  'huaweicloud_sandbox_connect' as string,\n] as const;",
+    ),
+    false,
+    'a widening hidden behind an in-array "// ] as const;" comment must fail the element check',
+  );
+  // Round 5's string-literal decoy: masked, so only the real declaration
+  // is an occurrence.
+  assert.equal(
+    allTuplesClean(
+      `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_check_cli' as string] as const;`,
+    ),
+    false,
+    'a decoy string before a widened real declaration must fail — the pin sees the real tuple',
+  );
+  assert.ok(
+    allTuplesClean(
+      `const pinExample = "export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;";\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`,
+    ),
+    'a decoy before a CLEAN real declaration stays green — the real tuple is clean',
+  );
+  // Round 6's regex-literal decoy (the attacked shapes verified end to
+  // end): the regex passes the skeleton VERBATIM, so it is itself an
+  // occurrence — clean, but the widened real declaration beside it fails.
+  const regexDecoyBeforeWidenedReal = `// eslint-disable-next-line no-unused-vars\nconst pinSightDecoyRegex = /export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_secret_set'] as const;/;\n\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command', 'huaweicloud_secret_set' as string] as const;`;
+  assert.equal(
+    allTuplesClean(regexDecoyBeforeWidenedReal),
+    false,
+    'a regex-literal decoy before a widened real declaration must fail — every occurrence is checked',
+  );
+  const regexDecoyBeforeCleanReal = `const pinSightDecoyRegex = /export const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;/;\nexport const APPROVAL_TOOLS = ['huaweicloud_run_approved_command'] as const;`;
+  assert.ok(
+    allTuplesClean(regexDecoyBeforeCleanReal),
+    'a regex decoy beside a CLEAN real declaration stays green — both occurrences are clean',
+  );
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [`x`] as const;'),
+    false,
+    'a template-literal element is a widened shape',
+  );
+  assert.equal(
+    allTuplesClean("export const APPROVAL_TOOLS = ['x' + 'y'] as const;"),
+    false,
+    'a concatenated element is a widened shape',
+  );
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [] as const;'),
+    false,
+    'an empty tuple must fail (core gate registrations)',
+  );
+  assert.equal(
+    allTuplesClean('export const APPROVAL_TOOLS = [...([] as string[])] as const;'),
+    false,
+    'a spread element is a widened shape',
+  );
+  // A same-length runtime-element swap is a clean shape by this pin; the
+  // sibling value-level test (roster names real tools) is the guard for
+  // that class.
+  //
+  // The classified list (PR-3a: the two sandbox exec faces; PR-3c adds the
+  // obs pair) carries the same const-tuple discipline: it feeds structure
+  // guards (every member must provide a classify) and the gate's
+  // classifiedPass engagement, so widening it to a plain array would inert
+  // both silently. The masked parser runs over the classified declaration
+  // with the same every-occurrence rule and the runtime arity.
+  const classifiedTuples = parseTuples(roster, 'APPROVAL_CLASSIFIED_TOOLS');
+  assert.ok(
+    classifiedTuples.length > 0,
+    'the classified-list declaration must be present outside strings and comments',
+  );
+  assert.ok(
+    classifiedTuples.every(
+      (elements) => cleanElements(elements) && elements.length === APPROVAL_CLASSIFIED_TOOLS.length,
+    ),
+    'every classified-list occurrence must be a clean masked tuple of the runtime arity',
+  );
+  const classifiedClean = (text: string): boolean => {
+    const all = parseTuples(text, 'APPROVAL_CLASSIFIED_TOOLS');
+    return all.length > 0 && all.every((elements) => cleanElements(elements));
+  };
+  assert.ok(
+    classifiedClean("export const APPROVAL_CLASSIFIED_TOOLS = ['huaweicloud_sandbox_exec_one_shot'] as const;"),
+    'a clean classified tuple parses clean',
+  );
+  assert.equal(
+    classifiedClean('export const APPROVAL_CLASSIFIED_TOOLS: readonly string[] = [];'),
+    false,
+    'a widened classified list must fail the pin',
+  );
+});
+
+test('every registered classified tool provides a classify', () => {
+  // ApprovalCoreMint pins classification before the mint: a classified
+  // registration without a classify function cannot decide engagement, so
+  // it would fail open. The registry satisfies check pins the spec's
+  // existence; this pins the classified flavor's function.
+  for (const name of APPROVAL_CLASSIFIED_TOOLS) {
+    const spec = APPROVAL_SPECS[name as keyof typeof APPROVAL_SPECS];
+    assert.ok(spec, `classified tool ${name} has no ApprovalSpec`);
+    assert.equal(
+      typeof spec.classify,
+      'function',
+      `classified tool ${name} must register a pure classify (classify-before-mint)`,
+    );
+  }
+});
+
+test('the sandbox and safety skills teach the registered approval gate (PR-3a)', () => {
+  // The teaching layer is a consent surface: eight sandbox tools gained a
+  // mechanical gate in PR-3a (shutdown joined as the ninth in the port-pr6
+  // wave), and a skill that still says "call connect" or
+  // "exec runs commands" without the gate contract teaches the model to
+  // fight the refusal instead of driving the confirmation. The guard pins
+  // the sandbox skill's gate section and the safety skill's
+  // registered-tools wording, the memo, and the standing consent. The
+  // roster list is DERIVED from the roster leaf (one line per member) so
+  // the sibling registrations' rebases must update it, never outgrow it.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /## Approval gate \(the nine mutating tools\)/);
+  assert.match(sandboxSkill, /USER_CONFIRMATION_REQUIRED/);
+  assert.match(sandboxSkill, /retry-uncertain/, 'the sandbox skill names the retry memo carrier');
+  assert.match(sandboxSkill, /standing-session/, 'the sandbox skill names the standing-consent carrier');
+  // The exec doctrine: benign runs ungated, the refusal coverage names the
+  // engine's real rows, and the boundary sentence states exactly what lies
+  // outside them — never an absolutist "outright"/"still CONFIRM"/"every
+  // target shape" claim.
+  assert.match(sandboxSkill, /NO confirmation surface at all/);
+  assert.match(sandboxSkill, /no confirmation able to unlock it/, 'the refusal coverage names its own boundary');
+  assert.match(
+    sandboxSkill,
+    /recursive forced rm in any combined-flag spelling/,
+    'the rm coverage is the combined-flag spelling, enumerated honestly',
+  );
+  assert.match(
+    sandboxSkill,
+    /The refusal set is those rows and nothing more/,
+    'the refusal set is the rows, stated honestly',
+  );
+  assert.match(
+    sandboxSkill,
+    /a command outside them is NOT silently stopped/,
+    'the outside-the-rows boundary is the honest sentence, never a blanket confirm claim',
+  );
+  assert.match(
+    sandboxSkill,
+    /after a restart the same command confirms again/,
+    'the memo carries its restart boundary',
+  );
+  // The operator-approved Bash-face widening is disclosed (round 4, F3).
+  assert.match(
+    sandboxSkill,
+    /Bash-face widening \(operator-approved\)/,
+    'the Bash-face widening carries its disclosure paragraph',
+  );
+  assert.match(sandboxSkill, /rm -rf node_modules/, 'the disclosure names the node_modules shape');
+  assert.match(
+    sandboxSkill,
+    /the hook gates the agent face only/,
+    'the disclosure scopes the change to the agent face',
+  );
+
+  const approvals = readSource(
+    join('src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'references', 'approvals.md'),
+  );
+  assert.match(approvals, /The registered tools today/, 'the approvals reference names the registered roster');
+  for (const tool of APPROVAL_TOOLS) {
+    assert.ok(approvals.includes(`\`${tool}\``), `the approvals reference lists ${tool} per the roster leaf`);
+  }
+  assert.match(approvals, /## The retry memo \(uncertain delivery\)/);
+  assert.match(approvals, /approvedVia: "retry-uncertain"/);
+  assert.match(approvals, /`approve-session`/, 'the form enum offers the standing-consent choice');
+  assert.match(
+    approvals,
+    /ELICITATION_INVALID_CONTENT/,
+    'the refusal class names the invalid-content shape (the empty-accept clients)',
+  );
+  assert.match(approvals, /approvedVia: "standing-session"/);
+  assert.match(approvals, /The refusal set is those rows and nothing more/, 'the refusal class is the enumerated one');
+  assert.match(
+    approvals,
+    /recursive forced rm in any combined-flag spelling/,
+    'the approvals rm coverage is the combined-flag spelling',
+  );
+  assert.match(
+    approvals,
+    /a command outside them is not silently stopped/,
+    'the outside-the-rows boundary carries the responsibility wording',
+  );
+  assert.match(approvals, /dies with it: after a restart the same command confirms again/, 'the memo restart boundary');
+  assert.match(
+    approvals,
+    /operator-approved widening/,
+    'the approvals reference carries the Bash-face widening disclosure',
+  );
+  assert.match(
+    approvals,
+    /the hook gates the agent face only/,
+    'the disclosure scopes the Bash-face change to the agent face',
+  );
+});
+
+test('the sandbox skill teaches selective tunnel cleanup, never blanket delete-all (port-pr4)', () => {
+  // The doctrine layer: the automated connect/expose paths run a selective
+  // cleanup (orphans + same-port only), and the skill must teach the same
+  // contract — the old "always run devbridge delete-all" pre-flight contradicted
+  // the concurrency warning one paragraph below it and killed keepalive-protected
+  // and other-sessions' tunnels when followed. delete-all survives only as the
+  // documented manual full-reset exception.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /selective cleanup/i);
+  assert.match(sandboxSkill, /cleanup_mode=stale/);
+  assert.match(sandboxSkill, /devbridge_tunnel_quota_exceeded/);
+  // The connect-time doctrine names what is preserved.
+  assert.match(sandboxSkill, /keep other ports\/sessions/i);
+  // The contradictory blanket pre-flight must not come back.
+  assert.doesNotMatch(sandboxSkill, /always run `devbridge delete-all`/);
+  // The delete-all mentions that remain are always scoped as the manual
+  // full-reset exception, never the default path.
+  for (const m of sandboxSkill.matchAll(/devbridge delete-all/g)) {
+    const around = sandboxSkill.slice(Math.max(0, m.index - 160), m.index + 80);
+    assert.match(
+      around,
+      /full reset|GLOBAL operations/i,
+      `every delete-all mention must be scoped as the manual exception (context: …${around.slice(-100)})`,
+    );
+  }
+});
+
+test('the sandbox skill gates pool selection on task intent, never on tech stack (port-pr5)', () => {
+  // dev b1ab4029: the pool choice is a doctrine gate beside the target and
+  // stack gates — the key sentences an agent must meet before
+  // huaweicloud_sandbox_connect. The four semantic rules and the scenario
+  // table are pinned by the acceptance port in
+  // structure-sandbox-pool-selection.test.ts; this guard pins the gate
+  // posture plus the anchor every cross-reference must resolve.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /^## Pool-Selection Gate \(MANDATORY — do not skip\)$/m);
+  assert.match(sandboxSkill, /select the pool by \*\*task intent\*\*, not by tech stack/);
+  assert.match(sandboxSkill, /Default is `ephemeral`/);
+  assert.match(sandboxSkill, /Never select `persistent` merely because the project is full-stack or DB-backed\./);
+  assert.match(sandboxSkill, /Never switch pool silently mid-task\./);
+  assert.match(sandboxSkill, /Never ask the pool question when the intent is already explicit\./);
+  assert.match(
+    sandboxSkill,
+    /\[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\)/,
+    'the gate anchor must be linked from at least one cross-reference surface',
+  );
+});
+
+test('connect retires template_id: pool_type only, no pinning, no schema field (port-pr8)', () => {
+  // dev 8c1af52e: custom templates are retired; the server owns the
+  // pool_type → template mapping. The client must not expose, send, or
+  // teach template_id on connect — no schema field, no request-body key
+  // (explicit input or HW_POOL_TEMPLATE_* pinning), no doctrine granting
+  // explicit priority. The connect tool description keeps naming the
+  // server's RESOLVED template_id echo, a response field, never a request
+  // parameter. The HW_POOL_TEMPLATE_* names survive only outside the
+  // request path: update-upgrade's env-preserve list (the upgrade path is
+  // outside this wave's boundary) and the hdkitservice-api tests flipping
+  // the env's retirement — neither is a read path the request can reach.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /客户端不再支持传 template_id/, 'the skill teaches the retired parameter face');
+  assert.match(sandboxSkill, /不支持传 `template_id`；自定义模板已下线/, 'the selection rules name the retirement');
+  assert.doesNotMatch(sandboxSkill, /显式 `template_id` 优先/, 'the explicit-priority doctrine must not come back');
+  const resourcePool = readSource(
+    join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'references', 'resource-pool.md'),
+  );
+  assert.match(resourcePool, /但客户端不再传入/);
+  assert.match(resourcePool, /钉扎或显式 template_id/);
+  assert.doesNotMatch(resourcePool, /显式 `template_id` 优先/, 'the reference retires the explicit-priority line');
+  assert.doesNotMatch(resourcePool, /附带映射 template_id 上送/, 'the pinning teaching must not come back');
+  const schemas = readSource(join('src', 'packs', 'sandbox', 'schemas.ts'));
+  assert.doesNotMatch(schemas, /template_id/, 'the connect schema exposes no template_id property or description');
+  const apiFace = readSource(join('src', 'lib', 'hdkit', 'hdkitservice-api.ts'));
+  assert.doesNotMatch(apiFace, /pinnedTemplateFor|HW_POOL_TEMPLATE/, 'the pinning read path is gone from the api face');
+  assert.doesNotMatch(apiFace, /body\.template_id|options\.template_id/, 'no code path sends template_id');
+  const poolFace = readSource(join('src', 'lib', 'hdkit', 'sandbox-pool.ts'));
+  assert.doesNotMatch(poolFace, /pinnedTemplateFor|HW_POOL_TEMPLATE/, 'the pinning reader stays deleted');
+  const approval = readSource(join('src', 'packs', 'sandbox', 'approval.ts'));
+  assert.doesNotMatch(approval, /template_id/, 'the confirmation view echoes no dead parameter');
+  const toolArgs = readSource(join('src', 'tools.ts'));
+  assert.doesNotMatch(toolArgs, /template_id/, 'the raw-args face declares no template_id');
+  const connectDescription = readSource(join('src', 'packs', 'sandbox', 'tools.ts'));
+  assert.match(connectDescription, /resolved template_id echo/, 'the description names the response echo only');
+  assert.doesNotMatch(connectDescription, /template_id overrides pool_type/);
+});
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {
   // Since the sandbox pack's family split the handlers live in
@@ -24,7 +456,12 @@ test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', 
     assert.doesNotMatch(src, /args\.timeout_ms \|\| \d/, 'handler fallbacks must read SANDBOX_TIMEOUT_MS');
     fallbacks += src.match(/args\.timeout_ms \|\| SANDBOX_TIMEOUT_MS\.\w+/g)?.length ?? 0;
   }
-  assert.equal(fallbacks, 9, 'nine tool handlers apply the shared defaults');
+  // 11 since the async-exec claim protocol: the nine legacy timeout-bearing
+  // handlers, plus the async-start branch (exec_one_shot_async) and the
+  // exec_poll handler (both in handlers-hwexec.ts) — the poll's wait_ms
+  // budget folds ON TOP of its table default via
+  // resolveHwexecPollTimeoutMs, which is why its fallback reads the table.
+  assert.equal(fallbacks, 11, 'eleven tool handlers apply the shared defaults');
 });
 
 test('agent-registration reports openclaw registration status', () => {
@@ -49,6 +486,12 @@ test('node:sqlite is required inside functions, never at module scope', () => {
   // CLI and asserting its stderr carries no Node warning lines (that half
   // only has teeth on Node 22.x, where the builtin still warns).
   const srcDir = join(root, 'plugins', 'huaweicloud-core', 'src');
+  // Two spellings reach module scope: a top-level `createRequire(...)('node:sqlite')`
+  // and an ES import. The import arm joined after PR-1.5's saved-perms reader
+  // walked through the require-only scan (its ESM import was invisible to the
+  // regex) and printed the warning on every CLI boot on Node 22.19.
+  const moduleScopeRequire = /^(?:export\s+)?(?:const|let|var)\b.*\(\s*['"]node:sqlite['"]\s*\)/;
+  const moduleScopeImport = /^\s*import\b[^;]*\bfrom\s+['"]node:sqlite['"]/;
   const offenders: string[] = [];
   const walk = (dir: string) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -57,7 +500,7 @@ test('node:sqlite is required inside functions, never at module scope', () => {
         walk(entryPath);
       } else if (entry.name.endsWith('.ts')) {
         for (const [idx, line] of readFileSync(entryPath, 'utf8').split('\n').entries()) {
-          if (/^(const|let|var)\b.*\(\s*['"]node:sqlite['"]\s*\)/.test(line)) {
+          if (moduleScopeRequire.test(line) || moduleScopeImport.test(line)) {
             offenders.push(`${relative(srcDir, entryPath)}:${idx + 1}`);
           }
         }
@@ -65,7 +508,11 @@ test('node:sqlite is required inside functions, never at module scope', () => {
     }
   };
   walk(srcDir);
-  assert.deepEqual(offenders, [], 'node:sqlite requires must sit inside functions (lazy), never at module scope');
+  assert.deepEqual(
+    offenders,
+    [],
+    'node:sqlite must be loaded lazily inside functions (require or import), never at module scope',
+  );
 });
 
 test('spawn call sites never combine a non-empty args array with shell', () => {

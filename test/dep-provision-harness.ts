@@ -13,6 +13,7 @@ import { type DepUninstallTargets } from '../plugins/huaweicloud-core/src/dep/pr
 import { type DepReceipt } from '../plugins/huaweicloud-core/src/dep/receipts.ts';
 
 import { fixtureDir } from './fixture-dir.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 // Unit 2 (provision half) and Unit 3 (uninstall half + receipts) contracts,
 // driven through the public functions and the real CLI: the resolution
@@ -104,6 +105,7 @@ export function cliEnv(
     HOMEDRIVE: home.slice(0, 2),
     HOMEPATH: home.slice(2),
     HUAWEICLOUD_DEVKIT_SKIP_OFFICEACE_DETECT: '1',
+    ...npmCacheEnv(),
   };
   // These tests reach `install --target opencode` (the XDG-aware config
   // root) and `uninstall --target all` (uninstallCodex's CODEX_HOME-keyed

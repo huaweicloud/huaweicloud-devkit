@@ -30,7 +30,7 @@ import { getRegionalAvailability } from './services/availability.ts';
 import type { DistTags } from './update-check.ts';
 // PACK_TOOL_HANDLERS is the central pack dispatch table (its satisfies check
 // pins every PackToolName to a handler).
-import { PACK_TOOL_HANDLERS, isPackToolName, type PackToolName } from './packs/registry.ts';
+import { PACK_TOOL_HANDLERS, isPackToolName, APPROVAL_SPECS, type PackToolName } from './packs/registry.ts';
 // The skill-dir listing lives in the shared zod-free module
 // (src/lib/skill-tree.ts) so the boot guard, the installer's doctor check,
 // the build-time --check stray scan, and validate-package's skill gate all
@@ -50,6 +50,18 @@ import { toolArgKeys } from './tool-schemas.ts';
 // importers (structure-load-path, e2e/cases/core) and dispatchTool calls
 // enforceVendorGate at dispatch's top.
 import { VENDOR_GATED_TOOLS, enforceVendorGate } from './vendor-gate.ts';
+// The dispatch-layer approval gate (the roster, the per-pack specs it
+// resolves from packs/registry.ts's APPROVAL_SPECS merge, the consent
+// ledger, and the envelope faces) lives in the approval-* family;
+// dispatchTool calls runApprovalGate after the vendor gate and before the
+// pack dispatch.
+import {
+  recordApprovalDispatchOutcome,
+  runApprovalGate,
+  type ApprovalConsentScope,
+  type ApprovalReuseVia,
+} from './approval-gate.ts';
+import type { ApprovalSpec, ElicitationSeam } from './approval-types.ts';
 // The capability catalog (service_catalog / list_packs / pack_info
 // handlers, the SKILL_OWNER inversion, and the shared pack-refusal
 // helpers) lives in capability-catalog.ts; dispatchTool switches into it.
@@ -134,6 +146,11 @@ export type ToolArgs = {
   workspace_id?: string;
   username?: string;
   timeout_ms?: number;
+  // The async-exec claim protocol (huaweicloud_sandbox_exec_one_shot mode:
+  // "async" + huaweicloud_sandbox_exec_poll).
+  task_id?: string;
+  wait_ms?: number;
+  tail_bytes?: number;
   local_path?: string;
   remote_path?: string;
   local_dir?: string;
@@ -150,7 +167,6 @@ export type ToolArgs = {
   framework_type?: string;
   source?: string;
   pool_type?: string;
-  template_id?: string;
   flavor_id?: string;
   env?: Record<string, unknown>;
   git?: SandboxGitConfig;
@@ -167,6 +183,8 @@ export type ToolArgs = {
   rules?: unknown[];
   expiry_hours?: number;
   keepalive?: boolean;
+  // The expose_tunnel selective pre-clean mode (stale default / all / none).
+  cleanup_mode?: string;
   tunnel_id?: string;
   tunnels?: unknown[];
   ref?: string;
@@ -193,6 +211,20 @@ export interface CallToolOptions {
   // mcp-protocol.ts. Its absence is the guard that keeps the stateless remote
   // from mutating process-shared pack state through a direct unlisted call.
   onPacksChanged?: () => void;
+  // The server-run confirmation seam (PR-1.5): mcp-protocol.ts wires the
+  // client's initialize capability record and the SDK elicitInput call here;
+  // the approval gate consumes it in ask mode. Absent on the remote face
+  // (force-token) and in every non-protocol construction, which is exactly
+  // the non-capable T3 path.
+  elicitation?: ElicitationSeam;
+  // The approval gate's binding value for THIS call, set by dispatchTool
+  // when a roster tool's call passed the gate (ask-mode consent, a consumed
+  // token, or a classified pass-through). The auth pack's switch and init
+  // handlers execute this resolved snapshot — never a post-consent re-read
+  // of their backing stores (PR-3b's TOCTOU finding: the shown account must
+  // be the executed account). Handlers of tools whose substance lives in
+  // the args alone ignore it.
+  approvedBinding?: unknown;
 }
 
 // Reject invalid numeric args up front instead of silently coercing them to
@@ -269,16 +301,98 @@ async function dispatchTool(name: ToolName, args: ToolArgs, opts: CallToolOption
   if (VENDOR_GATED_TOOLS.has(name)) {
     enforceVendorGate(args, opts);
   }
-  // Pack tools (every non-core name) dispatch through the central handler
-  // map in packs/registry.ts before the switch; the type guard narrows
-  // `name` to the core remainder, which is what the switch below and its
-  // never-guard are exhaustive over. opts rides through verbatim: every pack
-  // handler takes (args, opts), and the update pack's doQuery/sessionId
-  // seams keep reaching their handlers exactly as before the migration.
-  if (isPackToolName(name)) {
-    return await PACK_TOOL_HANDLERS[name](args, opts);
+  // The approval gate sits after the vendor gate and before the pack
+  // dispatch, spec-driven through the roster (APPROVAL_SPECS keys are
+  // exactly the roster names, compile-checked in packs/registry.ts). A
+  // non-roster tool pays one table miss here and dispatches unchanged.
+  // Envelopes are results, not throws, so a gated refusal reaches the
+  // caller as the same JSON the handler would have returned. On a pass
+  // the gate's binding rides the handler opts: the call's approved
+  // resolution, so credential-consuming handlers execute the snapshot the
+  // human confirmed — never a post-consent re-read (PR-3b's TOCTOU
+  // finding).
+  const approvalSpec = (APPROVAL_SPECS as Partial<Record<ToolName, ApprovalSpec>>)[name];
+  let arrivalStamp: number | undefined;
+  let arrivalSeq: number | undefined;
+  let approvedVia: ApprovalReuseVia | undefined;
+  let consentScope: ApprovalConsentScope | undefined;
+  let handlerOpts: CallToolOptions = opts;
+  if (approvalSpec) {
+    const gated = await runApprovalGate(name, approvalSpec, args, opts);
+    if (!('pass' in gated)) return gated.envelope;
+    arrivalStamp = gated.pass.arrivalStamp;
+    arrivalSeq = gated.pass.arrivalSeq;
+    approvedVia = gated.pass.approvedVia;
+    consentScope = gated.pass.consentScope;
+    if (gated.binding !== undefined) handlerOpts = { ...opts, approvedBinding: gated.binding };
   }
+  // The delivery-outcome recorder sits at the COMMON dispatch boundary
+  // (round 12, finding 3): the gate covers every roster member — pack
+  // tools and core tools alike (PR-3c's packs_configure registration is
+  // a CORE-tool dispatch through the switch below) — so the recorder must
+  // wrap BOTH dispatch legs, or a core-tool registration records its
+  // consent arrival but structurally never the delivery outcome the memo
+  // keys on. The wrapper hands the gate's spec and the arrival's stamp to
+  // the recorder; non-gated tools pay one no-op (the recorder returns
+  // without a spec) and dispatch through unchanged.
+  try {
+    const result = isPackToolName(name)
+      ? await PACK_TOOL_HANDLERS[name](args, handlerOpts)
+      : await dispatchCoreTool(name, args, handlerOpts);
+    recordApprovalDispatchOutcome(
+      name,
+      approvalSpec,
+      args,
+      opts,
+      result,
+      undefined,
+      arrivalStamp,
+      arrivalSeq,
+      consentScope,
+    );
+    // The reuse attribution (PR-3a): a call that rode the retry memo or the
+    // session standing grant names it on the response, so the caller can
+    // tell a fresh confirmation's execution from a reused consent's. Object
+    // results carry the field; every registered tool's handler returns one,
+    // and a non-object shape keeps its wire contract untouched.
+    if (approvedVia !== undefined && result !== null && typeof result === 'object' && !Array.isArray(result)) {
+      (result as Record<string, unknown>).approvedVia = approvedVia;
+    }
+    return result;
+  } catch (error) {
+    recordApprovalDispatchOutcome(
+      name,
+      approvalSpec,
+      args,
+      opts,
+      undefined,
+      error,
+      arrivalStamp,
+      arrivalSeq,
+      consentScope,
+    );
+    // The reuse attribution rides the error path too (interrogate round 2,
+    // F11): a memo-reused retry whose handler throws again still names what
+    // authorized it — programmatic callers see the marker on the error
+    // object; the wire shape of the error itself is unchanged.
+    if (approvedVia !== undefined && error instanceof Error) {
+      (error as Error & { approvedVia?: ApprovalReuseVia }).approvedVia = approvedVia;
+    }
+    throw error;
+  }
+}
 
+// The core-tool dispatch leg: the switch over the core remainder, after
+// the pack guard — extracted so the delivery-outcome wrapper above can
+// cover both dispatch paths from one boundary. The compile-time
+// exhaustiveness never-guard moves with it: `name` is narrowed to
+// Exclude<ToolName, PackToolName> by the call site's isPackToolName
+// branch above.
+async function dispatchCoreTool(
+  name: Exclude<ToolName, PackToolName>,
+  args: ToolArgs,
+  opts: CallToolOptions,
+): Promise<unknown> {
   switch (name) {
     case 'huaweicloud_hook_check_command':
       return hookResult(withUnknownOperationWarn(String(args.command || ''), evaluateCommandRisk(args.command || '')));

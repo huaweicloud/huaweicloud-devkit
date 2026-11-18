@@ -14,6 +14,30 @@ import { clearRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/cr
 
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 
+// PR-3b registered the account-switch pair on the approval chain, so an
+// auth_switch call through dispatch now gates. The reconcile matrix pins
+// the HANDLER flows (persist, mirrors, import lifecycle, R3/R10 policies),
+// not the approval ladder, so the drive answers the gate's confirmation
+// form mechanically: ask mode plus an always-accepting elicitation seam
+// executes the call in one step, end to end through the real dispatch
+// (the vendor gate still runs on the args). The ladder itself is pinned
+// in test/approval-auth.test.ts.
+export async function gatedAuthSwitchCall(args: Record<string, unknown>): Promise<unknown> {
+  const previous = process.env.DEVKIT_APPROVAL_MODE;
+  process.env.DEVKIT_APPROVAL_MODE = 'ask';
+  try {
+    return await callTool('huaweicloud_auth_switch', args, {
+      elicitation: {
+        capable: true,
+        prompt: async () => ({ decision: 'accept', content: { decision: 'approve-once' } }),
+      },
+    });
+  } finally {
+    if (previous === undefined) delete process.env.DEVKIT_APPROVAL_MODE;
+    else process.env.DEVKIT_APPROVAL_MODE = previous;
+  }
+}
+
 // Deterministic-tier seam: disable the once-per-session first-assertion
 // vendor challenge (HUAWEICLOUD_VENDOR_CHALLENGE=off, the installer-override
 // pattern) so cold-attested calls in this file dispatch without the
@@ -115,7 +139,7 @@ export async function persistViaSwitch(
   sk: string,
   region: string,
 ): Promise<AuthSwitchResult & { hcloud?: { ok?: boolean; profileReset?: boolean } }> {
-  return (await callTool('huaweicloud_auth_switch', {
+  return (await gatedAuthSwitchCall({
     mode: 'memory',
     action: 'persist',
     ak,

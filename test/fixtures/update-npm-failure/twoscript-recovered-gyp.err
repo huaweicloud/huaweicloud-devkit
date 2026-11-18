@@ -1,0 +1,27 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm exec huaweicloud-devkit@latest update --target opencode
+npm verbose argv "exec" "--yes" "--foreground-scripts" "--" "huaweicloud-devkit@latest" "update" "--target" "opencode"
+npm verbose logfile logs-max:10 dir:/home/op/c-recovered/_logs/2026-11-11T17_40_55_092Z-
+npm verbose logfile /home/op/c-recovered/_logs/2026-11-11T17_40_55_092Z-debug-0.log
+npm http fetch GET 404 http://127.0.0.1:4873/npm 27ms
+npm http fetch GET 404 http://127.0.0.1:4873/npm 3ms
+npm verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+npm http fetch GET 200 http://127.0.0.1:4873/huaweicloud-devkit 19ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:4873/huaweicloud-devkit 9ms (cache miss)
+npm http fetch POST 200 http://127.0.0.1:4873/-/npm/v1/security/advisories/bulk 10ms
+npm http cache huaweicloud-devkit@http://127.0.0.1:4873/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 1ms (cache hit)
+npm http fetch GET 200 http://127.0.0.1:4873/huaweicloud-devkit/-/huaweicloud-devkit-9.9.9.tgz 19ms (cache miss)
+npm info run huaweicloud-devkit@9.9.9 preinstall node_modules/huaweicloud-devkit node pre.js
+gyp ERR! stack Error: EACCES: permission denied, mkdir '/usr/lib/node_modules/.cache'
+gyp info ok
+npm info run huaweicloud-devkit@9.9.9 preinstall { code: 0, signal: null }
+npm info run huaweicloud-devkit@9.9.9 postinstall node_modules/huaweicloud-devkit node post.js
+npm info run huaweicloud-devkit@9.9.9 postinstall { code: 7, signal: null }
+npm verbose cwd /home/op
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7

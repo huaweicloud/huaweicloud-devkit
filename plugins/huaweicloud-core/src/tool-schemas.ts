@@ -3,7 +3,14 @@ import { z } from 'zod';
 import type { ToolName } from './tools.ts';
 import type { LooseToolSchema } from './lib/pack-types.ts';
 import { PACK_IDS } from './lib/pack-types.ts';
-import { looseObject, vendorConfirmed } from './lib/tool-schema-parts.ts';
+import {
+  looseObject,
+  vendorConfirmed,
+  approvalTokenArg,
+  approvedByUserArg,
+  confirmLanguageArg,
+} from './lib/tool-schema-parts.ts';
+import { APPROVAL_TOOLS } from './approval-roster.ts';
 import { UPDATE_TOOL_SCHEMAS } from './packs/update/tools.ts';
 import { HUAWEICLOUD_OPEN_MCP_TOOL_SCHEMAS } from './packs/huaweicloud-open-mcp/tools.ts';
 import { HUAWEICLOUD_CLI_TOOL_SCHEMAS } from './packs/huaweicloud-cli/tools.ts';
@@ -39,7 +46,7 @@ const TOOL_SCHEMAS = {
     command: z.string().describe('The exact command text to inspect.'),
   }),
   huaweicloud_hook_check_artifacts: z.looseObject({
-    artifacts: z.array(artifactsItem),
+    artifacts: z.array(artifactsItem).describe('Artifacts to inspect, each with a path and its full text content.'),
   }),
   huaweicloud_hook_check_deploy_plan: z.looseObject({
     plan: z
@@ -54,11 +61,17 @@ const TOOL_SCHEMAS = {
       .describe('Developer intent to route, such as deploy app, use API, debug error, or inspect resources.'),
   }),
   huaweicloud_explain_error: z.looseObject({
-    service: z.string().optional(),
-    errorCode: z.string().optional(),
+    service: z.string().optional().describe('Optional service name (e.g., ECS, VPC, APIG) to route the lookup.'),
+    errorCode: z
+      .string()
+      .optional()
+      .describe('The error code to explain, such as APIGW.0301 or Ecs.0038. Extracted from message when omitted.'),
     code: z.string().optional().describe('Alias of errorCode, accepted for compatibility. Prefer errorCode.'),
-    message: z.string().optional(),
-    requestId: z.string().optional(),
+    message: z
+      .string()
+      .optional()
+      .describe('Optional raw error message; the error code is extracted from it when errorCode is not provided.'),
+    requestId: z.string().optional().describe('Optional request ID from the failed response, for support escalation.'),
   }),
   huaweicloud_search_docs: z.looseObject({
     query: z.string().describe('Search query across skill descriptions and documentation.'),
@@ -151,8 +164,28 @@ const TOOL_SCHEMAS = {
       .boolean()
       .optional()
       .describe('Drop the session override and return to the operator DEVKIT_PACKS posture.'),
+    approvalToken: approvalTokenArg,
+    approvedByUser: approvedByUserArg,
   }),
 } satisfies Record<ToolName, LooseToolSchema>;
+
+// The confirm-language hint rides every roster tool — the approval
+// domain's parameter, injected HERE rather than in any pack's schema
+// (the field belongs to the roster concept, which is cross-pack; the pack
+// files stay untouched and the pack-boundaries guard stays clean). The
+// roster is a zod-free leaf (approval-roster.ts), so this import adds no
+// pack edge. The extend preserves each schema's loose catchall
+// (probe-verified on zod 4.6.7), so the #530 pass-through leniency is
+// unchanged; the field stays optional everywhere (a missing value must
+// reach the gate, same doctrine as the other approval args). The legacy
+// registry snapshot gate consults DELIBERATE_ADDITIONS for this property
+// on every non-exempt roster tool.
+for (const name of APPROVAL_TOOLS) {
+  const base = TOOL_SCHEMAS[name] as LooseToolSchema;
+  (TOOL_SCHEMAS as Record<ToolName, LooseToolSchema>)[name] = base.extend({
+    confirmLanguage: confirmLanguageArg,
+  });
+}
 
 export type ToolSchemaMap = typeof TOOL_SCHEMAS;
 export type ToolSchemaEntry = ToolSchemaMap[ToolName];

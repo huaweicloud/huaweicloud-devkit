@@ -1,0 +1,4 @@
+npm error code 1
+npm error EAI_AGAIN: Temporary failure in name resolution, retrying
+npm error command sh -c node fail.js
+npm error EACCES: permission denied, open '/home/op/.npm/_cacache'

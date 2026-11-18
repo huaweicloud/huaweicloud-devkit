@@ -6,6 +6,8 @@
 // extraction. The runner owns install, seams, evaluation — drivers cannot
 // shadow seams (env-policy merge order).
 
+import type { GatewayWireStats } from './gateway-proxy.ts';
+
 export interface DriverContext {
   home: string;
   workdir: string;
@@ -36,6 +38,11 @@ export interface RunResult {
   stdout: string;
   stderr: string;
   finalText: string | null;
+  // Model-wire terminal outcomes for this attempt (requests that got a
+  // response.completed / error frame, or never got a response). Only a
+  // driver that sits on the wire can fill it (the codex shaping proxy);
+  // absent elsewhere — the wire-dead classifier then reads nothing.
+  wireStats?: GatewayWireStats;
 }
 
 // The closed driver vocabulary: the runner's registry literal is keyed by

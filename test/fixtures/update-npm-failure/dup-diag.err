@@ -1,0 +1,10 @@
+npm error code EACCES
+npm error EACCES: permission denied, mkdir '/ro'
+npm error command failed
+npm error command sh -c node a.js
+{ code: 0, signal: null }
+npm error code EACCES
+npm error EACCES: permission denied, mkdir '/ro'
+npm error command failed
+npm error command sh -c node d.js
+{ code: 7, signal: null }

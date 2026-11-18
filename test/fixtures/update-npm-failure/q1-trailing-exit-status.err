@@ -1,0 +1,3 @@
+Resolving package metadata
+EACCES: permission denied, open '/root/.npm/_cacache/temp/build'
+EXIT code 1

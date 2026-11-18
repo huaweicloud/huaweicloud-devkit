@@ -1,0 +1,6 @@
+npm error code EACCES
+npm error path /home/op/pkg
+npm error command failed
+gyp ERR! build error
+gyp ERR! stack Error: `make` failed with exit code: 2
+later note line

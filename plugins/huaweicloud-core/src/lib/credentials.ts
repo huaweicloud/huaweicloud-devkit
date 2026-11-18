@@ -68,7 +68,15 @@ export const pendingConfirms = new Map<string, PendingConfirm>();
 // 2026-11-05 UX report pinned that).
 export const consumedConfirms = new Map<string, { consumedAt: number }>();
 
-export function readImportFile() {
+// The import channel's side-effect-free read. The approval gate resolves
+// the channel BEFORE any consent, and a read that wipes the file on
+// malformed content would mutate the user's state on the refusal path —
+// so every reader peeks (a malformed file stays on disk,
+// operator-visible), and only EXECUTION wipes (the switch handler's
+// clearImportFile on non-replayable outcomes). The pre-PR-3b wiping read
+// (readImportFile) is gone with its only consumer: the handler now
+// resolves through the approval spec's snapshot, which peeks here.
+export function peekImportFile() {
   const path = join(dirname(globalCredentialsPath()), 'creds-import.json');
   try {
     if (!existsSync(path)) return null;
@@ -81,13 +89,6 @@ export function readImportFile() {
       region: asText(record.region || ''),
     };
   } catch {
-    // Malformed/undecodable import file is un-replayable — wipe it. A VALID
-    // file is kept so a rejected persist can be replayed (see #502).
-    try {
-      rmSync(path, { force: true });
-    } catch {
-      // ignore
-    }
     return null;
   }
 }

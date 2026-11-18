@@ -9,12 +9,16 @@ import {
 } from '../plugins/huaweicloud-core/src/packs/enable.ts';
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 import { createLinkedDevkitServers } from '../plugins/huaweicloud-core/src/mcp-protocol.ts';
+import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
+import { withTempAuthHome } from './hcloud-cli-harness.ts';
 import type { PackId } from '../plugins/huaweicloud-core/src/lib/pack-types.ts';
 
 // node --test runs each file in its own process, so env mutation cannot leak
 // into the other suites; the try/finally still keeps this file's later tests
 // honest when one fails mid-flight, and drops the session override both
-// before and after the body.
+// before and after the body. The auth-home isolation (PR-3c:
+// packs_configure is approval-gated now) keeps every minted token inside a
+// fixture home instead of the machine's real approvals store.
 function withEnv(devkitPacks: string | undefined, fn: () => Promise<void>): () => Promise<void> {
   return async () => {
     const previous = process.env.DEVKIT_PACKS;
@@ -22,7 +26,7 @@ function withEnv(devkitPacks: string | undefined, fn: () => Promise<void>): () =
     else process.env.DEVKIT_PACKS = devkitPacks;
     clearRuntimePacksOverride();
     try {
-      await fn();
+      await withTempAuthHome(() => fn());
     } finally {
       if (previous === undefined) delete process.env.DEVKIT_PACKS;
       else process.env.DEVKIT_PACKS = previous;
@@ -51,6 +55,38 @@ async function callJson(client: Client, name: string, args: Record<string, unkno
   const text = res.content?.[0]?.type === 'text' ? res.content[0].text : '{}';
   if (res.isError) throw new Error(`MCP tool error from ${name}: ${text}`);
   return JSON.parse(typeof text === 'string' ? text : '{}') as ToolPayload;
+}
+
+// The packs_configure approval cycle (PR-3c registration): the attested
+// tokenless call mints, the terminal confirm records the grant, the retry
+// with the token executes. Every drive path below funnels through one of
+// these two helpers so the tests keep asserting the HANDLER's behavior on
+// the far side of the gate.
+async function configureJson(client: Client, args: Record<string, unknown>): Promise<ToolPayload> {
+  const envelope = await callJson(client, 'huaweicloud_packs_configure', { ...args, approvedByUser: true });
+  assert.equal(
+    (envelope as unknown as { code?: string }).code,
+    'USER_CONFIRMATION_REQUIRED',
+    'the tokenless call mints instead of executing',
+  );
+  const token = (envelope as unknown as { approvalToken: string }).approvalToken;
+  assert.equal(confirmApprovalToken(token).status, 'confirmed');
+  return callJson(client, 'huaweicloud_packs_configure', { ...args, approvalToken: token, approvedByUser: true });
+}
+
+async function configureDirect(args: Record<string, unknown>): Promise<ToolPayload> {
+  const envelope = (await callTool(
+    'huaweicloud_packs_configure',
+    { ...args, approvedByUser: true },
+    { onPacksChanged: noopSync },
+  )) as unknown as ToolPayload & { code: string; approvalToken: string };
+  assert.equal(envelope.code, 'USER_CONFIRMATION_REQUIRED');
+  assert.equal(confirmApprovalToken(envelope.approvalToken).status, 'confirmed');
+  return (await callTool(
+    'huaweicloud_packs_configure',
+    { ...args, approvalToken: envelope.approvalToken, approvedByUser: true },
+    { onPacksChanged: noopSync },
+  )) as ToolPayload;
 }
 
 // Loose payload shape for the JSON the tools return; assertions stay
@@ -89,7 +125,7 @@ test(
       assert.ok(before.includes('huaweicloud_packs_configure'), 'the toggle tool is registered on the stdio surface');
       assert.ok(!before.includes('huaweicloud_setup_obs_config'), 'obs tool starts hidden under DEVKIT_PACKS=core');
 
-      const result = await callJson(client, 'huaweicloud_packs_configure', { enable: ['obs'] });
+      const result = await configureJson(client, { enable: ['obs'] });
       assert.equal(result.ok, true);
       assert.equal(result.changed, true);
       assert.equal(result.override, 'core,obs', 'the override stores the seed in PACK_IDS order');
@@ -117,7 +153,7 @@ test(
       const before = await toolNames(client);
       assert.ok(before.includes('huaweicloud_setup_obs_config'), 'obs starts enabled via env');
 
-      const result = await callJson(client, 'huaweicloud_packs_configure', { disable: ['obs'] });
+      const result = await configureJson(client, { disable: ['obs'] });
       assert.equal(result.ok, true);
       assert.equal(result.changed, true);
       assert.equal(result.override, 'core', 'disabling the only optional pack floors the override at core');
@@ -137,8 +173,8 @@ test(
   'reset restores the operator env posture',
   withEnv('core', () =>
     withClient({ runtimePacks: true }, async (client) => {
-      await callJson(client, 'huaweicloud_packs_configure', { enable: ['obs', 'sandbox'] });
-      const result = await callJson(client, 'huaweicloud_packs_configure', { reset: true });
+      await configureJson(client, { enable: ['obs', 'sandbox'] });
+      const result = await configureJson(client, { reset: true });
       assert.equal(result.ok, true);
       assert.equal(result.changed, true);
       assert.equal(result.override, null, 'reset drops the override entirely');
@@ -147,7 +183,7 @@ test(
       const names = await toolNames(client);
       assert.ok(!names.includes('huaweicloud_sandbox_connect'), 'env posture rules again after reset');
 
-      const again = await callJson(client, 'huaweicloud_packs_configure', { reset: true });
+      const again = await configureJson(client, { reset: true });
       assert.equal(again.changed, false, 'reset without an override is a noop');
     }),
   ),
@@ -157,7 +193,7 @@ test(
   'enable with the full default surface is a noop and keeps env unset',
   withEnv(undefined, () =>
     withClient({ runtimePacks: true }, async (client) => {
-      const result = await callJson(client, 'huaweicloud_packs_configure', { enable: ['obs'] });
+      const result = await configureJson(client, { enable: ['obs'] });
       assert.equal(result.ok, true);
       assert.equal(result.changed, false, 'nothing to enable when the surface is already full');
       assert.equal(result.override, null, 'no override is stored for a noop');
@@ -170,7 +206,7 @@ test(
   'disable from the full surface stores the shrunk seed, floor core',
   withEnv(undefined, () =>
     withClient({ runtimePacks: true }, async (client) => {
-      const result = await callJson(client, 'huaweicloud_packs_configure', {
+      const result = await configureJson(client, {
         disable: [
           'huaweicloud-cli',
           'sandbox',
@@ -196,7 +232,7 @@ test(
   'enable and disable compose in one call',
   withEnv('core,sandbox', () =>
     withClient({ runtimePacks: true }, async (client) => {
-      const result = await callJson(client, 'huaweicloud_packs_configure', { disable: ['sandbox'], enable: ['obs'] });
+      const result = await configureJson(client, { disable: ['sandbox'], enable: ['obs'] });
       assert.equal(result.ok, true);
       assert.equal(result.override, 'core,obs', 'disable applies to the base before enable unions in');
       assert.deepEqual(result.effectivePacks, ['core', 'obs']);
@@ -204,36 +240,22 @@ test(
   ),
 );
 
-test('disable core is refused and nothing changes', () =>
+test('disable core is refused before the mint and nothing changes', () =>
   withEnv('core,obs', async () => {
-    const refused = (await callTool(
-      'huaweicloud_packs_configure',
-      { disable: ['core'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /core is always enabled/);
+    await assert.rejects(configureDirect({ disable: ['core'] }), /core is always enabled/);
     assert.equal(runtimePacksOverride(), null, 'the refusal must not leave an override behind');
   })());
 
-test('unknown ids are named with the valid list', () =>
+test('unknown ids are named with the valid list before the mint', () =>
   withEnv('core', async () => {
-    const refused = (await callTool(
-      'huaweicloud_packs_configure',
-      { enable: ['bogus'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /Unknown pack id\(s\): bogus/);
-    assert.match(refused.error ?? '', /core, huaweicloud-cli, sandbox/);
+    await assert.rejects(configureDirect({ enable: ['bogus'] }), /Unknown pack id\(s\): bogus/);
+    await assert.rejects(configureDirect({ enable: ['bogus'] }), /core, huaweicloud-cli, sandbox/);
     assert.equal(runtimePacksOverride(), null);
   })());
 
-test('missing every verb is a usage error', () =>
+test('missing every verb is a usage error before the mint', () =>
   withEnv('core', async () => {
-    const refused = (await callTool('huaweicloud_packs_configure', {}, { onPacksChanged: noopSync })) as ToolPayload;
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /at least one of enable, disable, or reset/);
+    await assert.rejects(configureDirect({}), /at least one of enable, disable, or reset/);
   })());
 
 test(
@@ -257,12 +279,8 @@ test(
 
 test('sequential calls accumulate over the same session override', () =>
   withEnv('core', async () => {
-    await callTool('huaweicloud_packs_configure', { enable: ['obs'] }, { onPacksChanged: noopSync });
-    const second = (await callTool(
-      'huaweicloud_packs_configure',
-      { enable: ['auth'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
+    await configureDirect({ enable: ['obs'] });
+    const second = await configureDirect({ enable: ['auth'] });
     assert.equal(second.ok, true);
     assert.equal(second.override, 'core,auth,obs', 'the second call unions onto the first override');
     assert.deepEqual(second.effectivePacks, ['core', 'auth', 'obs']);
@@ -272,17 +290,17 @@ test(
   'a disable then re-enable cycle converges through the same client',
   withEnv('core', () =>
     withClient({ runtimePacks: true }, async (client) => {
-      const enabled = await callJson(client, 'huaweicloud_packs_configure', { enable: ['obs'] });
+      const enabled = await configureJson(client, { enable: ['obs'] });
       assert.equal(enabled.changed, true);
       let names = await toolNames(client);
       assert.ok(names.includes('huaweicloud_setup_obs_config'));
 
-      const disabled = await callJson(client, 'huaweicloud_packs_configure', { disable: ['obs'] });
+      const disabled = await configureJson(client, { disable: ['obs'] });
       assert.equal(disabled.changed, true);
       names = await toolNames(client);
       assert.ok(!names.includes('huaweicloud_setup_obs_config'), 'disable removes the tool from the client list');
 
-      const again = await callJson(client, 'huaweicloud_packs_configure', { enable: ['obs'] });
+      const again = await configureJson(client, { enable: ['obs'] });
       assert.equal(again.changed, true);
       names = await toolNames(client);
       assert.ok(
@@ -295,25 +313,15 @@ test(
   ),
 );
 
-test('reset combined with enable or disable is refused', () =>
+test('reset combined with enable or disable is refused before the mint', () =>
   withEnv('core', async () => {
-    const refused = (await callTool(
-      'huaweicloud_packs_configure',
-      { reset: true, enable: ['obs'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /cannot be combined/);
+    await assert.rejects(configureDirect({ reset: true, enable: ['obs'] }), /cannot be combined/);
     assert.equal(runtimePacksOverride(), null);
   })());
 
 test('enabling an already-enabled pack is a noop', () =>
   withEnv('core,obs', async () => {
-    const result = (await callTool(
-      'huaweicloud_packs_configure',
-      { enable: ['obs'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
+    const result = await configureDirect({ enable: ['obs'] });
     assert.equal(result.ok, true);
     assert.equal(result.changed, false);
     assert.equal(result.override, null, 'no override is stored when env already carries the pack');
@@ -321,11 +329,7 @@ test('enabling an already-enabled pack is a noop', () =>
 
 test('a duplicated DEVKIT_PACKS id does not eat a real enable', () =>
   withEnv('core,core', async () => {
-    const result = (await callTool(
-      'huaweicloud_packs_configure',
-      { enable: ['obs'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
+    const result = await configureDirect({ enable: ['obs'] });
     assert.equal(result.ok, true);
     assert.equal(result.changed, true, 'enable must apply even when env requested ids repeat');
     assert.equal(result.override, 'core,obs');
@@ -334,25 +338,15 @@ test('a duplicated DEVKIT_PACKS id does not eat a real enable', () =>
 
 test('enabling closure-pulled core is a noop', () =>
   withEnv('obs', async () => {
-    const result = (await callTool(
-      'huaweicloud_packs_configure',
-      { enable: ['core'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
+    const result = await configureDirect({ enable: ['core'] });
     assert.equal(result.ok, true);
     assert.equal(result.changed, false, 'core is already effectively enabled via the closure');
     assert.equal(result.override, null);
   })());
 
-test('the same pack in enable and disable is refused', () =>
+test('the same pack in enable and disable is refused before the mint', () =>
   withEnv('core', async () => {
-    const refused = (await callTool(
-      'huaweicloud_packs_configure',
-      { enable: ['obs'], disable: ['obs'] },
-      { onPacksChanged: noopSync },
-    )) as ToolPayload;
-    assert.equal(refused.ok, false);
-    assert.match(refused.error ?? '', /cannot be both enabled and disabled/);
+    await assert.rejects(configureDirect({ enable: ['obs'], disable: ['obs'] }), /cannot be both enabled and disabled/);
     assert.equal(runtimePacksOverride(), null);
   })());
 

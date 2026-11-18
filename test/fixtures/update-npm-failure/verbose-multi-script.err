@@ -1,0 +1,18 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/bin/npm-cli.js
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm exec file:/home/op/pkg-multi update --target opencode
+npm verbose argv "exec" "--loglevel" "verbose" "--yes" "--foreground-scripts" "--" "file:/home/op/pkg-multi" "update" "--target" "opencode"
+npm verbose logfile logs-max:10 dir:/home/op/.npm/_logs/2026-11-11T15_46_23_718Z-
+npm verbose logfile /home/op/.npm/_logs/2026-11-11T15_46_23_718Z-debug-0.log
+npm verbose shrinkwrap failed to load node_modules/.package-lock.json out of date, updated: node_modules
+npm info run pr3-r10-multi-pkg@1.0.0 preinstall ../../../../../home/op/pkg-multi node ./pre.js
+npm info run pr3-r10-multi-pkg@1.0.0 preinstall { code: 0, signal: null }
+npm info run pr3-r10-multi-pkg@1.0.0 postinstall ../../../../../home/op/pkg-multi node ./build.js
+npm info run pr3-r10-multi-pkg@1.0.0 postinstall { code: 7, signal: null }
+npm verbose cwd /home/op
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7

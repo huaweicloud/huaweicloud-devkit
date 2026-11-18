@@ -50,6 +50,19 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['node bin/setup.cjs pin', 'deny'],
   ['npx huaweicloud-devkit@2.0.0 pin', 'deny'],
   ['hcloud Workspace Pin --x=1', 'allow'],
+  // The account-switch CLI verbs (PR-3b interrogate round 1, finding 1):
+  // the devkit's own auth init / auth sync write S1, OBS, and the KooCLI
+  // profile — the account switch the MCP tools gate behind a human
+  // present. Both layers must deny them on the agent Bash face, while the
+  // read-only auth status and plain text stay allowed.
+  ['npx huaweicloud-devkit auth init', 'deny'],
+  ['npx huaweicloud-devkit auth sync', 'deny'],
+  ['npx huaweicloud-devkit@2.0.0 auth init', 'deny'],
+  ['node dist/setup-cli.js auth init', 'deny'],
+  ['node bin/setup.cjs auth sync', 'deny'],
+  ['npx huaweicloud-devkit auth status', 'allow'],
+  ['npx huaweicloud-devkit auth', 'allow'],
+  ['echo run auth init yourself', 'allow'],
   // Write gate: separators, command positions, obfuscation.
   ['hcloud ECS CreateServers --server.name=x', 'deny'],
   ['hcloud ECS ListServers\nhcloud ECS CreateServers --server.name=x', 'deny'],
@@ -294,7 +307,11 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['bash <<EOF\nhcloud ECS ListServers\nEOF', 'allow'],
   ["python3 -c 'print(1+1)'", 'allow'],
   ["awk '{print $1}' file.txt", 'allow'],
-  ['find /tmp -name x.log -delete', 'allow'],
+  // PR-3a round 3: find with -delete denies on ANY start point (the
+  // hwc-sandbox-destructive-find-delete row) — the earlier root-anchored
+  // row let cwd sweeps through while the teaching claimed the family was
+  // covered.
+  ['find /tmp -name x.log -delete', 'deny'],
   // port-v2defects (interrogate round 13 + the coordinator's DESIGN PIVOT):
   // the vision tail closes by DENIAL, not enumeration — the carrier space
   // is unbounded, so the walk denies fail-closed when it cannot traverse
@@ -975,42 +992,149 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['hcloud', 'allow'],
   ['sudo hcloud', 'allow'],
   ['hcloud --', 'allow'],
+  // The reboot-parameter incident and the anchored destructive arms. The
+  // deny rows pin the verbs at command position (plus the deliberate
+  // over-deny faces of the sudo-anywhere and dd arms); the allow rows pin
+  // the mention classes the old bare \bwords\b used to catch. The incident
+  // command denies through the WRITE gate here — the destructive rule must
+  // no longer have an opinion about --reboot.* parameter names.
+  ['sudo reboot', 'deny'],
+  ['reboot', 'deny'],
+  ['systemctl reboot', 'deny'],
+  ['systemctl --no-block reboot', 'deny'],
+  ['sudo -u root reboot', 'deny'],
+  ['sudo init 6', 'deny'],
+  ['bash -c "reboot"', 'deny'],
+  ['rm -rf /', 'deny'],
+  ['ssh -i k root@1.2.3.4 "sudo reboot"', 'deny'],
+  ['echo "sudo reboot done"', 'deny'],
+  ['grep "dd if=" docs/', 'deny'],
+  ['grep -rn reboot docs/', 'allow'],
+  ['echo "reboot soon"', 'allow'],
+  ['git log --grep=reboot', 'allow'],
+  ['grep "(reboot)" crontab.txt', 'allow'],
+  ['hcloud ECS BatchRebootServers --reboot.servers.1.id=i --reboot.type=SOFT', 'deny'],
+  ['hcloud ECS BatchStartServers --os-start.servers.1.id=i', 'deny'],
 ];
+
+// One python3 process runs the whole battery in-process through the real
+// hook (importlib load, per-case sys.stdin/stdout swap, SystemExit
+// captured as the verdict). The per-case spawn loop this replaces spent
+// ~70s of pure process-start + policy-load overhead (630 spawns at
+// ~110ms each, measured 2026-11-14); the batched driver reproduces every
+// verdict — adversarially diffed against the per-spawn implementation
+// (0 differences across the full battery, stable in reverse order and on
+// a repeat run) before adoption.
+const PY_BATTERY_DRIVER = [
+  'import importlib.util, io, json, sys, traceback',
+  'payload = json.load(sys.stdin)',
+  'spec = importlib.util.spec_from_file_location("hws", payload["hook"])',
+  'm = importlib.util.module_from_spec(spec)',
+  'spec.loader.exec_module(m)',
+  'results = []',
+  'for case in payload["cases"]:',
+  '    entry = {}',
+  '    old_stdin, old_stdout = sys.stdin, sys.stdout',
+  '    buf = io.StringIO()',
+  '    sys.stdout = buf',
+  '    sys.stdin = io.StringIO(json.dumps({"tool_name": "Bash", "tool_input": {"command": case}}))',
+  '    try:',
+  '        m.main()',
+  '    except SystemExit as e:',
+  '        if e.code not in (0, None):',
+  '            entry["verdict"] = "crashed"',
+  '            entry["trace"] = "exit code " + str(e.code)',
+  '        else:',
+  '            entry["verdict"] = "deny" if buf.getvalue().strip() else "allow"',
+  '    except BaseException:',
+  '        entry["verdict"] = "crashed"',
+  '        entry["trace"] = traceback.format_exc()[:300]',
+  '    else:',
+  '        entry["verdict"] = "deny" if buf.getvalue().strip() else "allow"',
+  '    finally:',
+  '        sys.stdin, sys.stdout = old_stdin, old_stdout',
+  '    results.append(entry)',
+  'print(json.dumps(results))',
+].join('\n');
+
+interface PyVerdict {
+  verdict: 'deny' | 'allow' | 'crashed';
+  trace?: string;
+}
+
+// The per-case spawn shape the battery ran before batching: one gated
+// spawn per case with its own 30s bound. The batch falls back to it
+// whenever its single overall result is unusable, so a timeout-class
+// regression still names the offending case instead of discarding every
+// verdict at once (the 2026-11-14 interrogate round's mixed-battery probe:
+// an overall-timeout batch returned a bare SIGTERM with no case named).
+function pyVerdictPerCase(command: string): PyVerdict | 'unavailable' {
+  const py = spawnSync('python3', [hookPath], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+    encoding: 'utf8',
+    timeout: 30000,
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+  });
+  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+  if (unavailable) return 'unavailable';
+  if (py.status !== 0 || py.stderr) {
+    return { verdict: 'crashed', trace: `status ${py.status}: ${py.stderr.slice(0, 200)}` };
+  }
+  return { verdict: py.stdout.trim().length > 0 ? 'deny' : 'allow' };
+}
+
+function runPyBattery(): Array<PyVerdict | 'unavailable'> | 'unavailable' {
+  const cases = BATTERY.map((row) => row[0]);
+  // The battery drives the REAL hook (no copy, no redirect), so its
+  // record_cli_event side effect would append to the SHARED agent-dir
+  // spool (plugins/huaweicloud-core/telemetry/hook-events.jsonl — the
+  // path derives from the hook file's own location, immune to every test
+  // HOME isolation). ~490 hcloud rows per run then flood any later test
+  // whose telemetry ingest reads that file: enqueueTrackedEvent ingests
+  // the spool on EVERY enqueue, and one awaited flush splices only
+  // BATCH_SIZE=100 — the #1040 flush pin's tool event (enqueued last)
+  // missed its round on the windows CI legs twice (runs 40841747815 /
+  // 40849117055; reproduced red-first on Linux by staging a 120-line
+  // spool). The battery tests classification, not telemetry — the spool
+  // write is an untested side effect, gated off here (the #1040 pin in
+  // structure-safety.test.ts enforces this gate on every real-hook spawn
+  // site, this batch driver included).
+  const py = spawnSync('python3', ['-c', PY_BATTERY_DRIVER], {
+    input: JSON.stringify({ hook: hookPath, cases }),
+    encoding: 'utf8',
+    timeout: 60000,
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+  });
+  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+  if (unavailable) return 'unavailable'; // python3 not on PATH: TS-only environment
+  if (py.status === 0 && !py.stderr) {
+    try {
+      const parsed = JSON.parse(py.stdout) as PyVerdict[];
+      if (parsed.length === cases.length) return parsed;
+    } catch {
+      // unparseable batch output falls through to the per-case rerun
+    }
+  }
+  return cases.map((command) => pyVerdictPerCase(command));
+}
 
 test('TS classifier and python hook agree on the shared adversarial battery', () => {
   const mismatches: string[] = [];
-  for (const [command, expected] of BATTERY) {
+  const py = runPyBattery();
+  for (const [i, [command, expected]] of BATTERY.entries()) {
     const ts = classifyTextCommand(command).decision;
     if (ts !== expected) mismatches.push(`TS: want ${expected}, got ${ts}: ${command}`);
-    // The battery spawns the REAL hook (no copy, no redirect), so its
-    // record_cli_event side effect would append to the SHARED agent-dir
-    // spool (plugins/huaweicloud-core/telemetry/hook-events.jsonl — the
-    // path derives from the hook file's own location, immune to every test
-    // HOME isolation). ~490 hcloud rows per run then flood any later test
-    // whose telemetry ingest reads that file: enqueueTrackedEvent ingests
-    // the spool on EVERY enqueue, and one awaited flush splices only
-    // BATCH_SIZE=100 — the #1040 flush pin's tool event (enqueued last)
-    // missed its round on the windows CI legs twice (runs 40841747815 /
-    // 40849117055; reproduced red-first on Linux by staging a 120-line
-    // spool). The battery tests classification, not telemetry — the spool
-    // write is an untested side effect, gated off here.
-    const py = spawnSync('python3', [hookPath], {
-      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
-      encoding: 'utf8',
-      timeout: 30000,
-      env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
-    });
-    const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-    if (unavailable) continue; // python3 not on PATH: TS-only environment
+    if (py === 'unavailable') continue; // python3 not on PATH: TS-only environment
+    const entry = py[i];
+    if (entry === 'unavailable') continue;
     // A crashed hook must fail loudly, not read as "allow" through empty
     // stdout — an allow-expected entry that crashes would otherwise pass
     // silently (the exact shape that hid a TypeError during development).
-    if (py.status !== 0 || py.stderr) {
-      mismatches.push(`PY: crashed (status ${py.status}): ${command}: ${py.stderr.slice(0, 200)}`);
+    if (entry.verdict === 'crashed') {
+      mismatches.push(`PY: crashed: ${command}: ${entry.trace ?? ''}`);
       continue;
     }
-    const pyVerdict = py.stdout.trim().length > 0 ? 'deny' : 'allow';
-    if (pyVerdict !== expected) mismatches.push(`PY: want ${expected}, got ${pyVerdict}: ${command}`);
+    if (entry.verdict !== expected) mismatches.push(`PY: want ${expected}, got ${entry.verdict}: ${command}`);
   }
   assert.deepEqual(mismatches, [], 'layer drift detected');
 });
@@ -1023,9 +1147,9 @@ test('the env-dump flag chain stays linear on the -u/-- adversarial shape (ReDoS
   // pre-fix regex: 14.3s at 26 repetitions of ' -u -- ', >120s at 28. The
   // (?!u\s) lookahead on the long-flag branch makes each token's parse
   // unique; 5000 repetitions must classify in bounded time on BOTH layers
-  // (the python twin shares the structure; its spawnSync timeout of 30s is
-  // the python-side bound — an exponential regression kills the process
-  // there and fails the status assertion below).
+  // (the python twin shares the structure; pyVerdictPerCase's 30s spawnSync
+  // timeout is the python-side bound — an exponential regression kills the
+  // process there and fails the verdict assertion below).
   const payload = `env${' -u -- '.repeat(5000)}plainword`;
   const tsStart = Date.now();
   assert.equal(classifyTextCommand(payload).decision, 'allow');
@@ -1039,16 +1163,9 @@ test('the env-dump flag chain stays linear on the -u/-- adversarial shape (ReDoS
   // python twin keeps its own independent 30s spawnSync bound.
   assert.ok(Date.now() - tsStart < 5000, 'TS classifier spent exponential time on the -u/-- chain');
 
-  const py = spawnSync('python3', [hookPath], {
-    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: payload } }),
-    encoding: 'utf8',
-    timeout: 30000,
-    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
-  });
-  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-  if (unavailable) return; // python3 not on PATH: TS-only environment
-  assert.equal(py.status, 0, `python hook crashed on the -u/-- chain: ${py.stderr.slice(0, 200)}`);
-  assert.equal(py.stdout.trim().length > 0 ? 'deny' : 'allow', 'allow');
+  const verdict = pyVerdictPerCase(payload);
+  if (verdict === 'unavailable') return; // python3 not on PATH: TS-only environment
+  assert.equal(verdict.verdict, 'allow', `python hook crashed on the -u/-- chain: ${verdict.trace ?? ''}`);
 });
 
 // port-v2defects (interrogate round 4): the ANSI-C decoders are TWINS —
@@ -1207,15 +1324,116 @@ test('deep-nest quote-idiom mangled writes deny via the opaque gate (interrogate
   };
   for (const depth of [5, 8, 9, 10]) {
     assert.equal(classifyTextCommand(nest(depth)).decision, 'deny', `nest depth ${depth}`);
-    const py = spawnSync('python3', [hookPath], {
-      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: nest(depth) } }),
-      encoding: 'utf8',
-      timeout: 30000,
-      env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
-    });
-    const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
-    if (unavailable) continue;
-    assert.equal(py.status, 0, `nest ${depth} py crashed: ${py.stderr.slice(0, 200)}`);
-    assert.equal(py.stdout.trim().length > 0 ? 'deny' : 'allow', 'deny', `nest depth ${depth} py`);
+    const verdict = pyVerdictPerCase(nest(depth));
+    if (verdict === 'unavailable') break; // python3 not on PATH: TS-only environment
+    assert.equal(verdict.verdict, 'deny', `nest depth ${depth} py: ${verdict.trace ?? ''}`);
   }
+});
+
+// The approval-gate roster exemption (the approval-chain core PR): an MCP
+// call to a roster tool skips hook text classification because the
+// dispatch-layer approval gate is strictly stronger. Both twins must allow
+// a bin-prefixed run_approved_command MCP call where trunk's .mjs denied
+// it; the raw Bash face and unregistered MCP names keep full classification
+// (pinned in hook-node.test.ts — the py twin's lack of MCP-call write
+// classification is the recorded trunk residual, so the deny side is
+// mjs-only and never a parity predicate).
+// Spawn a hook twin for the roster-exemption test (the battery's py column
+// spawns inline above; the exemption needs the mjs face too, which is not
+// loaded in-process).
+function spawnMjsHook(payload: unknown) {
+  return spawnSync(process.execPath, [join('plugins', 'huaweicloud-core', 'hooks', 'huaweicloud-safety.mjs')], {
+    input: JSON.stringify(payload),
+    encoding: 'utf8',
+    timeout: 30000,
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+  });
+}
+
+// The py twin's real-hook spawn: the telemetry-off gate stays inline (the
+// structure-safety pin reads the spawn block for it), with a property
+// order that does not mirror the legacy inline blocks above.
+function spawnPyHook(payload: unknown) {
+  return spawnSync('python3', [hookPath], {
+    input: JSON.stringify(payload),
+    env: { ...process.env, HUAWEICLOUD_DEVKIT_TELEMETRY: 'off' },
+    timeout: 30000,
+    encoding: 'utf8',
+  });
+}
+
+test('roster MCP calls skip hook text classification on both twins', () => {
+  const payload = {
+    tool_name: 'mcp__huaweicloud-devkit_huaweicloud_run_approved_command',
+    tool_input: {
+      args: ['hcloud', 'ECS', 'DeleteServers', '--server.id=i-123'],
+      approvedByUser: true,
+    },
+  };
+  const mjs = spawnMjsHook(payload);
+  assert.equal(mjs.status, 0, `mjs hook crashed: ${mjs.stderr.slice(0, 200)}`);
+  assert.equal(mjs.stdout.trim(), '', 'the mjs twin must exempt the roster MCP call');
+
+  const py = spawnPyHook(payload);
+  const unavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+  if (unavailable) return; // python3 not on PATH: TS-only environment
+  assert.equal(py.status, 0, `py hook crashed: ${py.stderr.slice(0, 200)}`);
+  assert.equal(
+    py.stdout.trim(),
+    '',
+    'the py twin allows the roster MCP call (its write block never covered MCP names)',
+  );
+
+  // The raw tool name spelling (no server prefix) exempts identically.
+  const bare = spawnMjsHook({
+    tool_name: 'huaweicloud_run_approved_command',
+    tool_input: { args: ['hcloud', 'ECS', 'DeleteServers', '--server.id=i-123'], approvedByUser: true },
+  });
+  assert.equal(bare.status, 0);
+  assert.equal(bare.stdout.trim(), '', 'the bare roster name exempts like the prefixed one');
+});
+
+test('the gated-mutation CLI twins deny on the Bash face on both twins (interrogate r1 finding 1)', () => {
+  // `npx huaweicloud-devkit update|upgrade`, `secret rm`, and
+  // `packs enable|disable|all` perform the exact mutations the MCP
+  // approval gate mediates (huaweicloud_upgrade, secret_delete,
+  // packs_configure) with no gate at all on the CLI path — the agent
+  // Bash face must deny them on both twins. The controls stay allowed:
+  // packs status (read-only), the devkit doctor verb, and a plain
+  // hcloud read. The OBS write control keeps its deny (the hcloud class).
+  const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } });
+  const twins = (payload: unknown): [string, string] => {
+    const mjs = spawnMjsHook(payload);
+    assert.equal(mjs.status, 0, `mjs hook crashed: ${mjs.stderr.slice(0, 200)}`);
+    const py = spawnPyHook(payload);
+    const pyUnavailable = (py.error as NodeJS.ErrnoException | undefined)?.code === 'ENOENT';
+    return [
+      mjs.stdout.trim() === '' ? 'allow' : 'deny',
+      pyUnavailable ? 'skip' : py.stdout.trim() === '' ? 'allow' : 'deny',
+    ];
+  };
+  for (const command of [
+    'npx huaweicloud-devkit update',
+    'npx huaweicloud-devkit upgrade --target opencode',
+    'node bin/setup.cjs upgrade',
+    'npx huaweicloud-devkit secret rm secret://user/hw-sk',
+    'npx huaweicloud-devkit packs enable sandbox,obs',
+    'npx huaweicloud-devkit packs disable obs',
+    'npx huaweicloud-devkit packs all',
+  ]) {
+    const [mjs, py] = twins(bash(command));
+    assert.equal(mjs, 'deny', `the mjs twin must deny the gated-mutation twin: ${command}`);
+    if (py !== 'skip') assert.equal(py, 'deny', `the py twin must deny the gated-mutation twin: ${command}`);
+  }
+  for (const [mjs, py] of [
+    twins(bash('npx huaweicloud-devkit packs status')),
+    twins(bash('npx huaweicloud-devkit doctor')),
+    twins(bash('hcloud ECS ListServersDetails')),
+  ]) {
+    assert.equal(mjs, 'allow', 'the read-only devkit verbs and hcloud reads stay allowed');
+    if (py !== 'skip') assert.equal(py, 'allow', 'the py twin allows the same controls');
+  }
+  const [obsMjs, obsPy] = twins(bash('hcloud OBS cp obs://my-bucket/x /tmp/x -f'));
+  assert.equal(obsMjs, 'deny', 'the hcloud OBS write control keeps its deny');
+  if (obsPy !== 'skip') assert.equal(obsPy, 'deny', 'the py twin keeps the OBS write deny');
 });

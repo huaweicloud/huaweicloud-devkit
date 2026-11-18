@@ -196,6 +196,34 @@ test('classifyHcloudArgs blocks execution operations (Invoke, Trigger, Deploy)',
   assert.equal(classifyHcloudArgs(['ECS', 'RebootServers']).decision, 'deny', 'ECS RebootServers should be blocked');
 });
 
+test('the anchored destructive rule no longer vetoes an approved BatchRebootServers (the reboot-parameter incident)', () => {
+  // `--reboot.servers.[N].id` and `--reboot.type` are REQUIRED KooCLI
+  // parameters, so the old bare \breboot\b arm denied the soft restart
+  // AFTER the user approved it (hcloud-run's assertAllowed re-classifies
+  // with allowWrites:true and the risk rule flipped allow back to deny).
+  // The plan face still denies the unapproved argv through the write
+  // gate; the approved face must reach allow/write with no risk-rule
+  // finding attached.
+  const argv = ['ECS', 'BatchRebootServers', '--reboot.servers.1.id=abc', '--reboot.type=SOFT'];
+
+  const plan = classifyHcloudArgs(argv);
+  assert.equal(plan.decision, 'deny');
+  assert.equal(plan.risk, 'write');
+  assert.match(plan.reason ?? '', /blocked until the agent presents a plan/);
+
+  const approved = classifyHcloudArgs(argv, { allowWrites: true });
+  assert.equal(approved.decision, 'allow');
+  assert.equal(approved.risk, 'write');
+  assert.equal(approved.blockedByRiskRule, undefined);
+
+  // The non-colliding sibling keeps its approved allow as a regression pin.
+  const start = classifyHcloudArgs(['ECS', 'BatchStartServers', '--os-start.servers.1.id=abc'], {
+    allowWrites: true,
+  });
+  assert.equal(start.decision, 'allow');
+  assert.equal(start.risk, 'write');
+});
+
 test('classifyHcloudArgs blocks hcloud configure show without allowCredentialRead', () => {
   const result = classifyHcloudArgs(['configure', 'show']);
   assert.equal(result.decision, 'deny');

@@ -70,6 +70,46 @@ export const gitConfig = z.looseObject({
   open_type: z.string().optional(),
 });
 
+// The shared approval-gate parameters, declared once for every roster tool
+// the gate covers (the hcloud run face today; the PR-3 pack registrations
+// join by spreading the same parts into their schemas). Both are optional
+// in the schema ON PURPOSE, same doctrine as vendorConfirmed: a missing
+// value must reach callTool's gate, which owns the refusal teaching —
+// SDK-level required-field rejects would silence the consent instruction.
+// The gate, not zod, is the enforcement.
+export const approvalTokenArg = z
+  .string()
+  .optional()
+  .describe(
+    "Required in token-approval mode (from the minting face — the plan tool, or the approval gate's USER_CONFIRMATION_REQUIRED envelope); omit in ask mode, where the server-run gate confirms at run time.",
+  );
+
+// Optional in the schema for the same reason: in token mode the gate throws
+// the teaching rejection when it is absent, and in ask mode the server-run
+// confirmation owns the gate — the first arrival has no attestation yet (the
+// chat round-trip envelope asks for it), so a required field here would kill
+// the T3 flow in SDK validation before the gate ever saw it.
+export const approvedByUserArg = booleanArg
+  .optional()
+  .describe(
+    'Must be true only after the user explicitly approves this exact call. In token mode the gate requires it; in ask mode the server-run confirmation asks the user itself, and this flag is the chat round-trip retry marker (posture trust) when the client cannot render a form.',
+  );
+
+// The confirm-language hint, injected on every roster tool by
+// src/tool-schemas.ts (the approval domain's parameter, not any pack's).
+// The model relays the user's conversation language so the human-facing
+// confirmation form renders its display text in it — the MCP server never
+// sees the chat, so the model is the only context observer. Optional and
+// soft-failing by design (lib/confirm-language.ts): an unrecognized value
+// falls through to the operator's DEVKIT_CONFIRM_LANG pin, then the machine
+// locale; the enum VALUES and every refusal stay English in both languages.
+export const confirmLanguageArg = z
+  .string()
+  .optional()
+  .describe(
+    "Optional: the user's conversation language, 'zh' (Chinese) or 'en' — the approval confirmation form renders its display text in that language.",
+  );
+
 export const workspaceId = z
   .string()
   .optional()

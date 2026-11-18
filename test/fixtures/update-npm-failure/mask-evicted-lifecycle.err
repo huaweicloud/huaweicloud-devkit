@@ -1,0 +1,5 @@
+cache: EVICTED 12 stale entries, continuing
+install failed: could not reach registry
+
+npm error code 1
+npm error command sh -c npx --yes huaweicloud-devkit@latest update --target opencode

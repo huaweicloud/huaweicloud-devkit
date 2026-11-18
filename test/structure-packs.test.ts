@@ -97,7 +97,10 @@ test('update pack registers version-update tools; registry carries the central d
     assert.doesNotMatch(tools, new RegExp(`case '${name}':`));
   }
   assert.match(tools, /isPackToolName\(name\)/);
-  assert.match(tools, /PACK_TOOL_HANDLERS\[name\]\(args, opts\)/);
+  // handlerOpts IS the call opts (the gate's approved binding is threaded
+  // onto a copy for roster tools, PR-3b) — the pin is that the handler
+  // receives the call's arguments and options, not raw argv.
+  assert.match(tools, /PACK_TOOL_HANDLERS\[name\]\(args, handlerOpts\)/);
 
   // Behavioral lockstep: the pack tool list equals the PACK_OF ownership for
   // 'update'. Descriptions are derived from UPDATE_TOOLS in
@@ -114,12 +117,14 @@ test('update pack registers version-update tools; registry carries the central d
 
 test('eight packs register their tools; the central map dispatches them', () => {
   // Same contract as the update pack, asserted for the packs materialized
-  // after P4: sandbox (14), auth (6), obs (3), voucher (3), discovery (3),
-  // huaweicloud-open-mcp (3), huaweicloud-cli (7), secrets (3). Their
-  // handlers reach callTool only through the PACK_TOOL_HANDLERS merge in
-  // packs/registry.ts.
+  // after P4: sandbox (16 — the async-exec claim protocol added
+  // huaweicloud_sandbox_exec_poll, the port-pr6 wave added
+  // huaweicloud_sandbox_shutdown), auth (6), obs (3), voucher (3),
+  // discovery (3), huaweicloud-open-mcp (3), huaweicloud-cli (7), secrets
+  // (3). Their handlers reach callTool only through the
+  // PACK_TOOL_HANDLERS merge in packs/registry.ts.
   const packs = [
-    { id: 'sandbox', tools: SANDBOX_TOOLS, count: 14 },
+    { id: 'sandbox', tools: SANDBOX_TOOLS, count: 16 },
     { id: 'auth', tools: AUTH_TOOLS, count: 6 },
     { id: 'obs', tools: OBS_TOOLS, count: 3 },
     { id: 'voucher', tools: VOUCHER_TOOLS, count: 3 },

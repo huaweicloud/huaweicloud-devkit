@@ -159,6 +159,10 @@ export const TOOL_DEFINITIONS_LITERALS = [
     description: packDescription('huaweicloud_sandbox_exec_one_shot'),
   },
   {
+    name: 'huaweicloud_sandbox_exec_poll',
+    description: packDescription('huaweicloud_sandbox_exec_poll'),
+  },
+  {
     name: 'huaweicloud_sandbox_close_session',
     description: packDescription('huaweicloud_sandbox_close_session'),
   },
@@ -197,6 +201,10 @@ export const TOOL_DEFINITIONS_LITERALS = [
   {
     name: 'huaweicloud_sandbox_credentials',
     description: packDescription('huaweicloud_sandbox_credentials'),
+  },
+  {
+    name: 'huaweicloud_sandbox_shutdown',
+    description: packDescription('huaweicloud_sandbox_shutdown'),
   },
   {
     name: 'huaweicloud_voucher_status',
@@ -256,7 +264,7 @@ export const TOOL_DEFINITIONS_LITERALS = [
   {
     name: 'huaweicloud_packs_configure',
     description:
-      'Enable or disable capability packs for THIS session, or reset to the operator posture. Session-scoped: the change lives in this server process only and the next session restart restores the DEVKIT_PACKS posture the operator configured. Takes enable (pack ids to add), disable (pack ids to remove; core cannot be disabled), and reset (drop the session override). The refreshed tool list is pushed to the agent immediately. Confirm with the user before enabling a pack the operator trimmed: widening re-exposes that pack\u2019s tools, including state mutators that carry no approval chain of their own. The persistent equivalent is the operator CLI (npx huaweicloud-devkit packs enable <ids> --target <agent>); ask the operator to run it and restart the agent.',
+      'Enable or disable capability packs for THIS session, or reset to the operator posture. Session-scoped: the change lives in this server process only and the next session restart restores the DEVKIT_PACKS posture the operator configured. Takes enable (pack ids to add), disable (pack ids to remove; core cannot be disabled), and reset (drop the session override). The refreshed tool list is pushed to the agent immediately. Approval-gated in every mode because widening the disclosure face is the consequence: the no-token call returns USER_CONFIRMATION_REQUIRED naming the pack ids with the approve line for the user\u2019s own terminal (token mode), and under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself (a form on a capable client, else an ASK_CONFIRMATION_REQUIRED chat round-trip). Stdio agent sessions only — surfaces with no session state are refused outright. The persistent equivalent is the operator CLI (npx huaweicloud-devkit packs enable <ids> --target <agent>); ask the operator to run it and restart the agent.',
   },
   {
     name: 'huaweicloud_gateway_list_tools',

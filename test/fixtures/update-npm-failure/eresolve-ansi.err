@@ -1,0 +1,19 @@
+[1mnpm[22m [31merror[39m [94mcode[39m ERESOLVE
+[1mnpm[22m [31merror[39m [94mERESOLVE[39m unable to resolve dependency tree
+[1mnpm[22m [31merror[39m
+[1mnpm[22m [31merror[39m While resolving: probe@1.0.0
+[1mnpm[22m [31merror[39m Found: react@17.0.2[2m[22m
+[1mnpm[22m [31merror[39m [2mnode_modules/react[22m
+[1mnpm[22m [31merror[39m   react@"17" from the root project
+[1mnpm[22m [31merror[39m
+[1mnpm[22m [31merror[39m Could not resolve dependency:
+[1mnpm[22m [31merror[39m [95mpeer[39m react@"^18.3.1" from react-dom@18.3.1[2m[22m
+[1mnpm[22m [31merror[39m [2mnode_modules/react-dom[22m
+[1mnpm[22m [31merror[39m   react-dom@"18" from the root project
+[1mnpm[22m [31merror[39m
+[1mnpm[22m [31merror[39m Fix the upstream dependency conflict, or retry this command with --force or --legacy-peer-deps to accept an incorrect (and potentially broken) dependency resolution.
+[1mnpm[22m [31merror[39m
+[1mnpm[22m [31merror[39m
+[1mnpm[22m [31merror[39m For a full report see:
+[1mnpm[22m [31merror[39m /home/op/.npm/_logs/2026-11-11T05_28_24_641Z-eresolve-report.txt
+[1mnpm[22m [31merror[39m A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T05_28_24_641Z-debug-0.log

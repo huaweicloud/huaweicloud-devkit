@@ -1,6 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+import { isolateDirectFetchEnv } from './fetch-stub-harness.ts';
+import { fixtureDir } from './fixture-dir.ts';
+import { standingAccessor, landedThenFlippedCarrier } from './hdkit-gate-fixtures.ts';
 import {
   _setOneShotForTests,
   gateExposeAuth,
@@ -134,12 +137,27 @@ test('self-heal failure falls through to the generic auto-create fallback', asyn
   });
 });
 
-// Drive the gate over a constant NO_CREDENTIAL probe and return the failure
-// object — the structured-degradation assertions share this harness.
-async function failingGate(lifecycle: FakeKeyLifecycle, poolType?: string) {
+// 掷出型 ensure 的中继钉共用（round 24 去重）：登记载体直掷 ensure，走
+// failingGate 的同一降级链
+async function failingGateThrowing(carrier: unknown) {
+  return failingGate(
+    fakeKeyLifecycle({
+      ensure: async () => {
+        throw carrier;
+      },
+      listKeys: async () => [],
+    }),
+    'ephemeral',
+  );
+}
+
+// Drive the gate over a scripted probe stdout and return the failure
+// object — the structured-degradation assertions share this harness (the
+// constant-NO_CREDENTIAL default and the scripted cases alike).
+async function failingGate(lifecycle: FakeKeyLifecycle, poolType?: string, stdout: string = NO_KEY) {
   let failure: ExposeTunnelResult | undefined;
   await withSeam(
-    () => ({ stdout: NO_KEY, exitCode: 0 }),
+    () => ({ stdout, exitCode: 0 }),
     async () => {
       const gate = await gateExposeAuth('ws-1', 'root', 8080, { ...lifecycle.deps, poolType });
       assert.equal(gate.ok, false);
@@ -177,7 +195,7 @@ test('quota exhaustion degrades to the structured failure with the key list and 
   assert.equal(f.port, 8080);
 });
 
-test('a non-quota create failure keeps the plain no-credential degradation', async () => {
+test('a non-gate create failure keeps the plain no-credential degradation', async () => {
   const lifecycle = fakeKeyLifecycle({
     ensure: async () => {
       throw new Error('network unreachable');
@@ -190,18 +208,274 @@ test('a non-quota create failure keeps the plain no-credential degradation', asy
   assert.match(f.hint ?? '', /quota \(20 key limit\)/);
 });
 
+// 构造带完整门禁载荷的错误（三个 relay 折叠用例共用同一形状）
+// 构造带完整门禁载荷的错误（relay 折叠用例共用同一形状）；message/extra 可覆写
+// （round 6：不可见消息与不可见版本字段用例共用此构建器）
+function gateError(
+  message = 'HDKIT_VERSION_TOO_OLD: 插件版本过旧，请升级至正式版 2.0.0 及以上。',
+  extra: Record<string, unknown> = {},
+): Error & { code?: string; clientVersion?: string; minVersion?: string } {
+  return Object.assign(new Error(message), {
+    code: 'HDKIT_VERSION_TOO_OLD',
+    clientVersion: '2.0.0-next.0',
+    minVersion: '2.0.0',
+    remediation: {
+      hint: '插件版本过旧（当前 2.0.0-next.0，需升级至正式版 2.0.0 及以上）：',
+      steps: [
+        '在终端执行：npx --yes huaweicloud-devkit@latest update --target <agent>',
+        '升级完成后重启当前 Agent 会话（MCP 工具需重启才生效）',
+        '也可直接调用 huaweicloud_upgrade 工具完成升级',
+      ],
+    },
+    ...extra,
+  });
+}
+
+test('the 409 version gate folds through the relay failure with the upgrade remediation', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw gateError();
+    },
+  });
+  const f = await failingGate(lifecycle);
+  // 门禁按 relay 出口折叠（v2 扩展）：不是凭证误诊——quota/NO_CREDENTIAL 引导
+  // 不出现，升级引导穿透 expose 结果
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+  assert.match(f.error ?? '', /插件版本过旧/);
+  assert.equal((f as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+  assert.equal((f as { minVersion?: string }).minVersion, '2.0.0');
+  const remediation = (f as { gateRemediation?: { hint: string; steps: string[] } }).gateRemediation;
+  assert.ok(remediation, 'the gate remediation must reach the expose result');
+  assert.match(remediation!.hint, /版本过旧/);
+  assert.match(remediation!.steps.join(' '), /huaweicloud-devkit@latest update --target <agent>/);
+  assert.match(remediation!.steps.join(' '), /huaweicloud_upgrade/);
+  assert.doesNotMatch(
+    f.hint ?? '',
+    /No DevBridge API Key is available/,
+    'the no-credential misdiagnosis must not fire',
+  );
+  assert.doesNotMatch(f.hint ?? '', /quota/, 'the quota guidance must not fire');
+  assert.equal(f.port, 8080);
+});
+
+test('a woven devbridge quota code surfaces the quota envelope, never the no-credential misdiagnosis', async () => {
+  // 内部织入形态（round 14 台账）：真实链路会把边缘垫入清掉——edge-padded
+  // 夹具不可达，内部织入才是生产可达的拼写
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw Object.assign(new Error('HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEE\u200bDED: 20 key limit'), {
+        code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEE\u200bDED',
+      });
+    },
+    listKeys: async () => [{ name: 'stale-a', id: 'a', lastUsed: '2026-11-01' }],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED', 'the woven quota code is recognized canonically');
+  assert.match(f.error ?? '', /20 key limit/);
+  assert.ok(Array.isArray((f as { currentKeys?: unknown }).currentKeys), 'the quota envelope carries the key list');
+  assert.match(f.hint ?? '', /API Key 数量已达上限/, 'the quota guidance fires — not the misdiagnosis');
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/);
+});
+
+// ── relay 捕获的裸读收口（round 14）──
+// 配额分支的属性取值（canonCode 的读一半）与配额信封的 message 读仍裸——
+// 两条都在同一 catch 里安全的 isVersionGateError 之前求值：拒读载体到达设计
+// 的泛化降级信封，配额消息拒读时配额信封照常折叠，都不再 TypeError。
+
+test('a refusing code read through the relay catch degrades designed, never a TypeError', async () => {
+  const thrower = new Error('whatever the chain threw');
+  Object.defineProperty(thrower, 'code', {
+    get() {
+      throw new TypeError('code getter detonates');
+    },
+    configurable: true,
+  });
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw thrower;
+    },
+    listKeys: async () => [],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, undefined, 'a refusing code read is absent — no quota branch');
+  assert.match(f.error ?? '', /no usable credential in the sandbox/, 'the generic degradation envelope fires');
+  assert.match(
+    f.hint ?? '',
+    /No DevBridge API Key is available/,
+    'the no-credential guidance — the designed fallback for an unreadable auto-create failure',
+  );
+});
+
+test('a revoked proxy through the relay catch degrades designed, never a TypeError', async () => {
+  const revoked = Proxy.revocable(new Error('revoked carrier'), {});
+  revoked.revoke();
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw revoked.proxy;
+    },
+    listKeys: async () => [],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, undefined, 'a revoked proxy reads absent — no quota branch');
+  assert.match(f.error ?? '', /no usable credential in the sandbox/, 'the generic degradation envelope fires');
+});
+
+test('a quota code with a refusing message read still folds the quota envelope', async () => {
+  const carrier = Object.assign(new Error('never read'), { code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED' });
+  Object.defineProperty(carrier, 'message', {
+    get() {
+      throw new TypeError('message getter detonates');
+    },
+    configurable: true,
+  });
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw carrier;
+    },
+    listKeys: async () => [{ name: 'stale-a', id: 'a', lastUsed: '2026-11-01' }],
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED', 'the quota branch fires');
+  assert.equal(f.error, undefined, 'a refusing message read is absent — the field is omitted');
+  assert.ok(Array.isArray((f as { currentKeys?: unknown }).currentKeys), 'the key list still rides');
+  assert.match(f.hint ?? '', /API Key 数量已达上限/, 'the quota guidance fires');
+});
+
+test('the quota flow folds the gate when the key-list read is itself gated', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw Object.assign(new Error('HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED: 20 key limit'), {
+        code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED',
+      });
+    },
+    listKeys: async () => {
+      throw gateError();
+    },
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  // 429 后配额引导的 currentKeys 读取遭遇 409：门禁优先——拿着读不出来的
+  // key 清单教用户清 key 是误诊，升级引导穿透
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+  assert.equal((f as { currentKeys?: unknown }).currentKeys, undefined, 'the quota envelope must not surface');
+  const remediation = (f as { gateRemediation?: { hint: string; steps: string[] } }).gateRemediation;
+  assert.ok(remediation, 'the gate remediation must reach the expose result');
+  assert.match(remediation!.hint, /版本过旧/);
+  assert.doesNotMatch(f.hint ?? '', /quota/);
+});
+
+// 空白与纯不可见字符多形一例参数化（round 5 + round 6 扩类）：同一折叠路径，
+// 同一兜底断言——round 6 把参数面扩到 Cf 类新收口码点
+for (const [label, message] of [
+  ['a zero-width gate message', '​'],
+  ['a whitespace gate message', '   '],
+  ['a soft-hyphen gate message', '\u00ad'],
+  ['a bidi-override gate message', '\u202e'],
+] as const) {
+  test(`the relay fold never renders a blank error field for ${label}`, async () => {
+    const lifecycle = fakeKeyLifecycle({
+      ensure: async () => {
+        return Promise.reject(gateError(message));
+      },
+    });
+    const f = await failingGate(lifecycle, 'ephemeral');
+    assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+    assert.ok((f.error ?? '').trim() !== '', 'the error field must not render visually blank');
+    assert.match(f.error ?? '', /版本过旧/, 'the designed gate copy fires');
+  });
+}
+
+test('the relay fold narrows invisible clientVersion and minVersion away', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      return Promise.reject(
+        gateError('插件版本过旧，请升级至正式版 2.0.0 及以上。', {
+          clientVersion: '\u200b',
+          minVersion: '\u200d',
+        }),
+      );
+    },
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+  const fRec = f as unknown as Record<string, unknown>;
+  assert.equal('clientVersion' in fRec, false, 'an invisible version narrows away');
+  assert.equal('minVersion' in fRec, false);
+  const remediation = (f as { gateRemediation?: { hint: string } }).gateRemediation;
+  assert.ok(remediation, 'the fold mints or passes the remediation');
+});
+
+test('a readable codeless 409 on the relay folds as the gate with the server copy', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      return Promise.reject(Object.assign(new Error('插件版本过旧，请升级至正式版 2.0.0 及以上。'), { status: 409 }));
+    },
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'the codeless 409 is the gate on the relay too');
+  assert.match(
+    f.error ?? '',
+    /插件版本过旧，请升级至正式版 2\.0\.0 及以上/,
+    'the readable shape surfaces the server copy',
+  );
+  const remediation = (f as { gateRemediation?: { hint: string } }).gateRemediation;
+  assert.ok(remediation, 'the unknown-version remediation mints');
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
+});
+
+test('a blank-code 409 on the relay folds as the gate, not the credential misdiagnosis', async () => {
+  for (const blankCode of ['   ', '​'] as const) {
+    const lifecycle = fakeKeyLifecycle({
+      ensure: async () => {
+        return Promise.reject(
+          Object.assign(new Error('插件版本过旧，请升级至正式版 2.0.0 及以上。'), {
+            code: blankCode,
+            status: 409,
+          }),
+        );
+      },
+    });
+    const f = await failingGate(lifecycle, 'ephemeral');
+    assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'a blank code is absent to the recognizer');
+    assert.match(f.error ?? '', /插件版本过旧，请升级至正式版 2\.0\.0 及以上/);
+    assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the remediation mints');
+    assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
+  }
+});
+
+test('an aborted codeless 409 on the relay folds as the gate, not the no-credential misdiagnosis', async () => {
+  const gateError = Object.assign(new TypeError('terminated'), { status: 409 });
+  const lifecycle = fakeKeyLifecycle({
+    ensure: async () => {
+      throw gateError;
+    },
+  });
+  const f = await failingGate(lifecycle, 'ephemeral');
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'a codeless 409 is the gate by the module contract');
+  assert.ok((f.error ?? '').trim() !== '', 'the error field must render real text');
+  const remediation = (f as { gateRemediation?: { hint: string; steps: string[] } }).gateRemediation;
+  assert.ok(remediation, 'the unknown-version fallback remediation must reach the expose result');
+  assert.match(remediation!.hint, /当前 未知/);
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
+});
+
+test('the self-heal catch folds the gate on the first gated relay call', async () => {
+  const lifecycle = fakeKeyLifecycle({
+    recreate: async () => {
+      throw gateError();
+    },
+  });
+  const f = await failingGate(lifecycle, undefined, DEAD_KEY);
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+  assert.equal((f as { clientVersion?: string }).clientVersion, '2.0.0-next.0');
+  const remediation = (f as { gateRemediation?: { hint: string; steps: string[] } }).gateRemediation;
+  assert.ok(remediation, 'the gate remediation must surface on the first gated call');
+  assert.deepEqual(lifecycle.ensureCalls, [], 'the generic ladder round must never run for a gated client');
+});
+
 test('the version gate precedes the key-upgrade ladder — no key is created for a 0.1.x binary', async () => {
   const lifecycle = fakeKeyLifecycle();
-  let failure: ExposeTunnelResult | undefined;
-  await withSeam(
-    () => ({ stdout: `DB_VERSION=0.1.13-release\n${NO_KEY}`, exitCode: 0 }),
-    async () => {
-      const gate = await gateExposeAuth('ws-1', 'root', 8080, lifecycle.deps);
-      assert.equal(gate.ok, false);
-      if (!gate.ok) failure = gate.failure;
-    },
-  );
-  assert.equal(failure?.error_code, 'devbridge_too_old');
+  const f = await failingGate(lifecycle, undefined, `DB_VERSION=0.1.13-release\n${NO_KEY}`);
+  assert.equal(f.error_code, 'devbridge_too_old');
   assert.deepEqual(lifecycle.ensureCalls, [], 'a permanent version blocker must not spend a key');
 });
 
@@ -237,4 +511,234 @@ test('exposeTunnel short-circuits on the structured quota failure — the expose
       assert.equal(exposeRan, false, 'a failed auth gate must never start a host');
     },
   );
+});
+
+// ── 真实 relay 链路（round 8）：请求层码清洗直达 relay 折叠 ──
+// 驱动真实 devbridge-key + 真实 hdkitRequest（fetch 打桩）——DI 空白码与
+// 星面区垫码在请求层清洗后，relay 折叠为门禁而非凭证误诊。
+
+test('the real relay path under a VS17-only or astral-padded gate code folds as the gate', async () => {
+  const tmpHome = fixtureDir('relay-astral-home-');
+  const realHome = process.env.HOME;
+  process.env.HOME = tmpHome;
+  process.env.HW_ACCESS_KEY = 'TESTAK';
+  process.env.HW_SECRET_KEY = 'TESTSK';
+  process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
+  const restoreEnv = isolateDirectFetchEnv();
+  const keyMod = await import('../plugins/huaweicloud-core/src/sandbox/devbridge-key.ts');
+  const originalFetch = global.fetch;
+  try {
+    for (const code of [
+      'HDKIT_VERSION_TOO_OLD󠄀',
+      'HDKIT_VERSION_TOO_OLD\uFFF9',
+      'HDKIT_VERSION_T\u200bOO_OLD',
+      '󠄀',
+    ] as const) {
+      global.fetch = async () =>
+        new Response(JSON.stringify({ code, message: '插件版本过旧，请升级至正式版 2.0.0 及以上。' }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      await withSeam(
+        async () => ({ stdout: NO_KEY, exitCode: 0 }),
+        async () => {
+          const gate = await gateExposeAuth('ws-1', 'root', 8080, {
+            poolType: 'ephemeral',
+            keyUpgrade: {
+              ensureDevbridgeKey: keyMod.ensureDevbridgeKey,
+              recreateDevbridgeKey: keyMod.recreateDevbridgeKey,
+              buildKeyringInjectScript: keyMod.buildKeyringInjectScript,
+              listKeysForQuotaHint: keyMod.listKeysForQuotaHint,
+            },
+          });
+          assert.equal(gate.ok, false);
+          if (gate.ok) return;
+          const f = gate.failure;
+          assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD');
+          assert.match(f.error ?? '', /插件版本过旧/, 'the server copy surfaces through the real chain');
+          assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the gate remediation mints');
+          assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis must not fire');
+        },
+      );
+    }
+  } finally {
+    global.fetch = originalFetch;
+    restoreEnv();
+    if (realHome === undefined) delete process.env.HOME;
+    else process.env.HOME = realHome;
+  }
+});
+
+// ── 中继检测器先查登记（round 23/MUST 6）──
+// 中继出口以 isVersionGateError 先于折叠裁决——登记过的门禁载体 code 视图
+// 变坏（抛出型 getter）时检测器返回 false，出口落向凭证误诊/吞门禁，而折
+// 叠本会铸造。检测器先查门禁登记：与折叠同一规则。
+
+test('the relay detector consults the registration first: a registered gate carrier with a throwing code getter folds the gate at the relay', async () => {
+  const { applyVersionGate } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  // 登记：自有 clientVersion 访问器（读谎）挣得门禁拒绝
+  const carrier = Object.assign(new Error('gate'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  standingAccessor(carrier, 'clientVersion');
+  applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
+  // code 视图变坏：抛出型 getter——检测器与折叠都不得读它
+  Object.defineProperty(carrier, 'code', {
+    get() {
+      throw new TypeError('code getter detonates');
+    },
+    configurable: true,
+  });
+  const f = await failingGateThrowing(carrier);
+  assert.equal(
+    f.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the relay detector mints the gate — the registration decides, never the detonating code view',
+  );
+  assert.match(f.error ?? '', /插件版本过旧，请升级插件后重启会话/, 'the registered fallback message carries');
+  assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the unknown-version remediation mints');
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the credential misdiagnosis never fires');
+});
+
+// ── 中继检测器的种类对称（round 24/MUST 4）──
+// 仅耗尽登记的载体不是门禁——其自身字段读不可采信（谎报的 code 访问器把
+// 瞬时耗尽伪装成升级信号）。检测器与 versionGateResult 同规则：登记先裁、
+// 按种类零读，中继出口不再从两个不可信的 code 读铸造门禁信封。
+
+test('the relay detector is kind-symmetric: an exhaustion-registered carrier with a lying code getter never mints the gate', async () => {
+  const { applyVersionGate, decorateExhaustedConnect } =
+    await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  // 耗尽登记：标记访问器（读谎）挣得拒绝；谎报的 code 访问器常驻
+  // HDKIT_VERSION_TOO_OLD——检测器绝不能读它
+  const carrier = Object.assign(new Error('exhaustion relay twin'), { connectRetries: 1 });
+  standingAccessor(carrier, 'gatewayRetryExhausted');
+  let codeReads = 0;
+  Object.defineProperty(carrier, 'code', {
+    configurable: true,
+    enumerable: true,
+    get() {
+      codeReads += 1;
+      return 'HDKIT_VERSION_TOO_OLD';
+    },
+    set() {
+      // 吞写——访问器立着
+    },
+  });
+  const decorated = decorateExhaustedConnect(carrier, 2);
+  assert.notEqual(decorated, carrier, 'the marker accessor earns the exhaustion registration');
+  // 读数口径（round 25/MUST 4 后）：装饰口 rawCode 读 + 中继配额分支一次安
+  // 全读（门禁先裁后，未登记的耗尽载体才落进配额比较）——检测器本身零读
+  const readsAfterDecoration = codeReads;
+  const f = await failingGateThrowing(carrier);
+  assert.equal(f.error_code, undefined, 'the relay exit never mints the gate off an exhaustion registration');
+  assert.match(
+    f.hint ?? '',
+    /No DevBridge API Key is available/,
+    'the credential path takes over — the misroute is dead',
+  );
+  assert.doesNotMatch(f.error ?? '', /插件版本过旧/, 'the gate fallback message never surfaces');
+  assert.equal(
+    codeReads,
+    readsAfterDecoration + 1,
+    'the detector itself reads no code — only the quota pre-check does',
+  );
+  // 门禁对照（round 27/MUST 3b 后形态更替）：异种类拒绝的载体在首次写入前就走克隆——
+  // 同一载体上的门禁装饰不再注册 gate 种类（拒绝+拒绝并存不可达）。对照换落定+拒绝形态：
+  // 耗尽落定后门禁装饰经立着访问器挣得拒绝——种类并入拒绝记录，检测器随即零读铸造
+  const twin = Object.assign(new Error('gate refusal twin'), { connectRetries: 1 });
+  assert.equal(decorateExhaustedConnect(twin, 2), twin, 'the twin exhaustion decoration lands in place');
+  standingAccessor(twin, 'clientVersion');
+  const gateDecorated = applyVersionGate(twin, { clientVersion: '2.0.0-next.0' });
+  assert.notEqual(gateDecorated, twin, 'the standing clientVersion accessor earns the gate registration');
+  const f2 = await failingGateThrowing(twin);
+  assert.equal(f2.error_code, 'HDKIT_VERSION_TOO_OLD', 'the gate kind on the twin — the registration alone decides');
+  assert.equal(
+    codeReads,
+    readsAfterDecoration + 1,
+    'the registered verdict fires before the quota branch — the twin adds no code read',
+  );
+});
+
+// ── 落定裁决与配额先裁（round 25）──
+
+test('the relay folds the gate for a landed carrier whose code view flipped after landing', async () => {
+  // MUST 2 出口二（relay）：applyVersionGate 就地落定不写 code——落定后翻
+  // 转的 code [[Get]] 谎言此前把中继推入 NO_CREDENTIAL 误诊（gateRemediation
+  // 丢失）。落定登记的 gate 种类先裁，零 code 读
+  const carrier = landedThenFlippedCarrier();
+  const f = await failingGateThrowing(carrier);
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'the proven record decides the relay verdict — zero code reads');
+  // 落定（未登记）载体走落定分支：亲署消息照载（登记铸兜底、落定载亲署）
+  assert.match(f.error ?? '', /landed then flipped/, 'the authored message carries — the flipped code never does');
+  assert.doesNotMatch(f.hint ?? '', /No DevBridge API Key is available/, 'the credential misdiagnosis never fires');
+  assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the upgrade guidance rides the failure');
+});
+
+test('the relay auto-create catch checks the gate before the quota comparison: a lying quota view cannot misroute', async () => {
+  // MUST 4：配额比较此前先求值且自选分支——登记过的门禁载体 code 视图谎
+  // 报配额码即被误路由进清 key 信封（配额 hint、空 currentKeys、
+  // gateRemediation 丢失）。门禁先裁后，登记裁决零读先返回
+  const { applyVersionGate } = await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  const carrier = Object.assign(new Error('quota lie twin'), { code: 'HDKIT_DEVBRIDGE_KEY_QUOTA_EXCEEDED' });
+  standingAccessor(carrier, 'clientVersion');
+  applyVersionGate(carrier, { clientVersion: '2.0.0-next.0' });
+  const f = await failingGateThrowing(carrier);
+  assert.equal(
+    f.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the gate registration decides — the lying quota view never selects the branch',
+  );
+  assert.ok((f as { gateRemediation?: { hint: string } }).gateRemediation, 'the upgrade guidance carries');
+  assert.doesNotMatch(f.hint ?? '', /API Key 数量已达上限/, 'the quota hint never fires for a gate carrier');
+});
+
+// ── 落定裁决在种类集下存活（round 26/MUST 2，中继半边）──
+
+test('the relay renders the attached versions for a codeless 409 (the round-30 relay half)', async () => {
+  // round 30/MUST 1 的 relay 半边：无码 409 载体带挂载版本——relay 的
+  // versionGateFailure 经 gateFoldPayload 的无码分支渲染真实版本而非
+  // 未知/最新版兜底。round 31/MUST 1 的 relay 半边即本行：修复后的请求层
+  // 对超界码 409 造的载体正是这个形状（status 409、码缺失、版本挂载）——
+  // relay 折无码门禁带版本；relay 不经 hdkitservice 路径，填充码信封不可达
+  const carrier = Object.assign(new Error('relay codeless gate'), {
+    status: 409,
+    clientVersion: '2.0.0-next.0',
+    minVersion: '2.0.0',
+  });
+  const f = await failingGateThrowing(carrier);
+  assert.equal(f.error_code, 'HDKIT_VERSION_TOO_OLD', 'the relay folds the codeless gate');
+  assert.match(
+    String((f as { gateRemediation?: { hint: string } }).gateRemediation?.hint ?? ''),
+    /当前 2\.0\.0-next\.0，需升级至正式版 2\.0\.0 及以上/,
+    'the relay guidance renders the attached versions',
+  );
+});
+
+test('the relay verdict survives cross-kind re-decorations and foreign refusals (B1/B3 at the relay)', async () => {
+  // B1：门禁落定 → 耗尽再装饰 → 中继裁决存活（此前单槽 __kind 被覆写——
+  // 中继复现 NO_CREDENTIAL 误诊，正是记录要防的形态）；B3：门禁落定 → 耗
+  // 尽装饰拒绝 → 同判
+  const { applyVersionGate, decorateExhaustedConnect } =
+    await import('../plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts');
+  const b1 = Object.assign(new Error('relay B1 twin'), { status: 409 });
+  applyVersionGate(b1, { clientVersion: '2.0.0-next.0', minVersion: '2.0.0' });
+  decorateExhaustedConnect(b1, 2);
+  const f1 = await failingGateThrowing(b1);
+  assert.equal(
+    f1.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the cross-kind re-decoration never kills the relay gate verdict',
+  );
+  assert.ok((f1 as { gateRemediation?: { hint: string } }).gateRemediation, 'the upgrade guidance rides');
+  assert.doesNotMatch(f1.hint ?? '', /No DevBridge API Key is available/, 'the NO_CREDENTIAL misdiagnosis never fires');
+
+  const b3 = Object.assign(new Error('relay B3 twin'), { code: 'HDKIT_VERSION_TOO_OLD' });
+  applyVersionGate(b3, { clientVersion: '4.0.0', minVersion: '4.0.0' });
+  standingAccessor(b3, 'connectRetries');
+  decorateExhaustedConnect(b3, 5);
+  const f3 = await failingGateThrowing(b3);
+  assert.equal(
+    f3.error_code,
+    'HDKIT_VERSION_TOO_OLD',
+    'the foreign refusal never shadows the landed gate at the relay',
+  );
+  assert.doesNotMatch(f3.hint ?? '', /No DevBridge API Key is available/, 'the misdiagnosis never fires for B3 either');
 });

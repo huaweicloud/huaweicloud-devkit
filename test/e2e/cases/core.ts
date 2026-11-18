@@ -91,6 +91,32 @@ export const coreCases: E2eCase[] = [
   {
     id: 'core-approval-positive',
     pack: 'core',
+    // The token posture is pinned (E2eCase.approvalMode, the field's
+    // doctrine comment): this case IS the token contract, and the token
+    // chain is the only positive approval flow a headless run can
+    // complete. Under the installer's natural ask posture it was red by
+    // construction, twice over — the ask-gated run call never executes
+    // headless (measured on opencode 1.19.0: the refusal spins the model
+    // turn into a retry loop; there is no interactive approver under
+    // `opencode run`), and the plan tool's ask-mode note ("no token
+    // needed — the harness client confirms") contradicts this prompt's
+    // token teaching, which stalled glm-5.3 4/4 attempts across the
+    // 2026-11-13/14 nightlies: it narrated "现在开始执行:" and ended the
+    // turn without ever calling run.
+    //
+    // With the posture pinned, the 2026-11-14 nightly proved the chain
+    // plan → run works (both attempts called run with the minted token)
+    // but exposed the third link: the terminal confirmation. The token
+    // needs the user's out-of-band `npx huaweicloud-devkit approve` —
+    // headless nobody runs it, run rejects with USER_CONFIRMATION_REQUIRED,
+    // and the model (correctly) ends the turn asking the user. The
+    // autoConfirmApprovals watcher plays that terminal half through the
+    // product's own confirmApprovalToken (the simulated-user doctrine:
+    // the prompt plays the in-chat "我批准", the watcher plays the
+    // terminal approve), so the run call executes and the full
+    // mint → grant → consume → hcloud chain is what this case asserts.
+    approvalMode: 'token',
+    autoConfirmApprovals: true,
     prompt:
       '我批准创建名为 e2e-test-sg-01 的 VPC 安全组,明确授权本次操作。流程:先用 huaweicloud_plan_cli_command 规划 hcloud VPC CreateSecurityGroup --name=e2e-test-sg-01 --cli-region=cn-north-4,再用 huaweicloud_run_approved_command 执行(approvedByUser 设为 true,使用规划返回的 approvalToken)。完成后告诉我结果。',
     fixtures: {

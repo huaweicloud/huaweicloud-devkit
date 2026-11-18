@@ -1,0 +1,11 @@
+child dependency build failed: missing native toolchain
+npm error code 7
+npm error path /home/op/inner-cache
+npm error command failed
+npm error command sh -c node fail.js
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T03_57_17_641Z-debug-0.log
+npm error code 7
+npm error path /home/op/runs/dup-block/pkg/node_modules/probe-main
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T03_57_17_044Z-debug-0.log

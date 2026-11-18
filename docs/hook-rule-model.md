@@ -142,27 +142,27 @@ Agent 在**执行前**应主动调用以下 MCP 工具进行风险检查：
 
 ## 当前风险规则
 
-| 规则 ID                            | 类别            | 严重度 | 阶段                  | 说明                               |
-| ---------------------------------- | --------------- | ------ | --------------------- | ---------------------------------- |
-| `hwc-command-credential-file`      | credential      | deny   | command               | 禁止读取本地凭据文件               |
-| `hwc-command-env-dump`             | credential      | deny   | command               | 禁止打印云凭据环境变量             |
-| `hwc-command-secret-value-read`    | secret          | deny   | command               | 禁止检索明文 Secret                |
-| `hwc-command-adminpass-exposure`   | secret          | warn   | artifact, deploy_plan | 警告明文 adminPass 参数            |
-| `hwc-command-sts-credential`       | credential      | warn   | command               | 警告临时凭据暴露                   |
-| `hwc-command-encoded-shell-exec`   | execution       | deny   | command               | 禁止 base64 解码后管道执行         |
-| `hwc-network-public-admin-port`    | public_exposure | deny   | 全部                  | 禁止 0.0.0.0/0 开放管理端口        |
-| `hwc-obs-anonymous-write`          | public_exposure | deny   | 全部                  | 禁止 OBS 匿名写入                  |
-| `hwc-functiongraph-public-no-auth` | public_exposure | warn   | 全部                  | 警告无认证的公网函数               |
-| `hwc-iam-admin-policy`             | iam             | deny   | 全部                  | 禁止创建管理员权限策略             |
-| `hwc-iam-highrisk-write`           | iam             | warn   | command               | 警告 IAM 主体高危写操作            |
-| `hwc-destructive-delete-force`     | destructive     | deny   | command               | 禁止强制递归删除                   |
-| `hwc-destructive-delete-operation` | destructive     | warn   | command               | 警告云资源删除/解绑操作            |
-| `hwc-destructive-reset-operation`  | destructive     | warn   | command               | 警告资源重置操作                   |
-| `hwc-destructive-delete-cascade`   | destructive     | warn   | command               | 警告级联删除（EIP/卷）             |
-| `hwc-command-secret-in-arg`        | secret          | warn   | command               | 警告命令行明文密码/密钥参数        |
-| `hwc-sandbox-missing-ttl`          | sandbox         | warn   | artifact, deploy_plan | 警告沙箱无清理计划                 |
-| `hwc-cost-unbounded-scale`         | cost            | warn   | 全部                  | 警告高成本/无边界扩容              |
-| `hwc-sandbox-destructive-command`  | destructive     | deny   | command               | 禁止沙箱毁灭性命令（含 fork bomb） |
+| 规则 ID                            | 类别            | 严重度 | 阶段                  | 说明                                                                                                                                                                                                                                 |
+| ---------------------------------- | --------------- | ------ | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `hwc-command-credential-file`      | credential      | deny   | command               | 禁止读取本地凭据文件                                                                                                                                                                                                                 |
+| `hwc-command-env-dump`             | credential      | deny   | command               | 禁止打印云凭据环境变量                                                                                                                                                                                                               |
+| `hwc-command-secret-value-read`    | secret          | deny   | command               | 禁止检索明文 Secret                                                                                                                                                                                                                  |
+| `hwc-command-adminpass-exposure`   | secret          | warn   | artifact, deploy_plan | 警告明文 adminPass 参数                                                                                                                                                                                                              |
+| `hwc-command-sts-credential`       | credential      | warn   | command               | 警告临时凭据暴露                                                                                                                                                                                                                     |
+| `hwc-command-encoded-shell-exec`   | execution       | deny   | command               | 禁止 base64 解码后管道执行                                                                                                                                                                                                           |
+| `hwc-network-public-admin-port`    | public_exposure | deny   | 全部                  | 禁止 0.0.0.0/0 开放管理端口                                                                                                                                                                                                          |
+| `hwc-obs-anonymous-write`          | public_exposure | deny   | 全部                  | 禁止 OBS 匿名写入                                                                                                                                                                                                                    |
+| `hwc-functiongraph-public-no-auth` | public_exposure | warn   | 全部                  | 警告无认证的公网函数                                                                                                                                                                                                                 |
+| `hwc-iam-admin-policy`             | iam             | deny   | 全部                  | 禁止创建管理员权限策略                                                                                                                                                                                                               |
+| `hwc-iam-highrisk-write`           | iam             | warn   | command               | 警告 IAM 主体高危写操作                                                                                                                                                                                                              |
+| `hwc-destructive-delete-force`     | destructive     | deny   | command               | 禁止强制递归删除                                                                                                                                                                                                                     |
+| `hwc-destructive-delete-operation` | destructive     | warn   | command               | 警告云资源删除/解绑操作                                                                                                                                                                                                              |
+| `hwc-destructive-reset-operation`  | destructive     | warn   | command               | 警告资源重置操作                                                                                                                                                                                                                     |
+| `hwc-destructive-delete-cascade`   | destructive     | warn   | command               | 警告级联删除（EIP/卷）                                                                                                                                                                                                               |
+| `hwc-command-secret-in-arg`        | secret          | warn   | command               | 警告命令行明文密码/密钥参数                                                                                                                                                                                                          |
+| `hwc-sandbox-missing-ttl`          | sandbox         | warn   | artifact, deploy_plan | 警告沙箱无清理计划                                                                                                                                                                                                                   |
+| `hwc-cost-unbounded-scale`         | cost            | warn   | 全部                  | 警告高成本/无边界扩容                                                                                                                                                                                                                |
+| `hwc-sandbox-destructive-command`  | destructive     | deny   | command               | 禁止毁灭性终端命令：`rm -rf /`、`dd if=`、fork bomb（有界线性形态）、命令位锚定的 shutdown/reboot/init/mkfs/fdisk（提及形文本与 `--reboot.*` 参数名不再误伤；两条刻意保留的过度拒绝：sudo 无位置臂、`dd if=` 子串，均有 battery 钉） |
 
 ## Agent 使用 Hook 的推荐流程
 

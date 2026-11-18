@@ -16,6 +16,51 @@ LLM) against the fake Huawei Cloud boundary. The agent layer is never
 mocked; the Huawei Cloud boundary is fully fake but recording. Cases are
 driver-agnostic data: every assertion surface works for both legs.
 
+**Approval posture is case-scoped data too** (`E2eCase.approvalMode`):
+`core-approval-positive` pins `token` because the token chain (plan mints
+an approvalToken, run consumes it) is the only positive approval flow a
+headless run can complete — the ask posture's confirmation is an
+interactive client permission prompt, and a headless `opencode run` has no
+approver (measured on 1.19.0: an ask-gated MCP tool call never executes;
+the refusal spins the model turn into a retry loop). Under the installer's
+natural ask posture the case was red by construction, twice over: the
+ask-gated run call could never execute headless, and the plan tool's
+ask-mode note ("no token needed — the harness client confirms")
+contradicts the prompt's token teaching, which stalled glm-5.3 all four
+attempts across the 2026-11-13/14 nightlies (it narrated execution and
+ended the turn without calling run). The pin turns the opencode ask gate
+off for that case's throwaway home and sets `DEVKIT_APPROVAL_MODE=token`
+in the case env (the two halves move together — no ask rule, no
+`DEVKIT_APPROVAL_MODE=ask` in the mcp entry, which would otherwise beat
+the process env on the MCP child; measured on 2.2.7).
+`core-approval-negative` deliberately keeps the natural posture: waiting
+for the user is the ask note's taught surface, and its pass needs no
+executed run call.
+
+**The user's terminal half is simulated** (`E2eCase.autoConfirmApprovals`
+→ `approvals-watcher.ts`): the token chain's out-of-band confirmation
+(`npx huaweicloud-devkit approve <token>`) is the HUMAN's move, and its
+interactive CLI is deliberately un-simulatable headless — TTY-gated and
+PIN-gated so an agent piping into Bash cannot pass (by design). The
+watcher plays that half through the product's own
+`confirmApprovalToken` (the same function the CLI calls after its
+gates): the custody-HMAC grant it writes is real, the server-side grant
+verify in `consumeApprovalToken` is real, the single-use consume is
+real — the same doctrine as the fake cloud boundary (the prompt plays
+the in-chat "我批准", the watcher plays the terminal approve). Key
+agreement is the pinned env tier: the case env and the watcher both
+carry the same `HW_VAULT_MASTER_KEY` (the product's documented CI tier,
+first in the custody resolution order), so the MCP server child and the
+watcher derive the same grant MAC key and no machine's OS keychain is
+ever read or bootstrapped by the suite — the strip list keeps any host
+value out, so the pinned key is the only one in play. Race residual: if
+the model's run call lands before the watcher's 200ms poll confirms the
+mint (parallel tool calls, a sub-second turnaround), the run rejects
+with `USER_CONFIRMATION_REQUIRED`, the token stays usable, and a retry
+would succeed — but a well-behaved model asks the user and ends the
+turn, so the case reds; attempts: 2 is the backstop, and the measured
+plan→run turnarounds are seconds against the poll's milliseconds.
+
 | Channel                            | Seam                                                                                                      | Owner                                                                                                                                          |
 | ---------------------------------- | --------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | hcloud argv (agent session)        | `HCLOUD_BIN` + `HCLOUD_BIN_ARGS_JSON` + `HCLOUD_FAKE_LOG` (+ `HCLOUD_FAKE_SCRIPT`, `HCLOUD_FAKE_VERSION`) | env contract (long-standing; the install phase rides a sibling log, `hcloud-fake-install.log`, so the run recording names agent activity only) |
@@ -377,14 +422,34 @@ Two incident-hardening contracts, born from the 2026-10-22 CI failure
 an all-red dead-agent suite, and a runner-side crash took the only
 diagnostics with it):
 
-- **Model-wire pre-flight.** Each driver's `probe()` sends one authorized
-  request to the exact wire the leg speaks (responses for codex,
+- **Model-wire pre-flight.** Each driver's `probe()` sends authorized
+  requests to the exact wire the leg speaks (responses for codex,
   chat/completions for opencode) before any case spends budget: a dead key,
   a missing route, or an unlisted model aborts in seconds as exit 2 with the
   HTTP status and response body (scrubbed) in the output and the report.
-  Mid-suite, three consecutive liveness-false cases re-probe the wire once;
+  The probe sends FIVE distinct payloads and requires ≥4 clean, because a
+  body-routed backend pool is invisible to a single sample (see the
+  wire-dead classification below); transient classes (network error, 5xx)
+  earn one full retry round after a 2s backoff. Mid-suite, three
+  consecutive liveness-false (or wire-dead) cases re-probe the wire once;
   a dead wire aborts the suite as infra (`fatalError` in the report) instead
   of burning the remaining budget on guaranteed red.
+- **Wire-dead classification.** The 2026-11-13/14 nightly codex legs were
+  24 red cases whose every upstream request died with gateway
+  `internal_error` — deterministic per request body (identical retries all
+  fail; sibling bodies succeed), so it reads as product red unless someone
+  hand-mines the proxy dump. Two detectors now name it: (a) the pre-flight
+  samples the gateway with FIVE distinct probe payloads and requires
+  ≥4 clean — a body-routed backend pool cannot hide from samples the way
+  it hides from one lucky body (the tiny probe passed while 312/374 real
+  requests died); (b) the codex shaping proxy tallies per-request terminal
+  outcomes (`wireStats` on the attempt report), and a case whose EVERY
+  attempt shows requests>0, completed=0, failed=requests prints
+  `FAIL … (model wire dead: …; gateway/infra, not a product red)`, counts
+  toward the mid-suite dead-agent streak, and joins the exit-2 infra class
+  (all failures wire-dead/runner-error ⇒ exit 2). One live attempt that
+  went red on expectations keeps the case a product red — flake noise
+  around a real misbehavior is recorded, not reclassified.
 - **The report always ships.** The report scaffold exists before anything
   that can fail loudly, a `finally` serializes it on every terminal path
   (probe refusal, fatal throw, aborted or completed suite), and per-attempt

@@ -1,0 +1,2 @@
+AUDIT cache scan: 2 entries failed validation, ignored
+Error: EACCES: permission denied, mkdir '/usr/lib/node_modules/huaweicloud-devkit'

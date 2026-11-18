@@ -1,6 +1,12 @@
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import type { CallToolResult, JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
+import {
+  ErrorCode,
+  McpError,
+  type CallToolResult,
+  type ElicitRequestFormParams,
+  type JSONRPCMessage,
+} from '@modelcontextprotocol/sdk/types.js';
 
 import {
   TOOL_DEFINITIONS,
@@ -19,6 +25,7 @@ import { initTelemetry } from './telemetry/telemetry.ts';
 import { detectAgent } from './telemetry/agent-detect.ts';
 import { asRecord } from './lib/as-record.ts';
 import { approvalModeFromEnv } from './lib/approval-mode.ts';
+import type { ElicitationSeam } from './approval-types.ts';
 
 const pkgVersion = readInstalledVersion() || '0.0.0';
 
@@ -114,6 +121,23 @@ const VENDOR_BOUNDARY_RULE =
   "When the vendor is still unknown, ask the user which cloud they mean before operating on cloud resources through any tool or hcloud command, and before probing Huawei Cloud tooling, credential, or account state (CLI install checks, profile reads, auth status). Cloud-facing tools enforce this with a vendorConfirmed parameter — pass the user's establishing words as its value, never an invented quote. " +
   "Requests that are not cloud tasks are outside this rule; tasks for other clouds remain answerable from general knowledge — the devkit's tools themselves only operate on Huawei Cloud. ";
 
+// Harness tool-routing failure, shared by the stdio instruction forms (the
+// remote face rides no harness model wire — see the remote return).
+// Measured failure (2026-11-13, live codex 0.167.2 session + reproduced
+// against the same provider): codex presents MCP tools as namespace-type
+// tools and dispatches ONLY through the `namespace` field on function_call
+// items, with no flat-name fallback; a custom OpenAI-compatible model
+// gateway that drops that field (request history and/or generated calls)
+// turns every regenerated call namespace-less, codex's registry
+// (namespace, name) exact-match misses, and the harness answers
+// `unsupported call: <tool>` — 690 of 692 huaweicloud calls in the dump,
+// none ever reaching the devkit server, while the model retried the
+// identical call in a spin. The devkit cannot observe or fix these
+// calls; the only devkit-side lever is teaching the agent what the
+// signature means so the spin stops after one reply.
+const UNSUPPORTED_CALL_RULE =
+  'Tool-routing note: a reply "unsupported call: <tool>" naming a huaweicloud tool comes from your harness client, not from the devkit or Huawei Cloud — the call never reached this server, so retrying the identical call cannot succeed; report it to the user once and stop. ';
+
 export function instructionsFor(remote: boolean, runtimePacks = false): string {
   if (remote) {
     return (
@@ -155,6 +179,7 @@ export function instructionsFor(remote: boolean, runtimePacks = false): string {
     // directory, and the stdio instructions render on both.
     "Root disambiguation: huawei-* pack-owned service skills live only in this tree — on directory-loading agents, the native skills directory carrying the six huaweicloud-* meta-skill copies in your context is a different root, so never guess a service skill's path by analogy to it; the tree location stated above (skillRoot, the field a huaweicloud_list_skills payload carries) must be in hand before the first service-skill read, never fetched in parallel with a guessed one. " +
     VENDOR_BOUNDARY_RULE +
+    UNSUPPORTED_CALL_RULE +
     'Route Huawei Cloud tasks through the huaweicloud-core skill; browse packs with huaweicloud_list_packs.'
   );
 }
@@ -257,6 +282,40 @@ export function normalizeToolCallParams(message: JSONRPCMessage): JSONRPCMessage
   return message;
 }
 
+// The server-run confirmation seam (PR-1.5). The SDK captures the client's
+// initialize params on the per-session Server instance (that IS the session
+// record), so `capable` reads the declared `elicitation.form` capability and
+// never re-probes. The prompt raises a form-mode elicitation with an
+// explicit timeout and resolves every failure as a decision: the gate
+// refuses fail-closed instead of surfacing a transport error as the tool
+// result. Never wired on the remote face (it forces token mode and must not
+// elicit).
+// The SDK's request-timeout code (-32001) as a plain number: the enum type
+// has no shared member with the wire error's numeric code, so compare numbers.
+const REQUEST_TIMEOUT_CODE: number = ErrorCode.RequestTimeout;
+
+function createElicitationSeam(server: McpServer): ElicitationSeam {
+  return {
+    get capable(): boolean {
+      return server.server.getClientCapabilities()?.elicitation?.form !== undefined;
+    },
+    async prompt({ message, schema, timeoutMs }) {
+      try {
+        const result = await server.server.elicitInput(
+          { mode: 'form', message, requestedSchema: schema as ElicitRequestFormParams['requestedSchema'] },
+          { timeout: timeoutMs },
+        );
+        return { decision: result.action, content: result.content };
+      } catch (error) {
+        if (error instanceof McpError && error.code === REQUEST_TIMEOUT_CODE) {
+          return { decision: 'timeout', detail: error.message };
+        }
+        return { decision: 'error', detail: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  };
+}
+
 export function createDevkitMcpServer({
   sessionId,
   runtimePacks = false,
@@ -265,9 +324,11 @@ export function createDevkitMcpServer({
   assertConstructedSchemas();
   // The approval posture resolves once at construction: a bogus
   // DEVKIT_APPROVAL_MODE throws here (boot fail-fast, the same doctrine
-  // DEVKIT_PACKS applies through syncDisclosure), and registerOne below is
-  // the one place the mode changes the wire surface.
-  const askMode = approvalModeFromEnv(process.env) === 'ask';
+  // DEVKIT_PACKS applies through syncDisclosure). The value itself is read
+  // per call by the gate, and it no longer changes the wire surface: the
+  // PR-1.5 flip removed the client interaction flag, because the server
+  // raises the confirmation now.
+  approvalModeFromEnv(process.env);
   // The contradictory construction is refused, not cautioned: a remote that
   // also carried runtime pack toggling would attach the onPacksChanged seam
   // to every callOpts, publishing the server host's absolute install path
@@ -336,21 +397,24 @@ export function createDevkitMcpServer({
         {
           description: tool.description,
           inputSchema: getToolSchema(tool.name),
-          // Ask mode only: Claude Code honors this flag by prompting the
-          // user on every call of this tool — even in acceptEdits/auto/
-          // bypassPermissions modes, with no "don't ask again" — and that
-          // client prompt IS the user's confirmation the mode trusts.
-          // Other clients ignore the flag. Declared only in ask mode so
-          // token-mode Claude Code users don't gain a second prompt on top
-          // of the terminal approve they already run.
-          ...(askMode && tool.name === 'huaweicloud_run_approved_command'
-            ? { _meta: { 'anthropic/requiresUserInteraction': true } }
-            : {}),
+          // No client interaction flag (PR-1.5 flip). The confirmation runs
+          // on the server now: on an elicitation-capable client the gate
+          // raises its own form, and on the rest the T3 chat round-trip is
+          // the confirmation. A client dialog ahead of either would
+          // double-confirm (codex measured the two-interaction sequence:
+          // its own approval prompt, then the server form), so roster tools
+          // carry no `anthropic/requiresUserInteraction`. The machinery
+          // stays roster-driven where it lives: nothing here keys on the
+          // roster because the policy emits nothing for any tool.
         },
         async (args): Promise<CallToolResult> => {
-          const callOpts: CallToolOptions = runtimePacks
-            ? { sessionId, onPacksChanged: () => syncDisclosure() }
-            : { sessionId };
+          // The server-run confirmation seam rides every stdio call; the
+          // remote face never wires it (ask mode is force-downgraded there).
+          const elicitation = remoteSurface ? undefined : createElicitationSeam(server);
+          const callOpts: CallToolOptions = {
+            ...(runtimePacks ? { sessionId, onPacksChanged: () => syncDisclosure() } : { sessionId }),
+            ...(elicitation ? { elicitation } : {}),
+          };
           const result = await callTool(tool.name, args, callOpts);
           const decorated = _decorateResult(sessionId, tool.name, result);
           return {

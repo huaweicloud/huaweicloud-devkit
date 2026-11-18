@@ -109,15 +109,54 @@ const INTENT_TABLE: IntentRow[] = [
     run: () => ({ stdout: 'DB_VERSION=0.2.2-release\n' }),
   },
   {
-    // exposeTunnel's expose script AND its retry-cleanup blob — the latter
-    // is a single ;-joined line whose prefix is the same pkill, so the
-    // anchor must NOT be $-terminated. Synthesizes a healthy tunnel
-    // answer for both callers. #999: the export rides the same first line as
-    // the pkill (a leading standalone export would collide with the auth
-    // probe's $-anchored row — first-line recognition cannot tell them apart).
+    // exposeTunnel's expose script. The pre-clean used to ride the same first
+    // line as a pkill; the selective-cleanup port moved the pre-clean into its
+    // own execs (the devbridge-cleanup rows below), so the script now anchors
+    // on the data-disk PATH export riding the TUNNEL_URL init (#999 — a
+    // leading standalone export would collide with the auth probe's
+    // $-anchored row).
     intent: 'devbridge-expose-script',
-    pattern: /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; pkill -f "devbridge host"/,
+    pattern: /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; TUNNEL_URL=""$/,
     run: () => ({ stdout: DEVBRIDGE_EXPOSE_OK_STDOUT }),
+  },
+  {
+    // The selective cleanup's lock one-shot (devbridge-cleanup.ts): a fresh
+    // sandbox has no contention, so the lock is always won.
+    intent: 'devbridge-cleanup-lock',
+    pattern: /^LOCK=\/tmp\/devbridge-cleanup\.lock$/,
+    run: () => ({ stdout: 'LOCK_OK\n' }),
+  },
+  {
+    // The selective cleanup's state one-shot: token refresh + tunnel list +
+    // host processes + the installed-watchdog read, all in one exec. The
+    // synthesized world is the empty sandbox — no tunnels, no hosts, no
+    // watchdog (so the plan is empty and the apply script never runs).
+    intent: 'devbridge-cleanup-state',
+    pattern: /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; DB_KEY=""$/,
+    run: () => ({
+      stdout:
+        'DB_CLEANUP_TUNNELS_BEGIN\nNo tunnels found.\nDB_CLEANUP_TUNNELS_END\n' +
+        'DB_CLEANUP_HOSTS_BEGIN\nDB_CLEANUP_HOSTS_END\n' +
+        'DB_KEEPALIVE_TUNNELS=\n',
+    }),
+  },
+  {
+    // The selective cleanup's apply one-shot (kill + delete + the DB_CLEANUP_*
+    // echoes). Its own row so a future world-with-tunnels case never falls
+    // through to the generic export-path row, which answers '' — the silent
+    // degradation the zero-unknown doctrine exists to prevent (interrogate
+    // port-pr4 A-F4). Unreachable in today's empty world (the plan is always
+    // empty, the apply never sent on the e2e legs).
+    intent: 'devbridge-cleanup-apply',
+    pattern: /^export PATH="\/workspace\/.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; echo "DB_CLEANUP_APPLY"$/,
+    run: () => ({ stdout: 'DB_CLEANUP_DELETED=\nDB_CLEANUP_KILLED=\n' }),
+  },
+  {
+    // The selective cleanup's lock release (the orchestration's finally
+    // block) — its own row so it never degrades to 'unknown'.
+    intent: 'devbridge-cleanup-unlock',
+    pattern: /^rmdir \/tmp\/devbridge-cleanup\.lock/,
+    run: () => ({ stdout: '' }),
   },
   {
     // exposeTunnel's independent re-verify (#919): a fresh-session GET of the
@@ -161,12 +200,35 @@ const INTENT_TABLE: IntentRow[] = [
     run: () => ({ stdout: 'ACTIVE\n' }),
   },
   {
+    // exec_one_shot's async start (hwexec-task.ts, the claim protocol):
+    // opens with the literal task-dir assignment. Synthesizes the
+    // won-claim receipt; the dup/claim-error branches never occur on the
+    // fake (no real O_EXCL state to lose a race against).
+    intent: 'hwexec-start',
+    pattern: /^D=\/tmp\/\.hwexec\/([a-z0-9][a-z0-9-]{0,63})$/,
+    run: (m) => ({ stdout: `HW_STARTED=${m[1]}\n` }),
+  },
+  {
+    // exec_poll's script (hwexec-task.ts): opens with the #999-class
+    // concatenated pgrep-pattern construction (unique first line — the
+    // start script's D= line cannot collide with it). Synthesizes a
+    // healthy finished task: launched, wrapper dead, exit 0, empty log.
+    intent: 'hwexec-poll',
+    pattern: /^P="hwexec\/""[a-z0-9-]+""\/launched"$/,
+    run: () => ({
+      stdout: 'HW_DIR=1\nHW_STATUS=exit:0\nHW_ALIVE=0\nHW_LAUNCHED=1\nHW_LOG_BEGIN\nHW_LOG_END\n',
+    }),
+  },
+  {
     intent: 'echo',
     pattern: /^echo\s+(.*)$/,
     run: (m) => ({ stdout: `${m[1]}\n` }),
   },
   {
-    // handleConnect's best-effort cleanup (session-manager.ts).
+    // The manual full-reset command (the skill's documented last-resort
+    // exception). Kept so hand-written scripts still recognize (the rm-row
+    // precedent) — the automated connect/expose paths no longer send it (the
+    // selective cleanup replaced them).
     intent: 'devbridge-delete-all',
     pattern: /^devbridge\s+delete-all\b.*$/,
     run: () => ({ stdout: '' }),

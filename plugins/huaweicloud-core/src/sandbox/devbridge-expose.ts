@@ -10,6 +10,7 @@ import { DEVBRIDGE_HOST_EXPIRY_HOURS, evaluateDevbridgeVersion } from './devbrid
 import { stripTerminalEscapes } from './sandbox-output.ts';
 import { runOneShot, type OneShotResult } from './devbridge-exec.ts';
 import type { DevbridgeQuotaKeyHint } from './devbridge-key.ts';
+import type { DevbridgeCleanupResult } from './devbridge-cleanup.ts';
 
 // The expose attempt contract, extracted from devbridge-tunnel: the script that
 // starts the host and probes reachability, the DB_* stdout grammar (readDbField
@@ -56,13 +57,27 @@ export interface ExposeTunnelResult {
   // failure only): masked keys with last_used_at so the caller can pick what
   // to clean up in the console.
   currentKeys?: DevbridgeQuotaKeyHint[];
+  // The selective-cleanup summary of the last quota-mode cleanup attempt (the
+  // devbridge_tunnel_quota_exceeded failure only): what the cleanup actually
+  // deleted/killed before the quota still came back full.
+  cleanup?: DevbridgeCleanupResult;
+  // The 409 version-gate fold (the HDKIT_VERSION_TOO_OLD relay failure only):
+  // the gate payload surfaced flat — `gateRemediation` keeps the structured
+  // {hint, steps} copy because `remediation` on this interface is the
+  // DevBridge 0.1.x install-migration string (expose-flow's Step-0 upgrade
+  // copy), not a structured remediation.
+  clientVersion?: string;
+  minVersion?: string;
+  gateRemediation?: { hint: string; steps: string[] };
 }
 
 // Start (or replace) a devbridge host bound to a single port, extract the public
 // URL, and health-check it. Mirrors the huaweicloud-sandbox skill's Expose flow:
-// pre-clean stale tunnels (quota 10006), start host in background, read the
-// port-anchored "Tunnel URL: ..." from /tmp/host.log, curl-check, retry once on
-// unreachable.
+// selective pre-clean (devbridge-cleanup.ts) runs BEFORE this script in its
+// own execs, so the script itself never blanket-deletes or globally pkills —
+// those kill other sessions'/ports' tunnels on a shared sandbox. The host starts
+// in background; the port-anchored URL is read from /tmp/host.log and
+// curl-checked, retrying once on unreachable.
 // The host MUST survive the exec session that started it (#919): setsid detaches
 // it from the session's process group, `< /dev/null` drops the controlling tty
 // stdin, and `disown` removes it from the shell's job table — without all three
@@ -75,14 +90,14 @@ export function buildDevbridgeExposeScript(port: number, expiryHours: number = D
   // derived from the shared domain constant, never hardcoded.
   const domainLiteral = escapeTunnelDomainForRegExp(DEVBRIDGE_TUNNEL_DOMAIN);
   return [
-    // #999: the export rides the same first line as the pkill so the fake's
-    // first-line recognizer (and any reader) sees one stable anchor — the
+    // #999: the data-disk PATH export rides the TUNNEL_URL init line — the
     // one-shot exec shell does NOT inherit the auth probe's PATH, and after
     // the Layer-3 install + dedup (or a reboot) the only surviving binary
-    // lives at /workspace/.local/bin.
-    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; pkill -f "devbridge host" 2>/dev/null || true`,
-    `sleep 2`,
-    `devbridge delete-all > /dev/null 2>&1 || true`,
+    // lives at /workspace/.local/bin. A standalone export first line would be
+    // byte-identical to the auth probe's opening line, which first-line
+    // readers cannot tell apart (the anchor doctrine the retired pkill launch
+    // line used to carry).
+    `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; TUNNEL_URL=""`,
     // #922 (S8): setsid is unavailable on some sandbox images — fall back to a
     // bare nohup launch so the host still starts; persistence is then judged by
     // the independent re-verify in exposeTunnel, which emits the 请勿分享 warning
@@ -96,7 +111,8 @@ export function buildDevbridgeExposeScript(port: number, expiryHours: number = D
     // with 3s gaps (0/3/6/9s, early exit) before concluding the host never
     // logged a URL. Main's A2 uses a flat sleep 6 + single grep, which halves
     // the window v2 tuned for slow hosts — deliberate divergence, recorded.
-    `TUNNEL_URL=""`,
+    // (TUNNEL_URL was initialized on the script's first line so the PATH
+    // export can ride it — the #999 anchor.)
     `for i in 1 2 3 4; do`,
     `  TUNNEL_URL=$(grep -oE "https://[A-Za-z0-9_-]+-${port}\\.${domainLiteral}" ${hostLog} | head -1)`,
     `  [ -n "$TUNNEL_URL" ] && break`,

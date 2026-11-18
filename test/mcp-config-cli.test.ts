@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 
 import { fixtureDir } from './fixture-dir.ts';
+import { npmCacheEnv } from './npm-cache.ts';
 
 // CLI-level integration coverage for issue #615: user-customized MCP config
 // fields (extra args, timeout) must survive update, uninstall, and reinstall
@@ -36,6 +37,7 @@ function makeEnv(home: string) {
     // Fail the installer's own update check instantly against a closed port
     // (installRuntimeDeps still uses the real npm registry, like agent-install).
     HUAWEICLOUD_NPM_REGISTRY: 'http://127.0.0.1:9',
+    ...npmCacheEnv(),
   };
   // Clear agent home overrides so installs land in the temp home, not the real one.
   // XDG_CONFIG_HOME redirects the opencode config root (xdgConfigHome);

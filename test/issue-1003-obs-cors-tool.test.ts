@@ -3,8 +3,10 @@ import test from 'node:test';
 
 import { callTool, TOOL_DEFINITIONS } from '../plugins/huaweicloud-core/src/tools.ts';
 import { getToolSchema } from '../plugins/huaweicloud-core/src/tool-schemas.ts';
-import { clearProxyDispatcherCache } from '../plugins/huaweicloud-core/src/proxy/proxy-agent.ts';
 import { setRuntimeCredentials, clearRuntimeCredentials } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
+import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
+import { withTempAuthHome } from './hcloud-cli-harness.ts';
+import { pinObsMockEnv, withMockedFetch } from './obs-fetch-harness.ts';
 
 // ---- #1003: huaweicloud_obs_set_cors tool (same-structure obsSignedRequest
 // reuse; the subresource parameterization is the port's own seam) ----
@@ -27,28 +29,6 @@ test('TOOL_DEFINITIONS exposes huaweicloud_obs_set_cors with set/get/delete + ru
   assert.match(tool.description, /BrowserJS SDK/);
 });
 
-// Force the no-dispatcher branch (plain global fetch) so it is mockable, and
-// inject AK/SK so resolveCredentials finds credentials without file probing.
-function withMockedFetch(
-  handler: (url: unknown, opts: unknown) => Promise<{ status: number; text: () => Promise<string> }>,
-  fn: () => Promise<unknown>,
-): Promise<unknown> {
-  const originalFetch = globalThis.fetch;
-  const originalEnv = { ...process.env };
-  for (const key of ['HTTPS_PROXY', 'https_proxy', 'HTTP_PROXY', 'http_proxy']) delete process.env[key];
-  process.env.NO_PROXY = '*';
-  process.env.HW_ACCESS_KEY = 'test-ak';
-  process.env.HW_SECRET_KEY = 'test-sk';
-  process.env.HW_SECURITY_TOKEN = '';
-  clearProxyDispatcherCache();
-  globalThis.fetch = handler as unknown as typeof globalThis.fetch;
-  return Promise.resolve(fn()).finally(() => {
-    globalThis.fetch = originalFetch;
-    process.env = originalEnv;
-    clearProxyDispatcherCache();
-  });
-}
-
 const fullRules = [
   {
     allowedOrigin: 'https://app.example.com',
@@ -57,6 +37,34 @@ const fullRules = [
     maxAgeSeconds: 3000,
   },
 ];
+
+// The cors tool is approval-gated (PR-3c: set/delete are signed writes).
+// Every write-side drive funnels through the attested mint → terminal
+// confirm → retry cycle, inside an isolated auth home so the token never
+// touches the machine's real approvals store. Reads classify none and
+// need only the attestation.
+async function gatedCorsCall(args: Record<string, unknown>): Promise<unknown> {
+  let result: unknown;
+  await withTempAuthHome(async () => {
+    // withTempAuthHome's isolation strips the credential env the outer
+    // withMockedFetch pinned, so the env tier is re-pinned INSIDE — the
+    // retry's handler resolves credentials against the mock tier, never
+    // the machine's real stores.
+    pinObsMockEnv();
+    const envelope = (await callTool('huaweicloud_obs_set_cors', { ...args, approvedByUser: true })) as {
+      code: string;
+      approvalToken: string;
+    };
+    assert.equal(envelope.code, 'USER_CONFIRMATION_REQUIRED', 'the tokenless write mints');
+    assert.equal(confirmApprovalToken(envelope.approvalToken).status, 'confirmed');
+    result = await callTool('huaweicloud_obs_set_cors', {
+      ...args,
+      approvalToken: envelope.approvalToken,
+      approvedByUser: true,
+    });
+  });
+  return result;
+}
 
 test('set builds CORSConfiguration XML and PUTs /?cors with the verify preflight hint (#1003)', async () => {
   const calls: Array<{ url: string; method: unknown; body: unknown }> = [];
@@ -70,7 +78,7 @@ test('set builds CORSConfiguration XML and PUTs /?cors with the verify preflight
       return { status: 200, text: async () => '' };
     },
     async () => {
-      const res = (await callTool('huaweicloud_obs_set_cors', {
+      const res = (await gatedCorsCall({
         action: 'set',
         bucket: 'my-bucket',
         region: 'cn-north-4',
@@ -106,13 +114,14 @@ test('get and delete address the /?cors subresource (#1003)', async () => {
         action: 'get',
         bucket: 'my-bucket',
         region: 'cn-north-4',
+        approvedByUser: true,
       })) as Record<string, unknown>;
       assert.equal(calls[0]!.method, 'GET');
       assert.match(calls[0]!.url, /\?cors$/);
       assert.equal(got.ok, true);
       assert.match(String(got.verify), /OPTIONS/, 'get must carry the preflight hint too');
 
-      const deleted = (await callTool('huaweicloud_obs_set_cors', {
+      const deleted = (await gatedCorsCall({
         action: 'delete',
         bucket: 'my-bucket',
         region: 'cn-north-4',
@@ -134,7 +143,7 @@ test('set rejects a rule without HEAD at the input boundary, before any request 
     },
     async () => {
       await assert.rejects(
-        callTool('huaweicloud_obs_set_cors', {
+        gatedCorsCall({
           action: 'set',
           bucket: 'my-bucket',
           region: 'cn-north-4',
@@ -160,7 +169,7 @@ test('set without credentials points at huaweicloud_auth_init (website-config pa
       setRuntimeCredentials('', '', '', '');
       try {
         await assert.rejects(
-          callTool('huaweicloud_obs_set_cors', {
+          gatedCorsCall({
             action: 'set',
             bucket: 'my-bucket',
             region: 'cn-north-4',
@@ -183,7 +192,7 @@ test('set applies the documented defaults (allowedHeader *, maxAgeSeconds 3000) 
       return { status: 200, text: async () => '' };
     },
     async () => {
-      await callTool('huaweicloud_obs_set_cors', {
+      await gatedCorsCall({
         action: 'set',
         bucket: 'my-bucket',
         region: 'cn-north-4',
@@ -205,7 +214,7 @@ test('set surfaces the OBS error body on non-200 for self-diagnosis (#1003)', as
   await withMockedFetch(
     async () => ({ status: 400, text: async () => '<Error><Code>InvalidRequest</Code></Error>' }),
     async () => {
-      const res = (await callTool('huaweicloud_obs_set_cors', {
+      const res = (await gatedCorsCall({
         action: 'set',
         bucket: 'my-bucket',
         region: 'cn-north-4',
@@ -234,6 +243,7 @@ test('STS credentials sign the x-amz-security-token header (#1003 hardening)', a
           action: 'get',
           bucket: 'my-bucket',
           region: 'cn-north-4',
+          approvedByUser: true,
         })) as Record<string, unknown>;
         assert.equal(res.ok, true);
         assert.match(

@@ -12,6 +12,7 @@ import {
 import { dirname, join } from 'node:path';
 
 import { redactSecrets } from '../safety-policy.ts';
+import { redactWithSupplementalKeys } from './supplemental-redaction.ts';
 import { ensureMasterKey, resolveMasterKey, type ResolvedMasterKey } from './secret-vault/custody.ts';
 import { devkitStateBase } from './pack-state.ts';
 
@@ -289,7 +290,11 @@ export function createApprovalToken(
   const map = readApprovals();
   map[token] = {
     argsHash: hashArgs(rawArgs),
-    argsRedacted: redactSecrets(rawArgs),
+    // The same supplemental-key pass the trace face and the gate's pin views
+    // run (lib/supplemental-redaction.ts): redactSecrets alone lets a
+    // long-lived key under api_key ride the store entry and the approve
+    // CLI's Confirming line in plaintext (interrogate round 2, F2).
+    argsRedacted: redactWithSupplementalKeys(redactSecrets(rawArgs)),
     createdAt: Date.now(),
     ...(opts.secretsSubstitutable === true ? { secretsSubstitutable: true } : {}),
     ...(opts.argsPinView !== undefined ? { argsPinView: opts.argsPinView } : {}),
@@ -403,6 +408,18 @@ export interface GrantVerification {
 // breaks verification, not just an argsHash swap.
 const GRANT_MAC_DOMAIN = 'huaweicloud-approval-grant';
 
+// The reusable custody-HMAC grant primitive: the evidence stamp shared by
+// every confirmation channel (terminal today; elicitation and memo stamps
+// in the later approval-chain PRs, each under its own domain). Custody
+// material from one domain never verifies in another, so a grant proves
+// both WHO confirmed (possession of the custody key) and WHAT they
+// confirmed (the subject) and WHEN (the timestamp rides the message).
+export function custodyGrantMac(masterKey: Buffer, domain: string, subject: string, confirmedAt: number): string {
+  return createHmac('sha256', masterKey)
+    .update(`${domain}\x00${subject}\x00${String(confirmedAt)}`)
+    .digest('hex');
+}
+
 // The shape digests through hashArgs (the module's canonical-JSON machinery),
 // so the confirm side and the verify side agree no matter how the store was
 // re-serialized between them. undefined-valued keys drop on both sides.
@@ -421,9 +438,7 @@ function grantMac(
     secretsSubstitutable: entry.secretsSubstitutable,
     createdAt: entry.createdAt,
   });
-  return createHmac('sha256', masterKey)
-    .update(`${GRANT_MAC_DOMAIN}\x00${token}\x00${shapeDigest}\x00${String(confirmedAt)}`)
-    .digest('hex');
+  return custodyGrantMac(masterKey, GRANT_MAC_DOMAIN, `${token}\x00${shapeDigest}`, confirmedAt);
 }
 
 export function confirmApprovalToken(token: string): ConfirmApprovalResult {

@@ -215,11 +215,21 @@ export class DevkitStdioTransport implements Transport {
       return;
     }
 
-    // An id-bearing message without a method is malformed: the SDK's
-    // onmessage would silently drop it and the client would hang. Reply
-    // -32601 echoing the request id so the failure is correlatable, matching
-    // the legacy behavior.
+    // An id-bearing message without a method is either a RESPONSE to a
+    // server-initiated request (the elicitation form we raise during a tool
+    // call) or a malformed request. A response carries result or error and
+    // must reach the SDK, which correlates it by id; without this branch the
+    // form answer was answered with -32601 and the server waited out its
+    // request timeout (measured: every elicitation round-trip hung on the
+    // real stdio face while the in-memory transport worked). A message with
+    // neither result nor error is still the malformed shape: reply -32601
+    // echoing the id so the failure is correlatable, matching the legacy
+    // behavior.
     if (typeof message.method !== 'string' || !message.method) {
+      if (Object.hasOwn(message, 'result') || Object.hasOwn(message, 'error')) {
+        this.onmessage?.(raw as JSONRPCMessage);
+        return;
+      }
       this.writeJsonRpcError(-32601, 'Method not found: undefined', message.id);
       return;
     }

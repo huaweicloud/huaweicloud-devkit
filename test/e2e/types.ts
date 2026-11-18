@@ -216,6 +216,40 @@ export interface E2eCase {
   // treats it exactly like a boundary-liveness pass — no waiver flag, no
   // streak special-case.
   liveness?: 'boundary' | 'disclosure';
+  // The hcloud write-approval posture this case must run under. 'token':
+  // plan mints an approvalToken and run consumes it — the only positive
+  // approval chain that is testable headless, because the ask posture's
+  // confirmation is an interactive client permission prompt, and a
+  // headless `opencode run` has no approver (measured on 1.19.0: an
+  // ask-gated MCP tool call never executes — the refusal spins the model
+  // turn into a retry loop). Absent = the installer's natural posture
+  // (ask on opencode at or above the seam floor; the default token
+  // elsewhere), which stays the tested surface for the negative case.
+  // case-run.ts turns the pin into two channels: the install-time ask-gate
+  // off (opencode: no ask rule, no DEVKIT_APPROVAL_MODE=ask in the mcp
+  // entry — the halves move together) and the run env's
+  // DEVKIT_APPROVAL_MODE for the MCP child.
+  approvalMode?: 'token';
+  // Play the user's out-of-band terminal confirmation for every approval
+  // token minted in this case's home: the watcher module
+  // (approvals-watcher.ts) confirms through the product's own
+  // confirmApprovalToken, keyed on the pinned env-tier custody key that
+  // the case env also injects (HW_VAULT_MASTER_KEY), so the MCP server's
+  // grant verify passes without touching any machine's OS keychain. The
+  // PIN/TTY gates belong to the interactive CLI the headless suite cannot
+  // exercise — the same untestable class as the ask-mode client prompt.
+  // The simulated-user doctrine mirrors the fake cloud boundary: the
+  // in-chat half of the human is the prompt ("我批准…"), the terminal half
+  // is this watcher.
+  autoConfirmApprovals?: true;
+  // The REAL-CLI sibling of autoConfirmApprovals: the terminal half plays
+  // through the TTY-gated approve CLI inside a pseudo-terminal
+  // (approve-pty.ts, the PR-3a seam), so the PIN enrollment, the PIN
+  // prompt, and the custody grant all run for real instead of being
+  // played post-hoc through confirmApprovalToken. POSIX-only (script(1));
+  // a case using it runs where the seam exists. Same env-key injection as
+  // autoConfirmApprovals; pair it with approvalMode 'token'.
+  ptyConfirmApprovals?: true;
   fixtures: CaseFixtures;
   expect: Expectation[];
   softExpect?: Expectation[];

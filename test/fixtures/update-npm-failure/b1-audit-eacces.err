@@ -1,0 +1,3 @@
+AUDIT HW_ACCESS_KEY=ABSENT
+AUDIT HUAWEICLOUD_HOME=PRESENT(/home/op/review)
+EACCES: permission denied, open '/home/op/review/plugins/huaweicloud-core/.installed'

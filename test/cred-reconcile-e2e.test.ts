@@ -17,7 +17,7 @@ import {
   writeGlobalCredentials,
   writeObsConfig,
 } from '../plugins/huaweicloud-core/src/auth/credentials.ts';
-import type { AuthSwitchResult } from './cred-reconcile-harness.ts';
+import { gatedAuthSwitchCall, type AuthSwitchResult } from './cred-reconcile-harness.ts';
 import type { SyncAuthResult } from '../plugins/huaweicloud-core/src/auth/service.ts';
 import {
   assertDeleteBeforeSet,
@@ -128,7 +128,7 @@ test('05 syncAuth propagates S1 into the KooCLI current profile', () => {
 test('06 auth_switch temporary activates runtime; auth_sync is then rejected (R10)', async () => {
   await withTempHome(async () => {
     writeGlobalCredentials({ ak: 'E2E6_AK', sk: 'E2E6_SK', region: 'cn-north-4' });
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'memory',
       action: 'temporary',
@@ -157,7 +157,7 @@ test('07 auth_switch persist first time writes configuredBySession and keeps fil
     const region = 'cn-north-4';
     writeFakeKooCli('deploy', [{ name: 'deploy', accessKeyId: ak, secretAccessKey: sk, region }]);
 
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'memory',
       action: 'persist',
@@ -180,7 +180,7 @@ test('07 auth_switch persist first time writes configuredBySession and keeps fil
 test('08 auth_switch persist with conflicting S1 returns needs_confirmation and leaves S1 intact', async () => {
   await withTempHome(async () => {
     writeGlobalCredentials({ ak: 'E2E8_A_AK', sk: 'E2E8_A_SK', region: 'cn-north-4' });
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'memory',
       action: 'persist',
@@ -204,7 +204,7 @@ test('09 auth_confirm decision=newImported applies the new account and backs up 
     writeFakeKooCli('deploy', [{ name: 'deploy', accessKeyId: newAk, secretAccessKey: newSk, region }]);
     writeGlobalCredentials({ ak: 'E2E9_A_AK', sk: 'E2E9_A_SK', region });
 
-    const switched = (await callTool('huaweicloud_auth_switch', {
+    const switched = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'memory',
       action: 'persist',
@@ -236,7 +236,7 @@ test('09 auth_confirm decision=newImported applies the new account and backs up 
 test('10 auth_confirm decision=s1 aborts and leaves S1 unchanged', async () => {
   await withTempHome(async () => {
     writeGlobalCredentials({ ak: 'E2E10_A_AK', sk: 'E2E10_A_SK', region: 'cn-north-4' });
-    const switched = (await callTool('huaweicloud_auth_switch', {
+    const switched = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'memory',
       action: 'persist',
@@ -270,7 +270,7 @@ test('10b auth_confirm(newImported) from import clears the import file on succes
     mkdirSync(dirname(importFile), { recursive: true });
     writeFileSync(importFile, JSON.stringify({ ak: newAk, sk: newSk, region }), 'utf8');
 
-    const switched = (await callTool('huaweicloud_auth_switch', {
+    const switched = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       mode: 'import',
       action: 'persist',
@@ -298,7 +298,7 @@ test('11 auth_switch clear empties runtime and lets syncAuth run again', async (
     ]);
     setRuntimeCredentials('E2E11_RT_AK', 'E2E11_RT_SK');
 
-    const out = (await callTool('huaweicloud_auth_switch', {
+    const out = (await gatedAuthSwitchCall({
       vendorConfirmed: 'test: vendor established by the harness',
       action: 'clear',
     })) as AuthSwitchResult;

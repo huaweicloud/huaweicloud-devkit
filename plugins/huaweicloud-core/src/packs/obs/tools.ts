@@ -10,6 +10,7 @@ import { fetchWithProxy } from '../../proxy/proxy-agent.ts';
 import { asCredentialRecord, type CredentialLike } from '../../lib/credentials.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
 import type { CallToolOptions, ToolArgs } from '../../tools.ts';
+import { approvalTokenArg, approvedByUserArg } from '../../lib/tool-schema-parts.ts';
 import { asRecord } from '../../lib/as-record.ts';
 
 // Handlers migrated verbatim from src/tools.ts. setupObsConfig syncs the
@@ -411,12 +412,16 @@ const obsWebsiteConfigSchema = z.looseObject({
   region: z.string().describe('OBS 桶所在区域，如 cn-north-4'),
   indexDocument: z.string().optional().describe('首页文件名（action=set 时必填），如 index.html'),
   errorDocument: z.string().optional().describe('错误页面文件名（action=set 时可选），如 404.html 或 error.html'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
 });
 
 const obsCorsConfigSchema = z.looseObject({
   action: z.enum(['set', 'get', 'delete']).describe('操作类型：set=配置 CORS 规则，get=查询当前规则，delete=删除规则'),
   bucket: z.string().describe('OBS 桶名称'),
   region: z.string().describe('OBS 桶所在区域，如 cn-north-4'),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
   rules: z
     .array(
       z.looseObject({
@@ -447,7 +452,7 @@ export const OBS_TOOLS = [
   {
     name: 'huaweicloud_obs_set_website_config',
     description:
-      '配置 OBS 桶的静态网站托管（推荐路径：无需手写 XML，此工具内部实现 AWS4 签名调用 OBS REST API，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。KooCLI 7.3.12+ 另有 `hcloud OBS website -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。操作前需确保桶已创建且已设置 public-read ACL。',
+      '配置 OBS 桶的静态网站托管（推荐路径：无需手写 XML，此工具内部实现 AWS4 签名调用 OBS REST API，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。审批门把关（PR-3c）：set 与 delete 是对线上桶的签名 PUT/DELETE，无 token 调用返回 USER_CONFIRMATION_REQUIRED 供用户在终端确认，DEVKIT_APPROVAL_MODE=ask 时由服务器弹出确认；get 是签名只读，从不确认、直接执行。KooCLI 7.3.12+ 另有 `hcloud OBS website -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。操作前需确保桶已创建且已设置 public-read ACL。',
     schema: obsWebsiteConfigSchema,
     handler: handleObsWebsiteConfig,
   },
@@ -460,7 +465,7 @@ export const OBS_TOOLS = [
     // the recommended path (no XML file, no --noproxy traps); the CLI is the
     // scripted alternative for 7.3.12+ environments.
     description:
-      '配置 OBS 桶的 CORS 规则（浏览器直传前置条件；推荐路径：此工具内部实现 AWS4 签名调用 OBS REST API（PUT/GET/DELETE /?cors），无需手写 XML，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。allowedMethod 必须含 HEAD（BrowserJS SDK 每次操作前发 HEAD ?apiversion 探测，缺 HEAD 时浏览器吞掉探测请求报 Network Error）。KooCLI 7.3.12+ 另有 `hcloud OBS cors obs://<bucket> -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。配置成功后用返回体中的 verify 命令做 OPTIONS 预检验证（200 + Access-Control-Allow-Origin 才算成功）。',
+      '配置 OBS 桶的 CORS 规则（浏览器直传前置条件；推荐路径：此工具内部实现 AWS4 签名调用 OBS REST API（PUT/GET/DELETE /?cors），无需手写 XML，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。审批门把关（PR-3c）：set 与 delete 是对线上桶的签名 PUT/DELETE，无 token 调用返回 USER_CONFIRMATION_REQUIRED 供用户在终端确认，DEVKIT_APPROVAL_MODE=ask 时由服务器弹出确认；get 是签名只读，从不确认、直接执行。allowedMethod 必须含 HEAD（BrowserJS SDK 每次操作前发 HEAD ?apiversion 探测，缺 HEAD 时浏览器吞掉探测请求报 Network Error）。KooCLI 7.3.12+ 另有 `hcloud OBS cors obs://<bucket> -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。配置成功后用返回体中的 verify 命令做 OPTIONS 预检验证（200 + Access-Control-Allow-Origin 才算成功）。',
     schema: obsCorsConfigSchema,
     handler: handleObsCorsConfig,
   },

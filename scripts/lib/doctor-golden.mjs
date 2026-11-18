@@ -65,9 +65,14 @@ function baseEnv(home, extra) {
   // XDG_CONFIG_HOME redirects the opencode config root; CODEX_HOME keys the
   // codex cache cleanup; DSH_HOME keys the dsh layout; OFFICE_CLAW_CONFIG_ROOT
   // keys the officeace root (fixture (c) passes it explicitly). Ambient values
-  // would leak doctor's probes into real state.
+  // would leak doctor's probes into real state. XDG_DATA_HOME/OPENCODE_DB are
+  // the same hazard for opencode's saved-permission store: either would let
+  // the doctor read the machine's live store, whose "always allow" rows would
+  // enter the goldens.
   if (!('XDG_CONFIG_HOME' in extra)) delete env.XDG_CONFIG_HOME;
+  if (!('XDG_DATA_HOME' in extra)) delete env.XDG_DATA_HOME;
   delete env.CODEX_HOME;
+  delete env.OPENCODE_DB;
   if (!('DSH_HOME' in extra)) delete env.DSH_HOME;
   if (!('OFFICE_CLAW_CONFIG_ROOT' in extra)) delete env.OFFICE_CLAW_CONFIG_ROOT;
   return env;
@@ -95,9 +100,13 @@ export function doctorGoldenEnv(home, extra = {}) {
 // inherit the doctor-only pins — none of them affect the installed files.
 // npm_config_cache pins the undici fetch's cache to one stable dir so the
 // cold-registry fetch happens once per machine, not once per capture.
+// prefer_offline lets a warm cache satisfy the fetch without a registry
+// round-trip — the golden install still needs the network on a cold cache,
+// and this lane is the full layer, so that is fine.
 export function installGoldenEnv(home) {
   const env = baseEnv(home, { HUAWEICLOUD_OPENCODE_PERMISSION_SEAM: 'on' });
   env.npm_config_cache = join(tmpdir(), 'doctor-golden-npm-cache');
+  env.npm_config_prefer_offline = 'true';
   return env;
 }
 
@@ -181,7 +190,7 @@ export function stageHermesOfficeaceMarkers(home) {
 // hit it). (3) The hcloud `Version:` line: the shim mirrors kooCliVersion,
 // which bumps independently of doctor behavior.
 const ANSI_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
-const BANNER_VERSION_RE = /^(\u2563\s+HuaweiCloud DevKit )v\S+\s*(\u2563)$/;
+const BANNER_VERSION_RE = /^(\u2551\s+HuaweiCloud DevKit )v\S+\s*(\u2551)$/;
 const Hcloud_VERSION_RE = /^(\s*Version: )\S+.*$/;
 
 export function normalizeGoldenOutput(text) {

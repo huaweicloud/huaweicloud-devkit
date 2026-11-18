@@ -100,7 +100,7 @@ curl -sSL https://cn-north-4-hdn-koocli.obs.cn-north-4.myhuaweicloud.com/cli/lat
 9. For write operations, follow the approval contract:
    - Call `huaweicloud_plan_cli_command` and read `userConfirmation`. When `needed` is true, show the user the command echo.
    - Token mode (the default): show the `userConfirmation.command` line; the user runs `npx huaweicloud-devkit approve <approvalToken>` in their own terminal. Never run it yourself. First use: the user runs `npx huaweicloud-devkit pin` once in their own terminal to enroll the approvals PIN. Then call `huaweicloud_run_approved_command` with that token; an unconfirmed non-read command is rejected with `USER_CONFIRMATION_REQUIRED`, and the token stays usable, so retry the same call after the user confirms.
-   - Ask mode (`userConfirmation.mode` is `ask`): no terminal line and no token — call `huaweicloud_run_approved_command` with the same args and `approvedByUser: true`; the harness client prompts the user on that call, and that prompt is the confirmation.
+   - Ask mode (`userConfirmation.mode` is `ask`): no terminal line and no token — call `huaweicloud_run_approved_command` with the same args (the `command` display field is recommended but optional: without it the confirmation shows the derived redacted line). The server runs the confirmation for every call shape: an elicitation-capable client renders a form during the call, and any other client answers with `ASK_CONFIRMATION_REQUIRED` (show the command in chat, then retry with `approvedByUser: true`).
 
 ## KooCLI Syntax Notes
 
@@ -151,7 +151,7 @@ Credentials are resolved in this order (highest priority first):
 | 5        | S1 global file (no session flag)                | `auth init` permanent credentials                                                          | Permanent (S1)              |
 | 6        | KooCLI profile                                  | `~/.hcloud/config.json` (KooCLI commands only)                                             | Permanent                   |
 
-When switching accounts within the same Agent session, use `huaweicloud_auth_init` to set runtime credentials (overrides all sources for the current MCP process), or `huaweicloud_auth_switch action=persist`, which writes S1 with `configuredBySession: true` so the session-configured account outranks `HW_ACCESS_KEY` / `HW_SECRET_KEY`. Note: running `auth init` clears the configuredBySession flag.
+When switching accounts within the same Agent session, use `huaweicloud_auth_init` to set runtime credentials (overrides all sources for the current MCP process), or `huaweicloud_auth_switch action=persist`, which writes S1 with `configuredBySession: true` so the session-configured account outranks `HW_ACCESS_KEY` / `HW_SECRET_KEY`. Note: running `auth init` clears the configuredBySession flag. Both calls are approval-gated: the user must confirm the switch, and the confirmation view names the target account fingerprint and the credential source — in the default token mode confirm the returned approvalToken in your own terminal (`npx huaweicloud-devkit approve <token>`), and under `DEVKIT_APPROVAL_MODE=ask` the server raises the confirmation itself (an elicitation form, or the `ASK_CONFIRMATION_REQUIRED` chat round-trip whose retry carries `approvedByUser: true`).
 
 ## Global Services & domain-id
 

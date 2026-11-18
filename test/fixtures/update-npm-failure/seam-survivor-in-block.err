@@ -1,0 +1,6 @@
+probe r26 helper failed once, giving up
+npm error code E404
+npm error 404 Not Found - GET http://127.0.0.1:1/missing - Not Found
+npm error code EACCES
+npm error FetchError: probe r26 helper failed once, giving up
+npm error path /ro/_cacache

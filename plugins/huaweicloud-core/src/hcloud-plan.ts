@@ -6,15 +6,17 @@
 // src/lib/approval-tokens.ts.
 //
 // The plan's approval posture is mode-dependent (HcloudPlanOptions.
-// approvalMode): 'ask' (DEVKIT_APPROVAL_MODE=ask) plans for the harness
-// client's own permission prompt as the user's confirmation, so no token
-// is minted and userConfirmation carries the ask note instead of a
-// terminal approve line; 'token' (the default) keeps the mint + approve
-// line contract above.
+// approvalMode): 'ask' (DEVKIT_APPROVAL_MODE=ask) plans for the SERVER-run
+// confirmation — the approval gate raises an elicitation form, or the T3
+// chat round-trip on a client that cannot render one — so no token is
+// minted and userConfirmation carries the ask note instead of a terminal
+// approve line; 'token' (the default) keeps the mint + approve line
+// contract above.
 
 import { classifyHcloudArgs, redactSecrets, stripExecutable, type ClassifyOptions } from './safety-policy.ts';
 import { isHcloudToken } from './safety/tokens.ts';
 import { createApprovalToken } from './lib/approval-tokens.ts';
+import { foldSecretTokens, SECRET_KEY_TOKEN_RE, secretSegments } from './lib/supplemental-redaction.ts';
 import type { ApprovalMode } from './lib/approval-mode.ts';
 import type { RiskDecision } from './risk-rule-engine.ts';
 import { obsWriteHint } from './hcloud-obs-redact.ts';
@@ -30,9 +32,9 @@ import { triageUnknownService } from './hcloud-triage.ts';
 // The plan's terminal-confirmation block: `needed` says the command waits
 // on a confirmation the user makes in their own terminal, `command` is the
 // exact line they run (present only on plans that minted a token). Ask
-// mode shifts the confirmation onto the harness client's permission
-// prompt: `mode` names that posture and `note` teaches the run call that
-// satisfies it — no `command` exists to name.
+// mode shifts the confirmation onto the server-run gate (a form, or the T3
+// chat round-trip): `mode` names that posture and `note` teaches the run
+// call that satisfies it — no `command` exists to name.
 export interface HcloudPlanUserConfirmation {
   needed: boolean;
   command?: string;
@@ -88,11 +90,34 @@ export function needsUserConfirmation(args: string[], options: ClassifyOptions =
   return strict.decision === 'deny' && (strict.risk === 'write' || strict.risk === 'execution');
 }
 
-function quoteShellArg(value: unknown): string {
+export function quoteShellArg(value: unknown): string {
   const text = String(value);
   if (!text) return '""';
   if (/^[A-Za-z0-9_./:=@-]+$/.test(text)) return text;
   return `"${text.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+// One redacted echo argument: the real argument's quoting shape with the
+// value text replaced. A real argument quoteShellArg leaves bare stays bare
+// (so a safe-charset substitution is the gate's plain line); one it would
+// quote gets the same wrapper around the redacted spelling (so a
+// shell-special substitution is the gate's quoted line).
+function redactedCommandArg(raw: string, redacted: string): string {
+  if (quoteShellArg(raw) === raw) return redacted;
+  return `"${redacted.replace(/(["\\])/g, '\\$1')}"`;
+}
+
+// The accepted executable lines for a normalized argument list: the
+// command-forward `command` field must equal one of them exactly. The plain
+// space-joined line is the contract's stated anchor; the shell-quoted line is
+// this module's own echo (plan.command), so a model that forwards the plan's
+// echo verbatim passes too. The two coincide for the ordinary case (service,
+// operation, --key=value) and differ only where an argument carries a space,
+// a quote, or another character the echo has to quote.
+export function hcloudExecutableLines(normalizedArgs: readonly string[]): string[] {
+  const plain = ['hcloud', ...normalizedArgs].join(' ');
+  const quoted = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
+  return plain === quoted ? [plain] : [plain, quoted];
 }
 
 function planningWarnings(args: string[]): string[] {
@@ -201,32 +226,13 @@ function leadingBinWarning(stripped: string): string {
 // pinning message no longer claims a reason. Free-form JSON bodies with
 // real secrets should go through plan→approve with literal values (hash
 // path), not the substitution flow.
-const SECRET_KEY_ALT =
-  'access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?key|secret[_-]?string|secret[_-]?binary|security[_-]?token|x[_-]?auth[_-]?token|token|password|passwd|admin[_-]?pass|credential|input[_-]?value|user[_-]?data|metadata|private[_-]?key|authorization';
-// A bare key token (`--password`, `--server.adminPass`, `--dbpassword`): the
-// value rides the NEXT argv element. The optional prefix must end on a
-// separator char, or `--task` would parse as the SK key token.
-const SECRET_KEY_TOKEN_RE = new RegExp('^(?:--?[A-Za-z0-9_.-]*[._-])?(?:' + SECRET_KEY_ALT + '|AK|SK)$', 'i');
+// The secret-token fold's primitives (the key vocabulary, the scanner, the
+// argv fold) live in lib/supplemental-redaction.ts since PR-3a round 3 —
+// one canonical home shared with the exec views and the token store, which
+// cannot import this module's face (approval-tokens ← hcloud-cli would be
+// a value cycle). The detector comments below describe THEIR semantics and
+// stay authoritative for the substitution flow.
 const PLACEHOLDER_SECRET_VALUE_RE = /^["']?<{1,2}[A-Za-z0-9_ -]{1,40}>{1,2}["']?/;
-
-// Shared key+separator scanner (loop round 8): ONE global split drives every
-// consumer. The value segment of a key runs to the NEXT key occurrence — a
-// multi-key body (`{"token":"<x>","password":"Real"}`) yields one segment
-// per key, so a mixed placeholder/real body can no longer hide a real value
-// behind a lazy first match (loop round 7, seat-1 B1).
-const SECRET_KEY_SEP_RE = new RegExp(
-  '((?:(?:' + SECRET_KEY_ALT + ')|\\b(?:AK|SK))["\'\\\\]*\\s*(?:[=:]|\\s|(?=["\']))\\s*)',
-  'gi',
-);
-
-function secretSegments(arg: string): Array<{ sep: string; value: string }> {
-  const parts = String(arg).split(SECRET_KEY_SEP_RE);
-  const segments: Array<{ sep: string; value: string }> = [];
-  for (let i = 1; i < parts.length; i += 2) {
-    segments.push({ sep: parts[i] ?? '', value: parts[i + 1] ?? '' });
-  }
-  return segments;
-}
 
 function placeholderShaped(value: string): boolean {
   return PLACEHOLDER_SECRET_VALUE_RE.test(value.trim());
@@ -283,34 +289,12 @@ export function firstPlaceholderSecretArg(args: string[]): string | null {
 // the map-only version dropped the two-token branch and let cross-form
 // swaps through). The redactor's own output cannot serve here — it never
 // folds the two-token/glued forms, so the substitution flow dead-ended in
-// a mismatch (loop round 4, seat-1 B2).
+// a mismatch (loop round 4, seat-1 B2). Since PR-3a round 3 the fold body
+// lives in the shared leaf (lib/supplemental-redaction.ts) with the exec
+// views and the token store as its co-consumers; this export keeps the
+// run face's canonical name.
 export function pinViewArgs(args: string[]): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < args.length; i += 1) {
-    const arg = String(args[i]);
-    const segments = secretSegments(arg);
-    if (segments.length > 0) {
-      const parts = String(arg).split(SECRET_KEY_SEP_RE);
-      let folded = parts[0] ?? '';
-      for (let j = 1; j < parts.length; j += 2) {
-        folded += parts[j] + '<redacted>';
-      }
-      out.push(folded);
-      continue;
-    }
-    const next = i + 1 < args.length ? String(args[i + 1]) : undefined;
-    if (SECRET_KEY_TOKEN_RE.test(arg) && next !== undefined && !SECRET_KEY_TOKEN_RE.test(next)) {
-      // Bare key token with its value riding the next argv element — fold
-      // the value, keep the key. A CHAINED bare key (`--password --token x`)
-      // is left for its own iteration so no real value hides behind the
-      // skip (loop round 7, seat-1 residual).
-      out.push(arg, '<redacted>');
-      i += 1;
-      continue;
-    }
-    out.push(arg);
-  }
-  return out;
+  return foldSecretTokens(args) as string[];
 }
 
 function validateRequiredParams(args: string[]): { valid: boolean; missing: string[]; hints: string[] } {
@@ -328,7 +312,20 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
   const inputArgs = Array.isArray(args) ? args.map(String) : [];
   const { args: normalizedArgs, stripped } = stripLeadingHcloudBinArgs(inputArgs);
   const classification = classifyHcloudArgs(normalizedArgs, options);
-  const command = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
+  // The echo reproduces the REAL argument's quoting SHAPE and redacts only the
+  // value text inside it, so replacing `<redacted>` with the real value yields
+  // exactly the line the approval gate accepts for every charset family.
+  // Quoting must be decided from the raw argument: the placeholder itself is
+  // not charset-safe (`<` and `>` sit outside quoteShellArg's safe set), so
+  // quoting the redacted spelling unconditionally would wrap a safe-charset
+  // value the real line leaves bare and dead-end the substitution on the most
+  // common family (alphanumeric password, hex token). The old post-quote
+  // redaction had the mirror defect on the shell-special family (an
+  // unbalanced quote), so this one construction now serves both.
+  const redactedArgs = normalizedArgs.map((arg) => redactSecrets(arg));
+  const command = ['hcloud', ...normalizedArgs.map((raw, i) => redactedCommandArg(raw, redactedArgs[i] ?? ''))].join(
+    ' ',
+  );
   const warnings: Array<string | SgFinding> = planningWarnings(normalizedArgs);
   if (stripped !== null) warnings.unshift(leadingBinWarning(stripped));
   const obsHint = obsWriteHint(normalizedArgs);
@@ -369,10 +366,10 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
     }
   }
   const approvalMode = options.approvalMode ?? 'token';
-  // Ask mode never mints: the confirmation is the harness client's prompt
-  // on the run call, so there is no token to hand the model and nothing
-  // lands in the approvals store. Run paths keep mintApprovalToken:false
-  // in both modes.
+  // Ask mode never mints: the confirmation is the server-run gate inside
+  // the run call, so there is no token to hand the model and nothing lands
+  // in the approvals store. Run paths keep mintApprovalToken:false in both
+  // modes.
   const approvalToken =
     approvalMode === 'ask' || options.mintApprovalToken === false
       ? undefined
@@ -387,9 +384,10 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
     // The plan echo is a COMMAND string, not child-process output — banner
     // stripping is an output concern, and an argument VALUE that happens to
     // carry banner-shaped text must never blank the command the user is asked
-    // to approve (redactSecrets only).
-    command: redactSecrets(command),
-    executableBlock: redactSecrets(command),
+    // to approve (redaction only, already applied per arg above so the
+    // quoting stays balanced).
+    command,
+    executableBlock: command,
     warnings,
     classification: applyPreflightFindings(effectiveClassification, sgFindings),
     sgFindings,
@@ -403,7 +401,7 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
         ? {
             needed: true,
             mode: 'ask',
-            note: 'The harness client confirms this command with the user when huaweicloud_run_approved_command is called. Call it with the same args and approvedByUser: true. No terminal approval line or token is needed.',
+            note: 'The confirmation happens on the server when huaweicloud_run_approved_command is called: an elicitation-capable client renders a form with this command line, and any other client returns ASK_CONFIRMATION_REQUIRED, which you answer by showing the user this command in chat and retrying with approvedByUser: true. Send the same args on every call. This command field is the display line: where it shows <redacted>, substitute the real values, and the args array spelled out is always accepted as the command. No terminal approval line or token is needed.',
           }
         : {
             needed: true,

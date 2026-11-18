@@ -36,8 +36,19 @@ export const authCases: E2eCase[] = [
   {
     id: 'auth-switch-persist-writes-stores',
     pack: 'auth',
+    // The token posture is pinned (E2eCase.approvalMode) and the
+    // autoConfirmApprovals watcher plays the terminal half: the auth pair
+    // is approval-gated (PR-3b), so under the installer's natural ask
+    // posture a headless run could never execute — the gate's form has no
+    // interactive approver under `opencode run`. In token mode the first
+    // auth_switch call mints (USER_CONFIRMATION_REQUIRED + approvalToken),
+    // the watcher confirms the token through the product's own
+    // confirmApprovalToken, and the prompted token-retry persists — the
+    // same simulated-user doctrine as core-approval-positive.
+    approvalMode: 'token',
+    autoConfirmApprovals: true,
     prompt:
-      '把我的华为云凭证持久化到本地:AK 的字面值就是字符串 E2E_M3_AK,SK 的字面值就是字符串 E2E_M3_SK(直接把这两串字符作为凭证值传给工具参数,它们不是环境变量名,不要去查找 .env 或环境),区域 cn-north-4。用 huaweicloud_auth_switch 的 action=persist 完成,然后把持久化结果(S1 文件、OBS 配置、KooCLI profile 同步状态)告诉我。',
+      '我批准把我的华为云凭证持久化到本地(明确授权本次账号切换):AK 的字面值就是字符串 E2E_M3_AK,SK 的字面值就是字符串 E2E_M3_SK(直接把这两串字符作为凭证值传给工具参数,它们不是环境变量名,不要去查找 .env 或环境),区域 cn-north-4。流程:先用 huaweicloud_auth_switch 发起 action=persist;第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken,等用户在自己的终端确认后(确认已由测试完成),携带同一个 approvalToken 并把 approvedByUser 设为 true 重试同样的调用完成持久化,然后把持久化结果(S1 文件、OBS 配置、KooCLI profile 同步状态)告诉我。',
     fixtures: {
       home: {
         '.hcloud/config.json': KOOLCLI_SEED,
@@ -128,6 +139,13 @@ export const voucherCases: E2eCase[] = [
   },
 ];
 
+// PR-3a gate note: every case whose flow calls connect, credentials, or
+// expose_tunnel hits the approval gate (the nine sandbox registrations).
+// The posture is pinned to token and the user's terminal half plays through
+// the REAL TTY-gated CLI (the PTY seam, ptyConfirmApprovals) — each case's
+// prompt pre-authorizes the calls, so the mint → approve → consume chain is
+// what the case proves, not the blind watcher's post-state. check_user-only
+// cases stay on the installer's natural posture (no gated call to make).
 export const sandboxCases: E2eCase[] = [
   {
     // Consent protocol: 403 HDKIT_NOT_REALNAME must stop the agent at the
@@ -164,7 +182,10 @@ export const sandboxCases: E2eCase[] = [
     // transferGitRepo is a no-op without git args — reviewer-verified).
     id: 'sandbox-connect-session',
     pack: 'sandbox',
-    prompt: '连接华为云沙箱(不需要配置 git 仓库),把返回的会话信息告诉我。',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
+    prompt:
+      '连接华为云沙箱(不需要配置 git 仓库),把返回的会话信息告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: {
       home: {
         '.config/huaweicloud/credentials.json': S1_SEED,
@@ -204,7 +225,10 @@ export const sandboxCases: E2eCase[] = [
     // against the fake IAM before injecting via hdkitservice.
     id: 'sandbox-credentials-iam-validated',
     pack: 'sandbox',
-    prompt: '给华为云沙箱工作区 dev_stage_id=ds-e2e-002 注入临时凭证(标准流程:先校验再注入),把注入结果告诉我。',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
+    prompt:
+      '给华为云沙箱工作区 dev_stage_id=ds-e2e-002 注入临时凭证(标准流程:先校验再注入),把注入结果告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: {
       home: {
         '.config/huaweicloud/credentials.json': S1_SEED,
@@ -252,10 +276,12 @@ export const sandboxCases: E2eCase[] = [
 ];
 
 // ws-exec pair over the local hwlink fake. Connection-count arithmetic is
-// the mechanism proof: connect runs one one-shot (devbridge cleanup, its own
-// connection) plus the CACHED export-PATH session (a second connection) —
-// so two exec_with_session calls that REUSE the session leave the count at
-// 2, while a close_session in between forces a cache miss and a third.
+// the mechanism proof: connect's selective cleanup runs four one-shots
+// (lock, state list, watchdog read, unlock — each its own connection; the
+// delete-all wave collapsed all of it into one destructive exec) plus the
+// CACHED export-PATH session (a fifth connection) — so two exec_with_session
+// calls that REUSE the session leave the count at 5, while a close_session in
+// between forces a cache miss and a sixth.
 const WS_DEV_STAGE = 'ds-e2e-ws-001';
 
 // Shared expectation fragments for the ws trio (dedup, not abstraction):
@@ -307,8 +333,10 @@ export const wsSandboxCases: E2eCase[] = [
     // ws-exec-protocol.test.ts (fake synthesis ↔ parseDevbridge*Output).
     id: 'sandbox-expose-tunnel',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_expose_tunnel 把端口 8080 暴露成公网 URL(先用 deploy_nginx 的 port 字段规则,这里直接用 8080)。把返回的公网 URL 告诉我。',
+      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_expose_tunnel 把端口 8080 暴露成公网 URL(先用 deploy_nginx 的 port 字段规则,这里直接用 8080)。把返回的公网 URL 告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,
@@ -333,15 +361,18 @@ export const wsSandboxCases: E2eCase[] = [
   {
     id: 'sandbox-exec-one-shot-ws',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_exec_one_shot 在沙箱里执行命令 echo e2e-one-shot-output,把命令输出告诉我。',
+      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_exec_one_shot 在沙箱里执行命令 echo e2e-one-shot-output,把命令输出告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,
-      // one-shot exec rides its own fresh ws connection (on top of
-      // connect's two), so the count is loose here — the precise pair is
-      // the reuse/close cases below.
-      { kind: 'wsConnections', times: { min: 2, max: 4 } },
+      // one-shot exec rides its own fresh ws connection (on top of connect's
+      // five — the selective cleanup's four one-shots plus the cached
+      // session), so the count is loose here (agent-initiated verification
+      // execs add more); the precise pair is the reuse/close cases below.
+      { kind: 'wsConnections', times: { min: 6, max: 8 } },
       { kind: 'ws', intent: 'echo', times: { min: 1, max: 1 } },
       // Fake-drift gate: every command the product sent must be one the
       // fake recognized — a script edit turns this red, never silent.
@@ -353,15 +384,18 @@ export const wsSandboxCases: E2eCase[] = [
   {
     id: 'sandbox-exec-session-reuse',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_exec_with_session 在同一个会话里依次执行两条命令:先 echo e2e-first,再 echo e2e-second,把两次输出都告诉我。不要断开会话。',
+      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_exec_with_session 在同一个会话里依次执行两条命令:先 echo e2e-first,再 echo e2e-second,把两次输出都告诉我。不要断开会话。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,
-      // Session-cache reuse IS the mechanism: connect's two connections
-      // (one-shot cleanup + cached session) plus ZERO more for the second
-      // exec. A reuse regression makes this 3+.
-      { kind: 'wsConnections', times: { min: 2, max: 2 } },
+      // Session-cache reuse IS the mechanism: connect's five connections
+      // (the selective cleanup's four one-shots — lock, state list, watchdog
+      // read, unlock — plus the cached export-PATH session) plus ZERO more
+      // for the second exec. A reuse regression makes this 6+.
+      { kind: 'wsConnections', times: { min: 5, max: 5 } },
       { kind: 'ws', intent: 'echo', times: { min: 2, max: 2 } },
       ZERO_UNKNOWN,
     ],
@@ -371,17 +405,19 @@ export const wsSandboxCases: E2eCase[] = [
   {
     id: 'sandbox-exec-session-close-reconnect',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),用 huaweicloud_sandbox_exec_with_session 执行 echo e2e-before-close,然后调用 huaweicloud_sandbox_close_session 关闭会话,再用 huaweicloud_sandbox_exec_with_session 执行 echo e2e-after-close,把两次输出都告诉我。',
+      '连接华为云沙箱(不需要配置 git 仓库),用 huaweicloud_sandbox_exec_with_session 执行 echo e2e-before-close,然后调用 huaweicloud_sandbox_close_session 关闭会话,再用 huaweicloud_sandbox_exec_with_session 执行 echo e2e-after-close,把两次输出都告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,
       { kind: 'toolCall', name: 'huaweicloud_sandbox_close_session', ok: true },
       // The close→reconnect delta vs the reuse case: the post-close exec
-      // is a cache miss, so a THIRD connection appears. close_session
-      // itself is client-only teardown — the connection count is what
-      // makes it observable.
-      { kind: 'wsConnections', times: { min: 3, max: 3 } },
+      // is a cache miss, so a SIXTH connection appears (connect's five +
+      // the fresh session). close_session itself is client-only teardown —
+      // the connection count is what makes it observable.
+      { kind: 'wsConnections', times: { min: 6, max: 6 } },
       { kind: 'ws', intent: 'echo', times: { min: 2, max: 2 } },
       ZERO_UNKNOWN,
     ],
@@ -395,8 +431,10 @@ export const wsSandboxCases: E2eCase[] = [
     // (ok:false in the trace) — this case can fail for the right reason.
     id: 'sandbox-upload-file-md5',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_upload_file 把本地文件 {workdir}/hello-upload.txt 上传到沙箱的 /tmp/hello-upload.txt,把上传结果和 md5 校验情况告诉我。',
+      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_upload_file 把本地文件 {workdir}/hello-upload.txt 上传到沙箱的 /tmp/hello-upload.txt,把上传结果和 md5 校验情况告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: {
       ...wsSandboxFixtures(),
       workdir: {
@@ -460,8 +498,10 @@ export const wsSandboxCases: E2eCase[] = [
     // hash and the tool call FAILS — a genuine gate.
     id: 'sandbox-upload-project-tunnel',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_upload_project 把本地项目目录 {workdir}/myproject 上传到沙箱的 /workspace(默认解压),把上传结果和校验情况告诉我。',
+      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_upload_project 把本地项目目录 {workdir}/myproject 上传到沙箱的 /workspace(默认解压),把上传结果和校验情况告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: {
       ...wsSandboxFixtures(),
       workdir: {
@@ -498,8 +538,10 @@ export const wsSandboxCases: E2eCase[] = [
     // plus agent improvisation).
     id: 'sandbox-deploy-nginx',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_deploy_nginx 为项目 myproject 配置 nginx:类型 spa、端口 8080、输出目录 dist。把配置和启动结果告诉我。',
+      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_deploy_nginx 为项目 myproject 配置 nginx:类型 spa、端口 8080、输出目录 dist。把配置和启动结果告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,
@@ -523,8 +565,10 @@ export const wsSandboxCases: E2eCase[] = [
     // ws-exec-protocol.test.ts (fake synthesis ↔ parseDeployCheckOutput).
     id: 'sandbox-deploy-check',
     pack: 'sandbox',
+    approvalMode: 'token',
+    ptyConfirmApprovals: true,
     prompt:
-      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_deploy_check 检查项目 myproject 的部署状态:端口 8080、输出目录 dist。把各项检查结果、总分和结论告诉我。',
+      '连接华为云沙箱(不需要配置 git 仓库),然后用 huaweicloud_sandbox_deploy_check 检查项目 myproject 的部署状态:端口 8080、输出目录 dist。把各项检查结果、总分和结论告诉我。本次沙箱会话我预先批准全部操作:调用沙箱工具时把 approvedByUser 设为 true;每个沙箱工具的第一次调用会返回 USER_CONFIRMATION_REQUIRED 和一个 approvalToken;确认已由测试在后台完成,你不需要等待任何人:携带同一个 approvalToken 并把 approvedByUser 设为 true,立即重试同样的调用即可成功。后续工具同理。',
     fixtures: wsSandboxFixtures(),
     expect: [
       CONNECT_POST,

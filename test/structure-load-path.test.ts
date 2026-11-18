@@ -384,6 +384,22 @@ test('server instructions carry the three-form skillRoot disclosure contract', (
       /When your file tools reach the tree/,
       `the ${label} stdio form must not carry the evaluative reachability conditional`,
     );
+    // Tool-routing note (measured, 2026-11-13: codex 0.167.2 + a custom
+    // OpenAI-compatible provider that drops the `namespace` field — 690 of
+    // 692 huaweicloud calls answered `unsupported call` without reaching
+    // the devkit, and the model retried the identical call in a spin):
+    // both stdio forms teach the signature and the no-retry rule; the
+    // remote face rides no harness model wire and stays short.
+    assert.match(
+      form,
+      /unsupported call: <tool>/,
+      `the ${label} stdio form must name the harness tool-routing signature`,
+    );
+    assert.match(
+      form,
+      /retrying the identical call cannot succeed/,
+      `the ${label} stdio form must teach the no-retry rule`,
+    );
   }
   assert.doesNotMatch(
     remote,
@@ -405,6 +421,10 @@ test('server instructions carry the three-form skillRoot disclosure contract', (
     /never guess a service skill's path by analogy to it/,
     'the remote form must not carry the stdio root-disambiguation clause',
   );
+  // The tool-routing note is stdio-only (its failure mode lives on a
+  // harness model wire the stateless remote face never rides); pin the
+  // absence so a future harmonization cannot grow the remote form.
+  assert.doesNotMatch(remote, /unsupported call: <tool>/, 'the remote form must not carry the stdio tool-routing note');
   assert.match(remote, /skillRoot is withheld/, 'the remote form must state skillRoot is withheld');
   assert.match(remote, /huaweicloud_list_skills/, 'the remote form must name the effective-catalog tool');
   assert.match(remote, /fallback/, 'the remote form must frame retrieve_skill as the loader');
