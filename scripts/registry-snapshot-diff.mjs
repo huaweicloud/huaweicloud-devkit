@@ -40,6 +40,7 @@ const EXEMPT_TOOLS = new Set([
   'huaweicloud_sandbox_renew_tunnel',
   'huaweicloud_sandbox_keepalive_watchdog',
   'huaweicloud_sandbox_exec_poll',
+  'huaweicloud_sandbox_shutdown',
 ]);
 
 // Declared, intentional drifts from the legacy literals. Each entry names the
@@ -329,6 +330,21 @@ const DELIBERATE_OPTIONALS = [
   },
 ];
 
+// Deliberate removals: properties the legacy snapshot carries that a reviewed
+// change removed from the live contract. Same reasoning as
+// DELIBERATE_ADDITIONS — the fixture is history, not a live render — but the
+// drift direction is removal, so an entry is consulted by the missingProps
+// check only; every other check (types, enums, nested shapes) still applies
+// to every remaining property in full.
+const DELIBERATE_REMOVALS = [
+  {
+    tool: 'huaweicloud_sandbox_connect',
+    property: 'template_id',
+    reason:
+      'dev 8c1af52e: custom templates retired — connect only supports pool_type, the server owns the pool_type → template mapping, and the client neither sends nor exposes template_id (HW_POOL_TEMPLATE_* pinning dropped with it)',
+  },
+];
+
 function normalize(node) {
   if (Array.isArray(node)) return node.map((item) => normalize(item));
   if (node !== null && typeof node === 'object') {
@@ -394,7 +410,11 @@ for (const tool of TOOL_DEFINITIONS) {
 
   const legacyProps = propKeys(normLegacy);
   const renderedProps = propKeys(normRendered);
-  const missingProps = [...legacyProps].filter((k) => !renderedProps.has(k));
+  const missingProps = [...legacyProps].filter(
+    (k) =>
+      !renderedProps.has(k) &&
+      !DELIBERATE_REMOVALS.some((removal) => removal.tool === tool.name && removal.property === k),
+  );
   if (missingProps.length) {
     failures.push(`${tool.name}: properties missing in zod render: ${missingProps.join(', ')}`);
   }

@@ -1,0 +1,19 @@
+npm error code E404
+npm error 404 Not Found - GET http://127.0.0.1:4888/definitely-missing-pkg - not found
+npm error 404
+npm error 404  The requested resource 'definitely-missing-pkg@9.9.9' could not be found or you do not have permission to access it.
+npm error 404
+npm error 404 Note that you can also install from a
+npm error 404 tarball, folder, http url, or git url.
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T03_58_51_643Z-debug-0.log
+child dependency build failed: missing native toolchain
+npm error code 7
+npm error path /home/op/inner-cache
+npm error command failed
+npm error command sh -c node fail.js
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T03_58_52_177Z-debug-0.log
+npm error code 7
+npm error path /home/op/runs/three-block/node_modules/probe-main
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T03_58_51_042Z-debug-0.log

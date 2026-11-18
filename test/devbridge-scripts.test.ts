@@ -36,8 +36,13 @@ test('D: buildDevbridgeAuthProbe implements the verified waterfall (keyring → 
   assert.match(script, /source \/tmp\/hw_api_key/);
   assert.match(script, /--api-key "\$HW_API_KEY"/);
   assert.match(script, /DB_AUTH_MODE=API_KEY_FILE/);
-  // All tiers verified via real login + auth status; diagnostics emitted; final failure mode
-  assert.match(script, /db_login_ok\(\) \{ devbridge auth status.*Logged in/);
+  // All tiers verified via real login (exit code checked) + auth status AND a
+  // real authenticated API call — a stale key can leave a "Logged in" local
+  // token while server calls fail with 40100 (bde7ae56).
+  assert.match(script, /db_login_ok\(\) \{/);
+  assert.match(script, /devbridge auth status.*Logged in.*return 1/);
+  assert.match(script, /devbridge list >\/dev\/null 2>&1/);
+  assert.match(script, /devbridge auth login --api-key "\$HW_DB_KEY".*&& db_login_ok/);
   assert.match(script, /DB_ATTEMPT_/);
   assert.match(script, /DB_AUTH_MODE=NO_CREDENTIAL/);
   // Secrets are not left in the environment after the probe
@@ -67,8 +72,15 @@ test('D: parseDevbridgeAuthOutput extracts the final auth mode and per-tier atte
 
 test('D: buildDevbridgeExposeScript starts a session-surviving host with port-anchored URL extraction', () => {
   const script = buildDevbridgeExposeScript(8081);
-  assert.match(script, /devbridge delete-all/);
-  assert.match(script, /pkill -f "devbridge host"/);
+  // Selective cleanup (devbridge-cleanup.ts) now runs BEFORE this script, so
+  // the script must never blanket-delete or globally pkill — those kill other
+  // sessions'/ports' tunnels on a shared sandbox.
+  assert.doesNotMatch(script, /delete-all/);
+  assert.doesNotMatch(script, /pkill -f "devbridge host"/);
+  // #999 anchor doctrine survives the pkill removal: the data-disk PATH export
+  // rides the TUNNEL_URL init line (a standalone export first line would be
+  // byte-identical to the auth probe's and misrecognized by first-line readers).
+  assert.match(script, /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; TUNNEL_URL=""$/m);
   // #919/#922: setsid-detached launch with the guarded fallback + guarded disown,
   // 72-hour expiry echoed for the expiresAt field.
   assert.match(

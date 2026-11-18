@@ -41,6 +41,7 @@ export async function handleExposeTunnel(args: ToolArgs = {}, _opts: CallToolOpt
       port: args.port,
       expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
       keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
+      cleanupMode: args.cleanup_mode,
       // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
       poolType: exposePoolContext?.poolMode || 'ephemeral',
       poolContext: exposePoolContext,

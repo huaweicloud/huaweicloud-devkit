@@ -49,10 +49,11 @@ export const SANDBOX_TIMEOUT_MS = {
   // of dying as a ws-exec timeout (the pre-probing 30s default did not).
   deploy_check: 60000,
   // The expose script's A2 (#935) bounded waits can spend ~63s in one exec
-  // (2s settle + up to 9s URL-extraction retries + 4 × 10s probes + 3 × 5s
-  // backoff) plus the delete-all round-trip — the headroom exists for the
-  // slow-gateway days the probe loop exists for, and a timeout still folds
-  // into the structured unreachable envelope (never a raw ws error).
+  // (up to 9s URL-extraction retries + 4 × 10s probes + 3 × 5s backoff) — the
+  // headroom exists for the slow-gateway days the probe loop exists for, and
+  // a timeout still folds into the structured unreachable envelope (never a
+  // raw ws error). The selective pre-clean execs run outside this budget,
+  // each with its own bounded one-shot (devbridge-cleanup.ts).
   expose_tunnel: 90000,
   renew_tunnel: 60000,
   keepalive_watchdog: 60000,
@@ -222,6 +223,12 @@ export const exposeTunnelSchema = z.looseObject({
     .describe(
       'Enroll the tunnel into the keepalive watchdog (default true — pass false to opt out). Returns keepalive.enrolled/tunnelCount/watchdogPid.',
     ),
+  cleanup_mode: z
+    .enum(['stale', 'all', 'none'])
+    .optional()
+    .describe(
+      "Tunnel cleanup before exposing. stale (default): delete same-port tunnels + orphan records/hosts; preserve other ports, other sessions and keepalive-protected tunnels — except a tunnel bound to THIS port, which is always replaced. all: wipe every tunnel/host (manual full reset only — a shared sandbox loses every session's tunnels). none: no cleanup (a stale same-port host can then conflict).",
+    ),
   workspace_id: workspaceId,
   username,
   timeout_ms: numericArg
@@ -289,9 +296,8 @@ export const connectSchema = z.looseObject({
     .enum(['ephemeral', 'persistent'])
     .optional()
     .describe(
-      'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1). Explicit template_id overrides pool_type.',
+      'Sandbox pool type (default ephemeral). ephemeral = non-persistent: idle auto-shutdown 30min + auto-delete 1h (platform scheduled task, verified) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days. Each user may hold one instance per pool type (1+1); same-type requests reuse the existing instance. Custom templates are no longer supported.',
     ),
-  template_id: z.string().optional().describe('Template ID; overrides server default (only for new sandbox)'),
   flavor_id: z.string().optional().describe('Flavor ID; overrides server default (only for new sandbox)'),
   env: looseObject.optional().describe('Environment variables to set in the sandbox (only for new sandbox)'),
   git: gitConfig.optional().describe('Git repo config (only for new sandbox)'),
@@ -315,6 +321,21 @@ export const credentialsSchema = z.looseObject({
     .describe(
       'DevBridge API Key (devbridge_...), injected into the sandbox as HW_API_KEY for devbridge 0.2.x auth. Also accepts a vault ref (secret://<scope>/<name>), resolved locally so the key never enters the conversation. The local HW_API_KEY environment variable takes precedence over this param (preferred delivery — keeps the long-lived key out of the conversation). Users create one at https://devstation.connect.huaweicloud.com/space/devbridge/apikey (full value shown once at creation). Required for exposing web apps via devbridge 0.2.x; if missing, guide the user through creating one.',
     ),
+  approvalToken: approvalTokenArg,
+  approvedByUser: approvedByUserArg,
+});
+
+// 关机（dev 5d89c880）：不可逆写类工具，走审批门（always 面）；token 与
+// attestation 与其余门面工具同型——schema 可选，门是执行者，首个无 token
+// 调用必须能到达门以领取 mint 信封。
+export const shutdownSchema = z.looseObject({
+  session_id: z.string().optional().describe('Session ID from huaweicloud_sandbox_connect (optional)'),
+  dev_stage_id: z.string().optional().describe('DevStation environment ID (alternative to session_id)'),
+  workspace_id: z
+    .string()
+    .optional()
+    .describe('Workspace ID; defaults to the current workspace (an alternative to session_id/dev_stage_id)'),
+  username,
   approvalToken: approvalTokenArg,
   approvedByUser: approvedByUserArg,
 });

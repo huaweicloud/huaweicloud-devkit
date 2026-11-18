@@ -1,0 +1,2 @@
+command sh -c node ./b.js
+EPERM: operation not permitted, open '/home/op/.npm/_cacache'

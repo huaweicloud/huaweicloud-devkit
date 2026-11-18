@@ -1,0 +1,20 @@
+[eval]:1
+const c = null; c.foo.bar();
+                  ^
+
+TypeError: Cannot read properties of null (reading 'foo')
+    at [eval]:1:19
+    at runScriptInThisContext (node:internal/vm:219:10)
+    at node:internal/process/execution:485:12
+    at [eval]-wrapper:6:24
+    at runScriptInContext (node:internal/process/execution:483:60)
+    at evalFunction (node:internal/process/execution:317:30)
+    at evalTypeScript (node:internal/process/execution:329:3)
+    at node:internal/main/eval_string:71:3
+
+Node.js v26.13.0
+npm error code 1
+npm error path /home/op/probe/crashpkg
+npm error command failed
+npm error command sh -c node -e "const c = null; c.foo.bar();"
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T09_49_19_242Z-debug-0.log

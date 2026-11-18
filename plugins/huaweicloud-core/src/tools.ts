@@ -167,7 +167,6 @@ export type ToolArgs = {
   framework_type?: string;
   source?: string;
   pool_type?: string;
-  template_id?: string;
   flavor_id?: string;
   env?: Record<string, unknown>;
   git?: SandboxGitConfig;
@@ -184,6 +183,8 @@ export type ToolArgs = {
   rules?: unknown[];
   expiry_hours?: number;
   keepalive?: boolean;
+  // The expose_tunnel selective pre-clean mode (stale default / all / none).
+  cleanup_mode?: string;
   tunnel_id?: string;
   tunnels?: unknown[];
   ref?: string;

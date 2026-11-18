@@ -31,8 +31,8 @@ import type { ToolArgs, CallToolOptions } from './tools.ts';
 // directly — NOT only behind connect — but every e2e flow reaches them
 // through gated connect or a user-supplied id); the obs faces
 // (setup_obs_config, obs_set_website_config), auth_sync/auth_confirm,
-// sandbox check_user/sign_agreement/credentials/expose_tunnel, and
-// voucher_status (account-state probes and writers that no measured
+// sandbox check_user/sign_agreement/credentials/expose_tunnel/shutdown,
+// and voucher_status (account-state probes and writers that no measured
 // vendor-neutral first move has landed on); and the devkit meta tools
 // (check_update, list_skills, ...) the rule exempts.
 export const VENDOR_GATED_TOOLS: ReadonlySet<ToolName> = new Set<ToolName>([

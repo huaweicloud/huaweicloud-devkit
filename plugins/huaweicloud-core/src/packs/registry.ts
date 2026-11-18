@@ -80,6 +80,7 @@ export const PACK_OF = {
   huaweicloud_sandbox_sign_agreement: 'sandbox',
   huaweicloud_sandbox_connect: 'sandbox',
   huaweicloud_sandbox_credentials: 'sandbox',
+  huaweicloud_sandbox_shutdown: 'sandbox',
   huaweicloud_voucher_status: 'voucher',
   huaweicloud_voucher_claim: 'voucher',
   huaweicloud_competition_voucher_claim: 'voucher',

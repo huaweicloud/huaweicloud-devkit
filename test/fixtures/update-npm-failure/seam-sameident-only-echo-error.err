@@ -1,0 +1,5 @@
+npm info using npm@11.21.2
+npm info run widget-kit@3.1.4 postinstall node_modules/widget-kit/node_modules/probe-a node probe.js
+Error: matrix probe mismatch in the nested compatibility check
+npm info run widget-kit@3.1.4 postinstall { code: 0, signal: null }
+npm info run widget-kit@3.1.4 postinstall { code: 7, signal: null }

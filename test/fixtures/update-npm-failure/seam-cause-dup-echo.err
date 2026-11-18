@@ -1,0 +1,5 @@
+[cause]: Error: probe dependency crashed
+sh -c 'node helper.js'
+{ code: 7, signal: null }
+{ code: 0, signal: null }
+sh -c 'node helper.js'

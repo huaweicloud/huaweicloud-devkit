@@ -12,6 +12,7 @@
 //   devbridge-verify.ts       — the fresh-session re-verify family (#919/#922)
 //   devbridge-renew.ts        — the renew flow (script, parser, renewTunnel)
 //   devbridge-keepalive.ts    — the keepalive watchdog family + enrollment
+//   devbridge-cleanup.ts       — the selective tunnel cleanup family
 //   devbridge-expose-flow.ts  — the exposeTunnel orchestration
 // The sandbox siblings import each other's canonical modules directly (the
 // DEVBRIDGE_* gateway constants from devbridge-gateway.ts, the escape stripper
@@ -73,6 +74,29 @@ export {
   parseKeepaliveTunnelsOutput,
 } from './devbridge-keepalive.ts';
 export type { KeepaliveTunnel, KeepaliveWatchdogResult } from './devbridge-keepalive.ts';
+// The selective-cleanup family (parsers, cleanup plan, lock/state/apply
+// scripts, the cleanup orchestration) lives in devbridge-cleanup.ts;
+// re-exported as the public face (the sandbox pack's handlers and the tests
+// import these names here).
+export {
+  buildDevbridgeCleanupApplyScript,
+  buildDevbridgeCleanupLockScript,
+  buildDevbridgeCleanupStateScript,
+  cleanupDevbridgeTunnels,
+  normalizeCleanupMode,
+  parseDevbridgeHostProcesses,
+  parseDevbridgePortQueries,
+  parseDevbridgeTunnelList,
+  planDevbridgeCleanup,
+} from './devbridge-cleanup.ts';
+export type {
+  DevbridgeCleanupMode,
+  DevbridgeCleanupOptions,
+  DevbridgeCleanupPlan,
+  DevbridgeCleanupResult,
+  DevbridgeHostProcess,
+  DevbridgeTunnelRecord,
+} from './devbridge-cleanup.ts';
 // The exposeTunnel orchestration lives in devbridge-expose-flow.ts;
 // re-exported as the public face (the sandbox pack's handlers-tunnel.ts and
 // the test harness import it here).

@@ -473,6 +473,27 @@ test('huawei-voucher covers HDKIT_COMPETITION_NOT_CONFIGURED', () => {
   assert.match(voucher, /HDKIT_COMPETITION_NOT_CONFIGURED/);
   assert.match(voucher, /服务端活动参数未配置/);
   assert.match(voucher, /告知赛事代金券暂未开放，稍后再试/);
+  // 版本门禁行（round 5，PR-1 移植波）：claimed:false + HDKIT_VERSION_TOO_OLD
+  // 是客户端过旧，不是未领取——两处判定面（先查后提示 + 流程返回解读）都
+  // 必须教"绝不提示领券"。
+  assert.match(
+    voucher,
+    /`claimed=false` 且 `code=HDKIT_VERSION_TOO_OLD` → \*\*客户端版本过旧\*\*（不是未领取）：转述 remediation 升级引导（npx --yes huaweicloud-devkit@latest update --target <agent>、重启会话，或调用 huaweicloud_upgrade），\*\*绝不提示领券\*\*/,
+    'the first-answer gate row must route the version gate to the upgrade act, never a coupon offer',
+  );
+  assert.match(
+    voucher,
+    /`claimed=false` \+ `code=HDKIT_VERSION_TOO_OLD` → 客户端版本过旧：转述升级 remediation，\*\*绝不提示领券\*\*（与上表判定规则同款）/,
+    'the flow status-reading row must carry the same never-offer-a-coupon rule',
+  );
+  // 工具描述同款句（round 5）：voucher_status 的 agent 可见面必须把
+  // claimed:false + HDKIT_VERSION_TOO_OLD 从"可领券"歧义里摘出来
+  const voucherTools = readFileSync(join(pluginRoot, 'src', 'packs', 'voucher', 'tools.ts'), 'utf8');
+  assert.match(
+    voucherTools,
+    /claimed=false 且 code=HDKIT_VERSION_TOO_OLD 表示客户端版本过旧——转述 remediation 升级引导，绝不提示领券。/,
+    'the voucher_status tool description must discriminate the version gate from a claimable state',
+  );
   // The 1.1.11/1.1.12-next wave (ported from main, version 5): the real-name
   // dedup doctrine, the claimed-prefix widening, and the three new code rows.
   // The config-error rows must appear in BOTH tables (incentive + competition)

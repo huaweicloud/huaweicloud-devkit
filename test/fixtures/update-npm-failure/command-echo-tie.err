@@ -1,0 +1,6 @@
+native build failed: missing libfoo. rebuild aborted.
+npm error code 7
+npm error path /home/op/proj6/local-pkg
+npm error command failed
+npm error command sh -c node -e "console.error('native build failed: missing libfoo. rebuild aborted.'); process.exit(7)"
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T13_43_40_372Z-debug-0.log

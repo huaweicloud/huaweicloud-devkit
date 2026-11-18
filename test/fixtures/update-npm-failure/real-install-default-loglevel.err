@@ -1,0 +1,17 @@
+npm error code EACCES
+npm error syscall mkdir
+npm error path /home/op/env/install/run-default/ro-cache/_cacache
+npm error errno EACCES
+npm error
+npm error Your cache folder contains root-owned files, due to a bug in previous versions of npm which has since been addressed.
+npm error
+npm error To permanently fix this problem, please run:
+npm error   sudo chown -R 1002:1002 "/home/op/env/install/run-default/ro-cache"
+npm error Log files were not written due to an error writing to the directory: /home/op/env/install/run-default/ro-cache/_logs
+npm error You can rerun the command with `--loglevel=verbose` to see the logs in your terminal
+postinstall boom
+npm error code 7
+npm error path /home/op/env/install/run-default/node_modules/probeinstall
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/env/install/run-default/cache/_logs/2026-11-12T02_35_06_710Z-debug-0.log

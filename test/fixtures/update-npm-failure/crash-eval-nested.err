@@ -1,0 +1,17 @@
+<anonymous_script>:1
+throw new Error("payload copy stopped")
+^
+
+Error: payload copy stopped
+    at eval (eval at <anonymous> (eval at <anonymous> ([eval]:1:1)), <anonymous>:1:7)
+    at eval (eval at <anonymous> ([eval]:1:1), <anonymous>:1:1)
+    at [eval]:1:1
+    at runScriptInThisContext (node:internal/vm:219:10)
+    at node:internal/process/execution:485:12
+    at [eval]-wrapper:6:24
+    at runScriptInContext (node:internal/process/execution:483:60)
+    at evalFunction (node:internal/process/execution:317:30)
+    at evalTypeScript (node:internal/process/execution:329:3)
+    at node:internal/main/eval_string:71:3
+
+Node.js v26.13.0

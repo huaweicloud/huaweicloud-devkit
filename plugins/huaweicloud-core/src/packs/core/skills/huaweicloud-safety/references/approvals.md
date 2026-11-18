@@ -15,12 +15,13 @@ One per line, append-shaped: a sibling registration adds its tools here without 
 - `huaweicloud_sandbox_keepalive_watchdog`
 - `huaweicloud_sandbox_sign_agreement`
 - `huaweicloud_sandbox_credentials`
+- `huaweicloud_sandbox_shutdown`
 - `huaweicloud_auth_init`
 - `huaweicloud_auth_switch`
 
 ## The two gate flavors
 
-- **Always.** The call confirms on every invocation — connect, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands. No content rule ever exempts them.
+- **Always.** The call confirms on every invocation — connect, shutdown, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands. No content rule ever exempts them.
 - **Classified.** The two sandbox exec faces classify the `command` string first (the same engines the Bash safety face uses). A benign command runs with NO confirmation surface at all — no form, no envelope, no token. A write-classified command confirms on every call. The strict engine refuses some content with the rule named and no confirmation unlocks it — the families its rows cover: credential-file reads, environment dumps, recursive forced rm in any combined-flag spelling (`rm -rf`/`-fr`, flags interposed or after the target, `--`, quoted, glob, `$VAR`, dot-prefixed names, `.`, `..`, `~`, `$HOME`, `*`, `--no-preserve-root`), `find` with `-delete`, pipelines sweeping files into rm, downloads piped into a shell, disk format, and shutdown commands. The refusal set is those rows and nothing more: a command outside them is not silently stopped, so prefer targeted deletions (rm with exact file names, no combined -rf flag), and treat any refusal as a boundary to rework.
 
 The same destructive rows also deny on the agent's own Bash face through the safety hook (the operator-approved widening): unanchored recursive rm — any combined-flag spelling, including `rm -rf node_modules` and the quoted/glob/`$VAR` forms — and `find … -delete` now refuse there too. The operator chose the safe direction: a false deny on the agent face costs one rephrased command, a miss costs the workspace. A human's own terminal is unaffected — the hook gates the agent face only.
@@ -77,7 +78,7 @@ The PIN record stores only a mac over the vault custody master key, never the pl
 - Never treat `approvedByUser: true` as the confirmation. In token mode it is the agent's statement that the user approved the exact call and the tool still requires the terminal-confirmed grant; in ask mode it is the chat round-trip's retry marker, sent only after the user answered, and it never substitutes for the form or the round-trip.
 - Never ask the user for their PIN, and never enter a PIN on the user's behalf.
 - Never retry a call with different arguments under the same memo or token. The reuse covers the byte-identical call only; anything else confirms again.
-- Always send `command` on the hcloud run face: the full command line, never a prettified or shortened one. The gate rejects a mismatch with the `args` instead of running it; the sandbox exec faces' `command` is content, not a display anchor, and the six lifecycle faces carry no field at all.
+- Always send `command` on the hcloud run face: the full command line, never a prettified or shortened one. The gate rejects a mismatch with the `args` instead of running it; the sandbox exec faces' `command` is content, not a display anchor, and the seven lifecycle faces carry no field at all.
 - Never invent the user's answer to the chat round-trip. Wait for it, then retry with `approvedByUser: true` only after they approve.
 - Never treat a strict-engine refusal as approval-shaped: the engine denies credential-file reads, environment dumps, and the destructive families its rows name (recursive forced rm in any combined-flag spelling — quoted, glob, `$VAR`, dot-prefixed, `--`, interposed-flag targets — plus `find` with `-delete`, pipelines sweeping files into rm, pipe-to-shell downloads, disk format, shutdown) before any confirmation surface exists, and no channel unlocks them. The refusal set is those rows and nothing more — a command outside them is your responsibility to keep targeted. Rework any refused command instead of retrying it.
 

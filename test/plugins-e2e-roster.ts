@@ -48,6 +48,7 @@ export const PER_PACK_TOOLS = {
     'huaweicloud_sandbox_sign_agreement',
     'huaweicloud_sandbox_connect',
     'huaweicloud_sandbox_credentials',
+    'huaweicloud_sandbox_shutdown',
     'huaweicloud_sandbox_expose_tunnel',
     'huaweicloud_sandbox_renew_tunnel',
     'huaweicloud_sandbox_keepalive_watchdog',
@@ -130,8 +131,6 @@ export async function assertTrimmedToolsList(
     assert.equal(install.status, 0, install.stderr);
 
     const mcpServerPath = join(home, '.config', 'opencode', 'huaweicloud-plugins', 'dist', 'mcp-server.js');
-    // DEVKIT_PACKS rides the spawn env into the stdio server; without it the
-    // suite's other tests above still see the full 54.
     const responses = await invokeMcpSequence(
       mcpServerPath,
       { ...makeEnv(home, cwd), DEVKIT_PACKS: packId },

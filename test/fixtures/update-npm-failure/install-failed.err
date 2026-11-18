@@ -1,0 +1,4 @@
+[31mError: npm install failed in /home/op/real-devkit-run/home3/.config/opencode/huaweicloud-plugins: npm error 404 tarball, folder, http url, or git url. npm error A complete log of this run can be found in: /home/op/real-devkit-run/cache3/_logs/2026-11-11T06_13_08_890Z-debug-0.log[0m
+
+npm error code 1
+npm error command sh -c npx --yes huaweicloud-devkit@latest update --target opencode

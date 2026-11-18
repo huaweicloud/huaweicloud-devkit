@@ -12,6 +12,10 @@ process.env.HW_SECRET_KEY = 'TESTSK';
 process.env.HDKITSERVICE_ENDPOINT = 'https://example.test/hdkitservice/';
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 process.env.HUAWEICLOUD_DEVKIT_TELEMETRY = 'off';
+// 连接重试表针脚置 0：本文件的烧核用例伪造 HTTP 502 JSON，但 round 29 起烧核
+// 裁决不重试（实测默认表下 1 fetch / 47ms），今天不置 0 也不会慢；保留针脚是
+// 为了让将来落进本文件的瞬时重试用例不必睡满默认 30s+45s 表。
+process.env.HW_SANDBOX_CONNECT_RETRY_DELAYS_MS = '0';
 // 池缓存落盘路径隔离（fixtureDir 注册，进程退出回收）
 process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('sandbox-pool-calltool'), 'sandbox-pools.json');
 // PR-3a: connect/renew/watchdog ride the approval gate. This tier pins
@@ -20,8 +24,6 @@ process.env.HW_SANDBOX_POOL_CACHE_PATH = join(fixtureDir('sandbox-pool-calltool'
 // terminal half), and the benign classified exec pass-throughs stay
 // ungated. The approval battery owns the gate's own contract.
 process.env.DEVKIT_APPROVAL_MODE = 'ask';
-delete process.env.HW_POOL_TEMPLATE_EPHEMERAL;
-delete process.env.HW_POOL_TEMPLATE_PERSISTENT;
 
 // callTool 级行为测试：validate → hdkitConnect（真实实现 + fetch mock）→ 播报判定 →
 // rememberWorkspacePool 全链路；终端层走 session-manager 模块 mock，不触真实 DevStation。
@@ -32,6 +34,9 @@ after(() => {
 
 let currentWs: string | null = null;
 const execLog: string[] = [];
+// 3bfc1f53 形态：closeSession 记录入参——仅 session_id 的关机用例要断言
+// 终端会话以服务端回传的 devStageId 关闭，而非 session_id 字符串。
+const closeLog: Array<{ ws: unknown; username: unknown }> = [];
 
 // 模块 mock 必须先于 tools.ts 导入注册（按解析后 URL 拦截嵌套 import）
 mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.ts', {
@@ -44,7 +49,10 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.ts', {
       execLog.push(`${ws}:${cmd}`);
       return { stdout: 'STUB', exitCode: 0 };
     },
-    closeSession: async () => true,
+    closeSession: async (ws: unknown, username: unknown) => {
+      closeLog.push({ ws, username });
+      return true;
+    },
     uploadFileWithSession: async () => ({ ok: true, remote_path: 'stub' }),
     uploadProjectWithSession: async () => ({ ok: true }),
     deployNginx: async () => ({ ok: true, port: 8080 }),
@@ -58,11 +66,17 @@ mock.module('../plugins/huaweicloud-core/src/sandbox/session-manager.ts', {
 
 // 隧道层 mock：renew_tunnel/keepalive_watchdog/expose_tunnel 走 devbridge-tunnel 面；
 // dev 的 mock 面携带同名 stub（renewTunnel/installKeepaliveWatchdog/exposeTunnel）。
+// connect 的隧道清理走 cleanupDevbridgeTunnels（选择性清理，dev 291ce371 同型）：
+// 记录入 execLog 以断言「清理确实下发 + 不再全局 delete-all」。
 mock.module('../plugins/huaweicloud-core/src/sandbox/devbridge-tunnel.ts', {
   namedExports: {
     exposeTunnel: async () => ({ ok: true, publicUrl: 'https://stub.example' }),
     renewTunnel: async () => ({ ok: true, renewedForHours: 720 }),
     installKeepaliveWatchdog: async () => ({ ok: true, pid: '123' }),
+    cleanupDevbridgeTunnels: async (ws: string, opts: Record<string, unknown>) => {
+      execLog.push(`${ws}:cleanup:${JSON.stringify(opts || {})}`);
+      return { ok: true, deleteIds: [], killPids: [] };
+    },
     validateTunnelId: () => {},
   },
 });
@@ -193,7 +207,7 @@ test('callTool connect: invalid pool_type returns structured guidance instead of
   }
 });
 
-// 429 双码结构化用例共用：stub 429 Retry-After 信封，connect(ephemeral) 走结构化返回
+// 429 三码结构化用例共用：stub 429 Retry-After 信封，connect(ephemeral) 走结构化返回
 async function connect429Structured(payload: unknown): Promise<StructuredFailure> {
   const restore = withFetchResponse(payload, {
     status: 429,
@@ -243,6 +257,25 @@ test('callTool connect: capacity-insufficient shows exactly the server message (
   assert.equal(result.message, finalCopy);
   assert.equal(result.remediation, undefined, 'capacity copy must not be wrapped in remediation');
   assert.equal(result.retryAfter, '60');
+});
+
+test('callTool connect: template-quota-exceeded returns a structured envelope with remediation and no retryAfter', async () => {
+  const finalCopy = '当前账号在此类型沙箱的运行中实例已达上限，无法创建新的沙箱';
+  const result = await connect429Structured({
+    code: 'HDKIT_TEMPLATE_QUOTA_EXCEEDED',
+    message: finalCopy,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.code, 'HDKIT_TEMPLATE_QUOTA_EXCEEDED');
+  assert.equal(result.message, finalCopy);
+  assert.equal(result.retryAfter, undefined, 'template quota has no Retry-After');
+  assert.ok(result.remediation, 'remediation must reach the tool result (lost on throw path)');
+  assert.match(result.remediation!.hint, /上限/);
+  assert.match(result.remediation!.steps.join(' '), /huaweicloud_sandbox_shutdown/);
+  // MCP 边界等价：JSON-RPC 出口会整体序列化 result——字段必须可序列化不丢
+  const json = JSON.parse(JSON.stringify(result)) as StructuredFailure;
+  assert.equal(json.remediation?.hint, result.remediation!.hint);
+  assert.equal(json.retryAfter, undefined);
 });
 
 test('callTool connect: core-hours exhausted surfaces structured guidance', async () => {
@@ -314,8 +347,11 @@ test('callTool connect: first connect broadcasts server-configured lifecycle', a
     assert.match(result.pool.ttl_hint, /45 分钟自动关机/);
     assert.match(result.pool.ttl_hint, /2 小时自动删除/);
     assert.equal(currentWs, 'dev-1');
-    // 连接后的沙箱预清理命令确实下发（session-manager mock 记录）
-    assert.ok(execLog.some((c) => c.includes('devbridge delete-all')));
+    // 连接后执行选择性清理（不再使用全局 delete-all，dev 291ce371/43fa459e 同型）：
+    // 只清孤儿记录/宿主，保留其他端口、其他会话与 keepalive 保护的隧道。
+    assert.ok(execLog.some((c) => c.startsWith('dev-1:cleanup:')));
+    assert.ok(execLog.includes('dev-1:cleanup:{"mode":"stale"}'));
+    assert.ok(!execLog.some((c) => c.includes('devbridge delete-all')));
     // 生命周期口径进入缓存（expose_tunnel 后续使用）
     assert.equal(poolContextFor('dev-1')?.poolLifecycle.idleShutdownMinutes, 45);
   } finally {
@@ -425,4 +461,147 @@ test('callTool renew_tunnel and keepalive_watchdog stay clean (no per-call pool 
     assert.equal(watched.poolMode, undefined);
     assert.equal(watched.persistenceHint, undefined);
   });
+});
+
+// ── callTool shutdown（dev 5d89c880 + 3bfc1f53 终态；写类工具走审批门）──
+
+interface ShutdownResult {
+  ok?: boolean;
+  code?: string;
+  message?: string;
+  devStageId?: string;
+  status?: string;
+}
+
+// 关机是门面工具：与 connect 同型，ask 姿态 + 接受表单缝（本文件的直调
+// 层无法扮演终端半边）。
+async function gatedShutdownCall(args: Record<string, unknown>, label: string): Promise<unknown> {
+  return withApprovalMode('ask', async () =>
+    callTool('huaweicloud_sandbox_shutdown', args, {
+      sessionId: `${label}-${(poolPreloadSeq += 1)}`,
+      elicitation: elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } }).seam,
+    }),
+  );
+}
+
+test('callTool shutdown: closes via hdkitservice and returns status', async () => {
+  const restore = withFetchResponse(
+    { devStageId: 'ws1', status: 'shutting_down', message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒' },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ dev_stage_id: 'ws1' }, 'pool-shutdown')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    assert.equal(result.devStageId, 'ws1');
+    assert.equal(result.status, 'shutting_down');
+    assert.equal(result.message, '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒');
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: not-found returns structured code', async () => {
+  const restore = withFetchResponse(
+    { code: 'HDKIT_SANDBOX_NOT_FOUND', message: '环境不存在或已被删除' },
+    { status: 404, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ dev_stage_id: 'ws1' }, 'pool-shutdown-404')) as ShutdownResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_SANDBOX_NOT_FOUND');
+    assert.match(result.message ?? '', /环境不存在或已被删除/);
+  } finally {
+    restore();
+  }
+});
+
+test('callTool shutdown: session_id-only closes the returned workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = 'current-ws';
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-session',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ session_id: 'sess-1' }, 'pool-shutdown-sess')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    // 3bfc1f53：仅 session_id 时 closeSession 以服务端回传的 devStageId 为准
+    //（此前的 devStageId || sessionId 拼法把 session_id 字符串当 workspace 用）
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-session', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: an empty devStageId echo falls through to the workspace chain (dev || semantics)', async () => {
+  const previousWs = currentWs;
+  currentWs = 'current-ws';
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      // 敌意/异常服务端回显空串：|| 链穿透到当前 workspace（interrogate
+      // port-pr6 F4 的回归钉——?? 链会让 closeSession 收到 '' 白跑一趟）
+      devStageId: '',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ session_id: 'sess-1' }, 'pool-shutdown-empty')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'current-ws', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: workspace_id-only closes that workspace session', async () => {
+  const previousWs = currentWs;
+  currentWs = null;
+  closeLog.length = 0;
+  const restore = withFetchResponse(
+    {
+      devStageId: 'ws-fallback',
+      status: 'shutting_down',
+      message: '沙箱正在关机，实例与数据盘保留，下次连接会自动唤醒',
+    },
+    { status: 200, headers: { 'Content-Type': 'application/json' } },
+  );
+  try {
+    const result = (await gatedShutdownCall({ workspace_id: 'ws-fallback' }, 'pool-shutdown-ws')) as ShutdownResult;
+    assert.equal(result.ok, true);
+    assert.deepEqual(closeLog.at(-1), { ws: 'ws-fallback', username: 'root' });
+  } finally {
+    restore();
+    currentWs = previousWs;
+  }
+});
+
+test('callTool shutdown: no id and no current workspace returns structured guidance', async () => {
+  const previousWs = currentWs;
+  currentWs = null;
+  const originalFetch = global.fetch;
+  let fetchCalls = 0;
+  global.fetch = async () => {
+    fetchCalls += 1;
+    throw new Error('must not be reached');
+  };
+  try {
+    const result = (await gatedShutdownCall({}, 'pool-shutdown-noid')) as ShutdownResult;
+    assert.equal(result.ok, false);
+    assert.equal(result.code, 'HDKIT_INVALID_REQUEST');
+    assert.match(result.message ?? '', /session_id or dev_stage_id is required/);
+    assert.equal(fetchCalls, 0, 'an id-less call must fail locally, before any request');
+  } finally {
+    global.fetch = originalFetch;
+    currentWs = previousWs;
+  }
 });

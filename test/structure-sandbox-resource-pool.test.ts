@@ -66,12 +66,16 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     'the type table must keep the persistent row with the 1h idle shutdown and the 7-day reclaim cap',
   );
   // Selection-rules table rows: intent → pool_type mapping with the reason.
+  // dev b1ab4029 (PR-5): the DB row splits by intent — a DB-backed PREVIEW
+  // routes to ephemeral (stack is not a persistence trigger), only
+  // DB-with-cross-session-data-retention routes to persistent.
   for (const [intent, poolType] of [
     ['预览 / 试用 / demo', 'ephemeral'],
     ['一次性任务（跑完即弃）', 'ephemeral'],
     ['敏感内容（即焚）', 'ephemeral'],
+    ['带数据库但只是预览/演示', 'ephemeral'],
     ['开发工作台 / workbench', 'persistent'],
-    ['带数据库项目（DB-backed）', 'persistent'],
+    ['带数据库且需要跨会话保留数据', 'persistent'],
     ['跨日评审 / 展示', 'persistent'],
   ] as const) {
     assert.match(
@@ -87,8 +91,9 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     ['预览 / 试用 / demo', 'persistent'],
     ['一次性任务（跑完即弃）', 'persistent'],
     ['敏感内容（即焚）', 'persistent'],
+    ['带数据库但只是预览/演示', 'persistent'],
     ['开发工作台 / workbench', 'ephemeral'],
-    ['带数据库项目（DB-backed）', 'ephemeral'],
+    ['带数据库且需要跨会话保留数据', 'ephemeral'],
     ['跨日评审 / 展示', 'ephemeral'],
   ] as const) {
     assert.doesNotMatch(
@@ -97,24 +102,53 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
       `${intent} must never route to ${wrongType}`,
     );
   }
-  // Selection-rule leads (auto-select + override + per-type quota/reuse).
+  // The superseded DB-implies-persistent row must not survive anywhere in
+  // the section (the gate's never-rule 1 in table form).
+  assert.doesNotMatch(
+    poolSection,
+    /\|\s*带数据库项目（DB-backed）\s*\|/,
+    'the old DB-backed-implies-persistent row must not survive',
+  );
+  // The four gate-restatement bullets that follow the table (dev b1ab4029):
+  // the compact doctrine the pool-section reader meets before the full gate.
+  assert.match(poolSection, /预览\/一次性即使全栈\/DB 也用 `ephemeral`\*\*；技术栈不是持久化触发器/);
   assert.match(
     poolSection,
-    /agent 按意图自动选池，开发者可覆盖；意图不明确时呈现两类供选择/,
-    'the selection rules must state auto-select with developer override',
+    /`persistent` 只能来自明确长期意图，或推断后确认\*\*；不得仅因 full-stack\/DB 选 persistent/,
+  );
+  assert.match(
+    poolSection,
+    /同一任务沿用当前池\*\*；新任务重新选型；新预览默认 `ephemeral`，必要时问一次是否复用已有 persistent/,
+  );
+  assert.match(poolSection, /切换池数据不迁移\*\*\n/);
+  // Selection-rule leads: the selection defers to the gate (dev b1ab4029) —
+  // auto-select by intent with developer override, gate-executed, default
+  // ephemeral. The old intent-unclear-present-both lead is superseded by the
+  // gate's ask-once question with the ephemeral default.
+  assert.match(
+    poolSection,
+    /Selection rules（按意图自动选池；具体按 \[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\) 执行；默认 `ephemeral`，`persistent` 需明确长期意图或确认；开发者可覆盖）：/,
+    'the selection rules must defer to the Pool-Selection Gate with the ephemeral default',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /意图不明确时呈现两类供选择/,
+    'the pre-gate present-both-classes posture must not survive',
   );
   assert.match(
     poolSection,
     /\*\*配额\*\*：每用户每类型 1 台（1\+1 可并存）；同池 connect 自动复用已有实例/,
     'the per-type quota bullet must state the 1+1 model with same-pool reuse',
   );
-  // The 429 dual-code doctrine: the two codes with their opposite remedies,
-  // plus the Retry-After arrival — a code-to-remedy swap reds the gate.
+  // The 429 three-code doctrine (dev 45dd4f99 终态；PR-7): each code with its
+  // own remedy, and the Retry-After split (quota/capacity carry it, template
+  // quota does not) — a code-to-remedy swap or a Retry-After collapse reds the
+  // gate.
   // dev 5c09d225 终态：capacity 由服务端返回最终文案，客户端不再附加引导。
   assert.match(
     poolSection,
-    /\*\*429 双错误码\*\*：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放\/复用）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。响应带 `Retry-After`/,
-    'the 429 dual-code bullet must map each code to its distinct remedy with the Retry-After arrival',
+    /\*\*429 三错误码\*\*：`HDKIT_QUOTA_EXCEEDED`（账号配额满，重试无效→引导释放\/复用）；`HDKIT_TEMPLATE_QUOTA_EXCEEDED`（当前账号此类型沙箱运行中实例达上限，需关机\/释放同类型实例后重试，无 `Retry-After`）；`HDKIT_CAPACITY_INSUFFICIENT`（池容量不足，服务端直接返回最终文案“DevKit 免费资源当前使用人数较多，建议您错峰使用，感谢理解！”，客户端不再附加引导）。`HDKIT_QUOTA_EXCEEDED` \/ `HDKIT_CAPACITY_INSUFFICIENT` 响应带 `Retry-After: 60`/,
+    'the 429 three-code bullet must map each code to its distinct remedy with the per-code Retry-After split',
   );
   assert.doesNotMatch(
     poolSection,
@@ -128,8 +162,30 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   );
   assert.doesNotMatch(
     poolSection,
+    /HDKIT_TEMPLATE_QUOTA_EXCEEDED`（账号配额满/,
+    'template-quota-exceeded must never carry the account-quota remedy',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /HDKIT_TEMPLATE_QUOTA_EXCEEDED`（池容量不足/,
+    'template-quota-exceeded must never carry the capacity remedy',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /HDKIT_CAPACITY_INSUFFICIENT`（当前账号此类型沙箱/,
+    'capacity-insufficient must never carry the template-quota remedy',
+  );
+  assert.doesNotMatch(
+    poolSection,
     /HDKIT_CAPACITY_INSUFFICIENT`（池容量不足→建议错峰重试/,
     'the client-side off-peak remediation must not survive (server copy is final)',
+  );
+  // dev dff5df91: the old account-level guidance ("每账号最多 5 台") must not
+  // ride the template-quota sentence — it names the wrong cap.
+  assert.doesNotMatch(
+    poolSection,
+    /HDKIT_TEMPLATE_QUOTA_EXCEEDED`（[^）]*每账号最多 5 台/,
+    'the superseded account-level quota guidance must not ride the template-quota sentence',
   );
   // TTL broadcast duty (dev 5c09d225 终态)：播报只出现在 connect（首次/唤醒）与
   // expose_tunnel 两个时机；URL 交付时必须转述 urlLifetimeHint/warnings。
@@ -156,11 +212,18 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     /\*\*删除纪律\*\*：不向开发者暴露生命周期删除 API（回收走平台闲置策略 G1）；开发者主动删除时必须二次确认（确认要删除？数据不可恢复）；绝不做延后代删/,
     'the deletion-discipline bullet must state the no-API rule, the double confirm, and no deferred deletes',
   );
-  // Explicit template_id wins over pool_type (custom template scenario).
+  // Custom templates are retired (dev 8c1af52e): the client sends pool_type
+  // only and the server owns the mapping — the explicit-priority doctrine is
+  // gone.
   assert.match(
     poolSection,
-    /显式 `template_id` 优先于 `pool_type`（自定义模板场景）/,
-    'explicit template_id must be documented as taking precedence',
+    /不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`/,
+    'the template_id retirement must be documented in the selection rules',
+  );
+  assert.doesNotMatch(
+    poolSection,
+    /显式 `template_id` 优先/,
+    'the explicit-priority doctrine must not come back',
   );
   assert.match(
     poolSection,
@@ -177,23 +240,29 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
   );
 });
 
-test('workflow sequences pool selection (Step 0.3) between the target gate and the stack gate (v3 caliber)', () => {
+test('workflow sequences the pool gate (Step 0.6) after the stack gate (port-pr5)', () => {
   const skill = readFileSync(skillPath, 'utf8');
 
-  // Position, not just presence: after the target gate resolves and before
-  // the stack gate opens code transfer, the pool choice is checked against
-  // the lifecycle window — both the anchor and the v3 lifecycle gloss must
-  // hold seam to seam.
+  // dev b1ab4029 reorder: the pool choice follows the stack gate (the stack
+  // is known before the pool is picked) and defers to the gate doctrine —
+  // position, not just presence: after the target gate resolves, the stack
+  // gate opens code transfer, then the pool choice is gated and checked
+  // against the lifecycle window.
   assert.match(
     skill,
-    /\*\*Step 0\.3 — Resource pool selection\*\*: once the target is sandbox, pick the pool type per the \[两池沙箱（pool_type）\]\(#两池沙箱pool_type\) selection rules \(auto by intent, developer may override; 1 instance per type, same type reuses\)\. Check the task survives the chosen type's lifecycle window \(ephemeral: idle 30min shutdown \+ 1h delete; persistent: 7-day idle reclaim cap\) before connecting\./,
-    'Step 0.3 must link the 两池 section at its real heading anchor with the v3 lifecycle window',
+    /\*\*Step 0\.6 — Pool-Selection Gate \(MANDATORY\)\*\*: once the target is sandbox and the stack is known, select the pool per the \[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\)\. Default `ephemeral`; use `persistent` only with explicit long-term intent or after confirmation\. Same task reuses the current pool; a new task is re-evaluated\. Check the task survives the chosen type's lifecycle window \(ephemeral: idle 30min shutdown \+ 1h delete; persistent: 7-day idle reclaim cap\) before connecting\./,
+    'Step 0.6 must link the gate at its real heading anchor with the lifecycle window',
   );
   const step0 = skill.indexOf('**Step 0 — Target-Selection Gate (MANDATORY)**');
-  const step03 = skill.indexOf('**Step 0.3 — Resource pool selection**');
   const step05 = skill.indexOf('**Step 0.5 — Stack-Selection Gate (MANDATORY)**');
-  assert.ok(step0 !== -1 && step03 !== -1 && step0 < step03, 'Step 0.3 must follow Step 0');
-  assert.ok(step05 !== -1 && step03 < step05, 'Step 0.3 must precede Step 0.5');
+  const step06 = skill.indexOf('**Step 0.6 — Pool-Selection Gate (MANDATORY)**');
+  assert.ok(step0 !== -1 && step05 !== -1 && step0 < step05, 'Step 0.5 must follow Step 0');
+  assert.ok(step06 !== -1 && step05 < step06, 'Step 0.6 must follow Step 0.5 (stack before pool, dev b1ab4029)');
+  assert.equal(
+    skill.includes('**Step 0.3 — Resource pool selection**'),
+    false,
+    'the pre-stack pool-selection step must not survive',
+  );
 
   // Step 10 的 URL 交付纪律（dev 5c09d225）：每次交付 URL 必须附带 sandbox 存活期提示。
   assert.match(
@@ -226,13 +295,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /客户端传 `pool_type`（ephemeral\/persistent），\*\*服务端权威映射\*\* template_id；显式 `template_id` 优先（自定义模板）/,
-    'the client/server mapping split must be stated',
+    /客户端只传 `pool_type`（ephemeral\/persistent），\*\*服务端权威映射\*\* template_id；template_id\/自定义模板已下线/,
+    'the client/server mapping split must state the client-side retirement',
   );
   assert.match(
     resourcePool,
-    /\*\*无 persist_mode 请求参数\*\*（需求方两次纠正）/,
-    'the no-persist_mode fact must be stated',
+    /\*\*无 persist_mode 请求参数\*\*；闲置语义由平台按模板配置；上游参数面有 template_id，但客户端不再传入/,
+    'the no-persist_mode fact must state the client-side retirement',
   );
   assert.match(
     resourcePool,
@@ -245,6 +314,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     resourcePool,
     /\| 维度\s+\| 非持久化 \(ephemeral\)\s+\| 持久化 \(persistent\)/,
     'the type table columns must stay ephemeral-then-persistent',
+  );
+  // dev b1ab4029 (PR-5): the attribution row drops DB-as-a-trigger from the
+  // persistent side and scopes it to cross-session data retention.
+  assert.match(
+    resourcePool,
+    /\| 定位\s+\| 预览\/试用\/一次性任务\/敏感即焚（含全栈\/DB 预览）\s+\| 开发工作台\/需要跨会话保留数据的项目\/跨日评审展示\s*\|/,
+    'the attribution row must route DB previews to ephemeral and persistent to cross-session retention',
   );
   assert.match(
     resourcePool,
@@ -336,8 +412,9 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /实际池 flavor 为 \*\*3U6G\*\*（需求方 2026-11-02 指定，尾号 54），上述 2U4G\/4U8G 为原始申请口径，容量数字需按 3U6G 重新核算/,
     'the 3U6G re-check note must stay attached to the original-application table',
   );
-  // Quota and error codes: the per-type quota, account cap, dual 429 codes
-  // with upstream code mappings, and the burn-core code.
+  // Quota and error codes: the per-type quota, account cap, three 429 codes
+  // with upstream code mappings, and the burn-core code. PR-7 adds the
+  // template-level running cap (HD.98320082) as the third code.
   assert.match(
     resourcePool,
     /每用户每类型 1 台（同类复用，ephemeral \+ persistent 可并存 1\+1）；账号并发上限 5/,
@@ -345,8 +422,18 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
+    /429 三错误码（`HDKIT_QUOTA_EXCEEDED` \/ `HDKIT_CAPACITY_INSUFFICIENT` 带 `Retry-After: 60`；`HDKIT_TEMPLATE_QUOTA_EXCEEDED` 不带）：/,
+    'the 429 code block must carry the per-code Retry-After split',
+  );
+  assert.match(
+    resourcePool,
     /`HDKIT_QUOTA_EXCEEDED`：用户配额满（上游 `HD\.98320022`）→ 重试无效，引导释放\/复用已有实例/,
     'quota-exceeded must map to its upstream code and release/reuse remedy',
+  );
+  assert.match(
+    resourcePool,
+    /`HDKIT_TEMPLATE_QUOTA_EXCEEDED`：当前账号此类型沙箱运行中实例达上限（上游 `HD\.98320082`）→ 需关机\/释放同类型实例后重试/,
+    'template-quota-exceeded must map to its upstream code and the same-type free-up remedy',
   );
   assert.match(
     resourcePool,
@@ -369,6 +456,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /`sandbox_connect` 传 `pool_type`；非法值本地即报错（不发无效请求）；未传由服务端默认 ephemeral/,
     'the client must validate pool_type locally and defer absence to the server',
   );
+  // dev b1ab4029: the selection belongs to the skill's gate; the client only
+  // validates and passes pool_type through.
+  assert.match(
+    resourcePool,
+    /选型由 skill 的 Pool-Selection Gate 决定；客户端只校验\/透传 `pool_type`，不自行推断/,
+    'the client contract must defer selection to the skill gate',
+  );
   // dev 5c09d225 终态客户端行为：播报时机两处、口径落盘缓存、429 差异化透传。
   assert.match(
     resourcePool,
@@ -382,8 +476,8 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /429：配额满给 `remediation` 引导；容量不足只透传服务端最终文案 \+ `retryAfter`/,
-    'the 429 split must pin quota remediation vs capacity passthrough',
+    /429：配额满与模板配额满给 `remediation` 引导；容量不足只透传服务端最终文案 \+ `retryAfter`；模板配额不带 `retryAfter`/,
+    'the 429 split must pin quota/template-quota remediation vs capacity passthrough',
   );
   assert.doesNotMatch(
     resourcePool,
@@ -392,8 +486,13 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     resourcePool,
-    /钉扎（可选，运维场景）：`HW_POOL_TEMPLATE_EPHEMERAL`\/`HW_POOL_TEMPLATE_PERSISTENT` 环境变量——设置后客户端附带映射 template_id 上送；日常部署无需配置（模板 ID 由服务端权威维护）/,
-    'the pinning contract must be stated with its optional-ops posture',
+    /模板 ID 仅由服务端 `POOL_TEMPLATE_\*` 权威维护；客户端不再支持 `HW_POOL_TEMPLATE_\*` 钉扎或显式 template_id/,
+    'the retirement of pinning and explicit template_id must be stated',
+  );
+  assert.doesNotMatch(
+    resourcePool,
+    /设置后客户端附带映射 template_id 上送/,
+    'the pinning teaching must not come back',
   );
   // G list: G1's mapping drives the 7-day cap the deletion doctrine cites.
   assert.match(
@@ -436,34 +535,77 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
   );
   assert.match(
     skill,
-    /- \[Resource Pool\]\(references\/resource-pool\.md\) — 资源池定稿口径/,
-    'the References list must link the resource-pool reference',
+    /- \[Resource Pool\]\(references\/resource-pool\.md\) — 资源池定稿口径：两沙箱类型、申请\/限流参数（持久 2U4G×300 \+ 4U8G×200、非持久 2U4G×1000、overlayer 5GB\/实例、EVS 300TB）、配额 1\/类型 与 429 三码（Retry-After 仅随配额满与容量不足）语义/,
+    'the References list must link the resource-pool reference with the three-code caliber on its index line',
+  );
+  assert.doesNotMatch(
+    skill,
+    /429\+Retry-After/,
+    'the blanket 429+Retry-After index claim must not survive (PR-7: the split is per code)',
   );
   // The late-flow catch-all surface: the warnings table carries the pool row
   // beside the two gate rows (the #1021 v2-wins precedent — the table is the
   // surface an agent consults last). The v2-authored row is the one surface
   // with no verbatim dev source of truth, so its doctrine body is pinned in
-  // its reconciled v3 form: the 429 dual-code discriminator, the routing
+  // its reconciled v3 form: the 429 three-code discriminator, the routing
   // tails, the lifecycle facts, and the gate sentence.
   const warningsRow = skill.split('\n').find((line) => line.includes('Pool type fixes durability')) ?? '';
   assert.match(
     warningsRow,
-    /预览\/试用\/即焚 requests belong on the `ephemeral` pool — idle 30min auto-shutdown \+ 1h auto-delete \(平台定时任务，已实测\), nothing survives it, data dies with the box; 工作台\/带数据库\/跨日 requests belong on the `persistent` pool \(EVS 32G mounted, survives reboots, idle reclaim within 7 days max\)\./,
-    'the warnings row must route each intent family to its pool with the v3 lifecycle facts',
+    /预览\/试用\/即焚 requests belong on the `ephemeral` pool — idle 30min auto-shutdown \+ 1h auto-delete \(平台定时任务，已实测\), nothing survives it, data dies with the box; 工作台\/需要跨会话保留数据\/跨日 requests belong on the `persistent` pool \(EVS 32G mounted, survives reboots, idle reclaim within 7 days max\)\./,
+    'the warnings row must route each intent family to its pool with the v3 lifecycle facts (port-pr5: DB alone is not a persistent trigger)',
   );
   assert.match(
     warningsRow,
-    /Pick per the 两池沙箱（pool_type） selection rules \(Step 0\.3\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox\./,
-    'the warnings row must carry the Step 0.3 gate sentence',
+    /Pick per the \[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\) \(Step 0\.6\) BEFORE calling `sandbox_connect`, and never promise durability on an ephemeral sandbox\./,
+    'the warnings row must carry the Pool-Selection Gate sentence (Step 0.6)',
   );
   assert.match(
     warningsRow,
-    /A rejected connect returns HTTP 429 with a Retry-After header and a dual error code — the CODE, not the status, separates the two failure classes: HDKIT_QUOTA_EXCEEDED \(quota — 1 instance per pool type; release or reuse, retry useless\) vs HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak\)\./,
-    'the warnings row must state the full 429 dual-code arrival contract',
+    /A rejected connect returns HTTP 429 with one of three codes — the CODE, not the status, separates the failure classes: HDKIT_QUOTA_EXCEEDED \(quota — 1 instance per pool type; release or reuse, retry useless; Retry-After 60\), HDKIT_TEMPLATE_QUOTA_EXCEEDED \(the running instances of this account for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After\), or HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak; Retry-After 60\)\./,
+    'the warnings row must state the full 429 three-code arrival contract with its per-code remedies',
+  );
+  assert.doesNotMatch(
+    warningsRow,
+    /dual error code/,
+    'the superseded dual-code wording must not survive in the warnings row (PR-7)',
+  );
+  // dev e0c8700b + 501fd8b4 + e1255a4b 的门禁/重试 doctrine 行（v2 自著面）：
+  // 502/504 与 409 两类相反处置钉在同一行，互换即红门；autoUpgrade 不存活
+  // （dev 的自动升级模块未移植——替换措辞的缺位钉）。
+  const gateWarningsRow =
+    skill.split('\n').find((line) => line.includes('Gateway 502/504 vs the 409 version gate')) ?? '';
+  assert.match(
+    gateWarningsRow,
+    /A connect answered by gateway 502\/504 is a transient orchestration timeout, NOT a failed create: Gateway 502\/504 timeouts during orchestration are retried automatically \(30s\/45s backoff\) — the server may already have created the instance, so a retry reuses it; on exhaustion the result is ok:false with the attempt count, and the remediation follows the failing answer — a gateway page carries the transient-class copy, while a business-coded 502 that carries its own remediation keeps it \(one without its own copy falls to the transient copy\)\./,
+    'the gate warnings row must mirror the retry sentence with the exhaustion observable and the exact remediation-split rule',
+  );
+  assert.match(
+    gateWarningsRow,
+    /The same gate fires on the expose relay's auto-create, surfacing error_code HDKIT_VERSION_TOO_OLD with the upgrade remediation instead of a credential failure\./,
+    'the gate warnings row must pin the relay fold observable',
+  );
+  // Step 1 NO_CREDENTIAL 判别（门禁子弹先于配额/兜底引导）：被门禁的客户端
+  // 不再被引去清 key/重注凭证（与警告行"Do not debug either as a credential
+  // issue"互为印证）
+  assert.match(
+    skill,
+    /\*\*Version gate\*\* \(`HDKIT_VERSION_TOO_OLD`\): NOT a credential problem — the plugin version is too old\. The failure carries the upgrade remediation under gateRemediation \(npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or call `huaweicloud_upgrade`\); creating a key or re-running `huaweicloud_sandbox_credentials` cannot clear it\./,
+    'the Step 1 NO_CREDENTIAL branch must discriminate the version gate before the quota and manual fallbacks, with the taught field name gateRemediation',
+  );
+  assert.match(
+    gateWarningsRow,
+    /A 409 `HDKIT_VERSION_TOO_OLD` is the client-version gate — a different failure, not transient: follow the returned remediation \(npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or call `huaweicloud_upgrade`\); retrying connect cannot clear it\./,
+    'the gate warnings row must pin the 409-to-upgrade mapping with the non-retryable verdict',
+  );
+  assert.doesNotMatch(
+    gateWarningsRow,
+    /autoUpgrade|自动升级/,
+    'the dev autoUpgrade field must not survive in the warnings row (the auto-upgrade module is not ported)',
   );
 });
 
-test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics (v3 caliber)', () => {
+test('sandbox tool descriptions carry the pool_type and 429 three-code semantics (v3 caliber + PR-7)', () => {
   const tools = readFileSync(toolsPath, 'utf8');
 
   const connectDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_connect');
@@ -479,8 +621,31 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   assert.match(
     connectDesc,
-    /On quota exhaustion the API returns HTTP 429 with a Retry-After header and a dual error code: HDKIT_QUOTA_EXCEEDED \(retry useless — release or reuse the existing instance\) vs HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak\)\./,
-    'connect must state the full 429 arrival and dual-code-to-remedy contract',
+    /On quota exhaustion the API returns HTTP 429 with one of three codes: HDKIT_QUOTA_EXCEEDED \(retry useless — release or reuse the existing instance; Retry-After 60\), HDKIT_TEMPLATE_QUOTA_EXCEEDED \(the running instances of this account for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After\), or HDKIT_CAPACITY_INSUFFICIENT \(pool capacity; retry later \/ off-peak; Retry-After 60\)\./,
+    'connect must state the full 429 arrival and the three-code-to-remedy contract',
+  );
+  assert.doesNotMatch(
+    connectDesc,
+    /dual error code/,
+    'the superseded dual-code wording must not survive on the connect description (PR-7)',
+  );
+  // dev e0c8700b + 501fd8b4 + e1255a4b：网关 502/504 有界重试与 409 版本门禁。
+  // 映射承载钉：502/504 → 瞬时重试+复用语义；409 → 门禁+升级引导——两类相反
+  // 处置各钉其句，互换即红门。autoUpgrade 不存活（dev 的自动升级模块未移植）。
+  assert.match(
+    connectDesc,
+    /Gateway 502\/504 timeouts during orchestration are retried automatically \(30s\/45s backoff\) — the server may already have created the instance, so a retry reuses it\./,
+    'connect must state the bounded gateway retry with the reuse fact',
+  );
+  assert.match(
+    connectDesc,
+    /An outdated plugin version is rejected by the 409 HDKIT_VERSION_TOO_OLD version gate, surfaced by the sandbox tools \(connect\/check_user\/sign_agreement\/credentials\) as ok:false and by the voucher trio as claimed:false, always carrying code, message, and remediation naming the upgrade act \(npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or huaweicloud_upgrade\), with clientVersion and minVersion present when the service sends them\./,
+    'connect must state the version-gate arrival with the split ok/claimed envelopes, the always-present fields, and the version fields as service-conditional',
+  );
+  assert.doesNotMatch(
+    connectDesc,
+    /autoUpgrade|自动升级/,
+    'the dev autoUpgrade field must not survive on the connect description (the auto-upgrade module is not ported)',
   );
   // Mapping-bearing pins on the description's own lifecycle attribution —
   // the connect description is the surface an agent sees without loading
@@ -497,9 +662,10 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
     'the connect description must attribute the EVS retention, 1h shutdown, and 7-day cap to the persistent pool',
   );
   // dev 5c09d225/ef9e977b 终态：服务端配置字段（分钟口径）、started 字段、播报时机。
+  // dev 8c1af52e：回显是服务端解析出的模板（response 字段），不再是请求参数。
   assert.match(
     connectDesc,
-    /pool_type\/template_id echo, server-configured lifecycle numbers \(pool_idle_shutdown_minutes \/ pool_idle_delete_minutes \/ pool_reclaim_minutes\) and started \(true when a reused instance was woken from shutdown\)\./,
+    /pool_type\/resolved template_id echo, server-configured lifecycle numbers \(pool_idle_shutdown_minutes \/ pool_idle_delete_minutes \/ pool_reclaim_minutes\) and started \(true when a reused instance was woken from shutdown\)\./,
     'the connect description must promise the server-configured minute-based lifecycle echo and the started field',
   );
   assert.match(
@@ -514,8 +680,8 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
   );
   assert.match(
     connectDesc,
-    /pool_type\/template_id echo/,
-    'the connect description must promise the pool_type/template_id echo',
+    /pool_type\/resolved template_id echo/,
+    'the connect description must promise the resolved (server-side) echo, never a request parameter',
   );
   // v2 divergence: the vendor-gate seam stays on the connect description.
   assert.match(connectDesc, /Vendor-gated \(vendorConfirmed\)/, 'connect must keep the vendor-gate sentence');
@@ -531,6 +697,11 @@ test('sandbox tool descriptions carry the pool_type and 429 dual-code semantics 
     exposeDesc,
     /The urlLifetimeHint MUST be relayed to the developer together with the URL: the tunnel expiry is NOT the sandbox lifetime — an idle sandbox shuts down \(ephemeral also auto-deletes\), which kills the URL\./,
     'the expose description must carry the MUST-relay sentence',
+  );
+  assert.match(
+    exposeDesc,
+    /The auto-create relay goes through hdkitservice and inherits its 409 HDKIT_VERSION_TOO_OLD version gate: an outdated plugin fails auto-create the same way it fails connect, and the expose failure carries error_code HDKIT_VERSION_TOO_OLD with the upgrade remediation under gateRemediation, and clientVersion and minVersion when the service sends them — upgrade the plugin instead of creating a key by hand\./,
+    'the expose description must teach the relay gate fold with its taught field name gateRemediation and the versions as service-conditional',
   );
 
   const closeDesc = toolDescriptionBlock(tools, 'huaweicloud_sandbox_close_session');
@@ -575,9 +746,110 @@ test('connect schema documents the pool_type parameter with its lifecycle semant
     /Sandbox pool type \(default ephemeral\)\. ephemeral = non-persistent: idle auto-shutdown 30min \+ auto-delete 1h \(platform scheduled task, verified\) — save important data elsewhere; persistent = data disk retained, idle reclaim within 7 days\./,
     'the pool_type description must state both lifecycle calibers',
   );
+  // dev 8c1af52e：自定义模板下线，pool_type 是唯一的选池参数。
   assert.match(
     connectSchemaBlock,
-    /Explicit template_id overrides pool_type\./,
-    'the pool_type description must state the explicit-template precedence',
+    /Custom templates are no longer supported\./,
+    'the pool_type description must state the custom-template retirement',
+  );
+  assert.doesNotMatch(
+    connectSchemaBlock,
+    /template_id/,
+    'connectSchema must not declare or describe a template_id property',
+  );
+});
+
+test('huawei-sandbox teaches the shutdown doctrine and the persistent core-hours hint (port-pr6)', () => {
+  // dev 5d89c880 + 3bfc1f53 移植的教义面：关机纪律（仅明确要求时调用、
+  // close ≠ delete、非持久化也可关机但不主动提示）、persistent 播报的核时
+  // 提醒、工具表与选型表的关机行、以及审批门第九个成员的教义同步。v2 的
+  // TTL 播报行带行尾锚（见上 test 的 line-anchored pin），核时提醒因此落为
+  // 独立 bullet，而非 dev 的行内追加——语义同源，形态 v2 适配。
+  const skill = readFileSync(skillPath, 'utf8');
+  const resourcePool = readFileSync(referencePath, 'utf8');
+  const approvals = readFileSync(
+    join(pluginRoot, 'src', 'packs', 'core', 'skills', 'huaweicloud-safety', 'references', 'approvals.md'),
+    'utf8',
+  );
+
+  // 关机纪律（dev 逐字）：仅明确要求、调用前确认一次、绝不自动关机；
+  // 关机 ≠ 删除；非持久化也可关机但不主动提示；不提“控制台关机”。
+  assert.match(
+    skill,
+    /\*\*关机纪律\*\*：仅当开发者明确要求关机时调用 `huaweicloud_sandbox_shutdown`；调用前确认一次，绝不自动关机。关机 ≠ 删除：只 close，不 delete，实例与 EVS 数据盘保留，下次 connect 自动唤醒。非持久化沙箱也可关机，但不主动提示；不要向开发者提“控制台关机”。/,
+    'the shutdown-discipline bullet must pin the explicit-request-only contract and the close-not-delete fact',
+  );
+
+  // 核时提醒（v2 适配形态，独立 bullet）：persistent 播报追加，ephemeral 不出现。
+  assert.match(
+    skill,
+    /\*\*核时提醒（persistent 播报追加）\*\*：persistent 池的生命周期播报（connect 的 `pool\.ttl_hint` 与 expose_tunnel 的 `urlLifetimeHint`）追加「如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。」；ephemeral 播报不出现该提示/,
+    'the core-hours hint bullet must pin the persistent-only carriage and the hint text',
+  );
+
+  // 工具表与选型表的关机行（dev 逐字）。
+  assert.match(
+    skill,
+    /\| `huaweicloud_sandbox_shutdown`\s+\| Shut down a running sandbox \(close only; instance\/data disk retained; reconnect wakes it\)/,
+    'the lifecycle tool table must carry the shutdown row',
+  );
+  assert.match(
+    skill,
+    /\| 暂不使用 \/ 节省核时\s+\| `sandbox_shutdown`\s+\| 只关机不删除；数据盘保留，下次 connect 自动唤醒/,
+    'the tool selection guide must carry the shutdown row',
+  );
+
+  // round-2 seat-A F1：修正后的 workspace_id 描述钉（共享 part 的 "Required
+  // … HW_WORKSPACE_ID" 措辞对本工具双半皆错——workspace_id 是可选的第三定位
+  // 面，回退会静默绿，故钉 dev 口径文本）。
+  const schemas = readFileSync(join(pluginRoot, 'src', 'packs', 'sandbox', 'schemas.ts'), 'utf8');
+  assert.match(
+    schemas,
+    /workspace_id: z\s*\n?\s*\.string\(\)\s*\n?\s*\.optional\(\)\s*\n?\s*\.describe\('Workspace ID; defaults to the current workspace \(an alternative to session_id\/dev_stage_id\)'\)/,
+    "the shutdown schema's workspace_id must carry the dev-caliber description, not the shared part's Required wording",
+  );
+
+  // frontmatter 触发面：lifecycle 覆盖列表加入 shutdown。
+  assert.match(
+    skill,
+    /Covers sandbox lifecycle \(check-user, sign-agreement, connect, shutdown, release\)/,
+    'the frontmatter description must name shutdown in the lifecycle coverage',
+  );
+
+  // 审批门第九个成员：标题、Gated 名单与确认语义句都点名 shutdown。
+  assert.match(skill, /## Approval gate \(the nine mutating tools\)/, 'the gate heading must count nine');
+  assert.match(
+    skill,
+    /Gated: `connect`, `exec_with_session`, `exec_one_shot`, `expose_tunnel`, `renew_tunnel`, `keepalive_watchdog`, `sign_agreement`, `credentials`, `shutdown`\./,
+    'the gated list must name shutdown',
+  );
+  assert.match(
+    skill,
+    /connect \/ shutdown \/ the tunnel faces \/ sign_agreement \/ credentials confirm on every call/,
+    'the always-flavor sentence must name shutdown',
+  );
+
+  // resource-pool 引用：核时提醒 bullet 与 shutdown 客户端行为（dev 逐字）。
+  assert.match(
+    resourcePool,
+    /- persistent 生命周期提示追加核时提醒：\*\*如暂时不需要使用，建议尽快关机，避免持续消耗核时；可以告诉我帮你关机（实例与数据盘保留，下次连接会自动唤醒）。\*\* ephemeral 不出现该提示/,
+    'the reference must pin the persistent core-hours reminder',
+  );
+  assert.match(
+    resourcePool,
+    /- `sandbox_shutdown` 调 hdkitservice `POST \/shutdown`（DevStation `close`，不 delete）；仅开发者明确要求时调用；返回 `stopped` \/ `shutting_down` \/ `already_stopped` \/ `close_requested`。非持久化沙箱也可关机，但不主动提示/,
+    'the reference must pin the shutdown client behavior and the status vocabulary',
+  );
+
+  // 名册派生面：safety skill 的审批参考必须随 roster leaf 登记 shutdown
+  // （structure.test.ts 的 roster 循环钉强制此行——漏行即结构守卫红）。
+  assert.ok(
+    approvals.includes('- `huaweicloud_sandbox_shutdown`'),
+    'the safety approvals reference must list shutdown per the roster leaf',
+  );
+  assert.match(
+    approvals,
+    /connect, shutdown, the tunnel faces, sign_agreement, credentials, and the hcloud run face's write-classified commands/,
+    'the approvals always-flavor sentence must name shutdown',
   );
 });

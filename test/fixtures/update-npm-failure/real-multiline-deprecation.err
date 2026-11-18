@@ -1,0 +1,8 @@
+(node:2225937) DeprecationWarning: legacy API report follows
+credential rotation failed, stale session accepted
+(Use `node --trace-deprecation ...` to show where the warning was created)
+npm error code 7
+npm error path /home/op/project/pkgdep
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

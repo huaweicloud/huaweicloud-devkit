@@ -1,0 +1,6 @@
+npm error code 7
+npm error path /home/op/captures/lifecycle/consumer/node_modules/broken-install-fixture
+npm error command failed
+npm error command sh -c node -e "console.error('fatal: native build failed: missing libfoo'); process.exit(7)"
+npm error fatal: native build failed: missing libfoo
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T05_56_52_956Z-debug-0.log

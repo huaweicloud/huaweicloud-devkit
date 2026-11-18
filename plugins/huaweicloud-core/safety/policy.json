@@ -125,5 +125,11 @@
     "CollectPolicyAssignmentsStatesSummary",
     "CheckMigrateLogicDb"
   ],
-  "safeTextReadCommands": ["rg", "grep", "findstr", "git", "ls", "dir", "Get-ChildItem"]
+  "safeTextReadCommands": ["rg", "grep", "findstr", "git", "ls", "dir", "Get-ChildItem"],
+  "sandboxWriteTools": [
+    "huaweicloud_sandbox_connect",
+    "huaweicloud_sandbox_credentials",
+    "huaweicloud_sandbox_upload_file",
+    "huaweicloud_sandbox_shutdown"
+  ]
 }

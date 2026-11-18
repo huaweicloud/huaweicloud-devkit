@@ -1,6 +1,7 @@
 import { DEVBRIDGE_HOST_EXPIRY_HOURS, validateExpiryHours, validateTunnelPort } from './devbridge-validation.ts';
 import { runOneShot, type OneShotResult } from './devbridge-exec.ts';
 import { gateExposeAuth, type DevbridgeAuthGateOptions } from './devbridge-auth.ts';
+import { cleanupDevbridgeTunnels, normalizeCleanupMode, type DevbridgeCleanupResult } from './devbridge-cleanup.ts';
 import {
   buildDevbridgeExposeScript,
   formatTunnelReachabilityWarning,
@@ -27,6 +28,11 @@ import { buildExposeLifetimeNotice, type PoolContext } from '../lib/hdkit/sandbo
 // return ok:false (the gateway itself reports the URL dead), while 502 "bad
 // gateway" deliberately returns ok:true-with-warning — the tunnel IS alive,
 // the local service is not; the developer needs the URL to debug the service.
+// The selective-cleanup port (dev's 97c4bc8a wave) changed the retry anatomy:
+// every pre-clean/retry-cleanup runs cleanupDevbridgeTunnels (stale/quota,
+// never delete-all — a global wipe kills other sessions' tunnels), the loop
+// gets up to 4 attempts, and a quota that stays full after the selective
+// cleanups returns the structured devbridge_tunnel_quota_exceeded failure.
 //
 // The phases live with their concerns and are imported here: the auth/version
 // gate from devbridge-auth.ts, the no-URL verdict from devbridge-expose.ts,
@@ -100,6 +106,7 @@ export async function exposeTunnel(
     poolType,
     poolContext,
     keyUpgrade,
+    cleanupMode,
   }: {
     port?: number | string;
     expiryHours?: number;
@@ -114,6 +121,11 @@ export async function exposeTunnel(
     // ≠ 沙箱存活期）；未传/无缓存（自定义模板）时结果不带 sandboxLifetime 字段。
     poolContext?: PoolContext;
     keyUpgrade?: DevbridgeAuthGateOptions['keyUpgrade'];
+    // Selective pre-clean before the expose loop (stale default): same-port
+    // tunnels + orphan records/hosts are removed; other ports, other sessions
+    // and keepalive-protected tunnels are preserved. 'all' is a manual full
+    // reset; 'none' skips (a stale same-port host can then conflict).
+    cleanupMode?: unknown;
   },
   username = 'root',
   timeoutMs = 90000,
@@ -130,17 +142,33 @@ export async function exposeTunnel(
   }
   const { authMode, version: authVersion } = gate;
 
+  // Selective pre-clean: remove same-port tunnels + orphan records/hosts only.
+  // Other ports and keepalive-protected tunnels are preserved. Best-effort —
+  // a locked/listFailed cleanup must not block the expose itself.
+  const validatedCleanupMode = normalizeCleanupMode(cleanupMode);
+  try {
+    await cleanupDevbridgeTunnels(workspaceId, {
+      mode: validatedCleanupMode,
+      samePort: validatedPort,
+      username,
+    });
+  } catch {
+    // best-effort: cleanup failure must not mask the expose
+  }
+
   let result: OneShotResult | undefined;
   let attempt = 0;
-  const maxAttempts = 2;
+  let lastQuotaCleanup: DevbridgeCleanupResult | null = null;
+  const maxAttempts = 4;
   while (attempt < maxAttempts) {
     attempt += 1;
     const exposeScript = buildDevbridgeExposeScript(validatedPort, validatedExpiryHours);
     // A2 budget guard: the script's worst case is ~63s of bounded waits
-    // (2s settle + up to 9s URL-extraction + 4×10s probes + 3×5s backoff) plus
-    // the delete-all round-trip, inside one one-shot exec — a ws-exec timeout
-    // here must fold into the unreachable envelope (with the outer rebuild
-    // retry) instead of throwing a raw WebSocketExecError out of the tool.
+    // (up to 9s URL-extraction + 4×10s probes + 3×5s backoff) inside one
+    // one-shot exec — a ws-exec timeout here must fold into the unreachable
+    // envelope (with the outer rebuild retry) instead of throwing a raw
+    // WebSocketExecError out of the tool. (The pre-cleans and their execs run
+    // outside this budget, each with its own bounded one-shot.)
     let exposeFailed = false;
     try {
       result = await runOneShot(workspaceId, exposeScript, username, timeoutMs);
@@ -150,9 +178,19 @@ export async function exposeTunnel(
     }
     const parsed = parseDevbridgeExposeOutput(result.stdout);
 
-    // 10006 quota exceeded: clean up stale tunnels and retry.
+    // 10006 quota exceeded: remove orphan tunnels first, then the oldest
+    // non-protected live tunnel (one per retry) until the new tunnel fits.
+    // Never touches keepalive-protected tunnels.
     if (parsed.quotaError && attempt < maxAttempts) {
-      continue;
+      const quotaCleanup = await cleanupDevbridgeTunnels(workspaceId, {
+        mode: 'quota',
+        samePort: validatedPort,
+        maxExtra: 1,
+        username,
+      }).catch(() => null);
+      lastQuotaCleanup = quotaCleanup || lastQuotaCleanup;
+      // Kill-only progress frees no tunnel quota; only a deleted record can.
+      if (quotaCleanup?.deleteIds?.length) continue;
     }
     // Unreachable (000 — including a timed-out or failed expose exec), a
     // migrated-gateway placeholder (host-log marker), or gateway-level tunnel
@@ -165,18 +203,17 @@ export async function exposeTunnel(
     const backendDown = parsed.badGateway === true;
     if (unreachable || migration || gatewayTunnelError || backendDown) {
       if (attempt === 1) {
-        // best-effort cleanup before the retry; the expose script pre-cleans too.
+        // Only the same-port tunnel + orphans; other ports/sessions stay
+        // untouched. Best-effort — cleanup failure must not mask the expose
+        // failure.
         try {
-          await runOneShot(
-            workspaceId,
-            // #999: same first-line export as the expose script (the cleanup
-            // one-shot is a fresh shell too).
-            `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; pkill -f "devbridge host" 2>/dev/null || true; sleep 2; devbridge delete-all > /dev/null 2>&1 || true`,
+          await cleanupDevbridgeTunnels(workspaceId, {
+            mode: 'stale',
+            samePort: validatedPort,
             username,
-            20000,
-          );
+          });
         } catch {
-          // best-effort: cleanup failure must not mask the expose failure
+          // best-effort: the retry still runs
         }
         continue;
       }
@@ -189,8 +226,23 @@ export async function exposeTunnel(
     }
 
     const warnings: string[] = [];
-    if (parsed.quotaError)
-      warnings.push('DevBridge tunnel quota (10006) hit — stale tunnels were cleaned up and the host was retried.');
+    // A still-full quota is an honest structured failure: keepalive-protected
+    // tunnels were preserved and the caller learns exactly that, instead of a
+    // generic no_tunnel_url that points at the host.
+    if (parsed.quotaError && !parsed.tunnelUrl) {
+      return {
+        ok: false,
+        port: validatedPort,
+        error:
+          'DevBridge tunnel quota exceeded (10006) after cleanup. Keepalive-protected tunnels are preserved; ' +
+          'remove unused tunnels or retry with cleanup_mode=all if a full reset is acceptable.',
+        error_code: 'devbridge_tunnel_quota_exceeded',
+        authMode,
+        cleanup: lastQuotaCleanup || undefined,
+        warnings: 'tunnel quota (10006) still full after removing orphan/oldest non-protected tunnels',
+        hostLog: String(result.stdout ?? '').slice(0, 400),
+      };
+    }
     if (parsed.badGateway)
       warnings.push(
         'Tunnel reachable but the gateway reports "bad gateway" — the local service on the exposed port is not serving.',

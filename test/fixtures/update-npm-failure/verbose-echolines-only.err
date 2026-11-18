@@ -1,0 +1,4 @@
+npm info run pr3-r10-multi-pkg@1.0.0 preinstall ../../../../../home/op/pkg-multi node ./pre.js
+npm info run pr3-r10-multi-pkg@1.0.0 preinstall { code: 0, signal: null }
+npm info run pr3-r10-multi-pkg@1.0.0 postinstall ../../../../../home/op/pkg-multi node ./build.js
+npm info run pr3-r10-multi-pkg@1.0.0 postinstall { code: 7, signal: null }

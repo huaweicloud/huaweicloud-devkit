@@ -1,0 +1,14 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:39261/npm 33ms
+npm http fetch GET 404 http://127.0.0.1:39261/npm 8ms
+npm http fetch GET 200 http://127.0.0.1:39261/vault-pkg 20ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:39261/vault-pkg/-/vault-pkg-1.0.0.tgz 19ms (cache miss)
+npm info run vault-pkg@1.0.0 postinstall node_modules/vault-pkg node recover-fail.js
+FATAL: failed to restore session keystore from vault
+npm info run vault-pkg@1.0.0 postinstall { code: 7, signal: null }
+npm error code 7
+npm error path /home/op/capA/proj/node_modules/vault-pkg
+npm error command failed
+npm error command sh -c node recover-fail.js
+npm error A complete log of this run can be found in: /home/op/capA/cache/_logs/2026-11-12T16_24_09_197Z-debug-0.log

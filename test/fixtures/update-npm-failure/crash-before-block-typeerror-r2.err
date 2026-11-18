@@ -1,0 +1,20 @@
+/home/op/scratch/typefail/boom.js:2
+state.skills.push('x');
+      ^
+
+TypeError: Cannot read properties of undefined (reading 'skills')
+    at Object.<anonymous> (/home/op/scratch/typefail/boom.js:2:7)
+    at Module._compile (node:internal/modules/cjs/loader:1968:14)
+    at Object..js (node:internal/modules/cjs/loader:2108:10)
+    at Module.load (node:internal/modules/cjs/loader:1690:32)
+    at Module._load (node:internal/modules/cjs/loader:1480:12)
+    at wrapModuleLoad (node:internal/modules/cjs/loader:261:19)
+    at Module.executeUserEntryPoint [as runMain] (node:internal/modules/run_main:171:5)
+    at node:internal/main/run_main_module:33:47
+
+Node.js v26.13.0
+npm error code 1
+npm error path /home/op/scratch/typefail
+npm error command failed
+npm error command sh -c node ./boom.js
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T09_47_38_452Z-debug-0.log

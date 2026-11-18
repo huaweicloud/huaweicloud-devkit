@@ -262,7 +262,8 @@ test('every registered classified tool provides a classify', () => {
 
 test('the sandbox and safety skills teach the registered approval gate (PR-3a)', () => {
   // The teaching layer is a consent surface: eight sandbox tools gained a
-  // mechanical gate this PR, and a skill that still says "call connect" or
+  // mechanical gate in PR-3a (shutdown joined as the ninth in the port-pr6
+  // wave), and a skill that still says "call connect" or
   // "exec runs commands" without the gate contract teaches the model to
   // fight the refusal instead of driving the confirmation. The guard pins
   // the sandbox skill's gate section and the safety skill's
@@ -270,7 +271,7 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
   // roster list is DERIVED from the roster leaf (one line per member) so
   // the sibling registrations' rebases must update it, never outgrow it.
   const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
-  assert.match(sandboxSkill, /## Approval gate \(the eight mutating tools\)/);
+  assert.match(sandboxSkill, /## Approval gate \(the nine mutating tools\)/);
   assert.match(sandboxSkill, /USER_CONFIRMATION_REQUIRED/);
   assert.match(sandboxSkill, /retry-uncertain/, 'the sandbox skill names the retry memo carrier');
   assert.match(sandboxSkill, /standing-session/, 'the sandbox skill names the standing-consent carrier');
@@ -351,6 +352,92 @@ test('the sandbox and safety skills teach the registered approval gate (PR-3a)',
     /the hook gates the agent face only/,
     'the disclosure scopes the Bash-face change to the agent face',
   );
+});
+
+test('the sandbox skill teaches selective tunnel cleanup, never blanket delete-all (port-pr4)', () => {
+  // The doctrine layer: the automated connect/expose paths run a selective
+  // cleanup (orphans + same-port only), and the skill must teach the same
+  // contract — the old "always run devbridge delete-all" pre-flight contradicted
+  // the concurrency warning one paragraph below it and killed keepalive-protected
+  // and other-sessions' tunnels when followed. delete-all survives only as the
+  // documented manual full-reset exception.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /selective cleanup/i);
+  assert.match(sandboxSkill, /cleanup_mode=stale/);
+  assert.match(sandboxSkill, /devbridge_tunnel_quota_exceeded/);
+  // The connect-time doctrine names what is preserved.
+  assert.match(sandboxSkill, /keep other ports\/sessions/i);
+  // The contradictory blanket pre-flight must not come back.
+  assert.doesNotMatch(sandboxSkill, /always run `devbridge delete-all`/);
+  // The delete-all mentions that remain are always scoped as the manual
+  // full-reset exception, never the default path.
+  for (const m of sandboxSkill.matchAll(/devbridge delete-all/g)) {
+    const around = sandboxSkill.slice(Math.max(0, m.index - 160), m.index + 80);
+    assert.match(
+      around,
+      /full reset|GLOBAL operations/i,
+      `every delete-all mention must be scoped as the manual exception (context: …${around.slice(-100)})`,
+    );
+  }
+});
+
+test('the sandbox skill gates pool selection on task intent, never on tech stack (port-pr5)', () => {
+  // dev b1ab4029: the pool choice is a doctrine gate beside the target and
+  // stack gates — the key sentences an agent must meet before
+  // huaweicloud_sandbox_connect. The four semantic rules and the scenario
+  // table are pinned by the acceptance port in
+  // structure-sandbox-pool-selection.test.ts; this guard pins the gate
+  // posture plus the anchor every cross-reference must resolve.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /^## Pool-Selection Gate \(MANDATORY — do not skip\)$/m);
+  assert.match(sandboxSkill, /select the pool by \*\*task intent\*\*, not by tech stack/);
+  assert.match(sandboxSkill, /Default is `ephemeral`/);
+  assert.match(sandboxSkill, /Never select `persistent` merely because the project is full-stack or DB-backed\./);
+  assert.match(sandboxSkill, /Never switch pool silently mid-task\./);
+  assert.match(sandboxSkill, /Never ask the pool question when the intent is already explicit\./);
+  assert.match(
+    sandboxSkill,
+    /\[Pool-Selection Gate\]\(#pool-selection-gate-mandatory--do-not-skip\)/,
+    'the gate anchor must be linked from at least one cross-reference surface',
+  );
+});
+
+test('connect retires template_id: pool_type only, no pinning, no schema field (port-pr8)', () => {
+  // dev 8c1af52e: custom templates are retired; the server owns the
+  // pool_type → template mapping. The client must not expose, send, or
+  // teach template_id on connect — no schema field, no request-body key
+  // (explicit input or HW_POOL_TEMPLATE_* pinning), no doctrine granting
+  // explicit priority. The connect tool description keeps naming the
+  // server's RESOLVED template_id echo, a response field, never a request
+  // parameter. The HW_POOL_TEMPLATE_* names survive only outside the
+  // request path: update-upgrade's env-preserve list (the upgrade path is
+  // outside this wave's boundary) and the hdkitservice-api tests flipping
+  // the env's retirement — neither is a read path the request can reach.
+  const sandboxSkill = readSource(join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'SKILL.md'));
+  assert.match(sandboxSkill, /客户端不再支持传 template_id/, 'the skill teaches the retired parameter face');
+  assert.match(sandboxSkill, /不支持传 `template_id`；自定义模板已下线/, 'the selection rules name the retirement');
+  assert.doesNotMatch(sandboxSkill, /显式 `template_id` 优先/, 'the explicit-priority doctrine must not come back');
+  const resourcePool = readSource(
+    join('src', 'packs', 'sandbox', 'skills', 'huawei-sandbox', 'references', 'resource-pool.md'),
+  );
+  assert.match(resourcePool, /但客户端不再传入/);
+  assert.match(resourcePool, /钉扎或显式 template_id/);
+  assert.doesNotMatch(resourcePool, /显式 `template_id` 优先/, 'the reference retires the explicit-priority line');
+  assert.doesNotMatch(resourcePool, /附带映射 template_id 上送/, 'the pinning teaching must not come back');
+  const schemas = readSource(join('src', 'packs', 'sandbox', 'schemas.ts'));
+  assert.doesNotMatch(schemas, /template_id/, 'the connect schema exposes no template_id property or description');
+  const apiFace = readSource(join('src', 'lib', 'hdkit', 'hdkitservice-api.ts'));
+  assert.doesNotMatch(apiFace, /pinnedTemplateFor|HW_POOL_TEMPLATE/, 'the pinning read path is gone from the api face');
+  assert.doesNotMatch(apiFace, /body\.template_id|options\.template_id/, 'no code path sends template_id');
+  const poolFace = readSource(join('src', 'lib', 'hdkit', 'sandbox-pool.ts'));
+  assert.doesNotMatch(poolFace, /pinnedTemplateFor|HW_POOL_TEMPLATE/, 'the pinning reader stays deleted');
+  const approval = readSource(join('src', 'packs', 'sandbox', 'approval.ts'));
+  assert.doesNotMatch(approval, /template_id/, 'the confirmation view echoes no dead parameter');
+  const toolArgs = readSource(join('src', 'tools.ts'));
+  assert.doesNotMatch(toolArgs, /template_id/, 'the raw-args face declares no template_id');
+  const connectDescription = readSource(join('src', 'packs', 'sandbox', 'tools.ts'));
+  assert.match(connectDescription, /resolved template_id echo/, 'the description names the response echo only');
+  assert.doesNotMatch(connectDescription, /template_id overrides pool_type/);
 });
 
 test('sandbox timeout defaults stay single-sourced (no raw numeric fallbacks)', () => {

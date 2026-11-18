@@ -1,0 +1,8 @@
+Downloading prebuilt binary for linux-x64
+verifying cached artifact
+Error: prebuilt binary download failed: 404 Not Found
+npm error code 1
+npm error path /home/op/scratch/progfail
+npm error command failed
+npm error command sh -c node ./pre.js
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-11T09_47_54_298Z-debug-0.log

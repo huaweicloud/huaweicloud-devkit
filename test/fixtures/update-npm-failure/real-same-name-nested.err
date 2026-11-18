@@ -1,0 +1,29 @@
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 404 http://127.0.0.1:14927/npm 34ms
+npm http fetch GET 404 http://127.0.0.1:14927/npm 8ms
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit 20ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit 9ms (cache miss)
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit/-/huaweicloud-devkit-1.0.0.tgz 23ms (cache miss)
+npm info run huaweicloud-devkit@1.0.0 postinstall node_modules/huaweicloud-devkit node post.js
+outer postinstall: probing nested compatibility
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit 45ms (cache updated)
+npm http fetch GET 200 http://127.0.0.1:14927/huaweicloud-devkit/-/huaweicloud-devkit-1.0.0.tgz 21ms (cache updated)
+npm info run huaweicloud-devkit@1.0.0 postinstall node_modules/huaweicloud-devkit node post.js
+
+> huaweicloud-devkit@1.0.0 postinstall
+> node post.js
+
+compatibility check failed once, recovered
+npm info run huaweicloud-devkit@1.0.0 postinstall { code: 0, signal: null }
+
+added 1 package in 514ms
+npm warn install-scripts 1 package has install scripts not yet covered by allowScripts:
+npm warn install-scripts   huaweicloud-devkit@1.0.0 (postinstall: node post.js)
+npm warn install-scripts
+npm warn install-scripts Run `npm install-scripts ls` to review, or `npm install-scripts approve <pkg>` to allow.
+npm info ok
+build failed hard, cache locked
+npm info run huaweicloud-devkit@1.0.0 postinstall { code: 7, signal: null }

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 
 import { execOneShot, execWithSession, getCurrentWorkspaceId } from '../../sandbox/session-manager.ts';
 import { hdkitCredentials } from '../../lib/hdkit/hdkitservice-api.ts';
+import { versionGateResult } from '../../lib/hdkit/hdkit-gate.ts';
 import { getCredentials } from '../../lib/hdkit/hwlink-api.ts';
 import { validateIamCredentials } from '../../auth/credential-validator.ts';
 import { resolveCredentialsWithRuntime } from '../../auth/credentials.ts';
@@ -62,7 +63,16 @@ export async function handleCredentials(args: ToolArgs = {}, _opts: CallToolOpti
       hint: 'Credentials were NOT injected into the sandbox. Fix AK/SK first: run "npx huaweicloud-devkit auth init" or correct HW_ACCESS_KEY/HW_SECRET_KEY, then retry.',
     };
   }
-  const credResult = await hdkitCredentials(args.session_id, devStageId, args.enable_sts !== false);
+  // 409 版本门禁同样拦截 credentials 出口：结构化折叠（dev e1255a4b），
+  // clientVersion/minVersion/remediation 才能穿透 MCP 边界
+  let credResult: Record<string, unknown>;
+  try {
+    credResult = await hdkitCredentials(args.session_id, devStageId, args.enable_sts !== false);
+  } catch (error) {
+    const gate = versionGateResult(error);
+    if (gate) return gate;
+    throw error;
+  }
   const sandboxWsIdCred = args.dev_stage_id || getCurrentWorkspaceId();
   // The DevBridge API Key is a LONG-LIVED account-level credential (no expiry, manual
   // revocation only) — unlike the temporary STS AK/SK. It is stored in its own file

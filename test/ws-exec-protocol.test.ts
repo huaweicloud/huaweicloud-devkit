@@ -28,6 +28,9 @@ import {
 } from '../plugins/huaweicloud-core/src/sandbox/session-manager.ts';
 import {
   buildDevbridgeAuthProbe,
+  buildDevbridgeCleanupApplyScript,
+  buildDevbridgeCleanupLockScript,
+  buildDevbridgeCleanupStateScript,
   buildDevbridgeExposeScript,
   buildDevbridgeVerifyScript,
   parseDevbridgeAuthOutput,
@@ -281,16 +284,32 @@ test('devbridge fake rows recognize the real scripts (first-line anchors)', () =
     fs,
   );
   assert.equal(auth.stdout, DEVBRIDGE_AUTH_KEYRING_STDOUT);
-  // #999: the expose script (and the retry-cleanup blob) now opens with the
-  // data-disk PATH export riding the same first line as the pkill — feed the
+  // #999: the expose script now opens with the data-disk PATH export riding
+  // the TUNNEL_URL init line — the global pkill pre-clean is gone (the
+  // selective cleanup runs before the script as its own execs; delete-all
+  // would kill other sessions'/ports' tunnels on a shared sandbox). Feed the
   // REAL builder so the anchor and the pin stay honest.
   const expose = runShellCommand(buildDevbridgeExposeScript(8080), fs);
   assert.equal(expose.stdout, DEVBRIDGE_EXPOSE_OK_STDOUT);
-  const cleanup = runShellCommand(
-    'export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; pkill -f "devbridge host" 2>/dev/null || true; sleep 2; devbridge delete-all > /dev/null 2>&1 || true',
-    fs,
-  );
-  assert.equal(cleanup.stdout, DEVBRIDGE_EXPOSE_OK_STDOUT);
+  assert.doesNotMatch(buildDevbridgeExposeScript(8080), /delete-all/, 'the expose script must not blanket-delete');
+  // The selective-cleanup execs (connect + expose pre-clean): the lock, the
+  // state list, and the unlock each hit their own row, never the auth-probe
+  // row and never an unknown degradation.
+  const cleanupLock = runShellCommand(buildDevbridgeCleanupLockScript(), fs);
+  assert.equal(cleanupLock.intent, 'devbridge-cleanup-lock');
+  assert.match(cleanupLock.stdout, /LOCK_OK/);
+  const cleanupState = runShellCommand(buildDevbridgeCleanupStateScript(), fs);
+  assert.equal(cleanupState.intent, 'devbridge-cleanup-state');
+  assert.match(cleanupState.stdout, /DB_CLEANUP_TUNNELS_BEGIN/);
+  assert.match(cleanupState.stdout, /No tunnels found/);
+  assert.match(cleanupState.stdout, /DB_KEEPALIVE_TUNNELS=/);
+  // The apply one-shot has its OWN row — falling through to the generic
+  // export-path row would answer '' silently, the exact degradation the
+  // zero-unknown gate exists to prevent (interrogate port-pr4 A-F4).
+  const cleanupApply = runShellCommand(buildDevbridgeCleanupApplyScript({ deleteIds: [], killPids: [] }), fs);
+  assert.equal(cleanupApply.intent, 'devbridge-cleanup-apply');
+  const cleanupUnlock = runShellCommand('rmdir /tmp/devbridge-cleanup.lock 2>/dev/null || true', fs);
+  assert.equal(cleanupUnlock.intent, 'devbridge-cleanup-unlock');
   // The #998 version read-back one-shot — its own row, not the generic
   // export-path fall-through.
   const versionProbe = runShellCommand(

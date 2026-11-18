@@ -1,0 +1,2 @@
+huaweicloud-devkit update: step 1/4 copying payload
+cp: cannot create regular file 'ro-dir/hostname': Permission denied

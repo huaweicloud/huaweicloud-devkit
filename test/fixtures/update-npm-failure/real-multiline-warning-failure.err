@@ -1,0 +1,8 @@
+(node:2209207) Warning: integrity report follows
+network probe failed, mirror answered with stale manifest
+(Use `node --trace-warnings ...` to show where the warning was created)
+npm error code 7
+npm error path /home/op/project/pkgdep
+npm error command failed
+npm error command sh -c node post.js
+npm error A complete log of this run can be found in: /home/op/logs/2026-debug-0.log

@@ -1,0 +1,73 @@
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/bin/npm
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm install probe-main
+npm verbose argv "install" "probe-main" "--registry" "http://127.0.0.1:4888" "--no-audit" "--no-fund" "--foreground-scripts" "--loglevel" "verbose"
+npm verbose logfile logs-max:10 dir:/home/op/.npm/_logs/2026-11-12T03_53_19_130Z-
+npm verbose logfile /home/op/.npm/_logs/2026-11-12T03_53_19_130Z-debug-0.log
+npm http fetch GET 200 http://127.0.0.1:4888/probe-main 44ms (cache updated)
+npm http fetch GET 200 http://127.0.0.1:4888/tiny-dep 9ms (cache updated)
+npm http cache tiny-dep@http://127.0.0.1:4888/tiny-dep/-/tiny-dep-1.0.0.tgz 0ms (cache hit)
+npm http cache probe-main@http://127.0.0.1:4888/probe-main/-/probe-main-1.0.0.tgz 0ms (cache hit)
+npm info run probe-main@1.0.0 postinstall node_modules/probe-main node post.js
+npm verbose cli /home/op/.nvm/versions/node/v26.13.0/bin/node /home/op/.nvm/versions/node/v26.13.0/bin/npm
+npm info using npm@11.20.0
+npm info using node@v26.13.0
+npm verbose title npm install definitely-missing-pkg@9.9.9
+npm verbose argv "install" "--no-audit" "--no-fund" "--registry" "http://127.0.0.1:4888" "--prefix" "/home/op/inner-cache "--cache" "/home/op/inner-cache "definitely-missing-pkg@9.9.9"
+npm verbose logfile logs-max:10 dir:/home/op/inner-cache
+npm verbose logfile /home/op/inner-cache
+npm http fetch GET 404 http://127.0.0.1:4888/npm 32ms
+npm http fetch GET 404 http://127.0.0.1:4888/npm 6ms
+npm http fetch GET 404 http://127.0.0.1:4888/definitely-missing-pkg 5ms (cache skip)
+npm verbose stack HttpErrorGeneral: 404 Not Found - GET http://127.0.0.1:4888/definitely-missing-pkg - not found
+npm verbose stack     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/npm-registry-fetch/lib/check-response.js:103:15
+npm verbose stack     at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+npm verbose stack     at async RegistryFetcher.packument (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:90:19)
+npm verbose stack     at async RegistryFetcher.manifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/pacote/lib/registry.js:128:23)
+npm verbose stack     at async #fetchManifest (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1362:20)
+npm verbose stack     at async #nodeFromEdge (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1178:19)
+npm verbose stack     at async #buildDepStep (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:1015:15)
+npm verbose stack     at async Arborist.buildIdealTree (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/build-ideal-tree.js:180:7)
+npm verbose stack     at async Promise.all (index 1)
+npm verbose stack     at async Arborist.reify (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/reify.js:118:5)
+npm verbose statusCode 404
+npm verbose pkgid definitely-missing-pkg@9.9.9
+npm error code E404
+npm error 404 Not Found - GET http://127.0.0.1:4888/definitely-missing-pkg - not found
+npm error 404
+npm error 404  The requested resource 'definitely-missing-pkg@9.9.9' could not be found or you do not have permission to access it.
+npm error 404
+npm error 404 Note that you can also install from a
+npm error 404 tarball, folder, http url, or git url.
+npm verbose cwd /home/op/runs/verbose/pkg/node_modules/probe-main
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 1
+npm verbose code 1
+npm error A complete log of this run can be found in: /home/op/inner-cache
+npm info run probe-main@1.0.0 postinstall { code: 7, signal: null }
+npm verbose stack Error: command failed
+npm verbose stack     at promiseSpawn (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js:22:22)
+npm verbose stack     at spawnWithShell (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js:124:10)
+npm verbose stack     at promiseSpawn (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/promise-spawn/lib/index.js:12:12)
+npm verbose stack     at runScriptPkg (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/run-script-pkg.js:79:13)
+npm verbose stack     at runScript (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/run-script/lib/run-script.js:9:12)
+npm verbose stack     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/@npmcli/arborist/lib/arborist/rebuild.js:348:17
+npm verbose stack     at run (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/promise-call-limit/dist/commonjs/index.js:67:22)
+npm verbose stack     at /home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/promise-call-limit/dist/commonjs/index.js:84:9
+npm verbose stack     at new Promise (<anonymous>)
+npm verbose stack     at callLimit (/home/op/.nvm/versions/node/v26.13.0/lib/node_modules/npm/node_modules/promise-call-limit/dist/commonjs/index.js:35:69)
+npm verbose pkgid probe-main@1.0.0
+npm error code 7
+npm error path /home/op/runs/verbose/pkg/node_modules/probe-main
+npm error command failed
+npm error command sh -c node post.js
+npm verbose cwd /home/op/runs/verbose/pkg
+npm verbose os Linux 6.8.0-106-generic
+npm verbose node v26.13.0
+npm verbose npm  v11.20.0
+npm verbose exit 7
+npm verbose code 7
+npm error A complete log of this run can be found in: /home/op/.npm/_logs/2026-11-12T03_53_19_130Z-debug-0.log

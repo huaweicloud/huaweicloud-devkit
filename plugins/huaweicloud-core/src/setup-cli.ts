@@ -181,7 +181,7 @@ async function checkForUpdate(): Promise<void> {
     // optional chain never short-circuits a reachable path.
     const tag = distTags?.next && semverCompare(target, distTags.next) === 0 ? 'next' : 'latest';
     console.log(
-      `\n\x1b[33mℹ️ 检测到新版本：${target}（当前 ${pkgVersion}，${tag} 频道）。建议运行 \`npx --yes huaweicloud-devkit@${tag} update\` 更新。\x1b[0m`,
+      `\n\x1b[33mℹ️ 检测到新版本：${target}（当前 ${pkgVersion}，${tag} 频道）。建议运行 \`npx --yes --foreground-scripts huaweicloud-devkit@${tag} update\` 更新。\x1b[0m`,
     );
   }
 }
@@ -1235,6 +1235,7 @@ async function cmdUpdate(): Promise<void> {
   console.log(BANNER);
   resolvePacksFlag(); // fail fast on bogus --packs before any file is copied
   const target = parseTarget();
+  checkNode();
   await checkForUpdate();
   // Reconcile the native dirs only when this run will actually place the new
   // payload somewhere. A target whose server is absent gets "Not installed"

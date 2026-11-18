@@ -1815,10 +1815,14 @@ test(
     // ~15k and the 5s caller bar at ~17k, and pushing concurrent arrivals
     // past the cap so their degraded rows' outcomes were never recorded.
     // The fold is now O(store + lines) — one map pass over the store rows,
-    // then one pass over the lines. The bound is coarse on purpose: the
-    // linear fold measures ~55ms at 8k+8k here and the quadratic ~850ms+;
-    // 400ms separates them on any host this battery runs on, and the
-    // correctness half (every line attaches) is the primary assertion.
+    // then one pass over the lines. The bound is CPU time, coarse on
+    // purpose: the linear fold measures ~55ms of CPU at 8k+8k here and
+    // the quadratic ~850ms+; 400ms of CPU separates them on any host.
+    // Wall clock is NOT asserted — the 2026-11-17 port program measured
+    // this same linear read at 416-701ms wall under host load 10-18
+    // (wedge-holder residue from another program) while staying ~55ms
+    // CPU, so a wall budget reds on load, not on code. The correctness
+    // half (every line attaches) is the primary assertion.
     const dir = join(home, '.config', 'huaweicloud');
     const N = 8_000;
     const rows: ConsentEvent[] = [];
@@ -1837,29 +1841,21 @@ test(
     }
     stageStore(home, JSON.stringify(rows));
     writeFileSync(join(dir, 'approval-consents.json.outcomes.jsonl'), lines.join('\n') + '\n');
-    const started = Date.now();
+    const startedWall = Date.now();
+    const startedCpu = process.cpuUsage();
     const view = readConsentEvents();
-    const elapsed = Date.now() - started;
+    const cpuDelta = process.cpuUsage(startedCpu);
+    const elapsedWall = Date.now() - startedWall;
+    const elapsedCpu = (cpuDelta.user + cpuDelta.system) / 1000;
     assert.equal(view.length, N, 'every staged row is visible');
     assert.equal(
       view.filter((event) => event.outcomeDetail === 'failed').length,
       N,
       'every outcome line attaches to its row',
     );
-    // The bound is a LINEARITY discriminator, not a speed claim: the
-    // quadratic fold measured 850ms+ on the reference host vs ~55ms for
-    // the one-pass fold, so 400ms separated them cleanly THERE — but three
-    // CI occurrences across PR-2.5/PR-3c/PR-5 (windows lanes, passed on
-    // rerun each time; 420-601ms under schedule load) put the absolute
-    // bound below the noise floor of a loaded runner. A measured
-    // ceiling-relative bound keeps the discriminator honest on any host:
-    // a quadratic fold is >10x the linear baseline, load and all.
-    const baselineStarted = Date.now();
-    for (let i = 0; i < 10; i += 1) readConsentEvents();
-    const baselinePerRead = (Date.now() - baselineStarted) / 10;
     assert.ok(
-      elapsed < Math.max(400, baselinePerRead * 10),
-      `the one-pass fold stays linear (8k+8k read took ${elapsed}ms vs warm-baseline ${baselinePerRead.toFixed(1)}ms/read; the quadratic fold measured 850ms+ and would trip this on any host)`,
+      elapsedCpu < 400,
+      `the one-pass fold stays linear (8k+8k read took ${elapsedCpu}ms CPU / ${elapsedWall}ms wall; the quadratic fold measures 850ms+ CPU)`,
     );
   }),
 );

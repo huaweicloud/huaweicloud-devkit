@@ -61,6 +61,7 @@ export function buildDevbridgeKeepaliveScript(tunnels: unknown): string {
   const body = [
     `#!/bin/bash`,
     `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"`,
+    `export DBUS_SESSION_BUS_ADDRESS="\${DBUS_SESSION_BUS_ADDRESS:-unix:path=/run/dbus-session}"`,
     `# entries: tunnelId:url (URLs are stable — tunnel IDs never change)`,
     `TUNNELS="${entries}"`,
     `declare -A LAST_RENEW`,
@@ -79,6 +80,29 @@ export function buildDevbridgeKeepaliveScript(tunnels: unknown): string {
     `        echo "$TS renew $ID ok (${DEVBRIDGE_RENEW_HOURS}h)" >> /tmp/tunnel-keepalive.log`,
     `      else`,
     `        echo "$TS renew $ID FAILED: $(head -1 /tmp/keepalive-last-update.log)" >> /tmp/tunnel-keepalive.log`,
+    // Self-heal (bde7ae56): a valid key can coexist with an expired CLI token
+    // (renew returns 40100 while auth status still prints Logged in) —
+    // re-login from keyring/file (never create a key) and retry once now;
+    // the next tick retries normally if even that fails.
+    `        DB_KEY=""`,
+    `        if command -v hwcloud >/dev/null 2>&1; then`,
+    `          DB_KEY=$(hwcloud keyring get HW_DEVBRIDGE_API_KEY 2>&1 || true)`,
+    `          case "$DB_KEY" in "devbridge_"*) : ;; *) DB_KEY="";; esac`,
+    `        fi`,
+    `        if [ -z "$DB_KEY" ] && [ -s /tmp/hw_api_key ]; then`,
+    `          source /tmp/hw_api_key 2>/dev/null || true`,
+    `          DB_KEY="\${HW_API_KEY:-}"`,
+    `        fi`,
+    `        if [ -n "$DB_KEY" ] && devbridge auth login --api-key "$DB_KEY" >/tmp/keepalive-auth.log 2>&1; then`,
+    `          if devbridge update "$ID" -e ${DEVBRIDGE_RENEW_HOURS} > /tmp/keepalive-last-update.log 2>&1; then`,
+    `            echo "$TS renew $ID ok after re-login (${DEVBRIDGE_RENEW_HOURS}h)" >> /tmp/tunnel-keepalive.log`,
+    `          else`,
+    `            echo "$TS renew $ID FAILED after re-login: $(head -1 /tmp/keepalive-last-update.log)" >> /tmp/tunnel-keepalive.log`,
+    `          fi`,
+    `        else`,
+    `          echo "$TS renew $ID AUTH_FAILED: no usable key; next expose_tunnel will auto-create" >> /tmp/tunnel-keepalive.log`,
+    `        fi`,
+    `        unset DB_KEY HW_API_KEY 2>/dev/null`,
     `      fi`,
     `      LAST_RENEW[$ID]=$NOW`,
     `    fi`,
@@ -126,7 +150,14 @@ export function buildKeepaliveTunnelsReadScript(): string {
 }
 
 // Parse the raw stdout of buildKeepaliveTunnelsReadScript. Empty output (no
-// watchdog installed yet) yields [].
+// watchdog installed yet) yields []. Entries are the generated three-field
+// `id:url:port` form (plus the two-field legacy form): the tunnel URL's last
+// segment is the domain, so a trailing `:<digits>` (or the empty port field's
+// bare `:`) is never part of the URL — strip every tail, including the legacy
+// double tails the pre-fix round trip wrote. A kept tail mangles the watchdog's
+// health-check target and grows one field per roster rewrite (interrogate
+// port-pr4 A-F1; the parse shape predates this port — the fix lands with the
+// cleanup sync, the second roster-rewrite path, so both round trips are stable).
 export function parseKeepaliveTunnelsOutput(stdout: unknown): KeepaliveTunnel[] {
   const text = stripTerminalEscapes(stdout);
   const m = text.match(/^DB_KEEPALIVE_TUNNELS=(.*)$/m);
@@ -136,7 +167,15 @@ export function parseKeepaliveTunnelsOutput(stdout: unknown): KeepaliveTunnel[] 
     .split(/\s+/)
     .map((entry) => {
       const i = entry.indexOf(':');
-      return i > 0 ? { tunnelId: entry.slice(0, i), url: entry.slice(i + 1) } : null;
+      if (i <= 0) return null;
+      let url = entry.slice(i + 1);
+      // Strip every generated/legacy tail in one converging loop: digit tails
+      // and bare colons alike (the pre-fix shapes could leave one behind for a
+      // generation — a `:18082:` tail kept `:18082` after a single pass).
+      while (/:$/.test(url) || /:\d+$/.test(url)) {
+        url = url.slice(0, url.lastIndexOf(':'));
+      }
+      return { tunnelId: entry.slice(0, i), url };
     })
     .filter((t): t is KeepaliveTunnel => t !== null);
 }

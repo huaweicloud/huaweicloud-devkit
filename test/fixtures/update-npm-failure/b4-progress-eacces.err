@@ -1,0 +1,3 @@
+Resolving package metadata
+Downloading 3 packages
+EACCES: permission denied, open '/root/.npm/_cacache/temp/build'
