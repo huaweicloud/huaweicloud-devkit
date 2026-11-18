@@ -44,7 +44,7 @@ const CONFIG_PATH = join('plugins', 'huaweicloud-core', '.mcp.json');
 test('the tools block is roster-driven: one approve entry per roster tool', () => {
   const block = codexApprovalToolsBlock();
   assert.deepEqual(Object.keys(block), [...APPROVAL_TOOLS], 'the roster drives the block, in roster order');
-  assert.equal(APPROVAL_TOOLS.length, 16, 'the codex yield covers the full PR-3c roster');
+  assert.equal(APPROVAL_TOOLS.length, 17, 'the codex yield covers the full PR-3c roster plus the shutdown port');
   for (const tool of APPROVAL_TOOLS) {
     assert.deepEqual(block[tool], { approval_mode: CODEX_APPROVAL_MODE });
   }
@@ -481,7 +481,7 @@ test('the real doctor passes the healthy payload and warns on every direction, n
   const out = runDoctor(home, env);
   assert.match(
     out,
-    /\[PASS\] Codex approval posture \(16 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
+    /\[PASS\] Codex approval posture \(17 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
   );
 
   // A user override in config.toml: the doctor WARNs the winning value.
@@ -548,7 +548,7 @@ test('the real doctor: inline-table policy WARNs, header policy WARNs, clean pas
   const cleanOut = runDoctor(home, env);
   assert.match(
     cleanOut,
-    /\[PASS\] Codex approval posture \(16 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
+    /\[PASS\] Codex approval posture \(17 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
   );
   assert.ok(!/\[WARN\] Codex approval posture/.test(cleanOut));
 });

@@ -36,6 +36,9 @@
         "huaweicloud_sandbox_credentials": {
           "approval_mode": "approve"
         },
+        "huaweicloud_sandbox_shutdown": {
+          "approval_mode": "approve"
+        },
         "huaweicloud_auth_init": {
           "approval_mode": "approve"
         },
