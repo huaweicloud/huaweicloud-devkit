@@ -206,16 +206,37 @@
           },
           {
             "field": "text",
-            "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
+            "regex": "(\"Action\"\\s*:\\s*(\"(\\*|\\*:\\*)\"|\\[\\s*\"(\\*|\\*:\\*)\"\\s*\\])|Actions?\\s*[=:]\\s*(\"(\\*|\\*:\\*)\"|\\[\\s*\"(\\*|\\*:\\*)\"\\s*\\]|(\\*|\\*:\\*))|AdministratorAccess|FullAccess)"
           },
           {
             "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*Allow)"
+            "regex": "(\"Effect\"\\s*:\\s*\"Allow\"|Effects?\\s*[=:]\\s*\"?Allow\"?)"
           }
         ]
       },
       "message": "The change appears to grant broad administrator permissions.",
       "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials for generated application workflows."
+    },
+    {
+      "id": "hwc-iam-admin-managed-policy",
+      "title": "Broad IAM administrator managed policy reference",
+      "category": "iam",
+      "severity": "deny",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(IAM|policy|role|agency|Statement|Action)"
+          },
+          {
+            "field": "text",
+            "regex": "(AdministratorAccess|FullAccess)"
+          }
+        ]
+      },
+      "message": "The change references a broad administrator managed policy (AdministratorAccess/FullAccess).",
+      "remediation": "Attach a least-privilege custom policy scoped to the required service actions and resources instead of a broad managed policy."
     },
     {
       "id": "hwc-iam-highrisk-write",
