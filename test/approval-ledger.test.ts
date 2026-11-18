@@ -1815,10 +1815,14 @@ test(
     // ~15k and the 5s caller bar at ~17k, and pushing concurrent arrivals
     // past the cap so their degraded rows' outcomes were never recorded.
     // The fold is now O(store + lines) — one map pass over the store rows,
-    // then one pass over the lines. The bound is coarse on purpose: the
-    // linear fold measures ~55ms at 8k+8k here and the quadratic ~850ms+;
-    // 400ms separates them on any host this battery runs on, and the
-    // correctness half (every line attaches) is the primary assertion.
+    // then one pass over the lines. The bound is CPU time, coarse on
+    // purpose: the linear fold measures ~55ms of CPU at 8k+8k here and
+    // the quadratic ~850ms+; 400ms of CPU separates them on any host.
+    // Wall clock is NOT asserted — the 2026-11-17 port program measured
+    // this same linear read at 416-701ms wall under host load 10-18
+    // (wedge-holder residue from another program) while staying ~55ms
+    // CPU, so a wall budget reds on load, not on code. The correctness
+    // half (every line attaches) is the primary assertion.
     const dir = join(home, '.config', 'huaweicloud');
     const N = 8_000;
     const rows: ConsentEvent[] = [];
@@ -1837,9 +1841,12 @@ test(
     }
     stageStore(home, JSON.stringify(rows));
     writeFileSync(join(dir, 'approval-consents.json.outcomes.jsonl'), lines.join('\n') + '\n');
-    const started = Date.now();
+    const startedWall = Date.now();
+    const startedCpu = process.cpuUsage();
     const view = readConsentEvents();
-    const elapsed = Date.now() - started;
+    const cpuDelta = process.cpuUsage(startedCpu);
+    const elapsedWall = Date.now() - startedWall;
+    const elapsedCpu = (cpuDelta.user + cpuDelta.system) / 1000;
     assert.equal(view.length, N, 'every staged row is visible');
     assert.equal(
       view.filter((event) => event.outcomeDetail === 'failed').length,
@@ -1847,8 +1854,8 @@ test(
       'every outcome line attaches to its row',
     );
     assert.ok(
-      elapsed < 400,
-      `the one-pass fold stays linear (8k+8k read took ${elapsed}ms; the quadratic fold measured 850ms+)`,
+      elapsedCpu < 400,
+      `the one-pass fold stays linear (8k+8k read took ${elapsedCpu}ms CPU / ${elapsedWall}ms wall; the quadratic fold measures 850ms+ CPU)`,
     );
   }),
 );

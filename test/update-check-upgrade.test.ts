@@ -3762,34 +3762,48 @@ test('workspace 匹配对敌意声明有界退化', async () => {
   const beyondCap = `packages/${Array.from({ length: 17 }, () => 'b').join('/')}`;
   assert.equal(workspaceMemberMatch(firstMember, [bomb]), true, 'a member inside the 100k truncation matches');
   assert.equal(workspaceMemberMatch(beyondCap, [bomb]), false, 'a member beyond the 100k truncation does not');
-  // INVARIANT (budget first-to-bind): both cap orders stop the walk. The bound
-  // is generous for 8-way suite contention (the old 4 s pin measured 7.5-9.5 s
-  // loaded); the unbounded entry order takes >15 s and the character order
-  // >49 s, so the pin still reds a lost guard.
+  // INVARIANT (budget first-to-bind): both cap orders stop the walk. The
+  // bound is CPU time, not wall — the port program measured this battery
+  // at 13s quiet / 23s loaded under host load 10-18 while the bounded
+  // walk's CPU stays put, so a wall budget reds on load, not on code.
+  // The unbounded entry order takes >15 s CPU and the character order
+  // >49 s CPU, so the pin still reds a lost guard.
   const shortLeaf = `packages/${'{a,b}'.repeat(24)}`;
-  const chainStart = Date.now();
+  const chainStartCpu = process.cpuUsage();
+  const chainStartWall = Date.now();
   assert.equal(workspaceMemberMatch('packages/zzz', [shortLeaf]), false, 'a chained brace bomb is a non-member');
-  assert.ok(Date.now() - chainStart < 12000, 'the entry-order walk is bounded');
+  const chainCpu = process.cpuUsage(chainStartCpu);
+  assert.ok(
+    (chainCpu.user + chainCpu.system) / 1000 < 12000,
+    `the entry-order walk is bounded (${Math.round((chainCpu.user + chainCpu.system) / 1000)}ms CPU / ${Date.now() - chainStartWall}ms wall)`,
+  );
   for (const [groups, suffix] of [
     [24, 17],
     [26, 28],
   ]) {
     const longLeaf = `packages/${'{a,b}'.repeat(groups)}${'x'.repeat(suffix)}`;
-    const leafStart = Date.now();
+    const leafStartCpu = process.cpuUsage();
+    const leafStartWall = Date.now();
     assert.equal(workspaceMemberMatch('packages/zzz', [longLeaf]), false, 'a long-leaf bomb is a non-member');
+    const leafCpu = process.cpuUsage(leafStartCpu);
     assert.ok(
-      Date.now() - leafStart < 12000,
-      `the character-order walk is bounded at ${groups}x leaf ${groups + suffix}`,
+      (leafCpu.user + leafCpu.system) / 1000 < 12000,
+      `the character-order walk is bounded at ${groups}x leaf ${groups + suffix} (${Math.round((leafCpu.user + leafCpu.system) / 1000)}ms CPU / ${Date.now() - leafStartWall}ms wall)`,
     );
   }
   const stacked = `packages/${Array.from({ length: 9 }, () => '**').join('/')}/nomatch`;
-  const stackStart = Date.now();
+  const stackStartCpu = process.cpuUsage();
+  const stackStartWall = Date.now();
   assert.equal(
     workspaceMemberMatch(`packages/${Array.from({ length: 18 }, () => 'a').join('/')}`, [stacked]),
     false,
     'stacked ** is a non-member',
   );
-  assert.ok(Date.now() - stackStart < 1000, 'stacked ** is memoized (uncapped backtracking takes seconds)');
+  const stackCpu = process.cpuUsage(stackStartCpu);
+  assert.ok(
+    (stackCpu.user + stackCpu.system) / 1000 < 1000,
+    `stacked ** is memoized (uncapped backtracking takes seconds; ${Math.round((stackCpu.user + stackCpu.system) / 1000)}ms CPU / ${Date.now() - stackStartWall}ms wall)`,
+  );
   assert.equal(
     workspaceMemberMatch('packages/100000', ['packages/{1..100000}']),
     true,
