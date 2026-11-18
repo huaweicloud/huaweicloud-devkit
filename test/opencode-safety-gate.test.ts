@@ -142,16 +142,39 @@ test('credential-file reads, env dumps, and recursive forced rm each deny', asyn
   assert.match(rm.message ?? '', new RegExp(`^${DENY_PREFIX}`));
 });
 
-test('multi-element resources join into one command text; odd entries never break the join', async () => {
-  const gate = await loadGate('real', 'join');
-  const split = shellEvent(['hcloud ECS DeleteServers', '--server.id=x']);
-  await gate(split);
-  assert.equal(split.effect, 'deny', 'the join reconstructs the write command');
-  // filter(String) drops only the empty string; null survives the filter but
-  // joins as nothing, so a stray entry never garbles the command text.
-  const withNull = shellEvent([null, '', 'hcloud ECS DeleteServers --server.id=x']);
-  await gate(withNull);
-  assert.equal(withNull.effect, 'deny');
+test('per-segment classification: any denied segment denies the whole event (the host splits compounds)', async () => {
+  const gate = await loadGate('real', 'per-segment');
+  // The host scanner splits compound commands into per-segment resources
+  // (`ls /tmp && hcloud …` arrives as ['ls /tmp', 'hcloud …']) and its own
+  // rule engine denies the operation when ANY segment denies — the
+  // live-measured bypass shape: the old join(' ') erased the separator and
+  // the write segment rode through as one allow.
+  const bypass = shellEvent(['ls /tmp', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(bypass);
+  assert.equal(bypass.effect, 'deny');
+  assert.match(bypass.message ?? '', /plan and receives explicit user approval/);
+  const benign = shellEvent(['echo one', 'echo two']);
+  await gate(benign);
+  assert.equal(benign.effect, 'allow');
+  assert.equal(benign.message, undefined, 'two benign segments stay zero-intervention');
+  const readThenWrite = shellEvent(['hcloud ECS ListServers', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(readThenWrite);
+  assert.equal(readThenWrite.effect, 'deny', 'a denied second segment denies the whole operation');
+  // The first denied segment's reason wins.
+  const order = shellEvent(['cat ~/.hcloud/config', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(order);
+  assert.equal(order.effect, 'deny');
+  assert.match(order.message ?? '', /credential or profile files/, 'the first deny wins with its reason');
+  // Empty and whitespace-only entries are skipped; odd entries never break the loop.
+  const padded = shellEvent(['  ', '', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(padded);
+  assert.equal(padded.effect, 'deny');
+  const nullRide = shellEvent([null, 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(nullRide);
+  assert.equal(nullRide.effect, 'deny');
+  const allBlank = shellEvent(['   ', '\t']);
+  await gate(allBlank);
+  assert.equal(allBlank.effect, 'allow', 'an all-skipped event is zero-intervention');
 });
 
 test('non-shell actions are zero-intervention, including devkit MCP tool actions', async () => {
@@ -224,6 +247,43 @@ test('the deny prefix stays byte-identical to the PreToolUse hook wrapper', () =
   assert.equal(literal(gate, 'DENY_PREFIX'), literal(mjs, 'DENY_PREFIX'));
   assert.equal(literal(gate, 'POLICY_LOAD_FAILED_REASON'), literal(mjs, 'POLICY_LOAD_FAILED_REASON'));
   assert.equal(literal(gate, 'CLASSIFY_FAILED_REASON'), literal(mjs, 'CLASSIFY_FAILED_REASON'));
+});
+
+test('per-segment verdicts match the PreToolUse hook wrapper fed the same text', async () => {
+  // The compound bypass's parity contract: for any single command text, the
+  // adapter and the .mjs wrapper share one classifier and one deny prefix,
+  // so their verdicts and reasons must be byte-equal. A wiring regression
+  // (wrong reason field, diverged prefix) trips here.
+  const gate = await loadGate('real', 'parity');
+  const corpus = [
+    'ls /tmp',
+    'echo hello',
+    'hcloud ECS ListServersDetails --cli-region=cn-north-4',
+    'hcloud ECS DeleteServers --server.id=x',
+    'cat ~/.hcloud/config',
+    'env | grep HUAWEICLOUD',
+    'rm -rf /',
+    "bash -c 'hcloud ECS DeleteServers --server.id=x'",
+  ];
+  for (const command of corpus) {
+    const mjsRun = spawnSync(process.execPath, [MJS_HOOK_SRC], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8',
+    });
+    assert.equal(mjsRun.status, 0, mjsRun.stderr);
+    const mjsOut = mjsRun.stdout.trim();
+    const event = shellEvent(command);
+    await gate(event);
+    if (mjsOut === '') {
+      assert.equal(event.effect, 'allow', `${command}: the .mjs allows, the adapter must too`);
+      assert.equal(event.message, undefined, `${command}: an allow carries no message`);
+      continue;
+    }
+    const mjsReason = (JSON.parse(mjsOut) as { hookSpecificOutput: { permissionDecisionReason: string } })
+      .hookSpecificOutput.permissionDecisionReason;
+    assert.equal(event.effect, 'deny', `${command}: the .mjs denies, the adapter must too`);
+    assert.equal(event.message, mjsReason, `${command}: the deny reason must be byte-identical`);
+  }
 });
 
 // ── Part C: the installer, status, doctor, and uninstall with the override ──

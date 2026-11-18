@@ -61,25 +61,42 @@ function deny(event, reason) {
   event.message = DENY_PREFIX + reason;
 }
 
+// The host scanner splits compound commands into per-segment resources
+// (`ls /tmp && hcloud …` arrives as ['ls /tmp', 'hcloud …']) and the host's
+// own rule engine denies the operation when ANY segment denies — so the
+// adapter classifies each segment independently and the first deny wins
+// with its reason (interrogate round: the previous join(' ') erased the
+// separators and the write segment rode through as one allow, live-proven
+// — the faithful port of the host's per-resource semantics).
 async function onEvaluate(event) {
   try {
     if (event.action !== 'shell') return;
     const resources = Array.isArray(event.resources) ? event.resources : [];
-    const command = resources.filter((entry) => String(entry)).join(' ');
-    if (command === '') return;
+    const segments = [];
+    for (const entry of resources) {
+      const text = String(entry);
+      if (text.trim() !== '') segments.push(text);
+    }
+    if (segments.length === 0) return;
     try {
       if (!classifyTextCommand) await loadPolicy();
     } catch {
       deny(event, POLICY_LOAD_FAILED_REASON);
       return;
     }
-    try {
-      const verdict = classifyTextCommand(command);
-      if (verdict.decision === 'deny') deny(event, verdict.reason);
-    } catch {
-      // Classify-time failure is the .mjs twin's contract: a corrupt rules
-      // file must deny, not crash verdict-less.
-      deny(event, CLASSIFY_FAILED_REASON);
+    for (const text of segments) {
+      try {
+        const verdict = classifyTextCommand(text);
+        if (verdict.decision === 'deny') {
+          deny(event, verdict.reason);
+          return;
+        }
+      } catch {
+        // Classify-time failure is the .mjs twin's contract: a corrupt rules
+        // file must deny, not crash verdict-less.
+        deny(event, CLASSIFY_FAILED_REASON);
+        return;
+      }
     }
   } catch {
     // The belt over the whole body — never rethrow (G1-M2's rethrow deny is
