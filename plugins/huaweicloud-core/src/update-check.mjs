@@ -509,6 +509,27 @@ function defaultSpawn(command, args, options) {
   return spawnSync(command, args, options);
 }
 
+// Cloud credential environment variables must never reach the `npx update`
+// child: it only needs the registry, and inheriting credentials risks leaking
+// them into npm lifecycle output/logs. Prefixes mirror the credential detection
+// in safety-policy.mjs; the suffix list also covers the SDK (HUAWEICLOUD_SDK_AK/
+// SK), the DevBridge long-lived key (HW_API_KEY) and AWS-compatible names.
+const CREDENTIAL_ENV_KEY_PATTERN =
+  /^(?:X_)?(?:HUAWEICLOUD|HWC|HW|OS|AWS)_(?:.*_)?(?:SECRET_ACCESS_KEY|ACCESS_KEY_ID|ACCESS_KEY|SECRET_KEY|SECURITY_TOKEN|SESSION_TOKEN|API_KEY|PASSWORD|AK|SK)$/i;
+
+export function isCredentialEnvKey(key) {
+  return CREDENTIAL_ENV_KEY_PATTERN.test(String(key));
+}
+
+export function upgradeEnv(env = process.env) {
+  const next = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (!isCredentialEnvKey(key)) next[key] = value;
+  }
+  next.npm_config_registry = env.HUAWEICLOUD_NPM_REGISTRY || 'https://registry.npmjs.org';
+  return next;
+}
+
 // npm writes diagnostics as `npm error ...` lines; engine/platform noise as
 // `npm warn ...`. Taking the raw last lines reports the warnings as the
 // failure reason (observed: "npm warn EBADENGINE ..." twice) and truncates the
@@ -551,6 +572,7 @@ export async function upgradePackage({ target = 'all', version = 'latest' } = {}
     return { success: false, error: `不支持的升级目标：${targetStr}` };
   }
   const { doQuery = queryDistTags, spawnFn = defaultSpawn } = options;
+  const childEnv = upgradeEnv(options.env || process.env);
   // Tests inject currentVersion explicitly - the repo package.json version changes
   // between prerelease and stable lines, which must not flip the upgrade-tag logic.
   const previousVersion = options.currentVersion || readInstalledVersion();
@@ -580,7 +602,13 @@ export async function upgradePackage({ target = 'all', version = 'latest' } = {}
   const command = ['--yes', `huaweicloud-devkit@${tag}`, 'update', '--target', String(target)];
   let execResult;
   try {
-    execResult = spawnFn(NPX_BIN, command, { encoding: 'utf8', timeout: 300000, windowsHide: true, shell: true });
+    execResult = spawnFn(NPX_BIN, command, {
+      encoding: 'utf8',
+      timeout: 300000,
+      windowsHide: true,
+      shell: true,
+      env: childEnv,
+    });
   } catch (error) {
     return {
       success: false,

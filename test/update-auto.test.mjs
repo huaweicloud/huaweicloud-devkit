@@ -267,7 +267,15 @@ test('runAutoUpgrade: normal success writes succeeded and installs the new paylo
       trigger: 'startup_normal',
       currentVersion: '1.1.13',
       pluginRoot: root,
-      env: { ...env, HW_ACCESS_KEY: 'secret-ak', HW_SECRET_KEY: 'secret-sk' },
+      env: {
+        ...env,
+        HW_ACCESS_KEY: 'secret-ak',
+        HW_SECRET_KEY: 'secret-sk',
+        HW_API_KEY: 'secret-api-key',
+        HUAWEICLOUD_SDK_AK: 'secret-sdk-ak',
+        HUAWEICLOUD_SDK_SK: 'secret-sdk-sk',
+        HUAWEICLOUD_SECRET_ACCESS_KEY: 'secret-access-key',
+      },
       paths,
       now: () => NOW,
       gitCheckout: false,
@@ -286,8 +294,17 @@ test('runAutoUpgrade: normal success writes succeeded and installs the new paylo
     assert.equal(state.installedVersion, '1.1.14');
     assert.equal(readInstalled(), '1.1.14');
     assert.equal(isAutoUpgradeLockActive(paths.lock, NOW), false);
-    assert.equal(spawnedOptions.env.HW_ACCESS_KEY, undefined);
-    assert.equal(spawnedOptions.env.HW_SECRET_KEY, undefined);
+    for (const key of [
+      'HW_ACCESS_KEY',
+      'HW_SECRET_KEY',
+      'HW_API_KEY',
+      'HUAWEICLOUD_SDK_AK',
+      'HUAWEICLOUD_SDK_SK',
+      'HUAWEICLOUD_SECRET_ACCESS_KEY',
+    ]) {
+      assert.equal(spawnedOptions.env[key], undefined, `${key} must not reach the npx child`);
+    }
+    assert.equal(spawnedOptions.env.HUAWEICLOUD_HOME, env.HUAWEICLOUD_HOME);
     assert.equal(spawnedOptions.env.npm_config_registry, 'https://registry.npmjs.org');
     const persisted = readAutoUpgradeState(paths.state);
     assert.equal(persisted.lastResult, 'succeeded');
