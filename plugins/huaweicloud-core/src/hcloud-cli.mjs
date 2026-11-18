@@ -8,6 +8,7 @@ import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-polic
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { resolveHcloudCommand } from './hcloud-probe.mjs';
 import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.mjs';
+import { evaluateCommandRisk, mergeRiskDecision } from './risk-rule-engine.mjs';
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_FORCE_KILL_AFTER_MS = 2_000;
@@ -368,9 +369,17 @@ export function resolveStsInjectArgs(rawArgs) {
     : ['--cli-access-key=' + creds.ak, '--cli-secret-key=' + creds.sk, '--cli-security-token=' + creds.securityToken];
 }
 
+function riskFindingWarning(finding) {
+  return `${finding.severity || 'info'}: [${finding.ruleId}] ${finding.message}`;
+}
+
 export function planHcloudCommand(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
-  const classification = classifyHcloudArgs(normalizedArgs, options);
+  // Evaluate risk rules once, after the write/read classification, so the
+  // confirm flow (plan → approve → run) shares the same decision instead of
+  // only distinguishing write vs read (#1133 D4-19). skipRiskRules keeps the
+  // base classification from merging first, avoiding duplicate findings.
+  const classification = classifyHcloudArgs(normalizedArgs, { ...options, skipRiskRules: true });
   const command = ['hcloud', ...normalizedArgs].map((arg) => quoteShellArg(arg)).join(' ');
   const warnings = planningWarnings(normalizedArgs);
   const obsHint = obsWriteHint(normalizedArgs);
@@ -386,16 +395,24 @@ export function planHcloudCommand(args, options = {}) {
       warnings.push('Find valid values: ' + paramValidation.hints.join('; '));
     }
   }
+  const risk = evaluateCommandRisk(['hcloud', ...normalizedArgs].join(' '));
+  const mergedClassification = mergeRiskDecision(applyPreflightFindings(classification, sgFindings), risk);
+  const riskFindings = mergedClassification.findings || risk.findings || [];
+  for (const finding of riskFindings) {
+    warnings.push(riskFindingWarning(finding));
+  }
   return {
     executable: 'hcloud',
     args: redactSecrets(normalizedArgs),
     command: redactOutput(command),
     executableBlock: redactOutput(command),
     warnings,
-    classification: applyPreflightFindings(classification, sgFindings),
+    classification: mergedClassification,
+    findings: riskFindings,
+    ...(mergedClassification.blockedByRiskRule === true ? { blockedByRiskRule: true } : {}),
     sgFindings,
     approvalToken: createApprovalToken(normalizedArgs),
-    safeToRun: classification.decision === 'allow',
+    safeToRun: mergedClassification.decision === 'allow',
   };
 }
 
@@ -440,6 +457,28 @@ function isTemporaryStsExpired() {
   return expiry <= Date.now();
 }
 
+// Process-local negative cache of STS credential sets that already failed IAM
+// authentication. Reusing the same dead credentials only adds latency and turns
+// a working KooCLI profile into an APIGW.0301 error, so later calls skip the
+// injection entirely (#1133 D3-B3).
+const _stsInjectFailureCache = new Set();
+
+export function resetStsInjectFailureCache() {
+  _stsInjectFailureCache.clear();
+}
+
+function stsInjectFingerprint(stsInject) {
+  return sha256Hex(JSON.stringify(stsInject));
+}
+
+function isAuthSourceFailure(result) {
+  const errorCode = String(result?.errorCode || '');
+  const errorMessage = String(result?.errorMessage || '');
+  const errorText = String(result?.error || '');
+  if (/^(APIGW|AKM|IAM|HDKIT_CRED)/i.test(errorCode)) return true;
+  return /Unauthorized|Incorrect IAM authentication|鉴权|认证失败/i.test(`${errorMessage}\n${errorText}`);
+}
+
 export async function runHcloud(args, options = {}) {
   const normalizedArgs = Array.isArray(args) ? args.map(String) : [];
   const plan = {
@@ -468,9 +507,14 @@ export async function runHcloud(args, options = {}) {
   // and R3 forbids writing them to disk). Inject per-command so hcloud actually
   // authenticates with the platform-provided STS. Injection args are appended to
   // the EXECUTED args only; classification/approval used the original args.
+  const originalRawArgs = [...plan.rawArgs];
   const stsInject = resolveStsInjectArgs(normalizedArgs);
-  if (stsInject.length > 0) {
+  const stsFingerprint = stsInject.length > 0 ? stsInjectFingerprint(stsInject) : null;
+  const shouldInject = stsInject.length > 0 && !_stsInjectFailureCache.has(stsFingerprint);
+  if (shouldInject) {
     plan.rawArgs = [...plan.rawArgs, ...stsInject];
+  } else if (stsFingerprint && _stsInjectFailureCache.has(stsFingerprint)) {
+    plan.stsInjectSkipped = 'negative-cache';
   }
 
   const metaDir = options.metaDir;
@@ -478,7 +522,32 @@ export async function runHcloud(args, options = {}) {
   // KooCLI only switches language globally (`hcloud configure set --cli-lang=cn`); there is no
   // per-command `--cli-lang` flag (it is rejected as "不正确的参数:cli-lang"). So we never mutate
   // the command — we run it as-is and annotate `Unsupported service` with an actionable cause.
-  const result = await runHcloudOnceWithRetries(plan, options);
+  let result = await runHcloudOnceWithRetries(plan, options);
+  // D3-B3: the per-command injected STS may be a placeholder/stale credential
+  // while the KooCLI `current` profile is usable. One auth-class failure is
+  // enough proof that the injected source is wrong — retry once WITHOUT the
+  // injected flags so KooCLI falls back to its profile, and remember the dead
+  // fingerprint for subsequent calls in this process.
+  if (shouldInject && !result.ok && isAuthSourceFailure(result)) {
+    _stsInjectFailureCache.add(stsFingerprint);
+    const fallbackPlan = { ...plan, rawArgs: originalRawArgs };
+    delete fallbackPlan.stsInjectSkipped;
+    const fallback = await runHcloudOnceWithRetries(fallbackPlan, options);
+    const credentialFallback = { from: 'sts-inject', to: 'koocli-profile' };
+    if (fallback.ok) {
+      result = { ...fallback, credentialFallback };
+    } else {
+      result = {
+        ...fallback,
+        credentialFallback,
+        firstAttempt: {
+          errorCode: result.errorCode,
+          errorMessage: redactSecrets(result.errorMessage || ''),
+          error: redactSecrets(result.error || ''),
+        },
+      };
+    }
+  }
   const text = `${result.stderr || ''}\n${result.stdout || ''}`;
   const match = text.match(UNSUPPORTED_SERVICE_RE);
   if (match && !result.ok) {
