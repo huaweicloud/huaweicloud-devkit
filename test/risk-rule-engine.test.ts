@@ -805,3 +805,48 @@ test('wildcard IAM actions are caught in Terraform, plural, and no-Effect shapes
     ),
   );
 });
+
+// #1066 D4-21: hwc-iam-admin-policy's broad-action branch requires an explicit
+// `Effect: Allow`, so named administrator managed-policy references (ARNs, role
+// names) and HCL `delegated_role` agency grants without an Effect statement
+// slipped through as allow. Those grants are admin by themselves, so a
+// dedicated rule denies them without requiring an Effect line.
+test('evaluateArtifacts denies administrator managed policy references (#1066 D4-21)', () => {
+  const cases: [string, string][] = [
+    [
+      'HCL delegated_role AdministratorFullAccess',
+      'resource "huaweicloud_identity_agency" "a" {\n  name = "deployer"\n  delegated_role {\n    name = "AdministratorFullAccess"\n  }\n}',
+    ],
+    ['arn + FullAccess', 'arn:aws:iam::aws:policy/AdministratorAccess FullAccess'],
+    [
+      'policy_arn assignment',
+      'resource "x" "y" {\n  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"\n}',
+    ],
+    [
+      'FullAccess role name',
+      'resource "huaweicloud_identity_role_assignment" "r" {\n  role_name = "DMS FullAccess"\n}',
+    ],
+  ];
+  for (const [label, content] of cases) {
+    const result = evaluateArtifacts([{ path: 'role.tf', content }]);
+    assert.equal(result.decision, 'deny', `${label} should deny`);
+    assert.ok(
+      result.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-managed-policy'),
+      `${label} should be reported by hwc-iam-admin-managed-policy`,
+    );
+  }
+});
+
+test('evaluateArtifacts does not flag scoped managed policy references (#1066 D4-21)', () => {
+  for (const content of [
+    'resource "x" "y" {\n  policy_arn = "arn:aws:iam::aws:policy/ReadOnlyAccess"\n}',
+    'resource "x" "y" {\n  role_name = "ECS ReadOnlyAccess"\n}',
+    'resource "huaweicloud_identity_agency" "a" {\n  delegated_role {\n    name = "OBS ReadOnlyAccess"\n  }\n}',
+  ]) {
+    const result = evaluateArtifacts([{ path: 'scoped.tf', content }]);
+    assert.ok(
+      !result.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-managed-policy'),
+      'scoped managed policy references must not trigger the admin managed-policy rule',
+    );
+  }
+});
