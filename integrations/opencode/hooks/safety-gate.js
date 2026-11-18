@@ -37,6 +37,17 @@ const POLICY_URL = new URL('../huaweicloud-plugins/dist/safety-policy.js', impor
 // cheaply (the ESM registry caches the evaluation).
 const IMPORT_RACE_MS = 3000;
 
+// The classification walk is synchronous per segment, but its cost grows
+// quadratically with ';'-dense text (interrogate round: 96KB of flood took
+// 213s at an allow verdict — the 256KiB cap inside the classifier protects
+// nothing at this seam, and the old comment's "cannot hang a tool call"
+// claim was measured false). Each segment is therefore capped at 8192
+// bytes BEFORE classification: the quadratic worst case lands in the
+// 1.5-2s order of a real tool call, real commands sit far below the cap,
+// and the sanctioned path for oversized parameters is --cli-jsonInput,
+// which the deny reason names.
+const SEGMENT_BYTE_CAP = 8192;
+
 let classifyTextCommand;
 let policyLoading = null;
 
@@ -97,6 +108,14 @@ async function onEvaluate(event) {
       return;
     }
     for (const text of segments) {
+      const bytes = Buffer.byteLength(text, 'utf8');
+      if (bytes > SEGMENT_BYTE_CAP) {
+        deny(
+          event,
+          `the command text is too large for synchronous in-hook classification (${bytes} bytes > ${SEGMENT_BYTE_CAP}); split the command or pass complex parameters via --cli-jsonInput`,
+        );
+        return;
+      }
       try {
         const verdict = classifyTextCommand(text);
         if (verdict.decision === 'deny') {

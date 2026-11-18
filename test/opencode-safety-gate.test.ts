@@ -212,12 +212,28 @@ test('empty resources are zero-intervention', async () => {
   }
 });
 
-test('an over-cap payload denies fail-closed through the classifier cap (256 KiB)', async () => {
-  const gate = await loadGate('real', 'cap');
-  const event = shellEvent(`hcloud ECS DeleteServers --server.id=x ${'A'.repeat(300_000)}`);
-  await gate(event);
-  assert.equal(event.effect, 'deny');
-  assert.match(event.message ?? '', /too large to classify safely/);
+test('a single segment over 8192 bytes denies with the split-command remediation', async () => {
+  // The adapter's own bound fires before the classifier's internal 256KiB
+  // cap (which stays for the .mjs twin's face); anything over 8192 bytes
+  // never reaches the quadratic walk on this seam.
+  const gate = await loadGate('real', 'cap-over');
+  const over = shellEvent(`echo ${'A'.repeat(8188)}`); // 'echo ' (5) + 8188 = 8193 bytes
+  await gate(over);
+  assert.equal(over.effect, 'deny');
+  assert.match(over.message ?? '', /8193 bytes > 8192/);
+  assert.match(over.message ?? '', /split the command or pass complex parameters via --cli-jsonInput/);
+});
+
+test('the 8192-byte boundary classifies normally and the cap never sums across segments', async () => {
+  const gate = await loadGate('real', 'cap-edge');
+  const exact = shellEvent(`echo ${'A'.repeat(8187)}`); // exactly 8192 bytes
+  await gate(exact);
+  assert.equal(exact.effect, 'allow', 'the boundary itself is not oversized');
+  // Two 6000-byte segments total 12000 bytes over the cap, but the bound is
+  // per segment: a legitimate compound is never denied for its total.
+  const compound = shellEvent([`echo ${'A'.repeat(5995)}`, `echo ${'B'.repeat(5995)}`]);
+  await gate(compound);
+  assert.equal(compound.effect, 'allow');
 });
 
 test('a throwing classifier denies with the classify-failure reason (G1-M2 posture)', async () => {
