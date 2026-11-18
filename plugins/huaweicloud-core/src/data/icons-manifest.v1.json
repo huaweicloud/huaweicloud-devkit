@@ -5,7 +5,7 @@
   "icons": [
     {
       "id": "codeartsdoer",
-      "name": "华为云码道（CodeArts）代码智能体",
+      "name": "华为云码道CodeArts代码智能体",
       "category": "人工智能",
       "subcategory": "智能体",
       "description": "更懂你编码需求的AI研发专家",
@@ -41,13 +41,13 @@
     },
     {
       "id": "modelarts",
-      "name": "魔坊（ModelArts）模型训推平台",
+      "name": "魔坊（ModelArts）",
       "category": "人工智能",
       "subcategory": "模型开发平台",
       "description": "“数-训-推-强”，一站式AI开发平台",
       "product_url": "https://www.huaweicloud.com/product/modelarts.html",
       "logo": {
-        "source_url": "https://res-static.hc-cdn.cn/cloudbu-site/public/new-product-icon/AI/ModelArts.png",
+        "source_url": "https://res-static.hc-cdn.cn/cloudbu-site/public/%E6%96%B0%E7%89%88/CF057503-AE1E-48CA-E8C1-1919F51A1261.png",
         "local_path": "icons/assets/logo/modelarts.png"
       },
       "architecture": {
@@ -155,8 +155,8 @@
       "description": "高效敏捷安全的一站式企业级智能体平台",
       "product_url": "https://www.huaweicloud.com/product/agentarts.html",
       "logo": {
-        "source_url": "https://res-static.hc-cdn.cn/cloudbu-site/public/new-product-icon/aPaaS/Versatile.svg",
-        "local_path": "icons/assets/logo/agentarts.svg"
+        "source_url": "https://res-static.hc-cdn.cn/cloudbu-site/china/zh-cn/%E6%99%BA%E6%9E%9CAgentArts/AgentArts-%E5%AE%98%E7%BD%91%E4%BA%A7%E5%93%81%E9%A1%B5%E5%88%87%E5%9B%BE/bannerlogo.png",
+        "local_path": "icons/assets/logo/agentarts.png"
       },
       "architecture": {
         "status": "planned",
@@ -164,6 +164,24 @@
       },
       "aliases": ["agentarts"],
       "tags": ["人工智能", "智能体平台", "agentarts"]
+    },
+    {
+      "id": "officeace",
+      "name": "果办OfficeAce 办公智能体",
+      "category": "人工智能",
+      "subcategory": "智能体",
+      "description": "专业办公级AI助手，PPT一键生成、专家团研讨，安全高效随时待命",
+      "product_url": "https://www.huaweicloud.com/product/agentarts/officeace.html",
+      "logo": {
+        "source_url": "https://res-static.hc-cdn.cn/cloudbu-site/china/zh-cn/yunying/product/OfficeAce-v2.svg",
+        "local_path": "icons/assets/logo/officeace.svg"
+      },
+      "architecture": {
+        "status": "planned",
+        "local_path": "icons/assets/architecture/officeace.svg"
+      },
+      "aliases": ["officeace", "office-ace"],
+      "tags": ["人工智能", "智能体", "办公", "officeace"]
     },
     {
       "id": "pangu-nlp",
