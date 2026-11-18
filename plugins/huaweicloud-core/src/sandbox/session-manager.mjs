@@ -46,6 +46,15 @@ export const WS_EXEC_INDEX_URL = pathToFileURL(join(__dirname, '..', 'ws-exec', 
 
 export const TUNNEL_URL_PATTERN = /TUNNEL_URL:(https:\/\/[A-Za-z0-9_-]+-\d+\.devbridge-s2\.hwtunnel\.com)/;
 
+// #981 R4: detail text probe_tunnel emits for an app-level 4xx/5xx — everything
+// left after the three gateway markers (tunnel not found / port not configured /
+// bad gateway) matched. A tunnel FAIL carrying this detail means the tunnel and
+// its host are healthy and the app (nginx) itself answered with an error, so the
+// root cause is the app layer: nextStep must be configure_nginx, and the
+// destructive devbridge remediation (delete-all + create) must NOT be handed out —
+// it would tear down a working tunnel and leave the 403/5xx unfixed.
+export const APP_HTTP_FAILURE_DETAIL_PATTERN = /HTTP \d{3} from the app/;
+
 let currentWorkspaceId = process.env.HW_WORKSPACE_ID || null;
 
 function getCurrentWorkspaceId() {
@@ -1076,9 +1085,17 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     ``,
     `TOTAL=$((TOTAL+1))`,
     `HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:${port} 2>/dev/null)`,
+    `# #981 R4: a 4xx/5xx response must NOT count as "serving". nginx answering is`,
+    `# not proof the preview works — a 403 (forbidden / index missing / permission`,
+    `# denied) or 5xx previously scored PASS and could yield complete=true for a`,
+    `# broken site. Contract (huawei-sandbox SKILL): nginx_serving = 2xx/3xx.`,
     `if [ -n "$HTTP_CODE" ] && [ "$HTTP_CODE" != "000" ]; then`,
-    `  echo "nginx_serving:PASS (port ${port}, HTTP \${HTTP_CODE})"`,
-    `  PASS=$((PASS+1))`,
+    `  if [ "$HTTP_CODE" -ge 200 ] 2>/dev/null && [ "$HTTP_CODE" -lt 400 ]; then`,
+    `    echo "nginx_serving:PASS (port ${port}, HTTP \${HTTP_CODE})"`,
+    `    PASS=$((PASS+1))`,
+    `  else`,
+    `    echo "nginx_serving:FAIL (port ${port}, HTTP \${HTTP_CODE} — nginx responded but did not serve the app; check index.html / output permissions)"`,
+    `  fi`,
     `else`,
     `  echo "nginx_serving:FAIL (port ${port}, no HTTP response)"`,
     `fi`,
@@ -1129,8 +1146,13 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `# Gateway-level tunnel errors have exact text/plain bodies (verified on the s2`,
     `# gateway): 404 "tunnel not found" = no live host session (the tunnel RECORD may`,
     `# still be in \`list\`); 404 "port not configured" = URL port not registered; 502`,
-    `# "bad gateway" = tunnel alive, local service down. grep -x (exact-line match) +`,
-    `# status gating avoids flagging app-generated 404/502 pages.`,
+    `# "bad gateway" = tunnel alive, local service down. Those three are matched FIRST`,
+    `# and with grep -x (exact-line match), so an app's own 404/502 page is never read`,
+    `# as a gateway error.`,
+    `# #981 R4: whatever 4xx/5xx is left after them comes from the app itself (e.g.`,
+    `# nginx 403) — the tunnel is reachable but the preview serves no content, so it is`,
+    `# a FAIL. parseDeployCheckOutput routes that reason (APP_HTTP_FAILURE_DETAIL_PATTERN)`,
+    `# to configure_nginx instead of re-creating a healthy tunnel.`,
     `probe_tunnel() {`,
     `  local url="$1" code`,
     `  code=$(curl -s -o /tmp/.dc_tunnel_body -w "%{http_code}" --max-time 5 "$url" 2>/dev/null)`,
@@ -1140,6 +1162,7 @@ export function buildDeployCheckScript({ port, project, outputPath, isCrossPlatf
     `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_TUNNEL_NOT_FOUND_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="tunnel not found (no live host session on the gateway)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
     `  if [ "$code" = "404" ] && grep -qx "${DEVBRIDGE_PORT_NOT_CONFIGURED_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="port not configured (URL port not registered on the tunnel)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
     `  if [ "$code" = "502" ] && grep -qx "${DEVBRIDGE_BAD_GATEWAY_MARKER}" /tmp/.dc_tunnel_body 2>/dev/null; then PROBE_FAIL_REASON="bad gateway (tunnel alive, local service not serving)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
+    `  if [ "$code" -ge 400 ] 2>/dev/null; then PROBE_FAIL_REASON="HTTP $code from the app (preview not serving content)"; rm -f /tmp/.dc_tunnel_body; return 1; fi`,
     `  rm -f /tmp/.dc_tunnel_body`,
     `  return 0`,
     `}`,
@@ -1252,16 +1275,28 @@ export function parseDeployCheckOutput(stdout, { port, isCrossPlatform } = {}) {
       ? 'Check output parsing failed — individual check results could not be extracted. See rawOutput for details.'
       : undefined;
 
+  // #981 R4: distinguish WHY the tunnel probe failed before ranking nextStep. A
+  // tunnel FAIL whose detail is an app-level HTTP error means tunnel + host are
+  // healthy and the app answered 4xx/5xx: the fix is the nginx/app layer, not a
+  // tunnel re-creation. Ranking it as expose_via_devbridge handed the agent a
+  // "devbridge delete-all" remediation that would delete a working tunnel while
+  // leaving the real (nginx 403) root cause untouched.
+  const tunnelAppLevelFailure =
+    checks.tunnel_url_accessible?.status === 'FAIL' &&
+    APP_HTTP_FAILURE_DETAIL_PATTERN.test(checks.tunnel_url_accessible.detail || '');
+
   const nextStepValue = !complete
-    ? missing.includes('devbridge_tunnel') || missing.includes('tunnel_url_accessible')
-      ? 'expose_via_devbridge'
-      : missing.includes('nginx_serving')
-        ? 'configure_nginx'
-        : missing.includes('qr_code')
-          ? 'generate_qr_code'
-          : parseWarning
-            ? 'review_raw_output'
-            : 'review_checks'
+    ? tunnelAppLevelFailure
+      ? 'configure_nginx'
+      : missing.includes('devbridge_tunnel') || missing.includes('tunnel_url_accessible')
+        ? 'expose_via_devbridge'
+        : missing.includes('nginx_serving')
+          ? 'configure_nginx'
+          : missing.includes('qr_code')
+            ? 'generate_qr_code'
+            : parseWarning
+              ? 'review_raw_output'
+              : 'review_checks'
     : 'complete';
 
   return {

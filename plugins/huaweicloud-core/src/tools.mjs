@@ -749,7 +749,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_sandbox_deploy_check',
     description:
-      'Run a deployment completeness check on the sandbox. Verifies nginx is serving, output directory exists, DevBridge tunnel is active and accessible, and QR code exists (cross-platform). Returns a score, nextStep, and (when the DevBridge tunnel is missing) an executable "remediation" command string. Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
+      'Run a deployment completeness check on the sandbox. Verifies nginx is serving 2xx/3xx, output directory exists, DevBridge tunnel is active and its URL returns 2xx/3xx (an app-level 4xx/5xx such as nginx 403 counts as inaccessible and routes nextStep to configure_nginx), and QR code exists (cross-platform). Returns a score, nextStep, and (only when the tunnel itself is missing or unreachable) an executable "remediation" command string. Call this at the end of a deployment workflow to confirm everything is working before reporting success.',
     inputSchema: {
       type: 'object',
       required: ['port', 'project', 'output_dir'],

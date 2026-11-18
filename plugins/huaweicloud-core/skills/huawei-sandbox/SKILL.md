@@ -1052,6 +1052,8 @@ If the status code is not 2xx/3xx:
 
 When `deploy_check` returns `nextStep: expose_via_devbridge`, it also returns an executable `remediation` string — run those devbridge commands in the sandbox (after `source /tmp/hw_creds.sh`). Until a tunnel exists, `deploy_check` returns no `publicUrl`; do not fabricate a URL.
 
+When the tunnel probe fails because the **app** answered 4xx/5xx (`HTTP <code> from the app`, e.g. nginx 403), `deploy_check` returns `nextStep: configure_nginx` and **no** `remediation`: tunnel and host are healthy, so fix the app/nginx (see the Step 5 re-check) instead of re-creating the tunnel.
+
 Follow the standard [Expose the deployed app](#expose-the-deployed-app-public-url) procedure. The app is already running on the detected port — only DevBridge tunnel setup is needed.
 
 Use `exec_with_session` to background DevBridge. For SSR, DevBridge tunnels the nginx public port (not the Node port directly).
@@ -1103,7 +1105,7 @@ The tool checks:
 - **nginx_serving** — nginx responds with 2xx/3xx on the app port
 - **output_dir** — build output directory exists and is non-empty
 - **devbridge_tunnel** — DevBridge tunnel is active (version-aware: 0.1.x JSON / 0.2.x table)
-- **tunnel_url_accessible** — tunnel URL returns 200/304 with real content; these all count as FAIL: a gateway migration placeholder page (「服务已迁移」 with HTTP 200), `tunnel not found` (404 — no live host session on the gateway, even if the tunnel still appears in `devbridge list`), `port not configured` (404 — URL port not registered on the tunnel), and `bad gateway` (502 — tunnel alive but the local service is down). The check probes every listed tunnel and selects one that actually serves the port.
+- **tunnel_url_accessible** — tunnel URL returns 2xx/3xx with real content; these all count as FAIL: a gateway migration placeholder page (「服务已迁移」 with HTTP 200), `tunnel not found` (404 — no live host session on the gateway, even if the tunnel still appears in `devbridge list`), `port not configured` (404 — URL port not registered on the tunnel), `bad gateway` (502 — tunnel alive but the local service is down), and any other app 4xx/5xx (e.g. nginx 403 — the URL is answering but not serving content). The check probes every listed tunnel and selects one that actually serves the port.
 - **qr_code** (cross-platform only) — QR image exists in output dir
 
 Returns `complete: true/false`, `score`, and `nextStep` to fix missing items.

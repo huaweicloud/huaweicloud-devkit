@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 
@@ -159,23 +160,25 @@ test('resolveProxyNodePort re-probes past targetPort + 1 when it is occupied', a
   assert.equal(port, 83);
 });
 
-test('D3-C3: buildDeployCheckScript accepts any non-zero HTTP code for nginx_serving', () => {
+test('D3-C3/#981: buildDeployCheckScript counts only 2xx/3xx as nginx_serving PASS', () => {
   const script = buildDeployCheckScript({
     port: 8080,
     project: 'myapp',
     outputPath: '/workspace/myapp/dist',
     isCrossPlatform: false,
   });
-  assert.ok(!script.includes('grep -qE "^(2|3)"'), 'must not use 2xx/3xx-only grep');
   assert.ok(script.includes('HTTP_CODE'), 'must capture HTTP_CODE variable');
   assert.ok(script.includes('"000"'), 'must check for 000 (connection refused)');
+  assert.ok(script.includes('-ge 200'), 'must require >= 200 for PASS');
+  assert.ok(script.includes('-lt 400'), 'must reject >= 400 (403/5xx) as FAIL');
   assert.ok(script.includes('nginx_serving:PASS'), 'must emit PASS line');
+  assert.ok(script.includes('did not serve the app'), 'must explain 4xx/5xx failure');
 });
 
-test('D3-C3: parseDeployCheckOutput returns nginx_serving PASS when nginx responds', () => {
+test('D3-C3/#981: parseDeployCheckOutput passes nginx_serving for HTTP 200', () => {
   const stdout = [
     '=== DEPLOY CHECK ===',
-    'nginx_serving:PASS (port 8080, HTTP 404)',
+    'nginx_serving:PASS (port 8080, HTTP 200)',
     'output_dir:PASS (/workspace/myapp/dist)',
     'devbridge_tunnel:PASS',
     'tunnel_url_accessible:PASS (https://abc-8080.cn-north-4-bridge.myhuaweicloud.com -> 200)',
@@ -189,6 +192,149 @@ test('D3-C3: parseDeployCheckOutput returns nginx_serving PASS when nginx respon
   assert.equal(result.complete, true);
   assert.equal(result.score.pass, 4);
   assert.equal(result.score.total, 4);
+});
+
+test('#981 R4: nginx 403 is FAIL and must not yield complete=true', () => {
+  const stdout = [
+    '=== DEPLOY CHECK ===',
+    'nginx_serving:FAIL (port 8080, HTTP 403 — nginx responded but did not serve the app; check index.html / output permissions)',
+    'output_dir:PASS (/workspace/myapp/dist)',
+    'devbridge_tunnel:PASS',
+    'tunnel_url_accessible:FAIL (https://abc-8080.cn-north-4-bridge.myhuaweicloud.com -> HTTP 403 from the app (preview not serving content))',
+    'qr_code:SKIP (not a cross-platform project)',
+    'SCORE:2/4',
+    'VERDICT:INCOMPLETE',
+  ].join('\n');
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.nginx_serving.status, 'FAIL');
+  assert.match(result.checks.nginx_serving.detail, /HTTP 403/);
+  assert.equal(result.complete, false);
+  assert.ok(result.missingSteps.includes('nginx_serving'));
+});
+
+test('#981 R4: buildDeployCheckScript fails tunnel probe on app 4xx/5xx', () => {
+  const script = buildDeployCheckScript({
+    port: 8080,
+    project: 'myapp',
+    outputPath: '/workspace/myapp/dist',
+    isCrossPlatform: false,
+  });
+  assert.ok(script.includes('preview not serving content'), 'probe must fail app 4xx/5xx');
+});
+
+// #981 R4 (end-to-end): generate the deploy-check script, run it against stubbed
+// `curl`/`devbridge` binaries, then parse the REAL stdout. Pure `script.includes()`
+// assertions cannot catch a nextStep/remediation routing regression — that gap is
+// exactly what let the app-403 misroute to expose_via_devbridge slip through.
+function runDeployCheckScript({ httpCode, httpBody = '' }) {
+  const root = mkdtempSync(join(tmpdir(), 'deploy-check-e2e-'));
+  const binDir = join(root, 'bin');
+  const outputDir = join(root, 'dist');
+  mkdirSync(binDir);
+  mkdirSync(outputDir);
+  writeFileSync(join(outputDir, 'index.html'), '<h1>ok</h1>');
+
+  // curl stub: honours `-o` (writes FAKE_HTTP_BODY) and `-w` (prints the code).
+  const curlStub = [
+    '#!/bin/sh',
+    'out=""',
+    'want_format=0',
+    'url=""',
+    'while [ $# -gt 0 ]; do',
+    '  case "$1" in',
+    '    -o) out="$2"; shift 2 ;;',
+    '    -w) want_format=1; shift 2 ;;',
+    '    --max-time) shift 2 ;;',
+    '    -s) shift ;;',
+    '    *) url="$1"; shift ;;',
+    '  esac',
+    'done',
+    'if [ -n "$out" ] && [ "$out" != "/dev/null" ]; then',
+    '  case "$url" in',
+    '    http://localhost:*) : > "$out" ;;',
+    '    *) printf "%s" "$FAKE_HTTP_BODY" > "$out" ;;',
+    '  esac',
+    'fi',
+    'if [ "$want_format" = "1" ]; then printf "%s" "$FAKE_HTTP_CODE"; else printf "%s" "$FAKE_HTTP_BODY"; fi',
+    '',
+  ].join('\n');
+  writeFileSync(join(binDir, 'curl'), curlStub);
+  chmodSync(join(binDir, 'curl'), 0o755);
+
+  // devbridge stub: one live tunnel (JSON form for `-j`, table form for the
+  // fallback path used where grep -P is unavailable).
+  const devbridgeStub = [
+    '#!/bin/sh',
+    'if [ "$1" = "list" ]; then',
+    '  if [ "$2" = "-j" ]; then printf \'{"tunnelId":"abcdefgh"}\\n\'; else printf "abcdefgh\\t8080\\n"; fi',
+    '  exit 0',
+    'fi',
+    'exit 1',
+    '',
+  ].join('\n');
+  writeFileSync(join(binDir, 'devbridge'), devbridgeStub);
+  chmodSync(join(binDir, 'devbridge'), 0o755);
+
+  const scriptPath = join(root, 'deploy-check.sh');
+  writeFileSync(
+    scriptPath,
+    buildDeployCheckScript({
+      port: 8080,
+      project: 'deploy-check-e2e-981',
+      outputPath: outputDir,
+      isCrossPlatform: false,
+    }),
+  );
+  const res = spawnSync('bash', [scriptPath], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH}`,
+      FAKE_HTTP_CODE: String(httpCode),
+      FAKE_HTTP_BODY: httpBody,
+    },
+  });
+  assert.equal(res.status, 0, res.stderr);
+  return res.stdout;
+}
+
+test('#981 R4: live host + app 403 parses to nextStep=configure_nginx and no remediation', () => {
+  const stdout = runDeployCheckScript({ httpCode: 403, httpBody: 'Forbidden' });
+  // The tunnel record and its host are healthy; only the app (nginx) answers 403.
+  assert.match(stdout, /devbridge_tunnel:PASS/);
+  assert.match(stdout, /tunnel_url_accessible:FAIL \(.*HTTP 403 from the app/);
+
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.complete, false);
+  assert.equal(result.checks.tunnel_url_accessible.status, 'FAIL');
+  assert.equal(result.nextStep, 'configure_nginx', 'app-level 403 must not be routed to devbridge');
+  assert.equal(result.remediation, undefined, 'a healthy tunnel must not receive devbridge delete-all');
+});
+
+test('#981 R4: 3xx from the app counts as tunnel_url_accessible PASS', () => {
+  const stdout = runDeployCheckScript({ httpCode: 302 });
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.nginx_serving.status, 'PASS');
+  assert.equal(result.checks.tunnel_url_accessible.status, 'PASS');
+  assert.equal(result.complete, true);
+});
+
+test('#981 R4: app 5xx counts as tunnel_url_accessible FAIL and routes to configure_nginx', () => {
+  const stdout = runDeployCheckScript({ httpCode: 500, httpBody: 'Internal Server Error' });
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.checks.tunnel_url_accessible.status, 'FAIL');
+  assert.match(result.checks.tunnel_url_accessible.detail, /HTTP 500 from the app/);
+  assert.equal(result.complete, false);
+  assert.equal(result.nextStep, 'configure_nginx');
+  assert.equal(result.remediation, undefined);
+});
+
+test('#981 R4: gateway 404 marker still routes to expose_via_devbridge (checked before the app rule)', () => {
+  const stdout = runDeployCheckScript({ httpCode: 404, httpBody: 'tunnel not found' });
+  assert.match(stdout, /tunnel_url_accessible:FAIL \(.*tunnel not found/);
+  const result = parseDeployCheckOutput(stdout, { port: 8080, isCrossPlatform: false });
+  assert.equal(result.nextStep, 'expose_via_devbridge');
+  assert.ok(result.remediation.includes('devbridge delete-all'));
 });
 
 test('D3-C3: parseDeployCheckOutput returns nginx_serving FAIL when no response', () => {
