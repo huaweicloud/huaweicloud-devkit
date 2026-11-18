@@ -311,6 +311,27 @@
       "remediation": "Use least-privilege service actions, resource constraints, and short-lived credentials for generated application workflows."
     },
     {
+      "id": "hwc-iam-admin-managed-policy",
+      "title": "Broad IAM administrator managed policy reference",
+      "category": "iam",
+      "severity": "deny",
+      "stages": ["command", "artifact", "deploy_plan"],
+      "match": {
+        "all": [
+          {
+            "field": "text",
+            "regex": "(IAM|policy|role|agency|Statement|Action|delegated_role|delegatedRole)"
+          },
+          {
+            "field": "text",
+            "regex": "(AdministratorAccess|AdministratorFullAccess|FullAccess)"
+          }
+        ]
+      },
+      "message": "The change references a broad administrator managed policy (AdministratorAccess/AdministratorFullAccess/FullAccess), including HCL delegated_role grants.",
+      "remediation": "Attach a least-privilege custom policy scoped to the required service actions and resources instead of a broad managed policy."
+    },
+    {
       "id": "hwc-iam-wildcard-action",
       "title": "Wildcard IAM action",
       "category": "iam",
