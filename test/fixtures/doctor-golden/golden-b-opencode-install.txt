@@ -17,6 +17,7 @@ HuaweiCloud DevKit Doctor
   [PASS] MCP configured
   [PASS] Skills-tree permission seam (allow + edit deny)
   [SKIP] ASK approval posture (opencode not verifiably at or above 1.19.0)
+  [PASS] Shell safety gate (evaluate-hook adapter)
   [PASS] hcloud CLI installed
     Version: <hcloud-version>
   [PASS] hcloud credentials configured
@@ -25,7 +26,7 @@ HuaweiCloud DevKit Doctor
   [WARN] open-mcp-gateway not found — npx huaweicloud-devkit dep install open-mcp-gateway
   [INFO] devbridge: sandbox-resident, not probed host-side
 
-Results: 13 pass, 1 warn, 0 fail
+Results: 14 pass, 1 warn, 0 fail
 
 All checks passed. You can now describe your Huawei Cloud task
 
