@@ -19,6 +19,7 @@ import { readJsonRecord, writeMcpSettingsFile } from '../mcp-config-io.ts';
 import {
   applySkillTreePermissionSeam,
   opencodeSeamVersionSupported,
+  payloadEditDenyGlobs,
   removeSkillTreePermissionSeam,
   skillTreePermissionGlobs,
 } from '../lib/opencode-permission-seam.ts';
@@ -222,7 +223,7 @@ export function updateOpenCodeConfig(pluginDir: string): void {
   // lib/opencode-permission-seam.ts), so the single write below carries it.
   let permChanged = false;
   if (openCodeSeamGate() === 'on') {
-    const seam = applySkillTreePermissionSeam(config, openCodeSeamGlobs(pluginDir));
+    const seam = applySkillTreePermissionSeam(config, openCodeSeamGlobs(pluginDir), payloadEditDenyGlobs(pluginDir));
     permChanged = seam.changed;
     for (const section of seam.skipped) {
       console.log(
@@ -364,8 +365,13 @@ export function removeOpenCodeConfig(): void {
   // hand. Globs derive from the stable XDG paths (the plugin dir may
   // already be gone) and the running package's own manifest;
   // value-exact deletion keeps user-modified rules (the ownership contract
-  // lives in lib/opencode-permission-seam.ts).
-  const permCleaned = removeSkillTreePermissionSeam(config, openCodeSeamGlobs(opencodePluginsDir()));
+  // lives in lib/opencode-permission-seam.ts). The edit-only payload
+  // class is removed under the same value-exact rule.
+  const permCleaned = removeSkillTreePermissionSeam(
+    config,
+    openCodeSeamGlobs(opencodePluginsDir()),
+    payloadEditDenyGlobs(opencodePluginsDir()),
+  );
   // The client-rule cleanup also runs unconditionally of the version gate: an
   // uninstall must remove what any past install wrote — the opencode that
   // gated the write may since have been upgraded, downgraded, or removed from

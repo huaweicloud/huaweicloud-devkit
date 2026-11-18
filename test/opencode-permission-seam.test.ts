@@ -8,6 +8,7 @@ import test from 'node:test';
 import {
   applySkillTreePermissionSeam,
   opencodeSeamVersionSupported,
+  payloadEditDenyGlobs,
   removeSkillTreePermissionSeam,
   skillTreePermissionGlobs,
 } from '../plugins/huaweicloud-core/src/lib/opencode-permission-seam.ts';
@@ -37,6 +38,46 @@ test('skillTreePermissionGlobs covers the plugin tree plus sorted per-skill nati
     ['C:/fake/plugin/skills/**'],
     'backslash inputs are forward-slashed (the mcpPath precedent)',
   );
+});
+
+test('payloadEditDenyGlobs derives the forward-slashed payload-root glob', () => {
+  assert.deepEqual(payloadEditDenyGlobs('/fake/config/opencode/huaweicloud-plugins'), [
+    '/fake/config/opencode/huaweicloud-plugins/**',
+  ]);
+  assert.deepEqual(payloadEditDenyGlobs('C:\\fake\\huaweicloud-plugins'), ['C:/fake/huaweicloud-plugins/**']);
+});
+
+test('apply writes the edit-only deny without an external allow for the payload glob', () => {
+  const config: Record<string, unknown> = {};
+  const result = applySkillTreePermissionSeam(config, ['/t/skills/**'], ['/t/huaweicloud-plugins/**']);
+  assert.deepEqual(result, { changed: true, skipped: [] });
+  const permission = config.permission as Record<string, Record<string, string>>;
+  assert.deepEqual(permission.external_directory, { '/t/skills/**': 'allow' });
+  assert.deepEqual(permission.edit, { '/t/skills/**': 'deny', '/t/huaweicloud-plugins/**': 'deny' });
+});
+
+test('a user-owned edit value on the payload glob survives; missing skills globs still write', () => {
+  const config = { permission: { edit: { '/t/huaweicloud-plugins/**': 'allow' } } };
+  const result = applySkillTreePermissionSeam(config, ['/t/skills/**'], ['/t/huaweicloud-plugins/**']);
+  assert.equal(result.changed, true);
+  const permission = config.permission as Record<string, Record<string, string>>;
+  assert.equal(permission.edit['/t/huaweicloud-plugins/**'], 'allow', 'the user value is kept');
+  assert.equal(permission.edit['/t/skills/**'], 'deny');
+  assert.deepEqual(permission.external_directory, { '/t/skills/**': 'allow' });
+});
+
+test('remove deletes the payload edit deny value-exact and prunes seam-emptied sections', () => {
+  const config = {
+    permission: {
+      external_directory: { '/u/**': 'allow', '/t/skills/**': 'allow' },
+      edit: { '/t/skills/**': 'deny', '/t/huaweicloud-plugins/**': 'deny' },
+    },
+  };
+  const changed = removeSkillTreePermissionSeam(config, ['/t/skills/**'], ['/t/huaweicloud-plugins/**']);
+  assert.equal(changed, true);
+  const permission = config.permission as Record<string, Record<string, string>>;
+  assert.deepEqual(permission.external_directory, { '/u/**': 'allow' });
+  assert.equal('edit' in permission, false, 'the edit section was emptied by OUR deletions and pruned');
 });
 
 test('applySkillTreePermissionSeam writes allow+deny for every glob on a fresh config', () => {
@@ -227,16 +268,26 @@ function expectedGlobs(home: string): string[] {
   return [pluginGlob, ...REQUIRED_CORE_SKILLS.map((name) => `${nativeRoot}/${name}/**`)];
 }
 
+function expectedPayloadGlob(home: string): string {
+  return `${join(home, '.config', 'opencode', 'huaweicloud-plugins').replace(/\\/g, '/')}/**`;
+}
+
 test('install writes the full seam (plugin tree + six native per-skill globs) and stays idempotent', () => {
   const home = fixtureDir('devkit-seam-fresh-');
   const first = runCli(home, ['install', '--target', 'opencode']);
   assert.equal(first.status, 0, first.stderr || first.stdout);
   const globs = expectedGlobs(home);
+  const payloadGlob = expectedPayloadGlob(home);
   const sections = permissionSections(home);
   for (const glob of globs) {
     assert.equal(sections.external[glob], 'allow', `external_directory allow missing for ${glob}`);
     assert.equal(sections.edit[glob], 'deny', `edit deny missing for ${glob}`);
   }
+  // The payload root is the seam's edit-only class: the edit deny is written
+  // and the external allow deliberately is not (extending it would make the
+  // classifier a no-prompt bash write target).
+  assert.equal(sections.edit[payloadGlob], 'deny', 'the payload-root edit deny is written');
+  assert.equal(sections.external[payloadGlob], undefined, 'the external allow never covers the payload root');
   assert.equal(Object.keys(sections.external).length, globs.length, 'no extra external_directory rules');
   assert.ok(readConfig(home).mcp, 'the mcp entry is written alongside the seam');
 
@@ -244,7 +295,35 @@ test('install writes the full seam (plugin tree + six native per-skill globs) an
   assert.equal(second.status, 0, second.stderr || second.stdout);
   const after = permissionSections(home);
   assert.equal(Object.keys(after.external).length, globs.length, 're-install must not duplicate keys');
-  assert.equal(Object.keys(after.edit).length, globs.length, 're-install must not duplicate keys');
+  assert.equal(
+    Object.keys(after.edit).length,
+    globs.length + 1,
+    're-install must not duplicate keys (skills + payload)',
+  );
+});
+
+test('a pre-payload-glob install (skills keys present, payload key absent) is healed by re-install', () => {
+  // The real-world heal for this seam extension: every install made before
+  // the payload-root edit deny existed carries the skills keys but not the
+  // payload key. Re-install adds exactly the missing payload edit key and
+  // never the external allow.
+  const home = fixtureDir('devkit-seam-payload-heal-');
+  const first = runCli(home, ['install', '--target', 'opencode']);
+  assert.equal(first.status, 0, first.stderr || first.stdout);
+  const payloadGlob = expectedPayloadGlob(home);
+  const configPath = opencodeConfigPath(home);
+  const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<
+    string,
+    Record<string, Record<string, string>>
+  >;
+  delete config.permission.edit[payloadGlob];
+  writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+  const heal = runCli(home, ['install', '--target', 'opencode']);
+  assert.equal(heal.status, 0, heal.stderr || heal.stdout);
+  const sections = permissionSections(home);
+  assert.equal(sections.edit[payloadGlob], 'deny', 're-install restores the payload edit deny');
+  assert.equal(sections.external[payloadGlob], undefined, 'the heal never adds the external allow');
 });
 
 test('a pre-seam install (unchanged mcp entry, no permission section) is healed by re-install', () => {
