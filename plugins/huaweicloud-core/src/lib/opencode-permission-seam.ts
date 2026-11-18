@@ -82,6 +82,28 @@ export interface SeamApplyResult {
   skipped: string[];
 }
 
+// The per-section resolver shared by apply and remove: the section record
+// (fresh when absent, so the caller's writes land and are assigned back),
+// or null when the user owns a scalar shape there — one ownership check in
+// one place for both directions of the seam.
+function sectionFor(permission: Record<string, unknown>, key: string): Record<string, unknown> | null {
+  if (permission[key] !== undefined && !isRecord(permission[key])) return null;
+  return asRecord(permission[key]);
+}
+
+// The two-class section table shared by apply and remove: the external
+// allow covers the skills globs only, the edit deny covers them plus the
+// edit-only payload class.
+function seamSections(
+  globs: readonly string[],
+  editOnlyGlobs: readonly string[],
+): Array<readonly [key: string, value: 'allow' | 'deny', list: readonly string[]]> {
+  return [
+    ['external_directory', 'allow', globs],
+    ['edit', 'deny', [...globs, ...editOnlyGlobs]],
+  ];
+}
+
 // Mutates config in place. Add-only-if-absent per section: a glob already
 // present with ANY value keeps the user's rule; only missing globs get the
 // devkit value. Appended keys win under OpenCode's last-matching-rule-wins
@@ -103,16 +125,12 @@ export function applySkillTreePermissionSeam(
   const permission = asRecord(config.permission);
   const skipped: string[] = [];
   let changed = false;
-  const sections: Array<readonly [key: string, value: 'allow' | 'deny', list: readonly string[]]> = [
-    ['external_directory', 'allow', globs],
-    ['edit', 'deny', [...globs, ...editOnlyGlobs]],
-  ];
-  for (const [key, value, list] of sections) {
-    if (permission[key] !== undefined && !isRecord(permission[key])) {
+  for (const [key, value, list] of seamSections(globs, editOnlyGlobs)) {
+    const section = sectionFor(permission, key);
+    if (section === null) {
       skipped.push(key);
       continue;
     }
-    const section = asRecord(permission[key]);
     const missing = list.filter((glob) => !Object.hasOwn(section, glob));
     if (missing.length === 0) continue;
     for (const glob of missing) section[glob] = value;
@@ -136,13 +154,9 @@ export function removeSkillTreePermissionSeam(
   if (!isRecord(config.permission)) return false;
   const permission = asRecord(config.permission);
   let changed = false;
-  const sections: Array<readonly [key: string, value: 'allow' | 'deny', list: readonly string[]]> = [
-    ['external_directory', 'allow', globs],
-    ['edit', 'deny', [...globs, ...editOnlyGlobs]],
-  ];
-  for (const [key, value, list] of sections) {
-    if (!isRecord(permission[key])) continue;
-    const section = asRecord(permission[key]);
+  for (const [key, value, list] of seamSections(globs, editOnlyGlobs)) {
+    const section = sectionFor(permission, key);
+    if (section === null) continue;
     let removedHere = false;
     for (const glob of list) {
       if (section[glob] === value) {
