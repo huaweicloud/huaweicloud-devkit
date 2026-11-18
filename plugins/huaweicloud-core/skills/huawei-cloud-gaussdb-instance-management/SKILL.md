@@ -65,11 +65,13 @@ flowchart LR
 
 ## Critical Warnings
 
-| Trap                   | Why it matters                                                                                                                                                                 |
-| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| Shard key is permanent | Once set at creation, the shard key **cannot be changed**. Selecting it wrongly forces a full instance recreation.                                                             |
-| Minimum 3 nodes        | Distributed GaussDB (openGauss) requires **at least 3 nodes** for production. Do not create or recommend smaller topologies.                                                   |
-| Engine version pinned  | MySQL-compatible and openGauss are **separate products**; each engine's version is fixed per product family. Do not mix engine versions or assume cross-product compatibility. |
+| Trap                                | Why it matters                                                                                                                                                                                                                                |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Shard key is permanent              | Once set at creation, the shard key **cannot be changed**. Selecting it wrongly forces a full instance recreation.                                                                                                                            |
+| Minimum 3 nodes                     | Distributed GaussDB (openGauss) requires **at least 3 nodes** for production. Do not create or recommend smaller topologies.                                                                                                                  |
+| Engine version pinned               | MySQL-compatible and openGauss are **separate products**; each engine's version is fixed per product family. Do not mix engine versions or assume cross-product compatibility.                                                                |
+| EIP may be auto-released            | The EIP bound to a GaussDB instance can be released after a long session gap (devkit environment resource lifecycle), silently breaking the public link. See [EIP Recovery and Rebind](#eip-recovery-and-rebind) for the self-heal procedure. |
+| BSS inquiry unavailable for GaussDB | `hcloud BSS ListOnDemandResourceRatings` does NOT cover GaussDB (for MySQL / for openGauss) — `CBC.6074`. Always degrade to official website price estimates labeled **估算**. See [BSS Inquiry Boundary](#bss-inquiry-boundary).             |
 
 ## Prerequisites
 
@@ -423,6 +425,65 @@ real values before running; never submit a command that still contains `<>` or
 | Instance creation fails                                                      | Check VPC/subnet availability, flavor capacity, and security group                                                                                                                       |
 | Connection refused                                                           | Security group missing the database port (see security analysis action)                                                                                                                  |
 | Permission denied (403)                                                      | IAM policy lacks GaussDB rights — see iam-policies.md                                                                                                                                    |
+| Sudden connection failure (public network)                                   | EIP may have been auto-released — see [EIP Recovery and Rebind](#eip-recovery-and-rebind) below                                                                                          |
+| `CBC.6074` when estimating GaussDB cost                                      | Expected — BSS inquiry does not cover GaussDB; degrade to official website price (估算). See [BSS Inquiry Boundary](#bss-inquiry-boundary)                                               |
+
+## EIP Recovery and Rebind
+
+GaussDB instances bound to a public EIP can lose connectivity when the EIP is auto-released after a long session gap (devkit environment resource lifecycle). This is a known operational behavior, not a defect. Use the self-heal procedure below.
+
+### Diagnosis
+
+```bash
+# 1. Check the EIP currently bound to the instance (R3, read-only)
+hcloud GaussDB ShowInstanceEip --cli-region={region} --instance_id={instance_id}
+# Empty result or 404 → EIP has been released; proceed to rebind.
+```
+
+### Rebind procedure
+
+```bash
+# 2. Allocate a new EIP (R2 — preview + confirm)
+hcloud EIP CreatePublicip --cli-region={region} --publicip.type=<type> --bandwidth.name=<name> --bandwidth.size=<size> --bandwidth.share_type=PER
+# Capture publicip_id from the response.
+
+# 3. Find the target port (network_id = subnet the instance lives in)
+hcloud EIP ListPorts --cli-region={region} --network_id.1={subnet_id}
+# Pick the port whose device_id matches the GaussDB instance; capture port_id.
+
+# 4. Associate the new EIP with the instance port (R2)
+hcloud EIP AssociatePublicips --cli-region={region} --publicip_id={publicip_id} --publicip.associate_instance_type=PORT --publicip.associate_instance_id={port_id}
+```
+
+> **Operation names above are entry points, not gospel.** Always run `hcloud EIP <Operation> --help` before constructing the command to discover exact parameter names. `--publicip.associate_instance_type=PORT` is the GaussDB→PORT mapping (non-obvious, kept as a HELPFUL concrete value per the AGENTS.md parameter rule).
+>
+> **Quota pre-check**: before allocating, verify EIP quota with `hcloud EIP ListPublicips --cli-region={region} --limit=50` (beware pagination truncation — count precisely). `EIP.7905 Quota exceeded` surfaces only at RUN stage. After releasing an EIP, quota counting may lag several minutes.
+>
+> See `huawei-vpc` skill for EIP lifecycle basics and `huawei-iac/references/resource-catalog.md` for the EIP create/delete table.
+
+## BSS Inquiry Boundary
+
+`hcloud BSS ListOnDemandResourceRatings` does NOT cover GaussDB (for MySQL / for openGauss distributed). Attempting to inquire returns `CBC.6074 Request usage type list fail`. The BSS metadata discovery path (`ListServiceTypes` / `ListResourceTypes`) is unusable for filtering (895 entries, no service filter).
+
+**Action**: always degrade to official website prices as static estimates and label them **估算** (estimated). Do not attempt to guess GaussDB product codes — a wrong combination fails with `CBC.6074`.
+
+| Product family        | BSS inquiry usable? | Fallback                      |
+| --------------------- | ------------------- | ----------------------------- |
+| GaussDB for MySQL     | ❌ No (`CBC.6074`)  | Official website price (估算) |
+| GaussDB for openGauss | ❌ No (`CBC.6074`)  | Official website price (估算) |
+
+> **Single source of truth**: `huawei-iac/references/resource-catalog.md` "Pricing and Balance" section lists the full verified matrix (ECS usable; EIP/RDS/DCS/GaussDB not usable). `huawei-billing/SKILL.md` "BSS Inquiry Capability Boundary" mirrors the same table. Keep all three in sync.
+
+## Upstream Tracking
+
+The following GaussDB Agent 友好型联调 defects are tracked in upstream repositories (NOT in this repo). This skill mirrors their status so agents can advise users correctly; do not attempt to fix them here.
+
+| Defect                                                      | Upstream issue                                                                                             | Status | Impact on this skill                                                                                                                                                                      |
+| ----------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| P0 — `verify-ca` does not actually verify CA (pyodbc track) | [`plafaithing/huawei-gaussdb-data-mcp#1`](https://github.com/plafaithing/huawei-gaussdb-data-mcp/issues/1) | open   | Data-plane driver behavior; this skill's `huawei_analyze_gaussdb_security` reports SSL config but cannot verify whether the client actually enforced CA verification on the pyodbc track. |
+| P1 — Windows pyodbc Chinese needs `ansi=False`              | [`plafaithing/huawei-gaussdb-data-mcp#1`](https://github.com/plafaithing/huawei-gaussdb-data-mcp/issues/1) | open   | Data-plane driver behavior; out of scope for this management skill.                                                                                                                       |
+
+> When the upstream issues are resolved, revisit `huawei_analyze_gaussdb_security` to confirm the `verify-ca` behavior is consistent across both pyodbc and psycopg2 tracks.
 
 <!-- cli-inject-version: 3.9.0 -->
 
