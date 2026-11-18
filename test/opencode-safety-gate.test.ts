@@ -39,7 +39,7 @@ type EvaluateEvent = { sessionID?: string; action: string; resources?: unknown[]
 // the payload root with the type:module package.json the real deploy ships
 // (installRuntimeDeps) so dist/safety-policy.js parses as ESM.
 async function loadGate(
-  policy: 'real' | 'throwing' | 'missing',
+  policy: 'real' | 'throwing' | 'missing' | 'neverSettle',
   prefix: string,
 ): Promise<(event: EvaluateEvent) => Promise<void>> {
   const dir = fixtureDir(`safety-gate-${prefix}-`);
@@ -56,7 +56,11 @@ async function loadGate(
       join(distDir, 'safety-policy.js'),
       policy === 'real'
         ? `export { classifyTextCommand } from ${JSON.stringify(pathToFileURL(REAL_POLICY_SRC).href)};\n`
-        : "export function classifyTextCommand() {\n  throw new Error('injected classifier failure');\n}\n",
+        : policy === 'neverSettle'
+          ? // A top-level forever-pending promise: the module evaluation (and
+            // so the import) never settles — the FIX-4 hang shape.
+            'await new Promise(() => {});\nexport function classifyTextCommand() {\n  throw new Error("unreachable");\n}\n'
+          : "export function classifyTextCommand() {\n  throw new Error('injected classifier failure');\n}\n",
     );
   }
   const mod = (await import(pathToFileURL(join(dir, 'plugins', 'safety-gate.mjs')).href)) as GateModule;
@@ -229,6 +233,21 @@ test('a missing policy module denies with the load-failure reason naming the rei
   const gate = await loadGate('missing', 'nopol');
   const event = shellEvent('hcloud ECS DeleteServers --server.id=x');
   await gate(event);
+  assert.equal(event.effect, 'deny');
+  assert.match(event.message ?? '', /the safety policy failed to load/);
+  assert.match(event.message ?? '', /Reinstall the huaweicloud-devkit plugin/);
+});
+
+test('a policy import that never settles denies after the 3s race bound instead of hanging', async () => {
+  // The real 3s, not mocked: what is pinned is the production bound firing
+  // inside the handler, and a real wait is the non-flaky way to observe it.
+  const gate = await loadGate('neverSettle', 'race');
+  const event = shellEvent('ls /tmp');
+  const started = Date.now();
+  await gate(event);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 2900, `the race bound must fire at ~3s, measured ${elapsed}ms`);
+  assert.ok(elapsed < 20000, `the race bound must not over-wait, measured ${elapsed}ms`);
   assert.equal(event.effect, 'deny');
   assert.match(event.message ?? '', /the safety policy failed to load/);
   assert.match(event.message ?? '', /Reinstall the huaweicloud-devkit plugin/);

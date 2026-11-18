@@ -28,22 +28,34 @@ const CLASSIFY_FAILED_REASON =
 const POLICY_URL = new URL('../huaweicloud-plugins/dist/safety-policy.js', import.meta.url);
 
 // The host has NO evaluate timeout (G1-M3: a full 30s wait, measured), so
-// the only async work this plugin ever does is the one policy import,
-// awaited once and cached at module level — after the first call the
-// classification path is purely synchronous and cannot hang a tool call.
-// A failed import clears the cache so a mid-session reinstall heals without
-// a host restart; until then every shell call denies with the reinstall
-// reason.
+// anything unbounded inside the handler is a hang vector. The one policy
+// import races a 3s fail-closed bound: a module that never settles
+// (interrogate round: a rewritten policy with a top-level forever-pending
+// promise) denies instead of hanging the tool call. Any failed or lost
+// race clears the cache so a later call retries — a mid-session reinstall
+// heals without a host restart, and a late-settling import re-races
+// cheaply (the ESM registry caches the evaluation).
+const IMPORT_RACE_MS = 3000;
+
 let classifyTextCommand;
 let policyLoading = null;
 
 function loadPolicy() {
   if (!policyLoading) {
-    policyLoading = import(POLICY_URL).then(
+    let cancelBound;
+    const bound = new Promise((_, reject) => {
+      cancelBound = setTimeout(
+        () => reject(new Error('the policy import did not settle within the 3s race bound')),
+        IMPORT_RACE_MS,
+      );
+    });
+    policyLoading = Promise.race([import(POLICY_URL), bound]).then(
       (module) => {
+        clearTimeout(cancelBound);
         classifyTextCommand = module.classifyTextCommand;
       },
       (error) => {
+        clearTimeout(cancelBound);
         policyLoading = null;
         throw error;
       },
