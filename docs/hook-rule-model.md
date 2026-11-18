@@ -39,14 +39,14 @@ Hook 系统强制以下隐私边界，禁止以下数据进入 agent 上下文�
 
 PreToolUse 拦截面按 harness 区分：
 
-| Harness                          | 阻断面                                                                                  | 载体                                                                                                |
-| -------------------------------- | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| Claude Code / Codex / Cursor     | PreToolUse（Bash matcher + `huaweicloud_*` MCP matcher，hooks.json，5s 超时）           | `hooks/huaweicloud-safety.mjs`（Node，避免 Windows 环境依赖 `python3`）                               |
-| Hermes                           | PreToolUse（Python hook）                                                                | `hooks/huaweicloud-safety.py`（保留给 Hermes/Python hook 场景和既有兼容路径）                          |
-| OpenCode ≥ 2.0                   | `permission.hook("evaluate")`，in-process，`"shell"` action（无宿主超时，纯同步分类）   | installer 部署的 `~/.config/opencode/plugins/safety-gate.js` 适配器（源 `integrations/opencode/hooks/`） |
-| OpenCode 1.x                     | 无 hook 面                                                                               | MCP/CLI 包装层兜底；审批残留上 TTY 检查是唯一屏障（见 approvals.md 披露）                             |
+| Harness                      | 阻断面                                                                                                     | 载体                                                                                                                                        |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| Claude Code / Codex / Cursor | PreToolUse（Bash matcher + `huaweicloud_*` MCP matcher，hooks.json，5s 超时）                              | `hooks/huaweicloud-safety.mjs`（Node，避免 Windows 环境依赖 `python3`）                                                                     |
+| Hermes                       | PreToolUse（Python hook）                                                                                  | `hooks/huaweicloud-safety.py`（保留给 Hermes/Python hook 场景和既有兼容路径）                                                               |
+| OpenCode ≥ 2.0               | `permission.hook("evaluate")`，in-process，`"shell"` action（宿主无超时：import 3s 竞速界 + 每段 8KiB 帽） | installer 部署的 `~/.config/opencode/plugins/safety-gate.js` 适配器（逐段分类，任一段 deny 即整体 deny；源 `integrations/opencode/hooks/`） |
+| OpenCode 1.x                 | 无 hook 面                                                                                                 | MCP/CLI 包装层兜底；审批残留上 TTY 检查是唯一屏障（见 approvals.md 披露）                                                                   |
 
-`.mjs` 与 `.py` 拦截时返回 `permissionDecision: "deny"`，并附带 `permissionDecisionReason`；OpenCode 适配器的对应拒绝通道是 `event.effect = "deny"` + `event.message`（message 即模型可见的拒绝原因）。三层共用 `dist/safety-policy.js`（源码 `src/safety-policy.ts`）的同一套分类逻辑：
+`.mjs` 与 `.py` 拦截时返回 `permissionDecision: "deny"`，并附带 `permissionDecisionReason`；OpenCode 适配器的对应拒绝通道是 `event.effect = "deny"` + `event.message`（message 即模型可见的拒绝原因），且逐段评估——宿主 scanner 把 compound 命令拆成多个 `resources` 元素，任一段 deny 即整体 deny（宿主自身 per-resource 语义的忠实移植）。三层共用 `dist/safety-policy.js`（源码 `src/safety-policy.ts`）的同一套分类逻辑：
 
 - **凭证文件**：匹配 `.hcloud`、`.huaweicloud`、`hcloud/config` 等路径模式
 - **环境变量**：匹配 `env | HUAWEICLOUD` 等组合
