@@ -1,0 +1,107 @@
+// The OpenCode >= 2.0 shell-face safety gate (architecture B, in-process):
+// registers permission.hook("evaluate") and denies shell commands the
+// devkit's text classifier refuses — credential-file reads, env dumps,
+// unapproved hcloud writes, destructive rows. MCP tool actions are named
+// "huaweicloud-devkit_<tool>" and never match the shell check: that face is
+// the server approval gate's own surface (formal verification: safe in
+// every posture), so the adapter stays zero-intervention there.
+//
+// Same deployment seam as skill-tracker.js (this directory, one bare file
+// per plugin): the installer copies this file beside it, and the classifier
+// is the deployed payload's compiled module — the same dist/safety-policy.js
+// every other face reads, never a second implementation.
+
+const DENY_PREFIX = 'Huawei Cloud safety hook blocked this action: ';
+
+const POLICY_LOAD_FAILED_REASON =
+  'the safety policy failed to load; commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
+
+const CLASSIFY_FAILED_REASON =
+  'the safety classifier failed to run (corrupt safety rules?); commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
+
+// Resolved relative to this file: the payload root convention skill-tracker
+// uses (plugins/ and huaweicloud-plugins/ are siblings under the opencode
+// config root). A deployed payload always carries dist/ (copyServerPayload
+// ships it), so an import failure means a broken install — denied
+// fail-closed below, never silently un-gated. No src fallback: unlike a raw
+// checkout, a deployed payload is never unbuilt.
+const POLICY_URL = new URL('../huaweicloud-plugins/dist/safety-policy.js', import.meta.url);
+
+// The host has NO evaluate timeout (G1-M3: a full 30s wait, measured), so
+// the only async work this plugin ever does is the one policy import,
+// awaited once and cached at module level — after the first call the
+// classification path is purely synchronous and cannot hang a tool call.
+// A failed import clears the cache so a mid-session reinstall heals without
+// a host restart; until then every shell call denies with the reinstall
+// reason.
+let classifyTextCommand;
+let policyLoading = null;
+
+function loadPolicy() {
+  if (!policyLoading) {
+    policyLoading = import(POLICY_URL).then(
+      (module) => {
+        classifyTextCommand = module.classifyTextCommand;
+      },
+      (error) => {
+        policyLoading = null;
+        throw error;
+      },
+    );
+  }
+  return policyLoading;
+}
+
+// The clean deny path (G1-M1/M2): effect = "deny" + message is the
+// host-documented refusal channel — the message becomes the model-visible
+// rejection reason. Never rethrow: a thrown hook also denies (G1-M2
+// measured), but the clean path keeps the cause readable.
+function deny(event, reason) {
+  event.effect = 'deny';
+  event.message = DENY_PREFIX + reason;
+}
+
+async function onEvaluate(event) {
+  try {
+    if (event.action !== 'shell') return;
+    const resources = Array.isArray(event.resources) ? event.resources : [];
+    const command = resources.filter((entry) => String(entry)).join(' ');
+    if (command === '') return;
+    try {
+      if (!classifyTextCommand) await loadPolicy();
+    } catch {
+      deny(event, POLICY_LOAD_FAILED_REASON);
+      return;
+    }
+    try {
+      const verdict = classifyTextCommand(command);
+      if (verdict.decision === 'deny') deny(event, verdict.reason);
+    } catch {
+      // Classify-time failure is the .mjs twin's contract: a corrupt rules
+      // file must deny, not crash verdict-less.
+      deny(event, CLASSIFY_FAILED_REASON);
+    }
+  } catch {
+    // The belt over the whole body — never rethrow (G1-M2's rethrow deny is
+    // the last line, this keeps the message clean instead).
+    deny(event, CLASSIFY_FAILED_REASON);
+  }
+}
+
+// The export is the plain { id, setup } object the V2 plugin loader's
+// documented contract accepts ("one default export containing a unique
+// plugin id and a setup function") — the shape herdr's auto-discovered
+// agent-state plugin runs as on a real host, and what skill-tracker's
+// identity-define fallback reduces to where @opencode/plugin is not
+// resolvable. No Plugin.define resolution dance here: it would clone
+// skill-tracker's createRequire block (the zero-new-duplication gate), and
+// the two plugins must stay independently loadable anyway.
+export default {
+  id: 'huaweicloud-safety-gate',
+  async setup(ctx) {
+    await ctx.permission.hook('evaluate', onEvaluate);
+    // A V2 host may invoke the setup return value unguarded, and
+    // undefined is not callable — the skill-tracker precedent.
+    return () => {};
+  },
+};

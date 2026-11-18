@@ -34,6 +34,7 @@ import {
   openCodeSeamGate,
   openCodeSeamGlobs,
   openCodeAskGate,
+  openCodeSafetyGate,
 } from './opencode-config.ts';
 import { readPermissionRules, readPermissionRulesV1, type RosterRuleState } from '../lib/opencode-ask-rule.ts';
 import { scanSavedAllowRows } from '../lib/opencode-saved-perms.ts';
@@ -259,9 +260,28 @@ export function opencodeDoctorSeam(ctx: DoctorReporter): void {
   }
 }
 
+// Doctor: the shell safety gate — OpenCode installs only (the evaluate-hook
+// adapter is the opencode ≥ 2.0 in-process deny face for shell commands).
+// A below-floor, absent, or unparsable opencode is a SKIP, never a FAIL
+// (the adapter has no surface to register on there); a verifiably ≥ 2.0
+// opencode with a missing adapter file is the FAIL install heals.
+export function opencodeDoctorSafetyGate(ctx: DoctorReporter): void {
+  if (openCodeSafetyGate() === 'off') {
+    ctx.skip('Shell safety gate (opencode not verifiably at or above 2.0.0)');
+    return;
+  }
+  const gateFile = join(configRoot('opencode'), 'plugins', 'safety-gate.js');
+  ctx.check(
+    'Shell safety gate (evaluate-hook adapter)',
+    existsSync(gateFile),
+    'Run: npx huaweicloud-devkit install --target opencode',
+  );
+}
+
 export async function deployOpenCode(mode: DeployMode): Promise<void> {
   const commandsSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'commands');
   const pluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'hooks', 'skill-tracker.js');
+  const gateSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'hooks', 'safety-gate.js');
   const pluginDest = opencodePluginsDir();
 
   copyDir(commandsSrc, opencodeCommandsDir());
@@ -274,6 +294,19 @@ export async function deployOpenCode(mode: DeployMode): Promise<void> {
   mkdirSync(opcPlugins, { recursive: true });
   copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
   console.log(`  Plugin${deployWord(mode)} -> ${opcPlugins}`);
+  const gateFile = join(opcPlugins, 'safety-gate.js');
+  if (openCodeSafetyGate() === 'on') {
+    copyFileSync(gateSrc, gateFile);
+    console.log(`  Safety gate${deployWord(mode)} -> ${opcPlugins}`);
+  } else {
+    // Drift heal, same doctrine as the ask-rule migration: an opencode that
+    // downgraded or vanished since the last install must not keep the file
+    // (a below-floor host has no evaluate hook to run it on).
+    removeIfExists(gateFile);
+    console.log(
+      '  \x1b[33m[INFO]\x1b[0m opencode not verifiably at or above 2.0.0 — skipping the shell safety-gate plugin; a below-floor host has no evaluate hook to gate the Bash face on.',
+    );
+  }
   updateOpenCodeConfig(pluginDest);
 
   installRuntimeDeps(pluginDest);
@@ -292,6 +325,12 @@ export function uninstallOpenCode(removeOwnedSkills: (dir: string) => number): v
     console.log('  Removed plugin');
   }
 
+  const gateFile = join(configRoot('opencode'), 'plugins', 'safety-gate.js');
+  if (existsSync(gateFile)) {
+    removeIfExists(gateFile);
+    console.log('  Removed safety-gate plugin');
+  }
+
   if (removeIfExists(opencodePluginsDir())) {
     console.log('  Removed MCP server and safety policy');
   }
@@ -300,5 +339,7 @@ export function uninstallOpenCode(removeOwnedSkills: (dir: string) => number): v
 
 export function opencodeStatus(): void {
   payloadStatusLines(opencodePluginsDir());
+  const gateInstalled = existsSync(join(configRoot('opencode'), 'plugins', 'safety-gate.js'));
+  console.log(`  Shell safety gate: ${gateInstalled ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`);
   printMcpConfigStatus(opencodeConfigFile(), 'mcp');
 }

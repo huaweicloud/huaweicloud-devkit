@@ -137,6 +137,30 @@ export function openCodeAskGate(): OpenCodeAskGate {
   return forced === 'on' ? 'v2-array' : 'off';
 }
 
+// The safety gate's floor check: permission.hook("evaluate") is a V2
+// surface (G1 measured the event shape, the "shell" action naming, and the
+// deny semantics on 2.2.7; V1 named the action "bash" and had no evaluate
+// hook), so the floor is the 2.0 major. Unparsable or absent stays
+// unsupported — the caller's polarity is skip, never a guess.
+export function opencodeSafetyGateVersionSupported(version: string | null): boolean {
+  if (version === null) return false;
+  const match = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
+  return match !== null && Number(match[1]) >= 2;
+}
+
+// The safety gate's version gate, same doctrine as the seam's:
+// HUAWEICLOUD_OPENCODE_SAFETY_GATE=on|off is the deterministic override for
+// the installer test suite (e2e strips it — the runner's install relies on
+// the natural probe); unset runs the probe against the 2.0 floor. A
+// below-floor, absent, or unparsable opencode gets no adapter file and a
+// doctor SKIP, never a FAIL — 1.x has no evaluate hook to register on, and a
+// later update heals the skip by deploying the file.
+export function openCodeSafetyGate(): 'on' | 'off' {
+  const forced = process.env.HUAWEICLOUD_OPENCODE_SAFETY_GATE;
+  if (forced === 'on' || forced === 'off') return forced;
+  return opencodeSafetyGateVersionSupported(probeOpencodeVersion()) ? 'on' : 'off';
+}
+
 // The server half of the ask posture: DEVKIT_APPROVAL_MODE=ask in the mcp
 // entry's environment (the field OpenCode reads — the applyPacksToEntry
 // 'environment' precedent). Ask mode now means the SERVER-RUN gate: the

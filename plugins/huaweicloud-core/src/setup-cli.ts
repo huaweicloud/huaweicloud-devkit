@@ -123,6 +123,7 @@ import {
   deployOpenCode,
   opencodeDoctorAskRule,
   opencodeDoctorMcpConfigured,
+  opencodeDoctorSafetyGate,
   opencodeDoctorSeam,
   opencodeStatus,
   uninstallOpenCode,
@@ -1057,6 +1058,7 @@ async function cmdDoctor(): Promise<void> {
   if (installedPayload?.id === 'opencode') {
     opencodeDoctorSeam(ctx);
     opencodeDoctorAskRule(ctx);
+    opencodeDoctorSafetyGate(ctx);
   }
 
   // The codex client yield (PR-5): the per-tool approval_mode blocks the
