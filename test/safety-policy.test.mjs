@@ -50,6 +50,24 @@ test('redactSecrets handles string values with key=value patterns', () => {
   assert.doesNotMatch(out, /HPUAI12345/);
 });
 
+test('redactSecrets redacts lowercase ak=/sk= variants (#980 D2-4)', () => {
+  const out = redactSecrets('ak=lowerAK123\nsk=lowerSK456\nnormal output');
+  assert.match(out, /<redacted>/);
+  assert.match(out, /normal output/);
+  assert.doesNotMatch(out, /lowerAK123|lowerSK456/);
+  assert.equal(redactSecrets('ak=lowerAK123'), 'ak=<redacted>');
+  assert.equal(redactSecrets('sk:lowerSK456'), 'sk:<redacted>');
+  // Mixed-case variants also covered by the /i flag.
+  assert.doesNotMatch(redactSecrets('Ak=mixed1 sK=mixed2'), /mixed1|mixed2/);
+});
+
+test('redactSecrets object-key path treats bare ak/sk keys as secret (#980 D2-4)', () => {
+  const redacted = redactSecrets({ ak: 'plainAK', SK: 'plainSK', normal: 'visible' });
+  assert.equal(redacted.ak, '<redacted>');
+  assert.equal(redacted.SK, '<redacted>');
+  assert.equal(redacted.normal, 'visible');
+});
+
 test('redactSecrets redacts bare token= values (#726 D4-27)', () => {
   const out = redactSecrets('token=TokenValueABCDEF123456');
   assert.equal(out, 'token=<redacted>');
