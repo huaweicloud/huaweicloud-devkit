@@ -142,6 +142,47 @@ test('python hook write-gate blocks prefixed destructive ops (NovaDelete*/Reset*
   }
 });
 
+test('python hook write-gate blocks standard "Service OpName" form (#1065 D4-25)', () => {
+  // WRITE_OPERATION_RE previously required ^ or an alnum char before the write
+  // prefix, so "VPC CreateVpc" (prefix preceded by a space) never matched and
+  // standard-form write ops bypassed both the deny gate and cli:write telemetry.
+  for (const cmd of [
+    'hcloud VPC CreateVpc --vpc.name=x',
+    'hcloud ECS CreateServers --server.1.name=x',
+    'hcloud VPC DeleteVpc --vpc_id=x',
+  ]) {
+    const result = runEvaluate('terminal', { command: cmd });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0);
+    const reason = JSON.parse(result.stdout);
+    assert.equal(typeof reason, 'string', `${cmd} should be blocked by the write-gate`);
+    assert.match(reason, /write|plan|approv/i);
+  }
+});
+
+test('python hook WRITE_OPERATION_RE classifies space-separated write ops (#1065 D4-25)', () => {
+  const probe = [
+    'import importlib.util, json',
+    `spec = importlib.util.spec_from_file_location("hws", ${JSON.stringify(hookPath)})`,
+    'm = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(m)',
+    'out = {',
+    '  "write": bool(m.WRITE_OPERATION_RE.search("VPC CreateVpc")),',
+    '  "readFirst": bool(m.READ_OPERATION_RE.search("VPC ListVpcs")),',
+    '  "nova": bool(m.WRITE_OPERATION_RE.search("ECS NovaDeleteServer --server_id=x")),',
+    '}',
+    'print(json.dumps(out))',
+  ].join('\n');
+  const result = spawnSync(pythonBin, ['-c', probe], { encoding: 'utf8' });
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  const out = JSON.parse(result.stdout);
+  assert.equal(out.write, true, '"VPC CreateVpc" must match WRITE_OPERATION_RE');
+  assert.equal(out.readFirst, true, '"VPC ListVpcs" must still be classified read-first');
+  assert.equal(out.nova, true, 'mid-word Nova/Reset compatibility must not regress');
+});
+
 test('python hook write-gate still allows read-only Nova ops', () => {
   const result = runEvaluate('terminal', { command: 'hcloud ECS NovaListServers --limit=1' });
   if (pythonUnavailable(result)) return;

@@ -43,7 +43,13 @@ def load_policy():
             SECRET_READ_RE = re.compile("|".join(re.escape(op) for op in blocked_secrets), re.I)
         write_prefixes = policy.get("writeOperationPrefixes", [])
         if write_prefixes:
-            WRITE_OPERATION_RE = re.compile(r"(^|[A-Za-z0-9])(" + "|".join(write_prefixes) + r")\w*", re.I)
+            # Boundary before a write prefix: string start, whitespace, or an
+            # alnum char. Whitespace is required so standard-form commands like
+            # "VPC CreateVpc" (prefix as its own token) match the write-gate
+            # and cli:write telemetry; alnum keeps mid-word compatibility for
+            # legacy op spellings (NovaDeleteServer, ResetServerPassword -> Set).
+            # A bare \b word boundary would regress those mid-word forms.
+            WRITE_OPERATION_RE = re.compile(r"(^|[A-Za-z0-9\s])(" + "|".join(write_prefixes) + r")\w*", re.I)
     except Exception:
         pass
 
