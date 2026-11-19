@@ -4,8 +4,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import { classifyTextCommand } from '../plugins/huaweicloud-core/src/safety-policy.ts';
-import { loadPolicy } from '../plugins/huaweicloud-core/src/safety/default-policy.ts';
-import { DEFAULT_POLICY } from '../plugins/huaweicloud-core/src/safety/default-policy.ts';
+import { DEFAULT_POLICY, loadPolicy } from '../plugins/huaweicloud-core/src/safety/default-policy.ts';
 import { protectedPayloadWriteDenied } from '../plugins/huaweicloud-core/src/safety/protected-payload.ts';
 import { fixtureDir } from './fixture-dir.ts';
 

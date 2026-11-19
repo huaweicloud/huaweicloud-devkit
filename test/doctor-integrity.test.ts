@@ -21,7 +21,6 @@ import { runDoctor, runInstall, runUninstall } from './doctor-helpers.ts';
 // and the reinstall heal.
 
 const payloadDir = (home: string): string => join(home, '.config', 'opencode', 'huaweicloud-plugins');
-
 function stageScratchPayload(dir: string, withRules = true): void {
   mkdirSync(join(dir, 'dist', 'safety'), { recursive: true });
   mkdirSync(join(dir, 'safety', 'rules'), { recursive: true });
@@ -47,7 +46,10 @@ test('the receipt records the classifier scope, sorted, and verifyIntegrity agre
     files: Record<string, string>;
   };
   assert.equal(parsed.version, 1);
-  assert.deepEqual(Object.keys(parsed.files).sort(), integrityScopeFiles(dir));
+  assert.deepEqual(
+    Object.keys(parsed.files).sort((a, b) => a.localeCompare(b)),
+    integrityScopeFiles(dir),
+  );
   assert.equal(verifyIntegrity(dir).status, 'match');
 });
 

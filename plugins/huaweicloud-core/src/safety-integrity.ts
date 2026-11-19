@@ -68,7 +68,7 @@ export function integrityScopeFiles(dir: string): string[] {
   for (const file of filesUnder(join(dir, 'safety', 'rules'))) {
     rel.push(file.slice(dir.length + 1));
   }
-  return rel.sort();
+  return rel.sort((a, b) => a.localeCompare(b));
 }
 
 export function integrityReceiptPath(dir: string): string {
