@@ -181,6 +181,42 @@ test('per-segment classification: any denied segment denies the whole event (the
   assert.equal(allBlank.effect, 'allow', 'an all-skipped event is zero-intervention');
 });
 
+test('pipe-feed split events classify the reassembled pipeline; benign pipes stay allowed (F6)', async () => {
+  const gate = await loadGate('real', 'pipefeed');
+  // The host scanner splits pipes into per-segment resources too, and a pipe
+  // is the one cross-segment data flow: xargs splices its stdin into the
+  // next command's argv, so per-segment classification alone misses the
+  // write the pipeline actually executes (the F6 finding — live-reachable,
+  // same family as the compound bypass). The reassembled ' | ' text
+  // classifies through the same pipe-aware walk the .mjs twin runs.
+  const bypass = shellEvent(['echo DeleteServers --server.id=i-1', 'xargs hcloud ECS']);
+  await gate(bypass);
+  assert.equal(bypass.effect, 'deny', 'the xargs-fed write must not ride through the split');
+  assert.match(bypass.message ?? '', /plan and receives explicit user approval/);
+  const bare = shellEvent(['echo DeleteServers', 'xargs hcloud ECS']);
+  await gate(bare);
+  assert.equal(bare.effect, 'deny', 'the minimal probe shape denies too');
+  // The benign rows of the coordinator's verification table, split-driven.
+  const benignPipes: Array<[string, string]> = [
+    ['echo one', 'echo two'],
+    ['echo DeleteServers', 'tee /tmp/log.txt'],
+    ['echo hi', 'grep hi'],
+  ];
+  for (const segs of benignPipes) {
+    const event = shellEvent(segs);
+    await gate(event);
+    assert.equal(event.effect, 'allow', `${segs.join(' | ')}: prose through a pipe stays allowed`);
+    assert.equal(event.message, undefined);
+  }
+  // The remaining deny rows of the table, split-driven.
+  const credFeed = shellEvent(['cat /etc/passwd', 'xargs hcloud ECS CreateServers']);
+  await gate(credFeed);
+  assert.equal(credFeed.effect, 'deny', 'a fed write with a credential read denies');
+  const plainFeed = shellEvent(['ls /tmp', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(plainFeed);
+  assert.equal(plainFeed.effect, 'deny');
+});
+
 test('non-shell actions are zero-intervention, including devkit MCP tool actions', async () => {
   const gate = await loadGate('real', 'nonshell');
   for (const action of [
@@ -224,16 +260,27 @@ test('a single segment over 8192 bytes denies with the split-command remediation
   assert.match(over.message ?? '', /split the command or pass complex parameters via --cli-jsonInput/);
 });
 
-test('the 8192-byte boundary classifies normally and the cap never sums across segments', async () => {
+test('the 8192-byte boundary classifies normally; the reassembled pipeline rides its own bound', async () => {
   const gate = await loadGate('real', 'cap-edge');
   const exact = shellEvent(`echo ${'A'.repeat(8187)}`); // exactly 8192 bytes
   await gate(exact);
   assert.equal(exact.effect, 'allow', 'the boundary itself is not oversized');
-  // Two 6000-byte segments total 12000 bytes over the cap, but the bound is
-  // per segment: a legitimate compound is never denied for its total.
-  const compound = shellEvent([`echo ${'A'.repeat(5995)}`, `echo ${'B'.repeat(5995)}`]);
+  // Two small segments stay allowed: the per-segment bound is per segment,
+  // and the pipeline reassembly (F6) classifies the joined text fine under
+  // the cap.
+  const compound = shellEvent([`echo ${'A'.repeat(100)}`, `echo ${'B'.repeat(100)}`]);
   await gate(compound);
   assert.equal(compound.effect, 'allow');
+  // The F6 reassembly is itself a classification input (the pipeline text the
+  // classifier walks), so segments whose JOINED pipeline exceeds the cap deny
+  // fail-closed with the cap reason — the G3B adjudication superseding the
+  // older never-sums wording for multi-segment events. Each segment alone is
+  // under the bound; the pipeline view is not.
+  const hugePipeline = shellEvent([`echo ${'A'.repeat(5995)}`, `echo ${'B'.repeat(5995)}`]);
+  await gate(hugePipeline);
+  assert.equal(hugePipeline.effect, 'deny', 'an over-cap pipeline view denies');
+  assert.match(hugePipeline.message ?? '', /too large for synchronous in-hook classification/);
+  assert.match(hugePipeline.message ?? '', /--cli-jsonInput/);
 });
 
 test('a throwing classifier denies with the classify-failure reason (G1-M2 posture)', async () => {
@@ -288,9 +335,12 @@ test('per-segment verdicts match the PreToolUse hook wrapper fed the same text',
   // The compound bypass's parity contract: for any single command text, the
   // adapter and the .mjs wrapper share one classifier and one deny prefix,
   // so their verdicts and reasons must be byte-equal. A wiring regression
-  // (wrong reason field, diverged prefix) trips here.
+  // (wrong reason field, diverged prefix) trips here. A { split } entry is
+  // the pipe-feed shape: the adapter receives the host's split resources,
+  // the .mjs receives the reassembled text, and the verdicts must still be
+  // byte-equal — the same contract the .mjs's own pipe walk fulfills.
   const gate = await loadGate('real', 'parity');
-  const corpus = [
+  const corpus: Array<string | { split: string[] }> = [
     'ls /tmp',
     'echo hello',
     'hcloud ECS ListServersDetails --cli-region=cn-north-4',
@@ -299,15 +349,18 @@ test('per-segment verdicts match the PreToolUse hook wrapper fed the same text',
     'env | grep HUAWEICLOUD',
     'rm -rf /',
     "bash -c 'hcloud ECS DeleteServers --server.id=x'",
+    { split: ['echo DeleteServers --server.id=i-1', 'xargs hcloud ECS'] },
+    { split: ['echo hi', 'grep hi'] },
   ];
-  for (const command of corpus) {
+  for (const entry of corpus) {
+    const command = typeof entry === 'string' ? entry : entry.split.join(' | ');
     const mjsRun = spawnSync(process.execPath, [MJS_HOOK_SRC], {
       input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
       encoding: 'utf8',
     });
     assert.equal(mjsRun.status, 0, mjsRun.stderr);
     const mjsOut = mjsRun.stdout.trim();
-    const event = shellEvent(command);
+    const event = shellEvent(typeof entry === 'string' ? entry : entry.split);
     await gate(event);
     if (mjsOut === '') {
       assert.equal(event.effect, 'allow', `${command}: the .mjs allows, the adapter must too`);

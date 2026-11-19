@@ -84,6 +84,25 @@ function deny(event, reason) {
   event.message = DENY_PREFIX + reason;
 }
 
+// One classification input: null when it passes, the deny reason when it
+// refuses. The shared body of the per-segment loop and the pipe-feed
+// reassembly below — cap, classify, and classify-time failure in one place,
+// so the two paths cannot drift apart.
+function denyReasonOf(text) {
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > SEGMENT_BYTE_CAP) {
+    return `the command text is too large for synchronous in-hook classification (${bytes} bytes > ${SEGMENT_BYTE_CAP}); split the command or pass complex parameters via --cli-jsonInput`;
+  }
+  try {
+    const verdict = classifyTextCommand(text);
+    return verdict.decision === 'deny' ? verdict.reason : null;
+  } catch {
+    // Classify-time failure is the .mjs twin's contract: a corrupt rules
+    // file must deny, not crash verdict-less.
+    return CLASSIFY_FAILED_REASON;
+  }
+}
+
 // The host scanner splits compound commands into per-segment resources
 // (`ls /tmp && hcloud …` arrives as ['ls /tmp', 'hcloud …']) and the host's
 // own rule engine denies the operation when ANY segment denies — so the
@@ -108,26 +127,25 @@ async function onEvaluate(event) {
       return;
     }
     for (const text of segments) {
-      const bytes = Buffer.byteLength(text, 'utf8');
-      if (bytes > SEGMENT_BYTE_CAP) {
-        deny(
-          event,
-          `the command text is too large for synchronous in-hook classification (${bytes} bytes > ${SEGMENT_BYTE_CAP}); split the command or pass complex parameters via --cli-jsonInput`,
-        );
+      const reason = denyReasonOf(text);
+      if (reason !== null) {
+        deny(event, reason);
         return;
       }
-      try {
-        const verdict = classifyTextCommand(text);
-        if (verdict.decision === 'deny') {
-          deny(event, verdict.reason);
-          return;
-        }
-      } catch {
-        // Classify-time failure is the .mjs twin's contract: a corrupt rules
-        // file must deny, not crash verdict-less.
-        deny(event, CLASSIFY_FAILED_REASON);
-        return;
-      }
+    }
+    // The pipe-feed reassembly (F6, the compound bypass's same-family
+    // residual): a pipe is the ONE cross-segment data flow — xargs splices
+    // its stdin into the next command's argv — and the classifier's
+    // pipe/xargs unwrap fires only on the joined text, so a split event
+    // that passed per segment is re-examined as one pipeline. ';'/'&&'
+    // semantics stay owned by the per-segment loop above (each segment is
+    // an independent command); the reassembly is conservative there, and
+    // the benign-pipe table (echo-prose through pipes) proved it costs no
+    // false positives. The reassembled text is itself a classification
+    // input, so it rides the same 8KiB bound.
+    if (segments.length >= 2) {
+      const reason = denyReasonOf(segments.join(' | '));
+      if (reason !== null) deny(event, reason);
     }
   } catch {
     // The belt over the whole body — never rethrow (G1-M2's rethrow deny is
