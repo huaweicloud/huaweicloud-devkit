@@ -151,3 +151,13 @@
 | `npm run lint:md`（跟踪树）                                                                  | **0**（134 文件 0 issue；唯一 MD018 命中是协调者未跟踪的 BRIEF 文件自身 `#23` 标题写法，不进 CI） |
 | `npm test`（node 26）                                                                        | exit 1 —— 仅既有 real-agents 环境对（2791 pass，与基线 A/B 相同签名）                             |
 | 真 win32 双车道终判                                                                          | 由 CI 出（协调者 push 后重跑 PR）                                                                 |
+
+### 追加 — 第三轮：最后一例 `an empty last userconfig spelling is skipped`（:3703）
+
+512MB 修复在 #23 新 run 落地后，windows 仅剩此例。根因与 round-1 两条 skip 同类：该子景**直接在 process.env 上**先设 `npm_config_userconfig`（customConfig）再设 `NPM_CONFIG_USERCONFIG = ''`——win32 的 env 大小写不敏感，两个拼写是同一个变量，第二次赋值覆写第一次，「设值兄长 + 空值末位拼写」的输入状态不可构造，塌缩成「单一空值」→ userconfig 通道退到无令牌的 homeNpmrc → success false ≠ true。
+
+**prefix 兄弟（:3695）的裁决：一并跳过（实证，非推测）。** 塌缩态在 Linux 上复现：prefix 单一空值 + userconfig 令牌在 → success true（通过）；抽走 userconfig 令牌 → false。即 win32 上该断言的绿是 userconfig 通道的旁路绝缘，不验证「空末位拼写不遮蔽」这一主语——按协调者的诚实标准并入同一平台跳过。
+
+**修法。** 两景并入 `if (!isWin)` 守卫，理由注释同 round-1 skip 同风格；POSIX 分支逐字节不变。win32 侧 else 分支等价补齐下一条 `uppercase globalconfig channel is honored`（单拼写、win32 可构造）的前置（prefix/etc/npmrc 令牌文件、无令牌版 homeNpmrc、清 userconfig 通道），使它在 win32 上保持与 POSIX 同前置的**有义**验证，而非继承旁路绝缘的空过。
+
+**第三轮验收（exit code 落盘）**：两文件 node 26 → 0（550/550）；node 22.19 → 0（550/550）；`npm run lint` 全量 → 0；prettier/typecheck/lint:dup（CI 参数）→ 0/0/0。真 win32 终判由 CI 出。

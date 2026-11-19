@@ -3688,21 +3688,39 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         assert.equal((await attempt()).result.success, true, '${VAR} in the userconfig path is expanded');
         process.env.NPM_CONFIG_USERCONFIG = userconfig;
 
-        // An empty last spelling does not shadow a set sibling.
-        writeFileSync(join(prefix, 'etc', 'npmrc'), line('${CI_TOKEN}'));
-        process.env.npm_config_prefix = prefix;
-        process.env.NPM_CONFIG_PREFIX = '';
-        assert.equal((await attempt()).result.success, true, 'an empty last prefix spelling is skipped');
+        // An empty last spelling does not shadow a set sibling. 直接赋值
+        // process.env 的两个大小写拼写在 win32 上是同一个变量（env 大小写不
+        // 敏感），第二次赋值覆写第一次——「设值兄长 + 空值末位拼写」的输入
+        // 状态在 win32 无法构造（round-1 两条 skip 的同因）。prefix 兄弟本
+        // 轮虽绿但纯属 userconfig 通道的旁路绝缘（本地实证：塌缩态下
+        // userconfig 令牌在 → success true；抽走该令牌 → false），不验证本
+        // 断言主语——两条一并按平台跳过。POSIX 行为逐字节不变。
+        if (!isWin) {
+          writeFileSync(join(prefix, 'etc', 'npmrc'), line('${CI_TOKEN}'));
+          process.env.npm_config_prefix = prefix;
+          process.env.NPM_CONFIG_PREFIX = '';
+          assert.equal((await attempt()).result.success, true, 'an empty last prefix spelling is skipped');
 
-        // An empty last userconfig spelling does not shadow a set sibling.
-        const customConfig = join(base, 'custom-userconfig.npmrc');
-        writeFileSync(customConfig, line('${CI_TOKEN}'));
-        writeFileSync(homeNpmrc, `registry=${registry}/\n`);
-        process.env.npm_config_userconfig = customConfig;
-        process.env.NPM_CONFIG_USERCONFIG = '';
-        assert.equal((await attempt()).result.success, true, 'an empty last userconfig spelling is skipped');
-        delete process.env.npm_config_userconfig;
-        delete process.env.NPM_CONFIG_USERCONFIG;
+          // An empty last userconfig spelling does not shadow a set sibling.
+          const customConfig = join(base, 'custom-userconfig.npmrc');
+          writeFileSync(customConfig, line('${CI_TOKEN}'));
+          writeFileSync(homeNpmrc, `registry=${registry}/\n`);
+          process.env.npm_config_userconfig = customConfig;
+          process.env.NPM_CONFIG_USERCONFIG = '';
+          assert.equal((await attempt()).result.success, true, 'an empty last userconfig spelling is skipped');
+          delete process.env.npm_config_userconfig;
+          delete process.env.NPM_CONFIG_USERCONFIG;
+        } else {
+          // win32 跳过面不能漏掉下一条 globalconfig 兄弟的前置：POSIX 分支
+          // 在上面两景里写好 prefix/etc/npmrc 令牌文件、把 homeNpmrc 换成无
+          // 令牌版、清了 userconfig 通道——此处等价补齐，让「uppercase
+          // globalconfig channel is honored」（单拼写、win32 可构造）保持
+          // 与 POSIX 同前置的有义验证，而非旁路绝缘的空过
+          writeFileSync(join(prefix, 'etc', 'npmrc'), line('${CI_TOKEN}'));
+          writeFileSync(homeNpmrc, `registry=${registry}/\n`);
+          delete process.env.npm_config_userconfig;
+          delete process.env.NPM_CONFIG_USERCONFIG;
+        }
 
         // The uppercase globalconfig channel is honored too.
         process.env.NPM_CONFIG_GLOBALCONFIG = join(prefix, 'etc', 'npmrc');
