@@ -118,3 +118,36 @@
 ## 结束语
 
 基线三族 CI 债已修绿，三个 commit 直线历史待协调者验收后走正常 PR 流程；`npm test` 的 exit 1 为既有 real-agents 本机条件（基线同挂、CI 不跑），其余全量门在本机与 node22.19 floor 形状下全绿。真 win32 车道由 CI 终判。
+
+---
+
+## 追加 — windows 残余 2 例定点修复（#23 第二轮，run `44498912057`）
+
+背景：#23 首轮 CI 中六个 windows 修复全部生效（windows 从基线 8 失败收敛到 2）。本轮一个 commit（`01ac4bb3`），只动两个测试面，未碰产品。
+
+### 残余 1 — `an oversized JSON ... 512MB budget`：断裂点在驱动器内部，不在 spawn 实参
+
+**根因（对 brief 假设的修正）。** protocol `'d:'` 的 `ERR_UNSUPPORTED_ESM_URL_SCHEME` 是 ESM **说明符**层错误。上轮的 `fileURLToPath(driver)` 让子进程主模块入口在 win32 上正常加载（CI 日志的错误发生在驱动器开始执行之后）——入口没问题。真正的断裂在 `test/fixtures/oversize-json-driver.mjs` 内部：驱动器用 `fileURLToPath` 算出裸路径再拼 `${ROOT}/plugins/...` 作 **`import()` 说明符**。win32 的 ESM loader 把 `D:\...` 说明符按 URL 解析（protocol `'d:'`）直接拒。POSIX 上裸绝对路径说明符恰好等于 `file:///` URL 所以一直绿。
+
+**修法。** 驱动器内部两个 `import()` 改为 `new URL('../../plugins/...', import.meta.url).href`（file:// URL 说明符——双平台唯一同合法形态），顺带删掉只为拼路径存在的 `ROOT`/`fileURLToPath`。spawn 实参保持 `fileURLToPath(driver)`：**实测证据**——传 URL 串在本机 node 26 上被入口层当路径解析而挂（`Cannot find module '.../file:/...'`），裸路径在入口层是双平台合法形态。brief 的「传 href」处方对入口不成立，已在代码注释与本节记录实测依据。
+
+**本地验收。** 512MB 单测 node 26 与 node 22.19 双绿；驱动器内不再存在任何裸路径说明符（构造上杜绝 win32 复发）。
+
+### 残余 2 — `npmrc 级联`：`envReplace is exact-name only` 断的是 POSIX env 层性质
+
+**根因（对 brief 两个假设的双排除）。** 其一排除：该用例走 `withSavedEnv`（CI 栈帧 :392），与上轮改的 `withEnv` 折叠语义无涉。其二排除：夹具无 `HOME`/`home` 类双拼写冲突。真因：断言的主语「变体拼写不得解析」依赖 `env[name]` **大小写敏感**——这是 POSIX env 层的性质。win32 的 `process.env` 代理大小写不敏感，`nexus_token` 即 `NEXUS_TOKEN`，「只设变体、未设精确名」这一输入状态在 win32 上**不存在**。产品 `envReplace`（src/update-registry.ts:210）与 npm 同为直查 `env[name]`，win32 上解析变体就是平台可观察真值（npm 在 win32 行为相同）。
+
+**修法。** 断言改为按平台断各自真值（期望值 `isWin`）：POSIX 保持 exact-name-only 原语义；win32 断大小写不敏感解析（npm parity），理由注释在断言处。产品零变更——exact-name 语义按仓库既有契约是对的，它只在 POSIX env 层可成立。首版编辑曾把期望值写成 `!isWin`（布尔反了，Linux 本地即刻抓红），已在验收前修正——顺带说明本轮验收确实跑过这条断言的 Linux 侧。
+
+**残余面复查。** 该用例 fail-fast 于首个断言，:3424 之后还有约 150 行未在 win32 执行过的子场景。已逐段过读：后续全部是 `join()`/chdir 的 workspace-glob 与 nerf-walk 场景，无大小写变体 env 拼写、无裸路径说明符、无 POSIX-only 语义；其中的「last userconfig spelling wins」顺序对在 win32 上退化为 OS 自身的 last-write-wins，与两断言的期望恰好一致。
+
+### 第二轮验收矩阵（exit code 落盘）
+
+| 验收项                                                                                       | 结果                                                                                              |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `npx -p node@26 node --test test/hdkit-gate-retry.test.ts test/update-check-upgrade.test.ts` | **0**（550/550）                                                                                  |
+| `npx -p node@22.19 node --test` 同两文件                                                     | **0**（550/550）                                                                                  |
+| `lint:js` / `typecheck` / prettier / `lint:dup`（CI 参数）                                   | **0** / **0** / **0** / **0**                                                                     |
+| `npm run lint:md`（跟踪树）                                                                  | **0**（134 文件 0 issue；唯一 MD018 命中是协调者未跟踪的 BRIEF 文件自身 `#23` 标题写法，不进 CI） |
+| `npm test`（node 26）                                                                        | exit 1 —— 仅既有 real-agents 环境对（2791 pass，与基线 A/B 相同签名）                             |
+| 真 win32 双车道终判                                                                          | 由 CI 出（协调者 push 后重跑 PR）                                                                 |
