@@ -19,6 +19,47 @@ import { fixtureDir } from './fixture-dir.ts';
 
 type UpgradeSpawnFn = NonNullable<UpgradeOptions['spawnFn']>;
 
+// win32 env is case-insensitive but case-preserving: two case-variant keys in
+// one withEnv batch are ONE variable. Scenarios that need two case-variant
+// spellings to COEXIST with different values are unconstructible there.
+const isWin = process.platform === 'win32';
+
+// The net intent of a batch whose entries collide case-insensitively: the
+// defined value wins over a stray delete of a variant spelling (delete-then-set
+// of the same variable would kill the set); an all-undefined group deletes
+// once. POSIX keeps the exact sequence — distinct keys stay distinct.
+function collapseEnvEntries(vars: Record<string, string | undefined>): Array<[string, string | undefined]> {
+  const groups = new Map<string, Array<[string, string | undefined]>>();
+  for (const entry of Object.entries(vars)) {
+    const list = groups.get(entry[0].toUpperCase()) ?? [];
+    list.push(entry);
+    groups.set(entry[0].toUpperCase(), list);
+  }
+  const out: Array<[string, string | undefined]> = [];
+  for (const list of groups.values()) {
+    const lastDefined = [...list].reverse().find((entry) => entry[1] !== undefined);
+    out.push(lastDefined ?? list[list.length - 1]!);
+  }
+  return out;
+}
+
+async function withEnv(vars: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
+  const entries = isWin ? collapseEnvEntries(vars) : Object.entries(vars);
+  const saved = new Map(entries.map((entry) => [entry[0], process.env[entry[0]]]));
+  for (const [key, value] of entries) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    await run();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
 const FAILURE_FIXTURES = new URL('./fixtures/update-npm-failure/', import.meta.url);
 const failureStderr = (name: string) => readFileSync(new URL(name, FAILURE_FIXTURES), 'utf8');
 
@@ -202,22 +243,6 @@ async function reasonFor(stderr: string, status = 1): Promise<string> {
   const r = await upgradePackage({ target: 'opencode' }, { doQuery: stubQuery, spawnFn: failingSpawn(stderr, status) });
   assert.equal(r.success, false);
   return r.error ?? '';
-}
-
-async function withEnv(vars: Record<string, string | undefined>, run: () => Promise<void>): Promise<void> {
-  const saved = new Map(Object.keys(vars).map((key) => [key, process.env[key]]));
-  for (const [key, value] of Object.entries(vars)) {
-    if (value === undefined) delete process.env[key];
-    else process.env[key] = value;
-  }
-  try {
-    await run();
-  } finally {
-    for (const [key, value] of saved) {
-      if (value === undefined) delete process.env[key];
-      else process.env[key] = value;
-    }
-  }
 }
 
 async function errorForSpawn(result: {
@@ -3072,40 +3097,8 @@ test('upgradePackage 升级子进程: 预检查询与子进程共享 npm 认证�
           delete process.env['NPM_TOKEN '];
 
           process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
-          process.env.NPM_TOKEN = 'exact-token';
-          process.env.npm_token = 'variant-token';
-          delete process.env['NPM_TOKEN '];
-          const dupExact = await attempt();
-          assert.equal(dupExact.result.success, true, 'duplicate token spellings do not split the halves');
-          assert.equal(seen.at(-1), 'Bearer exact-token');
-          assert.equal(dupExact.env?.NPM_TOKEN, 'exact-token', 'the child gets the same exact-case token');
-
           delete process.env.NPM_TOKEN;
           delete process.env.npm_token;
-          process.env.npm_token = 'variant-token';
-          process.env.Npm_Token = 'exact-token';
-          const dupVariant = await attempt();
-          assert.equal(dupVariant.result.success, true, 'variants collapse to one token on both halves');
-          assert.equal(
-            seen.at(-1),
-            `Bearer ${dupVariant.env?.NPM_TOKEN}`,
-            'the pre-flight and child use the same collapsed variant',
-          );
-
-          delete process.env.npm_token;
-          delete process.env.Npm_Token;
-          delete process.env.NPM_TOKEN;
-          delete process.env.NODE_AUTH_TOKEN;
-
-          process.env.npm_token = 'variant-token';
-          process.env.NPM_TOKEN = 'exact-token';
-          const dupCanonicalLater = await attempt();
-          assert.equal(dupCanonicalLater.result.success, true, 'a later exact-case token still wins for both halves');
-          assert.equal(seen.at(-1), 'Bearer exact-token');
-          assert.equal(dupCanonicalLater.env?.NPM_TOKEN, 'exact-token');
-          delete process.env.npm_token;
-          delete process.env.NPM_TOKEN;
-
           const withoutToken = await attempt();
           assert.equal(withoutToken.result.success, false);
           assert.equal(withoutToken.spawned, false, 'an unauthenticated mirror degrades before the spawn');
@@ -3116,6 +3109,61 @@ test('upgradePackage 升级子进程: 预检查询与子进程共享 npm 认证�
     },
   );
 });
+
+// 大小写拼写共存折叠（dup 三景）：POSIX-only 场景——win32 的 env 大小写
+// 不敏感，NPM_TOKEN 与 npm_token 是同一个变量，两种拼写携带不同值共存
+// 的输入状态在 Windows 上无法构造（npm 自己的 env 语义同样如此）
+test(
+  'upgradePackage 升级子进程: 重复的大小写拼写折叠到一条通道',
+  {
+    skip: isWin
+      ? 'win32 env is case-insensitive (one variable behind both spellings) — the coexistence input state cannot be constructed there'
+      : false,
+  },
+  async () => {
+    await withTokenRegistry(
+      ['fixture-registry-token', 'exact-token', 'variant-token'],
+      {},
+      async ({ registry, seen }) => {
+        await withSavedEnv(['NPM_TOKEN', 'npm_token', 'Npm_Token', 'HUAWEICLOUD_NPM_REGISTRY'], async () => {
+          const attempt = async () => {
+            let env: NodeJS.ProcessEnv | undefined;
+            const spawnFn: UpgradeSpawnFn = (_cmd, _args, opts) => {
+              env = opts.env as NodeJS.ProcessEnv;
+              return { status: 0 };
+            };
+            const result = await upgradePackage({ target: 'opencode' }, { spawnFn });
+            return { result, env };
+          };
+          process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
+          process.env.NPM_TOKEN = 'exact-token';
+          process.env.npm_token = 'variant-token';
+          const dupExact = await attempt();
+          assert.equal(dupExact.result.success, true, 'duplicate token spellings do not split the halves');
+          assert.equal(seen.at(-1), 'Bearer exact-token');
+          assert.equal(dupExact.env?.NPM_TOKEN, 'exact-token', 'the child gets the same exact-case token');
+
+          process.env.npm_token = 'variant-token';
+          process.env.Npm_Token = 'exact-token';
+          const dupVariant = await attempt();
+          assert.equal(dupVariant.result.success, true, 'variants collapse to one token on both halves');
+          assert.equal(
+            seen.at(-1),
+            `Bearer ${dupVariant.env?.NPM_TOKEN}`,
+            'the pre-flight and child use the same collapsed variant',
+          );
+
+          process.env.npm_token = 'variant-token';
+          process.env.NPM_TOKEN = 'exact-token';
+          const dupCanonicalLater = await attempt();
+          assert.equal(dupCanonicalLater.result.success, true, 'a later exact-case token still wins for both halves');
+          assert.equal(seen.at(-1), 'Bearer exact-token');
+          assert.equal(dupCanonicalLater.env?.NPM_TOKEN, 'exact-token');
+        });
+      },
+    );
+  },
+);
 
 test('upgradePackage 升级子进程: ~/.npmrc 的 _authToken 也认证预检查询', async () => {
   await withTokenRegistry(['fixture-npmrc-token', 'fixture-legacy-token'], {}, async ({ registry, port, seen }) => {
@@ -3280,6 +3328,7 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         'npm_config_prefix',
         'npm_config_globalconfig',
         'HOME',
+        'USERPROFILE',
         'CI_TOKEN',
         'HOMEDIR',
         'NEXUS_TOKEN',
@@ -3297,6 +3346,9 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
         delete process.env.nexus_token;
         process.env.HUAWEICLOUD_NPM_REGISTRY = registry;
         process.env.HOME = home;
+        // win32 的 ~ 展开走 homedir()（读 USERPROFILE，不读 HOME）——级联的
+        // ~/.npmrc 兜底在 Windows 车道必须钉到 fixture home 才可构造
+        if (isWin) process.env.USERPROFILE = home;
         process.env.CI_TOKEN = 'fixture-registry-token';
         const attempt = async () => {
           const spawnFn: UpgradeSpawnFn = () => ({ status: 0 });
@@ -3938,7 +3990,10 @@ test('upgradePackage 升级子进程: 凭据谓词剥掉凭据, 保留子图配�
     }
     assert.equal(env.HUAWEICLOUD_NPM_REGISTRY, mirror);
     assert.equal(env[marker], `fixture-${marker}`);
-    assert.equal(env.PATH, process.env.PATH);
+    // win32 保留 env 键的首见大小写（Path），POSIX 拼写直查会落空——按大小写
+    // 不敏感读回，断言语义不变：子进程继承操作者的 PATH
+    const childPath = Object.entries(env).find(([key]) => key.toUpperCase() === 'PATH')?.[1];
+    assert.equal(childPath, process.env.PATH);
     assert.equal(env.HOME, process.env.HOME);
     assert.deepEqual(registrySpellings(env), ['npm_config_registry'], 'one registry spelling reaches npx');
     assert.equal(env.npm_config_registry, mirror, 'the child npm config follows the operator mirror');
@@ -3985,28 +4040,39 @@ test('upgradePackage 升级子进程: devkit 镜像设了时两种拼写都收�
   );
 });
 
-test('upgradePackage 升级子进程: devkit 镜像的大小写拼写收敛到一个通道', async () => {
-  const upper = 'http://upper-mirror.corp.local:4873';
-  const lower = 'http://lower-mirror.corp.local:4873';
-  await withEnv(
-    {
-      HUAWEICLOUD_NPM_REGISTRY: upper,
-      huaweicloud_npm_registry: lower,
-      npm_config_registry: undefined,
-      NPM_CONFIG_REGISTRY: undefined,
-    },
-    async () => {
-      const env = await childEnv();
-      assert.deepEqual(
-        Object.keys(env).filter((key) => key.toUpperCase() === 'HUAWEICLOUD_NPM_REGISTRY'),
-        ['HUAWEICLOUD_NPM_REGISTRY'],
-        'one canonical devkit spelling reaches the child',
-      );
-      assert.equal(env.HUAWEICLOUD_NPM_REGISTRY, upper, 'the exact-case spelling wins');
-      assert.equal(env.npm_config_registry, env.HUAWEICLOUD_NPM_REGISTRY, 'both channels agree');
-    },
-  );
-});
+// exact-case 与变体拼写共存时精确拼写胜出：POSIX-only 场景——win32 的 env
+// 大小写不敏感，HUAWEICLOUD_NPM_REGISTRY 与 huaweicloud_npm_registry 是同一
+// 个变量，两个不同值共存的输入状态在 Windows 上无法构造
+test(
+  'upgradePackage 升级子进程: devkit 镜像的大小写拼写收敛到一个通道',
+  {
+    skip: isWin
+      ? 'win32 env is case-insensitive (one variable behind both spellings) — the exact-case-vs-variant coexistence input state cannot be constructed there'
+      : false,
+  },
+  async () => {
+    const upper = 'http://upper-mirror.corp.local:4873';
+    const lower = 'http://lower-mirror.corp.local:4873';
+    await withEnv(
+      {
+        HUAWEICLOUD_NPM_REGISTRY: upper,
+        huaweicloud_npm_registry: lower,
+        npm_config_registry: undefined,
+        NPM_CONFIG_REGISTRY: undefined,
+      },
+      async () => {
+        const env = await childEnv();
+        assert.deepEqual(
+          Object.keys(env).filter((key) => key.toUpperCase() === 'HUAWEICLOUD_NPM_REGISTRY'),
+          ['HUAWEICLOUD_NPM_REGISTRY'],
+          'one canonical devkit spelling reaches the child',
+        );
+        assert.equal(env.HUAWEICLOUD_NPM_REGISTRY, upper, 'the exact-case spelling wins');
+        assert.equal(env.npm_config_registry, env.HUAWEICLOUD_NPM_REGISTRY, 'both channels agree');
+      },
+    );
+  },
+);
 
 test('upgradePackage 升级子进程: 空的 exact-case 值让位给非空变体', async () => {
   const lower = 'http://lower-mirror.corp.local:4873';

@@ -4413,7 +4413,12 @@ test('every engine error-family prototype routes to stamped carriers: zero proce
     engineFamilies.size >= 8,
     `the engine carries at least the eight known families (found ${engineFamilies.size})`,
   );
-  for (const known of [Error.prototype, TypeError.prototype, DOMException.prototype, SuppressedError.prototype]) {
+  // SuppressedError 家族在 node 22（工程地板 22.19）尚不存在，直写原型引用
+  // 在 22 车道上是 ReferenceError。跨版本等价断言：只点名引擎实际持有的
+  // 家族；未来引擎补齐后枚举扫描（collectEngineErrorPrototypes）自动覆盖
+  const knownEngineFamilies: object[] = [Error.prototype, TypeError.prototype, DOMException.prototype];
+  if (typeof SuppressedError !== 'undefined') knownEngineFamilies.push(SuppressedError.prototype);
+  for (const known of knownEngineFamilies) {
     assert.ok(engineFamilies.has(known), 'the known engine families are enumerated');
   }
   for (const proto of engineFamilies) {
@@ -5560,7 +5565,10 @@ test('an oversized JSON message, code, and traceId fold bounded — the child pr
     },
   ];
   for (const { shape, check } of rows) {
-    const res = spawnSync(process.execPath, ['--max-old-space-size=512', driver.pathname, shape], {
+    // fileURLToPath，不能 driver.pathname：win32 上 pathname 是 /D:/…（前导
+    // 斜杠+盘符），子进程的模块解析直接 Cannot find module——CI windows 车道
+    // 8 次红里的本项即此
+    const res = spawnSync(process.execPath, ['--max-old-space-size=512', fileURLToPath(driver), shape], {
       env: childEnv,
       encoding: 'utf8',
       timeout: 120_000,

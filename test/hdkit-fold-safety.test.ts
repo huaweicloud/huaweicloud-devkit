@@ -26,9 +26,12 @@ const HANDLERS_SPEC = '../plugins/huaweicloud-core/src/packs/sandbox/handlers-ac
 // transport 钉恢复诚实凭证。createConnection 同占位——handlers-account
 // 的图经 hwlink-connection 于链接期要求该名存在，钉内从不调用
 let credentialCarrier: unknown;
-// @types/node 尚无 exports 字段（运行时已弃用 namedExports）——双重断言桥接
+// namedExports 是 mock.module 跨 node 22.19 地板的唯一键：22.19 的实现忽略
+// exports 键并铸出空命名空间（链接期即 SyntaxError），24+ 两键都收、26 起
+// namedExports 进弃用告警。地板抬过 22 后全仓 mock.module 一次性换键
+// （其余五个测试文件同键，见 devbridge-key.test.ts）
 mock.module(HWLINK_SPEC, {
-  exports: {
+  namedExports: {
     getCredentials: (): { ak: string; sk: string; securitytoken: string } => {
       if (credentialCarrier !== undefined) throw credentialCarrier;
       return { ak: 'TESTAK', sk: 'TESTSK', securitytoken: '' };
@@ -37,7 +40,7 @@ mock.module(HWLINK_SPEC, {
       throw new Error('fold-safety pin: createConnection is mocked away');
     },
   },
-} as unknown as Parameters<typeof mock.module>[1]);
+});
 
 const { landedThenFlippedCarrier } = await import('./hdkit-gate-fixtures.ts');
 const { hdkitVoucherStatus, hdkitConnectWithRetry } = await import(API_SPEC);
@@ -53,6 +56,42 @@ function fieldThrower(field: string, base?: Error): Error {
     configurable: true,
   });
   return carrier;
+}
+
+// handler 业务折叠：敌意载体经 mock 的 hdkitservice-api 注入（真实链路的错误
+// 恒为请求层自建的诚实载体——mock 是导出面的唯一注入路由）。本块必须在任何
+// test 注册之前就位：node 22 的 runner 会在模块体暂停于顶层 await 的间隙开跑
+// 已注册的用例，晚于此处注册的用例在 22 地板上撞 handleConnect 的 TDZ
+let handlerCarrier: unknown;
+mock.module(API_SPEC, {
+  namedExports: {
+    hdkitConnectWithRetry: async () => {
+      throw handlerCarrier;
+    },
+    hdkitCheckUser: async () => ({}),
+    hdkitSignAgreement: async () => ({}),
+    // port-pr6：handlers-account 图新增的关机导出——mock 面必须随行补齐，
+    // 否则 HANDLERS_SPEC 的链接期即失败（hdkitShutdown 缺失 → 整组 fold 用例
+    // 拿不到 handleConnect）。本文件的用例不触关机路径，桩返回空信封即可。
+    hdkitShutdown: async () => ({}),
+  },
+});
+const { handleConnect } = await import(HANDLERS_SPEC);
+
+// mock 路由共用跑法（round 16 去重）：设载体 → 跑真实 handleConnect → 复原，
+// 返回折叠信封（拒绝与爆炸都是测试自身的失败）
+async function foldViaHandler(carrier: unknown): Promise<Record<string, unknown>> {
+  handlerCarrier = carrier;
+  try {
+    const out = (await handleConnect({ pool_type: 'ephemeral' }).then(
+      (result: unknown) => result,
+      () => null,
+    )) as Record<string, unknown> | null;
+    assert.ok(out, 'the fold envelope must fold — a rejection or null here fails the pin');
+    return out;
+  } finally {
+    handlerCarrier = undefined;
+  }
 }
 
 test('a throwing message getter through the voucher envelope folds the unavailable copy, never a TypeError', async () => {
@@ -410,40 +449,6 @@ test('the transport wrap never trusts the rejection shape: throwing message gett
     global.fetch = originalFetch;
   }
 });
-
-// handler 业务折叠：敌意载体经 mock 的 hdkitservice-api 注入（真实链路的错误
-// 恒为请求层自建的诚实载体——mock 是导出面的唯一注入路由）
-let handlerCarrier: unknown;
-mock.module(API_SPEC, {
-  exports: {
-    hdkitConnectWithRetry: async () => {
-      throw handlerCarrier;
-    },
-    hdkitCheckUser: async () => ({}),
-    hdkitSignAgreement: async () => ({}),
-    // port-pr6：handlers-account 图新增的关机导出——mock 面必须随行补齐，
-    // 否则 HANDLERS_SPEC 的链接期即失败（hdkitShutdown 缺失 → 整组 fold 用例
-    // 拿不到 handleConnect）。本文件的用例不触关机路径，桩返回空信封即可。
-    hdkitShutdown: async () => ({}),
-  },
-} as unknown as Parameters<typeof mock.module>[1]);
-const { handleConnect } = await import(HANDLERS_SPEC);
-
-// mock 路由共用跑法（round 16 去重）：设载体 → 跑真实 handleConnect → 复原，
-// 返回折叠信封（拒绝与爆炸都是测试自身的失败）
-async function foldViaHandler(carrier: unknown): Promise<Record<string, unknown>> {
-  handlerCarrier = carrier;
-  try {
-    const out = (await handleConnect({ pool_type: 'ephemeral' }).then(
-      (result: unknown) => result,
-      () => null,
-    )) as Record<string, unknown> | null;
-    assert.ok(out, 'the fold envelope must fold — a rejection or null here fails the pin');
-    return out;
-  } finally {
-    handlerCarrier = undefined;
-  }
-}
 
 test('a throwing code getter through the handler fold rethrows the original, never a TypeError', async () => {
   handlerCarrier = fieldThrower('code');
