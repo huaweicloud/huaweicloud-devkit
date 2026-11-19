@@ -27,6 +27,20 @@ test('classifyTextCommand blocks env var dumps with HUAWEICLOUD prefix', () => {
   assert.equal(classifyTextCommand('Get-ChildItem Env: | where HCLOUD_PROFILE').decision, 'deny');
 });
 
+test('classifyTextCommand denies generic credential env dumps (#1158 D4-2)', () => {
+  for (const cmd of [
+    'env | grep access_key',
+    'env | grep secret_key',
+    'printenv | grep ACCESS_KEY_ID',
+    'env | grep api_key',
+  ]) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.risk, 'credential');
+  }
+  assert.equal(classifyTextCommand('grep -rn access_key src/').decision, 'allow');
+});
+
 test('classifyTextCommand blocks credential env-var references incl. HW_ prefix (#650 D4-2)', () => {
   // HW_ is the plugin's own documented credential prefix (auth/credentials.ts).
   const bypasses = [
