@@ -2549,6 +2549,21 @@ function serviceCatalog(intent = '') {
         'website',
         'web app',
         'webapp',
+        'web应用',
+        'web 应用',
+        '应用部署',
+        '后端服务',
+        'backend service',
+        'full-stack',
+        'fullstack',
+        '全栈',
+        'workbench',
+        '工作台',
+        'crud',
+        'postgrest',
+        'rest api',
+        'database-backed',
+        '数据库应用',
         'hosting',
         '网站',
         '网页',
@@ -2585,25 +2600,34 @@ function serviceCatalog(intent = '') {
     },
   ];
   const matched = [];
-  const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
   const cjk = /[\u4e00-\u9fff]/;
+  const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  // ASCII keywords match at word boundaries, so composite labels such as
+  // "跨服务交付(Web应用+RDS)" still route RDS (#1055 D3-S7 recheck); the old
+  // whitespace token set missed any keyword glued to '+'/parentheses.
+  const matchesKeyword = (kw) => {
+    const keyword = kw.toLowerCase();
+    if (cjk.test(keyword) || keyword.includes(' ')) return it.includes(keyword);
+    return new RegExp(`(^|[^a-z0-9])${escapeRegExp(keyword)}([^a-z0-9]|$)`).test(it);
+  };
   for (const route of routeMap) {
-    if (
-      route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw.toLowerCase()) : tokens.has(kw)))
-    ) {
+    if (route.keywords.some((kw) => matchesKeyword(kw))) {
       matched.push(route);
     }
   }
 
   // #1055 D3-S7: composite intents must keep their deployment target. A
   // deployment-shaped intent ("部署一个 Web 应用并连接 RDS 数据库") used to
-  // match only RDS because the sandbox route lacked the bare deployment
-  // keywords — union the deployment-intent regex into the sandbox route so
-  // deploy/host/publish intents always carry a deployment service.
+  // match only RDS because neither the sandbox route (no bare "web应用" form)
+  // nor the deployment keyword union carried a hosting target. A backing
+  // service (RDS/…) is not a deploy target, so when a deploy intent names no
+  // explicit target (Sandbox/OBS/ECS/CCE), union the sandbox route in.
   const deploymentIntent = /deploy|host|hosting|publish|website|web app|preview|部署|托管|发布|网站|网页/.test(it);
+  const deployTargetServices = new Set(['Sandbox', 'DevStation', 'OBS', 'ECS', 'CCE']);
   if (deploymentIntent) {
+    const namedTargets = matched.flatMap((r) => r.services).filter((s) => deployTargetServices.has(s));
     const sandboxRoute = routeMap.find((r) => r.services.includes('Sandbox'));
-    if (sandboxRoute && !matched.includes(sandboxRoute)) {
+    if (namedTargets.length === 0 && sandboxRoute && !matched.includes(sandboxRoute)) {
       matched.push(sandboxRoute);
     }
   }

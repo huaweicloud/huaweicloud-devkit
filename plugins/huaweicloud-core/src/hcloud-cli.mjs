@@ -386,6 +386,9 @@ export function planHcloudCommand(args, options = {}) {
       warnings.push('Find valid values: ' + paramValidation.hints.join('; '));
     }
   }
+  if (paramValidation.aliasWarnings && paramValidation.aliasWarnings.length > 0) {
+    warnings.push(...paramValidation.aliasWarnings);
+  }
   return {
     executable: 'hcloud',
     args: redactSecrets(normalizedArgs),
@@ -745,8 +748,36 @@ const REQUIRED_PARAMS = {
   'FunctionGraph CreateFunction': ['func_name', 'runtime', 'handler', 'memory_size', 'package', 'timeout'],
   'FunctionGraph CreateFunctionTrigger': ['function_urn', 'trigger_type_code'],
   'APIG CreateInstanceV2': ['spec_id'],
+  'RDS CreateInstance': [
+    'region',
+    'name',
+    'datastore.type',
+    'datastore.version',
+    'flavor_ref',
+    'volume.type',
+    'volume.size',
+    'vpc_id',
+    'subnet_id',
+    'security_group_id',
+    'availability_zone',
+    'password',
+  ],
   'OBS mb': ['obs://'],
   'OBS rm': ['obs://'],
+};
+
+// #1055 D3-S7 follow-up: the RDS body has flat params (password/port/name/…),
+// not a nested db object. Agents repeatedly invented --db.password/--db.port,
+// which KooCLI rejects with "Invalid parameter: db.password" only after the
+// write request is built. Catch the alias at plan time.
+const PARAM_ALIASES = {
+  'RDS CreateInstance': {
+    'db.password': 'password',
+    'db.port': 'port',
+    'db.name': 'name',
+    'db.type': 'datastore.type',
+    'db.version': 'datastore.version',
+  },
 };
 
 const PARAM_VALUE_HINTS = {
@@ -757,18 +788,56 @@ const PARAM_VALUE_HINTS = {
   func_name: 'Function name must be unique within project',
   runtime: 'Run `hcloud FunctionGraph ListRuntimes` to see available runtimes',
   spec_id: 'APIG spec: BASIC (no public IP) or PROFESSIONAL (requires --loadbalancer_provider)',
+  region: 'CreateInstance body needs --region=<r> (same as --cli-region); omitting it returns DBS.280243',
+  name: 'DB instance name: 4-64 chars, starts with a letter, letters/digits/hyphens/underscores only',
+  'datastore.type':
+    'Use MySQL / PostgreSQL / SQLServer / MariaDB (value is case-insensitive; database_name lookups are case-sensitive)',
+  'datastore.version':
+    'Run `hcloud RDS ListDatastores --database_name=<engine> --cli-region=<r>` for supported versions',
+  flavor_ref:
+    'Run `hcloud RDS ListFlavors --database_name=<engine> --cli-region=<r>`; pick a spec whose az_status is normal',
+  'volume.type': 'Match the flavor group: General→CLOUDSSD, Dedicated→CLOUDSSD|ESSD, ARM→CLOUDSSD',
+  'volume.size': 'Integer GB from 40 to 4000, in multiples of 10',
+  vpc_id: 'Run `hcloud VPC ListVpcs --cli-region=<r>` to find VPC IDs',
+  subnet_id: 'Run `hcloud VPC ListSubnets --cli-region=<r>` to find subnet IDs',
+  security_group_id: 'The security group must allow the DB port (MySQL 3306 / PostgreSQL 5432 / SQL Server 1433)',
+  availability_zone: 'Use the az_desc/availability-zone code from `hcloud RDS ListFlavors`',
+  password:
+    'Use `--cli-jsonInput=<file>` with body.password (--password conflicts with a KooCLI system param). Do NOT use --db.password',
   'obs://': 'Bucket name must be globally unique and DNS-compliant (lowercase, numbers, hyphens only)',
 };
+
+const JSON_INPUT_RE = /^--cli-jsoninput(=|$)/i;
+
+function hasParam(args, param) {
+  if (param === 'obs://') return args.some((arg) => arg.startsWith('obs://'));
+  const flag = `--${param}`;
+  // Match `--flag=value`, bare `--flag value`, and not a longer alias such as
+  // `--db.password` for `password` (#1055 D3-S7).
+  return args.some((arg) => arg === flag || arg.startsWith(`${flag}=`));
+}
 
 function validateRequiredParams(args) {
   if (!args || args.length < 2) return { valid: true, missing: [], hints: [] };
   const key = `${args[0]} ${args[1]}`;
   const required = REQUIRED_PARAMS[key];
   if (!required) return { valid: true, missing: [], hints: [] };
-  const argsStr = args.join(' ');
-  const missing = required.filter((param) => !argsStr.includes(param));
+  const aliases = PARAM_ALIASES[key] || {};
+  const badAliases = Object.keys(aliases).filter((alias) => hasParam(args, alias));
+  const aliasWarnings = badAliases.map(
+    (alias) =>
+      `Invalid parameter alias --${alias}: use --${aliases[alias]} instead` +
+      (alias === 'db.password' ? ' (via --cli-jsonInput=<file>, see huawei-rds).' : '.'),
+  );
+  // --cli-jsonInput carries the body in a file: its keys cannot be inspected
+  // here, so missing-field checks would be false positives — but flag aliases
+  // on the command line are still wrong.
+  if (args.some((arg) => JSON_INPUT_RE.test(arg))) {
+    return { valid: badAliases.length === 0, missing: [], hints: [], aliasWarnings };
+  }
+  const missing = required.filter((param) => !hasParam(args, param));
   const hints = missing.map((param) => PARAM_VALUE_HINTS[param]).filter(Boolean);
-  return { valid: missing.length === 0, missing, hints };
+  return { valid: missing.length === 0 && badAliases.length === 0, missing, hints, aliasWarnings };
 }
 
 export function extractApiError(stdout) {

@@ -7,6 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import fs from 'node:fs';
 
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
+
 const { evaluateCommandRisk, evaluateArtifacts } = await import('../plugins/huaweicloud-core/src/risk-rule-engine.mjs');
 const { redactSecrets, classifyTextCommand } = await import('../plugins/huaweicloud-core/src/safety-policy.mjs');
 const { dispatch, _resetInitializedSessions } = await import('../plugins/huaweicloud-core/src/mcp-protocol.mjs');
@@ -16,6 +18,7 @@ const { resolveCredentials, clearRuntimeCredentials } =
   await import('../plugins/huaweicloud-core/src/auth/credentials.mjs');
 const { hdkitCheckUser } = await import('../plugins/huaweicloud-core/src/sandbox/hdkitservice-api.mjs');
 const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.mjs');
+const { planHcloudCommand } = await import('../plugins/huaweicloud-core/src/hcloud-cli.mjs');
 
 function withTempEnv(fn) {
   const previous = {
@@ -121,6 +124,67 @@ test('#1055 D3-S7 (P1): composite deploy+RDS intent keeps the deployment target'
   );
   assert.ok(result.recommendedSkills.includes('huawei-rds'));
   assert.ok(result.recommendedSkills.includes('huawei-sandbox'));
+
+  // 2026-11-19 recheck: the bare "Web应用" form (no space) must match the
+  // sandbox/deployment target on its own — the previous union only repaired
+  // intents whose deploy regex happened to fire.
+  const recheck = await callTool('huaweicloud_service_catalog', {
+    intent: '跨服务交付：部署一个Web应用并连接RDS数据库',
+  });
+  assert.ok(recheck.recommendedServices.includes('RDS'));
+  assert.ok(recheck.recommendedServices.includes('Sandbox'));
+  assert.ok(recheck.recommendedSkills.includes('huawei-sandbox'));
+  assert.ok(recheck.recommendedSkills.includes('huawei-rds'));
+
+  // The scenario label form glues "RDS" to parentheses/+: ASCII keywords must
+  // still match at word boundaries.
+  const label = await callTool('huaweicloud_service_catalog', {
+    intent: '跨服务交付(Web应用+RDS)',
+  });
+  assert.ok(label.recommendedServices.includes('RDS'));
+  assert.ok(label.recommendedServices.includes('Sandbox'));
+  assert.ok(label.recommendedSkills.includes('huawei-sandbox'));
+  assert.ok(label.recommendedSkills.includes('huawei-rds'));
+});
+
+test('#1055 D3-S7 follow-up: RDS CreateInstance preflight names flat params, not nested db.*', () => {
+  const missing = planHcloudCommand(['RDS', 'CreateInstance', '--cli-region=cn-north-4', '--name=demo']);
+  const text = missing.warnings.join('\n');
+  assert.match(text, /Missing required parameters:.*region/);
+  assert.match(text, /datastore\.type/);
+  assert.match(text, /vpc_id/);
+  assert.match(text, /security_group_id/);
+  assert.match(text, /--db\.password/);
+
+  const aliasOnly = planHcloudCommand([
+    'RDS',
+    'CreateInstance',
+    '--cli-region=cn-north-4',
+    '--name=demo',
+    '--datastore.type=MySQL',
+    '--datastore.version=8.0',
+    '--flavor_ref=x',
+    '--volume.type=CLOUDSSD',
+    '--volume.size=40',
+    '--vpc_id=v',
+    '--subnet_id=s',
+    '--security_group_id=g',
+    '--availability_zone=az1',
+    '--region=cn-north-4',
+    '--db.password=Secret123!',
+  ]);
+  assert.ok(aliasOnly.warnings.some((w) => /Invalid parameter alias --db\.password/.test(w)));
+
+  const jsonInput = planHcloudCommand(['RDS', 'CreateInstance', '--cli-jsonInput=rds-create.json']);
+  assert.ok(!jsonInput.warnings.some((w) => /Missing required parameters/.test(w)));
+
+  const jsonInputAlias = planHcloudCommand([
+    'RDS',
+    'CreateInstance',
+    '--cli-jsonInput=rds-create.json',
+    '--db.port=3306',
+  ]);
+  assert.ok(jsonInputAlias.warnings.some((w) => /Invalid parameter alias --db\.port: use --port/.test(w)));
 });
 
 test('#1055 D2-10 (P1): missing KooCLI config error is the exact contract string', () => {
