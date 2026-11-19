@@ -236,9 +236,7 @@ export function planDevbridgeCleanup({
     }
   }
 
-  const killPids = new Set(
-    hosts.filter((h) => (h.id || h.port != null) && !mappedPids.has(h.pid)).map((h) => h.pid),
-  );
+  const killPids = new Set(hosts.filter((h) => (h.id || h.port != null) && !mappedPids.has(h.pid)).map((h) => h.pid));
   const samePortIds = samePort == null ? [] : tunnels.filter((t) => hasPort(t.id, samePort)).map((t) => t.id);
   const orphanIds = tunnels.filter((t) => !protectedIds.has(t.id) && !liveIds.has(t.id)).map((t) => t.id);
   const deleteSet = new Set([...orphanIds, ...samePortIds]);
@@ -275,7 +273,10 @@ export function planDevbridgeCleanup({
   return { deleteIds: [...deleteSet], killPids: [...killPids] };
 }
 
-export function buildDevbridgeCleanupApplyScript({ deleteIds = [], killPids = [] }: Partial<DevbridgeCleanupPlan> = {}): string {
+export function buildDevbridgeCleanupApplyScript({
+  deleteIds = [],
+  killPids = [],
+}: Partial<DevbridgeCleanupPlan> = {}): string {
   for (const id of deleteIds) {
     if (!DEVBRIDGE_TUNNEL_ID_PATTERN.test(String(id))) {
       throw new Error(`devbridge cleanup: invalid tunnel id ${JSON.stringify(id)}`);
@@ -294,7 +295,8 @@ export function buildDevbridgeCleanupApplyScript({ deleteIds = [], killPids = []
     // Re-check the process identity before killing: state→apply can take
     // minutes, so a recycled PID must not hit an unrelated process.
     ...killPids.map(
-      (pid) => `if ps -p ${pid} -o args= 2>/dev/null | grep -q "devbridge host"; then kill ${pid} >/dev/null 2>&1 || true; fi`,
+      (pid) =>
+        `if ps -p ${pid} -o args= 2>/dev/null | grep -q "devbridge host"; then kill ${pid} >/dev/null 2>&1 || true; fi`,
     ),
     `sleep 1`,
     ...deleteIds.map((id) => `devbridge delete ${id} >/dev/null 2>&1 || true`),
