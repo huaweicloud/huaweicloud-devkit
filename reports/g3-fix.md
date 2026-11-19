@@ -39,18 +39,18 @@
 
 ## 验收记录（exit code 直接落盘，不经管道）
 
-| # | 验收项 | 命令 | exit | 备注 |
-| --- | --- | --- | --- | --- |
-| 1 | 新增/重写测试全绿 | `node --test test/opencode-safety-gate.test.ts test/opencode-permission-seam.test.ts test/doctor-skills-tree.test.ts test/structure.test.ts` | 0 | 17+14+17+50 全绿（结构文件合并跑 50/50） |
-| 2 | 变异自证（join 回退 → compound 回归红） | 改回 join 后 `node --test --test-name-pattern "per-segment classification" …` | **1** → 还原后 0 | 红：`✖ per-segment classification…`；还原绿。证据 `/tmp/opencode/g3-mutation-red.log` / `g3-mutation-green.log` |
-| 3a | build | `npm run build` | 0 | dist 重建 + 30 技能同步 |
-| 3b | typecheck | `npm run typecheck` | 0 | 两 project 干净 |
-| 3c | validate | `npm run validate` | 0 | 30 skills / KooCLI 7.3.12 / 34 pack 模块 |
-| 3d | lint | `npm run lint` | 0 | 0 error（87 条基线告警不变） |
-| 3e | lint:dup（完整门参数） | `npm run lint:dup -- --baseline .jscpd-baseline.json --fail-on-new-clones 0` | 0 | 208 clones，0 新增，baseline 文件未动 |
-| 4 | 全量测试 | `npm test` | 1 | 2816 tests / 2812 pass / 2 fail——仅基线豁免的 real-agents 环境项（同 G2：opencode 握手子测试 + 其父测试），**无新增失败** |
-| 5 | doctor golden 重生成 | `node scripts/doctor-golden.mjs --regen` + `node --test test/doctor-golden.test.ts` | 0/0 | diff 仅 seam label 一行（`…(allow + edit deny; payload edit deny)`），计数行不变 |
-| 6 | live 门（隔离两段式三例） | `bash /tmp/opencode/hookgate-g3-live/run-g3-live.sh` | 0 | 摘录见下节 |
+| #   | 验收项                                  | 命令                                                                                                                                         | exit             | 备注                                                                                                                      |
+| --- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1   | 新增/重写测试全绿                       | `node --test test/opencode-safety-gate.test.ts test/opencode-permission-seam.test.ts test/doctor-skills-tree.test.ts test/structure.test.ts` | 0                | 17+14+17+50 全绿（结构文件合并跑 50/50）                                                                                  |
+| 2   | 变异自证（join 回退 → compound 回归红） | 改回 join 后 `node --test --test-name-pattern "per-segment classification" …`                                                                | **1** → 还原后 0 | 红：`✖ per-segment classification…`；还原绿。证据 `/tmp/opencode/g3-mutation-red.log` / `g3-mutation-green.log`           |
+| 3a  | build                                   | `npm run build`                                                                                                                              | 0                | dist 重建 + 30 技能同步                                                                                                   |
+| 3b  | typecheck                               | `npm run typecheck`                                                                                                                          | 0                | 两 project 干净                                                                                                           |
+| 3c  | validate                                | `npm run validate`                                                                                                                           | 0                | 30 skills / KooCLI 7.3.12 / 34 pack 模块                                                                                  |
+| 3d  | lint                                    | `npm run lint`                                                                                                                               | 0                | 0 error（87 条基线告警不变）                                                                                              |
+| 3e  | lint:dup（完整门参数）                  | `npm run lint:dup -- --baseline .jscpd-baseline.json --fail-on-new-clones 0`                                                                 | 0                | 208 clones，0 新增，baseline 文件未动                                                                                     |
+| 4   | 全量测试                                | `npm test`                                                                                                                                   | 1                | 2816 tests / 2812 pass / 2 fail——仅基线豁免的 real-agents 环境项（同 G2：opencode 握手子测试 + 其父测试），**无新增失败** |
+| 5   | doctor golden 重生成                    | `node scripts/doctor-golden.mjs --regen` + `node --test test/doctor-golden.test.ts`                                                          | 0/0              | diff 仅 seam label 一行（`…(allow + edit deny; payload edit deny)`），计数行不变                                          |
+| 6   | live 门（隔离两段式三例）               | `bash /tmp/opencode/hookgate-g3-live/run-g3-live.sh`                                                                                         | 0                | 摘录见下节                                                                                                                |
 
 **验收 3e 的教训（已修）**：首轮全量跑里结构测试的 jscpd 门红（1 新克隆——FIX-3 让 apply/remove 两循环结构同形），而裸 `npm run lint:dup` 不带 `--fail-on-new-clones 0` 时同克隆不红。按 brief 预判（"FIX-3 可能撞重复——共享定义放一处"）折叠：`sectionFor`（标量所有权检查）与 `seamSections`（两类 section 表）各归一处，两循环剩余部分行为本就不同（add-only-if-absent vs value-exact delete）。0 新克隆，未动 baseline。
 
@@ -72,7 +72,13 @@ g3-single  exit=0 wall_ms=11196
 > The command was blocked. Here's the output:
 >
 > ```json
-> {"error":{"type":"permission.rejected","message":"Huawei Cloud safety hook blocked this action: Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval."},"content":[]}
+> {
+>   "error": {
+>     "type": "permission.rejected",
+>     "message": "Huawei Cloud safety hook blocked this action: Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval."
+>   },
+>   "content": []
+> }
 > ```
 >
 > The `ls /tmp` part didn't produce output either — the safety hook rejected the whole command before execution…
@@ -88,7 +94,13 @@ g3-single  exit=0 wall_ms=11196
 **单写例**（G2 回归）：
 
 > ```json
-> {"error":{"type":"permission.rejected","message":"Huawei Cloud safety hook blocked this action: Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval."},"content":[]}
+> {
+>   "error": {
+>     "type": "permission.rejected",
+>     "message": "Huawei Cloud safety hook blocked this action: Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval."
+>   },
+>   "content": []
+> }
 > ```
 
 三例全部宿主稳定（exit 0），deny reason 逐字回传模型。
@@ -129,18 +141,18 @@ e3b3013a fix(safety): close the compound-command bypass — per-segment classifi
 
 ### 验收记录（exit code 直接落盘，不经管道）
 
-| # | 验收项 | 命令 | exit | 备注 |
-| --- | --- | --- | --- | --- |
-| 1 | 测试电池全绿 | `node --test test/opencode-safety-gate.test.ts` | 0 | 18/18 |
-| 2 | 变异自证（删重组 → 红） | 删块后 `node --test --test-name-pattern "pipe-feed\|verdicts match"` | **1** → 恢复后 0 | 2 测红；恢复 18/18 绿 |
-| 3a | build | `npm run build` | 0 | |
-| 3b | typecheck | `npm run typecheck` | 0 | |
-| 3c | validate | `npm run validate` | 0 | 30 skills / 7.3.12 / 34 模块 |
-| 3d | lint | `npm run lint` | 0 | 0 error |
-| 3e | lint:dup（完整门参数） | `… --fail-on-new-clones 0` | 0 | 208 clones，0 新增，baseline 未动 |
-| 4 | 全量测试 | `npm test` | 1 | 2817 tests / 2813 pass / 2 fail——仅基线豁免 real-agents 项，无新增失败 |
-| 5 | doctor golden | `git status test/fixtures/doctor-golden/` + `node --test test/doctor-golden.test.ts` | 0 | fixtures 零改动（本轮不碰 seam/doctor 面） |
-| 6 | live 四例 | `bash /tmp/opencode/hookgate-g3b-live/run-g3b-live.sh` | 0 | 摘录见下 |
+| #   | 验收项                  | 命令                                                                                 | exit             | 备注                                                                   |
+| --- | ----------------------- | ------------------------------------------------------------------------------------ | ---------------- | ---------------------------------------------------------------------- |
+| 1   | 测试电池全绿            | `node --test test/opencode-safety-gate.test.ts`                                      | 0                | 18/18                                                                  |
+| 2   | 变异自证（删重组 → 红） | 删块后 `node --test --test-name-pattern "pipe-feed\|verdicts match"`                 | **1** → 恢复后 0 | 2 测红；恢复 18/18 绿                                                  |
+| 3a  | build                   | `npm run build`                                                                      | 0                |                                                                        |
+| 3b  | typecheck               | `npm run typecheck`                                                                  | 0                |                                                                        |
+| 3c  | validate                | `npm run validate`                                                                   | 0                | 30 skills / 7.3.12 / 34 模块                                           |
+| 3d  | lint                    | `npm run lint`                                                                       | 0                | 0 error                                                                |
+| 3e  | lint:dup（完整门参数）  | `… --fail-on-new-clones 0`                                                           | 0                | 208 clones，0 新增，baseline 未动                                      |
+| 4   | 全量测试                | `npm test`                                                                           | 1                | 2817 tests / 2813 pass / 2 fail——仅基线豁免 real-agents 项，无新增失败 |
+| 5   | doctor golden           | `git status test/fixtures/doctor-golden/` + `node --test test/doctor-golden.test.ts` | 0                | fixtures 零改动（本轮不碰 seam/doctor 面）                             |
+| 6   | live 四例               | `bash /tmp/opencode/hookgate-g3b-live/run-g3b-live.sh`                               | 0                | 摘录见下                                                               |
 
 ### live 门摘录（`/tmp/opencode/hookgate-g3b-live/`）
 
@@ -166,7 +178,13 @@ g3b-single  exit=0 wall_ms=18720
 **compound 例**（G3 回归保持）：
 
 > ```json
-> {"error":{"type":"permission.rejected","message":"Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval."},"content":[]}
+> {
+>   "error": {
+>     "type": "permission.rejected",
+>     "message": "Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval."
+>   },
+>   "content": []
+> }
 > ```
 
 **良性例**：`g3b-live-bc-1795051425` 正常输出。**单写例**（G2 回归保持）：deny 原因回传。

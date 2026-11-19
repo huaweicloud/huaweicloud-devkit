@@ -312,10 +312,7 @@ test('a pre-payload-glob install (skills keys present, payload key absent) is he
   assert.equal(first.status, 0, first.stderr || first.stdout);
   const payloadGlob = expectedPayloadGlob(home);
   const configPath = opencodeConfigPath(home);
-  const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<
-    string,
-    Record<string, Record<string, string>>
-  >;
+  const config = JSON.parse(readFileSync(configPath, 'utf8')) as Record<string, Record<string, Record<string, string>>>;
   delete config.permission.edit[payloadGlob];
   writeFileSync(configPath, JSON.stringify(config, null, 2));
 
