@@ -13,6 +13,25 @@ import {
 import * as updateCheck from '../plugins/huaweicloud-core/src/update-check.mjs';
 import { autoUpgradePaths, writeAutoUpgradeState } from '../plugins/huaweicloud-core/src/update-auto.mjs';
 
+// dispatch('initialize') reaches sandbox/hdkitservice-api.mjs through
+// mcp-protocol's handshake; a 409 version gate would otherwise spawn a REAL
+// detached auto-upgrade runner outside CI.
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
+
+// update-check honours the same mask: with it set, judgeUpdate short-circuits to
+// "no update available", so a hint would never be produced. The hint assertions
+// below lift it around the call that computes the hint — nothing else unmasks.
+async function withRealUpdateCheck(fn) {
+  const prev = process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE;
+  delete process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE;
+  try {
+    return await fn();
+  } finally {
+    if (prev === undefined) delete process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE;
+    else process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = prev;
+  }
+}
+
 // ============================================================================
 // 第一部分：mcp-protocol — hintConsumed 会话隔离
 // ============================================================================
@@ -27,7 +46,9 @@ test('hint-consumption: A 会话消费后 B 会话仍能拿到提示（隔离）
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
   // 注入真实 hint（版本 1.1.0 >= current 1.0.2 → update_available）
-  await updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) });
+  await withRealUpdateCheck(() =>
+    updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) }),
+  );
 
   const base = { ok: 1 };
   const rA = _decorateResult('session-A', 'huaweicloud_check_cli', { ...base });
@@ -48,7 +69,9 @@ test('hint-consumption: A 会话消费后 B 会话仍能拿到提示（隔离）
 test('hint-consumption: stdio 固定 session 行为 = 每会话首次提示一次', async () => {
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
-  await updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) });
+  await withRealUpdateCheck(() =>
+    updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) }),
+  );
   const base = { ok: 1 };
   const r1 = _decorateResult('stdin', 'huaweicloud_check_cli', { ...base });
   assert.ok(r1._updateInfo, 'stdio 首次附加');
@@ -61,7 +84,9 @@ test('hint-consumption: stdio 固定 session 行为 = 每会话首次提示一�
 test('hint-consumption: 缺省 session 兜底为 default（行为同现版）', async () => {
   _resetHintConsumption();
   updateCheck.invalidateUpdateCache();
-  await updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) });
+  await withRealUpdateCheck(() =>
+    updateCheck.getCachedUpdateInfo('1.0.2', { doQuery: async () => ({ latest: '1.1.0', next: null }) }),
+  );
   const base = { ok: 1 };
   const r1 = _decorateResult(undefined, 'huaweicloud_check_cli', { ...base });
   assert.ok(r1._updateInfo, '缺省登录为 default 并附加');
@@ -203,13 +228,15 @@ test('#607: callTool dismiss + doQuery 失败 → check_failed 且不写冷却',
     fs.rmSync(f, { force: true });
   } catch {}
 
-  const r = await callTool(
-    'huaweicloud_check_update',
-    { dismiss: true },
-    {
-      sessionId: 'sess-607e',
-      doQuery: async () => null, // 注入失败
-    },
+  const r = await withRealUpdateCheck(() =>
+    callTool(
+      'huaweicloud_check_update',
+      { dismiss: true },
+      {
+        sessionId: 'sess-607e',
+        doQuery: async () => null, // 注入失败
+      },
+    ),
   );
   assert.equal(r.result, 'check_failed', `dismiss+失败应 check_failed, got ${r.result}`);
   assert.ok(!fs.existsSync(f), '查询失败不得写 skip 冷却文件');

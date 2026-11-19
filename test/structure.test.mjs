@@ -931,13 +931,19 @@ test('tests touching hdkitservice mask the background auto-upgrade', () => {
     const content = readFileSync(join(testDir, name), 'utf8');
     // Either importing hdkitservice-api or faking a 409 version-gate response
     // reaches maybeAutoUpgrade; without the mask a non-CI machine spawns a REAL
-    // detached runner executing `npx update --target all`.
-    const touchesVersionGate = content.includes('hdkitservice-api.mjs') || content.includes('HDKIT_VERSION_TOO_OLD');
+    // detached runner executing `npx update --target all`. Importing
+    // mcp-protocol.mjs reaches the same gate transitively — its `initialize`
+    // handshake dynamically imports sandbox/hdkitservice-api.mjs (#1158) — so a
+    // literal hdkitservice-api.mjs match alone misses those tests.
+    const touchesVersionGate =
+      content.includes('hdkitservice-api.mjs') ||
+      content.includes('HDKIT_VERSION_TOO_OLD') ||
+      content.includes('mcp-protocol.mjs');
     if (!touchesVersionGate) continue;
     assert.match(
       content,
       /process\.env\.HUAWEICLOUD_DEVKIT_SKIP_UPDATE\s*=\s*'1'/,
-      `${name} references hdkitservice-api.mjs / HDKIT_VERSION_TOO_OLD and must set process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1' at file level (a 409 otherwise spawns a REAL detached auto-upgrade runner on non-CI machines)`,
+      `${name} touches the hdkitservice version gate (hdkitservice-api.mjs / HDKIT_VERSION_TOO_OLD / mcp-protocol.mjs, whose initialize handshake imports hdkitservice-api) and must set process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1' at file level (a 409 otherwise spawns a REAL detached auto-upgrade runner on non-CI machines)`,
     );
   }
 });
