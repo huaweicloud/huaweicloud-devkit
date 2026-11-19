@@ -30,6 +30,85 @@ function normalizeText(value) {
   return JSON.stringify(value, null, 2);
 }
 
+// #1055 D4-17: "no rule matched" must not degrade an unreviewable input to
+// allow. A command whose surface form cannot be parsed statically (control
+// bytes, a leading shell operator, unbalanced or nested command substitution,
+// or a remote fetch executed inside a substitution) has an unknown runtime
+// payload, so the risk check fails closed instead of reporting a clean allow.
+const LEADING_SHELL_OPERATOR_PATTERN = /^\s*(?:&&|\|\||\||;|&)\s*\S/;
+const SINGLE_SUBST_PATTERN = /\$\(([^)]*)\)/g;
+const SINGLE_BACKTICK_PATTERN = /`([^`]*)`/g;
+const NESTED_SUBST_PATTERN = /\$\(|`/;
+const REMOTE_FETCH_PATTERN = /\b(?:curl|wget|iwr|invoke-webrequest)\b/i;
+const INTERPRETER_REMOTE_PROCESS_SUBST_PATTERN = /\b(?:bash|sh|zsh|dash|ksh)\b[^\n;|&]*<\s*\(\s*(?:curl|wget)\b/i;
+
+function hasControlCharacters(text) {
+  for (const char of text) {
+    const code = char.codePointAt(0);
+    if (
+      (code >= 0x00 && code <= 0x08) ||
+      code === 0x0b ||
+      code === 0x0c ||
+      (code >= 0x0e && code <= 0x1f) ||
+      code === 0x7f
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasUnparsableSubstitution(text) {
+  const openings = (text.match(/\$\(/g) || []).length;
+  const parsed = (text.match(SINGLE_SUBST_PATTERN) || []).length;
+  if (openings > parsed) return true;
+  const backticks = (text.match(/`/g) || []).length;
+  return backticks % 2 === 1;
+}
+
+function hasNestedSubstitution(text) {
+  for (const match of text.matchAll(SINGLE_SUBST_PATTERN)) {
+    if (NESTED_SUBST_PATTERN.test(match[1] || '')) return true;
+  }
+  for (const match of text.matchAll(SINGLE_BACKTICK_PATTERN)) {
+    if (NESTED_SUBST_PATTERN.test(match[1] || '')) return true;
+  }
+  return false;
+}
+
+function hasRemoteFetchSubstitution(text) {
+  for (const match of text.matchAll(SINGLE_SUBST_PATTERN)) {
+    if (REMOTE_FETCH_PATTERN.test(match[1] || '')) return true;
+  }
+  for (const match of text.matchAll(SINGLE_BACKTICK_PATTERN)) {
+    if (REMOTE_FETCH_PATTERN.test(match[1] || '')) return true;
+  }
+  return false;
+}
+
+function unreviewableCommandReason(command) {
+  const text = String(command || '');
+  if (hasControlCharacters(text)) {
+    return 'Command contains control characters and cannot be parsed as a shell command.';
+  }
+  if (LEADING_SHELL_OPERATOR_PATTERN.test(text)) {
+    return 'Command starts with a shell control operator and has no executable name.';
+  }
+  if (hasUnparsableSubstitution(text)) {
+    return 'Command contains an unbalanced or nested $(...)/backtick substitution whose payload resolves only at runtime.';
+  }
+  if (hasNestedSubstitution(text)) {
+    return 'Command nests command substitution, so the executed payload resolves only at runtime.';
+  }
+  if (hasRemoteFetchSubstitution(text)) {
+    return 'Command executes a remote fetch inside command substitution, so the payload is downloaded at runtime.';
+  }
+  if (INTERPRETER_REMOTE_PROCESS_SUBST_PATTERN.test(text)) {
+    return 'Command executes a remote process substitution inside a shell interpreter.';
+  }
+  return '';
+}
+
 function evaluationContext(stage, input) {
   if (stage === 'command') {
     const command = normalizeText(input.command || input.text || '');
@@ -96,6 +175,25 @@ function evaluate(stage, inputs, options = {}) {
         source: input?.path || stage,
         evidence: excerpt(context.text),
       });
+    }
+
+    // #1055 D4-17 fail-closed: a command that cannot be reviewed statically
+    // must not come back as allow just because no catalog rule matched.
+    if (stage === 'command') {
+      const reason = unreviewableCommandReason(context.command);
+      if (reason && !findings.some((finding) => finding.severity === 'deny')) {
+        findings.push({
+          ruleId: 'hwc-command-unreviewable',
+          title: 'Unreviewable command input',
+          category: 'execution',
+          severity: 'deny',
+          message: reason,
+          remediation:
+            'Rewrite the command as an explicit, statically reviewable invocation, or have a human review it before execution.',
+          source: input?.path || stage,
+          evidence: excerpt(context.text),
+        });
+      }
     }
   }
 
