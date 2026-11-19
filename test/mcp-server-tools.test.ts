@@ -336,12 +336,39 @@ test('tools/call works with arguments omitted entirely', async () => {
     assert.equal(response.result.isError, false);
     // The vendor gate on the same omitted-arguments shape: a proper tool
     // result (never a protocol error) carrying the teaching rejection.
+    // #1158 D9-6: list_regions is now ungated; auth_status remains the
+    // measured gated first move.
     const gated = await client.request('tools/call', {
-      name: 'huaweicloud_list_regions',
+      name: 'huaweicloud_auth_status',
     });
     assert.ok(gated.result, 'the gate must answer as a tool result, not a protocol error');
     assert.equal(gated.result.isError, true);
     assert.match(gated.result.content[0].text, /Vendor gate: this tool operates on Huawei Cloud/);
+  } finally {
+    client.close();
+  }
+});
+
+test('read-only catalog and region faces are not vendor gated (#1158 D9-6)', async () => {
+  // A third-party MCP client that never sends vendorConfirmed must be able to
+  // use the side-effect-free read faces; only cloud OPERATION tools keep the
+  // attestation gate.
+  const client = createClient();
+  try {
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'third-party-client', version: '0.0.0' },
+    });
+    for (const [name, args] of [
+      ['huaweicloud_service_catalog', { intent: 'list ecs instances' }],
+      ['huaweicloud_list_regions', {}],
+    ] as const) {
+      const response = await client.request('tools/call', { name, arguments: args });
+      assert.ok(response.result, `${name} must answer as a tool result`);
+      assert.equal(response.result.isError, false, `${name} must not fail on the vendor gate`);
+      assert.doesNotMatch(response.result.content[0].text, /Vendor gate/);
+    }
   } finally {
     client.close();
   }

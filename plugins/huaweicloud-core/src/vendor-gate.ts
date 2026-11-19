@@ -24,8 +24,13 @@ import type { ToolArgs, CallToolOptions } from './tools.ts';
 // so the stateless remote face is covered by construction.
 //
 // Scope: the MEASURED entry set (the probe/execution chain above) plus
-// the sibling claim face — not every cloud-facing tool. Deliberately
-// ungated, extend on measurement (never silently): gateway_call (its own
+// the sibling claim face — not every cloud-facing tool. #1158 D9-6 pulled
+// the three side-effect-free read faces out (service_catalog, list_regions,
+// check_cli): third-party MCP clients that never send an attestation were
+// receiving isError on pure catalog/region/install reads, so the vendor
+// boundary teaching now rides the descriptions and the cloud OPERATION
+// tools keep the gate. Deliberately ungated, extend on measurement (never
+// silently): gateway_call (its own
 // policy engine is its consent plane — devkit does not double-gate it);
 // the sandbox exec/upload/deploy faces (they take a workspace_id
 // directly — NOT only behind connect — but every e2e flow reaches them
@@ -39,14 +44,11 @@ export const VENDOR_GATED_TOOLS: ReadonlySet<ToolName> = new Set<ToolName>([
   'huaweicloud_auth_status',
   'huaweicloud_auth_init',
   'huaweicloud_auth_switch',
-  'huaweicloud_check_cli',
   'huaweicloud_show_profile_redacted',
   'huaweicloud_list_operations',
-  'huaweicloud_list_regions',
   'huaweicloud_run_readonly_command',
   'huaweicloud_plan_cli_command',
   'huaweicloud_run_approved_command',
-  'huaweicloud_service_catalog',
   'huaweicloud_sandbox_connect',
   'huaweicloud_voucher_claim',
   'huaweicloud_competition_voucher_claim',

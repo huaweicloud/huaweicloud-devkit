@@ -885,9 +885,18 @@ test('wildcard IAM actions are caught in Terraform, plural, and no-Effect shapes
   assert.equal(terraform.decision, 'deny');
   assert.ok(terraform.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
 
+  // #1158 D4-21: HCL has no `Effect` field, so an HCL grant is an implicit
+  // Allow; the JSON and HCL forms now share one verdict (deny). An explicit
+  // Deny stays outside the admin-grant rule.
   const noEffect = evaluateDeployPlan({ iam: { actions: ['*'] } });
-  assert.equal(noEffect.decision, 'warn');
-  assert.ok(noEffect.findings.some((finding) => finding.ruleId === 'hwc-iam-wildcard-action'));
+  assert.equal(noEffect.decision, 'deny');
+  assert.ok(noEffect.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
+
+  const explicitDeny = evaluateDeployPlan({
+    iam: { statement: [{ effect: 'Deny', actions: ['*'] }] },
+  });
+  assert.notEqual(explicitDeny.decision, 'deny');
+  assert.ok(!explicitDeny.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
 
   const narrow = evaluateArtifacts([
     { path: 'iam.tf', content: 'policy = "x"\neffect = "Allow"\nactions = ["vpc:subnets:get"]\n' },
@@ -897,4 +906,128 @@ test('wildcard IAM actions are caught in Terraform, plural, and no-Effect shapes
       (finding) => finding.ruleId === 'hwc-iam-admin-policy' || finding.ruleId === 'hwc-iam-wildcard-action',
     ),
   );
+});
+
+test('wrapped credential env dumps deny at the rule level (#1158 D4-16)', () => {
+  // The rules matched only the bare payload, so `sh -c "…"` / `bash -c "…"` /
+  // `eval "…"` let the credential env dump through while the classify-text
+  // chain already denied it. The engine now expands the bounded wrapper
+  // nesting through the shared shell text model.
+  for (const command of [
+    'sh -c "env | grep HUAWEICLOUD_ACCESS_KEY"',
+    'bash -c "env | grep HUAWEICLOUD"',
+    "bash -c 'printenv HW_SECRET_KEY'",
+    'dash -c "env | grep HWC_SECRET_KEY"',
+    'ksh -c "env | grep HCLOUD_SECRET_KEY"',
+    'eval "env | grep HUAWEICLOUD_ACCESS_KEY"',
+    'sh -c "printenv HUAWEICLOUD_SECRET_KEY"',
+  ]) {
+    const result = evaluateCommandRisk(command);
+    assert.equal(result.decision, 'deny', `${command} must deny`);
+    assert.ok(
+      result.findings.some((finding) => finding.ruleId === 'hwc-command-env-dump'),
+      `${command} must deny through the env-dump rule`,
+    );
+  }
+
+  // Non-credential payloads and non-credential env reads keep their verdicts.
+  for (const command of [
+    'sh -c "echo hi"',
+    'eval "echo hello"',
+    'sh -c "env | grep HW_REGION"',
+    'bash -c "env HW_REGION=x hcloud ECS ListServers"',
+  ]) {
+    assert.equal(evaluateCommandRisk(command).decision, 'allow', `${command} must stay allowed`);
+  }
+});
+
+test('wrapper expansion budget is per wrapper kind and stateless across calls (#1158 D4-16)', () => {
+  const shellPadding = Array.from({ length: 8 }, (_, index) => `sh -c "echo ${index}"`).join('; ');
+  const evalPadding = Array.from({ length: 8 }, (_, index) => `eval "echo ${index}"`).join('; ');
+
+  // One shared budget let the eight harmless shell wrappers starve the eval
+  // payload that follows them, so the rule chain stayed allow.
+  const shellStarvedEval = evaluateCommandRisk(`${shellPadding}; eval "env | grep HUAWEICLOUD_ACCESS_KEY"`);
+  assert.equal(shellStarvedEval.decision, 'deny');
+  assert.ok(shellStarvedEval.findings.some((finding) => finding.ruleId === 'hwc-command-env-dump'));
+
+  // The eval budget must not starve a following shell wrapper either.
+  const evalStarvedShell = evaluateCommandRisk(`${evalPadding}; sh -c "env | grep HUAWEICLOUD_ACCESS_KEY"`);
+  assert.equal(evalStarvedShell.decision, 'deny');
+  assert.ok(evalStarvedShell.findings.some((finding) => finding.ruleId === 'hwc-command-env-dump'));
+
+  // A scan that exhausts a budget must not leak `lastIndex` into the next
+  // evaluation: the first call after the flood sees the payload again.
+  evaluateCommandRisk(shellPadding);
+  for (const command of ['sh -c "env | grep HUAWEICLOUD_ACCESS_KEY"', 'eval "printenv HUAWEICLOUD_ACCESS_KEY"']) {
+    assert.equal(evaluateCommandRisk(command).decision, 'deny', `${command} must deny after a stale scan`);
+  }
+});
+
+test('statement-scoped admin-grant rule keeps the deny when Allow and Deny are siblings (#1158 D4-21)', () => {
+  // Before the scope fix the whole-text Deny guard saw the sibling Deny *
+  // and demoted the Allow * grant to the wildcard warn. A policy with both
+  // is still an admin grant and must stay deny.
+  const mixed = evaluateArtifacts([
+    {
+      path: 'policy.json',
+      content: JSON.stringify({
+        Statement: [
+          { Effect: 'Allow', Action: '*', Resource: '*' },
+          { Effect: 'Deny', Action: '*', Resource: '*' },
+        ],
+      }),
+    },
+  ]);
+  assert.equal(mixed.decision, 'deny');
+  assert.ok(mixed.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
+
+  // Deny-first ordering must not change the verdict.
+  const mixedDenyFirst = evaluateArtifacts([
+    {
+      path: 'policy.json',
+      content: JSON.stringify({
+        Statement: [
+          { Effect: 'Deny', Action: '*', Resource: '*' },
+          { Effect: 'Allow', Action: '*', Resource: '*' },
+        ],
+      }),
+    },
+  ]);
+  assert.equal(mixedDenyFirst.decision, 'deny');
+  assert.ok(mixedDenyFirst.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
+
+  // A lone explicit Deny * is not an administrator grant: the wildcard warn
+  // stays, the P0 admin-policy deny does not fire.
+  for (const content of [
+    '{"Statement":[{"Effect":"Deny","Action":"*","Resource":"*"}]}',
+    'statement {\n  effect = "Deny"\n  actions = ["*"]\n}\n',
+  ]) {
+    const result = evaluateArtifacts([{ path: 'deny.json', content }]);
+    assert.notEqual(result.decision, 'deny', `${content} must not deny as an admin grant`);
+    assert.ok(
+      !result.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'),
+      `${content} must not match the admin-grant rule`,
+    );
+    assert.ok(result.findings.some((finding) => finding.ruleId === 'hwc-iam-wildcard-action'));
+  }
+
+  // HCL sibling statements split the same way.
+  const hclMixed = evaluateArtifacts([
+    {
+      path: 'iam.tf',
+      content:
+        'statement {\n  effect = "Allow"\n  actions = ["*"]\n}\nstatement {\n  effect = "Deny"\n  actions = ["*"]\n}\n',
+    },
+  ]);
+  assert.equal(hclMixed.decision, 'deny');
+  assert.ok(hclMixed.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
+
+  // Shell-transcribed policies arrive with escaped quotes; the block split
+  // must read the same statement boundaries after quote normalization.
+  const escapedMixed = evaluateCommandRisk(
+    'hcloud IAM CreatePolicy --policy.content={\\"Statement\\":[{\\"Effect\\":\\"Allow\\",\\"Action\\":\\"*\\"},{\\"Effect\\":\\"Deny\\",\\"Action\\":\\"*\\"}]}',
+  );
+  assert.equal(escapedMixed.decision, 'deny');
+  assert.ok(escapedMixed.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
 });

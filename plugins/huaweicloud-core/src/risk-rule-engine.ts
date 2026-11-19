@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { asText } from './lib/as-text.ts';
 import { asRecord } from './lib/as-record.ts';
 import { redactEvidenceText } from './safety/redact.ts';
+import { splitShellSegments, splitSimpleCommand } from './safety/shell-text.ts';
+import { basenameOf, SHELL_FIRST_TOKENS } from './safety/tokens.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultRulesPath = join(__dirname, '..', 'safety', 'rules', 'cloud-risk-rules.json');
@@ -28,6 +30,9 @@ export interface RiskRuleMatch {
   all?: RiskRuleCondition[];
   any?: RiskRuleCondition[];
   none?: RiskRuleCondition[];
+  // Optional match scope: `block` evaluates the conditions against the whole
+  // text and each brace-balanced block inside it (#1158 D4-21).
+  scope?: 'block';
 }
 
 export interface RiskRule {
@@ -104,6 +109,7 @@ function toMatch(value: unknown): RiskRuleMatch {
     all: toConditionList(raw.all),
     any: toConditionList(raw.any),
     none: toConditionList(raw.none),
+    scope: raw.scope === 'block' ? 'block' : undefined,
   };
 }
 
@@ -183,18 +189,144 @@ function normalizeRuleText(text: string): string {
   return text.replace(/\\+(["'])/g, '$1');
 }
 
+// Wrapper expansion (#1158 D4-16): `sh -c "env | grep HUAWEICLOUD_ACCESS_KEY"`
+// and `eval "…"` run the inner script in the same process, so a rule authored
+// against the bare payload must also see the inner text. The scan reuses the
+// shell text model every other safety consumer reads (a second regex dialect
+// is how the wrapper spellings drift apart), and is bounded by wrapper kind,
+// depth, and length so adversarial padding keeps the linear cost the flood
+// guard pins (#1158 D4-16 review: one shared budget let a shell flood starve
+// a following eval, and module-level /g state leaked across calls).
+const WRAPPER_MAX_CANDIDATES_PER_KIND = 8;
+const WRAPPER_MAX_DEPTH = 4;
+const WRAPPER_MAX_LENGTH = 4096;
+// The tokenizer-based scan is heavier than the old flat regex; keep it off
+// the flood-guard path entirely. Real command payloads sit far below this;
+// adversarial padding past it is matched by the raw whole-text rules only.
+const WRAPPER_MAX_INPUT_LENGTH = 16384;
+const WRAPPER_HINT = /(?:^|[\s;&|(/])(?:eval|(?:bash|dash|ksh|sh|zsh)(?:\.exe)?)\b/i;
+
+interface WrapperScript {
+  kind: 'shell' | 'eval';
+  script: string;
+}
+
+function wrapperAt(tokens: string[], index: number): WrapperScript | null {
+  const rawHead = String(tokens[index] ?? '');
+  const head = rawHead.toLowerCase();
+  const base = basenameOf(head);
+  // ksh sits outside SHELL_FIRST_TOKENS (the hcloud unwrap engine does not
+  // classify it), but `ksh -c` runs its script the same way.
+  const isShell =
+    head === 'ksh' || base === 'ksh' || SHELL_FIRST_TOKENS.has(head) || (base !== head && SHELL_FIRST_TOKENS.has(base));
+  if (isShell && /^-[a-z]*c$/i.test(String(tokens[index + 1] ?? '')) && tokens[index + 2] !== undefined) {
+    return { kind: 'shell', script: String(tokens[index + 2]) };
+  }
+  if (head === 'eval' && tokens.length > index + 1) {
+    return {
+      kind: 'eval',
+      script: tokens
+        .slice(index + 1)
+        .map(String)
+        .join(' '),
+    };
+  }
+  return null;
+}
+
+function collectWrapperCandidates(
+  text: string,
+  depth: number,
+  budget: Record<WrapperScript['kind'], number>,
+  out: string[],
+): void {
+  if (depth > WRAPPER_MAX_DEPTH) return;
+  for (const segment of splitShellSegments(text)) {
+    const tokens = splitSimpleCommand(segment);
+    for (let index = 0; index < tokens.length; index++) {
+      const wrapper = wrapperAt(tokens, index);
+      if (!wrapper || budget[wrapper.kind] >= WRAPPER_MAX_CANDIDATES_PER_KIND) continue;
+      budget[wrapper.kind] += 1;
+      const inner =
+        wrapper.script.length > WRAPPER_MAX_LENGTH ? wrapper.script.slice(0, WRAPPER_MAX_LENGTH) : wrapper.script;
+      out.push(inner);
+      collectWrapperCandidates(inner, depth + 1, budget, out);
+    }
+  }
+}
+
+function wrapperCandidates(text: string): string[] {
+  if (text.length > WRAPPER_MAX_INPUT_LENGTH || !WRAPPER_HINT.test(text)) return [];
+  const candidates: string[] = [];
+  collectWrapperCandidates(text, 0, { shell: 0, eval: 0 }, candidates);
+  return candidates;
+}
+
+function textMatches(regex: RegExp, text: string): boolean {
+  if (regex.test(text)) return true;
+  const normalized = normalizeRuleText(text);
+  return normalized !== text && regex.test(normalized);
+}
+
 function conditionMatches(condition: RiskRuleCondition, context: EvaluationContext): boolean {
   const field = condition.field || 'text';
   const value = Object.hasOwn(context, field) ? context[field] : context.text;
   const raw = String(value || '');
   const regex = new RegExp(condition.regex, 'ims');
-  if (regex.test(raw)) return true;
-  const normalized = normalizeRuleText(raw);
-  return normalized !== raw && regex.test(normalized);
+  if (textMatches(regex, raw)) return true;
+  return wrapperCandidates(raw).some((candidate) => textMatches(regex, candidate));
 }
 
-function ruleMatches(rule: RiskRule, context: EvaluationContext): boolean {
-  const match = rule.match || {};
+// Block-scoped rules (#1158 D4-21): a whole-text `none` guard cannot tell an
+// explicit Deny in the SAME statement from one in a sibling statement, so a
+// policy that grants Allow * AND carries a separate Deny * had its P0 deny
+// demoted to the wildcard warn. A rule that opts in is evaluated against the
+// text AND each brace-balanced block inside it (JSON statement objects and
+// HCL `statement { … }` bodies); it matches when any scope satisfies the
+// positive conditions and carries no `none` hit. Rules without the opt-in
+// keep whole-text semantics (their `none` guards are intentionally global).
+const BLOCK_SCOPE_MAX_BLOCKS = 64;
+
+function collectBlocks(text: string, scopes: string[]): void {
+  const stack: number[] = [];
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]!;
+    if (quote !== null) {
+      if (escaped) escaped = false;
+      else if (char === '\\' && quote === '"') escaped = true;
+      else if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === '{') {
+      stack.push(index);
+      continue;
+    }
+    if (char !== '}' || stack.length === 0) continue;
+    const start = stack.pop()!;
+    if (scopes.length > BLOCK_SCOPE_MAX_BLOCKS) return;
+    scopes.push(text.slice(start, index + 1));
+  }
+}
+
+function balancedBlockScopes(text: string): string[] {
+  const scopes = [text];
+  if (!text.includes('{')) return scopes;
+  // Shell-transcribed policies arrive with `\"` escapes; the block grammar
+  // reads quotes, so scan the quote-unescaped shadow too (the same spelling
+  // normalization the condition matcher already applies).
+  const normalized = normalizeRuleText(text);
+  collectBlocks(text, scopes);
+  if (normalized !== text) collectBlocks(normalized, scopes);
+  return scopes;
+}
+
+function matchConditions(match: RiskRuleMatch, context: EvaluationContext): boolean {
   const all = match.all;
   const any = match.any;
   const none = match.none;
@@ -208,6 +340,12 @@ function ruleMatches(rule: RiskRule, context: EvaluationContext): boolean {
     return false;
   }
   return Array.isArray(all) || Array.isArray(any);
+}
+
+function ruleMatches(rule: RiskRule, context: EvaluationContext): boolean {
+  const match = rule.match || {};
+  if (match.scope !== 'block') return matchConditions(match, context);
+  return balancedBlockScopes(context.text).some((scope) => matchConditions(match, { ...context, text: scope }));
 }
 
 function excerpt(text: unknown): string {

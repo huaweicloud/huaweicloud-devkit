@@ -50,7 +50,7 @@ function readWorkEnvironmentEntry(config: unknown): CodeArtsCredentials | null {
   const ak = environment.HW_ACCESS_KEY;
   const sk = environment.HW_SECRET_KEY;
   if (present(ak) && present(sk)) {
-    const region = environment.HW_REGION || environment.HUAWEICLOUD_REGION;
+    const region = environment.HUAWEICLOUD_REGION || environment.HW_REGION;
     return {
       ak,
       sk,
@@ -103,7 +103,7 @@ export function readCodeArtsCredentials(): CodeArtsCredentials | null {
       const ak = env.HW_ACCESS_KEY;
       const sk = env.HW_SECRET_KEY;
       if (present(ak) && present(sk)) {
-        const region = env.HW_REGION || env.HUAWEICLOUD_REGION;
+        const region = env.HUAWEICLOUD_REGION || env.HW_REGION;
         return {
           ak,
           sk,

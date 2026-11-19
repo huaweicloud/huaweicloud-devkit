@@ -371,7 +371,7 @@ async function handleListRegions(_args: ToolArgs = {}, _opts: CallToolOptions = 
   return listRegions();
 }
 
-const checkCliSchema = z.looseObject({ vendorConfirmed });
+const checkCliSchema = z.looseObject({});
 const planCliCommandSchema = z.looseObject({
   vendorConfirmed,
   args: stringArrayArg.describe('hcloud arguments, excluding the hcloud executable.'),
@@ -410,7 +410,7 @@ const showProfileRedactedSchema = z.looseObject({
   vendorConfirmed,
   profile: z.string().optional().describe('Optional KooCLI profile name.'),
 });
-const listRegionsSchema = z.looseObject({ vendorConfirmed });
+const listRegionsSchema = z.looseObject({});
 
 // The pack's approval registration: the run face is plan-face tokenSource
 // (the plan tool mints, the gate never does). normalizeArgs returns the
@@ -454,7 +454,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_check_cli',
     description:
-      'Check whether Huawei Cloud KooCLI hcloud is installed and whether its version matches the plugin paired version. Returns redacted output. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Check whether Huawei Cloud KooCLI hcloud is installed and whether its version matches the plugin paired version. Returns redacted output. Huawei Cloud-scoped: when the vendor is unknown and cannot be inferred, ask which cloud the user means before calling.',
     schema: checkCliSchema,
     handler: handleCheckCli,
   },
@@ -496,7 +496,7 @@ export const HUAWEICLOUD_CLI_TOOLS = [
   {
     name: 'huaweicloud_list_regions',
     description:
-      'List available Huawei Cloud regions. Returns region IDs, display names, and endpoints. Use when the agent needs to discover available regions before creating resources. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'List available Huawei Cloud regions. Returns region IDs, display names, and endpoints. Use when the agent needs to discover available regions before creating resources. Huawei Cloud-scoped: when the vendor is unknown and cannot be inferred, ask which cloud the user means before calling.',
     schema: listRegionsSchema,
     handler: handleListRegions,
   },

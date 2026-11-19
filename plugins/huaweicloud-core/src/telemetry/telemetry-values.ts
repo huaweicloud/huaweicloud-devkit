@@ -6,6 +6,7 @@
 import { type as osType, release as osRelease } from 'node:os';
 
 import { asText } from '../lib/as-text.ts';
+import { redactSecrets } from '../safety-policy.ts';
 import type { TelemetryContext, TelemetryEvent, TelemetryEventInput } from './telemetry-types.ts';
 
 const MAX_VALUE_LENGTH = 255;
@@ -24,8 +25,23 @@ export const MAX_EVENT_QUEUE = 500;
 const osTypeStr = osType();
 const osVersionStr = osRelease();
 
+// #1158 D8-9: credential-shaped content (AK/SK, access/secret keys, tokens,
+// passwords, bearer values) must be redacted BEFORE whitespace folding and
+// truncation, or plaintext credentials enter a telemetry event. The canonical
+// vocabulary (case-insensitive, `=`/`:` separators, quoted values, AK/SK
+// shorthand, bearer-to-end-of-line) comes from the safety redactor; the one
+// form it does not cover — a key and its value separated only by whitespace —
+// is closed here.
+const SPACE_SEPARATED_SECRET =
+  /\b(access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|password|passwd|admin[_-]?pass|credential|bearer)\s+([A-Za-z0-9._~+/=-]{6,})/gi;
+
+function redactSensitiveText(text: string): string {
+  return String(redactSecrets(text)).replace(SPACE_SEPARATED_SECRET, '$1 <redacted>');
+}
+
 export function sanitizeValue(value: unknown): string {
   let text = typeof value === 'string' ? value : value == null ? '' : asText(value);
+  text = redactSensitiveText(text);
   text = text.replace(/[\r\n\t]+/g, ' ').trim();
   if (text.length > MAX_VALUE_LENGTH) {
     text = text.slice(0, MAX_VALUE_LENGTH - 3) + '...';

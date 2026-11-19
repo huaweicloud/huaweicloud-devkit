@@ -13,12 +13,41 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const distDir = join(root, 'plugins', 'huaweicloud-core', 'dist');
 const distServer = join(distDir, 'mcp-server.js');
 
+// #1158 D9-12: the stdio transport serves business requests only after the
+// initialize handshake, so the bundle probes frame the handshake first.
+function frame(message: unknown): string {
+  const json = JSON.stringify(message);
+  return `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
+}
+const initializeFrame = frame({
+  jsonrpc: '2.0',
+  id: 0,
+  method: 'initialize',
+  params: {
+    protocolVersion: '2024-11-05',
+    capabilities: {},
+    clientInfo: { name: 'dist-bundle-test', version: '0.0.0' },
+  },
+});
+
+// Both bundle probes frame the handshake plus one request, spawn the bundle
+// and report the same diagnostics. Sharing the helper keeps the two cases
+// from re-cloning that block (the jscpd baseline gate fails on new clones).
+function probe(request: unknown) {
+  const json = JSON.stringify(request);
+  const framed = `Content-Length: ${Buffer.byteLength(json, 'utf8')}\r\n\r\n${json}`;
+  const run = spawnSync(process.execPath, [distServer], {
+    input: initializeFrame + framed,
+    encoding: 'utf8',
+    timeout: 30_000,
+  });
+  assert.equal(run.status, 0, `bundle exited ${run.status}: ${run.stderr}`);
+  return run;
+}
+
 test('dist bundle answers framed tools/list with clean stdout', () => {
   assert.ok(existsSync(distServer), 'dist bundle missing — run npm run build');
-  const request = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
-  const framed = `Content-Length: ${Buffer.byteLength(request, 'utf8')}\r\n\r\n${request}`;
-  const run = spawnSync(process.execPath, [distServer], { input: framed, encoding: 'utf8', timeout: 30_000 });
-  assert.equal(run.status, 0, `bundle exited ${run.status}: ${run.stderr}`);
+  const run = probe({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
   // The response must itself be Content-Length framed: the release smoke
   // gate and the Hermes-on-Windows workaround speak LSP frames. The SDK
   // serializes `result` before `jsonrpc`/`id`; the frame is what matters.
@@ -33,15 +62,12 @@ test('dist bundle parses tool arguments through the inlined zod path', () => {
   // the omitted arguments, the inlined zod schema parses them, and the tool
   // executes. A broken zod inlining fails here even though tools/list
   // (no parsing) still works.
-  const request = JSON.stringify({
+  const run = probe({
     jsonrpc: '2.0',
     id: 2,
     method: 'tools/call',
     params: { name: 'huaweicloud_explain_error', arguments: { service: 'ECS' } },
   });
-  const framed = `Content-Length: ${Buffer.byteLength(request, 'utf8')}\r\n\r\n${request}`;
-  const run = spawnSync(process.execPath, [distServer], { input: framed, encoding: 'utf8', timeout: 30_000 });
-  assert.equal(run.status, 0, `bundle exited ${run.status}: ${run.stderr}`);
   assert.match(run.stdout, /"isError":\s*false/, 'tool call through the bundle must succeed');
   assert.match(run.stdout, /ECS/, 'tool result must echo the parsed argument');
 });

@@ -338,6 +338,25 @@ const DELIBERATE_OPTIONALS = [
 // check only; every other check (types, enums, nested shapes) still applies
 // to every remaining property in full.
 const DELIBERATE_REMOVALS = [
+  // #1158 D9-6: the three side-effect-free read faces stopped declaring the
+  // vendorConfirmed attestation. They are no longer vendor-gated (third-party
+  // MCP clients were getting isError on pure catalog/region/install reads),
+  // so the parameter must not be advertised on their schemas either.
+  {
+    tool: 'huaweicloud_service_catalog',
+    property: 'vendorConfirmed',
+    reason: '#1158 D9-6: service_catalog is a read-only routing face and is no longer vendor-gated',
+  },
+  {
+    tool: 'huaweicloud_list_regions',
+    property: 'vendorConfirmed',
+    reason: '#1158 D9-6: list_regions is a read-only region table and is no longer vendor-gated',
+  },
+  {
+    tool: 'huaweicloud_check_cli',
+    property: 'vendorConfirmed',
+    reason: '#1158 D9-6: check_cli is a read-only install probe and is no longer vendor-gated',
+  },
   {
     tool: 'huaweicloud_sandbox_connect',
     property: 'template_id',

@@ -920,3 +920,31 @@ test('voucher claim flushes telemetry before the tool result returns', async () 
     restore();
   }
 });
+
+test('sanitizeValue redacts credential-shaped content before folding and truncation (#1158 D8-9)', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.ts');
+  const samples: Array<[string, string[]]> = [
+    ['AK=AK123 secret_key=SECRET token=abc123', ['AK123', 'SECRET', 'abc123']],
+    ['ak=lower sk=lower2 password: p@ss', ['lower', 'lower2', 'p@ss']],
+    ['Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.payload.sig', ['eyJhbGciOiJIUzI1NiJ9']],
+    ['token abcdefgh access_key AKIA12345678', ['abcdefgh', 'AKIA12345678']],
+  ];
+  for (const [input, secrets] of samples) {
+    const out = sanitizeValue(input);
+    for (const secret of secrets) {
+      assert.ok(!out.includes(secret), `${secret} must not survive sanitizeValue: ${out}`);
+    }
+    assert.match(out, /<redacted>/);
+  }
+
+  // Redaction runs BEFORE the 255-char clip, so a secret late in a long value
+  // cannot slip through as a truncated fragment.
+  const long = 'x'.repeat(260) + ' token=LATE_SECRET';
+  const clipped = sanitizeValue(long);
+  assert.ok(!clipped.includes('LATE_SECRET'));
+  assert.equal(clipped.length, 255);
+  assert.ok(clipped.endsWith('...'));
+
+  // Ordinary prose mentioning the words stays intact.
+  assert.equal(sanitizeValue('normal message about tokens and passwords'), 'normal message about tokens and passwords');
+});

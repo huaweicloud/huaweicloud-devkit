@@ -3,7 +3,7 @@ import { execSync, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 // Same parser doctor reads (src/lib/skill-manifest.ts, pure and zod-free);
 // the loud shape assert below is pack verification's own addition.
@@ -177,8 +177,28 @@ try {
       `bin/setup.cjs version did not report ${pkg.version}: ${versionRun.stdout}`,
     );
 
-    const request = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} });
-    const framed = `Content-Length: ${Buffer.byteLength(request, 'utf8')}\r\n\r\n${request}`;
+    // MCP lifecycle: tools/list is only served after initialize, the same
+    // gate the D9-12 handshake fix put in front of data requests. A bare
+    // tools/list probe would be rejected with -32002 and read as "the
+    // installed server is broken", so the smoke walks the handshake a real
+    // client does: initialize → notifications/initialized → tools/list.
+    const frame = (payload) => `Content-Length: ${Buffer.byteLength(payload, 'utf8')}\r\n\r\n${payload}`;
+    const framed = [
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-06-18',
+          capabilities: {},
+          clientInfo: { name: 'pack-verify', version: '0' },
+        },
+      },
+      { jsonrpc: '2.0', method: 'notifications/initialized' },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} },
+    ]
+      .map((message) => frame(JSON.stringify(message)))
+      .join('');
     const serverRun = spawnSync(process.execPath, [join(installed, distServer)], {
       input: framed,
       encoding: 'utf8',
@@ -209,6 +229,23 @@ try {
         declaredRun.stdout.includes('"result"'),
         `.mcp.json server ${JSON.stringify(server.args)} did not answer tools/list: ${declaredRun.stderr}`,
       );
+    }
+    // The thin (non-bundled) dist modules ship in the tarball and keep their
+    // bare imports: harness integrations load them directly instead of
+    // spawning the server. 2.0.0-next.4 declared zod and the MCP SDK in
+    // devDependencies only, so a clean install resolved neither and every
+    // such import died with ERR_MODULE_NOT_FOUND. Resolving from the
+    // installed layout is what makes the published dependency set — not the
+    // repo's node_modules — the subject under test.
+    for (const entry of ['tool-schemas.js', 'mcp-protocol.js', 'tools.js']) {
+      const entryPath = join(installed, 'plugins', 'huaweicloud-core', 'dist', entry);
+      assert.ok(existsSync(entryPath), `Installed package is missing dist/${entry}`);
+      const entryRun = spawnSync(
+        process.execPath,
+        ['--input-type=module', '-e', `await import(${JSON.stringify(pathToFileURL(entryPath).href)});`],
+        { cwd: installDir, encoding: 'utf8', timeout: 30_000 },
+      );
+      assert.equal(entryRun.status, 0, `Installed dist/${entry} failed to load: ${entryRun.stderr}`);
     }
     if (dshPatch) {
       assert.ok(

@@ -292,6 +292,7 @@
       "severity": "deny",
       "stages": ["command", "artifact", "deploy_plan"],
       "match": {
+        "scope": "block",
         "all": [
           {
             "field": "text",
@@ -300,10 +301,12 @@
           {
             "field": "text",
             "regex": "(\\\"Action\\\"\\s*:\\s*(\\\"(\\*|\\*:\\*)\\\"|\\[\\s*\\\"(\\*|\\*:\\*)\\\")|Action\\s*[=:]\\s*(\\*|\\*:\\*)|[\"']?actions?[\"']?\\s*[=:]\\s*(?:\\[\\s*)?[\"']?(?:\\*|\\*:\\*)|AdministratorAccess|FullAccess)"
-          },
+          }
+        ],
+        "none": [
           {
             "field": "text",
-            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Allow\\\"|Effect\\s*[=:]\\s*[\"']?Allow[\"']?)"
+            "regex": "(\\\"Effect\\\"\\s*:\\s*\\\"Deny\\\"|Effect\\s*[=:]\\s*[\"']?Deny[\"']?)"
           }
         ]
       },
