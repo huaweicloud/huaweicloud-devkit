@@ -68,8 +68,8 @@ test('MCP tools/list includes all required core tools with valid schemas', async
 // the opted-in pack registers fully, every other pack is absent). Extracted
 // because the sandbox and open-mcp scenarios are token-identical otherwise.
 
-test('DEVKIT_PACKS=sandbox trims tools/list to core 12 + sandbox 16', async () => {
-  await assertTrimmedToolsList('sandbox', 28, 'core 12 + sandbox 16');
+test('DEVKIT_PACKS=sandbox trims tools/list to core 12 + sandbox 17', async () => {
+  await assertTrimmedToolsList('sandbox', 29, 'core 12 + sandbox 17');
 });
 
 test('DEVKIT_PACKS=huaweicloud-open-mcp trims tools/list to core 12 + gateway 3', async () => {

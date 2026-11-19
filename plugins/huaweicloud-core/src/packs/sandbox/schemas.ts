@@ -17,6 +17,7 @@ import {
   approvalTokenArg,
   approvedByUserArg,
 } from '../../lib/tool-schema-parts.ts';
+import { EXPOSE_TASK_ID_PATTERN } from './expose-task.ts';
 
 // The sandbox pack's zod schema family, extracted from tools.ts in the
 // within-pack split for the jscpd complex-file bar. tools.ts stays the stable
@@ -229,6 +230,15 @@ export const exposeTunnelSchema = z.looseObject({
     .describe(
       "Tunnel cleanup before exposing. stale (default): delete same-port tunnels + orphan records/hosts; preserve other ports, other sessions and keepalive-protected tunnels — except a tunnel bound to THIS port, which is always replaced. all: wipe every tunnel/host (manual full reset only — a shared sandbox loses every session's tunnels). none: no cleanup (a stale same-port host can then conflict).",
     ),
+  mode: z
+    .enum(['sync', 'async'])
+    .optional()
+    .describe(
+      'sync (default): run the whole expose chain and return its result. async: start the chain in the background and return ' +
+        '{started:true, taskId, hint} immediately — use it on MCP hosts whose per-request timeout is shorter than the expose ' +
+        'chain (auth + selective cleanup + up to four ~63s expose attempts + re-verify + keepalive enrollment), then poll ' +
+        'huaweicloud_sandbox_expose_poll with taskId. The task receipt lives in this MCP server process (30 min).',
+    ),
   workspace_id: workspaceId,
   username,
   timeout_ms: numericArg
@@ -236,6 +246,16 @@ export const exposeTunnelSchema = z.looseObject({
     .describe(`Execution timeout in milliseconds (default: ${SANDBOX_TIMEOUT_MS.expose_tunnel})`),
   approvalToken: approvalTokenArg,
   approvedByUser: approvedByUserArg,
+});
+
+export const exposePollSchema = z.looseObject({
+  task_id: z
+    .string()
+    .regex(
+      EXPOSE_TASK_ID_PATTERN,
+      'task_id must be the exp-<uuid> from huaweicloud_sandbox_expose_tunnel mode:"async".',
+    )
+    .describe('The taskId returned by huaweicloud_sandbox_expose_tunnel with mode:"async".'),
 });
 
 export const renewTunnelSchema = z.looseObject({

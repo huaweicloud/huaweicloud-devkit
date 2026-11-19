@@ -72,7 +72,12 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
   }
   let connectResult: Record<string, unknown>;
   try {
-    connectResult = await hdkitConnectWithRetry(connectArgs);
+    // AX N-SB.2: the MCP tool answers inside the host's request budget — a
+    // transient gateway timeout returns a pending receipt instead of sleeping
+    // through the 30s/45s table (the next call re-attempts and reuses any
+    // instance the server already created). Short backoffs (tests/operators)
+    // keep the inline ladder.
+    connectResult = await hdkitConnectWithRetry(connectArgs, { maxInlineDelayMs: 1000 });
   } catch (error) {
     // 业务预期失败（429 三码 / 烧核 / 凭证失效）转结构化返回，remediation 才能穿透 MCP 边界；
     // 其余错误维持抛出（MCP 层透传 code+message）。
@@ -148,6 +153,28 @@ export async function handleConnect(args: ToolArgs = {}, _opts: CallToolOptions 
       };
     }
     throw error;
+  }
+  if (connectResult?.pending === true) {
+    const retryAfterMs =
+      typeof connectResult.retryAfterMs === 'number' && Number.isFinite(connectResult.retryAfterMs)
+        ? connectResult.retryAfterMs
+        : 30000;
+    const retryAfter = `${Math.max(1, Math.ceil(retryAfterMs / 1000))}s`;
+    return {
+      ok: false,
+      pending: true,
+      retryAfter,
+      retryAfterMs,
+      ...(typeof connectResult.code === 'string' ? { code: connectResult.code } : {}),
+      message:
+        typeof connectResult.message === 'string' && connectResult.message
+          ? connectResult.message
+          : 'the hdkitservice gateway timed out during orchestration.',
+      hint:
+        `The sandbox instance may already exist on the server. Re-call huaweicloud_sandbox_connect with the SAME ` +
+        `parameters after ~${retryAfter} — a created instance is reused. Do not start a second sandbox and do not ` +
+        `debug this as a credential failure.`,
+    };
   }
   const rawDevStageId = connectResult?.dev_stage_id || connectResult?.devStageId;
   const devStageId = typeof rawDevStageId === 'string' ? rawDevStageId : undefined;

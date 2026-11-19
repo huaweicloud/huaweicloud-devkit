@@ -5560,7 +5560,7 @@ test('an oversized JSON message, code, and traceId fold bounded — the child pr
     },
   ];
   for (const { shape, check } of rows) {
-    const res = spawnSync(process.execPath, ['--max-old-space-size=512', driver.pathname, shape], {
+    const res = spawnSync(process.execPath, ['--max-old-space-size=512', fileURLToPath(driver), shape], {
       env: childEnv,
       encoding: 'utf8',
       timeout: 120_000,
@@ -6071,5 +6071,48 @@ test('the Retry-After header folds at the same 200-code-point cap', async () => 
     } finally {
       stub.restore();
     }
+  }
+});
+
+// AX N-SB.2: the MCP connect face must not hold the tool call through the
+// production 30s/45s backoff — the host request timeout would abandon the
+// call while the server completed the create. The first transient gateway
+// answer returns a pending receipt; the retry moves to the next call.
+test('connect returns a pending receipt instead of sleeping through the production backoff (N-SB.2)', async () => {
+  const restoreSeam = withRetrySeam('30000,45000');
+  const stub = stubConnectSequence([() => htmlPage(502, '<html>502 Bad Gateway</html>')]);
+  const started = Date.now();
+  try {
+    const result = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ExhaustedResult & { pending?: boolean; hint?: string; retryAfterMs?: number };
+    const elapsed = Date.now() - started;
+    assert.equal(result.ok, false);
+    assert.equal(result.pending, true, 'a transient gateway answer returns the pending receipt');
+    assert.equal(result.retryAfterMs, 30000, 'the first configured backoff is surfaced, not slept');
+    assert.equal(stub.calls(), 1, 'exactly one HTTP attempt per tool call — no inline sleep/retry');
+    assert.match(String(result.hint), /Re-call huaweicloud_sandbox_connect/);
+    assert.ok(elapsed < 5000, `returned inside the host budget (${elapsed}ms)`);
+  } finally {
+    stub.restore();
+    restoreSeam();
+  }
+});
+
+test('a short inline backoff keeps the legacy retry ladder (N-SB.2 seam)', async () => {
+  const restoreSeam = withRetrySeam('1');
+  const stub = stubConnectSequence([() => htmlPage(502, '<html>502 Bad Gateway</html>')]);
+  try {
+    const result = (await callTool('huaweicloud_sandbox_connect', {
+      vendorConfirmed: VENDOR,
+      pool_type: 'ephemeral',
+    })) as ExhaustedResult & { pending?: boolean };
+    assert.equal(result.pending, undefined, 'short backoffs still retry inline');
+    assert.equal(result.connectRetries, 1, 'one retry happened inline before exhaustion');
+    assert.equal(stub.calls(), 2, 'one retry then exhaustion');
+  } finally {
+    stub.restore();
+    restoreSeam();
   }
 });
