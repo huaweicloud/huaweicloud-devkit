@@ -497,6 +497,59 @@ def condition_matches(condition, text):
 
 def rule_matches(rule, text):
     match = rule.get("match") or {}
+    if match.get("scope") == "block":
+        # Twin of risk-rule-engine.balancedBlockScopes (#1158 D4-21): a
+        # whole-text `none` guard cannot see that an explicit Deny sits in a
+        # sibling statement, so a policy granting Allow * plus a separate
+        # Deny * lost its P0 deny. Block-scoped rules match when any brace-
+        # balanced block (JSON statement object / HCL statement body) — or
+        # the whole text — satisfies the conditions without a `none` hit.
+        return any(_match_conditions(match, scope) for scope in _block_scopes(text))
+    return _match_conditions(match, text)
+
+
+def _block_scopes(text):
+    scopes = [text]
+    if "{" not in text:
+        return scopes
+    # Shell-transcribed policies carry \" escapes; the block grammar reads
+    # quotes, so scan the quote-unescaped shadow too (the spelling the
+    # condition matcher already normalizes).
+    _collect_blocks(text, scopes)
+    normalized = normalize_rule_text(text)
+    if normalized != text:
+        _collect_blocks(normalized, scopes)
+    return scopes
+
+
+def _collect_blocks(text, scopes):
+    stack = []
+    quote = None
+    escaped = False
+    for index, char in enumerate(text):
+        if quote is not None:
+            if escaped:
+                escaped = False
+            elif char == "\\" and quote == '"':
+                escaped = True
+            elif char == quote:
+                quote = None
+            continue
+        if char in ('"', "'"):
+            quote = char
+            continue
+        if char == "{":
+            stack.append(index)
+            continue
+        if char != "}" or not stack:
+            continue
+        start = stack.pop()
+        if len(scopes) > 64:
+            return
+        scopes.append(text[start : index + 1])
+
+
+def _match_conditions(match, text):
     all_conditions = match.get("all")
     any_conditions = match.get("any")
     none_conditions = match.get("none")

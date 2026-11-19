@@ -292,6 +292,7 @@
       "severity": "deny",
       "stages": ["command", "artifact", "deploy_plan"],
       "match": {
+        "scope": "block",
         "all": [
           {
             "field": "text",
