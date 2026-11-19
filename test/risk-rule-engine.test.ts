@@ -76,6 +76,99 @@ test('evaluateArtifacts detects broad IAM policy when Action is a JSON array', (
   assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
 });
 
+// AX report N-R4.2: shell-transcribed commands carry escaped quotes
+// (`\"Action\":`), the exact spelling the plan/advisory pipeline produces.
+// The catalog's JSON-shaped rules must match that shadow spelling too — the
+// escape must never demote a deny-severity rule to "not matched".
+test('escaped JSON quotes do not defeat broad IAM policy detection (N-R4.2)', () => {
+  const escaped = 'hcloud IAM CreatePolicy --policy.content={\\"Action\\":[\\"*\\"],\\"Effect\\":\\"Allow\\"}';
+  const result = evaluateCommandRisk(escaped);
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-iam-admin-policy'));
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-iam-wildcard-action'));
+  assert.equal(result.decision, 'deny');
+});
+
+test('escaped JSON quotes survive double escaping (N-R4.2)', () => {
+  const doubleEscaped =
+    'hcloud IAM CreatePolicy --policy.content={\\\\"Action\\\\":[\\\\"*\\\\"],\\\\"Effect\\\\":\\\\"Allow\\\\"}';
+  const result = evaluateCommandRisk(doubleEscaped);
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-iam-admin-policy'));
+});
+
+test('escaped JSON artifacts keep the IAM deny (N-R4.2)', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'policy.json',
+      content: '{\\"Statement\\":[{\\"Effect\\":\\"Allow\\",\\"Action\\":[\\"*\\"]}]}',
+    },
+  ]);
+  assert.equal(result.decision, 'deny');
+  assert.equal(result.findings[0].ruleId, 'hwc-iam-admin-policy');
+});
+
+test('escaped JSON quotes do not defeat OBS anonymous-write detection (N-R4.2)', () => {
+  const result = evaluateCommandRisk(
+    'hcloud OBS PutBucketPolicy --policy={\\"Statement\\":[{\\"Principal\\":\\"*\\",\\"Action\\":\\"PutObject\\"}]}',
+  );
+  assert.equal(result.decision, 'deny');
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-obs-anonymous-write'));
+});
+
+test('escaped JSON artifacts keep privileged-container detection (N-R4.2)', () => {
+  const result = evaluateArtifacts([
+    {
+      path: 'deployment.json',
+      content: '{\\"securityContext\\":{\\"privileged\\":true,\\"allowPrivilegeEscalation\\":true}}',
+    },
+  ]);
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-container-privileged'));
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-container-privilege-escalation'));
+});
+
+test('escaped JSON artifacts keep plaintext-password detection (N-R4.2)', () => {
+  const result = evaluateArtifacts([{ path: 'settings.json', content: '{\\"db_password\\":\\"SuperSecret123\\"}' }]);
+  assert.ok(result.findings.some((f) => f.ruleId === 'hwc-artifact-plaintext-password'));
+});
+
+test('rule normalization does not fold Windows path backslashes (N-R4.2)', () => {
+  const result = evaluateCommandRisk('hcloud ECS ListServers --cli-region=cn-north-4 --path=C:\\tmp\\docs');
+  assert.equal(result.findings.length, 0);
+});
+
+// AX N-R4.1: the secret-in-arg name table missed DEW's secret_text and the
+// DevBridge api_key; both are plaintext credentials on the command line.
+test('secret-in-arg covers secret_text and api_key parameter names (N-R4.1)', () => {
+  const dew = evaluateCommandRisk('hcloud DEW CreateSecret --secret.secret_text=PlainTextSecret123');
+  assert.ok(dew.findings.some((f) => f.ruleId === 'hwc-command-secret-in-arg'));
+  for (const command of [
+    'hcloud Foo --api_key=devbridge_abc123',
+    'hcloud Foo --apiKey=devbridge_abc123',
+    'hcloud Foo --secret_text=PlainText123',
+  ]) {
+    assert.ok(
+      evaluateCommandRisk(command).findings.some((f) => f.ruleId === 'hwc-command-secret-in-arg'),
+      `${command} must carry the plaintext-secret warn`,
+    );
+  }
+});
+
+test('artifact evidence redacts XML passwords and escaped JSON secrets (N-R4.1)', () => {
+  const xml = evaluateArtifacts([
+    {
+      path: 'settings.xml',
+      content: '<settings><servers><server><password>FakePassw0rd!xyz</password></server></servers></settings>',
+    },
+  ]);
+  assert.ok(xml.findings.some((f) => f.ruleId === 'hwc-artifact-plaintext-password'));
+  assert.doesNotMatch(xml.findings[0]!.evidence, /FakePassw0rd/);
+  assert.match(xml.findings[0]!.evidence, /<redacted>/);
+
+  const escaped = evaluateArtifacts([{ path: 'a.json', content: '{\\"db_password\\":\\"SuperSecret123\\"}' }]);
+  for (const finding of escaped.findings) {
+    assert.doesNotMatch(finding.evidence, /SuperSecret123/);
+  }
+});
+
 test('evaluateCommandRisk blocks OBS public read-write ACL changes', () => {
   const result = evaluateCommandRisk('hcloud obs chattri obs://bucket -acl=public-read-write');
   assert.equal(result.decision, 'deny');

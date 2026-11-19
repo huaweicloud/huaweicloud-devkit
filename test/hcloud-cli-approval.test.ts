@@ -281,26 +281,45 @@ function runWith(token: string, args: string[]): Promise<unknown> {
   });
 }
 
+// The ask envelope memo is session-scoped in-memory state; a direct callTool
+// without an explicit session shares the gate's 'default' scope, so one
+// test's shown envelope would authorize the next test's unattested arrival.
+// Every ask-mode case therefore runs in its own fresh session (the primer
+// and the attested retry must share one within the case).
+let askSessionSeq = 0;
+function freshAskSession(prefix = 'ask'): string {
+  askSessionSeq += 1;
+  return `${prefix}-${askSessionSeq}`;
+}
+
 // The ask-mode twin of runWith: no token, the attestation alone — the
 // harness prompt is the confirmation the token flow replaces.
-function runAsk(args: string[]): Promise<unknown> {
-  return callTool('huaweicloud_run_approved_command', {
-    args,
-    approvedByUser: true,
-    maxRetries: 0,
-    vendorConfirmed: 'test: vendor established by the harness',
-  });
+function runAsk(args: string[], sessionId: string): Promise<unknown> {
+  return callTool(
+    'huaweicloud_run_approved_command',
+    {
+      args,
+      approvedByUser: true,
+      maxRetries: 0,
+      vendorConfirmed: 'test: vendor established by the harness',
+    },
+    { sessionId },
+  );
 }
 
 // The server-run ladder's ritual: the commandless pass-through is closed, so
 // an executing attested arrival needs its line's envelope shown first (the
 // priming call is the unattested envelope refusal — no consent row).
-function primeAsk(args: string[]): Promise<unknown> {
-  return callTool('huaweicloud_run_approved_command', {
-    args,
-    maxRetries: 0,
-    vendorConfirmed: 'test: vendor established by the harness',
-  });
+function primeAsk(args: string[], sessionId: string): Promise<unknown> {
+  return callTool(
+    'huaweicloud_run_approved_command',
+    {
+      args,
+      maxRetries: 0,
+      vendorConfirmed: 'test: vendor established by the harness',
+    },
+    { sessionId },
+  );
 }
 
 test('runApprovedCommand: a placeholder-bearing plan accepts the real secret at run time', async () => {
@@ -760,8 +779,9 @@ test('ask mode: run executes a write after the ritual and reports the ask postur
     await withApprovalMode('ask', async () => {
       await withFakeHcloudBin(async () => {
         const args = ['ECS', 'DeleteServer', '--server_id=i-123'];
-        await primeAsk(args);
-        const result = (await runAsk(args)) as ApprovedRunResult;
+        const session = freshAskSession('ask-ritual');
+        await primeAsk(args, session);
+        const result = (await runAsk(args, session)) as ApprovedRunResult;
         assert.equal(result.approved, true, 'the ritual-completing attested arrival executes: no token needed');
         assert.equal(result.plan?.userConfirmation.mode, 'ask', 'the embedded plan reports the ask posture');
       });
@@ -773,11 +793,15 @@ test('ask mode: run without the attestation shows the chat envelope (the throw i
   await withTempAuthHome(async () => {
     await withApprovalMode('ask', async () => {
       await withFakeHcloudBin(async () => {
-        const envelope = (await callTool('huaweicloud_run_approved_command', {
-          args: ['ECS', 'DeleteServer', '--server_id=i-123'],
-          maxRetries: 0,
-          vendorConfirmed: 'test: vendor established by the harness',
-        })) as { code: string };
+        const envelope = (await callTool(
+          'huaweicloud_run_approved_command',
+          {
+            args: ['ECS', 'DeleteServer', '--server_id=i-123'],
+            maxRetries: 0,
+            vendorConfirmed: 'test: vendor established by the harness',
+          },
+          { sessionId: freshAskSession('ask-unattested') },
+        )) as { code: string };
         assert.equal(envelope.code, ASK_CONFIRMATION_REQUIRED, 'the unattested arrival asks, never executes');
       });
     });
@@ -789,7 +813,11 @@ test('ask mode: a placeholder secret value rejects without referencing the token
     await withApprovalMode('ask', async () => {
       await withFakeHcloudBin(async () => {
         await assert.rejects(
-          () => runAsk(['ECS', 'CreateServers', '--server.adminPass=<redacted>', '--server.flavorRef=x']),
+          () =>
+            runAsk(
+              ['ECS', 'CreateServers', '--server.adminPass=<redacted>', '--server.flavorRef=x'],
+              freshAskSession('ask-placeholder'),
+            ),
           (error: unknown) => {
             const message = error instanceof Error ? error.message : String(error);
             assert.match(message, /placeholder secret value/);
@@ -810,8 +838,9 @@ test('ask mode: a secret-classified command still denies through the strict clas
         // no approval posture can unlock a secret read — the ritual
         // completes, and the strict classification STILL denies.
         const secretArgs = ['CSMS', 'ShowSecret', '--secret_name', 'prod/db'];
-        await primeAsk(secretArgs);
-        await assert.rejects(() => runAsk(secretArgs), /Direct secret value reads are blocked/);
+        const secretSession = freshAskSession('ask-secret');
+        await primeAsk(secretArgs, secretSession);
+        await assert.rejects(() => runAsk(secretArgs, secretSession), /Direct secret value reads are blocked/);
       });
     });
   });

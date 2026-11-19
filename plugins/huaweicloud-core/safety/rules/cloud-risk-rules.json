@@ -496,7 +496,7 @@
           },
           {
             "field": "text",
-            "regex": "--(?:[A-Za-z0-9_.-]*[._-])?(?:admin(?:Pass|[_-]pass)|passwd|password|secret(?:[_-]?key)?|access[_-]?key|token|ak|sk)\\b\\s*[=:]\\s*[^\\s<][^\\s<>\"']"
+            "regex": "--(?:[A-Za-z0-9_.-]*[._-])?(?:admin(?:Pass|[_-]pass)|passwd|password|secret[_-]?(?:key|text|string|binary)|secret|api[_-]?key|access[_-]?key|token|ak|sk)\\b\\s*[=:]\\s*[^\\s<][^\\s<>\"']"
           }
         ]
       },

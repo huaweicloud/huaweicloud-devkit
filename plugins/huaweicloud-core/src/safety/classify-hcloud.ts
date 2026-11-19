@@ -129,20 +129,28 @@ export function classifyHcloudArgs(args: unknown, options: ClassifyOptions = {})
   const isWrite = !readOnly && hasWritePrefix(operation, policy);
 
   if (isExecution && !options.allowWrites) {
-    return {
-      decision: 'deny',
-      risk: 'execution',
-      reason: 'Huawei Cloud execution/trigger operation blocked until approved.',
-    };
+    return applyCommandRiskRules(
+      {
+        decision: 'deny',
+        risk: 'execution',
+        reason: 'Huawei Cloud execution/trigger operation blocked until approved.',
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   if (isWrite && !options.allowWrites) {
-    return {
-      decision: 'deny',
-      risk: 'write',
-      reason:
-        'Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval.',
-    };
+    return applyCommandRiskRules(
+      {
+        decision: 'deny',
+        risk: 'write',
+        reason:
+          'Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval.',
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   const obsutilWrites = OBSUTIL_WRITES;
@@ -154,11 +162,15 @@ export function classifyHcloudArgs(args: unknown, options: ClassifyOptions = {})
   const isObsWrite = isObs && obsutilWrites.has(operation.toLowerCase());
   const isObsRead = isObs && obsutilReads.includes(operation.toLowerCase());
   if (isObsWrite && !options.allowWrites) {
-    return {
-      decision: 'deny',
-      risk: 'write',
-      reason: 'OBS write operation blocked until the agent presents a plan and receives explicit user approval.',
-    };
+    return applyCommandRiskRules(
+      {
+        decision: 'deny',
+        risk: 'write',
+        reason: 'OBS write operation blocked until the agent presents a plan and receives explicit user approval.',
+      },
+      normalizedArgs,
+      options,
+    );
   }
   if (isObsRead) {
     return applyCommandRiskRules(

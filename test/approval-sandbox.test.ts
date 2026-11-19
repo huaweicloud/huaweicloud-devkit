@@ -240,6 +240,9 @@ function resetKnobs(): void {
   fetchLog.length = 0;
   execLog.length = 0;
   tunnelLog.length = 0;
+  // The credentials view resolves the api_key channel env-first; a developer
+  // shell carrying HW_API_KEY must not change which channel the form names.
+  delete process.env.HW_API_KEY;
 }
 
 // The nine-tool ask-mode loops' shared scaffolding: home, ask posture, and

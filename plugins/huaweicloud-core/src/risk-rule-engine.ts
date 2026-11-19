@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { asText } from './lib/as-text.ts';
 import { asRecord } from './lib/as-record.ts';
+import { redactEvidenceText } from './safety/redact.ts';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const defaultRulesPath = join(__dirname, '..', 'safety', 'rules', 'cloud-risk-rules.json');
@@ -134,12 +135,7 @@ export function loadRiskRules(options: RiskRuleOptions = {}): RiskCatalog {
 }
 
 function redactEvidence(text: unknown): string {
-  return String(text)
-    .replace(
-      /((?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?key|secret[_-]?string|secret[_-]?binary|secret(?!:\/)|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\\*["']?\s*[:=]\s*[\\"'\\]*\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      '$1<redacted>',
-    )
-    .replace(/\b(AK|SK)\\*["']?\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1=<redacted>');
+  return redactEvidenceText(text);
 }
 
 function normalizeText(value: unknown): string {
@@ -174,10 +170,27 @@ function evaluationContext(stage: string, input: unknown): EvaluationContext {
   return { text: normalizeText(input) };
 }
 
+// Shell-transcribed commands and nested JSON artifacts arrive with escaped
+// quotes (`\"Action\":` / `{\"privileged\":true}`) — the spelling a shell or
+// an embedded JSON string actually produces. The catalog's JSON-shaped rules
+// were authored against the unescaped spelling, so a backslash between the
+// key and the quote made deny-severity rules (IAM administrator grants, OBS
+// anonymous writes, privileged containers) silently miss. Matching therefore
+// tests the raw value AND a quote-unescaped shadow; evidence/display keep the
+// raw text. Only quote-adjacent backslashes are folded, so Windows paths are
+// untouched.
+function normalizeRuleText(text: string): string {
+  return text.replace(/\\+(["'])/g, '$1');
+}
+
 function conditionMatches(condition: RiskRuleCondition, context: EvaluationContext): boolean {
   const field = condition.field || 'text';
   const value = Object.hasOwn(context, field) ? context[field] : context.text;
-  return new RegExp(condition.regex, 'ims').test(String(value || ''));
+  const raw = String(value || '');
+  const regex = new RegExp(condition.regex, 'ims');
+  if (regex.test(raw)) return true;
+  const normalized = normalizeRuleText(raw);
+  return normalized !== raw && regex.test(normalized);
 }
 
 function ruleMatches(rule: RiskRule, context: EvaluationContext): boolean {
