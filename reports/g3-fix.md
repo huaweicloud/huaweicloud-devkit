@@ -115,7 +115,7 @@ e3b3013a fix(safety): close the compound-command bypass — per-segment classifi
 
 ---
 
-# G3B — pipe-feed 残余修复（F6，A-F1 同族）
+## G3B — pipe-feed 残余修复（F6，A-F1 同族）
 
 **背景。** 协调者用对抗者 A 的差分探针对 G3 修复后的适配器复测，发现逐段分类留下一个同族残余，升级为第 6 条 finding 并亲测验证。本节追加于 G3 报告之上。
 
