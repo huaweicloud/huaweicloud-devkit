@@ -10,6 +10,11 @@ const P0_SYNC_FLUSH_TOOLS = new Set(['huaweicloud_voucher_claim', 'huaweicloud_c
 
 const pkgVersion = getRuntimeVersion();
 
+// Upper bound for the KooCLI probe embedded in the `initialize` response.
+// Comfortably above a healthy `hcloud version` (<1 s) and below any budget a
+// client would notice on a handshake.
+const INITIALIZE_PROBE_TIMEOUT_MS = 1500;
+
 // 会话内首个非 check/upgrade 工具调用附加 _updateInfo，只消费一次。
 // 按会话隔离：同进程内不同会话(A/B)各自首次提示；stdio 用固定 'stdin'。
 const consumedBySession = new Map();
@@ -60,9 +65,15 @@ export async function dispatch(method, params, opts = {}) {
     // session learns about a missing/mismatched CLI up front (the tool catalog
     // alone never probes it). Best-effort: a probe failure must not block the
     // handshake, and only the version facts ride the response — never output.
+    //
+    // The probe is spawnSync, so try/catch alone cannot keep the handshake
+    // bounded: an installed-but-stuck hcloud (privacy prompt, hung wrapper)
+    // would otherwise hold the first response for the 5 s default. The shorter
+    // budget keeps `initialize` latency bounded; a real `hcloud version` answers
+    // in well under 1 s, and a slow answer only costs the version facts.
     let kooCli = null;
     try {
-      kooCli = await runVersionCheck();
+      kooCli = await runVersionCheck({ timeoutMs: INITIALIZE_PROBE_TIMEOUT_MS });
     } catch {}
 
     return {
