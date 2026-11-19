@@ -175,7 +175,7 @@ test('redactSecrets redacts XML password elements (N-R4.1)', () => {
 // Shell-transcribed JSON (escaped quotes) must redact too — the backslash
 // between the key and its quote used to defeat the key-value pattern.
 test('redactSecrets folds escaped-quote key shapes (N-R4.1)', () => {
-  const out = redactSecrets('{"db_password":"SuperSecret123"}'.replace(/"/g, '\\"'));
+  const out = redactSecrets('{\\"db_password\\":\\"SuperSecret123\\"}');
   assert.doesNotMatch(out, /SuperSecret123/);
   assert.match(out, /<redacted>/);
 });
