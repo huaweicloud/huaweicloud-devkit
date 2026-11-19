@@ -87,7 +87,7 @@ test('makeError returns code+messageZh+action+nextStep compatibility field', () 
 test('errorFromTable folds detail into messageZh and degrades for unknown codes', () => {
   const withDetail = errorFromTable('HDKIT_KOOCLI_NOT_READY', '无法解析用户主目录');
   assert.equal(withDetail.code, 'HDKIT_KOOCLI_NOT_READY');
-  assert.match(withDetail.messageZh, /KooCLI\(hcloud\)未安装或未就绪。\(无法解析用户主目录\)/);
+  assert.match(withDetail.messageZh, /^无法解析用户主目录\(KooCLI\(hcloud\)未安装或未就绪。\)/);
   assert.equal(withDetail.nextStep, withDetail.action);
   const unknown = errorFromTable('SOME_FUTURE_CODE', 'detail text');
   assert.equal(unknown.code, 'SOME_FUTURE_CODE');

@@ -12,6 +12,7 @@ import {
   getParentCwd,
   parseStsExpiry,
   pickDevkitMcpServer,
+  readCodeArtsCredentials,
   resolveCredentials,
   resolveCredentialsWithRuntime,
   setRuntimeCredentials,
@@ -422,4 +423,48 @@ test('S1 reads the legacy config tree only when the state tree has no credential
     rmSync(home, { recursive: true, force: true });
     rmSync(state, { recursive: true, force: true });
   }
+});
+
+test('HUAWEICLOUD_REGION wins over the HW_REGION alias in process env (#1158 D1-68)', () => {
+  withTempHome(() => {
+    clearRuntimeCredentials();
+    process.env.HW_ACCESS_KEY = 'ENV_AK';
+    process.env.HW_SECRET_KEY = 'ENV_SK';
+    process.env.HUAWEICLOUD_REGION = 'cn-north-4';
+    process.env.HW_REGION = 'cn-south-1';
+    assert.equal(resolveCredentials()?.region, 'cn-north-4');
+
+    // An empty official name must not mask the populated alias (`||`, not `??`).
+    process.env.HUAWEICLOUD_REGION = '';
+    assert.equal(resolveCredentials()?.region, 'cn-south-1');
+  });
+});
+
+test('CodeArts mcp_settings region also prefers HUAWEICLOUD_REGION (#1158 D1-68)', () => {
+  withTempHome((home) => {
+    mkdirSync(join(home, '.codeartsdoer', 'mcp'), { recursive: true });
+    writeFileSync(
+      join(home, '.codeartsdoer', 'mcp', 'mcp_settings.json'),
+      JSON.stringify({
+        mcpServers: {
+          'huaweicloud-devkit': {
+            env: {
+              HW_ACCESS_KEY: 'CODEARTS_AK',
+              HW_SECRET_KEY: 'CODEARTS_SK',
+              HUAWEICLOUD_REGION: 'cn-north-4',
+              HW_REGION: 'cn-south-1',
+            },
+          },
+        },
+      }),
+    );
+    const previous = process.env.CODEARTS_PROJECT_DIR;
+    process.env.CODEARTS_PROJECT_DIR = home;
+    try {
+      assert.equal(readCodeArtsCredentials()?.region, 'cn-north-4');
+    } finally {
+      if (previous === undefined) delete process.env.CODEARTS_PROJECT_DIR;
+      else process.env.CODEARTS_PROJECT_DIR = previous;
+    }
+  });
 });
