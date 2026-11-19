@@ -29,6 +29,42 @@ import type { ElicitationSeam } from './approval-types.ts';
 
 const pkgVersion = readInstalledVersion() || '0.0.0';
 
+// #1158 D9-12: the MCP lifecycle handshake state machine. Data requests
+// (tools/list, tools/call, resources/list) are served only after the
+// session completed `initialize`; an uninitialized session gets -32002
+// (Server not initialized) instead of a full tool enumeration. State is
+// keyed per session id — the stdio transport owns one fixed session per
+// process, and the stateless remote builds a fresh server per request, so
+// only faces with a real session consult this set (the remote keeps its
+// per-request SDK contract).
+const initializedSessions = new Set<string>();
+const LIFECYCLE_GATED_METHODS: ReadonlySet<string> = new Set(['tools/list', 'tools/call', 'resources/list']);
+
+export interface SessionLifecycleError {
+  code: number;
+  message: string;
+}
+
+export function markSessionInitialized(sessionId: string): void {
+  initializedSessions.add(sessionId);
+}
+
+export function isSessionInitialized(sessionId: string): boolean {
+  return initializedSessions.has(sessionId);
+}
+
+export function resetSessionLifecycle(): void {
+  initializedSessions.clear();
+}
+
+export function sessionLifecycleError(method: string, sessionId: string): SessionLifecycleError | null {
+  if (!LIFECYCLE_GATED_METHODS.has(method) || initializedSessions.has(sessionId)) return null;
+  return {
+    code: -32002,
+    message: `Server not initialized: call initialize before ${method} (MCP lifecycle requirement).`,
+  };
+}
+
 // Server-level instructions ride the initialize handshake result — the one
 // teaching surface that needs neither a skill load nor a description read.
 // Emission is what this side controls and proves; whether the client
@@ -353,6 +389,12 @@ export function createDevkitMcpServer({
   // transport branching. Unknown pack ids throw here; core is always in the
   // set, so its tools (the base face plus the three pack meta tools and
   // packs_configure) are never filtered.
+  // Capability posture (#1158 D9-6): tools only. No resource handlers are
+  // registered, so the SDK never advertises a `resources` capability and a
+  // post-handshake `resources/list` answers the explicit JSON-RPC -32601
+  // (Method not found), never a silent empty list. The removal is documented
+  // in test/mcp-server.test.ts and test/remote-mcp-server.test.ts so the
+  // restored-or-replaced decision stays reviewable.
   const server = new McpServer(
     { name: 'huaweicloud-devkit', version: pkgVersion },
     { instructions: instructionsFor(remoteSurface, runtimePacks) },

@@ -3,10 +3,18 @@ import { platform } from 'node:os';
 import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/shared/transport.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 
-import { runInitializeSideEffects, normalizeToolCallParams } from './mcp-protocol.ts';
+import {
+  runInitializeSideEffects,
+  normalizeToolCallParams,
+  markSessionInitialized,
+  sessionLifecycleError,
+} from './mcp-protocol.ts';
 import { detectAgent } from './telemetry/agent-detect.ts';
 import { spoolTelemetryEvents } from './telemetry/telemetry.ts';
 import { traceOutboundDisclosure } from './lib/call-trace.ts';
+
+// One stdio process carries exactly one client session.
+const STDIO_SESSION_ID = 'stdin';
 
 type JsonRpcRequest = { id?: unknown; method?: string; params?: unknown };
 type JsonRpcResponse = {
@@ -200,6 +208,10 @@ export class DevkitStdioTransport implements Transport {
     const message = raw as JsonRpcRequest;
 
     if (message.method === 'initialize') {
+      // #1158 D9-12: mark the handshake synchronously at receipt, before the
+      // best-effort side effects await — a client that pipelines initialize
+      // and its first request in one write must not race the state machine.
+      markSessionInitialized(STDIO_SESSION_ID);
       try {
         await (this.options.initializeSideEffects ?? runInitializeSideEffects)(message.params);
       } catch {
@@ -231,6 +243,14 @@ export class DevkitStdioTransport implements Transport {
         return;
       }
       this.writeJsonRpcError(-32601, 'Method not found: undefined', message.id);
+      return;
+    }
+
+    // #1158 D9-12: no business request before `initialize` — the lifecycle
+    // answer is -32002, never a silent tool enumeration.
+    const lifecycle = sessionLifecycleError(message.method, STDIO_SESSION_ID);
+    if (lifecycle) {
+      this.writeJsonRpcError(lifecycle.code, lifecycle.message, message.id);
       return;
     }
 
