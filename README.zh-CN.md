@@ -4,7 +4,7 @@
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 [![CI](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml/badge.svg)](https://github.com/huaweicloud/huaweicloud-devkit/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/huaweicloud-devkit)](https://www.npmjs.com/package/huaweicloud-devkit)
-[![Beta](https://img.shields.io/badge/beta-v1.1.13-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
+[![Beta](https://img.shields.io/badge/beta-v1.1.15-orange)](https://github.com/huaweicloud/huaweicloud-devkit)
 
 **中文 | [English](README.md)**
 
@@ -14,7 +14,7 @@
 
 ## 前置条件
 
-- Node.js >= 22
+- Node.js >= 22.19（Node 23 请使用 23.4+）
 
 > **国内用户**：使用默认 npm 镜像时可能遇到下载缓慢或连接失败的问题，建议配置华为云 npm 镜像：
 >
@@ -325,6 +325,18 @@ npx --yes huaweicloud-devkit@latest update --target all
 ```
 
 `update` 是增量更新——只刷新已安装的文件，不动配置文件。请务必保留 `@latest`，确保 npm 获取最新版本而非本地缓存的旧版本。
+
+### 自动升级
+
+插件默认在后台自动安装升级，不弹确认框：
+
+- 会话启动时拉取 `HDKITSERVICE_ENDPOINT/upgrade/policy`；若服务端启用最低版本且当前版本低于该值，立即升级（跳过冷却）。
+- 普通新版本需在 npm 发布满 24 小时，才会在之后的会话启动时自动安装。
+- 任意 hdkitservice 接口返回 `409 HDKIT_VERSION_TOO_OLD` 时立即触发升级。
+- 自动升级只作用于 `update` 命令会重写的目录（各 Agent 插件目录，如 `~/.config/opencode/huaweicloud-plugins`）。插件市场/缓存类安装（Claude Code、Codex CLI 插件缓存）与解包目录不在范围内，409 响应会直接给出对应的手动升级指引。
+- 安装完成后必须重启会话；当前会话仍运行旧代码，并继续被版本门禁拦截。
+- 升级前备份运行目录的 `src/`、`package.json` 与全部版本 manifest；校验失败自动整体恢复。
+- 内部保护：`HUAWEICLOUD_DEVKIT_SKIP_UPDATE=1`、CI 环境、git 仓库开发态会自动跳过。
 
 ### 配置代理
 

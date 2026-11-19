@@ -7,6 +7,10 @@ import path from 'node:path';
 import { AGENTS } from '../plugins/huaweicloud-core/src/telemetry/agent-registry.mjs';
 import { detectAgent, detectAgentHarness } from '../plugins/huaweicloud-core/src/telemetry/agent-detect.mjs';
 
+// hdkitVoucherStatus is imported below; a 409 path must never spawn a real
+// background auto-upgrade runner on dev machines.
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
+
 // 与 test/telemetry.test.mjs 相同的 env 隔离方式。
 const DETECTION_ENV_KEYS = ['AGENT_HARNESS', ...new Set(AGENTS.flatMap((agent) => agent.envVars || []))];
 

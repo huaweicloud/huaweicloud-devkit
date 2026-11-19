@@ -8,7 +8,14 @@ import { createRequire } from 'node:module';
 import test from 'node:test';
 
 const require = createRequire(import.meta.url);
-const { DatabaseSync } = require('node:sqlite');
+let DatabaseSync = null;
+try {
+  ({ DatabaseSync } = require('node:sqlite'));
+} catch {
+  // node:sqlite is unavailable on this Node version.
+}
+const sqliteSkip = DatabaseSync ? false : 'node:sqlite unavailable';
+const sqliteTest = (name, fn) => test(name, { skip: sqliteSkip }, fn);
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const setupCli = join(root, 'bin', 'setup.cjs');
@@ -86,7 +93,7 @@ function queryDevkitRow(dbParentDir) {
   return row || null;
 }
 
-test('officeace install copies skills, MCP server, and safety policy', () => {
+sqliteTest('officeace install copies skills, MCP server, and safety policy', () => {
   const home = mkdtempSync(join(tmpdir(), 'oa-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'oa-proj-'));
   const oaHome = join(home, '.office-claw');
@@ -112,7 +119,7 @@ test('officeace install copies skills, MCP server, and safety policy', () => {
   }
 });
 
-test('officeace uninstall removes installed files', () => {
+sqliteTest('officeace uninstall removes installed files', () => {
   const home = mkdtempSync(join(tmpdir(), 'oa-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'oa-proj-'));
   const oaHome = join(home, '.office-claw');
@@ -130,7 +137,7 @@ test('officeace uninstall removes installed files', () => {
   }
 });
 
-test('officeace uninstall→reinstall restores owner_user_id from backup (#559)', () => {
+sqliteTest('officeace uninstall→reinstall restores owner_user_id from backup (#559)', () => {
   const home = mkdtempSync(join(tmpdir(), 'oa-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'oa-proj-'));
   const oaHome = join(home, '.office-claw');
@@ -167,7 +174,7 @@ test('officeace uninstall→reinstall restores owner_user_id from backup (#559)'
   }
 });
 
-test('officeace install fails loudly when owner_user_id is underivable (#559)', () => {
+sqliteTest('officeace install fails loudly when owner_user_id is underivable (#559)', () => {
   const home = mkdtempSync(join(tmpdir(), 'oa-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'oa-proj-'));
   const oaHome = join(home, '.office-claw');
@@ -185,7 +192,7 @@ test('officeace install fails loudly when owner_user_id is underivable (#559)', 
   }
 });
 
-test('officeace uninstall locates root via persisted marker across processes (#559)', () => {
+sqliteTest('officeace uninstall locates root via persisted marker across processes (#559)', () => {
   const home = mkdtempSync(join(tmpdir(), 'oa-home-'));
   const cwd = mkdtempSync(join(tmpdir(), 'oa-proj-'));
   // Non-standard install location, only discoverable via OFFICE_CLAW_CONFIG_ROOT

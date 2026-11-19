@@ -17,12 +17,32 @@ import {
   queryDistTagsSync,
   queryDistTags,
   queryDistTagsFetch,
+  queryPublishTimes,
+  getVersionPublishTime,
+  invalidatePublishTimeCache,
   getCachedUpdateInfo,
   peekCachedUpdateInfo,
   invalidateUpdateCache,
   applyUpdateHint,
   upgradePackage,
+  extractNpmFailureReason,
 } from '../plugins/huaweicloud-core/src/update-check.mjs';
+
+function tempConfigHome() {
+  const dir = mkdtempSync(join(tmpdir(), 'hwdk-meta-'));
+  const saved = process.env.HUAWEICLOUD_HOME;
+  process.env.HUAWEICLOUD_HOME = dir;
+  invalidatePublishTimeCache();
+  return {
+    dir,
+    restore() {
+      invalidatePublishTimeCache();
+      if (saved === undefined) delete process.env.HUAWEICLOUD_HOME;
+      else process.env.HUAWEICLOUD_HOME = saved;
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
 
 test('semverParse 解析稳定版与 prerelease', () => {
   assert.deepEqual(semverParse('1.1.1-next.15'), {
@@ -372,6 +392,76 @@ test('upgradePackage next 目标: 用 next tag', async () => {
   assert.ok(spawned.some((a) => a === 'huaweicloud-devkit@next'));
 });
 
+test('queryPublishTimes 读取 registry packument 的 time 映射', async () => {
+  const home = tempConfigHome();
+  const saved = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = 'https://registry.npmjs.test';
+  invalidatePublishTimeCache();
+  let requested = null;
+  try {
+    const times = await queryPublishTimes({
+      doFetch: async (url) => {
+        requested = url;
+        return new Response(JSON.stringify({ time: { '1.1.14': '2026-11-01T00:00:00.000Z' } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        });
+      },
+    });
+    assert.equal(requested, 'https://registry.npmjs.test/huaweicloud-devkit');
+    assert.equal(times['1.1.14'], '2026-11-01T00:00:00.000Z');
+  } finally {
+    if (saved === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = saved;
+    home.restore();
+  }
+});
+
+test('getVersionPublishTime 缓存命中且未知版本/失败返回 null', async () => {
+  const home = tempConfigHome();
+  const saved = process.env.HUAWEICLOUD_NPM_REGISTRY;
+  process.env.HUAWEICLOUD_NPM_REGISTRY = 'https://registry.npmjs.test';
+  invalidatePublishTimeCache();
+  let calls = 0;
+  const doFetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ time: { '1.1.14': '2026-11-01T00:00:00.000Z' } }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const now = Date.parse('2026-11-02T00:00:00.000Z');
+    const a = await getVersionPublishTime('1.1.14', { now, doFetch });
+    const b = await getVersionPublishTime('1.1.14', { now: now + 60_000, doFetch });
+    assert.equal(a, Date.parse('2026-11-01T00:00:00.000Z'));
+    assert.equal(b, a);
+    assert.equal(calls, 1, 'packument must be cached');
+    assert.equal(await getVersionPublishTime('9.9.9', { now, doFetch }), null);
+  } finally {
+    if (saved === undefined) delete process.env.HUAWEICLOUD_NPM_REGISTRY;
+    else process.env.HUAWEICLOUD_NPM_REGISTRY = saved;
+    home.restore();
+  }
+});
+
+test('getVersionPublishTime 查询失败返回 null 并节流', async () => {
+  const home = tempConfigHome();
+  let calls = 0;
+  const doFetch = async () => {
+    calls += 1;
+    return new Response('{}', { status: 500 });
+  };
+  try {
+    const now = Date.now();
+    assert.equal(await getVersionPublishTime('1.1.14', { now, doFetch }), null);
+    assert.equal(await getVersionPublishTime('1.1.14', { now: now + 60_000, doFetch }), null);
+    assert.equal(calls, 1, 'failure must be throttled');
+  } finally {
+    home.restore();
+  }
+});
+
 test('upgradePackage officeace 专属重连文案', async () => {
   const spawnFn = () => ({ status: 0 });
   const doQuery = async () => ({ latest: '1.1.1', next: null });
@@ -386,6 +476,31 @@ test('upgradePackage 失败: 返回手动命令', async () => {
   assert.equal(r.success, false);
   assert.match(r.manual, /npx --yes huaweicloud-devkit@latest update --target opencode/);
   assert.match(r.error, /EPERM/);
+});
+
+test('extractNpmFailureReason: 优先 npm error 行，剔除 npm warn 噪声 (#1117)', async () => {
+  const stderr = [
+    'npm warn EBADENGINE Unsupported engine',
+    'npm warn EBADENGINE current: {"node":"v22.14.0"}',
+    'npm error code ELIFECYCLE',
+    'npm error Command failed with exit code 1',
+  ].join('\n');
+  const reason = extractNpmFailureReason({ status: 1, stdout: '', stderr });
+  assert.match(reason, /ELIFECYCLE/);
+  assert.match(reason, /exit code 1/);
+  assert.doesNotMatch(reason, /EBADENGINE/);
+  // 只有 warn 时：宁可报 status，也不能把 warning 当失败原因
+  const warnOnly = extractNpmFailureReason({ status: 1, stdout: '', stderr: 'npm warn deprecated foo' });
+  assert.equal(warnOnly, 'exit 1');
+  const nodeOnly = extractNpmFailureReason({
+    status: 1,
+    stdout: '',
+    stderr:
+      '(node:123) DeprecationWarning: something\nUse `node --trace-deprecation ...` to show where the warning was created',
+  });
+  assert.equal(nodeOnly, 'exit 1');
+  assert.equal(extractNpmFailureReason({ status: 0, stdout: '', stderr: '' }), 'exit 0');
+  assert.equal(extractNpmFailureReason({ status: null, error: new Error('spawn ENOENT') }), 'spawn ENOENT');
 });
 
 test('upgradePackage 失败: spawn 不存在时报可读错误而非 exit null', async () => {

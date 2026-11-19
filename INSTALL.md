@@ -2,7 +2,7 @@
 
 ## 前置条件
 
-- Node.js >= 22
+- Node.js >= 22.19（Node 23 请使用 23.4+）
 - 华为云账号
 - KooCLI (hcloud) 已安装并配置
 
