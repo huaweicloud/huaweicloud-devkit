@@ -237,8 +237,16 @@ export function explainError({
     return !arr.slice(0, i).some((prev) => prev.substring(0, 50).toLowerCase() === s.substring(0, 50).toLowerCase());
   });
 
+  // The response names the service the error was RESOLVED to, not a raw
+  // `unknown`/wrong pasted name: `code`-only calls and a pasted service whose
+  // own pattern table is empty derive their key from the code prefix (the
+  // suggestions already walked that table). A valid explicit service keeps
+  // its exact spelling — the pre-existing contract and its #935 regression
+  // pin (AX report D-05).
+  const providedKnown = Boolean(service) && svc !== 'unknown';
+  const responseService = !providedKnown || !hwErrorPatterns[patternKey] ? effectiveKey : service;
   return {
-    service,
+    service: responseService,
     errorCode: resolvedCode,
     requestId,
     suggestions: uniqueSuggestions,

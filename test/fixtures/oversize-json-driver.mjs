@@ -7,13 +7,16 @@
 // message on stderr).
 // argv[2] = shape: gate409 | exhaust502 | trace | nonjson-control
 import process from 'node:process';
-import { fileURLToPath } from 'node:url';
 
-const ROOT = fileURLToPath(new URL('../..', import.meta.url));
+// file URLs, not filesystem paths: a dynamic import of a Windows path string
+// dies with ERR_UNSUPPORTED_ESM_URL_SCHEME ('c:' is not a scheme).
+const ROOT_URL = new URL('../..', import.meta.url);
 const shape = process.argv[2] ?? 'gate409';
-const { hdkitConnectWithRetry } = await import(`${ROOT}/plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts`);
+const { hdkitConnectWithRetry } = await import(
+  new URL('plugins/huaweicloud-core/src/lib/hdkit/hdkitservice-api.ts', ROOT_URL).href
+);
 const { transientExhaustionResult, versionGateResult } = await import(
-  `${ROOT}/plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts`
+  new URL('plugins/huaweicloud-core/src/lib/hdkit/hdkit-gate.ts', ROOT_URL).href
 );
 
 const BIG = 'A'.repeat(8 * 1024 * 1024);

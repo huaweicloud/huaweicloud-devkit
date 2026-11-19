@@ -432,8 +432,24 @@ export async function hdkitConnect(options: Record<string, unknown> = {}): Promi
  * 重试表经 HW_SANDBOX_CONNECT_RETRY_DELAYS_MS 针脚可覆写（v2 扩展）。
  * 成功路径回显 connect_retries（v2 扩展；dev 仅在错误路径带尝试次数）。
  */
-export async function hdkitConnectWithRetry(options: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
+export interface HdkitConnectRetryOptions {
+  // MCP tool faces must answer inside the host's request budget. A backoff
+  // longer than maxInlineDelayMs returns a `pending` receipt instead of
+  // sleeping: the server may already have created the instance, and the
+  // agent's next huaweicloud_sandbox_connect call re-attempts the same
+  // request and reuses it. inlineRetry:false disables the inline ladder
+  // outright (both knobs default to the dev behavior: inline, unbounded).
+  inlineRetry?: boolean;
+  maxInlineDelayMs?: number;
+}
+
+export async function hdkitConnectWithRetry(
+  options: Record<string, unknown> = {},
+  retryOptions: HdkitConnectRetryOptions = {},
+): Promise<Record<string, unknown>> {
   const delays = connectRetryDelaysMs();
+  const inlineRetry = retryOptions.inlineRetry !== false;
+  const maxInlineDelayMs = retryOptions.maxInlineDelayMs ?? Number.POSITIVE_INFINITY;
   let retries = 0;
   for (;;) {
     try {
@@ -453,6 +469,21 @@ export async function hdkitConnectWithRetry(options: Record<string, unknown> = {
         // 耗尽装填返回待抛对象：常规载体即原错误，拒绝装饰的载体为克隆（round 9）
         if (transient) throw decorateExhaustedConnect(error, retries);
         throw error;
+      }
+      if (!inlineRetry || (delays[retries] ?? Number.POSITIVE_INFINITY) > maxInlineDelayMs) {
+        // AX N-SB.2: never hold the tool call through a backoff longer than
+        // the host's request budget — a host request timeout would abandon
+        // the call while the server completed the create. The retry moves to
+        // the next tool call (same params). Short test/operator backoffs keep
+        // the inline ladder.
+        const pendingCode = asString(safeReadField(error, 'code'));
+        return {
+          pending: true,
+          connectRetries: retries,
+          retryAfterMs: delays[retries] ?? delays[0] ?? 0,
+          ...(pendingCode ? { code: pendingCode } : {}),
+          message: safeMessageText(error),
+        };
       }
       await new Promise((resolve) => setTimeout(resolve, delays[retries]));
       retries += 1;

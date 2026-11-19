@@ -38,6 +38,59 @@ test('planHcloudCommand marks write command as unsafe without approval', () => {
   assert.equal(plan.classification.decision, 'deny');
 });
 
+// AX D-02 display layer: allowWrites:true unlocks the classification but a
+// write still needs the user's confirmation — safeToRun must not read true
+// beside userConfirmation.needed (the old contradiction).
+test('safeToRun stays false while a write plan still needs confirmation (D-02)', () => {
+  const plan = planHcloudCommand(['ECS', 'CreateServers', '--server.name=x'], { allowWrites: true });
+  assert.equal(plan.classification.decision, 'allow');
+  assert.equal(plan.userConfirmation.needed, true);
+  assert.equal(plan.safeToRun, false);
+});
+
+// AX report J2.5/N-R4.2: the pre-approval plan (allowWrites omitted) must
+// carry the catalog's specialized findings even though the base decision is
+// already the generic write deny — the developer deciding whether to approve
+// must see "broad administrator grant", not only "write needs approval".
+test('default plan carries the broad-IAM finding on a write deny (J2.5)', () => {
+  const plan = planHcloudCommand([
+    'IAM',
+    'CreatePolicy',
+    '--policy.content={"Action":["*"],"Effect":"Allow"}',
+    '--policy.name=p',
+    '--policy.type=1',
+  ]);
+  assert.equal(plan.classification.decision, 'deny');
+  assert.ok(
+    plan.classification.findings?.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'),
+    'the IAM administrator-grant finding rides the generic write deny',
+  );
+});
+
+test('default plan carries warn-severity findings on a write deny (J2.5)', () => {
+  const plan = planHcloudCommand(['CCE', 'CreateCluster', '--node_pool.max_node_count=80']);
+  assert.equal(plan.classification.decision, 'deny');
+  assert.ok(
+    plan.classification.warnings?.some((finding) => finding.ruleId === 'hwc-cost-unbounded-scale'),
+    'the cost warning rides the generic write deny',
+  );
+});
+
+test('escaped broad-IAM args are denied after approval (N-R4.2 run-path fidelity)', () => {
+  const plan = planHcloudCommand(
+    [
+      'IAM',
+      'CreatePolicy',
+      '--policy.content={\\"Action\\":[\\"*\\"],\\"Effect\\":\\"Allow\\"}',
+      '--policy.name=p',
+      '--policy.type=1',
+    ],
+    { allowWrites: true },
+  );
+  assert.equal(plan.classification.decision, 'deny');
+  assert.ok(plan.classification.findings?.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
+});
+
 test('planHcloudCommand adds resource-manifest hint for OBS write operations', () => {
   const plan = planHcloudCommand(['OBS', 'mb', 'obs://test-bucket', '-location=cn-north-4']);
   assert.ok(plan.warnings.some((warning) => typeof warning === 'string' && /resource manifest/i.test(warning)));

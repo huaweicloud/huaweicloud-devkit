@@ -146,6 +146,45 @@ test('redactSecrets redacts admin-pass / admin_pass / adminPass variants (#726 D
   assert.equal(obj.admin_pass, '<redacted>');
 });
 
+// AX N-R4.1: DEW's plaintext secret parameter and the DevBridge API key
+// joined the secret vocabulary — both crossed every evidence surface raw.
+test('redactSecrets covers secret_text and api_key (N-R4.1)', () => {
+  assert.equal(redactSecrets('--secret.secret_text=PlainTextSecret123'), '--secret.secret_text=<redacted>');
+  assert.equal(redactSecrets('--api_key=devbridge_abc123'), '--api_key=<redacted>');
+  assert.equal(redactSecrets('--apiKey=devbridge_abc123'), '--apiKey=<redacted>');
+  // Object-keyed values (approval args, tool payloads) take the same path.
+  const obj = redactSecrets({
+    api_key: 'devbridge_abc123',
+    secret_text: 'PlainTextSecret123',
+    password: 'hunter2',
+  }) as { api_key: string; secret_text: string; password: string };
+  assert.equal(obj.api_key, '<redacted>');
+  assert.equal(obj.secret_text, '<redacted>');
+  assert.equal(obj.password, '<redacted>');
+});
+
+// AX N-R4.1: XML settings shapes carry no key=value separator; the evidence
+// excerpt used to echo the password verbatim.
+test('redactSecrets redacts XML password elements (N-R4.1)', () => {
+  const out = redactSecrets('<password>FakePassw0rd!xyz</password>');
+  assert.equal(out, '<password><redacted></password>');
+  assert.doesNotMatch(out, /FakePassw0rd/);
+  assert.equal(redactSecrets('<passwd>abc123</passwd>'), '<passwd><redacted></passwd>');
+});
+
+// Shell-transcribed JSON (escaped quotes) must redact too — the backslash
+// between the key and its quote used to defeat the key-value pattern.
+test('redactSecrets folds escaped-quote key shapes (N-R4.1)', () => {
+  const out = redactSecrets('{\\"db_password\\":\\"SuperSecret123\\"}');
+  assert.doesNotMatch(out, /SuperSecret123/);
+  assert.match(out, /<redacted>/);
+});
+
+test('redactSecrets never touches conversation-safe secret:// refs', () => {
+  assert.equal(redactSecrets('--secret-ref=secret://user/hw-sk'), '--secret-ref=secret://user/hw-sk');
+  assert.equal(redactSecrets('secret://user/hw-sk'), 'secret://user/hw-sk');
+});
+
 test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) entirely', () => {
   const redacted = redactSecrets([
     'ECS',

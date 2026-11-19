@@ -145,9 +145,7 @@ test('cleanup: stale mode removes orphans but preserves protected/other-port tun
 
 test('cleanup: quota mode removes all orphans then the oldest non-protected live tunnel', () => {
   const { keepalive, tunnels, hosts } = planWorld(
-    [
-      { id: 'eeee2345', name: 'tunnel-18086-3', port: 18086, expirySeconds: 30 * 86400, expiryText: '30 days' },
-    ],
+    [{ id: 'eeee2345', name: 'tunnel-18086-3', port: 18086, expirySeconds: 30 * 86400, expiryText: '30 days' }],
     [{ pid: 400, id: null, port: 18086 }],
   );
   const quota = planDevbridgeCleanup({ tunnels, hosts, keepalive, mode: 'quota', maxExtra: 1 });
@@ -203,11 +201,14 @@ test('cleanup: port queries parse behind OSC noise, multi-port rows, and junk to
       'garbage line with no field shape',
     ].join('\r\n'),
   );
-  assert.deepEqual([...parsed.entries()], [
-    ['lw3bmxny', [8787, 9090]],
-    ['ncwa54gr', [18082]],
-    ['junk', []], // out-of-range tokens drop; the entry stays (empty port list)
-  ]);
+  assert.deepEqual(
+    [...parsed.entries()],
+    [
+      ['lw3bmxny', [8787, 9090]],
+      ['ncwa54gr', [18082]],
+      ['junk', []], // out-of-range tokens drop; the entry stays (empty port list)
+    ],
+  );
   assert.deepEqual([...parseDevbridgePortQueries('').entries()], []);
 });
 
@@ -217,7 +218,14 @@ test('cleanup: same-port targeting keys on the queried port list — a custom-na
   // Only the state script's per-tunnel port query sees it — without the ports
   // attribution, every later expose on that port fails on a port conflict.
   const tunnels: DevbridgeTunnelRecord[] = [
-    { id: 'lw3bmxny', name: 'kanban-board', port: null, expiryText: '30 days', expirySeconds: 30 * 86400, ports: [8787] },
+    {
+      id: 'lw3bmxny',
+      name: 'kanban-board',
+      port: null,
+      expiryText: '30 days',
+      expirySeconds: 30 * 86400,
+      ports: [8787],
+    },
   ];
   const hosts: DevbridgeHostProcess[] = [{ pid: 4242, id: 'lw3bmxny', port: 8787 }];
   const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive: [], mode: 'stale', samePort: 8787 });
@@ -249,14 +257,21 @@ test('cleanup: a host mapped to a KEPT record is never a kill target, even when 
   // exist; the structural guard makes the live-host invariant hold regardless
   // (a one-record port claim must not kill another record's live host).
   const tunnels: DevbridgeTunnelRecord[] = [
-    { id: 'lw3bmxny', name: 'kanban-board', port: 8787, expiryText: '30 days', expirySeconds: 30 * 86400, ports: [8787] },
+    {
+      id: 'lw3bmxny',
+      name: 'kanban-board',
+      port: 8787,
+      expiryText: '30 days',
+      expirySeconds: 30 * 86400,
+      ports: [8787],
+    },
     { id: 'ppcq44gr', name: 'tunnel-8787-2', port: 8787, expiryText: '1 day', expirySeconds: 86400, ports: [8787] }, // orphan record, same port claim
   ];
   const hosts: DevbridgeHostProcess[] = [{ pid: 23073, id: 'lw3bmxny', port: 8787 }];
   const plan = planDevbridgeCleanup({ tunnels, hosts, keepalive: [], mode: 'stale' });
   assert.ok(plan.deleteIds.includes('ppcq44gr'), 'the orphan record goes');
   assert.ok(!plan.deleteIds.includes('lw3bmxny'), 'the live record stays');
-  assert.ok(!plan.killPids.includes(23073), 'the LIVE record\'s host is never killed by a same-port claim');
+  assert.ok(!plan.killPids.includes(23073), "the LIVE record's host is never killed by a same-port claim");
   assert.deepEqual(plan.killPids, []);
 
   // The port-only host form (the expose launch form, no tunnel id): a
@@ -272,7 +287,11 @@ test('cleanup: a host mapped to a KEPT record is never a kill target, even when 
   });
   assert.ok(quotaPlan.deleteIds.includes('ppcq44gr'), 'quota frees the oldest non-protected record');
   assert.ok(!quotaPlan.deleteIds.includes('lw3bmxny'), 'the protected/oldest survivor stays');
-  assert.deepEqual(quotaPlan.killPids, [], 'the unattributable port-only host is shielded by the survivor\'s port claim');
+  assert.deepEqual(
+    quotaPlan.killPids,
+    [],
+    "the unattributable port-only host is shielded by the survivor's port claim",
+  );
 
   // The same-port replacement doctrine still kills: expose replaces EVERY
   // same-port record, so no survivor claims the port and the launch-form host
@@ -298,7 +317,10 @@ test('cleanup: apply script validates IDs/PIDs and re-checks the process before 
   assert.match(script, /DB_CLEANUP_DELETED=aaaa2345/);
   assert.match(script, /DB_CLEANUP_KILLED=100,200/);
   assert.throws(() => buildDevbridgeCleanupApplyScript({ deleteIds: ['bad;id'] }), /invalid tunnel id/);
-  assert.throws(() => buildDevbridgeCleanupApplyScript({ killPids: ['1; rm -rf /'] as unknown as number[] }), /invalid pid/);
+  assert.throws(
+    () => buildDevbridgeCleanupApplyScript({ killPids: ['1; rm -rf /'] as unknown as number[] }),
+    /invalid pid/,
+  );
 });
 
 test('cleanup: state script refreshes the CLI token (40100) before listing', () => {
@@ -335,10 +357,7 @@ test('cleanup: state script refreshes the CLI token (40100) before listing', () 
   assert.match(script, /gsub\(\/\\033\\\]133;C\\007\/, ""\)/);
   // #999 anchor doctrine: the PATH export rides the token-refresh init line —
   // a standalone export first line is byte-identical to the auth probe's.
-  assert.match(
-    script,
-    /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; DB_KEY=""$/m,
-  );
+  assert.match(script, /^export PATH="\/workspace\/\.local\/bin:\$HOME\/\.huawei\/bin:\$PATH"; DB_KEY=""$/m);
 });
 
 test('cleanup: lock script uses the 10-minute stale threshold', () => {
@@ -380,9 +399,7 @@ const TWO_PORT_STATE: CleanupState = {
     'bbbb2345   tunnel-18084-789                23 hours           1\r\n' +
     'cccc2345   old-tunnel                      5 days             1\r\n',
   hosts:
-    '100 devbridge host aaaa2345\r\n' +
-    '200 devbridge host -p 18084 -e 72\r\n' +
-    '300 devbridge host dddd2345\r\n',
+    '100 devbridge host aaaa2345\r\n' + '200 devbridge host -p 18084 -e 72\r\n' + '300 devbridge host dddd2345\r\n',
   keepalive: 'aaaa2345:https://aaaa2345-18082.devbridge-s2.hwtunnel.com:18082',
 };
 
@@ -428,7 +445,10 @@ function cleanupSeam(state: CleanupState) {
   return { commands, seam };
 }
 
-async function runCleanup(seam: Parameters<typeof _setOneShotForTests>[0], options: Parameters<typeof cleanupDevbridgeTunnels>[1] = {}) {
+async function runCleanup(
+  seam: Parameters<typeof _setOneShotForTests>[0],
+  options: Parameters<typeof cleanupDevbridgeTunnels>[1] = {},
+) {
   _setOneShotForTests(seam);
   try {
     return await cleanupDevbridgeTunnels('ws-1', options);
@@ -457,9 +477,7 @@ test('cleanup: connect-twice keeps both live tunnels, prunes only the orphan (fl
   assert.deepEqual(second.deleteIds, [], 'the first port’s tunnel must survive the second connect');
   assert.deepEqual(second.killPids, []);
 
-  const applyCommands = commands
-    .concat(commands2)
-    .filter((c) => c.includes('DB_CLEANUP_APPLY'));
+  const applyCommands = commands.concat(commands2).filter((c) => c.includes('DB_CLEANUP_APPLY'));
   assert.equal(applyCommands.length, 1, 'only the first pass deletes the orphan');
   assert.match(applyCommands[0] ?? '', /devbridge delete cccc2345/);
   assert.doesNotMatch(applyCommands[0] ?? '', /devbridge delete aaaa2345/);
@@ -472,9 +490,7 @@ test('cleanup: connect-twice keeps both live tunnels, prunes only the orphan (fl
   // The keepalive roster is unchanged by the first pass (the orphan had no
   // watchdog entry), so no re-install runs — the protected tunnel's coverage
   // is not even touched.
-  const installCommands = commands
-    .concat(commands2)
-    .filter((c) => c.includes('cat > /tmp/tunnel-keepalive.sh'));
+  const installCommands = commands.concat(commands2).filter((c) => c.includes('cat > /tmp/tunnel-keepalive.sh'));
   assert.equal(installCommands.length, 0);
 });
 

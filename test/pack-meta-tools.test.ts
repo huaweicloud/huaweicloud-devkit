@@ -70,7 +70,7 @@ interface ClientToolResult {
   isError?: boolean;
 }
 
-test('huaweicloud_list_packs returns all 10 packs, sandbox carries exactly 16 tool names', async () => {
+test('huaweicloud_list_packs returns all 10 packs, sandbox carries exactly 17 tool names', async () => {
   const result = (await callTool('huaweicloud_list_packs', {})) as ListPacksPayload;
   assert.equal(result.ok, true);
   assert.equal(result.count, 10);
@@ -89,20 +89,20 @@ test('huaweicloud_list_packs returns all 10 packs, sandbox carries exactly 16 to
   assert.ok(cliPack!.skills.includes('huawei-ecs'));
   const sandbox = result.packs.find((pack) => pack.id === 'sandbox');
   // 15 since the async-exec claim protocol added huaweicloud_sandbox_exec_poll;
-  // 16 since the port-pr6 wave added huaweicloud_sandbox_shutdown.
-  assert.equal(sandbox!.tools.length, 16);
+  // 17 since the async-expose wave added huaweicloud_sandbox_expose_poll (16 after port-pr6 s shutdown).
+  assert.equal(sandbox!.tools.length, 17);
   assert.ok(sandbox!.tools.includes('huaweicloud_sandbox_connect'));
   assert.ok(sandbox!.tools.includes('huaweicloud_sandbox_exec_poll'));
   assert.ok(sandbox!.tools.includes('huaweicloud_sandbox_shutdown'));
 });
 
-test('huaweicloud_pack_info returns the 16 sandbox tools with name, description, and schema', async () => {
+test('huaweicloud_pack_info returns the 17 sandbox tools with name, description, and schema', async () => {
   const result = (await callTool('huaweicloud_pack_info', { pack: 'sandbox' })) as PackInfoPayload;
   assert.equal(result.ok, true);
   assert.equal(result.pack, 'sandbox');
   assert.deepEqual(result.skills, ['huawei-sandbox']);
   assert.equal(result.enabled, true);
-  assert.equal(result.tools.length, 16);
+  assert.equal(result.tools.length, 17);
   for (const entry of result.tools) {
     assert.equal(typeof entry.name, 'string');
     assert.ok(entry.name.startsWith('huaweicloud_sandbox_'));
@@ -371,10 +371,10 @@ test('pack_info schema output matches the tools/list rendering after stripping i
       }
     }
     // Every registered tool except huaweicloud_packs_configure (pack_info
-    // filters it from core's listing on non-session surfaces): 58 registry
-    // tools - 1 = 57, +1 of those being the async-exec claim protocol's
-    // huaweicloud_sandbox_exec_poll and one the port-pr6 shutdown.
-    assert.equal(compared, 57, 'every registered tool must be compared');
+    // filters it from core's listing on non-session surfaces): 59 registry
+    // tools - 1 = 58, including the async-exec claim protocol's exec_poll,
+    // the port-pr6 shutdown, and the async-expose expose_poll.
+    assert.equal(compared, 58, 'every registered tool must be compared');
   } finally {
     await client.close();
     await server.close();

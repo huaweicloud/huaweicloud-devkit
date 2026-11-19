@@ -9,6 +9,7 @@ import {
   deployCheckSchema,
   checkUserSchema,
   exposeTunnelSchema,
+  exposePollSchema,
   renewTunnelSchema,
   keepaliveWatchdogSchema,
   signAgreementSchema,
@@ -20,7 +21,7 @@ import { handleExecWithSession, handleExecOneShot, handleCloseSession } from './
 import { handleHwexecPoll } from './handlers-hwexec.ts';
 import { handleUploadFile, handleUploadProject } from './handlers-upload.ts';
 import { handleDeployNginx, handleDeployCheck } from './handlers-deploy.ts';
-import { handleExposeTunnel, handleRenewTunnel, handleKeepaliveWatchdog } from './handlers-tunnel.ts';
+import { handleExposeTunnel, handleExposePoll, handleRenewTunnel, handleKeepaliveWatchdog } from './handlers-tunnel.ts';
 import { handleCheckUser, handleSignAgreement, handleConnect, handleShutdown } from './handlers-account.ts';
 import { handleCredentials } from './handlers-credentials.ts';
 import type { PackToolDefinition, LooseToolSchema } from '../../lib/pack-types.ts';
@@ -109,6 +110,13 @@ export const SANDBOX_TOOLS = [
     handler: handleExposeTunnel,
   },
   {
+    name: 'huaweicloud_sandbox_expose_poll',
+    description:
+      'Poll an async expose task started by huaweicloud_sandbox_expose_tunnel with mode: "async". Returns state: running (the chain is still working — call again), done (result carries the full expose envelope: ok, publicUrl, port, tunnelId, expiresAt, urlLifetimeHint, keepalive, warnings), failed (an unexpected throw escaped the chain, with error), or unknown (no receipt in this MCP server process — it never started here, the session restarted, or the 30-minute receipt expired; the tunnel may already exist, so check huaweicloud_sandbox_deploy_check or re-expose — never assume success without a URL). The urlLifetimeHint MUST be relayed with the URL: the tunnel expiry is not the sandbox lifetime.',
+    schema: exposePollSchema,
+    handler: handleExposePoll,
+  },
+  {
     name: 'huaweicloud_sandbox_renew_tunnel',
     description:
       "Renew a DevBridge tunnel's lifetime (devbridge update <id> -e <hours>) — a ROLLING window: expiration = now + hours regardless of remaining time, so renewing before expiry keeps the SAME public URL alive indefinitely (the URL is bound to the tunnel ID and never changes). Default 720h = the 30-day maximum. Returns ok, tunnelId, expiresAt (absolute ISO timestamp read back via show -v — a management-plane loss (10002 tunnel not found) is NOT misread as success), renewedForHours. Use the tunnelId from huaweicloud_sandbox_expose_tunnel or extract it from the URL. The keepalive watchdog renews automatically; this tool is the manual/one-off path.",
@@ -139,7 +147,7 @@ export const SANDBOX_TOOLS = [
   {
     name: 'huaweicloud_sandbox_connect',
     description:
-      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with one of three codes: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance; Retry-After 60), HDKIT_TEMPLATE_QUOTA_EXCEEDED (the running instances of this account for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After), or HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak; Retry-After 60). Gateway 502/504 timeouts during orchestration are retried automatically (30s/45s backoff) — the server may already have created the instance, so a retry reuses it. An outdated plugin version is rejected by the 409 HDKIT_VERSION_TOO_OLD version gate, surfaced by the sandbox tools (connect/check_user/sign_agreement/credentials) as ok:false and by the voucher trio as claimed:false, always carrying code, message, and remediation naming the upgrade act (npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or huaweicloud_upgrade), with clientVersion and minVersion present when the service sends them. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/resolved template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
+      'Connect to a sandbox via hdkitservice. One instance per user per pool — reuses the same-pool sandbox if available, otherwise creates a new one. Quota: 1 instance per pool type (a user may hold 1 ephemeral AND 1 persistent simultaneously; same-type requests reuse the existing instance). On quota exhaustion the API returns HTTP 429 with one of three codes: HDKIT_QUOTA_EXCEEDED (retry useless — release or reuse the existing instance; Retry-After 60), HDKIT_TEMPLATE_QUOTA_EXCEEDED (the running instances of this account for this sandbox type are at the limit — shut down or release an instance of the same type and retry; no Retry-After), or HDKIT_CAPACITY_INSUFFICIENT (pool capacity; retry later / off-peak; Retry-After 60). Gateway 502/504 timeouts during orchestration return a pending receipt (ok:false, pending:true, retryAfter, hint) instead of holding the call through the backoff — the server may already have created the instance; re-call this tool with the SAME parameters after retryAfter and a created instance is reused. An outdated plugin version is rejected by the 409 HDKIT_VERSION_TOO_OLD version gate, surfaced by the sandbox tools (connect/check_user/sign_agreement/credentials) as ok:false and by the voucher trio as claimed:false, always carrying code, message, and remediation naming the upgrade act (npx --yes huaweicloud-devkit@latest update --target <agent>, restart the agent session, or huaweicloud_upgrade), with clientVersion and minVersion present when the service sends them. Returns session_id, dev_stage_id, connection_id, connection_address, expiresAt (STS credential expiry), pool_type/resolved template_id echo, server-configured lifecycle numbers (pool_idle_shutdown_minutes / pool_idle_delete_minutes / pool_reclaim_minutes) and started (true when a reused instance was woken from shutdown). Lifecycle hints are announced only on the first connect of a session or when started=true. Ephemeral pool (default): idle auto-shutdown after 30min, auto-delete after 1h — do not keep important data there. Persistent pool: data disk retained (EVS 32G), idle shutdown after 1h, idle reclaim capped at 7 days. Numbers are configured by hdkitservice; the text follows the server echo and falls back to these defaults. Vendor-gated (vendorConfirmed): call only when the vendor is established — see the vendorConfirmed parameter description; when unknown, ask which cloud the user means first.',
     schema: connectSchema,
     handler: handleConnect,
   },
@@ -174,6 +182,7 @@ export const SANDBOX_TOOL_SCHEMAS: Readonly<Record<SandboxToolName, LooseToolSch
   huaweicloud_sandbox_deploy_nginx: deployNginxSchema,
   huaweicloud_sandbox_deploy_check: deployCheckSchema,
   huaweicloud_sandbox_expose_tunnel: exposeTunnelSchema,
+  huaweicloud_sandbox_expose_poll: exposePollSchema,
   huaweicloud_sandbox_renew_tunnel: renewTunnelSchema,
   huaweicloud_sandbox_keepalive_watchdog: keepaliveWatchdogSchema,
   huaweicloud_sandbox_check_user: checkUserSchema,
@@ -196,6 +205,7 @@ export const SANDBOX_TOOL_HANDLERS: Readonly<Record<SandboxToolName, PackToolDef
   huaweicloud_sandbox_deploy_nginx: handleDeployNginx,
   huaweicloud_sandbox_deploy_check: handleDeployCheck,
   huaweicloud_sandbox_expose_tunnel: handleExposeTunnel,
+  huaweicloud_sandbox_expose_poll: handleExposePoll,
   huaweicloud_sandbox_renew_tunnel: handleRenewTunnel,
   huaweicloud_sandbox_keepalive_watchdog: handleKeepaliveWatchdog,
   huaweicloud_sandbox_check_user: handleCheckUser,

@@ -478,8 +478,21 @@ def load_cloud_risk_rules():
         return None
 
 
+def normalize_rule_text(text):
+    # Twin of risk-rule-engine.normalizeRuleText: shell-transcribed commands
+    # and nested JSON carry \"key\": spellings the catalog's JSON-shaped
+    # rules were not authored against — a backslash between the key and the
+    # quote silently defeated the deny rules. Match the raw text AND its
+    # quote-unescaped shadow; the displayed reason keeps the raw command.
+    return re.sub(r'\\+(["\'])', r"\1", text)
+
+
 def condition_matches(condition, text):
-    return re.search(condition.get("regex", r"a^"), text, re.I | re.M | re.S) is not None
+    regex = re.compile(condition.get("regex", r"a^"), re.I | re.M | re.S)
+    if regex.search(text) is not None:
+        return True
+    normalized = normalize_rule_text(text)
+    return normalized != text and regex.search(normalized) is not None
 
 
 def rule_matches(rule, text):

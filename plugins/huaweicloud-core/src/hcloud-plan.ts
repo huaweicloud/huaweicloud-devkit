@@ -408,6 +408,11 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
             ...(approvalToken !== undefined ? { command: `npx huaweicloud-devkit approve ${approvalToken}` } : {}),
           }
       : { needed: false },
-    safeToRun: effectiveClassification.decision === 'allow',
+    // "Safe to run NOW": a caller-supplied allowWrites:true only unlocks the
+    // classification — the strict view still demands the user's confirmation
+    // (the approval token/form), so a plan showing decision:"allow" must not
+    // also read as runnable while userConfirmation.needed is true (AX D-02
+    // display-layer alignment).
+    safeToRun: effectiveClassification.decision === 'allow' && !needsConfirmation,
   };
 }

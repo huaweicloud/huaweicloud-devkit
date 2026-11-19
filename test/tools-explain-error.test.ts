@@ -5,15 +5,44 @@ import { clearRuntimeCredentials, setRuntimeCredentials } from '../plugins/huawe
 import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 
 test('huaweicloud_explain_error maps APIGW.0301 to credential/project_id guidance', async () => {
-  const result = await callTool('huaweicloud_explain_error', {
+  const result = (await callTool('huaweicloud_explain_error', {
     service: 'unknown',
     errorCode: 'APIGW.0301',
     message: 'Incorrect IAM authentication information',
-  });
+  })) as { service: string };
+  assert.equal(result.service, 'APIGW', 'the response names the service the pattern table resolved to');
   const text = JSON.stringify(result);
   assert.match(text, /Incorrect IAM authentication information/);
   assert.match(text, /auth init/);
   assert.match(text, /project_id/);
+});
+
+// AX report D-05: the response service field carries the RESOLVED service
+// key, never the raw input — a `code`-only call must not report "unknown",
+// and a pasted service name whose own table is empty must not mask the
+// code's service (the suggestions already walked the derived table).
+test('explain_error resolves the response service from the code alias (D-05)', async () => {
+  const result = (await callTool('huaweicloud_explain_error', {
+    code: 'APIGW.0301',
+  })) as { service: string };
+  assert.equal(result.service, 'APIGW');
+});
+
+test('explain_error resolves the response service past a wrong pasted service name (D-05)', async () => {
+  const result = (await callTool('huaweicloud_explain_error', {
+    errorCode: 'VPC.9904',
+    service: 'iam',
+  })) as { service: string };
+  assert.equal(result.service, 'VPC', 'the service key with no table falls back to the code prefix');
+});
+
+test('explain_error keeps a valid explicit service spelling unchanged (D-05)', async () => {
+  const result = (await callTool('huaweicloud_explain_error', {
+    service: 'ecs',
+    errorCode: 'Ecs.0019',
+    message: 'the flavor does not exist',
+  })) as { service: string };
+  assert.equal(result.service, 'ecs', 'a real service keeps the caller spelling; only unknown/wrong keys are resolved');
 });
 
 // A3/E2E-B1 (#935): the new ECS order-failure mappings, the Kps service

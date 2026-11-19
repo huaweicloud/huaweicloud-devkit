@@ -5,7 +5,9 @@ import {
   validateTunnelId,
 } from '../../sandbox/devbridge-tunnel.ts';
 import { getCurrentWorkspaceId } from '../../sandbox/session-manager.ts';
+import { validateTunnelPort } from '../../sandbox/devbridge-validation.ts';
 import { poolContextFor } from '../../lib/hdkit/sandbox-pool.ts';
+import { startExposeTask, pollExposeTask } from './expose-task.ts';
 import {
   buildKeyringInjectScript,
   ensureDevbridgeKey,
@@ -35,21 +37,45 @@ export async function handleExposeTunnel(args: ToolArgs = {}, _opts: CallToolOpt
   const sandboxUser9 = args.username || 'root';
   const sandboxTimeout9 = args.timeout_ms || SANDBOX_TIMEOUT_MS.expose_tunnel;
   const exposePoolContext = poolContextFor(sandboxWsId9);
-  return await exposeTunnel(
-    sandboxWsId9,
-    {
-      port: args.port,
-      expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
-      keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
-      cleanupMode: args.cleanup_mode,
-      // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
-      poolType: exposePoolContext?.poolMode || 'ephemeral',
-      poolContext: exposePoolContext,
-      keyUpgrade: { ensureDevbridgeKey, recreateDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
-    },
-    sandboxUser9,
-    sandboxTimeout9,
-  );
+  const exposeArgs = {
+    port: validateTunnelPort(args.port),
+    expiryHours: typeof args.expiry_hours === 'number' ? args.expiry_hours : undefined,
+    keepalive: typeof args.keepalive === 'boolean' ? args.keepalive : undefined,
+    cleanupMode: args.cleanup_mode,
+    // DevBridge API Key 自动创建兜底（认证固定 apikey，AK/SK 已移除）
+    poolType: exposePoolContext?.poolMode || 'ephemeral',
+    poolContext: exposePoolContext,
+    keyUpgrade: { ensureDevbridgeKey, recreateDevbridgeKey, buildKeyringInjectScript, listKeysForQuotaHint },
+  };
+  // AX N-SB.1: the chain can outlive the host's request timeout while the
+  // server completes it — async starts it detached and the poll tool delivers
+  // the URL in-band. The fast parameter checks above stay synchronous, so a
+  // bad port is an immediate error, not a deferred task failure.
+  if (args.mode === 'async') {
+    const { taskId } = startExposeTask(sandboxWsId9, exposeArgs.port, () =>
+      exposeTunnel(sandboxWsId9, exposeArgs, sandboxUser9, sandboxTimeout9),
+    );
+    return {
+      started: true,
+      mode: 'async',
+      taskId,
+      hint:
+        'The expose chain is running in the background. Poll huaweicloud_sandbox_expose_poll with this taskId until ' +
+        'state is done — the publicUrl and urlLifetimeHint are delivered there (the task receipt lives 30 minutes in ' +
+        'this MCP server process).',
+    };
+  }
+  return await exposeTunnel(sandboxWsId9, exposeArgs, sandboxUser9, sandboxTimeout9);
+}
+
+export async function handleExposePoll(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
+  const taskId = args.task_id;
+  if (typeof taskId !== 'string' || taskId === '') {
+    throw new Error(
+      'task_id is required — pass the taskId returned by huaweicloud_sandbox_expose_tunnel mode:"async".',
+    );
+  }
+  return pollExposeTask(taskId);
 }
 
 export async function handleRenewTunnel(args: ToolArgs = {}, _opts: CallToolOptions = {}) {

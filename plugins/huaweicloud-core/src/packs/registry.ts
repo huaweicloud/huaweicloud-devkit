@@ -74,6 +74,7 @@ export const PACK_OF = {
   huaweicloud_sandbox_deploy_nginx: 'sandbox',
   huaweicloud_sandbox_deploy_check: 'sandbox',
   huaweicloud_sandbox_expose_tunnel: 'sandbox',
+  huaweicloud_sandbox_expose_poll: 'sandbox',
   huaweicloud_sandbox_renew_tunnel: 'sandbox',
   huaweicloud_sandbox_keepalive_watchdog: 'sandbox',
   huaweicloud_sandbox_check_user: 'sandbox',

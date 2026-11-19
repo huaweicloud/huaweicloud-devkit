@@ -6,7 +6,7 @@ function isSecretKeyName(key: unknown, policy: Policy = DEFAULT_POLICY): boolean
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '');
   if (
-    /access.*key|secret.*key|security.*token|xauth.*token|authorization|password|passwd|adminpass|credential|private.*key|userdata|metadata|inputvalue/.test(
+    /access.*key|secret.*key|secret.*string|secret.*binary|secret.*text|api.*key|security.*token|xauth.*token|authorization|password|passwd|adminpass|credential|private.*key|userdata|metadata|inputvalue/.test(
       normalized,
     )
   ) {
@@ -14,6 +14,15 @@ function isSecretKeyName(key: unknown, policy: Policy = DEFAULT_POLICY): boolean
   }
   return policy.secretKeyNamePatterns.some((pattern) => regexFrom(`^(${pattern})$`).test(String(key)));
 }
+
+// The key vocabulary is shared by every evidence/command redaction face.
+// Backslashes around the key/value are tolerated because shell-transcribed
+// commands and nested JSON carry `\"password\":\"…\"` spellings; `secret://`
+// refs are exempt (the ref is conversation-safe by doctrine). `secret_text`
+// and `api_key` joined the family with the AX N-R4.1 fix — DEW's plaintext
+// secret and the DevBridge key were crossing every evidence surface.
+const SECRET_KEY_VALUE_RE =
+  /((?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?key|secret[_-]?string|secret[_-]?binary|secret[_-]?text|api[_-]?key|secret(?!:\/)|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential|input[_-]?value)\\*["']?\s*[:=]\s*[\\"']*\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi;
 
 function redactString(text: unknown): string {
   return (
@@ -32,12 +41,21 @@ function redactString(text: unknown): string {
         /(["']?(?:user[_-]?data|metadata|private[_-]?key|authorization|x[_-]?auth[_-]?token)["']?\s*[:=]\s*).*/gi,
         '$1<redacted>',
       )
-      .replace(
-        /(["']?(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?key|secret[_-]?string|secret[_-]?binary|security[_-]?token|token|password|passwd|admin[_-]?pass|credential|input[_-]?value)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-        '$1<redacted>',
-      )
-      .replace(/\b(["']?(?:AK|SK)["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>')
+      .replace(SECRET_KEY_VALUE_RE, '$1<redacted>')
+      // XML settings shapes (`<password>value</password>`, the settings.xml
+      // deploy idiom) carry no `:`/`=` separator, so the key-value family
+      // never saw them — the artifact evidence echoed the password verbatim
+      // (AX N-R4.1). The tag name is backreferenced so a mismatched close
+      // tag is not half-redacted.
+      .replace(/<(password|passwd|pwd)>[^<]*<\/\1>/gi, '<$1><redacted></$1>')
+      .replace(/\b(["']?(?:AK|SK)\\*["']?\s*[:=]\s*[\\"']*\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>')
   );
+}
+
+// The string-level evidence redaction entry (risk-rule-engine's excerpt and
+// any future evidence face): one vocabulary, no second drift-prone copy.
+export function redactEvidenceText(text: unknown): string {
+  return redactString(text);
 }
 
 // Overload parameter names are documentation only; the implementation below

@@ -220,11 +220,7 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     /不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`/,
     'the template_id retirement must be documented in the selection rules',
   );
-  assert.doesNotMatch(
-    poolSection,
-    /显式 `template_id` 优先/,
-    'the explicit-priority doctrine must not come back',
-  );
+  assert.doesNotMatch(poolSection, /显式 `template_id` 优先/, 'the explicit-priority doctrine must not come back');
   assert.match(
     poolSection,
     /完整口径、容量规划与 G 清单：\[references\/resource-pool\.md\]\(references\/resource-pool\.md\)/,
@@ -489,11 +485,7 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /模板 ID 仅由服务端 `POOL_TEMPLATE_\*` 权威维护；客户端不再支持 `HW_POOL_TEMPLATE_\*` 钉扎或显式 template_id/,
     'the retirement of pinning and explicit template_id must be stated',
   );
-  assert.doesNotMatch(
-    resourcePool,
-    /设置后客户端附带映射 template_id 上送/,
-    'the pinning teaching must not come back',
-  );
+  assert.doesNotMatch(resourcePool, /设置后客户端附带映射 template_id 上送/, 'the pinning teaching must not come back');
   // G list: G1's mapping drives the 7-day cap the deletion doctrine cites.
   assert.match(
     resourcePool,
@@ -577,7 +569,7 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     skill.split('\n').find((line) => line.includes('Gateway 502/504 vs the 409 version gate')) ?? '';
   assert.match(
     gateWarningsRow,
-    /A connect answered by gateway 502\/504 is a transient orchestration timeout, NOT a failed create: Gateway 502\/504 timeouts during orchestration are retried automatically \(30s\/45s backoff\) — the server may already have created the instance, so a retry reuses it; on exhaustion the result is ok:false with the attempt count, and the remediation follows the failing answer — a gateway page carries the transient-class copy, while a business-coded 502 that carries its own remediation keeps it \(one without its own copy falls to the transient copy\)\./,
+    /A connect answered by gateway 502\/504 is a transient orchestration timeout, NOT a failed create: Gateway 502\/504 timeouts during orchestration return a pending receipt \(ok:false, pending:true, retryAfter, hint\) instead of holding the call through the backoff — the server may already have created the instance; re-call connect with the SAME parameters after retryAfter and a created instance is reused; on a genuine exhaustion the result is ok:false with the attempt count, and the remediation follows the failing answer — a gateway page carries the transient-class copy, while a business-coded 502 that carries its own remediation keeps it \(one without its own copy falls to the transient copy\)\./,
     'the gate warnings row must mirror the retry sentence with the exhaustion observable and the exact remediation-split rule',
   );
   assert.match(
@@ -634,8 +626,8 @@ test('sandbox tool descriptions carry the pool_type and 429 three-code semantics
   // 处置各钉其句，互换即红门。autoUpgrade 不存活（dev 的自动升级模块未移植）。
   assert.match(
     connectDesc,
-    /Gateway 502\/504 timeouts during orchestration are retried automatically \(30s\/45s backoff\) — the server may already have created the instance, so a retry reuses it\./,
-    'connect must state the bounded gateway retry with the reuse fact',
+    /Gateway 502\/504 timeouts during orchestration return a pending receipt \(ok:false, pending:true, retryAfter, hint\) instead of holding the call through the backoff — the server may already have created the instance; re-call this tool with the SAME parameters after retryAfter and a created instance is reused\./,
+    'connect must state the pending receipt with the reuse fact',
   );
   assert.match(
     connectDesc,
