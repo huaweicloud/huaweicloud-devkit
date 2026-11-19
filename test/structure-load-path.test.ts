@@ -523,7 +523,12 @@ test('the vendorConfirmed gate is pinned on every gated tool face', () => {
   // converse pin holds the exemption boundary: a devkit meta tool
   // (check_update) passes the wrong-typed value through, proving the gate
   // set did not silently grow over the meta family.
-  assert.ok(VENDOR_GATED_TOOLS.size >= 13, 'the measured entry set must stay gated');
+  assert.ok(VENDOR_GATED_TOOLS.size >= 11, 'the measured entry set must stay gated');
+  // #1158 D9-6: the side-effect-free read faces were pulled out so
+  // third-party MCP clients can call them without an attestation.
+  for (const name of ['huaweicloud_service_catalog', 'huaweicloud_list_regions', 'huaweicloud_check_cli']) {
+    assert.ok(!(VENDOR_GATED_TOOLS as ReadonlySet<string>).has(name), `${name} is a read-only face and stays ungated`);
+  }
   for (const name of VENDOR_GATED_TOOLS) {
     const def = TOOL_DEFINITIONS.find((tool) => tool.name === name);
     assert.ok(def, `gated tool ${name} must exist in TOOL_DEFINITIONS`);

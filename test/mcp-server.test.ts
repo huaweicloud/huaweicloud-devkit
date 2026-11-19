@@ -311,3 +311,32 @@ test('the stdio transport forwards client responses to server-initiated requests
   );
   assert.match(written.join(''), /-32601/, 'the malformed message still earns a visible reply');
 });
+
+test('MCP server rejects business requests before initialize with -32002 (#1158 D9-12)', async () => {
+  const client = createClient();
+  try {
+    const earlyList = await client.request('tools/list');
+    assert.equal(earlyList.error?.code, -32002, 'tools/list before the handshake must be refused');
+    assert.match(earlyList.error.message, /initialize/);
+    assert.equal(earlyList.result, undefined, 'no tool catalog may leak before initialize');
+
+    const earlyResources = await client.request('resources/list');
+    assert.equal(earlyResources.error?.code, -32002);
+
+    await client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: 'test-client', version: '0.0.0' },
+    });
+
+    const listed = await client.request('tools/list');
+    assert.ok(Array.isArray(listed.result?.tools) && listed.result.tools.length > 0);
+
+    // resources were never advertised: after the handshake the unknown method
+    // keeps the JSON-RPC -32601 answer (the capability stays explicitly absent).
+    const resources = await client.request('resources/list');
+    assert.equal(resources.error?.code, -32601);
+  } finally {
+    client.close();
+  }
+});
