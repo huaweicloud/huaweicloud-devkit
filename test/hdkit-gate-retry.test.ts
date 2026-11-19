@@ -5565,9 +5565,11 @@ test('an oversized JSON message, code, and traceId fold bounded — the child pr
     },
   ];
   for (const { shape, check } of rows) {
-    // fileURLToPath，不能 driver.pathname：win32 上 pathname 是 /D:/…（前导
-    // 斜杠+盘符），子进程的模块解析直接 Cannot find module——CI windows 车道
-    // 8 次红里的本项即此
+    // 主模块实参必须是裸路径：pathname 在 win32 是 /D:/…（Cannot find
+    // module），URL 串又会被入口层当路径解析（本机 node 26 实测挂）——
+    // fileURLToPath 双平台同合法。run 44498912057 的 protocol 'd:' 红不在
+    // 入口，在驱动器内部的裸路径 import()（ESM 说明符层按 URL 解析），那
+    // 一段已改 file:// URL 说明符（见 oversize-json-driver.mjs）
     const res = spawnSync(process.execPath, ['--max-old-space-size=512', fileURLToPath(driver), shape], {
       env: childEnv,
       encoding: 'utf8',

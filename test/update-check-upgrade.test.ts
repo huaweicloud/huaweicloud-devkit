@@ -3421,7 +3421,17 @@ test('upgradePackage 升级子进程: npmrc 级联与 npm 的表单语义', asyn
 
         writeFileSync(userconfig, line('${NEXUS_TOKEN}'));
         process.env.nexus_token = 'fixture-registry-token';
-        assert.equal((await attempt()).result.success, false, 'envReplace is exact-name only');
+        // exact-name 拒绝是 POSIX env 层的性质（env[name] 大小写敏感）。win32
+        // 的 process.env 代理大小写不敏感——产品与 npm 同为直查 env[name]，
+        // 「只设变体、未设精确名」这一输入状态在 win32 上不存在，变体解析即
+        // 平台真值（npm 在 win32 上同样解析）。按平台断各自可观察的契约
+        assert.equal(
+          (await attempt()).result.success,
+          isWin,
+          isWin
+            ? 'win32 env is case-insensitive: the variant spelling resolves (npm parity)'
+            : 'envReplace is exact-name only',
+        );
         delete process.env.nexus_token;
 
         writeFileSync(userconfig, `registry=${registry}/\n${host}/:_authToken=fixture-registry-token ; ci token\n`);
