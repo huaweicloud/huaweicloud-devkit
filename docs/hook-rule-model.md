@@ -124,6 +124,17 @@ Agent 在**执行前**应主动调用以下 MCP 工具进行风险检查：
 | `match.any`  | **至少一个**正则匹配 → OR  |
 | `match.none` | **全部不能**匹配 → NOT AND |
 
+### 写操作前缀匹配边界
+
+`writeOperationPrefixes` 的匹配边界有两个约束，改动时须同时满足（#1065 D4-25）：
+
+- **前边界必须接受空白**：标准形态 `hcloud VPC CreateVpc` 的操作名前是空格，边界字符类须含 `\s`。缺了它，写门禁与 `cli:write` 遥测同时失效（写操作被放行且被记成 `cli:invoke`）。
+- **不得改成纯 `\b` 词边界**：`NovaDeleteServer`、`ResetServerPassword` 的前缀不在词首，`\b` 会把这类破坏性操作放行；`(^|[A-Za-z0-9\s])` 兼顾标准形态与词中匹配。
+
+> 副作用：未加引号的回显文本（如 `echo hcloud VPC CreateVpc`）也会被拒——属 fail-closed 误报，不影响安全边界，带引号的回显因不匹配 `hcloud` 行首/空白后置条件仍放行。
+
+> 遥测落盘位置：hook 写在 `<plugin>/telemetry/hook-events.jsonl`，与该文件 `src/telemetry/telemetry.mjs` 的 `AGENT_TELEMETRY_DIR` 必须一致（hook 位于 `<plugin>/hooks/`，故插件根 = `parents[1]`），否则事件不会被 ingest。
+
 ### 严重级别
 
 | 级别   | 含义             | 行为               |
