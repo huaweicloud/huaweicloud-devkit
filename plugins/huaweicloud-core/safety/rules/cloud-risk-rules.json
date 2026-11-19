@@ -36,7 +36,7 @@
           },
           {
             "field": "text",
-            "regex": "(HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_|(?:^|[^A-Za-z0-9_])(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|api[_-]?key)(?=[^A-Za-z0-9_]|$))"
+            "regex": "(HUAWEICLOUD|HWC_|HCLOUD|HW_|OS_|(?:^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|api[_-]?key)(?=[^A-Za-z0-9_]|$))"
           }
         ]
       },
