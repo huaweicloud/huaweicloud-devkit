@@ -773,8 +773,12 @@ test('ask mode: run without the attestation shows the chat envelope (the throw i
   await withTempAuthHome(async () => {
     await withApprovalMode('ask', async () => {
       await withFakeHcloudBin(async () => {
+        // 本用例的 args 必须独占：与任何先行的 ask 用例逐字节相同会在
+        // spawn 不可投递的车道（win32 的 POSIX-only 假 bin）骑上它留下的
+        // S1 retry memo——未投递的派发按设计续装 memo，同参到达即复用 consent
+        // 而不再询问。独占 args 才钉住本用例的真正主语：新鲜到达必问
         const envelope = (await callTool('huaweicloud_run_approved_command', {
-          args: ['ECS', 'DeleteServer', '--server_id=i-123'],
+          args: ['ECS', 'DeleteServer', '--server_id=i-unattested-1'],
           maxRetries: 0,
           vendorConfirmed: 'test: vendor established by the harness',
         })) as { code: string };

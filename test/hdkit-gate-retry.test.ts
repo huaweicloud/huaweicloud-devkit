@@ -4413,7 +4413,12 @@ test('every engine error-family prototype routes to stamped carriers: zero proce
     engineFamilies.size >= 8,
     `the engine carries at least the eight known families (found ${engineFamilies.size})`,
   );
-  for (const known of [Error.prototype, TypeError.prototype, DOMException.prototype, SuppressedError.prototype]) {
+  // SuppressedError 家族在 node 22（工程地板 22.19）尚不存在，直写原型引用
+  // 在 22 车道上是 ReferenceError。跨版本等价断言：只点名引擎实际持有的
+  // 家族；未来引擎补齐后枚举扫描（collectEngineErrorPrototypes）自动覆盖
+  const knownEngineFamilies: object[] = [Error.prototype, TypeError.prototype, DOMException.prototype];
+  if (typeof SuppressedError !== 'undefined') knownEngineFamilies.push(SuppressedError.prototype);
+  for (const known of knownEngineFamilies) {
     assert.ok(engineFamilies.has(known), 'the known engine families are enumerated');
   }
   for (const proto of engineFamilies) {
@@ -5560,7 +5565,12 @@ test('an oversized JSON message, code, and traceId fold bounded — the child pr
     },
   ];
   for (const { shape, check } of rows) {
-    const res = spawnSync(process.execPath, ['--max-old-space-size=512', driver.pathname, shape], {
+    // 主模块实参必须是裸路径：pathname 在 win32 是 /D:/…（Cannot find
+    // module），URL 串又会被入口层当路径解析（本机 node 26 实测挂）——
+    // fileURLToPath 双平台同合法。run 44498912057 的 protocol 'd:' 红不在
+    // 入口，在驱动器内部的裸路径 import()（ESM 说明符层按 URL 解析），那
+    // 一段已改 file:// URL 说明符（见 oversize-json-driver.mjs）
+    const res = spawnSync(process.execPath, ['--max-old-space-size=512', fileURLToPath(driver), shape], {
       env: childEnv,
       encoding: 'utf8',
       timeout: 120_000,

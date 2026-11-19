@@ -31,7 +31,7 @@ import { confirmApprovalToken } from '../../plugins/huaweicloud-core/src/lib/app
 // base64 of 32 bytes (the env tier's exact shape). Pinned, public, and
 // case-scoped: any fixed value works; this one is committed so the
 // watcher and the injected case env can never drift apart.
-export const E2E_VAULT_MASTER_KEY = 'bgdPqPS9m9UpBKNHbVlffb8vZQet2PRHmea9ZwNFgFg=';
+export const E2E_VAULT_MASTER_KEY = 'bgdPqPS9m9UpBKNHbVlffb8vZQet2PRHmea9ZwNFgFg='; // gitleaks:allow — synthetic public key
 
 // The store file inside the throwaway home: devkitStateBase() resolves to
 // the config tree for a writable home (every E2E home is one — the same
