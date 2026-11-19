@@ -2700,7 +2700,8 @@ test('command-forward: every secret charset family substitutes into an accepted 
     {
       label: 'hex token',
       secrets: ['a1b2c3d4e5f67890'],
-      args: ['RDS', 'CreateInstance', '--auth_token=a1b2c3d4e5f67890'],
+      // gitleaks:allow — 合成的脱敏夹具值：本表就是钉「token 形态的值不上工具面」
+      args: ['RDS', 'CreateInstance', '--auth_token=a1b2c3d4e5f67890'], // gitleaks:allow
     },
     {
       label: 'shell-special',
