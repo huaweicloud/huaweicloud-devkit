@@ -220,11 +220,7 @@ test('huawei-sandbox carries the two-pool pool_type selection section (v3 calibe
     /不支持传 `template_id`；自定义模板已下线，客户端只传 `pool_type`/,
     'the template_id retirement must be documented in the selection rules',
   );
-  assert.doesNotMatch(
-    poolSection,
-    /显式 `template_id` 优先/,
-    'the explicit-priority doctrine must not come back',
-  );
+  assert.doesNotMatch(poolSection, /显式 `template_id` 优先/, 'the explicit-priority doctrine must not come back');
   assert.match(
     poolSection,
     /完整口径、容量规划与 G 清单：\[references\/resource-pool\.md\]\(references\/resource-pool\.md\)/,
@@ -489,11 +485,7 @@ test('resource-pool reference documents the v3 mechanism, lifecycle, and error c
     /模板 ID 仅由服务端 `POOL_TEMPLATE_\*` 权威维护；客户端不再支持 `HW_POOL_TEMPLATE_\*` 钉扎或显式 template_id/,
     'the retirement of pinning and explicit template_id must be stated',
   );
-  assert.doesNotMatch(
-    resourcePool,
-    /设置后客户端附带映射 template_id 上送/,
-    'the pinning teaching must not come back',
-  );
+  assert.doesNotMatch(resourcePool, /设置后客户端附带映射 template_id 上送/, 'the pinning teaching must not come back');
   // G list: G1's mapping drives the 7-day cap the deletion doctrine cites.
   assert.match(
     resourcePool,
