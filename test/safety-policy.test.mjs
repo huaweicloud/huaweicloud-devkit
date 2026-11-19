@@ -673,3 +673,28 @@ test('hcloud classification quote normalization preserves existing exemptions (#
   assert.equal(jsonInput.decision, 'deny');
   assert.equal(jsonInput.risk, 'write');
 });
+
+test('classifyTextCommand denies generic credential env dumps (#1158 D4-2)', () => {
+  for (const cmd of [
+    'env | grep access_key',
+    'env | grep secret_key',
+    'printenv | grep ACCESS_KEY_ID',
+    'env | grep api_key',
+  ]) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.risk, 'credential');
+  }
+  // A non-credential environment grep is not a credential dump.
+  assert.equal(classifyTextCommand('env | grep PATH').decision, 'allow');
+});
+
+test('redactSecrets redacts flag-space and quoted-key credential forms (#1158 D4-6/D4-26)', () => {
+  assert.equal(redactSecrets('--admin_pass SuperSecret123!'), '--admin_pass <redacted>');
+  assert.equal(
+    redactSecrets('hcloud ECS CreateServers --admin-pass SuperSecret123!'),
+    'hcloud ECS CreateServers --admin-pass <redacted>',
+  );
+  assert.equal(redactSecrets('"admin_pass": "SuperSecret123!"'), '"admin_pass": <redacted>');
+  assert.equal(redactSecrets('{"secret_key":"SuperSecret123!"}'), '{"secret_key":<redacted>}');
+});

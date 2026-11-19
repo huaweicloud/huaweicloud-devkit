@@ -444,6 +444,11 @@ test('service_catalog routes all documented Chinese-intent eval cases >= 80% (#7
   assert.ok(accuracy >= 0.8, `Chinese-intent routing accuracy ${accuracy.toFixed(3)} < 0.8`);
 });
 
+test('service_catalog routes 云主机 to ECS (#1158 D10-3)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', { intent: '查看云主机列表' });
+  assert.ok(result.recommendedServices.includes('ECS'), '云主机 must route to ECS');
+});
+
 test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)', async () => {
   // `it` is lowercased before matching; keywords containing ASCII letters
   // (弹性公网IP / NAT网关) must match the lowercased intent.
