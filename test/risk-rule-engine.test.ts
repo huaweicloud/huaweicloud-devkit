@@ -382,6 +382,39 @@ test('evaluateCommandRisk warns on plaintext secret in CLI args (#561 D4-3)', ()
   }
 });
 
+test('evaluateCommandRisk blocks env dumps of generic credential keys (#1158 D4-2)', () => {
+  for (const cmd of [
+    'env | grep access_key',
+    'env | grep secret_key',
+    'printenv | grep ACCESS_KEY_ID',
+    'env | grep api_key',
+  ]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.ok(
+      result.findings.some((f) => f.ruleId === 'hwc-command-env-dump'),
+      `${cmd} should carry hwc-command-env-dump`,
+    );
+  }
+  assert.equal(evaluateCommandRisk('grep -rn access_key src/').decision, 'allow');
+});
+
+test('evaluateCommandRisk warns on --admin-pass / --admin_pass command forms (#1158 D4-6)', () => {
+  for (const cmd of [
+    'hcloud ECS CreateServers --admin-pass SuperSecret123!',
+    'hcloud ECS CreateServers --admin_pass SuperSecret123!',
+  ]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'warn', `${cmd} should warn`);
+    assert.ok(
+      result.findings.some((f) => f.ruleId === 'hwc-command-adminpass-exposure'),
+      'adminpass rule must fire in the command stage',
+    );
+    assert.doesNotMatch(JSON.stringify(result), /SuperSecret123!/, 'evidence must be redacted');
+  }
+  assert.equal(evaluateCommandRisk('hcloud ECS CreateServers --admin-pass <password>').findings.length, 0);
+});
+
 test('evaluateArtifacts warns on admin_pass in Terraform files (#733 D4-6)', () => {
   const result = evaluateArtifacts([
     {

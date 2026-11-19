@@ -992,7 +992,7 @@ export function classifyTextCommand(command: unknown, options: ClassifyOptions =
   // `-devkit` suffix so the devkit bin name does not feed the family token;
   // `export -p` and `declare`/`typeset` are dump forms of the same class.
   const CRED_ENV_NAMES =
-    '(?:HUAWEICLOUD(?!-devkit)|HWC_|HCLOUD_|OS_|HW_(?:ACCESS_KEY|SECRET_KEY|SECRET_ACCESS_KEY|SECURITY_TOKEN|API_KEY|VAULT_MASTER_KEY))';
+    '(?:HUAWEICLOUD(?!-devkit)|HWC_|HCLOUD_|OS_|HW_(?:ACCESS_KEY|SECRET_KEY|SECRET_ACCESS_KEY|SECURITY_TOKEN|API_KEY|VAULT_MASTER_KEY)|(?:^|[^A-Za-z0-9_-])(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|api[_-]?key)(?=[^A-Za-z0-9_]|$))';
   if (
     /(^|\s)(env|printenv|export\s+-p|declare|typeset|set|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)(?![A-Za-z0-9_-])/i.test(
       shadowText,
