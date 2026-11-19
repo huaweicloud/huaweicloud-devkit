@@ -1,4 +1,4 @@
-import { TOOL_DEFINITIONS, callTool } from './tools.mjs';
+import { TOOL_DEFINITIONS, callTool, runVersionCheck } from './tools.mjs';
 import { peekCachedUpdateInfo, applyUpdateHint, getRuntimeVersion } from './update-check.mjs';
 import { getAutoUpgradeNotice } from './update-auto.mjs';
 import { initTelemetry, flushEvents } from './telemetry/telemetry.mjs';
@@ -55,6 +55,16 @@ export async function dispatch(method, params, opts = {}) {
 
     const agent = detectAgent(ci);
     initTelemetry({ harness: agent.harness, version: agent.version });
+
+    // #1158 D9-12: the initialize handshake runs the KooCLI version check so a
+    // session learns about a missing/mismatched CLI up front (the tool catalog
+    // alone never probes it). Best-effort: a probe failure must not block the
+    // handshake, and only the version facts ride the response — never output.
+    let kooCli = null;
+    try {
+      kooCli = await runVersionCheck();
+    } catch {}
+
     return {
       protocolVersion: params.protocolVersion || '2024-11-05',
       capabilities: {
@@ -63,6 +73,17 @@ export async function dispatch(method, params, opts = {}) {
       serverInfo: {
         name: 'huaweicloud-devkit',
         version: pkgVersion,
+        ...(kooCli
+          ? {
+              kooCli: {
+                installed: kooCli.installed,
+                status: kooCli.status,
+                installedVersion: kooCli.installedVersion,
+                requiredVersion: kooCli.kooCliVersion,
+                versionMismatch: kooCli.versionMismatch,
+              },
+            }
+          : {}),
       },
     };
   }
