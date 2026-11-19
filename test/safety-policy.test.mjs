@@ -689,6 +689,28 @@ test('classifyTextCommand denies generic credential env dumps (#1158 D4-2)', () 
   assert.equal(classifyTextCommand('env | grep PATH').decision, 'allow');
 });
 
+test('classifyTextCommand denies PREFIXED credential env dumps (#1158 D4-2)', () => {
+  // The same credentials are routinely exported under a namespace prefix:
+  // TF_VAR_* is how the Terraform Huawei provider receives AK/SK, AWS_* is the
+  // ROS/dual-stack convention, and <VENDOR>_SECRET_KEY is common in CI. A left
+  // boundary that rejects `_` turned every one of these into an env-dump bypass.
+  for (const cmd of [
+    'env | grep TF_VAR_access_key',
+    'env | grep TF_VAR_secret_key',
+    'env | grep AWS_ACCESS_KEY_ID',
+    'env | grep MY_SECRET_KEY',
+    'env | grep AWS_SECRET_ACCESS_KEY',
+    'printenv | grep MY_API_KEY',
+    'env | grep HUAWEICLOUD_AWS_ACCESS_KEY_ID',
+  ]) {
+    const result = classifyTextCommand(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.risk, 'credential');
+  }
+  // Prefix support must not turn every environment grep into a deny.
+  assert.equal(classifyTextCommand('env | grep TF_VAR_region').decision, 'allow');
+});
+
 test('redactSecrets redacts flag-space and quoted-key credential forms (#1158 D4-6/D4-26)', () => {
   assert.equal(redactSecrets('--admin_pass SuperSecret123!'), '--admin_pass <redacted>');
   assert.equal(

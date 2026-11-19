@@ -161,6 +161,35 @@ test('python hook blocks env dumps with HW_ prefix (#561 D4-2)', () => {
   }
 });
 
+test('python hook blocks generic and prefixed credential env dumps (#1158 D4-2)', () => {
+  // The Python hook consumes the shared cloud-risk-rules.json `env-dump` rule,
+  // so the Node hook and this hook must agree on both the bare key family and
+  // the prefixed forms (TF_VAR_* is the Terraform Huawei provider's shape).
+  for (const cmd of [
+    'env | grep access_key',
+    'env | grep secret_key',
+    'printenv | grep API_KEY',
+    'env | grep TF_VAR_access_key',
+    'env | grep TF_VAR_secret_key',
+    'env | grep AWS_ACCESS_KEY_ID',
+    'env | grep MY_SECRET_KEY',
+  ]) {
+    const result = runEvaluate('terminal', { command: cmd });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0);
+    const reason = JSON.parse(result.stdout);
+    assert.equal(typeof reason, 'string', `${cmd} should be blocked`);
+    assert.match(reason, /credential|env/i);
+  }
+  // Parity on the allow side: a non-credential environment grep stays allowed.
+  for (const cmd of ['env | grep PATH', 'env | grep TF_VAR_region', 'printenv | grep HOME']) {
+    const result = runEvaluate('terminal', { command: cmd });
+    if (pythonUnavailable(result)) return;
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout), null, `${cmd} should be allowed`);
+  }
+});
+
 test('python hook blocks credential variable references incl. HW_ prefix (#561 D4-2)', () => {
   const bypasses = [
     'echo $HW_SECRET_KEY',

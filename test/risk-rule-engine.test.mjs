@@ -356,6 +356,25 @@ test('evaluateCommandRisk blocks env dumps of generic credential keys (#1158 D4-
   assert.equal(evaluateCommandRisk('env | grep PATH').decision, 'allow');
 });
 
+test('evaluateCommandRisk blocks env dumps of PREFIXED credential keys (#1158 D4-2)', () => {
+  // Terraform injects the Huawei provider credentials as TF_VAR_access_key /
+  // TF_VAR_secret_key; AWS_* and <VENDOR>_SECRET_KEY are the same shape. The
+  // rule's left boundary must accept an optional prefix segment, otherwise the
+  // rule is bypassed by any prefixed export.
+  for (const cmd of [
+    'env | grep TF_VAR_access_key',
+    'env | grep TF_VAR_secret_key',
+    'env | grep AWS_ACCESS_KEY_ID',
+    'env | grep MY_SECRET_KEY',
+    'printenv | grep MY_API_KEY',
+  ]) {
+    const result = evaluateCommandRisk(cmd);
+    assert.equal(result.decision, 'deny', `${cmd} should deny`);
+    assert.equal(result.findings[0].ruleId, 'hwc-command-env-dump');
+  }
+  assert.equal(evaluateCommandRisk('env | grep TF_VAR_region').decision, 'allow');
+});
+
 test('evaluateCommandRisk warns on --admin-pass / --admin_pass command forms (#1158 D4-6)', () => {
   for (const cmd of [
     'hcloud ECS CreateServers --admin-pass SuperSecret123!',
