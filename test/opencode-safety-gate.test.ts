@@ -1,0 +1,439 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import test from 'node:test';
+
+import { opencodeSafetyGateVersionSupported } from '../plugins/huaweicloud-core/src/agents/opencode-config.ts';
+import { fixtureDir } from './fixture-dir.ts';
+import { doctorEnv, runDoctor, runInstall, runUninstall, setupCli } from './doctor-helpers.ts';
+
+// The OpenCode >= 2.0 shell safety gate (integrations/opencode/hooks/
+// safety-gate.js): the evaluate-hook adapter that denies shell commands the
+// deployed dist/safety-policy.js classifier refuses. Part A pins the
+// version floor, Part B drives the real adapter file against simulated
+// evaluate events (the deployed layout staged in a fixtureDir, the policy
+// module stubbed to the repo's real classifier, a throwing stub, or absent),
+// Part C runs the real installer/doctor/uninstall with the deterministic
+// HUAWEICLOUD_OPENCODE_SAFETY_GATE override (the permission-seam precedent).
+
+const GATE_SRC = fileURLToPath(new URL('../integrations/opencode/hooks/safety-gate.js', import.meta.url));
+const MJS_HOOK_SRC = fileURLToPath(
+  new URL('../plugins/huaweicloud-core/hooks/huaweicloud-safety.mjs', import.meta.url),
+);
+const REAL_POLICY_SRC = fileURLToPath(new URL('../plugins/huaweicloud-core/src/safety-policy.ts', import.meta.url));
+
+interface GateModule {
+  default: {
+    id: string;
+    setup(ctx: unknown): Promise<() => void>;
+  };
+}
+
+type EvaluateEvent = { sessionID?: string; action: string; resources?: unknown[]; effect?: string; message?: string };
+
+// Stage the deployed layout and import the adapter fresh: plugins/ holds the
+// gate (renamed .mjs like the skill-tracker load-smoke — a fixtureDir has no
+// package.json, and .js would parse as CommonJS), huaweicloud-plugins/ holds
+// the payload root with the type:module package.json the real deploy ships
+// (installRuntimeDeps) so dist/safety-policy.js parses as ESM.
+async function loadGate(
+  policy: 'real' | 'throwing' | 'missing' | 'neverSettle',
+  prefix: string,
+): Promise<(event: EvaluateEvent) => Promise<void>> {
+  const dir = fixtureDir(`safety-gate-${prefix}-`);
+  mkdirSync(join(dir, 'plugins'), { recursive: true });
+  copyFileSync(GATE_SRC, join(dir, 'plugins', 'safety-gate.mjs'));
+  if (policy !== 'missing') {
+    const distDir = join(dir, 'huaweicloud-plugins', 'dist');
+    mkdirSync(distDir, { recursive: true });
+    writeFileSync(
+      join(dir, 'huaweicloud-plugins', 'package.json'),
+      `${JSON.stringify({ name: 'huaweicloud-devkit', type: 'module' }, null, 2)}\n`,
+    );
+    writeFileSync(
+      join(distDir, 'safety-policy.js'),
+      policy === 'real'
+        ? `export { classifyTextCommand } from ${JSON.stringify(pathToFileURL(REAL_POLICY_SRC).href)};\n`
+        : policy === 'neverSettle'
+          ? // A top-level forever-pending promise: the module evaluation (and
+            // so the import) never settles — the FIX-4 hang shape.
+            'await new Promise(() => {});\nexport function classifyTextCommand() {\n  throw new Error("unreachable");\n}\n'
+          : "export function classifyTextCommand() {\n  throw new Error('injected classifier failure');\n}\n",
+    );
+  }
+  const mod = (await import(pathToFileURL(join(dir, 'plugins', 'safety-gate.mjs')).href)) as GateModule;
+  assert.equal(mod.default.id, 'huaweicloud-safety-gate');
+  let registered: ((event: EvaluateEvent) => Promise<void>) | undefined;
+  const ctx = {
+    permission: {
+      hook: async (name: string, fn: (event: EvaluateEvent) => Promise<void>) => {
+        assert.equal(name, 'evaluate');
+        registered = fn;
+      },
+    },
+  };
+  const cleanup = await mod.default.setup(ctx);
+  assert.equal(typeof cleanup, 'function', 'a V2 host may invoke the setup return value unguarded');
+  assert.doesNotThrow(() => cleanup());
+  assert.ok(registered, 'the handler was registered via ctx.permission.hook');
+  return registered;
+}
+
+function shellEvent(command: string | unknown[]): EvaluateEvent {
+  // The measured V2 shape: resources[0] carries the full command string; an
+  // array input tests the multi-element join directly.
+  const resources = Array.isArray(command) ? command : [command];
+  return { sessionID: 'ses_test', action: 'shell', resources, effect: 'allow' };
+}
+
+const DENY_PREFIX = 'Huawei Cloud safety hook blocked this action: ';
+
+// ── Part A: the version floor ──
+
+test('opencodeSafetyGateVersionSupported pins the 2.0 floor and the skip polarity', () => {
+  assert.equal(opencodeSafetyGateVersionSupported('2.0.0'), true, 'the floor itself');
+  assert.equal(opencodeSafetyGateVersionSupported('v2.2.7'), true, 'the measured host');
+  assert.equal(opencodeSafetyGateVersionSupported('1.19.9'), false, '1.x has no evaluate hook (V1 named it bash)');
+  assert.equal(opencodeSafetyGateVersionSupported('1.19'), false, 'unparsable per the anchored shape');
+  assert.equal(
+    opencodeSafetyGateVersionSupported('opencode 2.2.7'),
+    false,
+    'the probe must extract, not pass raw output',
+  );
+  assert.equal(opencodeSafetyGateVersionSupported(null), false, 'absent/unparsable polarity is skip');
+});
+
+// ── Part B: the handler against simulated evaluate events ──
+
+test('a benign read and a benign shell command leave the effect untouched', async () => {
+  const gate = await loadGate('real', 'benign');
+  const ls = shellEvent('ls /tmp');
+  await gate(ls);
+  assert.equal(ls.effect, 'allow');
+  assert.equal(ls.message, undefined);
+  const echo = shellEvent('echo gate-smoke-ok');
+  await gate(echo);
+  assert.equal(echo.effect, 'allow');
+  const read = shellEvent('hcloud ECS ListServersDetails --cli-region=cn-north-4');
+  await gate(read);
+  assert.equal(read.effect, 'allow', 'a plain hcloud read is not the write class');
+});
+
+test('an unapproved hcloud write denies with the plan-and-approval remediation', async () => {
+  const gate = await loadGate('real', 'write');
+  const event = shellEvent('hcloud ECS DeleteServers --server.id=x');
+  await gate(event);
+  assert.equal(event.effect, 'deny');
+  assert.match(event.message ?? '', new RegExp(`^${DENY_PREFIX}`));
+  assert.match(event.message ?? '', /plan and receives explicit user approval/);
+});
+
+test('credential-file reads, env dumps, and recursive forced rm each deny', async () => {
+  const gate = await loadGate('real', 'families');
+  const cred = shellEvent('cat ~/.hcloud/config');
+  await gate(cred);
+  assert.equal(cred.effect, 'deny');
+  assert.match(cred.message ?? '', /credential or profile files/);
+  const dump = shellEvent('env | grep HUAWEICLOUD');
+  await gate(dump);
+  assert.equal(dump.effect, 'deny');
+  assert.match(dump.message ?? '', /Dumping cloud credential environment variables/);
+  const rm = shellEvent('rm -rf /');
+  await gate(rm);
+  assert.equal(rm.effect, 'deny');
+  assert.match(rm.message ?? '', new RegExp(`^${DENY_PREFIX}`));
+});
+
+test('per-segment classification: any denied segment denies the whole event (the host splits compounds)', async () => {
+  const gate = await loadGate('real', 'per-segment');
+  // The host scanner splits compound commands into per-segment resources
+  // (`ls /tmp && hcloud …` arrives as ['ls /tmp', 'hcloud …']) and its own
+  // rule engine denies the operation when ANY segment denies — the
+  // live-measured bypass shape: the old join(' ') erased the separator and
+  // the write segment rode through as one allow.
+  const bypass = shellEvent(['ls /tmp', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(bypass);
+  assert.equal(bypass.effect, 'deny');
+  assert.match(bypass.message ?? '', /plan and receives explicit user approval/);
+  const benign = shellEvent(['echo one', 'echo two']);
+  await gate(benign);
+  assert.equal(benign.effect, 'allow');
+  assert.equal(benign.message, undefined, 'two benign segments stay zero-intervention');
+  const readThenWrite = shellEvent(['hcloud ECS ListServers', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(readThenWrite);
+  assert.equal(readThenWrite.effect, 'deny', 'a denied second segment denies the whole operation');
+  // The first denied segment's reason wins.
+  const order = shellEvent(['cat ~/.hcloud/config', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(order);
+  assert.equal(order.effect, 'deny');
+  assert.match(order.message ?? '', /credential or profile files/, 'the first deny wins with its reason');
+  // Empty and whitespace-only entries are skipped; odd entries never break the loop.
+  const padded = shellEvent(['  ', '', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(padded);
+  assert.equal(padded.effect, 'deny');
+  const nullRide = shellEvent([null, 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(nullRide);
+  assert.equal(nullRide.effect, 'deny');
+  const allBlank = shellEvent(['   ', '\t']);
+  await gate(allBlank);
+  assert.equal(allBlank.effect, 'allow', 'an all-skipped event is zero-intervention');
+});
+
+test('pipe-feed split events classify the reassembled pipeline; benign pipes stay allowed (F6)', async () => {
+  const gate = await loadGate('real', 'pipefeed');
+  // The host scanner splits pipes into per-segment resources too, and a pipe
+  // is the one cross-segment data flow: xargs splices its stdin into the
+  // next command's argv, so per-segment classification alone misses the
+  // write the pipeline actually executes (the F6 finding — live-reachable,
+  // same family as the compound bypass). The reassembled ' | ' text
+  // classifies through the same pipe-aware walk the .mjs twin runs.
+  const bypass = shellEvent(['echo DeleteServers --server.id=i-1', 'xargs hcloud ECS']);
+  await gate(bypass);
+  assert.equal(bypass.effect, 'deny', 'the xargs-fed write must not ride through the split');
+  assert.match(bypass.message ?? '', /plan and receives explicit user approval/);
+  const bare = shellEvent(['echo DeleteServers', 'xargs hcloud ECS']);
+  await gate(bare);
+  assert.equal(bare.effect, 'deny', 'the minimal probe shape denies too');
+  // The benign rows of the coordinator's verification table, split-driven.
+  const benignPipes: Array<[string, string]> = [
+    ['echo one', 'echo two'],
+    ['echo DeleteServers', 'tee /tmp/log.txt'],
+    ['echo hi', 'grep hi'],
+  ];
+  for (const segs of benignPipes) {
+    const event = shellEvent(segs);
+    await gate(event);
+    assert.equal(event.effect, 'allow', `${segs.join(' | ')}: prose through a pipe stays allowed`);
+    assert.equal(event.message, undefined);
+  }
+  // The remaining deny rows of the table, split-driven.
+  const credFeed = shellEvent(['cat /etc/passwd', 'xargs hcloud ECS CreateServers']);
+  await gate(credFeed);
+  assert.equal(credFeed.effect, 'deny', 'a fed write with a credential read denies');
+  const plainFeed = shellEvent(['ls /tmp', 'hcloud ECS DeleteServers --server.id=x']);
+  await gate(plainFeed);
+  assert.equal(plainFeed.effect, 'deny');
+});
+
+test('non-shell actions are zero-intervention, including devkit MCP tool actions', async () => {
+  const gate = await loadGate('real', 'nonshell');
+  for (const action of [
+    'huaweicloud-devkit_huaweicloud_run_approved_command',
+    'huaweicloud-devkit_huaweicloud_run_readonly_command',
+    'edit',
+    'write',
+    'bash', // the V1 action name never fires on a V2 host; if it did, the adapter must not treat it as the shell face
+  ]) {
+    const event: EvaluateEvent = {
+      sessionID: 'ses_test',
+      action,
+      resources: ['hcloud ECS DeleteServers --server.id=x'],
+      effect: 'allow',
+    };
+    await gate(event);
+    assert.equal(event.effect, 'allow', `${action} must stay zero-intervention`);
+    assert.equal(event.message, undefined, `${action} must not carry a deny message`);
+  }
+});
+
+test('empty resources are zero-intervention', async () => {
+  const gate = await loadGate('real', 'empty');
+  for (const resources of [[], [''], [null]]) {
+    const event = shellEvent(resources);
+    await gate(event);
+    assert.equal(event.effect, 'allow');
+    assert.equal(event.message, undefined);
+  }
+});
+
+test('a single segment over 8192 bytes denies with the split-command remediation', async () => {
+  // The adapter's own bound fires before the classifier's internal 256KiB
+  // cap (which stays for the .mjs twin's face); anything over 8192 bytes
+  // never reaches the quadratic walk on this seam.
+  const gate = await loadGate('real', 'cap-over');
+  const over = shellEvent(`echo ${'A'.repeat(8188)}`); // 'echo ' (5) + 8188 = 8193 bytes
+  await gate(over);
+  assert.equal(over.effect, 'deny');
+  assert.match(over.message ?? '', /8193 bytes > 8192/);
+  assert.match(over.message ?? '', /split the command or pass complex parameters via --cli-jsonInput/);
+});
+
+test('the 8192-byte boundary classifies normally; the reassembled pipeline rides its own bound', async () => {
+  const gate = await loadGate('real', 'cap-edge');
+  const exact = shellEvent(`echo ${'A'.repeat(8187)}`); // exactly 8192 bytes
+  await gate(exact);
+  assert.equal(exact.effect, 'allow', 'the boundary itself is not oversized');
+  // Two small segments stay allowed: the per-segment bound is per segment,
+  // and the pipeline reassembly (F6) classifies the joined text fine under
+  // the cap.
+  const compound = shellEvent([`echo ${'A'.repeat(100)}`, `echo ${'B'.repeat(100)}`]);
+  await gate(compound);
+  assert.equal(compound.effect, 'allow');
+  // The F6 reassembly is itself a classification input (the pipeline text the
+  // classifier walks), so segments whose JOINED pipeline exceeds the cap deny
+  // fail-closed with the cap reason — the G3B adjudication superseding the
+  // older never-sums wording for multi-segment events. Each segment alone is
+  // under the bound; the pipeline view is not.
+  const hugePipeline = shellEvent([`echo ${'A'.repeat(5995)}`, `echo ${'B'.repeat(5995)}`]);
+  await gate(hugePipeline);
+  assert.equal(hugePipeline.effect, 'deny', 'an over-cap pipeline view denies');
+  assert.match(hugePipeline.message ?? '', /too large for synchronous in-hook classification/);
+  assert.match(hugePipeline.message ?? '', /--cli-jsonInput/);
+});
+
+test('a throwing classifier denies with the classify-failure reason (G1-M2 posture)', async () => {
+  const gate = await loadGate('throwing', 'inject');
+  const event = shellEvent('hcloud ECS DeleteServers --server.id=x');
+  await gate(event);
+  assert.equal(event.effect, 'deny');
+  assert.match(event.message ?? '', /the safety classifier failed to run/);
+  assert.match(event.message ?? '', /Reinstall the huaweicloud-devkit plugin/);
+});
+
+test('a missing policy module denies with the load-failure reason naming the reinstall', async () => {
+  const gate = await loadGate('missing', 'nopol');
+  const event = shellEvent('hcloud ECS DeleteServers --server.id=x');
+  await gate(event);
+  assert.equal(event.effect, 'deny');
+  assert.match(event.message ?? '', /the safety policy failed to load/);
+  assert.match(event.message ?? '', /Reinstall the huaweicloud-devkit plugin/);
+});
+
+test('a policy import that never settles denies after the 3s race bound instead of hanging', async () => {
+  // The real 3s, not mocked: what is pinned is the production bound firing
+  // inside the handler, and a real wait is the non-flaky way to observe it.
+  const gate = await loadGate('neverSettle', 'race');
+  const event = shellEvent('ls /tmp');
+  const started = Date.now();
+  await gate(event);
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed >= 2900, `the race bound must fire at ~3s, measured ${elapsed}ms`);
+  assert.ok(elapsed < 20000, `the race bound must not over-wait, measured ${elapsed}ms`);
+  assert.equal(event.effect, 'deny');
+  assert.match(event.message ?? '', /the safety policy failed to load/);
+  assert.match(event.message ?? '', /Reinstall the huaweicloud-devkit plugin/);
+});
+
+test('the deny prefix stays byte-identical to the PreToolUse hook wrapper', () => {
+  const literal = (source: string, name: string): string => {
+    // The reason literals are wrapped across two lines in both files; \s+
+    // closes over the newline.
+    const m = new RegExp(`const ${name} =\\s+'([^']+)'`).exec(source);
+    assert.ok(m, `the ${name} literal must be extractable`);
+    return m[1]!;
+  };
+  const gate = readFileSync(GATE_SRC, 'utf8');
+  const mjs = readFileSync(MJS_HOOK_SRC, 'utf8');
+  assert.equal(literal(gate, 'DENY_PREFIX'), literal(mjs, 'DENY_PREFIX'));
+  assert.equal(literal(gate, 'POLICY_LOAD_FAILED_REASON'), literal(mjs, 'POLICY_LOAD_FAILED_REASON'));
+  assert.equal(literal(gate, 'CLASSIFY_FAILED_REASON'), literal(mjs, 'CLASSIFY_FAILED_REASON'));
+});
+
+test('per-segment verdicts match the PreToolUse hook wrapper fed the same text', async () => {
+  // The compound bypass's parity contract: for any single command text, the
+  // adapter and the .mjs wrapper share one classifier and one deny prefix,
+  // so their verdicts and reasons must be byte-equal. A wiring regression
+  // (wrong reason field, diverged prefix) trips here. A { split } entry is
+  // the pipe-feed shape: the adapter receives the host's split resources,
+  // the .mjs receives the reassembled text, and the verdicts must still be
+  // byte-equal — the same contract the .mjs's own pipe walk fulfills.
+  const gate = await loadGate('real', 'parity');
+  const corpus: Array<string | { split: string[] }> = [
+    'ls /tmp',
+    'echo hello',
+    'hcloud ECS ListServersDetails --cli-region=cn-north-4',
+    'hcloud ECS DeleteServers --server.id=x',
+    'cat ~/.hcloud/config',
+    'env | grep HUAWEICLOUD',
+    'rm -rf /',
+    "bash -c 'hcloud ECS DeleteServers --server.id=x'",
+    { split: ['echo DeleteServers --server.id=i-1', 'xargs hcloud ECS'] },
+    { split: ['echo hi', 'grep hi'] },
+  ];
+  for (const entry of corpus) {
+    const command = typeof entry === 'string' ? entry : entry.split.join(' | ');
+    const mjsRun = spawnSync(process.execPath, [MJS_HOOK_SRC], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8',
+    });
+    assert.equal(mjsRun.status, 0, mjsRun.stderr);
+    const mjsOut = mjsRun.stdout.trim();
+    const event = shellEvent(typeof entry === 'string' ? entry : entry.split);
+    await gate(event);
+    if (mjsOut === '') {
+      assert.equal(event.effect, 'allow', `${command}: the .mjs allows, the adapter must too`);
+      assert.equal(event.message, undefined, `${command}: an allow carries no message`);
+      continue;
+    }
+    const mjsReason = (JSON.parse(mjsOut) as { hookSpecificOutput: { permissionDecisionReason: string } })
+      .hookSpecificOutput.permissionDecisionReason;
+    assert.equal(event.effect, 'deny', `${command}: the .mjs denies, the adapter must too`);
+    assert.equal(event.message, mjsReason, `${command}: the deny reason must be byte-identical`);
+  }
+});
+
+// ── Part C: the installer, status, doctor, and uninstall with the override ──
+
+const gateFileIn = (home: string): string => join(home, '.config', 'opencode', 'plugins', 'safety-gate.js');
+
+test('install deploys the adapter beside the payload it imports; off skips and heals drift', () => {
+  const home = fixtureDir('safety-gate-install-on-');
+  const out = runInstall(home, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' });
+  assert.match(out, /Safety gate -> /);
+  assert.ok(existsSync(gateFileIn(home)), 'the adapter file lands in the plugins dir');
+  assert.ok(
+    existsSync(join(home, '.config', 'opencode', 'huaweicloud-plugins', 'dist', 'safety-policy.js')),
+    'the payload module the adapter imports must be deployed with it',
+  );
+
+  const homeOff = fixtureDir('safety-gate-install-off-');
+  const offOut = runInstall(homeOff, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'off' });
+  assert.match(offOut, /skipping the shell safety-gate plugin/);
+  assert.ok(!existsSync(gateFileIn(homeOff)));
+
+  // Drift heal: an install made while the gate was on must not keep the file
+  // after the host downgraded (the off re-run removes it).
+  const homeHeal = fixtureDir('safety-gate-heal-');
+  runInstall(homeHeal, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' });
+  assert.ok(existsSync(gateFileIn(homeHeal)));
+  const healOut = runInstall(homeHeal, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'off' });
+  assert.ok(!existsSync(gateFileIn(homeHeal)), 'the off install heals the leftover file');
+  assert.match(healOut, /skipping the shell safety-gate plugin/);
+});
+
+test('status reports the gate, uninstall removes it item-by-item', () => {
+  const home = fixtureDir('safety-gate-status-');
+  runInstall(home, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' });
+  const status = spawnSync(process.execPath, [setupCli, 'status', '--target', 'opencode'], {
+    encoding: 'utf8',
+    env: doctorEnv(home, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' }),
+    timeout: 60_000,
+  });
+  assert.equal(status.status, 0, status.stderr);
+  const statusText = (status.stdout ?? '').replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '');
+  assert.match(statusText, /Shell safety gate: Installed/);
+
+  const uninstallOut = runUninstall(home, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' });
+  assert.match(uninstallOut, /Removed safety-gate plugin/);
+  assert.ok(!existsSync(gateFileIn(home)));
+});
+
+test('doctor: PASS when deployed, FAIL when the gate is on but the file is missing, SKIP below the floor', () => {
+  const home = fixtureDir('safety-gate-doctor-');
+  runInstall(home, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' });
+  const pass = runDoctor(home, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' });
+  assert.match(pass, /\[PASS\] Shell safety gate \(evaluate-hook adapter\)/);
+
+  // The file never written (install ran below the floor) while doctor's gate
+  // is forced on: the verifiably-eligible host is missing its adapter.
+  const homeMissing = fixtureDir('safety-gate-doctor-missing-');
+  runInstall(homeMissing, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'off' });
+  const fail = runDoctor(homeMissing, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on' });
+  assert.match(fail, /\[FAIL\] Shell safety gate \(evaluate-hook adapter\)/);
+  assert.match(fail, /Run: npx huaweicloud-devkit install --target opencode/);
+
+  const skip = runDoctor(home, { HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'off' });
+  assert.match(skip, /\[SKIP\] Shell safety gate \(opencode not verifiably at or above 2\.0\.0\)/);
+});
