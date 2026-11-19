@@ -134,7 +134,10 @@ export function errorFromTable(code: ErrorCode | (string & {}), detail?: string)
   }
   return {
     code,
-    messageZh: detail ? `${e.messageZh}(${detail})` : e.messageZh,
+    // #1158 D2-10: the upstream raw message is the PREFIX — downstream
+    // assertions pin `KooCLI config not found` as the leading text, and the
+    // Chinese guidance follows as supplementary context.
+    messageZh: detail ? `${detail}(${e.messageZh})` : e.messageZh,
     action: e.action,
     nextStep: e.action,
   };
