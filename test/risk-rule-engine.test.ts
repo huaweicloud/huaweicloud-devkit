@@ -885,9 +885,18 @@ test('wildcard IAM actions are caught in Terraform, plural, and no-Effect shapes
   assert.equal(terraform.decision, 'deny');
   assert.ok(terraform.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
 
+  // #1158 D4-21: HCL has no `Effect` field, so an HCL grant is an implicit
+  // Allow; the JSON and HCL forms now share one verdict (deny). An explicit
+  // Deny stays outside the admin-grant rule.
   const noEffect = evaluateDeployPlan({ iam: { actions: ['*'] } });
-  assert.equal(noEffect.decision, 'warn');
-  assert.ok(noEffect.findings.some((finding) => finding.ruleId === 'hwc-iam-wildcard-action'));
+  assert.equal(noEffect.decision, 'deny');
+  assert.ok(noEffect.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
+
+  const explicitDeny = evaluateDeployPlan({
+    iam: { statement: [{ effect: 'Deny', actions: ['*'] }] },
+  });
+  assert.notEqual(explicitDeny.decision, 'deny');
+  assert.ok(!explicitDeny.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
 
   const narrow = evaluateArtifacts([
     { path: 'iam.tf', content: 'policy = "x"\neffect = "Allow"\nactions = ["vpc:subnets:get"]\n' },
@@ -897,4 +906,35 @@ test('wildcard IAM actions are caught in Terraform, plural, and no-Effect shapes
       (finding) => finding.ruleId === 'hwc-iam-admin-policy' || finding.ruleId === 'hwc-iam-wildcard-action',
     ),
   );
+});
+
+test('wrapped credential env dumps deny at the rule level (#1158 D4-16)', () => {
+  // The rules matched only the bare payload, so `sh -c "…"` / `bash -c "…"` /
+  // `eval "…"` let the credential env dump through while the classify-text
+  // chain already denied it. The engine now expands one wrapper level.
+  for (const command of [
+    'sh -c "env | grep HUAWEICLOUD_ACCESS_KEY"',
+    'bash -c "env | grep HUAWEICLOUD"',
+    "bash -c 'printenv HW_SECRET_KEY'",
+    'dash -c "env | grep HWC_SECRET_KEY"',
+    'eval "env | grep HUAWEICLOUD_ACCESS_KEY"',
+    'sh -c "printenv HUAWEICLOUD_SECRET_KEY"',
+  ]) {
+    const result = evaluateCommandRisk(command);
+    assert.equal(result.decision, 'deny', `${command} must deny`);
+    assert.ok(
+      result.findings.some((finding) => finding.ruleId === 'hwc-command-env-dump'),
+      `${command} must deny through the env-dump rule`,
+    );
+  }
+
+  // Non-credential payloads and non-credential env reads keep their verdicts.
+  for (const command of [
+    'sh -c "echo hi"',
+    'eval "echo hello"',
+    'sh -c "env | grep HW_REGION"',
+    'bash -c "env HW_REGION=x hcloud ECS ListServers"',
+  ]) {
+    assert.equal(evaluateCommandRisk(command).decision, 'allow', `${command} must stay allowed`);
+  }
 });

@@ -865,9 +865,12 @@ test('artifact checks catch privileged containers, plaintext passwords, and wild
   assert.equal(password.decision, 'warn');
   assert.ok(password.findings.some((finding) => finding.ruleId === 'hwc-artifact-plaintext-password'));
 
+  // #1158 D4-21: an HCL-shaped grant has no Effect field, so it is an
+  // implicit Allow — wildcard actions now deny exactly like the JSON form.
   const iam = (await callTool('huaweicloud_hook_check_deploy_plan', {
     plan: { iam: { actions: ['*'] } },
   })) as HookCheckResult;
-  assert.equal(iam.decision, 'warn');
+  assert.equal(iam.decision, 'deny');
+  assert.ok(iam.findings.some((finding) => finding.ruleId === 'hwc-iam-admin-policy'));
   assert.ok(iam.findings.some((finding) => finding.ruleId === 'hwc-iam-wildcard-action'));
 });
