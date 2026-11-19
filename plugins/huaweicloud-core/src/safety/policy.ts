@@ -7,6 +7,7 @@ import { stripShellQuotes } from './shell-text.ts';
 export interface Policy {
   secretKeyNamePatterns: string[];
   credentialFilePatterns: string[];
+  protectedPayloadPathMarkers: string[];
   blockedConfigureSubcommands: string[];
   blockedSecretOperations: string[];
   blockedSecretCliPatterns: string[];
@@ -59,9 +60,24 @@ export function loadPolicy(path: string): Policy {
   if (raw.writeOperationPrefixes !== undefined && writeOperationPrefixes.length === 0) {
     throw new TypeError('safety policy field "writeOperationPrefixes" must not be empty');
   }
+  const protectedPayloadPathMarkers = toStringArray(
+    raw.protectedPayloadPathMarkers,
+    'protectedPayloadPathMarkers',
+  );
+  // Same emptied-list doctrine as writeOperationPrefixes: a present-but-empty
+  // marker list silently disarms the payload path-write gate, so it fails
+  // LOUD at load. The py twin has no load-time throw (its load_policy catches
+  // everything) and normalizes the degraded shape to an unset gate — the
+  // recorded py fail-open posture for a hand-corrupted policy file, the same
+  // divergence class the write vocabulary carries (the .mjs face is the
+  // fail-closed one).
+  if (raw.protectedPayloadPathMarkers !== undefined && protectedPayloadPathMarkers.length === 0) {
+    throw new TypeError('safety policy field "protectedPayloadPathMarkers" must not be empty');
+  }
   return {
     secretKeyNamePatterns: toStringArray(raw.secretKeyNamePatterns, 'secretKeyNamePatterns'),
     credentialFilePatterns: toStringArray(raw.credentialFilePatterns, 'credentialFilePatterns'),
+    protectedPayloadPathMarkers,
     blockedConfigureSubcommands: toStringArray(raw.blockedConfigureSubcommands, 'blockedConfigureSubcommands'),
     blockedSecretOperations: toStringArray(raw.blockedSecretOperations, 'blockedSecretOperations'),
     blockedSecretCliPatterns: toStringArray(raw.blockedSecretCliPatterns, 'blockedSecretCliPatterns'),

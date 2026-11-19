@@ -501,10 +501,30 @@ const BATTERY: Array<[command: string, verdict: 'deny' | 'allow']> = [
   ['mkdir -p $(pwd)/build', 'allow'],
   ['bash -c "cp $(mktemp -d)/x y"', 'allow'],
   ['git commit -m "sync $(git rev-parse --short HEAD)"', 'allow'],
-  ['cp $(mktemp -d)/x plugins/huaweicloud-core/dist/foo', 'allow'],
+  // The integrity unit (layer 1) FLIPPED this row: a cp whose DESTINATION
+  // is the deployed classifier dir now denies by design (the bash-half of
+  // the classifier-rewrite residual the edit seam closed for edit tools).
+  // The row's original purpose — pinning the retired bare-`cloud` marker's
+  // over-deny — stays covered by the non-marker sibling rows around it
+  // (huaweicloud-core/ without dist/ or safety/ keeps its allow).
+  ['cp $(mktemp -d)/x plugins/huaweicloud-core/dist/foo', 'deny'],
   ['cp -r $(pwd)/src plugins/huaweicloud-core/ && mv $(pwd)/old plugins/huaweicloud-core/old', 'allow'],
   ['mkdir -p $(pwd)/build/observations', 'allow'],
   ['gcloud storage rm gs://bucket/$(date).bak', 'allow'],
+  // The payload path-write gate (integrity unit layer 1): write-shaped
+  // commands targeting the deployed payload deny on BOTH twins (the py
+  // evaluate gate mirrors protected-payload.ts — verdict parity pinned
+  // here), read-shaped references to the same paths stay allowed, and the
+  // direction rules keep copy-out and read-only sed legal.
+  ["echo 'permissive' > ~/.config/opencode/huaweicloud-plugins/dist/safety-policy.js", 'deny'],
+  ['echo x | tee ~/.config/opencode/huaweicloud-plugins/dist/safety-policy.js', 'deny'],
+  ['cp /tmp/evil.js ~/.config/opencode/huaweicloud-plugins/dist/safety-policy.js', 'deny'],
+  ['mv /tmp/x ~/huaweicloud-plugins/safety/policy.json', 'deny'],
+  ["sed -i 's/deny/allow/' ~/huaweicloud-plugins/dist/safety-policy.js", 'deny'],
+  ['echo x > plugins/huaweicloud-core/safety/policy.json', 'deny'],
+  ['cat ~/.config/opencode/huaweicloud-plugins/dist/safety-policy.js', 'allow'],
+  ['grep -rn reboot plugins/huaweicloud-core/dist/safety-policy.js', 'allow'],
+  ['cp ~/huaweicloud-plugins/safety/policy.json /tmp/backup.json', 'allow'],
   // port-v2defects (interrogate round 1): the write gate's read exemption is
   // anchored at the operation token's START on both layers (TS hasReadPrefix
   // ^prefix parity — py re.match). A write-prefixed operation with an

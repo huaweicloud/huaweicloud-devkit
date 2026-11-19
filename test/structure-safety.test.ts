@@ -407,6 +407,47 @@ test('the OBSUTIL_WRITES vocabulary is set-equal across the py hook and the TS t
   );
 });
 
+test('the py hook derives the payload path-write gate from policy.json protectedPayloadPathMarkers (integrity layer 1)', () => {
+  // The deployed-payload write gate is policy-driven on BOTH faces: the
+  // marker alternation must compile inside load_policy from the policy
+  // field (never a hand-copied marker list — the APPROVAL_CLI_RE
+  // doctrine), the write shapes mirror src/safety/protected-payload.ts,
+  // and the gate sits in evaluate beside CONFIG_FILE_RE. An absent field
+  // leaves the gate unset (additive vocabulary): the degraded shape
+  // normalizes to an unset gate, matching the TS side's [] marker policy.
+  const pyHook = readSource(join('hooks', 'huaweicloud-safety.py'));
+  const policy = readJson(join(pluginRoot, 'safety', 'policy.json')) as Record<string, unknown>;
+  assert.ok(
+    Array.isArray(policy.protectedPayloadPathMarkers) && policy.protectedPayloadPathMarkers.length >= 3,
+    'policy.json must carry protectedPayloadPathMarkers (3 deployed-path markers)',
+  );
+  assert.match(pyHook, /PROTECTED_WRITE_RES = None/);
+  assert.match(pyHook, /policy\.get\("protectedPayloadPathMarkers", \[\]\)/);
+  // The marker alternation derives from the policy field (the hand-copied
+  // list is the drift shape), and the shape table compiles from it — pinned
+  // as two containment matches because the table's regex literals carry ]
+  // inside character classes (a block match would truncate on them).
+  assert.match(pyHook, /marker_alt = "\(\?:" \+ "\|"\.join\(protected_markers\) \+ "\)"/);
+  assert.match(pyHook, /PROTECTED_WRITE_RES = \[/);
+  // The gate's applied shape: the four path candidates (the CONFIG_FILE_RE
+  // gate's set), chunk-split, searched by the compiled shapes.
+  assert.match(pyHook, /if PROTECTED_WRITE_RES:/);
+  assert.match(
+    pyHook,
+    /for chunk in re\.split\(r"\[;&\|\\n\\r\]", candidate\):[\s\S]*?for shape in PROTECTED_WRITE_RES:/,
+  );
+  // The TS face: the gate module and the classify-text wiring after the
+  // credential-file gate.
+  const classifyText = readSource(join('src', 'safety', 'classify-text.ts'));
+  assert.match(classifyText, /import \{ protectedPayloadWriteDenied \} from '\.\/protected-payload\.ts';/);
+  assert.match(classifyText, /const payloadWrite = protectedPayloadWriteDenied\(text, policy\);/);
+  const module = readSource(join('src', 'safety', 'protected-payload.ts'));
+  assert.match(module, /credentialFileCandidates/);
+  // The deny is exemption-proof: risk 'invalid' never rides a roster skip
+  // class (write/execution/destructive), pinned on the face module.
+  assert.match(module, /risk: 'invalid'/);
+});
+
 test('hooks.json uses Node hook and keeps Python hook for Hermes compatibility', () => {
   const hooksDir = join(pluginRoot, 'hooks');
   const hooksJsonPath = join(hooksDir, 'hooks.json');

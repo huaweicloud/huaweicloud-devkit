@@ -32,6 +32,19 @@ TELEMETRY_DIR = PLUGIN_DIR / "telemetry"
 HOOK_EVENTS_PATH = TELEMETRY_DIR / "hook-events.jsonl"
 
 CONFIG_FILE_RE = None
+# The payload path-write gate (the integrity unit's layer 1): the compiled
+# write-shape regexes over the policy's protectedPayloadPathMarkers, the py
+# mirror of src/safety/protected-payload.ts. None (field absent, non-list,
+# or empty — the degraded shapes load_policy normalizes) means the gate is
+# unset: additive vocabulary, so an older policy.json without the key
+# disables it on BOTH twins (the TS side's [] / py None agree in verdict).
+PROTECTED_WRITE_RES = None
+PROTECTED_WRITE_REASON = (
+    "writing to the deployed Huawei Cloud DevKit plugin payload is blocked: "
+    "this command targets the installed safety policy files, and modifying them "
+    "would disarm the gates that classify agent commands. Reinstall or update "
+    "via npx huaweicloud-devkit install from your own terminal."
+)
 SECRET_READ_RE = None
 SECRET_CLI_RE = None
 APPROVAL_CLI_RE = None
@@ -76,7 +89,7 @@ OBS_MARKER_RE = re.compile(r"\bOBS\b", re.I)
 
 
 def load_policy():
-    global CONFIG_FILE_RE, SECRET_READ_RE, SECRET_CLI_RE, APPROVAL_CLI_RE, ACCOUNT_SWITCH_CLI_RE, GATED_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
+    global CONFIG_FILE_RE, PROTECTED_WRITE_RES, SECRET_READ_RE, SECRET_CLI_RE, APPROVAL_CLI_RE, ACCOUNT_SWITCH_CLI_RE, GATED_CLI_RE, WRITE_OPERATION_RE, WRITE_VOCAB_RE, READ_OPERATION_RE, READ_OPERATION_EXCEPTIONS
     try:
         with POLICY_PATH.open("r", encoding="utf-8") as file_obj:
             policy = json.load(file_obj)
@@ -165,6 +178,41 @@ def load_policy():
         cred_patterns = policy.get("credentialFilePatterns", [])
         if cred_patterns:
             CONFIG_FILE_RE = re.compile("|".join(cred_patterns), re.I)
+        # The payload path-write gate (integrity layer 1): compiled from the
+        # policy's protectedPayloadPathMarkers — never a hand-copied marker
+        # list — with the SAME write-shape spec as the TS twin
+        # (src/safety/protected-payload.ts owns the doctrine comment):
+        # candidates split on [;&|\n\r], per-chunk shapes anchored at
+        # command position (env assignments + sudo/env/nice/nohup/command/
+        # xargs heads), whitespace [ \t] only. Absent/non-list/empty
+        # normalizes to an UNSET gate (additive vocabulary — the absent key
+        # on an older deployed policy must not fail this face), and a
+        # malformed marker pattern degrades ONLY this gate (the isolated
+        # per-field doctrine), never the later loads.
+        protected_markers = policy.get("protectedPayloadPathMarkers", [])
+        if not isinstance(protected_markers, list):
+            protected_markers = []
+        protected_markers = [m for m in protected_markers if isinstance(m, str) and m]
+        if protected_markers:
+            try:
+                marker_alt = "(?:" + "|".join(protected_markers) + ")"
+                anchor = (
+                    r"^[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*=\S*[ \t]+)*"
+                    r"(?:(?:sudo|env|nice|nohup|command|xargs)[ \t]+)*"
+                )
+                PROTECTED_WRITE_RES = [
+                    re.compile(r">>?[^;&|]*" + marker_alt, re.I),
+                    re.compile(anchor + r"tee\b[^;&|]*" + marker_alt, re.I),
+                    re.compile(
+                        anchor + r"(?:cp|mv|rsync|install)\b[^;&|]*[ \t]\S*" + marker_alt + r"\S*[ \t]*$",
+                        re.I,
+                    ),
+                    re.compile(anchor + r"dd\b[^;&|]*\bof[ \t]*=[ \t]*[^;&|]*" + marker_alt, re.I),
+                    re.compile(anchor + r"sed\b[^;&|]*[ \t]-i\b[^;&|]*" + marker_alt, re.I),
+                    re.compile(anchor + r"patch\b[^;&|]*" + marker_alt, re.I),
+                ]
+            except re.error:
+                PROTECTED_WRITE_RES = None
         blocked_secrets = [op for op in policy.get("blockedSecretOperations", []) if op != ""]
         if blocked_secrets:
             # Only entries that are a PREFIX of another entry (ShowSecret is
@@ -2653,6 +2701,18 @@ def evaluate(tool_name, tool_input):
         for candidate in (text, unquoted, normalized, normalized_unquoted)
     ):
         return "reading Huawei Cloud credential/profile files can expose AK/SK or tokens. Use redacted toolkit tools."
+    # The payload path-write gate (integrity layer 1, the CONFIG_FILE_RE
+    # gate's sibling): the same four candidates, WRITE-shaped only — the
+    # py mirror of classify-text.ts's protectedPayloadWriteDenied, compiled
+    # in load_policy from the same policy field. Reads of the payload tree
+    # stay allowed (skills reads, direct inspection); only a write-shaped
+    # command targeting a protected payload path denies.
+    if PROTECTED_WRITE_RES:
+        for candidate in (text, unquoted, normalized, normalized_unquoted):
+            for chunk in re.split(r"[;&|\n\r]", candidate):
+                for shape in PROTECTED_WRITE_RES:
+                    if shape.search(chunk):
+                        return PROTECTED_WRITE_REASON
     if SECRET_CLI_RE and any(SECRET_CLI_RE.search(candidate) for candidate in candidates):
         return "printing vault secrets into the agent context is blocked. Use secret exec so the value reaches only the child process environment."
     if APPROVAL_CLI_RE and any(APPROVAL_CLI_RE.search(candidate) for candidate in candidates):

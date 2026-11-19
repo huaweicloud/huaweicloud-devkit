@@ -4,6 +4,7 @@ import { classifyHcloudArgs } from './classify-hcloud.ts';
 import { credentialFileCandidates } from './credential-path.ts';
 import { DEFAULT_POLICY } from './default-policy.ts';
 import { matchesAny, type ClassifyOptions } from './policy.ts';
+import { protectedPayloadWriteDenied } from './protected-payload.ts';
 import { applyRawCommandRiskRules } from './risk-merge.ts';
 import { unwrapSecretExecWrapper } from './secret-exec.ts';
 import { unwrapSkillQualityCli } from './skill-quality-cli.ts';
@@ -827,6 +828,15 @@ export function classifyTextCommand(command: unknown, options: ClassifyOptions =
         'Reading Huawei Cloud credential or profile files is blocked. Use redacted profile inspection tools instead.',
     };
   }
+
+  // The payload path-write gate (the integrity unit's layer 1): the same
+  // candidate doctrine as the credential gate, but WRITE-shaped — a
+  // redirection/tee/copy-family/dd/sed -i/patch command targeting a
+  // protectedPayloadPathMarkers path denies (the bash-face disarm vector
+  // the edit seam closed for edit tools; protected-payload.ts owns the
+  // shape spec, mirrored by the py twin after its CONFIG_FILE_RE gate).
+  const payloadWrite = protectedPayloadWriteDenied(text, policy);
+  if (payloadWrite !== null) return payloadWrite;
 
   // The vault CLI's own reveal surface: `secret get` prints a stored secret
   // to stdout, which is the agent context when run through the Bash tool.
