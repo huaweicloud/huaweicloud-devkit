@@ -183,14 +183,50 @@ function normalizeRuleText(text: string): string {
   return text.replace(/\\+(["'])/g, '$1');
 }
 
+// Wrapper expansion (#1158 D4-16): `sh -c "env | grep HUAWEICLOUD_ACCESS_KEY"`
+// and `eval "…"` run the inner script in the same process, so a rule authored
+// against the bare payload must also see the inner text. The scan is bounded
+// (candidate count and length) so adversarial padding keeps the linear cost
+// the flood guard pins.
+const WRAPPER_MAX_CANDIDATES = 8;
+const WRAPPER_MAX_LENGTH = 4096;
+const WRAPPER_PATTERNS = [
+  /(?:^|[\s;&|(])(?:sh|bash|dash|zsh|ksh)(?:\.exe)?\s+-[A-Za-z]*c\s+(['"])/gi,
+  /(?:^|[\s;&|(])eval\s+(['"])/gi,
+];
+
+function wrapperCandidates(text: string): string[] {
+  const candidates: string[] = [];
+  for (const pattern of WRAPPER_PATTERNS) {
+    while (candidates.length < WRAPPER_MAX_CANDIDATES) {
+      const match = pattern.exec(text);
+      if (!match) break;
+      const quote = match[1];
+      if (!quote) break;
+      const start = pattern.lastIndex;
+      const end = text.indexOf(quote, start);
+      if (end === -1) break;
+      const inner = text.slice(start, end);
+      candidates.push(inner.length > WRAPPER_MAX_LENGTH ? inner.slice(0, WRAPPER_MAX_LENGTH) : inner);
+      pattern.lastIndex = start;
+    }
+  }
+  return candidates;
+}
+
+function textMatches(regex: RegExp, text: string): boolean {
+  if (regex.test(text)) return true;
+  const normalized = normalizeRuleText(text);
+  return normalized !== text && regex.test(normalized);
+}
+
 function conditionMatches(condition: RiskRuleCondition, context: EvaluationContext): boolean {
   const field = condition.field || 'text';
   const value = Object.hasOwn(context, field) ? context[field] : context.text;
   const raw = String(value || '');
   const regex = new RegExp(condition.regex, 'ims');
-  if (regex.test(raw)) return true;
-  const normalized = normalizeRuleText(raw);
-  return normalized !== raw && regex.test(normalized);
+  if (textMatches(regex, raw)) return true;
+  return wrapperCandidates(raw).some((candidate) => textMatches(regex, candidate));
 }
 
 function ruleMatches(rule: RiskRule, context: EvaluationContext): boolean {
