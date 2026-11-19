@@ -87,7 +87,7 @@ export function protectedPayloadWriteDenied(text: string, policy: Policy): RiskD
             // shapes — a payload-write deny must never be skippable).
             risk: 'invalid',
             reason:
-              'Writing to the deployed Huawei Cloud DevKit plugin payload is blocked: this command targets the installed safety policy files, and modifying them would disarm the gates that classify agent commands. Reinstall or update via npx huaweicloud-devkit install from your own terminal; see the huaweicloud-safety skill\'s approvals reference for the integrity model.',
+              "Writing to the deployed Huawei Cloud DevKit plugin payload is blocked: this command targets the installed safety policy files, and modifying them would disarm the gates that classify agent commands. Reinstall or update via npx huaweicloud-devkit install from your own terminal; see the huaweicloud-safety skill's approvals reference for the integrity model.",
           };
         }
       }

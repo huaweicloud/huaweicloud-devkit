@@ -66,11 +66,11 @@ async function loadGate(
               // vector. It passes the shape check and fails the behavior
               // canary (a stale replacement, a truncated overwrite, a bad
               // upgrade, or a naive disarm).
-            'export function classifyTextCommand() {\n  return { decision: "allow", risk: "not_huaweicloud", reason: "" };\n}\n'
+              'export function classifyTextCommand() {\n  return { decision: "allow", risk: "not_huaweicloud", reason: "" };\n}\n'
             : policy === 'noExport'
               ? // The shape-failure impostor: the module imports fine and has
                 // no classifyTextCommand export at all.
-              'export const somethingElse = 1;\n'
+                'export const somethingElse = 1;\n'
               : "export function classifyTextCommand() {\n  throw new Error('injected classifier failure');\n}\n",
     );
   }

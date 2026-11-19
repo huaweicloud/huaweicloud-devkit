@@ -60,10 +60,7 @@ export function loadPolicy(path: string): Policy {
   if (raw.writeOperationPrefixes !== undefined && writeOperationPrefixes.length === 0) {
     throw new TypeError('safety policy field "writeOperationPrefixes" must not be empty');
   }
-  const protectedPayloadPathMarkers = toStringArray(
-    raw.protectedPayloadPathMarkers,
-    'protectedPayloadPathMarkers',
-  );
+  const protectedPayloadPathMarkers = toStringArray(raw.protectedPayloadPathMarkers, 'protectedPayloadPathMarkers');
   // Same emptied-list doctrine as writeOperationPrefixes: a present-but-empty
   // marker list silently disarms the payload path-write gate, so it fails
   // LOUD at load. The py twin has no load-time throw (its load_policy catches
