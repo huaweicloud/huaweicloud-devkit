@@ -40,7 +40,9 @@ try {
     }
   }
 } catch {}
-function hookEventsPath() {
+// Exported so the hook-side writer test can assert the safety hook writes the
+// exact file this module ingests (#1065 D4-25).
+export function hookEventsPath() {
   return join(AGENT_TELEMETRY_DIR, 'hook-events.jsonl');
 }
 function installStampPath() {

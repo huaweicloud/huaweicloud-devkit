@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { join } from 'node:path';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import test from 'node:test';
+
+import { hookEventsPath } from '../plugins/huaweicloud-core/src/telemetry/telemetry.mjs';
 
 const hookPath = join(process.cwd(), 'plugins', 'huaweicloud-core', 'hooks', 'huaweicloud-safety.py');
 const pythonBin = process.platform === 'win32' ? 'python' : 'python3';
@@ -226,4 +229,101 @@ test('python hook blocks credential variable references incl. HW_ prefix (#561 D
     assert.equal(result.status, 0);
     assert.equal(JSON.parse(result.stdout), null, `${safe} should be allowed`);
   }
+});
+
+// #1065 D4-25: the safety hook writes cli:* events into <plugin>/telemetry, and
+// telemetry.mjs ingests exactly that directory. A different base made every
+// hook event invisible end-to-end (dev wrote plugins/telemetry, installed wrote
+// one level above the plugin root).
+function pythonTelemetryPaths(hookFile) {
+  const probe = [
+    'import importlib.util, json',
+    `spec = importlib.util.spec_from_file_location("hws", ${JSON.stringify(hookFile)})`,
+    'm = importlib.util.module_from_spec(spec)',
+    'spec.loader.exec_module(m)',
+    'print(json.dumps({',
+    '  "plugin": str(m.PLUGIN_DIR),',
+    '  "telemetry": str(m.TELEMETRY_DIR),',
+    '  "events": str(m.HOOK_EVENTS_PATH),',
+    '}))',
+  ].join('\n');
+  return spawnSync(pythonBin, ['-c', probe], { encoding: 'utf8' });
+}
+
+// Reproduce the installed layout the hook lands in: <plugin>/hooks/ +
+// <plugin>/safety/ + <plugin>/src/telemetry/, so parents[1] is the plugin root.
+function installedPluginLayout(t) {
+  const root = mkdtempSync(join(tmpdir(), 'hwc-hook-paths-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const pluginDir = join(root, 'huaweicloud-plugins');
+  const pluginSrc = join(process.cwd(), 'plugins', 'huaweicloud-core');
+  cpSync(join(pluginSrc, 'hooks'), join(pluginDir, 'hooks'), { recursive: true });
+  cpSync(join(pluginSrc, 'safety'), join(pluginDir, 'safety'), { recursive: true });
+  return { pluginDir, hookFile: join(pluginDir, 'hooks', 'huaweicloud-safety.py') };
+}
+
+test('python hook writes hook events into the telemetry.mjs ingest dir (#1065 D4-25)', () => {
+  const result = pythonTelemetryPaths(hookPath);
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  const paths = JSON.parse(result.stdout);
+  assert.equal(
+    resolve(paths.plugin),
+    resolve(process.cwd(), 'plugins', 'huaweicloud-core'),
+    'PLUGIN_DIR must be the plugin root, not its parent (dev layout)',
+  );
+  assert.equal(resolve(paths.telemetry), resolve(paths.plugin, 'telemetry'));
+  assert.equal(
+    resolve(paths.events),
+    resolve(hookEventsPath()),
+    'safety hook must write the file telemetry.mjs ingests',
+  );
+});
+
+test('python hook telemetry path stays inside the plugin root when installed (#1065 D4-25)', (t) => {
+  const { pluginDir, hookFile } = installedPluginLayout(t);
+  const result = pythonTelemetryPaths(hookFile);
+  if (pythonUnavailable(result)) return;
+
+  assert.equal(result.status, 0);
+  const paths = JSON.parse(result.stdout);
+  assert.equal(resolve(paths.plugin), resolve(pluginDir), 'installed PLUGIN_DIR must be the plugin root');
+  assert.equal(
+    resolve(paths.events),
+    resolve(pluginDir, 'telemetry', 'hook-events.jsonl'),
+    'installed hook events must not land outside the plugin root',
+  );
+});
+
+test('python hook records cli:write / cli:read into that directory end-to-end (#1065 D4-25)', (t) => {
+  const { pluginDir, hookFile } = installedPluginLayout(t);
+  const eventsPath = join(pluginDir, 'telemetry', 'hook-events.jsonl');
+  const runCommand = (command) =>
+    spawnSync(pythonBin, [hookFile], {
+      input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+      encoding: 'utf8',
+    });
+
+  const denied = runCommand('hcloud VPC CreateVpc --vpc.name=x');
+  if (pythonUnavailable(denied)) return;
+  assert.equal(denied.status, 0);
+  assert.match(JSON.parse(denied.stdout).hookSpecificOutput.permissionDecisionReason, /write|plan|approv/i);
+
+  const allowed = runCommand('hcloud VPC ListVpcs --cli-region=cn-north-4');
+  assert.equal(allowed.status, 0);
+  assert.equal(allowed.stdout.trim(), '', 'read-only command should be allowed');
+
+  assert.ok(existsSync(eventsPath), 'hook must record the event into <plugin>/telemetry/hook-events.jsonl');
+  const events = readFileSync(eventsPath, 'utf8')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.deepEqual(
+    events.map((event) => event.key),
+    ['cli:write', 'cli:read'],
+    'write ops must classify as cli:write (not cli:invoke) and reads as cli:read',
+  );
+  assert.match(events[0].value, /VPC CreateVpc/);
 });

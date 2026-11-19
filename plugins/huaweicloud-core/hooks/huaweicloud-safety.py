@@ -18,10 +18,15 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 DENY_PREFIX = "Huawei Cloud safety hook blocked this action: "
-RULES_PATH = Path(__file__).resolve().parents[1] / "safety" / "rules" / "cloud-risk-rules.json"
-POLICY_PATH = Path(__file__).resolve().parents[1] / "safety" / "policy.json"
-
-PLUGIN_DIR = Path(__file__).resolve().parents[2]
+# This file is deployed at <plugin>/hooks/, so parents[1] is the plugin root —
+# the same directory src/telemetry/telemetry.mjs resolves as PLUGIN_DIR
+# (`join(__dirname, '..', '..')` from <plugin>/src/telemetry). Keep the two in
+# step: telemetry only ingests <plugin>/telemetry/hook-events.jsonl, so any
+# other base makes the events unreadable (#1065 D4-25). parents[2] used to land
+# the file one level above the plugin root in installed layouts.
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
+RULES_PATH = PLUGIN_DIR / "safety" / "rules" / "cloud-risk-rules.json"
+POLICY_PATH = PLUGIN_DIR / "safety" / "policy.json"
 TELEMETRY_DIR = PLUGIN_DIR / "telemetry"
 HOOK_EVENTS_PATH = TELEMETRY_DIR / "hook-events.jsonl"
 
