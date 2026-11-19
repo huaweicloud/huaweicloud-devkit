@@ -480,6 +480,20 @@ test('the structured shape rows never fall to the transition fallback: a present
   }
 });
 
+// Run the fixture's hook on one Bash payload and assert the fail-closed
+// deny shape with its reason — the shared body of the layer-2 canary tests
+// (the corrupt-rules and impostor fixtures deny the same way).
+function runFixtureBashDenyReason(dir: string, command: string, reason: RegExp, note = ''): void {
+  const result = spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
+    input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `${command}: must exit 0, not crash: ${result.stderr.slice(0, 200)}`);
+  const output = JSON.parse(result.stdout);
+  assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', `${command} must deny fail-closed`);
+  assert.match(output.hookSpecificOutput.permissionDecisionReason, reason, note);
+}
+
 test('node hook denies fail-closed when classification itself throws (corrupt rules file, interrogate round 2)', () => {
   // The load-time guard covers DEFAULT_POLICY only; a truncated
   // cloud-risk-rules.json kills risk-rule-engine's JSON.parse INSIDE
@@ -499,15 +513,9 @@ test('node hook denies fail-closed when classification itself throws (corrupt ru
     assert.ok(!existsSync(join(dir, 'dist')), 'fixture must not contain dist');
 
     for (const command of ['hcloud ECS ListServers', 'echo hello']) {
-      const result = spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
-        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
-        encoding: 'utf8',
-      });
-      assert.equal(result.status, 0, `${command}: must exit 0, not crash: ${result.stderr.slice(0, 200)}`);
-      const output = JSON.parse(result.stdout);
-      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', `${command} must deny fail-closed`);
-      assert.match(
-        output.hookSpecificOutput.permissionDecisionReason,
+      runFixtureBashDenyReason(
+        dir,
+        command,
         /failed its load-time self-check/,
         `${command}: the corrupt rules file fails the canaries at load`,
       );
@@ -535,14 +543,7 @@ test('the node hook refuses a shape-passing but permissive deployed module at lo
       'utf8',
     );
     for (const command of ['ls -la', 'hcloud ECS DeleteServer --server_id=i-1', 'echo hello']) {
-      const result = spawnSync(process.execPath, [join(dir, 'hooks', 'huaweicloud-safety.mjs')], {
-        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
-        encoding: 'utf8',
-      });
-      assert.equal(result.status, 0, `${command}: must exit 0, not crash: ${result.stderr.slice(0, 200)}`);
-      const output = JSON.parse(result.stdout);
-      assert.equal(output.hookSpecificOutput.permissionDecision, 'deny', `${command} must deny fail-closed`);
-      assert.match(output.hookSpecificOutput.permissionDecisionReason, /failed its load-time self-check/);
+      runFixtureBashDenyReason(dir, command, /failed its load-time self-check/);
     }
   } finally {
     rmSync(dir, { recursive: true, force: true });

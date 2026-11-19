@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 
@@ -8,6 +7,7 @@ import { classifyTextCommand } from '../plugins/huaweicloud-core/src/safety-poli
 import { loadPolicy } from '../plugins/huaweicloud-core/src/safety/default-policy.ts';
 import { DEFAULT_POLICY } from '../plugins/huaweicloud-core/src/safety/default-policy.ts';
 import { protectedPayloadWriteDenied } from '../plugins/huaweicloud-core/src/safety/protected-payload.ts';
+import { fixtureDir } from './fixture-dir.ts';
 
 // The payload path-write gate (the integrity unit's layer 1): a
 // write-shaped command targeting the DEPLOYED payload paths denies on the
@@ -55,7 +55,7 @@ const DENY_ROWS: string[] = [
   // Windows separators in the deployed path.
   'echo x > C:\\Users\\u\\.config\\opencode\\huaweicloud-plugins\\dist\\safety-policy.js',
   // Compounds: the write rides a later segment.
-  "ls /tmp; echo x > ~/.config/opencode/huaweicloud-plugins/dist/safety-policy.js",
+  'ls /tmp; echo x > ~/.config/opencode/huaweicloud-plugins/dist/safety-policy.js',
   'cp /tmp/a /tmp/b && mv /tmp/b ~/huaweicloud-plugins/dist/safety-policy.js',
   // The classifier-bearing path named inside a script carrier.
   "bash -c 'echo x > ~/huaweicloud-plugins/dist/safety-policy.js'",
@@ -97,8 +97,8 @@ test('write-shaped commands targeting the deployed payload deny (layer 1)', () =
     assert.equal(verdict.decision, 'deny', `must deny: ${command}`);
     // risk 'invalid': no roster exemption class may skip this deny.
     assert.equal(verdict.risk, 'invalid', `the payload-write deny is exemption-proof: ${command}`);
-    assert.match(verdict.reason, /Writing to the deployed Huawei Cloud DevKit plugin payload is blocked/);
-    assert.match(verdict.reason, /npx huaweicloud-devkit install/);
+    assert.match(verdict.reason ?? '', /Writing to the deployed Huawei Cloud DevKit plugin payload is blocked/);
+    assert.match(verdict.reason ?? '', /npx huaweicloud-devkit install/);
   }
 });
 
@@ -117,8 +117,8 @@ test('a read-direction dd over the payload keeps its PRE-EXISTING destructive de
   // never the payload-write one.
   const verdict = classifyTextCommand('dd if=~/huaweicloud-plugins/dist/safety-policy.js of=/tmp/copy.js');
   assert.equal(verdict.decision, 'deny');
-  assert.doesNotMatch(verdict.reason, /deployed Huawei Cloud DevKit plugin payload/);
-  assert.match(verdict.reason, /destructively dangerous/);
+  assert.doesNotMatch(verdict.reason ?? '', /deployed Huawei Cloud DevKit plugin payload/);
+  assert.match(verdict.reason ?? '', /destructively dangerous/);
 });
 
 test('the marker list is policy-driven: an absent field disables the gate on both shapes', () => {
@@ -137,7 +137,7 @@ test('the marker list is policy-driven: an absent field disables the gate on bot
 });
 
 test('loadPolicy fails loud on a present-but-empty marker list (the emptied-vocabulary doctrine)', () => {
-  const dir = mkdtempSync(join(tmpdir(), 'hwc-protected-empty-'));
+  const dir = fixtureDir('protected-empty-policy-');
   const policy = JSON.parse(JSON.stringify(DEFAULT_POLICY, null, 2)) as Record<string, unknown>;
   policy.protectedPayloadPathMarkers = [];
   writeFileSync(join(dir, 'policy.json'), `${JSON.stringify(policy)}\n`);
