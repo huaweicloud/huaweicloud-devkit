@@ -19,6 +19,28 @@ const POLICY_LOAD_FAILED_REASON =
 const CLASSIFY_FAILED_REASON =
   'the safety classifier failed to run (corrupt safety rules?); commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
 
+// The load-time behavior self-check (the integrity unit's layer 2): a
+// module that imports fine is not yet a classifier — a stale replacement,
+// a truncated overwrite, or a bad upgrade can hand the gate an object that
+// is shaped right and decides wrong (allowing the canonical write). Before
+// the module is trusted, three canaries run ONCE at load: the export
+// shape, a typical write vector (must deny), and a typical benign read
+// (must allow). Any failure pins the module untrusted — every later event
+// denies with this reason instead of running a module that cannot be
+// trusted to deny. This layer catches NON-adversarial corruption; an
+// adversary who can write the module can also write one that passes the
+// canaries — that crafted-module residual is documented in the approvals
+// reference and owned by the doctor drift check (layer 3).
+const SELF_CHECK_FAILED_REASON =
+  'the deployed safety policy failed its load-time self-check (shape or behavior canary); commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
+
+// Fixed canonical canary inputs (never derived from event data): the write
+// vector and benign read the test batteries already use, so a regression
+// that breaks the classifier's core verdicts disarms nothing — the gate
+// fails closed at load instead.
+const CANARY_WRITE_VECTOR = 'hcloud ECS DeleteServers --server.id=x';
+const CANARY_BENIGN_READ = 'ls /tmp';
+
 // Resolved relative to this file: the payload root convention skill-tracker
 // uses (plugins/ and huaweicloud-plugins/ are siblings under the opencode
 // config root). A deployed payload always carries dist/ (copyServerPayload
@@ -50,6 +72,31 @@ const SEGMENT_BYTE_CAP = 8192;
 
 let classifyTextCommand;
 let policyLoading = null;
+// Set when a policy import SUCCEEDED but the self-check refused the
+// module; sticky for the process lifetime (the ESM registry caches the
+// module — a retry would re-import the same broken evaluation).
+let selfCheckFailed = false;
+
+// The layer-2 self-check: null when the module is trusted, otherwise the
+// module must not be used. A throw inside a canary classification counts as
+// a failure (a module that crashes on the canonical vectors cannot be
+// trusted to deny).
+function selfCheckReasonOf(module) {
+  if (typeof module.classifyTextCommand !== 'function') {
+    return 'the deployed policy does not export a classifyTextCommand function';
+  }
+  let writeVerdict;
+  let readVerdict;
+  try {
+    writeVerdict = module.classifyTextCommand(CANARY_WRITE_VECTOR);
+    readVerdict = module.classifyTextCommand(CANARY_BENIGN_READ);
+  } catch {
+    return 'the deployed policy threw during the canary classifications';
+  }
+  if (writeVerdict?.decision !== 'deny') return 'the deployed policy allowed the canonical write canary';
+  if (readVerdict?.decision !== 'allow') return 'the deployed policy denied the canonical benign read canary';
+  return null;
+}
 
 function loadPolicy() {
   if (!policyLoading) {
@@ -63,6 +110,11 @@ function loadPolicy() {
     policyLoading = Promise.race([import(POLICY_URL), bound]).then(
       (module) => {
         clearTimeout(cancelBound);
+        const selfCheckReason = selfCheckReasonOf(module);
+        if (selfCheckReason !== null) {
+          selfCheckFailed = true;
+          return;
+        }
         classifyTextCommand = module.classifyTextCommand;
       },
       (error) => {
@@ -120,10 +172,20 @@ async function onEvaluate(event) {
       if (text.trim() !== '') segments.push(text);
     }
     if (segments.length === 0) return;
+    if (selfCheckFailed) {
+      deny(event, SELF_CHECK_FAILED_REASON);
+      return;
+    }
     try {
       if (!classifyTextCommand) await loadPolicy();
     } catch {
       deny(event, POLICY_LOAD_FAILED_REASON);
+      return;
+    }
+    // The just-awaited load may have completed with a module the self-check
+    // refused — the sticky flag carries that verdict to every later event.
+    if (selfCheckFailed) {
+      deny(event, SELF_CHECK_FAILED_REASON);
       return;
     }
     for (const text of segments) {

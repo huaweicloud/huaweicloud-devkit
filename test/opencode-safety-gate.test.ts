@@ -39,7 +39,7 @@ type EvaluateEvent = { sessionID?: string; action: string; resources?: unknown[]
 // the payload root with the type:module package.json the real deploy ships
 // (installRuntimeDeps) so dist/safety-policy.js parses as ESM.
 async function loadGate(
-  policy: 'real' | 'throwing' | 'missing' | 'neverSettle',
+  policy: 'real' | 'throwing' | 'missing' | 'neverSettle' | 'impostor' | 'noExport',
   prefix: string,
 ): Promise<(event: EvaluateEvent) => Promise<void>> {
   const dir = fixtureDir(`safety-gate-${prefix}-`);
@@ -60,7 +60,18 @@ async function loadGate(
           ? // A top-level forever-pending promise: the module evaluation (and
             // so the import) never settles — the FIX-4 hang shape.
             'await new Promise(() => {});\nexport function classifyTextCommand() {\n  throw new Error("unreachable");\n}\n'
-          : "export function classifyTextCommand() {\n  throw new Error('injected classifier failure');\n}\n",
+          : policy === 'impostor'
+            ? // The layer-2 impostor shape: the export is a well-formed
+              // function that decides WRONG — it allows the canonical write
+              // vector. It passes the shape check and fails the behavior
+              // canary (a stale replacement, a truncated overwrite, a bad
+              // upgrade, or a naive disarm).
+              'export function classifyTextCommand() {\n  return { decision: "allow", risk: "not_huaweicloud", reason: "" };\n}\n'
+            : policy === 'noExport'
+              ? // The shape-failure impostor: the module imports fine and has
+                // no classifyTextCommand export at all.
+                'export const somethingElse = 1;\n'
+              : "export function classifyTextCommand() {\n  throw new Error('injected classifier failure');\n}\n",
     );
   }
   const mod = (await import(pathToFileURL(join(dir, 'plugins', 'safety-gate.mjs')).href)) as GateModule;
@@ -283,13 +294,54 @@ test('the 8192-byte boundary classifies normally; the reassembled pipeline rides
   assert.match(hugePipeline.message ?? '', /--cli-jsonInput/);
 });
 
-test('a throwing classifier denies with the classify-failure reason (G1-M2 posture)', async () => {
+test('a throwing classifier denies with the self-check reason (layer 2 catches it at load)', async () => {
+  // A module that throws on the canonical vectors is exactly the
+  // layer-2 catch: the import settles, the export is a function, and the
+  // behavior canary crashes — a truncated overwrite or corrupt-rules
+  // deploy shape. Pre-layer-2 this denied per-event with the
+  // classify-failure reason; the load-time canary now refuses the module
+  // outright (same fail-closed deny, a more accurate cause), and the
+  // classify-time reason survives only for modules that pass the canaries
+  // but crash on a specific input.
   const gate = await loadGate('throwing', 'inject');
   const event = shellEvent('hcloud ECS DeleteServers --server.id=x');
   await gate(event);
   assert.equal(event.effect, 'deny');
-  assert.match(event.message ?? '', /the safety classifier failed to run/);
+  assert.match(event.message ?? '', /failed its load-time self-check/);
   assert.match(event.message ?? '', /Reinstall the huaweicloud-devkit plugin/);
+  // The verdict is sticky: every later event denies the same way.
+  const second = shellEvent('ls /tmp');
+  await gate(second);
+  assert.equal(second.effect, 'deny');
+  assert.match(second.message ?? '', /failed its load-time self-check/);
+});
+
+test('a shape-passing but permissive impostor module is refused by the behavior canary (layer 2)', async () => {
+  // The headline canary row: a deployed module that allows the canonical
+  // write vector would silently un-gate every command; the load-time
+  // canary refuses it before any real event classifies, benign reads
+  // included — the non-adversarial corruption class (stale replacement,
+  // truncated overwrite, bad upgrade) and the naive disarm shape.
+  const gate = await loadGate('impostor', 'canary');
+  const write = shellEvent('hcloud ECS DeleteServers --server.id=x');
+  await gate(write);
+  assert.equal(write.effect, 'deny');
+  assert.match(write.message ?? '', /failed its load-time self-check/);
+  assert.match(write.message ?? '', /Reinstall the huaweicloud-devkit plugin/);
+  const benign = shellEvent('ls /tmp');
+  await gate(benign);
+  assert.equal(benign.effect, 'deny', 'an untrusted module denies benign input too');
+  const compound = shellEvent(['ls /tmp', 'echo hi']);
+  await gate(compound);
+  assert.equal(compound.effect, 'deny');
+});
+
+test('a module without the classifyTextCommand export fails the shape canary (layer 2)', async () => {
+  const gate = await loadGate('noExport', 'shape');
+  const event = shellEvent('ls /tmp');
+  await gate(event);
+  assert.equal(event.effect, 'deny');
+  assert.match(event.message ?? '', /failed its load-time self-check/);
 });
 
 test('a missing policy module denies with the load-failure reason naming the reinstall', async () => {
@@ -329,6 +381,11 @@ test('the deny prefix stays byte-identical to the PreToolUse hook wrapper', () =
   assert.equal(literal(gate, 'DENY_PREFIX'), literal(mjs, 'DENY_PREFIX'));
   assert.equal(literal(gate, 'POLICY_LOAD_FAILED_REASON'), literal(mjs, 'POLICY_LOAD_FAILED_REASON'));
   assert.equal(literal(gate, 'CLASSIFY_FAILED_REASON'), literal(mjs, 'CLASSIFY_FAILED_REASON'));
+  // Layer 2: the self-check reason and the canary inputs are shared
+  // doctrine across the adapter and the PreToolUse wrapper.
+  assert.equal(literal(gate, 'SELF_CHECK_FAILED_REASON'), literal(mjs, 'SELF_CHECK_FAILED_REASON'));
+  assert.equal(literal(gate, 'CANARY_WRITE_VECTOR'), literal(mjs, 'CANARY_WRITE_VECTOR'));
+  assert.equal(literal(gate, 'CANARY_BENIGN_READ'), literal(mjs, 'CANARY_BENIGN_READ'));
 });
 
 test('per-segment verdicts match the PreToolUse hook wrapper fed the same text', async () => {
