@@ -34,8 +34,10 @@ function bareSpecifiers(source: string): string[] {
   const matches = source.matchAll(/\bfrom\s*['"]([^'"]+)['"]|\bimport\s*\(?\s*['"]([^'"]+)['"]/g);
   return [...matches]
     .map((match) => match[1] ?? match[2]!)
-    .filter((specifier) => !specifier.startsWith('.') && !specifier.startsWith('node:') && packageSpecifier.test(specifier))
-    .map(packageNameOf);
+    .filter(
+      (specifier) => !specifier.startsWith('.') && !specifier.startsWith('node:') && packageSpecifier.test(specifier),
+    )
+    .map((specifier) => packageNameOf(specifier));
 }
 
 test('every bare import in the shipped thin dist modules is a declared dependency', () => {
@@ -58,7 +60,7 @@ test('every bare import in the shipped thin dist modules is a declared dependenc
   }
 
   assert.deepEqual(
-    [...new Set(undeclared)].sort(),
+    [...new Set(undeclared)].sort((a, b) => a.localeCompare(b)),
     [],
     'thin dist modules import packages the published package does not declare; a clean install cannot load them',
   );
