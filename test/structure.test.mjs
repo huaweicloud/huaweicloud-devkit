@@ -138,10 +138,7 @@ test('skills document KooCLI installation, operation discovery, region intent, a
 
 test('OBS skill documents the correct empty-bucket delete command', () => {
   const obsSkill = readFileSync(join(pluginRoot, 'skills', 'huawei-obs', 'SKILL.md'), 'utf8');
-  const pitfalls = readFileSync(
-    join(pluginRoot, 'skills', 'huawei-obs', 'references', 'common-pitfalls.md'),
-    'utf8',
-  );
+  const pitfalls = readFileSync(join(pluginRoot, 'skills', 'huawei-obs', 'references', 'common-pitfalls.md'), 'utf8');
   assert.match(obsSkill, /`OBS rm obs:\/\/<bucket> -f`/);
   assert.match(obsSkill, /`hcloud OBS rm obs:\/\/<bucket> -f`/);
   assert.doesNotMatch(obsSkill, /\| Delete bucket\s*\| `hcloud OBS rm obs:\/\/<bucket> -r`/);
