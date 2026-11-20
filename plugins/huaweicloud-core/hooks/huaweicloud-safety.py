@@ -18,10 +18,15 @@ from pathlib import Path
 from datetime import datetime, timezone
 
 DENY_PREFIX = "Huawei Cloud safety hook blocked this action: "
-RULES_PATH = Path(__file__).resolve().parents[1] / "safety" / "rules" / "cloud-risk-rules.json"
-POLICY_PATH = Path(__file__).resolve().parents[1] / "safety" / "policy.json"
-
-PLUGIN_DIR = Path(__file__).resolve().parents[2]
+# This file is deployed at <plugin>/hooks/, so parents[1] is the plugin root —
+# the same directory src/telemetry/telemetry.mjs resolves as PLUGIN_DIR
+# (`join(__dirname, '..', '..')` from <plugin>/src/telemetry). Keep the two in
+# step: telemetry only ingests <plugin>/telemetry/hook-events.jsonl, so any
+# other base makes the events unreadable (#1065 D4-25). parents[2] used to land
+# the file one level above the plugin root in installed layouts.
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
+RULES_PATH = PLUGIN_DIR / "safety" / "rules" / "cloud-risk-rules.json"
+POLICY_PATH = PLUGIN_DIR / "safety" / "policy.json"
 TELEMETRY_DIR = PLUGIN_DIR / "telemetry"
 HOOK_EVENTS_PATH = TELEMETRY_DIR / "hook-events.jsonl"
 
@@ -43,7 +48,13 @@ def load_policy():
             SECRET_READ_RE = re.compile("|".join(re.escape(op) for op in blocked_secrets), re.I)
         write_prefixes = policy.get("writeOperationPrefixes", [])
         if write_prefixes:
-            WRITE_OPERATION_RE = re.compile(r"(^|[A-Za-z0-9])(" + "|".join(write_prefixes) + r")\w*", re.I)
+            # Boundary before a write prefix: string start, whitespace, or an
+            # alnum char. Whitespace is required so standard-form commands like
+            # "VPC CreateVpc" (prefix as its own token) match the write-gate
+            # and cli:write telemetry; alnum keeps mid-word compatibility for
+            # legacy op spellings (NovaDeleteServer, ResetServerPassword -> Set).
+            # A bare \b word boundary would regress those mid-word forms.
+            WRITE_OPERATION_RE = re.compile(r"(^|[A-Za-z0-9\s])(" + "|".join(write_prefixes) + r")\w*", re.I)
     except Exception:
         pass
 
