@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.1.15-next.2 (2026-11-20)
+
+- style(skills): format iac/obs table rows
+- style(test): format manifest approval test
+- feat(cli): add batch manifest approval and fix executed-plan output
+
 ## 1.1.15-next.1 (2026-11-17)
 
 - Release
