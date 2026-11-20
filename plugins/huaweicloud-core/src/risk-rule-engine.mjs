@@ -17,12 +17,22 @@ export function loadRiskRules(options = {}) {
 }
 
 function redactEvidence(text) {
-  return String(text)
-    .replace(
-      /((?:access[_-]?key|secret[_-]?key|secret|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
-      '$1<redacted>',
-    )
-    .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>');
+  return (
+    String(text)
+      // Key[:=]value family, including the JSON quoted-key form the gateway
+      // validation echo produces (`"admin_pass":"..."`). #1158 D4-6/D4-26.
+      .replace(
+        /((?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key|string|binary|text)|security[_-]?token|x[_-]?auth[_-]?token|api[_-]?key|token|authorization|password|passwd|admin[_-]?pass|credential|secret)\\*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        '$1<redacted>',
+      )
+      // Flag space form (`--admin_pass value`) carries no `:`/`=`, so the
+      // key-value family above never saw it. #1158 D4-6/D4-26.
+      .replace(
+        /((?:^|\s)--?(?:access[_-]?key|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|x[_-]?auth[_-]?token|api[_-]?key|token|password|passwd|admin[_-]?pass|credential)[.\w-]*\s+)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        '$1<redacted>',
+      )
+      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
+  );
 }
 
 function normalizeText(value) {

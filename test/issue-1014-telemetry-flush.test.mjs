@@ -5,6 +5,10 @@ import http from 'node:http';
 // #1014: 遥测分级上报——P0 领券类工具同步 flush、领券成功补缓存 userHash、
 // flush 前身份字段兜底回填、installId 惰性恢复、P1 退出兜底 flush 注册。
 
+// 本文件经 mcp-protocol 的 dispatch 触达 sandbox/hdkitservice-api.mjs（initialize
+// 握手动态导入），409 版本门会拉起真实的后台自动升级——非 CI 机器上必须屏蔽。
+process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
+
 const PROXY_KEYS = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy'];
 
 // 隔离 telemetry.mjs 模块级目录常量（GLOBAL_TELEMETRY_DIR 在 import 时固定）：
