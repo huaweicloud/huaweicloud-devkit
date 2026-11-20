@@ -35,6 +35,7 @@ Use this skill before any Huawei Cloud action that may expose secrets, change re
 
 - Default path: use `huaweicloud_plan_cli_command` to produce a reviewed command block, then let the user or host agent execute it after approval.
 - Approved tool path: use `huaweicloud_run_approved_command` only when the exact planned command has been shown and the user explicitly approved that exact command.
+- Batch path: for multi-command work, use `huaweicloud_plan_manifest` once to show the full list, then `huaweicloud_run_approved_manifest` after the user approves the whole manifest. Never split an approved batch into unapproved commands.
 - After a write, verify with `huaweicloud_run_readonly_command` or another read-only check.
 
 ## Proactive Hook Checks

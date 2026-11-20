@@ -42,7 +42,7 @@ Also in the repo:
 
 - `bin/setup.cjs` — interactive installer (`huaweicloud-devkit`); dispatches to each agent's plugin dir.
 - `integrations/` — per-agent adapter configs (opencode, dsh, hermes, workbuddy, atomcode), separate from the plugin.
-- `src/tools.mjs` — 39 MCP tool definitions (hcloud CLI, hooks, catalog, auth, sandbox, voucher, update). `src/mcp-server-remote.mjs` — remote (HTTP) transport alongside stdio.
+- `src/tools.mjs` — 41 MCP tool definitions (hcloud CLI, hooks, catalog, auth, sandbox, voucher, update). `src/mcp-server-remote.mjs` — remote (HTTP) transport alongside stdio.
 - `src/setup-cli.mjs` — KooCLI install/doctor logic; honors `HCLOUD_BIN`.
 - `scripts/*.mjs` — validation, version sync, packaging, release helpers.
 - `.superpowers/` + `docs/superpowers/` — planning/spec workflow used for larger changes.
@@ -131,7 +131,7 @@ Service skills may skip steps 1-2 when the correct service name and operation ar
 
 ## Safety Model
 
-Write-capable `hcloud` commands are blocked by default. The only write path for hcloud command I/O is `huaweicloud_run_approved_command`, which requires `args` + `approvalToken` + `approvedByUser: true`. Non-hcloud tools that mutate state by design (e.g., `huaweicloud_auth_init`, `huaweicloud_voucher_claim`, `huaweicloud_sandbox_connect`, `huaweicloud_upgrade`) do not require approval.
+Write-capable `hcloud` commands are blocked by default. The write paths for hcloud command I/O are `huaweicloud_run_approved_command` (one command) and `huaweicloud_run_approved_manifest` (a batch planned by `huaweicloud_plan_manifest`); both require `args`/`commands` + `approvalToken` + `approvedByUser: true`. Non-hcloud tools that mutate state by design (e.g., `huaweicloud_auth_init`, `huaweicloud_voucher_claim`, `huaweicloud_sandbox_connect`, `huaweicloud_upgrade`) do not require approval.
 
 Policy vocabulary lives in `plugins/huaweicloud-core/safety/policy.json`. Both `src/safety-policy.mjs` and `hooks/huaweicloud-safety.py` read from it. If you add a blocked pattern, update the policy JSON, not just one enforcement layer.
 
