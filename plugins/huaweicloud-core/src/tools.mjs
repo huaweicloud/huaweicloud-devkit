@@ -8,7 +8,14 @@ import { createHmac, createHash } from 'node:crypto';
 
 import { evaluateArtifacts, evaluateCommandRisk, evaluateDeployPlan } from './risk-rule-engine.mjs';
 import { classifyTextCommand, redactSecrets } from './safety-policy.mjs';
-import { planHcloudCommand, runHcloud, consumeApprovalToken, inspectApprovalToken, hashArgs } from './hcloud-cli.mjs';
+import {
+  planHcloudCommand,
+  runHcloud,
+  consumeApprovalToken,
+  inspectApprovalToken,
+  hashArgs,
+  createApprovalToken,
+} from './hcloud-cli.mjs';
 import { checkAccountType } from './account-type.mjs';
 import { searchMarketplace } from './search-market.mjs';
 import { getServiceIcon } from './icon-library.mjs';
@@ -308,6 +315,79 @@ export const TOOL_DEFINITIONS = [
         cwd: {
           type: 'string',
           description: 'Optional working directory for the hcloud process.',
+        },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_plan_manifest',
+    description:
+      'Plan a list of write-capable hcloud commands as ONE manifest for batch approval. Use for multi-command cleanup or resource groups so the agent does not repeat plan/run calls. Returns per-command plans and ONE approvalToken; after explicit user approval, call huaweicloud_run_approved_manifest with the same commands.',
+    inputSchema: {
+      type: 'object',
+      required: ['commands'],
+      properties: {
+        commands: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['args'],
+            properties: {
+              args: {
+                type: 'array',
+                items: { type: 'string' },
+                description: 'hcloud arguments for one command, excluding the hcloud executable.',
+              },
+              note: { type: 'string', description: 'Optional human-readable purpose for this command.' },
+            },
+          },
+        },
+      },
+    },
+  },
+  {
+    name: 'huaweicloud_run_approved_manifest',
+    description:
+      'Execute an approved manifest of hcloud commands sequentially. Requires the manifest approvalToken and approvedByUser=true. Returns every command result; use continueOnError for idempotent cleanup lists.',
+    inputSchema: {
+      type: 'object',
+      required: ['commands', 'approvalToken', 'approvedByUser'],
+      properties: {
+        commands: {
+          type: 'array',
+          items: {
+            type: 'object',
+            required: ['args'],
+            properties: {
+              args: { type: 'array', items: { type: 'string' } },
+              note: { type: 'string' },
+            },
+          },
+        },
+        approvalToken: {
+          type: 'string',
+          description: 'The approvalToken returned by huaweicloud_plan_manifest.',
+        },
+        approvedByUser: {
+          type: 'boolean',
+          description: 'Must be true only after the user explicitly approves this exact manifest.',
+        },
+        continueOnError: {
+          type: 'boolean',
+          description:
+            'When true, continue after a failed command and return partial results (for idempotent cleanup lists).',
+        },
+        timeoutMs: {
+          type: 'number',
+          description: 'Optional per-command timeout in milliseconds. Defaults to 60000.',
+        },
+        maxRetries: {
+          type: 'number',
+          description: 'Optional per-command retry count for transient network errors. Defaults to 1.',
+        },
+        cwd: {
+          type: 'string',
+          description: 'Optional working directory for the hcloud processes.',
         },
       },
     },
@@ -1358,6 +1438,10 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       return listOperations(args.service, { timeoutMs: args.timeoutMs });
     case 'huaweicloud_run_approved_command':
       return runApprovedCommand(args);
+    case 'huaweicloud_plan_manifest':
+      return planManifest(args);
+    case 'huaweicloud_run_approved_manifest':
+      return runApprovedManifest(args);
     case 'huaweicloud_show_profile_redacted':
       return showProfileRedacted(args.profile);
     case 'huaweicloud_hook_check_command':
@@ -2298,6 +2382,137 @@ async function listOperations(service, options = {}) {
   };
 }
 
+function normalizeManifestCommands(commands) {
+  if (!Array.isArray(commands) || commands.length === 0) {
+    throw new Error('commands must be a non-empty array');
+  }
+  return commands.map((entry, index) => {
+    const rawArgs = Array.isArray(entry) ? entry : entry && entry.args;
+    if (!Array.isArray(rawArgs) || rawArgs.length === 0) {
+      throw new Error(`commands[${index}].args must be a non-empty array`);
+    }
+    return {
+      args: rawArgs.map(String),
+      note: String((entry && entry.note) || ''),
+    };
+  });
+}
+
+function manifestDigest(commands) {
+  return hashArgs(commands.map((command) => command.args));
+}
+
+function executedPlanFor(args) {
+  const plan = planHcloudCommand(args, { allowWrites: true, createToken: false });
+  return {
+    ...plan,
+    safeToRun: true,
+    classification: {
+      ...plan.classification,
+      decision: 'allow',
+      reason: 'Executed after explicit user approval.',
+    },
+  };
+}
+
+function planManifest(args = {}) {
+  const commands = normalizeManifestCommands(args.commands);
+  const plans = commands.map((command) => {
+    const plan = planHcloudCommand(command.args, { allowWrites: true, createToken: false });
+    return {
+      args: plan.args,
+      command: plan.command,
+      note: command.note,
+      classification: plan.classification,
+      safeToRun: plan.safeToRun,
+      warnings: plan.warnings,
+      sgFindings: plan.sgFindings,
+    };
+  });
+  const digest = manifestDigest(commands);
+  return {
+    commands: plans,
+    count: plans.length,
+    manifestDigest: digest,
+    approvalToken: createApprovalToken([`--manifest-digest=${digest}`]),
+    safeToRun: plans.every((plan) => plan.safeToRun),
+    note: 'Review the full command list with the user. After explicit approval, call huaweicloud_run_approved_manifest with the same commands and approvalToken.',
+  };
+}
+
+async function runApprovedManifest(args = {}) {
+  if (args.approvedByUser !== true) {
+    throw new Error('approvedByUser must be true after explicit user approval for this exact manifest.');
+  }
+  const commands = normalizeManifestCommands(args.commands);
+  const digest = manifestDigest(commands);
+  const synthetic = [`--manifest-digest=${digest}`];
+  const token = String(args.approvalToken || '');
+  const inspection = inspectApprovalToken(token);
+  if (inspection.state === 'already_consumed') {
+    return { status: 'ok', outcome: 'already_processed' };
+  }
+  if (inspection.state === 'expired') {
+    return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
+  }
+  if (inspection.state === 'not_found') {
+    return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
+  }
+  if (!inspection.entry || inspection.entry.argsHash !== hashArgs(synthetic)) {
+    throw new Error('Provided commands do not match the approved manifest. Re-plan and re-approve the list.');
+  }
+  const stored = consumeApprovalToken(token);
+  if (!stored) {
+    const recheck = inspectApprovalToken(token);
+    if (recheck.state === 'already_consumed') return { status: 'ok', outcome: 'already_processed' };
+    if (recheck.state === 'expired') return { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' };
+    return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
+  }
+  if (stored.argsHash !== hashArgs(synthetic)) {
+    throw new Error('Provided commands do not match the approved manifest. Re-plan and re-approve the list.');
+  }
+
+  const results = [];
+  for (const command of commands) {
+    const result = await runHcloud(command.args, {
+      allowWrites: true,
+      timeoutMs: args.timeoutMs,
+      maxRetries: args.maxRetries,
+      cwd: args.cwd,
+      createToken: false,
+    });
+    const entry = {
+      args: redactSecrets(command.args),
+      note: command.note,
+      ok: result.ok === true,
+      exitCode: result.exitCode,
+      signal: result.signal,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    };
+    if (result.errorCode) entry.errorCode = result.errorCode;
+    if (result.nextStep) entry.nextStep = result.nextStep;
+    results.push(entry);
+    if (result.ok !== true && args.continueOnError !== true) {
+      return {
+        approved: true,
+        partial: true,
+        stoppedAt: results.length - 1,
+        count: results.length,
+        results,
+        manifestDigest: digest,
+      };
+    }
+  }
+  return {
+    approved: true,
+    ok: results.every((result) => result.ok),
+    count: results.length,
+    results,
+    manifestDigest: digest,
+  };
+}
+
 async function runApprovedCommand(args = {}) {
   if (args.approvedByUser !== true) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
@@ -2342,16 +2557,17 @@ async function runApprovedCommand(args = {}) {
       );
     }
   }
-  const strictPlan = planHcloudCommand(providedArgs, { allowWrites: false });
+  const executedPlan = executedPlanFor(providedArgs);
   const result = await runHcloud(providedArgs, {
     allowWrites: true,
     timeoutMs: args.timeoutMs,
     maxRetries: args.maxRetries,
     cwd: args.cwd,
     stdin: args.stdin,
+    createToken: false,
   });
   result.approved = true;
-  result.plan = strictPlan;
+  result.plan = executedPlan;
   return result;
 }
 
