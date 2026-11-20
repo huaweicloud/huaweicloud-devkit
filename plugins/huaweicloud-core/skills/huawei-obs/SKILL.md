@@ -27,7 +27,7 @@ hcloud OBS help <command> # e.g. hcloud OBS help mb
 | ------------------ | ------------------------------- |
 | `OBS CreateBucket` | `OBS mb obs://<bucket>`         |
 | `OBS PutObject`    | `OBS cp <file> obs://<bucket>/` |
-| `OBS DeleteBucket` | `OBS rm obs://<bucket> -r`      |
+| `OBS DeleteBucket` | `OBS rm obs://<bucket> -f`      |
 
 ## Overview
 
@@ -74,7 +74,7 @@ hcloud OBS config -e=<endpoint> -i=<AK> -k=<SK> -t=token
 | Set lifecycle                | `hcloud OBS lifecycle obs://<bucket> -method=put -localfile=<json>`                                                                                                 |
 | Set bucket policy            | `hcloud OBS bucketpolicy obs://<bucket> -method=put -localfile=<json>`                                                                                              |
 | Set CORS                     | `huaweicloud_obs_set_cors` (set/get/delete) — KooCLI OBS has no cors subcommand; the tool does AWS4-signed `PUT /?cors` internally. allowedMethod MUST include HEAD |
-| Delete bucket                | `hcloud OBS rm obs://<bucket> -r` (must be empty)                                                                                                                   |
+| Delete bucket                | `hcloud OBS rm obs://<bucket> -f` (must be empty; `-r` is prefix object deletion and returns "No task to run" on an empty bucket)                                   |
 | Presigned URL                | `hcloud OBS sign obs://<bucket>/<key> -e=<seconds>`                                                                                                                 |
 | Object metadata              | `hcloud OBS stat obs://<bucket>/<key>`                                                                                                                              |
 

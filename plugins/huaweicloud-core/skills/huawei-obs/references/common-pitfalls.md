@@ -11,7 +11,7 @@ OBS 使用 **obsutil-style** 子命令，不是 API-style 操作名：
 | `OBS --help`          | `hcloud OBS help`（无 `--`，`help` 是子命令） |
 | `OBS CreateBucket`    | `hcloud OBS mb obs://<bucket>`                |
 | `OBS PutObject`       | `hcloud OBS cp <file> obs://<bucket>/`        |
-| `OBS DeleteBucket`    | `hcloud OBS rm obs://<bucket> -r`             |
+| `OBS DeleteBucket`    | `hcloud OBS rm obs://<bucket> -f`             |
 | `OBS ListBuckets`     | `hcloud OBS ls`                               |
 
 ## 独立凭证配置

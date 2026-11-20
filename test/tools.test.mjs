@@ -93,6 +93,8 @@ test('TOOL_DEFINITIONS includes all required tools including sandbox', () => {
     'huaweicloud_run_readonly_command',
     'huaweicloud_list_operations',
     'huaweicloud_run_approved_command',
+    'huaweicloud_plan_manifest',
+    'huaweicloud_run_approved_manifest',
     'huaweicloud_show_profile_redacted',
     'huaweicloud_service_catalog',
     'huaweicloud_explain_error',
@@ -131,6 +133,108 @@ test('TOOL_DEFINITIONS expose cwd parameter on run tools', () => {
 
   const approvedTool = TOOL_DEFINITIONS.find((t) => t.name === 'huaweicloud_run_approved_command');
   assert.ok(Object.hasOwn(approvedTool.inputSchema.properties, 'cwd'), 'run_approved_command should have cwd param');
+});
+
+function withManifestTestEnv() {
+  const home = mkdtempSync(join(tmpdir(), 'huaweicloud-manifest-home-'));
+  const bin = mkdtempSync(join(tmpdir(), 'huaweicloud-manifest-bin-'));
+  const script = join(bin, 'fake-hcloud.mjs');
+  writeFileSync(script, 'console.log(JSON.stringify({ argv: process.argv.slice(2) }));', 'utf8');
+  const previous = {
+    home: process.env.HUAWEICLOUD_HOME,
+    bin: process.env.HCLOUD_BIN,
+    args: process.env.HCLOUD_BIN_ARGS_JSON,
+  };
+  process.env.HUAWEICLOUD_HOME = home;
+  process.env.HCLOUD_BIN = process.execPath;
+  process.env.HCLOUD_BIN_ARGS_JSON = JSON.stringify([script]);
+  return {
+    restore() {
+      if (previous.home === undefined) delete process.env.HUAWEICLOUD_HOME;
+      else process.env.HUAWEICLOUD_HOME = previous.home;
+      if (previous.bin === undefined) delete process.env.HCLOUD_BIN;
+      else process.env.HCLOUD_BIN = previous.bin;
+      if (previous.args === undefined) delete process.env.HCLOUD_BIN_ARGS_JSON;
+      else process.env.HCLOUD_BIN_ARGS_JSON = previous.args;
+      rmSync(home, { recursive: true, force: true });
+      rmSync(bin, { recursive: true, force: true });
+    },
+  };
+}
+
+test('plan_manifest and run_approved_manifest execute an approved batch once', async () => {
+  const env = withManifestTestEnv();
+  try {
+    const commands = [
+      { args: ['OBS', 'rm', 'obs://bucket/one.svg', '-f'], note: 'object one' },
+      { args: ['OBS', 'rm', 'obs://bucket/two.svg', '-f'], note: 'object two' },
+    ];
+    const plan = await callTool('huaweicloud_plan_manifest', { commands });
+    assert.equal(plan.count, 2);
+    assert.equal(plan.commands.length, 2);
+    assert.ok(plan.manifestDigest);
+    assert.ok(plan.approvalToken);
+    assert.equal(plan.commands[0].note, 'object one');
+
+    const run = await callTool('huaweicloud_run_approved_manifest', {
+      commands,
+      approvalToken: plan.approvalToken,
+      approvedByUser: true,
+    });
+    assert.equal(run.approved, true);
+    assert.equal(run.ok, true);
+    assert.equal(run.count, 2);
+    assert.equal(run.results.length, 2);
+    assert.equal(run.results[0].ok, true);
+
+    const again = await callTool('huaweicloud_run_approved_manifest', {
+      commands,
+      approvalToken: plan.approvalToken,
+      approvedByUser: true,
+    });
+    assert.equal(again.status, 'ok');
+    assert.equal(again.outcome, 'already_processed');
+  } finally {
+    env.restore();
+  }
+});
+
+test('run_approved_manifest rejects commands that do not match the approved manifest', async () => {
+  const env = withManifestTestEnv();
+  try {
+    const commands = [{ args: ['OBS', 'rm', 'obs://bucket/one.svg', '-f'] }];
+    const plan = await callTool('huaweicloud_plan_manifest', { commands });
+    await assert.rejects(
+      callTool('huaweicloud_run_approved_manifest', {
+        commands: [{ args: ['OBS', 'rm', 'obs://bucket/other.svg', '-f'] }],
+        approvalToken: plan.approvalToken,
+        approvedByUser: true,
+      }),
+      /do not match the approved manifest/,
+    );
+  } finally {
+    env.restore();
+  }
+});
+
+test('run_approved_command returns an executed allow plan without a new token', async () => {
+  const env = withManifestTestEnv();
+  try {
+    const args = ['OBS', 'rm', 'obs://bucket/one.svg', '-f'];
+    const plan = await callTool('huaweicloud_plan_cli_command', { args, allowWrites: true });
+    const run = await callTool('huaweicloud_run_approved_command', {
+      args,
+      approvalToken: plan.approvalToken,
+      approvedByUser: true,
+    });
+    assert.equal(run.approved, true);
+    assert.equal(run.ok, true);
+    assert.equal(run.plan.classification.decision, 'allow');
+    assert.equal(run.plan.safeToRun, true);
+    assert.equal(run.plan.approvalToken, undefined);
+  } finally {
+    env.restore();
+  }
 });
 
 test('TOOL_DEFINITIONS includes proactive hook check tools', () => {
