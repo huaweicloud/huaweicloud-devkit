@@ -394,7 +394,7 @@ export function planHcloudCommand(args, options = {}) {
     warnings,
     classification: applyPreflightFindings(classification, sgFindings),
     sgFindings,
-    approvalToken: createApprovalToken(normalizedArgs),
+    approvalToken: options.createToken === false ? undefined : createApprovalToken(normalizedArgs),
     safeToRun: classification.decision === 'allow',
   };
 }

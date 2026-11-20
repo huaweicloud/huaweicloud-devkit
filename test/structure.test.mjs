@@ -136,6 +136,16 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   assert.ok(!cliSkill.includes('hwcloudcli.obs.cn-north-1'), 'no stale hwcloudcli endpoint in cli-and-auth');
 });
 
+test('OBS skill documents the correct empty-bucket delete command', () => {
+  const obsSkill = readFileSync(join(pluginRoot, 'skills', 'huawei-obs', 'SKILL.md'), 'utf8');
+  const pitfalls = readFileSync(join(pluginRoot, 'skills', 'huawei-obs', 'references', 'common-pitfalls.md'), 'utf8');
+  assert.match(obsSkill, /`OBS rm obs:\/\/<bucket> -f`/);
+  assert.match(obsSkill, /`hcloud OBS rm obs:\/\/<bucket> -f`/);
+  assert.doesNotMatch(obsSkill, /\| Delete bucket\s*\| `hcloud OBS rm obs:\/\/<bucket> -r`/);
+  assert.match(pitfalls, /`hcloud OBS rm obs:\/\/<bucket> -f`/);
+  assert.doesNotMatch(pitfalls, /`hcloud OBS rm obs:\/\/<bucket> -r`/);
+});
+
 test('skill SKILL.md files meet minimum content quality bar', () => {
   const skillsDir = join(pluginRoot, 'skills');
   const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
