@@ -175,6 +175,10 @@ test('dependency provisioning: new modules stay unbundled; setup-cli delegates',
     ['src/doctor-report.ts', readSource(join('src', 'doctor-report.ts'))] as const,
     ['src/doctor-payload.ts', readSource(join('src', 'doctor-payload.ts'))] as const,
     ['src/doctor-native.ts', readSource(join('src', 'doctor-native.ts'))] as const,
+    // The integrity receipt module: written at the placement seam and read
+    // by the doctor sections — both members of this unbundled graph, so it
+    // joins the zod-free guard the same way (node builtins only).
+    ['src/safety-integrity.ts', readSource(join('src', 'safety-integrity.ts'))] as const,
     ['src/lib/banner.ts', readSource(join('src', 'lib', 'banner.ts'))] as const,
     // The opencode saved-permission reader is a zod-free leaf serving the
     // unbundled doctor (hygiene only since the server-run gate took over the

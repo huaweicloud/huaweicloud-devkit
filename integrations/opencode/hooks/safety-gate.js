@@ -1,0 +1,235 @@
+// The OpenCode >= 2.0 shell-face safety gate (architecture B, in-process):
+// registers permission.hook("evaluate") and denies shell commands the
+// devkit's text classifier refuses — credential-file reads, env dumps,
+// unapproved hcloud writes, destructive rows. MCP tool actions are named
+// "huaweicloud-devkit_<tool>" and never match the shell check: that face is
+// the server approval gate's own surface (formal verification: safe in
+// every posture), so the adapter stays zero-intervention there.
+//
+// Same deployment seam as skill-tracker.js (this directory, one bare file
+// per plugin): the installer copies this file beside it, and the classifier
+// is the deployed payload's compiled module — the same dist/safety-policy.js
+// every other face reads, never a second implementation.
+
+const DENY_PREFIX = 'Huawei Cloud safety hook blocked this action: ';
+
+const POLICY_LOAD_FAILED_REASON =
+  'the safety policy failed to load; commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
+
+const CLASSIFY_FAILED_REASON =
+  'the safety classifier failed to run (corrupt safety rules?); commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
+
+// The load-time behavior self-check (the integrity unit's layer 2): a
+// module that imports fine is not yet a classifier — a stale replacement,
+// a truncated overwrite, or a bad upgrade can hand the gate an object that
+// is shaped right and decides wrong (allowing the canonical write). Before
+// the module is trusted, three canaries run ONCE at load: the export
+// shape, a typical write vector (must deny), and a typical benign read
+// (must allow). Any failure pins the module untrusted — every later event
+// denies with this reason instead of running a module that cannot be
+// trusted to deny. This layer catches NON-adversarial corruption; an
+// adversary who can write the module can also write one that passes the
+// canaries — that crafted-module residual is documented in the approvals
+// reference and owned by the doctor drift check (layer 3).
+const SELF_CHECK_FAILED_REASON =
+  'the deployed safety policy failed its load-time self-check (shape or behavior canary); commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
+
+// Fixed canonical canary inputs (never derived from event data): the write
+// vector and benign read the test batteries already use, so a regression
+// that breaks the classifier's core verdicts disarms nothing — the gate
+// fails closed at load instead.
+const CANARY_WRITE_VECTOR = 'hcloud ECS DeleteServers --server.id=x';
+const CANARY_BENIGN_READ = 'ls /tmp';
+
+// Resolved relative to this file: the payload root convention skill-tracker
+// uses (plugins/ and huaweicloud-plugins/ are siblings under the opencode
+// config root). A deployed payload always carries dist/ (copyServerPayload
+// ships it), so an import failure means a broken install — denied
+// fail-closed below, never silently un-gated. No src fallback: unlike a raw
+// checkout, a deployed payload is never unbuilt.
+const POLICY_URL = new URL('../huaweicloud-plugins/dist/safety-policy.js', import.meta.url);
+
+// The host has NO evaluate timeout (G1-M3: a full 30s wait, measured), so
+// anything unbounded inside the handler is a hang vector. The one policy
+// import races a 3s fail-closed bound: a module that never settles
+// (interrogate round: a rewritten policy with a top-level forever-pending
+// promise) denies instead of hanging the tool call. Any failed or lost
+// race clears the cache so a later call retries — a mid-session reinstall
+// heals without a host restart, and a late-settling import re-races
+// cheaply (the ESM registry caches the evaluation).
+const IMPORT_RACE_MS = 3000;
+
+// The classification walk is synchronous per segment, but its cost grows
+// quadratically with ';'-dense text (interrogate round: 96KB of flood took
+// 213s at an allow verdict — the 256KiB cap inside the classifier protects
+// nothing at this seam, and the old comment's "cannot hang a tool call"
+// claim was measured false). Each segment is therefore capped at 8192
+// bytes BEFORE classification: the quadratic worst case lands in the
+// 1.5-2s order of a real tool call, real commands sit far below the cap,
+// and the sanctioned path for oversized parameters is --cli-jsonInput,
+// which the deny reason names.
+const SEGMENT_BYTE_CAP = 8192;
+
+let classifyTextCommand;
+let policyLoading = null;
+// Set when a policy import SUCCEEDED but the self-check refused the
+// module; sticky for the process lifetime (the ESM registry caches the
+// module — a retry would re-import the same broken evaluation).
+let selfCheckFailed = false;
+
+// The layer-2 self-check: null when the module is trusted, otherwise the
+// module must not be used. A throw inside a canary classification counts as
+// a failure (a module that crashes on the canonical vectors cannot be
+// trusted to deny).
+function selfCheckReasonOf(module) {
+  if (typeof module.classifyTextCommand !== 'function') {
+    return 'the deployed policy does not export a classifyTextCommand function';
+  }
+  let writeVerdict;
+  let readVerdict;
+  try {
+    writeVerdict = module.classifyTextCommand(CANARY_WRITE_VECTOR);
+    readVerdict = module.classifyTextCommand(CANARY_BENIGN_READ);
+  } catch {
+    return 'the deployed policy threw during the canary classifications';
+  }
+  if (writeVerdict?.decision !== 'deny') return 'the deployed policy allowed the canonical write canary';
+  if (readVerdict?.decision !== 'allow') return 'the deployed policy denied the canonical benign read canary';
+  return null;
+}
+
+function loadPolicy() {
+  if (!policyLoading) {
+    let cancelBound;
+    const bound = new Promise((_, reject) => {
+      cancelBound = setTimeout(
+        () => reject(new Error('the policy import did not settle within the 3s race bound')),
+        IMPORT_RACE_MS,
+      );
+    });
+    policyLoading = Promise.race([import(POLICY_URL), bound]).then(
+      (module) => {
+        clearTimeout(cancelBound);
+        const selfCheckReason = selfCheckReasonOf(module);
+        if (selfCheckReason !== null) {
+          selfCheckFailed = true;
+          return;
+        }
+        classifyTextCommand = module.classifyTextCommand;
+      },
+      (error) => {
+        clearTimeout(cancelBound);
+        policyLoading = null;
+        throw error;
+      },
+    );
+  }
+  return policyLoading;
+}
+
+// The clean deny path (G1-M1/M2): effect = "deny" + message is the
+// host-documented refusal channel — the message becomes the model-visible
+// rejection reason. Never rethrow: a thrown hook also denies (G1-M2
+// measured), but the clean path keeps the cause readable.
+function deny(event, reason) {
+  event.effect = 'deny';
+  event.message = DENY_PREFIX + reason;
+}
+
+// One classification input: null when it passes, the deny reason when it
+// refuses. The shared body of the per-segment loop and the pipe-feed
+// reassembly below — cap, classify, and classify-time failure in one place,
+// so the two paths cannot drift apart.
+function denyReasonOf(text) {
+  const bytes = Buffer.byteLength(text, 'utf8');
+  if (bytes > SEGMENT_BYTE_CAP) {
+    return `the command text is too large for synchronous in-hook classification (${bytes} bytes > ${SEGMENT_BYTE_CAP}); split the command or pass complex parameters via --cli-jsonInput`;
+  }
+  try {
+    const verdict = classifyTextCommand(text);
+    return verdict.decision === 'deny' ? verdict.reason : null;
+  } catch {
+    // Classify-time failure is the .mjs twin's contract: a corrupt rules
+    // file must deny, not crash verdict-less.
+    return CLASSIFY_FAILED_REASON;
+  }
+}
+
+// The host scanner splits compound commands into per-segment resources
+// (`ls /tmp && hcloud …` arrives as ['ls /tmp', 'hcloud …']) and the host's
+// own rule engine denies the operation when ANY segment denies — so the
+// adapter classifies each segment independently and the first deny wins
+// with its reason (interrogate round: the previous join(' ') erased the
+// separators and the write segment rode through as one allow, live-proven
+// — the faithful port of the host's per-resource semantics).
+async function onEvaluate(event) {
+  try {
+    if (event.action !== 'shell') return;
+    const resources = Array.isArray(event.resources) ? event.resources : [];
+    const segments = [];
+    for (const entry of resources) {
+      const text = String(entry);
+      if (text.trim() !== '') segments.push(text);
+    }
+    if (segments.length === 0) return;
+    if (selfCheckFailed) {
+      deny(event, SELF_CHECK_FAILED_REASON);
+      return;
+    }
+    try {
+      if (!classifyTextCommand) await loadPolicy();
+    } catch {
+      deny(event, POLICY_LOAD_FAILED_REASON);
+      return;
+    }
+    // The just-awaited load may have completed with a module the self-check
+    // refused — the sticky flag carries that verdict to every later event.
+    if (selfCheckFailed) {
+      deny(event, SELF_CHECK_FAILED_REASON);
+      return;
+    }
+    for (const text of segments) {
+      const reason = denyReasonOf(text);
+      if (reason !== null) {
+        deny(event, reason);
+        return;
+      }
+    }
+    // The pipe-feed reassembly (F6, the compound bypass's same-family
+    // residual): a pipe is the ONE cross-segment data flow — xargs splices
+    // its stdin into the next command's argv — and the classifier's
+    // pipe/xargs unwrap fires only on the joined text, so a split event
+    // that passed per segment is re-examined as one pipeline. ';'/'&&'
+    // semantics stay owned by the per-segment loop above (each segment is
+    // an independent command); the reassembly is conservative there, and
+    // the benign-pipe table (echo-prose through pipes) proved it costs no
+    // false positives. The reassembled text is itself a classification
+    // input, so it rides the same 8KiB bound.
+    if (segments.length >= 2) {
+      const reason = denyReasonOf(segments.join(' | '));
+      if (reason !== null) deny(event, reason);
+    }
+  } catch {
+    // The belt over the whole body — never rethrow (G1-M2's rethrow deny is
+    // the last line, this keeps the message clean instead).
+    deny(event, CLASSIFY_FAILED_REASON);
+  }
+}
+
+// The export is the plain { id, setup } object the V2 plugin loader's
+// documented contract accepts ("one default export containing a unique
+// plugin id and a setup function") — the shape herdr's auto-discovered
+// agent-state plugin runs as on a real host, and what skill-tracker's
+// identity-define fallback reduces to where @opencode/plugin is not
+// resolvable. No Plugin.define resolution dance here: it would clone
+// skill-tracker's createRequire block (the zero-new-duplication gate), and
+// the two plugins must stay independently loadable anyway.
+export default {
+  id: 'huaweicloud-safety-gate',
+  async setup(ctx) {
+    await ctx.permission.hook('evaluate', onEvaluate);
+    // A V2 host may invoke the setup return value unguarded, and
+    // undefined is not callable — the skill-tracker precedent.
+    return () => {};
+  },
+};

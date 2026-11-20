@@ -3,6 +3,7 @@ import { join } from 'node:path';
 
 import { copyDir, copyFileVerified, pruneStale } from './payload-files.ts';
 import { PLUGIN_ROOT } from './payload-utils.ts';
+import { writeIntegrityReceipt } from './safety-integrity.ts';
 
 // The server-payload placement (the install-payload.ts internals split):
 // the one shared seam every per-agent install/update call site ships the
@@ -74,6 +75,13 @@ export function copyServerPayload(pluginDest: string, opts: { skipDist?: boolean
   }
   copyDir(join(PLUGIN_ROOT, 'safety'), join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
+  // The integrity receipt (the integrity unit's layer 3): a hash manifest
+  // of the classifier files that just landed, written at the one shared
+  // placement seam so every install/update path records it and doctor can
+  // detect drift later. Covers whatever shipped — a skipDist payload
+  // records its safety/ files only.
+  writeIntegrityReceipt(pluginDest);
+  console.log(`  Integrity receipt -> ${join(pluginDest, '.safety-integrity.json')}`);
   const skillsSrc = join(PLUGIN_ROOT, 'skills');
   // A missing source tree must abort, not silently skip: copyDir's
   // existsSync guard would no-op the copy while this function still prints

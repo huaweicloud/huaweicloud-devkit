@@ -171,8 +171,7 @@ test('doctor: seam check reports ok, pure-missing, mixed, and scalar states per 
   writeFileSync(configPath, JSON.stringify(asMissing, null, 2));
   const missingOut = runDoctor(home, { HUAWEICLOUD_OPENCODE_PERMISSION_SEAM: 'on' });
   assert.ok(
-    missingOut.includes('[FAIL] Skills-tree permission seam') &&
-      missingOut.includes('writes the missing skills-tree rules'),
+    missingOut.includes('[FAIL] Skills-tree permission seam') && missingOut.includes('writes the missing seam rules'),
     `a deleted edit deny must FAIL with the reinstall remediation, got:\n${missingOut}`,
   );
 

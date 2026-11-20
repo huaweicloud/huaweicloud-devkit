@@ -29,11 +29,14 @@ test('telemetry hooks never classify skill-tool loads', () => {
   // huawei* prefix match misattributes user skills). Two review rounds
   // caught drift in this family one file at a time; this sweep pins every
   // hook-events.jsonl emitter together — the five platform hooks plus the
-  // plugin-dir safety hook — so a bad merge cannot quietly re-add the
-  // branch anywhere.
+  // plugin-dir safety hook — and the opencode shell deny adapter
+  // (safety-gate.js, a non-emitter bound by the same server-data doctrine:
+  // it classifies shell text only), so a bad merge cannot quietly re-add
+  // the branch anywhere.
   const integrations = join(root, 'integrations');
   const hookFiles = [
     join(integrations, 'opencode', 'hooks', 'skill-tracker.js'),
+    join(integrations, 'opencode', 'hooks', 'safety-gate.js'),
     join(integrations, 'workbuddy', 'hooks', 'telemetry-tracker.py'),
     join(integrations, 'hermes', 'hooks', 'huaweicloud-telemetry.py'),
     join(integrations, 'atomcode', 'hooks', 'huaweicloud-telemetry.js'),
