@@ -14,6 +14,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { fetchWithProxy } from '../proxy/proxy-agent.mjs';
+import { redactSecrets } from '../safety-policy.mjs';
 import { installSegment } from './agent-registry.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -189,6 +190,11 @@ function capabilityFromKey(key) {
 
 export function sanitizeValue(value) {
   if (typeof value !== 'string') value = value == null ? '' : String(value);
+  // #1055 D8-9 (recurrence of #980): credential-shaped content (AK=/SK=,
+  // secret_key=, token=, …) must be redacted BEFORE it enters a telemetry
+  // event — plain truncation/whitespace-squash left plaintext credentials in
+  // reported values.
+  value = redactSecrets(value);
   value = value.replace(/[\r\n\t]+/g, ' ').trim();
   if (value.length > MAX_VALUE_LENGTH) {
     value = value.slice(0, MAX_VALUE_LENGTH - 3) + '...';

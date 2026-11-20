@@ -38,18 +38,19 @@ hcloud RDS <Operation> --cli-region=<region> [--key=value ...]
 
 ## Critical Warnings
 
-| Trap                                | Why                                                                                                                                          |
-| ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| Engine version immutable            | Cannot change MySQL to PostgreSQL in-place                                                                                                   |
-| Automated backups use OBS           | Backup storage incurs separate charges. Set retention period explicitly                                                                      |
-| Storage auto-scaling off by default | Enable before storage runs out or instance goes read-only                                                                                    |
-| `--password` conflicts with KooCLI  | Use `--cli-jsonInput=<file>` with JSON file (see `--cli-jsonInput` section below). The `printf "b\n"` workaround is broken in KooCLI 7.2.12+ |
-| Volume type must match flavor       | General→CLOUDSSD; Dedicated→CLOUDSSD\|ESSD; ARM→CLOUDSSD                                                                                     |
-| Flavor not in region                | Always `ListFlavors` first. Spec codes vary by region                                                                                        |
-| `database_name` is case-sensitive   | Use `MySQL` / `PostgreSQL` / `SQLServer` / `MariaDB` — NOT lower-case `mysql`                                                                |
-| Instance creation takes 3–8 min     | Status: BUILD→MODIFYING→ACTIVE. Poll every 15s: `hcloud RDS ListInstances --cli-region=<r> --instance_id=<id> \| jq '.instances[0].status'`  |
-| Body `--region` is required         | CreateInstance body requires `--region=<r>` (same as `--cli-region`) or `DBS.280243`                                                         |
-| Restore creates new instance        | No in-place restore. Verify target flavor before restoring                                                                                   |
+| Trap                                | Why                                                                                                                                                                                           |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Engine version immutable            | Cannot change MySQL to PostgreSQL in-place                                                                                                                                                    |
+| Automated backups use OBS           | Backup storage incurs separate charges. Set retention period explicitly                                                                                                                       |
+| Storage auto-scaling off by default | Enable before storage runs out or instance goes read-only                                                                                                                                     |
+| `--password` conflicts with KooCLI  | Use `--cli-jsonInput=<file>` with JSON file (see `--cli-jsonInput` section below). The `printf "b\n"` workaround is broken in KooCLI 7.2.12+                                                  |
+| **No nested `db.*` params**         | CreateInstance body params are flat: `--password`, `--port`, `--name`, `--datastore.type`. `--db.password` / `--db.port` fail with `Invalid parameter: db.password` — there is no `db` object |
+| Volume type must match flavor       | General→CLOUDSSD; Dedicated→CLOUDSSD\|ESSD; ARM→CLOUDSSD                                                                                                                                      |
+| Flavor not in region                | Always `ListFlavors` first. Spec codes vary by region                                                                                                                                         |
+| `database_name` is case-sensitive   | Use `MySQL` / `PostgreSQL` / `SQLServer` / `MariaDB` — NOT lower-case `mysql`                                                                                                                 |
+| Instance creation takes 3–8 min     | Status: BUILD→MODIFYING→ACTIVE. Poll every 15s: `hcloud RDS ListInstances --cli-region=<r> --instance_id=<id> \| jq '.instances[0].status'`                                                   |
+| Body `--region` is required         | CreateInstance body requires `--region=<r>` (same as `--cli-region`) or `DBS.280243`                                                                                                          |
+| Restore creates new instance        | No in-place restore. Verify target flavor before restoring                                                                                                                                    |
 
 ## Instance Management
 

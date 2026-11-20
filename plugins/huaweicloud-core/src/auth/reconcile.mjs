@@ -47,8 +47,12 @@ export function readKooCliProfiles() {
   if (!existsSync(configPath)) {
     // #900: bare string replaced by the unified ERROR_TABLE shape; the old
     // English text survives only as the distinguishing detail argument.
-    const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', 'KooCLI config not found');
-    return { error: e.messageZh, code: e.code, messageZh: e.messageZh, action: e.action, nextStep: e.nextStep };
+    // #1055 D2-10: the `error` field must be the exact contract string
+    // (`KooCLI config not found`) — the Chinese guidance stays in `messageZh`
+    // so clients that match the precise string are not broken.
+    const detail = 'KooCLI config not found';
+    const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', detail);
+    return { error: detail, code: e.code, messageZh: e.messageZh, action: e.action, nextStep: e.nextStep };
   }
   try {
     const raw = JSON.parse(readFileSync(configPath, 'utf8'));
@@ -78,9 +82,11 @@ export function readKooCliProfiles() {
       ),
     };
   } catch {
-    // #900: bare string replaced by the unified ERROR_TABLE shape.
-    const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', 'KooCLI config parse failed');
-    return { error: e.messageZh, code: e.code, messageZh: e.messageZh, action: e.action, nextStep: e.nextStep };
+    // #900: bare string replaced by the unified ERROR_TABLE shape; #1055 D2-10
+    // keeps `error` as the exact English contract string.
+    const detail = 'KooCLI config parse failed';
+    const e = errorFromTable('HDKIT_KOOCLI_NOT_READY', detail);
+    return { error: detail, code: e.code, messageZh: e.messageZh, action: e.action, nextStep: e.nextStep };
   }
 }
 
