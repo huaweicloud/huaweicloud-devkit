@@ -7,7 +7,9 @@ Huawei Cloud DevKit 安全模型由三层组成：**技能教学 → Hook 拦截
 ```
 Agent 生成命令/产物/部署计划
         │
-        ├── PreToolUse Hook (Node/Codex, Python/Hermes) ← 实时拦截 Bash/hcloud 命令
+        ├── 阻断面（per-harness）← 实时拦截 Bash/hcloud 命令
+        │     PreToolUse Hook：Claude Code/Codex/Cursor（Node .mjs）、Hermes（Python .py）
+        │     OpenCode ≥ 2.0：in-process permission.evaluate 适配器（safety-gate.js）
         │
         ├── huaweicloud_hook_check_*  ← MCP 工具，主动检查
         │   ├── command   → 检查计划执行的命令
@@ -35,14 +37,24 @@ Hook 系统强制以下隐私边界，禁止以下数据进入 agent 上下文�
 
 ### 第 1 层：PreToolUse 实时拦截
 
-Codex 原生插件通过 `hooks/huaweicloud-safety.mjs` 执行 PreToolUse 拦截，避免 Windows/Codex 环境依赖 `python3`。`hooks/huaweicloud-safety.py` 保留给 Hermes/Python hook 场景和既有兼容路径。Hook 使用共享策略拦截：
+PreToolUse 拦截面按 harness 区分：
+
+| Harness                      | 阻断面                                                                                                     | 载体                                                                                                                                                               |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Claude Code / Codex / Cursor | PreToolUse（Bash matcher + `huaweicloud_*` MCP matcher，hooks.json，5s 超时）                              | `hooks/huaweicloud-safety.mjs`（Node，避免 Windows 环境依赖 `python3`；载入期形状/行为金丝雀三查，败者 fail-closed deny）                                          |
+| Hermes                       | PreToolUse（Python hook）                                                                                  | `hooks/huaweicloud-safety.py`（保留给 Hermes/Python hook 场景和既有兼容路径）                                                                                      |
+| OpenCode ≥ 2.0               | `permission.hook("evaluate")`，in-process，`"shell"` action（宿主无超时：import 3s 竞速界 + 每段 8KiB 帽） | installer 部署的 `~/.config/opencode/plugins/safety-gate.js` 适配器（逐段分类，任一段 deny 即整体 deny；import 后同三查金丝雀；源 `integrations/opencode/hooks/`） |
+| OpenCode 1.x                 | 无 hook 面                                                                                                 | MCP/CLI 包装层兜底；审批残留上 TTY 检查是唯一屏障（见 approvals.md 披露）                                                                                          |
+
+`.mjs` 与 `.py` 拦截时返回 `permissionDecision: "deny"`，并附带 `permissionDecisionReason`；OpenCode 适配器的对应拒绝通道是 `event.effect = "deny"` + `event.message`（message 即模型可见的拒绝原因），且逐段评估——宿主 scanner 把 compound 命令拆成多个 `resources` 元素，任一段 deny 即整体 deny（宿主自身 per-resource 语义的忠实移植）。三层共用 `dist/safety-policy.js`（源码 `src/safety-policy.ts`）的同一套分类逻辑：
 
 - **凭证文件**：匹配 `.hcloud`、`.huaweicloud`、`hcloud/config` 等路径模式
 - **环境变量**：匹配 `env | HUAWEICLOUD` 等组合
 - **Secret 读取**：匹配 `ShowSecret`、`ShowSecretVersion`、`secret_string` 等
 - **风险规则**：加载 `safety/rules/cloud-risk-rules.json`，对 `hcloud` 命令和通用 shell 命令文本进行规则匹配
+- **部署 payload 路径写**：匹配 `policy.json` 的 `protectedPayloadPathMarkers`（`huaweicloud-plugins/`、`huaweicloud-core/dist/`、`huaweicloud-core/safety/`）——写形命令（重定向、`tee`、`cp`/`mv`/`rsync`/`install` 目标、`dd of=`、`sed -i`、`patch`）指向部署路径即 deny（risk `invalid`，豁免不可跳）；读形引用不拦（技能读取、直接检查合法）。TS/py 双面消费同一词表（`src/safety/protected-payload.ts` + py `load_policy`/`evaluate`，hook-parity 电池钉判定一致）
 
-拦截时返回 `permissionDecision: "deny"`，并附带 `permissionDecisionReason`。
+分类器完整性三道防线（把「经 bash 改写部署分类器」从完全开放抬到多层设防，天花板如实）：**分类器路径写拒绝**（上表词表）→ **载入期行为自检**（适配器与 `.mjs` 在 import 成功后、信任模块前跑三条金丝雀：导出形状、典型写向量必须 deny、良性读必须 allow，任一不过 deny fail-closed，reason 指向重装）→ **doctor 漂移检查**（安装/更新时 `copyServerPayload` 写部署侧分类器文件的 sha256 清单 `.safety-integrity.json`，doctor 逐行比对：漂移 FAIL + 重装修复；无 receipt（旧安装升级）WARN 不是 FAIL）。对任意用户权限 bash **无本地完全闭合**（本地一切文件皆可写，receipt 本身也可被改写——doctor 是检出不是证明；完全闭合需带外校验：只读安装位置、签名 payload 或 agent 写不到的进程做校验），crafted 模块（通过金丝雀的伪造分类器）与引号/变量拼写的路径残余如实披露在 approvals.md。
 
 ### 第 2 层：MCP 主动检查
 
@@ -89,7 +101,7 @@ Agent 在**执行前**应主动调用以下 MCP 工具进行风险检查：
 `src/risk-rule-engine.ts`（编译为 `dist/risk-rule-engine.js`）实现了规则匹配引擎，被多个组件复用：
 
 - **MCP 工具**：`huaweicloud_hook_check_*` 调用 `evaluateCommandRisk` / `evaluateArtifacts` / `evaluateDeployPlan`
-- **Node Hook**：`huaweicloud-safety.mjs` 通过 `dist/safety-policy.js`（源码 `src/safety-policy.ts`）复用 `dist/risk-rule-engine.js`，供 Codex 原生插件使用
+- **Node Hook**：`huaweicloud-safety.mjs` 通过 `dist/safety-policy.js`（源码 `src/safety-policy.ts`）复用 `dist/risk-rule-engine.js`，供 Claude Code/Codex/Cursor 的 PreToolUse 拦截，并为 OpenCode ≥ 2.0 的 evaluate 适配器共用（同一模块，同一 deny 前缀与 fail-closed 原因文案）
 - **Python Hook**：`huaweicloud-safety.py` 独立加载 `cloud-risk-rules.json`，供 Hermes/Python hook 场景使用
 - **安全策略检查**：`src/safety-policy.ts` 读取 `policy.json` 进行凭证/写操作分类
 

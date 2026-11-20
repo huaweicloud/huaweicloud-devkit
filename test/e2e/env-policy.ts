@@ -55,6 +55,9 @@ export const STRIP_ENV_KEYS: readonly string[] = [
   // Same doctrine for the ask-rule gate: the runner's install relies on
   // the natural probe deciding whether the ASK posture's pair is written.
   'HUAWEICLOUD_OPENCODE_ASK_RULE',
+  // And the safety-gate gate: the runner's install relies on the natural
+  // probe deciding whether the evaluate-hook adapter file is deployed.
+  'HUAWEICLOUD_OPENCODE_SAFETY_GATE',
 ];
 
 // Posture overrides applied last: telemetry off (no production POSTs from

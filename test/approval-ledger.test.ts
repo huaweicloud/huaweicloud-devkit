@@ -1800,7 +1800,13 @@ test(
     });
     rows = readConsentEvents().filter((event) => event.argsHash === key);
     assert.ok(rows[0]!.arrivalSeq < rows[1]!.arrivalSeq, 'real arrivals carry increasing seqs');
-    assert.notEqual(first.grantedAt, second.grantedAt, 'distinct arrivals keep distinct stamps');
+    // No distinct-stamp assertion here: grantedAt is millisecond-grained
+    // (recordAskModeConsent reads Date.now()), so two back-to-back arrivals
+    // can land in the same millisecond — a shape the ledger's own doctrine
+    // treats as the exact-tie case (weakest-wins at the equal stamp), not a
+    // defect. The counter is the chronology key this test exists to pin;
+    // the CI flake (ubuntu-22 lane, run 44683266605) was this side
+    // assertion racing the clock, not the seq contract.
     assert.ok(first.arrivalSeq < second.arrivalSeq, 'the identity threads the seq the ledger assigned');
   }),
 );

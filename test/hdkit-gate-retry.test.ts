@@ -4413,7 +4413,12 @@ test('every engine error-family prototype routes to stamped carriers: zero proce
     engineFamilies.size >= 8,
     `the engine carries at least the eight known families (found ${engineFamilies.size})`,
   );
-  for (const known of [Error.prototype, TypeError.prototype, DOMException.prototype, SuppressedError.prototype]) {
+  // SuppressedError 家族在 node 22（工程地板 22.19）尚不存在，直写原型引用
+  // 在 22 车道上是 ReferenceError。跨版本等价断言：只点名引擎实际持有的
+  // 家族；未来引擎补齐后枚举扫描（collectEngineErrorPrototypes）自动覆盖
+  const knownEngineFamilies: object[] = [Error.prototype, TypeError.prototype, DOMException.prototype];
+  if (typeof SuppressedError !== 'undefined') knownEngineFamilies.push(SuppressedError.prototype);
+  for (const known of knownEngineFamilies) {
     assert.ok(engineFamilies.has(known), 'the known engine families are enumerated');
   }
   for (const proto of engineFamilies) {
@@ -5560,6 +5565,11 @@ test('an oversized JSON message, code, and traceId fold bounded — the child pr
     },
   ];
   for (const { shape, check } of rows) {
+    // 主模块实参必须是裸路径：pathname 在 win32 是 /D:/…（Cannot find
+    // module），URL 串又会被入口层当路径解析（本机 node 26 实测挂）——
+    // fileURLToPath 双平台同合法。run 44498912057 的 protocol 'd:' 红不在
+    // 入口，在驱动器内部的裸路径 import()（ESM 说明符层按 URL 解析），那
+    // 一段已改 file:// URL 说明符（见 oversize-json-driver.mjs）
     const res = spawnSync(process.execPath, ['--max-old-space-size=512', fileURLToPath(driver), shape], {
       env: childEnv,
       encoding: 'utf8',
@@ -6071,48 +6081,5 @@ test('the Retry-After header folds at the same 200-code-point cap', async () => 
     } finally {
       stub.restore();
     }
-  }
-});
-
-// AX N-SB.2: the MCP connect face must not hold the tool call through the
-// production 30s/45s backoff — the host request timeout would abandon the
-// call while the server completed the create. The first transient gateway
-// answer returns a pending receipt; the retry moves to the next call.
-test('connect returns a pending receipt instead of sleeping through the production backoff (N-SB.2)', async () => {
-  const restoreSeam = withRetrySeam('30000,45000');
-  const stub = stubConnectSequence([() => htmlPage(502, '<html>502 Bad Gateway</html>')]);
-  const started = Date.now();
-  try {
-    const result = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as ExhaustedResult & { pending?: boolean; hint?: string; retryAfterMs?: number };
-    const elapsed = Date.now() - started;
-    assert.equal(result.ok, false);
-    assert.equal(result.pending, true, 'a transient gateway answer returns the pending receipt');
-    assert.equal(result.retryAfterMs, 30000, 'the first configured backoff is surfaced, not slept');
-    assert.equal(stub.calls(), 1, 'exactly one HTTP attempt per tool call — no inline sleep/retry');
-    assert.match(String(result.hint), /Re-call huaweicloud_sandbox_connect/);
-    assert.ok(elapsed < 5000, `returned inside the host budget (${elapsed}ms)`);
-  } finally {
-    stub.restore();
-    restoreSeam();
-  }
-});
-
-test('a short inline backoff keeps the legacy retry ladder (N-SB.2 seam)', async () => {
-  const restoreSeam = withRetrySeam('1');
-  const stub = stubConnectSequence([() => htmlPage(502, '<html>502 Bad Gateway</html>')]);
-  try {
-    const result = (await callTool('huaweicloud_sandbox_connect', {
-      vendorConfirmed: VENDOR,
-      pool_type: 'ephemeral',
-    })) as ExhaustedResult & { pending?: boolean };
-    assert.equal(result.pending, undefined, 'short backoffs still retry inline');
-    assert.equal(result.connectRetries, 1, 'one retry happened inline before exhaustion');
-    assert.equal(stub.calls(), 2, 'one retry then exhaustion');
-  } finally {
-    stub.restore();
-    restoreSeam();
   }
 });

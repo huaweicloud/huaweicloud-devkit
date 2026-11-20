@@ -44,7 +44,6 @@ const CONFIG_PATH = join('plugins', 'huaweicloud-core', '.mcp.json');
 test('the tools block is roster-driven: one approve entry per roster tool', () => {
   const block = codexApprovalToolsBlock();
   assert.deepEqual(Object.keys(block), [...APPROVAL_TOOLS], 'the roster drives the block, in roster order');
-  assert.equal(APPROVAL_TOOLS.length, 17, 'the codex yield covers the full PR-3c roster plus the shutdown port');
   for (const tool of APPROVAL_TOOLS) {
     assert.deepEqual(block[tool], { approval_mode: CODEX_APPROVAL_MODE });
   }
@@ -403,6 +402,14 @@ test('cache candidates resolve from CODEX_HOME and stop at files named .mcp.json
 
 // ── The deploy writer and the real doctor ──
 
+// The real doctor's PASS row derives its count from the roster, so the
+// guard derives it too: a pinned literal goes stale on every roster
+// widening (the shutdown port's landing proved it — the reds got "fixed"
+// by bumping 16 to 17, not by asking what the count is a proxy for).
+const REAL_DOCTOR_POSTURE_PASS = new RegExp(
+  `\\[PASS\\] Codex approval posture \\(${APPROVAL_TOOLS.length} per-tool approve blocks \\+ DEVKIT_APPROVAL_MODE="${CODEX_APPROVAL_MODE_ENV}" in the devkit payload\\)`,
+);
+
 test('codex-desktop install writes the tools block and the ask env into its payload .mcp.json', () => {
   const home = fixtureDir('codex-approval-desktop-');
   const cwd = fixtureDir('codex-approval-cwd-');
@@ -479,10 +486,7 @@ test('the real doctor passes the healthy payload and warns on every direction, n
   mkdirSync(configDir, { recursive: true });
   writeFileSync(join(configDir, 'config.toml'), '# user codex config\n', 'utf8');
   const out = runDoctor(home, env);
-  assert.match(
-    out,
-    /\[PASS\] Codex approval posture \(17 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
-  );
+  assert.match(out, REAL_DOCTOR_POSTURE_PASS);
 
   // A user override in config.toml: the doctor WARNs the winning value.
   const override = [`[mcp_servers.${APPROVAL_MCP_SERVER}.tools.huaweicloud_upgrade]`, 'approval_mode = "prompt"'].join(
@@ -546,9 +550,6 @@ test('the real doctor: inline-table policy WARNs, header policy WARNs, clean pas
 
   writeFileSync(configToml, '# user codex config\n', 'utf8');
   const cleanOut = runDoctor(home, env);
-  assert.match(
-    cleanOut,
-    /\[PASS\] Codex approval posture \(17 per-tool approve blocks \+ DEVKIT_APPROVAL_MODE="ask" in the devkit payload\)/,
-  );
+  assert.match(cleanOut, REAL_DOCTOR_POSTURE_PASS);
   assert.ok(!/\[WARN\] Codex approval posture/.test(cleanOut));
 });

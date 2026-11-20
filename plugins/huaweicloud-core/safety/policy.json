@@ -27,6 +27,11 @@
     "/proc/(self|[0-9]+)/environ",
     "huaweicloud\\s*(?:&&|;|/|[\\n\\r])\\s*(?:\\S+\\s+){0,2}(?:credentials|creds-import|config)\\.json"
   ],
+  "protectedPayloadPathMarkers": [
+    "huaweicloud-plugins[/\\\\]",
+    "huaweicloud-core[/\\\\]dist[/\\\\]",
+    "huaweicloud-core[/\\\\]safety[/\\\\]"
+  ],
   "blockedConfigureSubcommands": ["show", "get", "list", "export", "init"],
   "blockedSecretOperations": [
     "ShowSecret",

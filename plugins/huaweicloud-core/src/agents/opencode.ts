@@ -34,9 +34,11 @@ import {
   openCodeSeamGate,
   openCodeSeamGlobs,
   openCodeAskGate,
+  openCodeSafetyGate,
 } from './opencode-config.ts';
 import { readPermissionRules, readPermissionRulesV1, type RosterRuleState } from '../lib/opencode-ask-rule.ts';
 import { scanSavedAllowRows } from '../lib/opencode-saved-perms.ts';
+import { payloadEditDenyGlobs } from '../lib/opencode-permission-seam.ts';
 import type { DoctorReporter } from '../doctor-report.ts';
 import { asRecord } from '../lib/as-record.ts';
 
@@ -204,23 +206,27 @@ function savedAllowStoreCheck(ctx: DoctorReporter): void {
 
 // Doctor: the skills-tree permission seam check — OpenCode installs only
 // (the seam is the installer's zero-prompt path for direct skill reads on
-// that harness). Verifies the two keys and their values, honoring the
-// ownership contract: a user-owned value on a devkit glob is reported as
-// kept, not broken; a below-floor or absent opencode is a SKIP, never a
-// FAIL.
+// that harness). Verifies the keys and their values over BOTH glob classes,
+// honoring the ownership contract: a user-owned value on a devkit glob is
+// reported as kept, not broken; a below-floor or absent opencode is a SKIP,
+// never a FAIL.
 export function opencodeDoctorSeam(ctx: DoctorReporter): void {
   if (openCodeSeamGate() === 'off') {
     ctx.skip('Skills-tree permission seam (opencode not verifiably at or above the measured permission floor)');
     return;
   }
-  // Per-glob evaluation, matching the installer's per-section/per-glob
+  // Per-glob, two-class evaluation, matching the installer's per-section
   // contract exactly: user-owned globs (any non-devkit value) are reported
   // as kept, missing globs as healable — one user-owned glob must never
-  // mask a missing edit deny. Configs the installer itself refuses to
+  // mask a healable gap. The edit-only class (the payload root — the
+  // classifier the in-process gate imports) requires just the edit deny:
+  // the external allow is deliberately absent there, so requiring it would
+  // fail every healthy install. Configs the installer itself refuses to
   // touch (scalar-shaped permission, unparseable file — the parse-fail
   // skip is the install path's ONLY skip) get a SKIP with the manual
   // pointer, never a FAIL whose re-run-install remediation cannot succeed.
   const globs = openCodeSeamGlobs(opencodePluginsDir());
+  const editOnlyGlobs = payloadEditDenyGlobs(opencodePluginsDir());
   let cfg: Record<string, unknown> | null;
   try {
     cfg = asRecord(JSON.parse(readFileSync(opencodeConfigFile(), 'utf8')));
@@ -240,28 +246,52 @@ export function opencodeDoctorSeam(ctx: DoctorReporter): void {
   const permRecord = asRecord(permission);
   const ext = asRecord(permRecord.external_directory);
   const editRules = asRecord(permRecord.edit);
-  const kept = globs.filter((g) => (g in ext && ext[g] !== 'allow') || (g in editRules && editRules[g] !== 'deny'));
-  const missing = globs.filter((g) => ext[g] !== 'allow' || editRules[g] !== 'deny');
-  if (missing.length === 0) {
-    ctx.check('Skills-tree permission seam (allow + edit deny)', true, '');
-  } else if (kept.length === 0) {
+  const kept =
+    globs.filter((g) => (g in ext && ext[g] !== 'allow') || (g in editRules && editRules[g] !== 'deny')).length +
+    editOnlyGlobs.filter((g) => g in editRules && editRules[g] !== 'deny').length;
+  const missing =
+    globs.filter((g) => ext[g] !== 'allow' || editRules[g] !== 'deny').length +
+    editOnlyGlobs.filter((g) => editRules[g] !== 'deny').length;
+  const LABEL = 'Skills-tree permission seam (allow + edit deny; payload edit deny)';
+  if (missing === 0) {
+    ctx.check(LABEL, true, '');
+  } else if (kept === 0) {
     ctx.check(
-      'Skills-tree permission seam (allow + edit deny)',
+      LABEL,
       false,
-      'Run: npx huaweicloud-devkit install (writes the missing skills-tree rules; see README, Harness permission notes)',
+      'Run: npx huaweicloud-devkit install (writes the missing seam rules; see README, Harness permission notes)',
     );
   } else {
     ctx.check(
-      'Skills-tree permission seam (allow + edit deny)',
+      LABEL,
       false,
-      `${missing.length} rule(s) missing (re-run: npx huaweicloud-devkit install); ${kept.length} user-owned glob(s) kept as-is (see README, Harness permission notes)`,
+      `${missing} rule(s) missing (re-run: npx huaweicloud-devkit install); ${kept} user-owned glob(s) kept as-is (see README, Harness permission notes)`,
     );
   }
+}
+
+// Doctor: the shell safety gate — OpenCode installs only (the evaluate-hook
+// adapter is the opencode ≥ 2.0 in-process deny face for shell commands).
+// A below-floor, absent, or unparsable opencode is a SKIP, never a FAIL
+// (the adapter has no surface to register on there); a verifiably ≥ 2.0
+// opencode with a missing adapter file is the FAIL install heals.
+export function opencodeDoctorSafetyGate(ctx: DoctorReporter): void {
+  if (openCodeSafetyGate() === 'off') {
+    ctx.skip('Shell safety gate (opencode not verifiably at or above 2.0.0)');
+    return;
+  }
+  const gateFile = join(configRoot('opencode'), 'plugins', 'safety-gate.js');
+  ctx.check(
+    'Shell safety gate (evaluate-hook adapter)',
+    existsSync(gateFile),
+    'Run: npx huaweicloud-devkit install --target opencode',
+  );
 }
 
 export async function deployOpenCode(mode: DeployMode): Promise<void> {
   const commandsSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'commands');
   const pluginSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'hooks', 'skill-tracker.js');
+  const gateSrc = join(PACKAGE_ROOT, 'integrations', 'opencode', 'hooks', 'safety-gate.js');
   const pluginDest = opencodePluginsDir();
 
   copyDir(commandsSrc, opencodeCommandsDir());
@@ -274,6 +304,19 @@ export async function deployOpenCode(mode: DeployMode): Promise<void> {
   mkdirSync(opcPlugins, { recursive: true });
   copyFileSync(pluginSrc, join(opcPlugins, 'skill-tracker.js'));
   console.log(`  Plugin${deployWord(mode)} -> ${opcPlugins}`);
+  const gateFile = join(opcPlugins, 'safety-gate.js');
+  if (openCodeSafetyGate() === 'on') {
+    copyFileSync(gateSrc, gateFile);
+    console.log(`  Safety gate${deployWord(mode)} -> ${opcPlugins}`);
+  } else {
+    // Drift heal, same doctrine as the ask-rule migration: an opencode that
+    // downgraded or vanished since the last install must not keep the file
+    // (a below-floor host has no evaluate hook to run it on).
+    removeIfExists(gateFile);
+    console.log(
+      '  \x1b[33m[INFO]\x1b[0m opencode not verifiably at or above 2.0.0 — skipping the shell safety-gate plugin; a below-floor host has no evaluate hook to gate the Bash face on.',
+    );
+  }
   updateOpenCodeConfig(pluginDest);
 
   installRuntimeDeps(pluginDest);
@@ -292,6 +335,12 @@ export function uninstallOpenCode(removeOwnedSkills: (dir: string) => number): v
     console.log('  Removed plugin');
   }
 
+  const gateFile = join(configRoot('opencode'), 'plugins', 'safety-gate.js');
+  if (existsSync(gateFile)) {
+    removeIfExists(gateFile);
+    console.log('  Removed safety-gate plugin');
+  }
+
   if (removeIfExists(opencodePluginsDir())) {
     console.log('  Removed MCP server and safety policy');
   }
@@ -300,5 +349,7 @@ export function uninstallOpenCode(removeOwnedSkills: (dir: string) => number): v
 
 export function opencodeStatus(): void {
   payloadStatusLines(opencodePluginsDir());
+  const gateInstalled = existsSync(join(configRoot('opencode'), 'plugins', 'safety-gate.js'));
+  console.log(`  Shell safety gate: ${gateInstalled ? '\x1b[32mInstalled\x1b[0m' : '\x1b[31mNot installed\x1b[0m'}`);
   printMcpConfigStatus(opencodeConfigFile(), 'mcp');
 }

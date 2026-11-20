@@ -84,8 +84,9 @@ let classifyTextCommand;
 // covers the transition.
 let rosterApprovalTools;
 let rosterInputShapes;
+let policyModule;
 try {
-  const policyModule = existsSync(join(__dirname, '..', 'dist', 'safety-policy.js'))
+  policyModule = existsSync(join(__dirname, '..', 'dist', 'safety-policy.js'))
     ? await import('../dist/safety-policy.js')
     : await import('../src/safety-policy.ts');
   ({ classifyTextCommand } = policyModule);
@@ -97,6 +98,48 @@ try {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
         permissionDecisionReason: DENY_PREFIX + POLICY_LOAD_FAILED_REASON,
+      },
+    }) + '\n',
+  );
+  process.exit(0);
+}
+
+// The load-time behavior self-check (the integrity unit's layer 2, the
+// opencode safety-gate adapter's twin): an import that succeeds is not yet
+// a classifier — a stale replacement, a truncated overwrite, or a bad
+// upgrade can hand over a module that is shaped right and decides wrong.
+// Three canaries run before the module is trusted: the export shape, a
+// canonical write vector (must deny), and a canonical benign read (must
+// allow); any failure denies fail-closed with the self-check reason before
+// main() runs. This runs per hook invocation (a fresh process per Bash
+// call) and catches NON-adversarial corruption; the crafted module that
+// passes the canaries is the documented residual the doctor drift check
+// (layer 3) owns. The reason literal is pinned byte-identical to the
+// adapter's by the safety-gate test.
+const SELF_CHECK_FAILED_REASON =
+  'the deployed safety policy failed its load-time self-check (shape or behavior canary); commands are denied fail-closed. Reinstall the huaweicloud-devkit plugin.';
+const CANARY_WRITE_VECTOR = 'hcloud ECS DeleteServers --server.id=x';
+const CANARY_BENIGN_READ = 'ls /tmp';
+
+function policySelfCheckFailed(module) {
+  if (typeof module.classifyTextCommand !== 'function') return true;
+  try {
+    if (module.classifyTextCommand(CANARY_WRITE_VECTOR).decision !== 'deny') return true;
+    if (module.classifyTextCommand(CANARY_BENIGN_READ).decision !== 'allow') return true;
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+if (policySelfCheckFailed(policyModule)) {
+  writeSync(
+    1,
+    JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: DENY_PREFIX + SELF_CHECK_FAILED_REASON,
       },
     }) + '\n',
   );

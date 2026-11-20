@@ -25,6 +25,10 @@
 //                         the seam rules are written at install time and
 //                         verified byte-stably at doctor time regardless of
 //                         the host's opencode version
+//   HUAWEICLOUD_OPENCODE_SAFETY_GATE=on for both install and doctor —
+//                         same determinism contract for the evaluate-hook
+//                         adapter file (the golden host has no opencode on
+//                         PATH, so the natural probe would skip)
 //
 // Normalized volatile lines (the ONLY accepted golden diffs, see
 // normalizeGoldenOutput): ANSI color escapes, the banner's version line, and
@@ -82,6 +86,7 @@ function baseEnv(home, extra) {
 export function doctorGoldenEnv(home, extra = {}) {
   const env = baseEnv(home, {
     HUAWEICLOUD_OPENCODE_PERMISSION_SEAM: 'on',
+    HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on',
     HW_VAULT_MASTER_KEY: GOLDEN_VAULT_KEY,
     HCLOUD_BIN: process.execPath,
     HCLOUD_BIN_ARGS_JSON: JSON.stringify([fakeHcloud]),
@@ -104,7 +109,10 @@ export function doctorGoldenEnv(home, extra = {}) {
 // round-trip — the golden install still needs the network on a cold cache,
 // and this lane is the full layer, so that is fine.
 export function installGoldenEnv(home) {
-  const env = baseEnv(home, { HUAWEICLOUD_OPENCODE_PERMISSION_SEAM: 'on' });
+  const env = baseEnv(home, {
+    HUAWEICLOUD_OPENCODE_PERMISSION_SEAM: 'on',
+    HUAWEICLOUD_OPENCODE_SAFETY_GATE: 'on',
+  });
   env.npm_config_cache = join(tmpdir(), 'doctor-golden-npm-cache');
   env.npm_config_prefer_offline = 'true';
   return env;

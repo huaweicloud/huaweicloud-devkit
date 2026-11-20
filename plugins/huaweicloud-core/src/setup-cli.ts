@@ -123,6 +123,7 @@ import {
   deployOpenCode,
   opencodeDoctorAskRule,
   opencodeDoctorMcpConfigured,
+  opencodeDoctorSafetyGate,
   opencodeDoctorSeam,
   opencodeStatus,
   uninstallOpenCode,
@@ -975,6 +976,12 @@ async function cmdDoctor(): Promise<void> {
   const safetyOk = sections.some((section) => section.triple.safety);
   check('Safety policy installed', safetyOk, 'Run: npx huaweicloud-devkit install');
 
+  // The integrity unit's layer 3: per-row comparison of the deployed
+  // classifier files against the receipt the placement seam wrote. A row
+  // with no payload stays silent; a payload without a receipt WARNs (a
+  // pre-integrity install); drift FAILs with the reinstall remediation.
+  for (const section of sections) section.integrity(ctx);
+
   // Secret vault — custody tier and inventory only; doctor never decrypts.
   try {
     const custody = custodyReport();
@@ -1057,6 +1064,7 @@ async function cmdDoctor(): Promise<void> {
   if (installedPayload?.id === 'opencode') {
     opencodeDoctorSeam(ctx);
     opencodeDoctorAskRule(ctx);
+    opencodeDoctorSafetyGate(ctx);
   }
 
   // The codex client yield (PR-5): the per-tool approval_mode blocks the
