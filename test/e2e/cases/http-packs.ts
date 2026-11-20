@@ -349,9 +349,18 @@ export const wsSandboxCases: E2eCase[] = [
       { kind: 'ws', intent: 'devbridge-verify-script', times: { min: 1, max: 2 } },
       // The tunnel-persistence port's AUTO-ENROLL phase: every successful
       // expose reads the installed watchdog's tunnel list and installs the
-      // merged one — one read + one install per call (max 2 mirrors the
-      // expose-script slack for a retry).
-      { kind: 'ws', intent: 'devbridge-keepalive-read', times: { min: 1, max: 2 } },
+      // merged one — the enroll read plus the install (max 2 mirrors the
+      // expose-script slack for a retry). The read's honest ceiling also
+      // covers the two selective cleanups on this case's path (connect's
+      // stale-mode cleanup, dev 97c4bc8a, and the expose pre-clean): each
+      // cleanup that syncs the watchdog roster does one read of the same
+      // script (syncKeepaliveAfterCleanup; best-effort, skipped when there
+      // is nothing to prune), so the deterministic shape on this fixture
+      // is 3 reads (connect-cleanup + pre-clean + enroll) and the pin is
+      // min 1 max 3 — the enroll read is the invariant, the cleanup reads
+      // are conditional slack (CI-measured: run 44685232428, both attempts
+      // exactly 3).
+      { kind: 'ws', intent: 'devbridge-keepalive-read', times: { min: 1, max: 3 } },
       { kind: 'ws', intent: 'devbridge-keepalive-install', times: { min: 1, max: 2 } },
     ],
     softExpect: [{ kind: 'agentSays', text: { any: ['devbridge-s2.hwtunnel.com', 'e2e-tunnel-1'] } }],
