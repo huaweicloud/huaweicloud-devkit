@@ -55,6 +55,10 @@ function filesUnder(dir: string): string[] {
 // The classifier artifacts present under a deployed payload dir, as sorted
 // relative paths. Absent entries (a skipDist payload ships safety/ without
 // dist/) simply stay out of the scope — the receipt records what shipped.
+// The receipt's keys are wire vocabulary (pinned deep-equal in the tests and
+// spelled forward-slash in policy docs), so the platform separator is
+// normalized to posix: join()/readdirSync() produce '\' segments on win32
+// and a raw slice would ship platform-dependent receipt keys.
 export function integrityScopeFiles(dir: string): string[] {
   const rel: string[] = [];
   const push = (path: string) => {
@@ -62,11 +66,11 @@ export function integrityScopeFiles(dir: string): string[] {
   };
   push('dist/safety-policy.js');
   for (const file of filesUnder(join(dir, 'dist', 'safety'))) {
-    rel.push(file.slice(dir.length + 1));
+    rel.push(file.slice(dir.length + 1).replaceAll('\\', '/'));
   }
   push('safety/policy.json');
   for (const file of filesUnder(join(dir, 'safety', 'rules'))) {
-    rel.push(file.slice(dir.length + 1));
+    rel.push(file.slice(dir.length + 1).replaceAll('\\', '/'));
   }
   return rel.sort((a, b) => a.localeCompare(b));
 }
