@@ -41,6 +41,17 @@ test('resolveCredentials prefers environment and falls back to vault', () => {
   });
 });
 
+test('resolveCredentials prefers HUAWEICLOUD_REGION over HW_REGION (#1158 D1-68)', () => {
+  withTempHome(() => {
+    process.env.HW_ACCESS_KEY = 'ENV_AK';
+    process.env.HW_SECRET_KEY = 'ENV_SK';
+    process.env.HW_REGION = 'cn-north-4';
+    process.env.HUAWEICLOUD_REGION = 'cn-south-1';
+    const creds = resolveCredentials();
+    assert.equal(creds?.region, 'cn-south-1');
+  });
+});
+
 test('resolveCredentialsWithRuntime prioritizes runtime > env > vault', () => {
   withTempHome(() => {
     clearRuntimeCredentials();
