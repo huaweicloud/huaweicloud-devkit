@@ -407,7 +407,8 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_hook_check_command',
-    description: 'Check a planned shell or hcloud command against Huawei Cloud hook risk rules without executing it.',
+    description:
+      'Check a planned shell or hcloud command against the Huawei Cloud safety hook policy (write, execution, credential and secret classification plus risk rules) without executing it.',
     inputSchema: {
       type: 'object',
       required: ['command'],
@@ -1445,7 +1446,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
     case 'huaweicloud_show_profile_redacted':
       return showProfileRedacted(args.profile);
     case 'huaweicloud_hook_check_command':
-      return hookResult(evaluateCommandRisk(args.command || ''));
+      return hookResult(evaluateHookCommandRisk(args.command || ''));
     case 'huaweicloud_hook_check_artifacts':
       return hookResult(evaluateArtifacts(args.artifacts || []));
     case 'huaweicloud_hook_check_deploy_plan':
@@ -2092,6 +2093,35 @@ async function handleUpgrade(args = {}, opts = {}) {
     };
   }
   return upgradePackage({ target, version });
+}
+
+function evaluateHookCommandRisk(command) {
+  const risk = evaluateCommandRisk(command);
+  if (typeof command !== 'string' || command.trim() === '' || risk.decision === 'deny') {
+    return risk;
+  }
+  const classified = classifyTextCommand(command);
+  if (classified.decision !== 'deny') {
+    return risk;
+  }
+  return {
+    ...risk,
+    decision: 'deny',
+    findings: [
+      ...(risk.findings || []),
+      {
+        ruleId: 'hook-' + (classified.risk || 'command') + '-classification',
+        title: 'Huawei Cloud hook blocks this command',
+        category: classified.risk || 'command',
+        severity: 'deny',
+        message: classified.reason || 'The safety hook blocks this command.',
+        remediation:
+          'Present a plan and obtain explicit user approval before running write, execution, credential, or secret operations.',
+        source: 'command',
+        evidence: redactSecrets(command).slice(0, 240),
+      },
+    ],
+  };
 }
 
 function hookResult(result) {
