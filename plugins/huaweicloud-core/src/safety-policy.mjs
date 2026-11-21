@@ -22,7 +22,7 @@ function isSecretKeyName(key, policy = DEFAULT_POLICY) {
     .toLowerCase()
     .replace(/[^a-z0-9]/g, '');
   if (
-    /access.*key|secret.*key|security.*token|xauth.*token|authorization|password|passwd|adminpass|credential|private.*key|userdata|metadata/.test(
+    /^(ak|sk)$|access.*key|secret.*key|security.*token|xauth.*token|authorization|password|passwd|adminpass|credential|private.*key|userdata|metadata/.test(
       normalized,
     )
   ) {
@@ -42,7 +42,7 @@ function redactString(text) {
         /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
         '$1<redacted>',
       )
-      .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
+      .replace(/((?:AK|SK)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1<redacted>')
   );
 }
 
