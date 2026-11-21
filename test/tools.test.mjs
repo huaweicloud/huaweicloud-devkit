@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, symlinkSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -36,6 +36,81 @@ test('runVersionCheck uses hcloud version instead of --version', async () => {
   assert.equal(result.installed, true);
   assert.match(result.output, /"version":\s*"7\.0\.0"/);
   assert.doesNotMatch(result.output, /--version/);
+});
+
+function recordingHcloudScript(dir, output) {
+  const logFile = join(dir, 'argv.jsonl');
+  const script = join(dir, 'fake-hcloud.mjs');
+  writeFileSync(
+    script,
+    `import { appendFileSync } from 'node:fs';\n` +
+      `appendFileSync(${JSON.stringify(logFile)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n` +
+      `console.log(JSON.stringify(${JSON.stringify(output)}));\n`,
+    'utf8',
+  );
+  return { logFile, script };
+}
+
+function readRecordedArgv(logFile) {
+  return JSON.parse(readFileSync(logFile, 'utf8').trim().split('\n')[0]);
+}
+
+test('show_profile_redacted passes --cli-profile as a single argv token (#1158 D2-10)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-profile-argv-'));
+  const { logFile, script } = recordingHcloudScript(dir, {
+    currentCredential: { accessKeyId: 'FAKE_AK', secretAccessKey: 'FAKE_SK' },
+    currentRegion: 'cn-north-4',
+  });
+  const previousBin = process.env.HCLOUD_BIN;
+  const previousArgs = process.env.HCLOUD_BIN_ARGS_JSON;
+  process.env.HCLOUD_BIN = process.execPath;
+  process.env.HCLOUD_BIN_ARGS_JSON = JSON.stringify([script]);
+  try {
+    await callTool('huaweicloud_show_profile_redacted', { profile: 'my-profile' });
+    const argv = readRecordedArgv(logFile);
+    assert.ok(argv.includes('--cli-profile=my-profile'), `argv=${JSON.stringify(argv)}`);
+    assert.equal(
+      argv.filter((arg) => arg === '--cli-profile').length,
+      0,
+      'KooCLI 7.x needs the --cli-profile=<name> single-token form',
+    );
+  } finally {
+    if (previousBin === undefined) delete process.env.HCLOUD_BIN;
+    else process.env.HCLOUD_BIN = previousBin;
+    if (previousArgs === undefined) delete process.env.HCLOUD_BIN_ARGS_JSON;
+    else process.env.HCLOUD_BIN_ARGS_JSON = previousArgs;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('setup_obs_config passes --cli-profile as a single argv token (#1158 D2-10)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-obs-profile-argv-'));
+  const { logFile, script } = recordingHcloudScript(dir, {
+    currentCredential: { accessKeyId: 'FAKE_AK', secretAccessKey: 'FAKE_SK' },
+    currentRegion: 'cn-north-4',
+  });
+  const previous = {
+    HOME: process.env.HOME,
+    HUAWEICLOUD_HOME: process.env.HUAWEICLOUD_HOME,
+    HCLOUD_BIN: process.env.HCLOUD_BIN,
+    HCLOUD_BIN_ARGS_JSON: process.env.HCLOUD_BIN_ARGS_JSON,
+  };
+  process.env.HOME = dir;
+  process.env.HUAWEICLOUD_HOME = dir;
+  process.env.HCLOUD_BIN = process.execPath;
+  process.env.HCLOUD_BIN_ARGS_JSON = JSON.stringify([script]);
+  try {
+    await callTool('huaweicloud_setup_obs_config', { profile: 'obs-profile' });
+    const argv = readRecordedArgv(logFile);
+    assert.ok(argv.includes('--cli-profile=obs-profile'), `argv=${JSON.stringify(argv)}`);
+    assert.equal(argv.filter((arg) => arg === '--cli-profile').length, 0);
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('runVersionCheck returns installed:false and errorCode on ENOENT', async () => {
@@ -412,36 +487,58 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
   assert.notEqual(result.recommendedSkills[0], 'huawei-sandbox');
 });
 
-test('service_catalog routes all documented Chinese-intent eval cases >= 80% (#770 D10-3)', async () => {
-  // Daily-test eval set (CodeArtsWork 2026-09-21): 11 documented MISS cases +
-  // 3 baseline HIT guards. EXP-E08 (ECS troubleshooting) is N/A — diagnostics
-  // routing is explicitly out of scope. HIT = expected service appears in
-  // recommendedServices.
+test('service_catalog routes the daily eval set >= 90% (#1158 D10-3)', async () => {
+  // Prompts mirror huaweicloud-devkit-test eval/prompts/eval-set-v1.csv. The
+  // daily run scores EXP-E01 ("云主机") and EXP-E08 ("ECS 启动失败" diagnostics)
+  // too — at 13/15 = 86.7% they failed the 90% gate. HIT = the expected service
+  // (and any expected skill) is recommended.
   const cases = [
-    { id: 'EXP-E01', intent: '查询我的云服务器状态', expect: ['ECS'] },
-    { id: 'EXP-E02', intent: '创建一台弹性云服务器', expect: ['ECS'] },
-    { id: 'EXP-E03', intent: '部署静态网站到对象存储', expect: ['OBS'] },
-    { id: 'EXP-E04', intent: '申请一个弹性公网IP', expect: ['EIP', 'VPC'] },
-    { id: 'EXP-E05', intent: '查询数据库实例信息', expect: ['RDS'] },
-    { id: 'EXP-E06', intent: '领取代金券', expect: ['Incentive Voucher'] },
-    { id: 'EXP-E07', intent: '创建一个云备份', expect: ['CBR'] },
-    { id: 'EXP-E09', intent: '部署一个静态网站', expect: ['Sandbox', 'DevStation'] },
-    { id: 'EXP-E10', intent: '创建一个函数', expect: ['FunctionGraph'] },
-    { id: 'EXP-E11', intent: '查询本月账单费用', expect: ['BSS'] },
-    { id: 'EXP-E12', intent: '设置监控告警', expect: ['CES'] },
-    { id: 'EXP-E13', intent: '管理负载均衡证书', expect: ['ELB'] },
-    { id: 'EXP-E14', intent: '查看IAM用户权限', expect: ['IAM'] },
-    { id: 'EXP-E15', intent: '查看云审计事件', expect: ['CTS'] },
+    { id: 'EXP-E01', intent: '帮我查一下我账号在华北北京四有哪些云主机', expect: ['ECS'] },
+    { id: 'EXP-E02', intent: '创建一台 2C4G 的 Ubuntu 云服务器 规格通用型', expect: ['ECS'] },
+    { id: 'EXP-E03', intent: '把本地 dist 目录部署成一个公网静态网站', expect: ['OBS'] },
+    { id: 'EXP-E04', intent: '给这台服务器绑定一个弹性公网IP', expect: ['EIP'] },
+    { id: 'EXP-E05', intent: '看一下我的云数据库MySQL实例的状态', expect: ['RDS'] },
+    { id: 'EXP-E06', intent: '创建一个 Redis 缓存实例用于会话存储', expect: ['DCS'] },
+    { id: 'EXP-E07', intent: '给生产环境的服务器配置一个每日备份策略', expect: ['CBR'] },
+    {
+      id: 'EXP-E08',
+      intent: '我的ECS启动失败了 帮我分析原因',
+      expect: ['ECS'],
+      skills: ['huaweicloud-troubleshooting'],
+    },
+    { id: 'EXP-E09', intent: '开设一个 Kubernetes 集群用于微服务部署', expect: ['CCE'] },
+    { id: 'EXP-E10', intent: '部署一个函数处理图片自动压缩', expect: ['FunctionGraph'] },
+    { id: 'EXP-E11', intent: '查一下我账号这个月的费用情况', expect: ['BSS'] },
+    { id: 'EXP-E12', intent: '把应用日志指标推送到云监控告警', expect: ['CES'] },
+    { id: 'EXP-E13', intent: '申请HTTPS证书并配置到我的域名', expect: ['ELB'] },
+    { id: 'EXP-E14', intent: '我账号下的用户都有哪些权限 帮我审计一下', expect: ['IAM'] },
+    { id: 'EXP-E15', intent: '帮我领一下华为云的代金券', expect: ['Incentive Voucher'] },
   ];
   let hits = 0;
   for (const c of cases) {
     const result = await callTool('huaweicloud_service_catalog', { intent: c.intent });
-    const ok = c.expect.some((s) => result.recommendedServices.includes(s));
-    assert.equal(ok, true, `${c.id} ('${c.intent}') should route to ${c.expect.join('/')}`);
-    if (ok) hits += 1;
+    const servicesHit = c.expect.some((s) => result.recommendedServices.includes(s));
+    const skillsHit = (c.skills || []).every((s) => result.recommendedSkills.includes(s));
+    assert.equal(
+      servicesHit && skillsHit,
+      true,
+      `${c.id} ('${c.intent}') should route to ${c.expect.join('/')} ${(c.skills || []).join('/')}`,
+    );
+    if (servicesHit && skillsHit) hits += 1;
   }
   const accuracy = hits / cases.length;
-  assert.ok(accuracy >= 0.8, `Chinese-intent routing accuracy ${accuracy.toFixed(3)} < 0.8`);
+  assert.ok(accuracy >= 0.9, `Chinese-intent routing accuracy ${accuracy.toFixed(3)} < 0.9`);
+});
+
+test('service_catalog routes diagnostic intents to huaweicloud-troubleshooting (#1158 D10-3)', async () => {
+  const intents = ['OBS 上传报错怎么排查', '调用 API 失败 帮我看看错误码', '云服务器无法启动 需要诊断'];
+  for (const intent of intents) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(
+      result.recommendedSkills.includes('huaweicloud-troubleshooting'),
+      `'${intent}' should recommend huaweicloud-troubleshooting`,
+    );
+  }
 });
 
 test('service_catalog routes 云主机 to ECS (#1158 D10-3)', async () => {
