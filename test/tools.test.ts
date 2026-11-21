@@ -437,6 +437,39 @@ test('serviceCatalog routes Chinese intent keywords to the right skills', async 
   }
 });
 
+test('serviceCatalog routes 云主机/云硬盘 intents to ECS and exposes EVS (#1065 D10-3)', async () => {
+  // Issue #1065 D10-3: 「查云主机（华北北京四）」fell through to the generic
+  // help fallback because the ECS route lacked the 云主机 alias. The EVS
+  // block aliases match the v1 line (#1066 D3-A2) so disk-shaped intents
+  // land on the same service pair there.
+  interface CatalogRouting {
+    recommendedSkills: string[];
+    recommendedServices: string[];
+  }
+  const catalogs: Array<[string, string[]]> = [
+    ['查云主机（华北北京四）', ['ECS']],
+    ['创建一块云硬盘并挂载到云服务器', ['ECS', 'EVS']],
+  ];
+  for (const [intent, expectedServices] of catalogs) {
+    const result = (await callTool('huaweicloud_service_catalog', {
+      intent,
+      vendorConfirmed: 'test: vendor established by the harness',
+    })) as CatalogRouting;
+    assert.ok(
+      result.recommendedSkills.includes('huawei-ecs'),
+      `intent "${intent}" must route to huawei-ecs, got ${JSON.stringify(result.recommendedSkills)}`,
+    );
+    for (const service of expectedServices) {
+      assert.ok(
+        result.recommendedServices.includes(service),
+        `intent "${intent}" must expose ${service}, got ${JSON.stringify(result.recommendedServices)}`,
+      );
+    }
+    // A plain query never drags in the deployment fallbacks.
+    assert.ok(!result.recommendedSkills.includes('huawei-sandbox'), `query "${intent}" must not gain the sandbox rec`);
+  }
+});
+
 test('serviceCatalog: slash-bearing keywords (ak/sk, ci/cd) match via the phrase path', async () => {
   // Same routing contract as the Chinese-intent test above, exercised through
   // the shared assertSkillForIntent helper to avoid duplicating its loop.

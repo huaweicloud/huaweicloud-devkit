@@ -31,12 +31,17 @@ export function serviceCatalog(intent: string = '') {
         'image',
         '弹性云服务器',
         '云服务器',
+        '云主机',
         '服务器',
         '虚拟机',
         '镜像',
+        '云硬盘',
+        '磁盘',
+        '硬盘',
+        'evs',
       ],
       skills: ['huawei-ecs'],
-      services: ['ECS'],
+      services: ['ECS', 'EVS'],
     },
     {
       keywords: [
