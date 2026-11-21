@@ -38,8 +38,19 @@ function redactString(text) {
       // base64/scripts that may embed SSH keys, DB passwords, bootstrap tokens.
       // Redact the ENTIRE value of this arg — not just the first whitespace token.
       .replace(/((?:user[_-]?data|metadata|private[_-]?key)\s*[:=]\s*).*/gi, '$1<redacted>')
+      // Key[:=]value family with the JSON quoted-key form: the key may carry
+      // escaped/plain quotes before the separator (`"admin_pass":"..."`), and
+      // secret_access_key / api_key / secret_string joined the vocabulary
+      // (#1158 D4-6/D4-26). `\\*` tolerates shell-transcribed nested JSON.
       .replace(
-        /((?:access[_-]?key|secret[_-]?key|security[_-]?token|x[_-]?auth[_-]?token|token|authorization|password|passwd|admin[_-]?pass|credential)\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        /((?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key|string|binary|text)|security[_-]?token|x[_-]?auth[_-]?token|api[_-]?key|token|authorization|password|passwd|admin[_-]?pass|credential)\\*["']?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        '$1<redacted>',
+      )
+      // Flag space form (`--admin_pass value`, `--admin-pass value`): the
+      // command-line shape carries no `:`/`=` separator, so the family above
+      // never saw it (#1158 D4-6/D4-26).
+      .replace(
+        /((?:^|\s)--?(?:access[_-]?key|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|x[_-]?auth[_-]?token|api[_-]?key|token|password|passwd|admin[_-]?pass|credential)[.\w-]*\s+)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
         '$1<redacted>',
       )
       .replace(/(AK|SK)\s*[:=]\s*("[^"]*"|'[^']*'|[^\s,;]+)/g, '$1=<redacted>')
@@ -544,10 +555,21 @@ export function classifyTextCommand(command, options = {}) {
   }
 
   // Env var dumps — check all candidates (covers bash -c "env | grep HUAWEICLOUD", #682).
+  // The credential-key condition also accepts the generic (vendor-neutral)
+  // names: `env | grep access_key` / `printenv | grep secret_key` used to slip
+  // through because only Huawei/AWS-style prefixes were listed (#1158 D4-2).
+  // The optional prefix segment ((?:[A-Za-z0-9]+_)*) keeps the namespaced
+  // exports covered too — TF_VAR_access_key/TF_VAR_secret_key is how the
+  // Terraform Huawei provider takes AK/SK, and AWS_*/<VENDOR>_SECRET_KEY is the
+  // same shape; rejecting `_` at the left boundary was a real dump bypass.
+  // Each segment is [A-Za-z0-9]+ (it can never consume the `_`), so the repeat
+  // stays linear — no nested-quantifier backtracking.
   for (const candidate of candidates) {
     if (
       /(^|\s)(env|printenv|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)/i.test(candidate) &&
-      /HUAWEICLOUD|HWC_|HW_|HCLOUD|OS_/i.test(candidate)
+      /HUAWEICLOUD|HWC_|HW_|HCLOUD|OS_|(?:^|[^A-Za-z0-9_])(?:[A-Za-z0-9]+_)*(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|api[_-]?key)(?=[^A-Za-z0-9_]|$)/i.test(
+        candidate,
+      )
     ) {
       return {
         decision: 'deny',

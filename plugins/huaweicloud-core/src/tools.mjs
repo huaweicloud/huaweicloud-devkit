@@ -2129,7 +2129,7 @@ export async function runVersionCheck(options = {}) {
 async function showProfileRedacted(profile) {
   const args = ['configure', 'show'];
   if (profile) {
-    args.push('--cli-profile', String(profile));
+    args.push(`--cli-profile=${String(profile)}`);
   }
   const result = await runHcloud(args, { allowWrites: false, allowCredentialRead: true }).catch((error) => ({
     ok: false,
@@ -2193,7 +2193,7 @@ async function setupObsConfigFromHcloud(profile) {
   }
 
   const args = ['configure', 'show'];
-  if (profile) args.push('--cli-profile', String(profile));
+  if (profile) args.push(`--cli-profile=${String(profile)}`);
   const result = await runHcloud(args, { allowWrites: false, allowCredentialRead: true });
 
   if (!result.ok) {
@@ -2575,6 +2575,28 @@ function serviceCatalog(intent = '') {
   const it = String(intent).toLowerCase();
   const routeMap = [
     {
+      // Diagnostics intents (a failing command, startup error, error code) have
+      // no service of their own; route them to the troubleshooting meta-skill
+      // (explain_error flow) instead of falling back to the generic router.
+      keywords: [
+        '排查',
+        '排错',
+        '故障',
+        '诊断',
+        '报错',
+        '错误码',
+        '启动失败',
+        '无法启动',
+        '失败原因',
+        '分析原因',
+        'troubleshoot',
+        'troubleshooting',
+        'diagnose',
+      ],
+      skills: ['huaweicloud-troubleshooting'],
+      services: [],
+    },
+    {
       keywords: [
         'ecs',
         'server',
@@ -2583,8 +2605,12 @@ function serviceCatalog(intent = '') {
         'compute',
         'flavor',
         'image',
+        '云主机',
+        '实例',
+        '启动失败',
         '弹性云服务器',
         '云服务器',
+        '云主机',
         '服务器',
         '虚拟机',
         '镜像',
@@ -2802,12 +2828,17 @@ function serviceCatalog(intent = '') {
   const matched = [];
   const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
   const cjk = /[\u4e00-\u9fff]/;
+  // "实例" is a generic noun that also names database/cache instances; only
+  // treat it as an ECS synonym when the intent carries no data-service qualifier.
+  const dataInstanceIntent = /数据库|mysql|postgres|redis|mongodb|gauss|dds|dcs|rds|缓存|数据仓库/;
   for (const route of routeMap) {
-    if (
-      route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw.toLowerCase()) : tokens.has(kw)))
-    ) {
-      matched.push(route);
-    }
+    const hit = route.keywords.some((kw) => {
+      const matches = kw.includes(' ') || cjk.test(kw) ? it.includes(kw.toLowerCase()) : tokens.has(kw);
+      if (!matches) return false;
+      if (kw === '实例' && route.services.includes('ECS') && dataInstanceIntent.test(it)) return false;
+      return true;
+    });
+    if (hit) matched.push(route);
   }
   const recommendedSkills = [...new Set(matched.flatMap((r) => r.skills))];
   const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
