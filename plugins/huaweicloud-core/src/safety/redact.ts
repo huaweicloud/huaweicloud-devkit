@@ -42,6 +42,13 @@ function redactString(text: unknown): string {
         '$1<redacted>',
       )
       .replace(SECRET_KEY_VALUE_RE, '$1<redacted>')
+      // Flag space form (`--admin_pass value`, `--admin-pass value`): the
+      // command-line shape carries no `:`/`=` separator, so the key-value
+      // family above never saw it (#1158 D4-6/D4-26).
+      .replace(
+        /((?:^|\s)--?(?:access[_-]?key|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|x[_-]?auth[_-]?token|api[_-]?key|token|password|passwd|admin[_-]?pass|credential)[.\w-]*\s+)("[^"]*"|'[^']*'|[^\s,;]+)/gi,
+        '$1<redacted>',
+      )
       // XML settings shapes (`<password>value</password>`, the settings.xml
       // deploy idiom) carry no `:`/`=` separator, so the key-value family
       // never saw them — the artifact evidence echoed the password verbatim

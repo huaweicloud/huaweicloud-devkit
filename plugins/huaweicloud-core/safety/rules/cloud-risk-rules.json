@@ -36,7 +36,7 @@
           },
           {
             "field": "text",
-            "regex": "(HUAWEICLOUD(?!-devkit)|HWC_|HCLOUD_|OS_|HW_(?:ACCESS_KEY|SECRET_KEY|SECRET_ACCESS_KEY|SECURITY_TOKEN|API_KEY|VAULT_MASTER_KEY))"
+            "regex": "(HUAWEICLOUD(?!-devkit)|HWC_|HCLOUD_|OS_|HW_(?:ACCESS_KEY|SECRET_KEY|SECRET_ACCESS_KEY|SECURITY_TOKEN|API_KEY|VAULT_MASTER_KEY)|(?:^|[^A-Za-z0-9_-])(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|api[_-]?key)(?=[^A-Za-z0-9_]|$))"
           }
         ]
       },
@@ -69,16 +69,16 @@
       "title": "Plaintext adminPass exposure",
       "category": "secret",
       "severity": "warn",
-      "stages": ["artifact", "deploy_plan"],
+      "stages": ["command", "artifact", "deploy_plan"],
       "match": {
         "any": [
           {
             "field": "text",
-            "regex": "(adminPass|admin_pass|admin-password)"
+            "regex": "(adminPass|admin_pass|admin-pass|admin-password)(?!\\s*[=:]?\\s*<)"
           }
         ]
       },
-      "message": "The artifact or plan contains a plaintext adminPass parameter. The password may be exposed in version control, logs, or agent context.",
+      "message": "The command, artifact, or plan contains a plaintext adminPass parameter. The password may be exposed in shell history, logs, version control, or agent context.",
       "remediation": "Use userData cloud-init, KMS/CSMS secret references, or encrypted password injection instead of embedding adminPass as plaintext in deployment files."
     },
     {

@@ -289,7 +289,7 @@ def load_policy():
 load_policy()
 
 ENV_DUMP_RE = re.compile(
-    r"(^|\s)(env|printenv|export\s+-p|declare|typeset|set|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)(?![A-Za-z0-9_-]).*(HUAWEICLOUD(?!-devkit)|HWC_|HCLOUD_|OS_|HW_(?:ACCESS_KEY|SECRET_KEY|SECRET_ACCESS_KEY|SECURITY_TOKEN|API_KEY|VAULT_MASTER_KEY))",
+    r"(^|\s)(env|printenv|export\s+-p|declare|typeset|set|Get-ChildItem\s+Env:|gci\s+Env:|dir\s+Env:)(?![A-Za-z0-9_-]).*(HUAWEICLOUD(?!-devkit)|HWC_|HCLOUD_|OS_|HW_(?:ACCESS_KEY|SECRET_KEY|SECRET_ACCESS_KEY|SECURITY_TOKEN|API_KEY|VAULT_MASTER_KEY)|(?:^|[^A-Za-z0-9_-])(?:access[_-]?key(?:[_-]?(?:id|secret))?|secret[_-]?(?:access[_-]?key|key)|security[_-]?token|api[_-]?key)(?=[^A-Za-z0-9_]|$))",
     re.I,
 )
 HCLOUD_RE = re.compile(r"(^|\s)hcloud(\.exe)?\s+", re.I)

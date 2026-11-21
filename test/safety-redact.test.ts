@@ -202,3 +202,19 @@ test('redactSecrets masks opaque blob keys (user_data / metadata / private_key) 
   assert.match(redacted[4], /metadata.db_password=<redacted>/);
   assert.match(redacted[5], /private_key=<redacted>/);
 });
+
+test('redactSecrets redacts flag-space and quoted-key credential forms (#1158 D4-6/D4-26)', () => {
+  assert.equal(redactSecrets('--admin_pass SuperSecret123!'), '--admin_pass <redacted>');
+  assert.equal(
+    redactSecrets('hcloud ECS CreateServers --admin-pass SuperSecret123!'),
+    'hcloud ECS CreateServers --admin-pass <redacted>',
+  );
+  // The quoted-key family already redacts the value; the assertion is about
+  // the secret never surviving, not the surrounding quote shape.
+  const quoted = redactSecrets('"admin_pass": "SuperSecret123!"');
+  assert.doesNotMatch(quoted, /SuperSecret123/);
+  assert.match(quoted, /<redacted>/);
+  const json = redactSecrets('{"secret_key":"SuperSecret123!"}');
+  assert.doesNotMatch(json, /SuperSecret123/);
+  assert.match(json, /<redacted>/);
+});
