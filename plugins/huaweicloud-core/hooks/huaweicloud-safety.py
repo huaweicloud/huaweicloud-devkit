@@ -72,6 +72,23 @@ CRED_VAR_REF_RE = re.compile(
 HCLOUD_RE = re.compile(r"(^|\s)hcloud(\.exe)?\s+", re.I)
 READ_OPERATION_RE = re.compile(r"\b(List|Show|Get|Describe|NovaList|NovaShow)\w*", re.I)
 
+# #1055 D4-17: command substitution whose payload itself nests `$(` / backtick
+# (or arithmetic shell `$(( $(...) ))`) resolves only at runtime — fail closed.
+ARITHMETIC_SHELL_RE = re.compile(r"\$\(\((.*?)\)\)", re.S)
+SUBSTITUTION_RE = re.compile(r"\$\((?!\()([^)]*)\)|`([^`]+)`")
+
+
+def has_unresolvable_substitution(text):
+    for match in ARITHMETIC_SHELL_RE.finditer(text):
+        body = match.group(1) or ""
+        if "$(" in body or "`" in body:
+            return True
+    for match in SUBSTITUTION_RE.finditer(text):
+        payload = match.group(1) or match.group(2) or ""
+        if "$(" in payload or "`" in payload:
+            return True
+    return False
+
 
 def deny(reason, hermes=False):
     sys.stdout.write(
@@ -200,6 +217,13 @@ def evaluate(tool_name, tool_input):
     denied_rule = first_denied_command_rule(text)
     if denied_rule:
         return f"{denied_rule.get('message')} Remediation: {denied_rule.get('remediation')}"
+    if has_unresolvable_substitution(text):
+        return (
+            "The command nests command substitution; the executed payload resolves only at runtime, "
+            "so no static rule can review what will execute. "
+            "Remediation: expand nested command substitution into a reviewable file, "
+            "inspect the content, and execute only explicit reviewed commands."
+        )
     if tool_name in ("Bash", "terminal") and HCLOUD_RE.search(text) and WRITE_OPERATION_RE.search(text) and not READ_OPERATION_RE.search(text):
         return "unapproved Huawei Cloud write operations must be planned first and explicitly approved by the user."
 
