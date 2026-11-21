@@ -352,6 +352,34 @@ test('huaweicloud_hook_check_command returns deny finding', async () => {
   assert.equal(result.findings[0].ruleId, 'hwc-network-public-admin-port');
 });
 
+test('huaweicloud_hook_check_command matches the PreToolUse hook write/execution denial (#1065 D4-8)', async () => {
+  const write = await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud VPC CreateVpc --vpc.name test',
+  });
+  assert.equal(write.decision, 'deny');
+  assert.equal(write.ok, false);
+  assert.equal(write.findings.at(-1).ruleId, 'hook-write-classification');
+
+  const remove = await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud ECS DeleteServers --server-id i-1',
+  });
+  assert.equal(remove.decision, 'deny');
+  assert.equal(remove.ok, false);
+  assert.ok(remove.findings.some((finding) => finding.ruleId === 'hook-write-classification'));
+
+  const execution = await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud ECS RebootServers --server-id i-1',
+  });
+  assert.equal(execution.decision, 'deny');
+  assert.ok(execution.findings.some((finding) => finding.ruleId === 'hook-execution-classification'));
+
+  const read = await callTool('huaweicloud_hook_check_command', {
+    command: 'hcloud ECS ListServersDetails',
+  });
+  assert.equal(read.decision, 'allow');
+  assert.equal(read.ok, true);
+});
+
 test('huaweicloud_explain_error maps APIGW.0301 to credential/project_id guidance', async () => {
   const result = await callTool('huaweicloud_explain_error', {
     service: 'unknown',
