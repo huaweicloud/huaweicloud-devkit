@@ -29,7 +29,7 @@ export function resolveCredentials(options: ResolveCredentialsOptions = {}): Res
   let ak = present(envAk) ? envAk : '';
   let sk = present(envSk) ? envSk : '';
   let securityToken = present(envSecurityToken) ? envSecurityToken : '';
-  let region = process.env.HW_REGION || process.env.HUAWEICLOUD_REGION || '';
+  let region = process.env.HUAWEICLOUD_REGION || process.env.HW_REGION || '';
 
   const codeartsCreds = isCodeArtsContext() ? readCodeArtsCredentials() : null;
   if (codeartsCreds) {

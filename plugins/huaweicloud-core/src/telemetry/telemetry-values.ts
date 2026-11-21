@@ -6,6 +6,7 @@
 import { type as osType, release as osRelease } from 'node:os';
 
 import { asText } from '../lib/as-text.ts';
+import { redactEvidenceText } from '../safety/redact.ts';
 import type { TelemetryContext, TelemetryEvent, TelemetryEventInput } from './telemetry-types.ts';
 
 const MAX_VALUE_LENGTH = 255;
@@ -26,7 +27,7 @@ const osVersionStr = osRelease();
 
 export function sanitizeValue(value: unknown): string {
   let text = typeof value === 'string' ? value : value == null ? '' : asText(value);
-  text = text.replace(/[\r\n\t]+/g, ' ').trim();
+  text = redactEvidenceText(text.replace(/[\r\n\t]+/g, ' ').trim());
   if (text.length > MAX_VALUE_LENGTH) {
     text = text.slice(0, MAX_VALUE_LENGTH - 3) + '...';
   }

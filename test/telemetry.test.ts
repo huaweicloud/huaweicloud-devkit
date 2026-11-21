@@ -318,6 +318,13 @@ test('sanitizeValue keeps short values intact', async () => {
   assert.equal(sanitizeValue('hcloud version'), 'hcloud version');
 });
 
+test('sanitizeValue redacts credential values (#1158 D8-9)', async () => {
+  const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.ts');
+  const out = sanitizeValue('AK=AK123 secret_key=SECRET token=abc123');
+  assert.doesNotMatch(out, /AK123|SECRET|abc123/);
+  assert.match(out, /<redacted>/);
+});
+
 test('sanitizeValue coerces non-strings and nulls safely', async () => {
   const { sanitizeValue } = await import('../plugins/huaweicloud-core/src/telemetry/telemetry.ts');
   assert.equal(sanitizeValue(null), '');
