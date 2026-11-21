@@ -137,6 +137,31 @@ test('parseDistTagsOutput 解析 npm view --json 输出', () => {
   assert.equal(parseDistTagsOutput(''), null);
 });
 
+test('parseDistTagsOutput 兼容 Windows 数组形态 (D1-39)', () => {
+  assert.deepEqual(parseDistTagsOutput('[{"latest":"1.1.12","next":"1.1.13-next.0"}]'), {
+    latest: '1.1.12',
+    next: '1.1.13-next.0',
+  });
+  assert.deepEqual(parseDistTagsOutput('[{"latest":"1.1.0"}]'), { latest: '1.1.0', next: null });
+  assert.equal(parseDistTagsOutput('[]'), null);
+  assert.equal(parseDistTagsOutput('[42]'), null);
+  assert.equal(parseDistTagsOutput('["str"]'), null);
+});
+
+test('parseDistTagsOutput 剥离 npm.cmd 前置 banner (D1-39)', () => {
+  const banner = 'npm notice\r\nnpm notice New minor version of npm available! 10.9.0 -> 11.0.0\r\nnpm notice\r\n';
+  const objectBody = '{"latest":"1.1.15","next":"1.1.16-next.0"}';
+  const arrayBody = '[{"latest":"1.1.15","next":"1.1.16-next.0"}]';
+  assert.deepEqual(parseDistTagsOutput(`${banner}${objectBody}`), {
+    latest: '1.1.15',
+    next: '1.1.16-next.0',
+  });
+  assert.deepEqual(parseDistTagsOutput(`${banner}${arrayBody}`), {
+    latest: '1.1.15',
+    next: '1.1.16-next.0',
+  });
+});
+
 function tmpDir() {
   const dir = mkdtempSync(join(tmpdir(), 'upd-'));
   return dir;

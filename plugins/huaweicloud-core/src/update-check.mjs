@@ -78,19 +78,49 @@ export function determineTarget(current, distTags = {}) {
   return candidates.slice().sort(semverCompare).pop();
 }
 
-export function parseDistTagsOutput(stdout) {
-  try {
-    const text = String(stdout || '').trim();
-    if (!text) return null; // 空输出视为 npm view 失败
-    const parsed = JSON.parse(text);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
-    return {
-      latest: typeof parsed.latest === 'string' ? parsed.latest : null,
-      next: typeof parsed.next === 'string' ? parsed.next : null,
-    };
-  } catch {
-    return null;
+// npm.cmd on Windows may prepend a banner (e.g. upgrade notice) before the JSON
+// body, so trim to the first `{`/`[` and last `}`/`]` before parsing. Candidate
+// fallbacks keep the object/array forms parseable when a banner itself contains
+// bracket characters. CRLF line endings are handled by the same slicing.
+function extractJsonCandidates(text) {
+  const candidates = [];
+  const firstObj = text.indexOf('{');
+  const lastObj = text.lastIndexOf('}');
+  const firstArr = text.indexOf('[');
+  const lastArr = text.lastIndexOf(']');
+  const starts = [firstObj, firstArr].filter((i) => i >= 0);
+  const ends = [lastObj, lastArr].filter((i) => i >= 0);
+  if (starts.length && ends.length) {
+    const start = Math.min(...starts);
+    const end = Math.max(...ends);
+    if (end > start) candidates.push(text.slice(start, end + 1));
   }
+  if (firstObj >= 0 && lastObj > firstObj) candidates.push(text.slice(firstObj, lastObj + 1));
+  if (firstArr >= 0 && lastArr > firstArr) candidates.push(text.slice(firstArr, lastArr + 1));
+  candidates.push(text);
+  return candidates;
+}
+
+function parseJsonPayload(text) {
+  for (const candidate of extractJsonCandidates(text)) {
+    try {
+      return JSON.parse(candidate);
+    } catch {}
+  }
+  return undefined;
+}
+
+export function parseDistTagsOutput(stdout) {
+  const text = String(stdout || '').trim();
+  if (!text) return null; // 空输出视为 npm view 失败
+  const parsed = parseJsonPayload(text);
+  if (parsed === undefined) return null;
+  const obj = Array.isArray(parsed) ? parsed[0] : parsed;
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return null;
+  return {
+    latest: typeof obj.latest === 'string' ? obj.latest : null,
+    next: typeof obj.next === 'string' ? obj.next : null,
+  };
 }
 
 function buildResult(current, distTags, extra = {}) {
