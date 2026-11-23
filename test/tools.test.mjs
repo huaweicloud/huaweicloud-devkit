@@ -518,9 +518,10 @@ test('service_catalog keeps storage routing for pure storage intent', async () =
 
 test('service_catalog routes all documented Chinese-intent eval cases >= 80% (#770 D10-3)', async () => {
   // Daily-test eval set (CodeArtsWork 2026-09-21): 11 documented MISS cases +
-  // 3 baseline HIT guards. EXP-E08 (ECS troubleshooting) is N/A — diagnostics
-  // routing is explicitly out of scope. HIT = expected service appears in
-  // recommendedServices.
+  // 3 baseline HIT guards. HIT = expected service appears in recommendedServices.
+  // EXP-E08 (ECS troubleshooting) was N/A while diagnostics routing was out of
+  // scope; #766 adds that route, so it is covered by the troubleshooting tests
+  // below rather than by this service-name eval set.
   const cases = [
     { id: 'EXP-E01', intent: '查询我的云服务器状态', expect: ['ECS'] },
     { id: 'EXP-E02', intent: '创建一台弹性云服务器', expect: ['ECS'] },
@@ -555,6 +556,99 @@ test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)
   assert.ok(eip.recommendedServices.includes('EIP'));
   const nat = await callTool('huaweicloud_service_catalog', { intent: '查看NAT网关' });
   assert.ok(nat.recommendedServices.includes('VPC'));
+});
+
+test('service_catalog routes troubleshooting intent to the troubleshooting skill (#766)', async () => {
+  // Acceptance case: "我的ECS启动失败帮我分析原因" must lead with the loadable
+  // troubleshooting meta-skill, keep the ECS match, and point at explain_error.
+  // S1: recommendedSkills entries must be real skill directories — a tool name
+  // there makes retrieveSkill answer `Skill "<name>" not found`.
+  // S2: recommendedServices entries must be KooCLI service names — there is no
+  // `Troubleshooting` service.
+  const result = await callTool('huaweicloud_service_catalog', { intent: '我的ECS启动失败帮我分析原因' });
+  assert.equal(result.recommendedSkills[0], 'huaweicloud-troubleshooting');
+  assert.ok(result.recommendedSkills.includes('huawei-ecs'), 'mixed CJK/ASCII intent should keep the ECS match');
+  assert.deepEqual(result.recommendedTools, ['huaweicloud_explain_error']);
+  assert.ok(result.recommendedServices.includes('ECS'));
+  assert.ok(!result.recommendedServices.includes('Troubleshooting'));
+
+  for (const skill of result.recommendedSkills) {
+    const loaded = await callTool('huaweicloud_retrieve_skill', { name: skill });
+    assert.equal(loaded.ok, true, `recommended skill "${skill}" should be retrievable`);
+  }
+});
+
+test('service_catalog matches every Chinese diagnostic keyword (#766)', async () => {
+  // T2: the previous coverage tested `失败` only. `异常` is absent on purpose —
+  // it also means "unusually", see the misroute test below.
+  const cases = [
+    '帮我排障RDS连接超时',
+    '诊断一下CCE节点状态',
+    '我的ECS启动失败帮我分析原因',
+    '创建OBS桶时报错',
+    'CCE集群故障怎么处理',
+    '调用API出错',
+  ];
+  for (const intent of cases) {
+    const r = await callTool('huaweicloud_service_catalog', { intent });
+    assert.equal(
+      r.recommendedSkills[0],
+      'huaweicloud-troubleshooting',
+      `diagnostic intent '${intent}' should lead with the troubleshooting skill`,
+    );
+    assert.ok(
+      r.recommendedTools.includes('huaweicloud_explain_error'),
+      `diagnostic intent '${intent}' should recommend explain_error`,
+    );
+  }
+});
+
+test('service_catalog routes pasted error formats and English variants (#766)', async () => {
+  // P2: token matching is exact, so keywords glued to punctuation used to be
+  // missed entirely ("Error: InvalidParameter", "an error; please help").
+  const cases = [
+    'ECS Error: InvalidParameter',
+    'the API returned an error; please help',
+    'ECS startup failed help me diagnose',
+    'troubleshoot my deployment',
+    'debug a failure',
+  ];
+  for (const intent of cases) {
+    const r = await callTool('huaweicloud_service_catalog', { intent });
+    assert.equal(
+      r.recommendedSkills[0],
+      'huaweicloud-troubleshooting',
+      `expected the troubleshooting skill first for intent: ${intent}`,
+    );
+    assert.ok(r.recommendedTools.includes('huaweicloud_explain_error'));
+  }
+  const ecs = await callTool('huaweicloud_service_catalog', { intent: 'ECS Error: InvalidParameter' });
+  assert.ok(ecs.recommendedSkills.includes('huawei-ecs'));
+});
+
+test('service_catalog does not misroute non-diagnostic intent as troubleshooting (#766)', async () => {
+  // T1/S4: the previous guard held before the change too, so it proved nothing.
+  // Anchor it on intents the diagnostic route previously stole.
+  const create = await callTool('huaweicloud_service_catalog', { intent: 'create an ECS instance in cn-north-4' });
+  assert.ok(create.recommendedSkills.includes('huawei-ecs'));
+  assert.ok(!create.recommendedSkills.includes('huaweicloud-troubleshooting'));
+  assert.deepEqual(create.recommendedTools, []);
+
+  // `异常` also means "unusually": this is a purchase intent, not a diagnosis.
+  const cheap = await callTool('huaweicloud_service_catalog', { intent: '异常便宜的OBS存储怎么买' });
+  assert.equal(cheap.recommendedSkills[0], 'huawei-obs');
+  assert.ok(!cheap.recommendedSkills.includes('huaweicloud-troubleshooting'));
+  assert.deepEqual(cheap.recommendedTools, []);
+});
+
+test('service_catalog keeps the 5-service cap after troubleshooting priority (#766)', async () => {
+  // S3: the priority block used to push a 6th service past the cap, and its
+  // dedupe guard was only reachable in that truncated case.
+  const r = await callTool('huaweicloud_service_catalog', { intent: 'ecs vpc obs cce rds error' });
+  assert.equal(r.recommendedSkills[0], 'huaweicloud-troubleshooting');
+  assert.equal(r.recommendedServices[0], 'ECS', 'service order should follow routeMap order');
+  assert.equal(r.recommendedServices.length, 5, 'service list must stay capped at 5');
+  assert.ok(!r.recommendedServices.includes('Troubleshooting'));
 });
 
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {

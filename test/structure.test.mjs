@@ -146,6 +146,35 @@ test('OBS skill documents the correct empty-bucket delete command', () => {
   assert.doesNotMatch(pitfalls, /`hcloud OBS rm obs:\/\/<bucket> -r`/);
 });
 
+test('serviceCatalog recommends loadable skills and real MCP tools only (#766)', () => {
+  const source = readFileSync(join(pluginRoot, 'src', 'tools.mjs'), 'utf8');
+  const catalog = source.slice(source.indexOf('function serviceCatalog'), source.indexOf('function explainError'));
+  const skillsDir = join(pluginRoot, 'skills');
+  const loadable = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));
+  const definedTools = new Set([...source.matchAll(/^\s{4}name: '([^']+)',$/gm)].map((m) => m[1]));
+
+  const routeSkillNames = [...catalog.matchAll(/^\s*skills: \[(.*)\],?$/gm)]
+    .flatMap((m) => [...m[1].matchAll(/'([^']+)'/g)])
+    .map((s) => s[1]);
+  assert.ok(routeSkillNames.length > 0, 'routeMap should advertise skills');
+  for (const name of routeSkillNames) {
+    // retrieveSkill resolves `<SKILLS_ROOT>/<name>/SKILL.md`; a tool name here is a dead end.
+    assert.ok(loadable.includes(name), `route skill "${name}" must be a retrievable skill directory`);
+  }
+
+  const routeToolNames = [...catalog.matchAll(/^\s*tools: \[(.*)\],?$/gm)]
+    .flatMap((m) => [...m[1].matchAll(/'([^']+)'/g)])
+    .map((s) => s[1]);
+  for (const name of routeToolNames) {
+    assert.ok(definedTools.has(name), `route tool "${name}" must be a defined MCP tool`);
+  }
+});
+
+test('troubleshooting skill hands off to the explain_error tool (#766)', () => {
+  const body = readFileSync(join(pluginRoot, 'skills', 'huaweicloud-troubleshooting', 'SKILL.md'), 'utf8');
+  assert.match(body, /huaweicloud_explain_error/);
+});
+
 test('skill SKILL.md files meet minimum content quality bar', () => {
   const skillsDir = join(pluginRoot, 'skills');
   const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));

@@ -453,7 +453,10 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_service_catalog',
-    description: 'Return the recommended capability sources for Huawei Cloud agent tasks.',
+    description:
+      'Return the recommended capability sources for Huawei Cloud agent tasks: recommendedSkills holds loadable skill ' +
+      'directory names for huaweicloud_retrieve_skill, recommendedServices holds KooCLI service names, and ' +
+      'recommendedTools holds MCP tool names to call (for example huaweicloud_explain_error for diagnostic intent).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -2798,9 +2801,52 @@ function serviceCatalog(intent = '') {
       skills: ['huawei-voucher'],
       services: ['Incentive Voucher'],
     },
+    {
+      // Troubleshooting/diagnostic intent — route to the troubleshooting meta-skill (#766),
+      // which owns the diagnosis workflow and hands off to huaweicloud_explain_error.
+      // The MCP tool name belongs in `tools`, never in `skills`: recommendedSkills entries
+      // must be real skill directories, otherwise retrieveSkill answers
+      // `Skill "<name>" not found`.
+      // English keywords include variants because token matching is exact.
+      // `异常` is deliberately absent: in Chinese it also means "unusually", so
+      // "异常便宜的OBS存储怎么买" is a purchase intent, not a diagnosis.
+      keywords: [
+        'error',
+        'errors',
+        'fail',
+        'failed',
+        'failure',
+        'troubleshoot',
+        'troubleshooting',
+        'diagnose',
+        'diagnostic',
+        'diagnosis',
+        'debug',
+        '排障',
+        '诊断',
+        '失败',
+        '报错',
+        '故障',
+        '出错',
+      ],
+      skills: ['huaweicloud-troubleshooting'],
+      // Diagnostics has no KooCLI service of its own (`hcloud Troubleshooting` is
+      // unsupported); the concrete service comes from the service route matched beside it.
+      services: [],
+      tools: ['huaweicloud_explain_error'],
+    },
   ];
   const matched = [];
-  const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
+  // Tokenize on separators and on CJK/ASCII transitions. Separators alone miss the
+  // cases users actually paste: "ECS Error: InvalidParameter", "an error; please help",
+  // and mixed Chinese intents such as "我的ECS启动失败" or "异常便宜的OBS存储怎么买",
+  // which would otherwise collapse into one token that never equals `ecs`/`error`/`obs`.
+  const tokens = new Set(
+    it
+      .replace(/[\u4e00-\u9fff]+/g, (run) => ` ${run} `)
+      .split(/[^a-z0-9\u4e00-\u9fff]+/)
+      .filter((t) => t.length > 0),
+  );
   const cjk = /[\u4e00-\u9fff]/;
   for (const route of routeMap) {
     if (
@@ -2810,7 +2856,8 @@ function serviceCatalog(intent = '') {
     }
   }
   const recommendedSkills = [...new Set(matched.flatMap((r) => r.skills))];
-  const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
+  const recommendedServices = [...new Set(matched.flatMap((r) => r.services))];
+  const recommendedTools = [...new Set(matched.flatMap((r) => r.tools || []))];
 
   // Deployment intent (deploy/host/publish a web app or static website) must never
   // default to a storage/other service — recommend the sandbox first.
@@ -2821,12 +2868,24 @@ function serviceCatalog(intent = '') {
     recommendedSkills.unshift('huawei-sandbox');
   }
 
+  // Troubleshooting/diagnostic intent leads with the troubleshooting meta-skill (#766):
+  // "我的ECS启动失败" must start from the diagnosis workflow, not only from huawei-ecs.
+  // Ordering only — the 5-service cap is applied once, after every priority edit below.
+  if (recommendedSkills.includes('huaweicloud-troubleshooting')) {
+    const idx = recommendedSkills.indexOf('huaweicloud-troubleshooting');
+    recommendedSkills.splice(idx, 1);
+    recommendedSkills.unshift('huaweicloud-troubleshooting');
+  }
+
   return {
     intent,
     recommendedSkills: recommendedSkills.length ? recommendedSkills : ['Use huaweicloud-core to route intent.'],
     recommendedServices: recommendedServices.length
-      ? recommendedServices
+      ? recommendedServices.slice(0, 5)
       : ['Run hcloud --help to list available services.'],
+    // MCP tools implied by the matched routes (e.g. huaweicloud_explain_error for
+    // diagnostics); kept separate from recommendedSkills, which must hold skill dirs.
+    recommendedTools,
     capabilityOrder: [
       'Huawei Cloud Skills for task-specific workflows and examples',
       'KooCLI hcloud for local authenticated operations and quick inspection',
