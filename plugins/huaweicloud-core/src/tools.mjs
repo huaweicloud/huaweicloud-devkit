@@ -1683,6 +1683,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         args.remote_path,
         sandboxUser5,
         sandboxTimeout5,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_upload_project': {
@@ -1697,7 +1698,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         );
       }
       const sandboxUser6 = args.username || 'root';
-      const sandboxTimeout6 = args.timeout_ms || 120000;
+      const sandboxTimeout6 = args.timeout_ms || 300000;
       return await uploadProjectWithSession(
         sandboxWsId6,
         args.local_dir,
@@ -1707,6 +1708,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         {
           exclude: args.exclude,
           extract: args.extract,
+          signal: opts.signal,
         },
       );
     }
@@ -1736,6 +1738,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         },
         sandboxUser7,
         sandboxTimeout7,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_deploy_check': {
@@ -1761,6 +1764,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         },
         sandboxUser8,
         sandboxTimeout8,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_expose_tunnel': {
@@ -1795,6 +1799,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         },
         sandboxUser9,
         sandboxTimeout9,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_renew_tunnel': {
@@ -1815,6 +1820,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
         args.username || 'root',
         args.timeout_ms || 60000,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_keepalive_watchdog': {
@@ -1836,6 +1842,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         { tunnels: tunnels11 },
         args.username || 'root',
         args.timeout_ms || 60000,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_check_user':

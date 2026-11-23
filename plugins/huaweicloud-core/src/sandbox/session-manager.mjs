@@ -286,7 +286,14 @@ export function buildUploadResetCommand(remotePath, tmpPath) {
   return `mkdir -p "$(dirname "${remotePath}")" && rm -f "${tmpPath}"`;
 }
 
-export async function uploadFileWithSession(workspaceId, localPath, remotePath, username = 'root', timeoutMs = 30000) {
+export async function uploadFileWithSession(
+  workspaceId,
+  localPath,
+  remotePath,
+  username = 'root',
+  timeoutMs = 30000,
+  signal,
+) {
   const localError = classifyLocalUploadPath(localPath, 'file');
   if (localError) {
     throw localError;
@@ -297,12 +304,21 @@ export async function uploadFileWithSession(workspaceId, localPath, remotePath, 
   const chunks = splitBase64Chunks(base64);
   const tmp = `${remotePath}.b64tmp`;
 
-  const reset = await execWithSession(workspaceId, buildUploadResetCommand(remotePath, tmp), username, timeoutMs);
+  const reset = await execWithSession(
+    workspaceId,
+    buildUploadResetCommand(remotePath, tmp),
+    username,
+    timeoutMs,
+    signal,
+  );
   if (reset.exitCode !== 0) {
     throw new Error(`sandbox upload: failed to reset temp file: ${reset.stdout || reset.error || reset.exitCode}`);
   }
 
   for (let batchStart = 0; batchStart < chunks.length; batchStart += UPLOAD_BATCH_SIZE) {
+    if (signal?.aborted) {
+      throw new Error('sandbox upload cancelled by the client.');
+    }
     const batch = chunks.slice(batchStart, batchStart + UPLOAD_BATCH_SIZE);
     const combinedChunk = batch.join('');
     const batchNum = Math.floor(batchStart / UPLOAD_BATCH_SIZE) + 1;
@@ -312,7 +328,10 @@ export async function uploadFileWithSession(workspaceId, localPath, remotePath, 
     let batchOk = false;
     let lastError;
     for (let retry = 0; retry < UPLOAD_MAX_RETRIES; retry++) {
-      const res = await execWithSession(workspaceId, cmd, username, timeoutMs);
+      if (signal?.aborted) {
+        throw new Error('sandbox upload cancelled by the client.');
+      }
+      const res = await execWithSession(workspaceId, cmd, username, timeoutMs, signal);
       if (res.exitCode === 0) {
         batchOk = true;
         break;
@@ -334,6 +353,7 @@ export async function uploadFileWithSession(workspaceId, localPath, remotePath, 
     `base64 -d "${tmp}" > "${remotePath}" && rm -f "${tmp}"`,
     username,
     timeoutMs,
+    signal,
   );
   if (decode.exitCode !== 0) {
     throw new Error(
@@ -341,7 +361,7 @@ export async function uploadFileWithSession(workspaceId, localPath, remotePath, 
     );
   }
 
-  const verify = await execWithSession(workspaceId, `md5sum "${remotePath}"`, username, timeoutMs);
+  const verify = await execWithSession(workspaceId, `md5sum "${remotePath}"`, username, timeoutMs, signal);
   let md5Verified = false;
   if (verify.exitCode === 0) {
     const remoteMd5 = String(verify.stdout || '')
@@ -454,26 +474,32 @@ function cleanupLocalArchive(archivePath) {
   } catch {}
 }
 
-async function deployFileServer(workspaceId, username, port = 8888, token = '') {
+async function deployFileServer(workspaceId, username, port = 8888, token = '', signal) {
   const scriptPath = '/tmp/sandbox-file-server.py';
   const pidFile = '/tmp/sandbox-file-server.pid';
   uploadLog(`deployFileServer: killing old server (pidFile=${pidFile})`);
-  await execWithSession(workspaceId, `kill $(cat ${pidFile} 2>/dev/null) 2>/dev/null; rm -f ${pidFile}`, username);
+  await execWithSession(
+    workspaceId,
+    `kill $(cat ${pidFile} 2>/dev/null) 2>/dev/null; rm -f ${pidFile}`,
+    username,
+    undefined,
+    signal,
+  );
   const b64 = Buffer.from(SANDBOX_FILE_SERVER_SCRIPT).toString('base64');
   uploadLog(`deployFileServer: writing script (${b64.length} b64 chars)`);
-  await execWithSession(workspaceId, `echo '${b64}' | base64 -d > ${scriptPath}`, username);
+  await execWithSession(workspaceId, `echo '${b64}' | base64 -d > ${scriptPath}`, username, undefined, signal);
   const cmd = token
     ? `python3 ${scriptPath} ${port} ${token} & echo $! > ${pidFile}`
     : `python3 ${scriptPath} ${port} & echo $! > ${pidFile}`;
   uploadLog(`deployFileServer: starting server on port ${port}`);
-  const startResult = await execWithSession(workspaceId, cmd, username);
+  const startResult = await execWithSession(workspaceId, cmd, username, undefined, signal);
   uploadLog(
     `deployFileServer: start result exitCode=${startResult.exitCode} stdout=${JSON.stringify(startResult.stdout?.slice(0, 200))}`,
   );
   return startResult;
 }
 
-async function uploadViaTunnel(localPort, archivePath, archiveSize, archiveRemotePath, uploadToken, timeoutMs) {
+async function uploadViaTunnel(localPort, archivePath, archiveSize, archiveRemotePath, uploadToken, timeoutMs, signal) {
   const archiveBuffer = readFileSync(archivePath);
   const headers = [
     'POST /upload HTTP/1.1',
@@ -487,20 +513,27 @@ async function uploadViaTunnel(localPort, archivePath, archiveSize, archiveRemot
     '',
   ].join('\r\n');
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('sandbox upload cancelled by the client.'));
+      return;
+    }
     let settled = false;
     const done = (fn) => {
       if (!settled) {
         settled = true;
         clearTimeout(timer);
+        if (onAbort) signal.removeEventListener('abort', onAbort);
         sock.destroy();
         fn();
       }
     };
     const timer = setTimeout(() => done(() => reject(new Error(`upload timeout after ${timeoutMs}ms`))), timeoutMs);
+    const onAbort = signal ? () => done(() => reject(new Error('sandbox upload cancelled by the client.'))) : null;
     const sock = netConnect({ host: '127.0.0.1', port: localPort }, () => {
       sock.write(headers);
       sock.write(archiveBuffer);
     });
+    if (onAbort) signal.addEventListener('abort', onAbort, { once: true });
     let respBuf = Buffer.alloc(0);
     let contentLength = -1;
     let headerEnd = -1;
@@ -565,8 +598,11 @@ async function uploadViaTunnel(localPort, archivePath, archiveSize, archiveRemot
   });
 }
 
-async function waitForServerReady(localPort) {
+async function waitForServerReady(localPort, signal) {
   for (let i = 0; i < SERVER_HEALTH_MAX_RETRIES; i++) {
+    if (signal?.aborted) {
+      throw new Error('sandbox upload cancelled by the client.');
+    }
     try {
       uploadLog(`waitForServerReady: attempt ${i + 1}, checking http://localhost:${localPort}/health`);
       const ok = await new Promise((resolve) => {
@@ -605,10 +641,16 @@ async function waitForServerReady(localPort) {
   );
 }
 
-async function cleanupFileServer(workspaceId, username) {
+async function cleanupFileServer(workspaceId, username, signal) {
   const pidFile = '/tmp/sandbox-file-server.pid';
   const scriptPath = '/tmp/sandbox-file-server.py';
-  await execWithSession(workspaceId, `kill $(cat ${pidFile}) 2>/dev/null; rm -f ${pidFile} ${scriptPath}`, username);
+  await execWithSession(
+    workspaceId,
+    `kill $(cat ${pidFile}) 2>/dev/null; rm -f ${pidFile} ${scriptPath}`,
+    username,
+    undefined,
+    signal,
+  );
 }
 
 async function uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, username, timeoutMs, options) {
@@ -621,7 +663,7 @@ async function uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, 
   );
 
   uploadLog(`uploadViaHttpTunnel: deploying file server on sandbox port ${sandboxPort}`);
-  await deployFileServer(workspaceId, username, sandboxPort, uploadToken);
+  await deployFileServer(workspaceId, username, sandboxPort, uploadToken, options.signal);
 
   uploadLog(`uploadViaHttpTunnel: creating dedicated tunnel session`);
   const tunnelSession = await createTunnelSession(workspaceId, username);
@@ -634,10 +676,25 @@ async function uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, 
   });
   tunnel.attach(tunnelSession.mux);
 
+  const signal = options.signal;
+  if (signal?.aborted) {
+    tunnel.close();
+    tunnelSession.close();
+    throw new Error('sandbox upload cancelled by the client.');
+  }
+
   uploadLog(`uploadViaHttpTunnel: waiting for tunnel ready (timeout=${TUNNEL_READY_TIMEOUT_MS}ms)`);
+  let readyAbortListener = null;
   try {
     await Promise.race([
       tunnel.ready,
+      // Abort closes the tunnel so a cancelled upload stops promptly instead of
+      // waiting for the full tunnel-ready / health-check window.
+      new Promise((_, reject) => {
+        if (!signal) return;
+        readyAbortListener = () => reject(new Error('sandbox upload cancelled by the client.'));
+        signal.addEventListener('abort', readyAbortListener, { once: true });
+      }),
       new Promise((_, reject) =>
         setTimeout(
           () => reject(new Error(`tunnel ready timeout after ${TUNNEL_READY_TIMEOUT_MS}ms`)),
@@ -645,10 +702,13 @@ async function uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, 
         ),
       ),
     ]);
+    if (readyAbortListener) signal?.removeEventListener('abort', readyAbortListener);
     uploadLog(`uploadViaHttpTunnel: tunnel ready, localPort=${tunnel.localPort}`);
   } catch (tunnelReadyError) {
+    if (readyAbortListener) signal?.removeEventListener('abort', readyAbortListener);
     uploadLog(`uploadViaHttpTunnel: TUNNEL READY FAILED: ${tunnelReadyError.message}`);
     tunnel.close();
+    tunnelSession.close();
     throw new Error(
       `HTTP tunnel failed to establish: ${tunnelReadyError.message}. ` +
         `This means the WebSocket port-forwarding channel to sandbox port ${sandboxPort} could not be opened. ` +
@@ -661,7 +721,7 @@ async function uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, 
 
   try {
     uploadLog(`uploadViaHttpTunnel: waiting for server health on localhost:${tunnel.localPort}`);
-    await waitForServerReady(tunnel.localPort);
+    await waitForServerReady(tunnel.localPort, signal);
 
     uploadLog(`uploadViaHttpTunnel: sending POST with ${archiveSize} bytes`);
     const result = await uploadViaTunnel(
@@ -671,6 +731,7 @@ async function uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, 
       archiveRemotePath,
       uploadToken,
       timeoutMs,
+      signal,
     );
     uploadLog(`uploadViaHttpTunnel: upload complete (bytes=${result.bytes}, md5=${result.md5})`);
     return result;
@@ -704,6 +765,7 @@ export async function uploadProjectWithSession(
 
   rotateUploadLog();
 
+  const signal = options.signal;
   const projectName = basename(localDir);
   const targetParentDir = remoteDir || '/workspace';
   const archiveRemotePath = `${targetParentDir}/${projectName}.tar.gz`;
@@ -726,8 +788,12 @@ export async function uploadProjectWithSession(
   let result;
   let tunnelError;
   for (let attempt = 0; attempt < UPLOAD_MAX_RETRIES; attempt++) {
+    if (signal?.aborted) {
+      cleanupLocalArchive(archivePath);
+      throw new Error('sandbox upload cancelled by the client.');
+    }
     try {
-      await cleanupFileServer(workspaceId, username).catch(() => {});
+      await cleanupFileServer(workspaceId, username, signal).catch(() => {});
       result = await uploadViaHttpTunnel(workspaceId, archivePath, archiveRemotePath, username, timeoutMs, options);
       tunnelError = null;
       break;
@@ -735,6 +801,10 @@ export async function uploadProjectWithSession(
       tunnelError = error;
       const errorType = error.code || error.name || 'unknown';
       uploadLog(`uploadProject: attempt ${attempt + 1}/${UPLOAD_MAX_RETRIES} failed [${errorType}]: ${error.message}`);
+      if (signal?.aborted) {
+        cleanupLocalArchive(archivePath);
+        throw new Error('sandbox upload cancelled by the client.', { cause: error });
+      }
       await new Promise((r) => setTimeout(r, 5000));
     }
   }
@@ -761,6 +831,7 @@ export async function uploadProjectWithSession(
       `mkdir -p "${targetParentDir}" && tar -xzf "${archiveRemotePath}" -C "${targetParentDir}" && rm -f "${archiveRemotePath}"`,
       username,
       timeoutMs,
+      signal,
     );
     try {
       await execWithSession(
@@ -776,12 +847,13 @@ export async function uploadProjectWithSession(
         ].join('\n'),
         username,
         15000,
+        signal,
       );
     } catch {}
   }
 
   try {
-    await cleanupFileServer(workspaceId, username);
+    await cleanupFileServer(workspaceId, username, signal);
   } catch {}
   cleanupLocalArchive(archivePath);
 
@@ -856,6 +928,7 @@ export async function deployNginx(
   { nginxType, port, project, outputDir, nodePort, publicPort, configName },
   username = 'root',
   timeoutMs = 60000,
+  signal,
 ) {
   if (!workspaceId) {
     throw new Error('sandbox deploy nginx: workspace_id is required.');
@@ -869,6 +942,7 @@ export async function deployNginx(
     'command -v nginx >/dev/null 2>&1 && echo "INSTALLED" || echo "MISSING"',
     username,
     10000,
+    signal,
   );
   if (!String(nginxCheck.stdout || '').includes('INSTALLED')) {
     throw new Error(
@@ -894,6 +968,7 @@ export async function deployNginx(
         `ss -tlnp 2>/dev/null | grep -q ":${targetPort} " && echo "IN_USE" || echo "FREE"`,
         username,
         10000,
+        signal,
       );
       if (!String(portCheck.stdout || '').includes('IN_USE')) break;
     } catch {}
@@ -912,6 +987,7 @@ export async function deployNginx(
             `ss -tlnp 2>/dev/null | grep -q ":${candidate} " && echo "IN_USE" || echo "FREE"`,
             username,
             10000,
+            signal,
           );
           return String(portCheck.stdout || '').includes('IN_USE');
         })
@@ -1008,7 +1084,7 @@ fi`;
     `if echo "$NGINX_T_OUTPUT" | grep -Eq "syntax is ok|test is successful"; then echo "DB_NGINX_T=PASS"; else echo "DB_NGINX_T=FAIL"; echo "$NGINX_T_OUTPUT" | sed "s/^/DB_NGINX_T_OUTPUT: /"; fi`,
   ].join('\n');
 
-  const result = await execOneShot(workspaceId, cmd, username, timeoutMs);
+  const result = await execOneShot(workspaceId, cmd, username, timeoutMs, signal);
 
   let tunnelActive = false;
   try {
@@ -1019,6 +1095,7 @@ fi`;
       '(devbridge list -j 2>/dev/null | grep -q \'"tunnelId"\' || devbridge list 2>/dev/null | grep -Eq \'^[a-z2-7]{8}[[:space:]]\') && echo "ACTIVE" || echo "INACTIVE"',
       username,
       10000,
+      signal,
     );
     tunnelActive = String(tunnelCheck.stdout || '').includes('ACTIVE');
   } catch {}
@@ -1074,6 +1151,7 @@ export async function deployCheck(
   { port, project, outputDir, frameworkType },
   username = 'root',
   timeoutMs = 30000,
+  signal,
 ) {
   if (!workspaceId) {
     throw new Error('sandbox deploy check: workspace_id is required.');
@@ -1084,7 +1162,7 @@ export async function deployCheck(
   const isCrossPlatform = frameworkType === 'cross-platform';
 
   const checkScript = buildDeployCheckScript({ port, project, outputPath, isCrossPlatform });
-  const result = await execOneShot(workspaceId, checkScript, username, timeoutMs);
+  const result = await execOneShot(workspaceId, checkScript, username, timeoutMs, signal);
   const stdout = String(result.stdout || '');
   return parseDeployCheckOutput(stdout, { port, isCrossPlatform });
 }
@@ -1719,12 +1797,18 @@ export function parseDevbridgeRenewOutput(stdout) {
 // Renew a tunnel's lifetime via `devbridge update <id> -e <hours>`. Returns ok,
 // tunnelId, expiresAt (absolute ISO timestamp), renewedForHours. The URL does
 // not change — renewal only extends the lifetime of the existing tunnel ID.
-export async function renewTunnel(workspaceId, { tunnelId, expiryHours }, username = 'root', timeoutMs = 60000) {
+export async function renewTunnel(
+  workspaceId,
+  { tunnelId, expiryHours },
+  username = 'root',
+  timeoutMs = 60000,
+  signal,
+) {
   if (!workspaceId) {
     throw new Error('sandbox renew tunnel: workspace_id is required.');
   }
   const script = buildDevbridgeRenewScript(tunnelId, expiryHours);
-  const result = await execOneShot(workspaceId, script, username, timeoutMs);
+  const result = await execOneShot(workspaceId, script, username, timeoutMs, signal);
   const parsed = parseDevbridgeRenewOutput(result.stdout);
   return parsed;
 }
@@ -1873,12 +1957,12 @@ export function mergeKeepaliveTunnels(existing, incoming) {
 // URL before splicing, aborts on a bash syntax error (DB_KEEPALIVE_SYNTAX != 0),
 // and reports the watchdog PID. Replacing the watchdog (re-running the tool)
 // kills the old loop first so two loops never double-renew.
-export async function installKeepaliveWatchdog(workspaceId, { tunnels }, username = 'root', timeoutMs = 60000) {
+export async function installKeepaliveWatchdog(workspaceId, { tunnels }, username = 'root', timeoutMs = 60000, signal) {
   if (!workspaceId) {
     throw new Error('sandbox keepalive: workspace_id is required.');
   }
   const script = buildDevbridgeKeepaliveScript(tunnels);
-  const result = await execOneShot(workspaceId, script, username, timeoutMs);
+  const result = await execOneShot(workspaceId, script, username, timeoutMs, signal);
   const text = stripTerminalEscapes(result.stdout);
   const getField = (key) => {
     const m = text.match(new RegExp(`^${key}=(.*)$`, 'm'));
@@ -2253,6 +2337,7 @@ export async function exposeTunnel(
   },
   username = 'root',
   timeoutMs = 90000,
+  signal,
 ) {
   if (!workspaceId) {
     throw new Error('sandbox expose tunnel: workspace_id is required.');
@@ -2261,7 +2346,7 @@ export async function exposeTunnel(
   const validatedExpiryHours = validateExpiryHours(expiryHours ?? DEVBRIDGE_HOST_EXPIRY_HOURS);
 
   const authScript = buildDevbridgeAuthProbe();
-  const authResult = await execOneShot(workspaceId, authScript, username, 30000);
+  const authResult = await execOneShot(workspaceId, authScript, username, 30000, signal);
   const { authMode, attempts, version: authVersion } = parseDevbridgeAuthOutput(authResult.stdout);
 
   // #998: version gate BEFORE the expose loop. 0.1.x binaries' AK/SK tier still
@@ -2293,8 +2378,8 @@ export async function exposeTunnel(
       const { recreateDevbridgeKey } = await import('./devbridge-key.mjs');
       const { apiKey } = await recreateDevbridgeKey(poolType || 'ephemeral');
       const injectScript = buildKeyringInjectScript(apiKey);
-      await execOneShot(workspaceId, injectScript, username, 15000);
-      const healResult = await execOneShot(workspaceId, authScript, username, 30000);
+      await execOneShot(workspaceId, injectScript, username, 15000, signal);
+      const healResult = await execOneShot(workspaceId, authScript, username, 30000, signal);
       const healParsed = parseDevbridgeAuthOutput(healResult.stdout);
       if (healParsed.authMode === 'API_KEY_KEYRING' || healParsed.authMode === 'API_KEY_FILE') {
         effectiveAuthMode = 'API_KEY_AUTO';
@@ -2309,8 +2394,8 @@ export async function exposeTunnel(
     try {
       const { apiKey } = await ensureDevbridgeKey(poolType || 'ephemeral');
       const injectScript = buildKeyringInjectScript(apiKey);
-      await execOneShot(workspaceId, injectScript, username, 15000);
-      const authResult2 = await execOneShot(workspaceId, authScript, username, 30000);
+      await execOneShot(workspaceId, injectScript, username, 15000, signal);
+      const authResult2 = await execOneShot(workspaceId, authScript, username, 30000, signal);
       const parsed2 = parseDevbridgeAuthOutput(authResult2.stdout);
       if (parsed2.authMode === 'API_KEY_KEYRING' || parsed2.authMode === 'API_KEY_FILE') {
         effectiveAuthMode = 'API_KEY_AUTO';
@@ -2375,7 +2460,7 @@ export async function exposeTunnel(
   while (attempt < maxAttempts) {
     attempt += 1;
     const exposeScript = buildDevbridgeExposeScript(validatedPort, validatedExpiryHours);
-    result = await execOneShot(workspaceId, exposeScript, username, timeoutMs);
+    result = await execOneShot(workspaceId, exposeScript, username, timeoutMs, signal);
     const parsed = parseDevbridgeExposeOutput(result.stdout);
 
     // 10006 quota exceeded: remove orphan tunnels first, then the oldest non-protected
@@ -2456,6 +2541,7 @@ export async function exposeTunnel(
           `export PATH="/workspace/.local/bin:$HOME/.huawei/bin:$PATH"; devbridge version 2>/dev/null | head -1`,
           username,
           15000,
+          signal,
         );
         noUrlVersion = String(versionResult.stdout || '').trim() || authVersion;
       } catch {}
@@ -2494,6 +2580,7 @@ export async function exposeTunnel(
           buildDevbridgeVerifyScript(parsed.tunnelUrl),
           username,
           30000,
+          signal,
         );
         // #922 (B1): parse with the dedicated verify parser — the
         // DB_VERIFY_HTTP_CODE key is not visible to parseDevbridgeExposeOutput.

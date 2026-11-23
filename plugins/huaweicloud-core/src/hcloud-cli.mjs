@@ -526,6 +526,27 @@ async function runtimeCurrentMismatchWarning() {
   }
 }
 
+// Kill the spawned command and, on POSIX, every process in its group. KooCLI
+// commands can fork helpers (obsutil for OBS subcommands, wrapper scripts);
+// signalling only the direct child leaves those grandchildren running after a
+// timeout/cancel. The child is spawned detached on POSIX so it becomes its own
+// process-group leader and `kill(-pid)` reaches the whole tree. Windows has no
+// process groups via child.kill; only the direct child is terminated there.
+function killChildTree(child, signalName) {
+  if (!child || !child.pid) return;
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, signalName);
+      return;
+    } catch {
+      // ESRCH/EPERM → fall back to the direct child handle.
+    }
+  }
+  try {
+    child.kill(signalName);
+  } catch {}
+}
+
 function runHcloudOnce(plan, options) {
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const forceKillAfterMs = options.forceKillAfterMs ?? DEFAULT_FORCE_KILL_AFTER_MS;
@@ -577,6 +598,8 @@ function runHcloudOnce(plan, options) {
     const child = spawn(executable, [...executableArgs, ...plan.rawArgs], {
       shell: false,
       windowsHide: true,
+      // POSIX: new process group so abort/timeout can reclaim grandchildren.
+      detached: process.platform !== 'win32',
       cwd,
       env: {
         ...process.env,
@@ -631,8 +654,8 @@ function runHcloudOnce(plan, options) {
 
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGTERM');
-      forceTimer = setTimeout(() => child.kill('SIGKILL'), forceKillAfterMs);
+      killChildTree(child, 'SIGTERM');
+      forceTimer = setTimeout(() => killChildTree(child, 'SIGKILL'), forceKillAfterMs);
       settleTimer = setTimeout(() => {
         finish({
           ok: false,
@@ -653,8 +676,8 @@ function runHcloudOnce(plan, options) {
         cancelled = true;
         // Stop the underlying command (and any child processes that terminate
         // with it) within the 2s cancellation window required by D9-9.
-        child.kill('SIGTERM');
-        forceTimer = setTimeout(() => child.kill('SIGKILL'), forceKillAfterMs);
+        killChildTree(child, 'SIGTERM');
+        forceTimer = setTimeout(() => killChildTree(child, 'SIGKILL'), forceKillAfterMs);
         settleTimer = setTimeout(() => {
           finish({
             ok: false,
