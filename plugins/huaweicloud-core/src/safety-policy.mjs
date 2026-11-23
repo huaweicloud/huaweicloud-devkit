@@ -1,5 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { copyFileSync, existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { spawnSync } from 'node:child_process';
+import { platform } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { evaluateCommandRisk, mergeRiskDecision } from './risk-rule-engine.mjs';
@@ -11,7 +15,161 @@ export function loadPolicy() {
   return JSON.parse(readFileSync(policyPath, 'utf8'));
 }
 
-const DEFAULT_POLICY = loadPolicy();
+let DEFAULT_POLICY = loadPolicy();
+
+const IS_WINDOWS = platform() === 'win32';
+const NPM_BIN = IS_WINDOWS ? 'npm.cmd' : 'npm';
+
+export function policyFilePath() {
+  return policyPath;
+}
+
+export function computePolicyHash(filePath) {
+  try {
+    const content = readFileSync(filePath, 'utf8');
+    return createHash('sha256').update(content).digest('hex');
+  } catch {
+    return null;
+  }
+}
+
+function resolveSourcePolicyPath(runtimePath) {
+  const normalizedRuntime = resolve(runtimePath);
+
+  // Strategy 1: createRequire — works for local installs and when the npm
+  // package is resolvable from the current module's location.
+  try {
+    const req = createRequire(import.meta.url);
+    const pkgJsonPath = req.resolve('huaweicloud-devkit/package.json');
+    const sourcePath = join(dirname(pkgJsonPath), 'plugins', 'huaweicloud-core', 'safety', 'policy.json');
+    if (resolve(sourcePath) !== normalizedRuntime && existsSync(sourcePath)) return sourcePath;
+  } catch {}
+
+  // Strategy 2: global npm root — `npm root -g` is the authoritative way to
+  // locate the globally installed package regardless of nvm/volta/std layout.
+  try {
+    const result = spawnSync(NPM_BIN, ['root', '-g'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (result.status === 0 && result.stdout) {
+      const globalRoot = result.stdout.trim();
+      if (globalRoot) {
+        const sourcePath = join(
+          globalRoot,
+          'huaweicloud-devkit',
+          'plugins',
+          'huaweicloud-core',
+          'safety',
+          'policy.json',
+        );
+        if (resolve(sourcePath) !== normalizedRuntime && existsSync(sourcePath)) return sourcePath;
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+const DIFF_ARRAY_KEYS = [
+  'writeOperationPrefixes',
+  'readOperationPrefixes',
+  'blockedConfigureSubcommands',
+  'blockedSecretOperations',
+  'secretKeyNamePatterns',
+  'credentialFilePatterns',
+  'safeTextReadCommands',
+  'blockedSandboxCommands',
+  'sandboxWriteTools',
+];
+
+export function computePolicyDiff(oldPolicy, newPolicy) {
+  if (!oldPolicy || !newPolicy) return '';
+  const parts = [];
+  for (const key of DIFF_ARRAY_KEYS) {
+    const oldArr = Array.isArray(oldPolicy[key]) ? oldPolicy[key] : [];
+    const newArr = Array.isArray(newPolicy[key]) ? newPolicy[key] : [];
+    if (oldArr.length === 0 && newArr.length === 0) continue;
+    const oldSet = new Set(oldArr);
+    const newSet = new Set(newArr);
+    const added = newArr.filter((item) => !oldSet.has(item));
+    const removed = oldArr.filter((item) => !newSet.has(item));
+    if (added.length === 0 && removed.length === 0 && oldArr.length === newArr.length) continue;
+    const changes = [];
+    if (added.length > 0) changes.push(`+${added.join(',+')}`);
+    if (removed.length > 0) changes.push(`-${removed.join(',-')}`);
+    parts.push(`${key}: ${oldArr.length}→${newArr.length}${changes.length ? ` (${changes.join(' ')})` : ''}`);
+  }
+  if (oldPolicy.version !== newPolicy.version) {
+    parts.unshift(`version: ${oldPolicy.version ?? '?'}→${newPolicy.version ?? '?'}`);
+  }
+  return parts.join('; ');
+}
+
+export function syncPolicyFromSource({ runtimePolicyPath = policyPath, sourcePolicyPath, log = true } = {}) {
+  const resolvedSource = sourcePolicyPath || resolveSourcePolicyPath(runtimePolicyPath);
+  if (!resolvedSource || !existsSync(resolvedSource)) {
+    return { synced: false, reason: 'source_not_found' };
+  }
+
+  let oldContent = null;
+  try {
+    oldContent = readFileSync(runtimePolicyPath, 'utf8');
+  } catch {}
+
+  const runtimeHash = oldContent ? createHash('sha256').update(oldContent).digest('hex') : null;
+
+  try {
+    const sourceContent = readFileSync(resolvedSource, 'utf8');
+    const sourceHash = createHash('sha256').update(sourceContent).digest('hex');
+
+    if (runtimeHash && runtimeHash === sourceHash) {
+      return { synced: false, reason: 'in_sync' };
+    }
+
+    mkdirSync(dirname(runtimePolicyPath), { recursive: true });
+    copyFileSync(resolvedSource, runtimePolicyPath);
+    let diff = '';
+    try {
+      const oldPolicy = oldContent ? JSON.parse(oldContent) : null;
+      const newPolicy = JSON.parse(sourceContent);
+      diff = computePolicyDiff(oldPolicy, newPolicy);
+    } catch {}
+    if (log) {
+      process.stderr.write(
+        `[safety-policy] Runtime policy.json was stale (hash mismatch). Auto-synced from ${resolvedSource}.\n`,
+      );
+      if (diff) process.stderr.write(`[safety-policy] Policy diff: ${diff}\n`);
+      process.stderr.write(
+        `[safety-policy] If safety classification behaves unexpectedly, run 'hcloud setup update' to re-sync all runtime files.\n`,
+      );
+    }
+    return { synced: true, reason: 'synced', sourcePath: resolvedSource, diff };
+  } catch (error) {
+    if (log) {
+      process.stderr.write(
+        `[safety-policy] Auto-sync failed: ${error.message}. Run 'hcloud setup update' manually to update the safety policy.\n`,
+      );
+    }
+    return { synced: false, reason: 'sync_failed', error: error.message };
+  }
+}
+
+export function verifyAndSyncPolicy() {
+  try {
+    const result = syncPolicyFromSource();
+    if (result.synced) {
+      DEFAULT_POLICY = loadPolicy();
+    }
+    return result;
+  } catch (error) {
+    try {
+      process.stderr.write(`[safety-policy] Policy verification error: ${error.message}\n`);
+    } catch {}
+    return { synced: false, reason: 'error', error: error.message };
+  }
+}
 
 function regexFrom(pattern) {
   return new RegExp(pattern, 'i');

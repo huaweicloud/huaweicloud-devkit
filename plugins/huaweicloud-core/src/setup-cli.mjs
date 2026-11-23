@@ -20,7 +20,7 @@ import { getAuthStatus, syncAuth } from './auth/service.mjs';
 import { resolveAndApplyProjectId } from './auth/project-id.mjs';
 import { SUPPORTED_AGENT_TARGETS } from './auth/agent-registration.mjs';
 import { fingerprint, readKooCliProfiles, resolveManagedProfile } from './auth/reconcile.mjs';
-import { redactSecrets } from './safety-policy.mjs';
+import { redactSecrets, computePolicyDiff } from './safety-policy.mjs';
 import {
   globalCredentialsPath,
   readGlobalCredentials,
@@ -592,6 +592,23 @@ function injectAgentRules(pluginDest) {
   console.log(`  Agent Rules -> ${join(rulesDestDir, AGENT_RULES_FILE)}`);
 }
 
+function copySafetyPolicy(safetySrcDir, destDir) {
+  const destPolicyPath = join(destDir, 'policy.json');
+  let oldPolicy = null;
+  try {
+    oldPolicy = JSON.parse(readFileSync(destPolicyPath, 'utf8'));
+  } catch {}
+  copyDir(safetySrcDir, destDir);
+  let newPolicy = null;
+  try {
+    newPolicy = JSON.parse(readFileSync(destPolicyPath, 'utf8'));
+  } catch {}
+  const diff = computePolicyDiff(oldPolicy, newPolicy);
+  if (diff) {
+    console.log(`  Safety Policy diff: ${diff}`);
+  }
+}
+
 function installRuntimeDeps(pluginsDir) {
   const pkgJson = {
     name: 'huaweicloud-devkit',
@@ -964,7 +981,7 @@ async function installOpenCode() {
   console.log(`  Commands -> ${opencodeCommandsDir()}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
@@ -1044,7 +1061,7 @@ async function updateOpenCode() {
   );
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   const opcPlugins = join(configRoot('opencode'), 'plugins');
@@ -1145,7 +1162,7 @@ async function installOpenClaw() {
   console.log(`  Commands -> ${join(homedir(), '.agents', 'commands')}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1206,7 +1223,7 @@ async function updateOpenClaw() {
   console.log(`  Commands updated -> ${join(homedir(), '.agents', 'commands')}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1237,7 +1254,7 @@ async function installCodexDesktop() {
   console.log(`  Commands -> ${join(pluginDest, 'commands')}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1296,7 +1313,7 @@ async function updateCodexDesktop() {
   );
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1432,7 +1449,7 @@ async function installCodeArts() {
   const pluginDest = codeartsPluginsDir();
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1462,7 +1479,7 @@ async function updateCodeArts() {
   }
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1618,7 +1635,7 @@ async function installCodeArtsWork() {
   const pluginDest = codeartsWorkPluginsDir();
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1636,7 +1653,7 @@ async function updateCodeArtsWork() {
   console.log(`  Skills updated -> ${codeartsWorkSkillsDir()}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   registerCodeartsWorkMcp();
@@ -1900,7 +1917,7 @@ async function installWorkBuddy() {
 
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -1923,7 +1940,7 @@ async function updateWorkBuddy() {
   console.log(`  Skills updated -> ${workbuddySkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   ensureWorkbuddyMcpConfig();
@@ -2095,7 +2112,7 @@ async function installAtomCode() {
 
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -2116,7 +2133,7 @@ async function updateAtomCode() {
   console.log(`  Skills updated -> ${atomcodeSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   ensureAtomcodeMcpConfig();
@@ -2406,7 +2423,7 @@ async function installDsh() {
   console.log(`  Skills -> ${dshSkillsDir()}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
@@ -2430,7 +2447,7 @@ async function updateDsh() {
   console.log(`  Skills updated -> ${dshSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   copyFileSync(hookSrc, join(pluginDest, 'hook-plugin.mjs'));
@@ -2540,7 +2557,7 @@ async function installOfficeAce() {
 
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
 
@@ -2570,7 +2587,7 @@ async function updateOfficeAce() {
   console.log(`  Skills updated -> ${officeaceSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   installRuntimeDeps(pluginDest);
@@ -3072,7 +3089,7 @@ async function installHermes() {
     copyDir(srcDir, join(pluginDest, 'src'));
     console.log(`  MCP Server -> ${join(pluginDest, 'src')}`);
   }
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
@@ -3104,7 +3121,7 @@ async function updateHermes() {
   console.log(`  Skills updated -> ${hermesSkillsDir()}${stale > 0 ? ` (removed ${stale} stale)` : ''}`);
   copyDir(srcDir, join(pluginDest, 'src'));
   console.log(`  MCP Server updated -> ${join(pluginDest, 'src')}`);
-  copyDir(safetyDir, join(pluginDest, 'safety'));
+  copySafetyPolicy(safetyDir, join(pluginDest, 'safety'));
   console.log(`  Safety Policy updated -> ${join(pluginDest, 'safety')}`);
   injectAgentRules(pluginDest);
   copyDir(hooksDir, join(pluginDest, 'hooks'));
