@@ -115,6 +115,17 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   assert.match(billingSkill, /ListQuotaCoupons/);
   assert.match(billingSkill, /identity, not domain-id/);
 
+  // F: billing skill documents the full account_type enum (5/7 are legacy, not coupons)
+  // and the coupon-balance workflow (explicit window + pagination, per-coupon grouping,
+  // partner/reseller CBC.99000084 fallback).
+  assert.match(billingSkill, /1:余额 2:信用 5:奖励金 7:保证金/);
+  assert.match(billingSkill, /trade_time_begin/);
+  assert.match(billingSkill, /group by `coupon_id`/);
+  assert.match(billingSkill, /CBC\.99000084/);
+  // Guard against regression to the old "meaning unconfirmed / cash only" wording.
+  assert.doesNotMatch(billingSkill, /含义待确认/);
+  assert.doesNotMatch(billingSkill, /Other numeric values may appear/);
+
   // I: cli-and-auth documents the 4-step <Operation> --help discovery chain.
   assert.match(cliSkill, /hcloud <Service> <Operation> --help/);
   assert.match(cliSkill, /step 3 \(`<Operation> --help`\) is never skippable/);
