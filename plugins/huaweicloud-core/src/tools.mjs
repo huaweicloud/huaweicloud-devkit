@@ -1433,17 +1433,18 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         maxRetries: args.maxRetries,
         cwd: args.cwd,
         stdin: args.stdin,
+        signal: opts.signal,
       });
     case 'huaweicloud_list_operations':
-      return listOperations(args.service, { timeoutMs: args.timeoutMs });
+      return listOperations(args.service, { timeoutMs: args.timeoutMs, signal: opts.signal });
     case 'huaweicloud_run_approved_command':
-      return runApprovedCommand(args);
+      return runApprovedCommand(args, opts.signal);
     case 'huaweicloud_plan_manifest':
       return planManifest(args);
     case 'huaweicloud_run_approved_manifest':
-      return runApprovedManifest(args);
+      return runApprovedManifest(args, opts.signal);
     case 'huaweicloud_show_profile_redacted':
-      return showProfileRedacted(args.profile);
+      return showProfileRedacted(args.profile, { signal: opts.signal });
     case 'huaweicloud_hook_check_command':
       return hookResult(evaluateCommandRisk(args.command || ''));
     case 'huaweicloud_hook_check_artifacts':
@@ -1458,9 +1459,9 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       trackSkillRetrieve(args.name || '');
       return retrieveSkill(args.name || '');
     case 'huaweicloud_list_regions':
-      return listRegions();
+      return listRegions(opts.signal);
     case 'huaweicloud_check_account_type':
-      return checkAccountType(args);
+      return checkAccountType({ region: args.region, signal: opts.signal });
     case 'huaweicloud_get_regional_availability':
       return getRegionalAvailability(args.service || '', args.region || '');
     case 'huaweicloud_explain_error':
@@ -1479,7 +1480,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       return { ok: true, ...result };
     }
     case 'huaweicloud_setup_obs_config':
-      return setupObsConfig(args.profile);
+      return setupObsConfig(args.profile, opts.signal);
     case 'huaweicloud_auth_status':
       return getAuthStatus(args.target || 'all');
     case 'huaweicloud_auth_sync': {
@@ -1619,7 +1620,13 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser2 = args.username || 'root';
       const sandboxTimeout2 = args.timeout_ms || 120000;
-      const sandboxResult2 = await execWithSession(sandboxWsId2, args.command, sandboxUser2, sandboxTimeout2);
+      const sandboxResult2 = await execWithSession(
+        sandboxWsId2,
+        args.command,
+        sandboxUser2,
+        sandboxTimeout2,
+        opts.signal,
+      );
       return {
         stdout: sandboxResult2.stdout,
         exitCode: sandboxResult2.exitCode,
@@ -1635,7 +1642,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
       }
       const sandboxUser3 = args.username || 'root';
       const sandboxTimeout3 = args.timeout_ms || 120000;
-      const sandboxResult3 = await execOneShot(sandboxWsId3, args.command, sandboxUser3, sandboxTimeout3);
+      const sandboxResult3 = await execOneShot(sandboxWsId3, args.command, sandboxUser3, sandboxTimeout3, opts.signal);
       return {
         stdout: sandboxResult3.stdout,
         exitCode: sandboxResult3.exitCode,
@@ -1676,6 +1683,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         args.remote_path,
         sandboxUser5,
         sandboxTimeout5,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_upload_project': {
@@ -1690,7 +1698,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         );
       }
       const sandboxUser6 = args.username || 'root';
-      const sandboxTimeout6 = args.timeout_ms || 120000;
+      const sandboxTimeout6 = args.timeout_ms || 300000;
       return await uploadProjectWithSession(
         sandboxWsId6,
         args.local_dir,
@@ -1700,6 +1708,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         {
           exclude: args.exclude,
           extract: args.extract,
+          signal: opts.signal,
         },
       );
     }
@@ -1729,6 +1738,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         },
         sandboxUser7,
         sandboxTimeout7,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_deploy_check': {
@@ -1754,6 +1764,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         },
         sandboxUser8,
         sandboxTimeout8,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_expose_tunnel': {
@@ -1788,6 +1799,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         },
         sandboxUser9,
         sandboxTimeout9,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_renew_tunnel': {
@@ -1808,6 +1820,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         { tunnelId: args.tunnel_id, expiryHours: args.expiry_hours },
         args.username || 'root',
         args.timeout_ms || 60000,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_keepalive_watchdog': {
@@ -1829,6 +1842,7 @@ export async function callTool(name, rawArgs = {}, opts = {}) {
         { tunnels: tunnels11 },
         args.username || 'root',
         args.timeout_ms || 60000,
+        opts.signal,
       );
     }
     case 'huaweicloud_sandbox_check_user':
@@ -2126,12 +2140,16 @@ export async function runVersionCheck(options = {}) {
   };
 }
 
-async function showProfileRedacted(profile) {
+async function showProfileRedacted(profile, options = {}) {
   const args = ['configure', 'show'];
   if (profile) {
     args.push('--cli-profile', String(profile));
   }
-  const result = await runHcloud(args, { allowWrites: false, allowCredentialRead: true }).catch((error) => ({
+  const result = await runHcloud(args, {
+    allowWrites: false,
+    allowCredentialRead: true,
+    signal: options.signal,
+  }).catch((error) => ({
     ok: false,
     blocked: true,
     reason: error.message,
@@ -2154,7 +2172,7 @@ async function showProfileRedacted(profile) {
   };
 }
 
-async function setupObsConfig(profile) {
+async function setupObsConfig(profile, signal) {
   const stored = readGlobalCredentials();
   if (stored?.ak && stored?.sk) {
     try {
@@ -2178,10 +2196,10 @@ async function setupObsConfig(profile) {
     }
   }
 
-  return setupObsConfigFromHcloud(profile);
+  return setupObsConfigFromHcloud(profile, signal);
 }
 
-async function setupObsConfigFromHcloud(profile) {
+async function setupObsConfigFromHcloud(profile, signal) {
   const obsConfigPath = join(homedir(), '.obsutilconfig');
   if (existsSync(obsConfigPath)) {
     return {
@@ -2194,7 +2212,7 @@ async function setupObsConfigFromHcloud(profile) {
 
   const args = ['configure', 'show'];
   if (profile) args.push('--cli-profile', String(profile));
-  const result = await runHcloud(args, { allowWrites: false, allowCredentialRead: true });
+  const result = await runHcloud(args, { allowWrites: false, allowCredentialRead: true, signal });
 
   if (!result.ok) {
     return {
@@ -2328,12 +2346,14 @@ async function listOperations(service, options = {}) {
         const r = await runHcloud([sub, '--help'], {
           timeoutMs: options.timeoutMs,
           maxRetries: 0,
+          signal: options.signal,
         });
         let result = r;
         if (!result.ok) {
           result = await runHcloud([sub, 'help'], {
             timeoutMs: options.timeoutMs,
             maxRetries: 0,
+            signal: options.signal,
           });
         }
         return {
@@ -2362,11 +2382,13 @@ async function listOperations(service, options = {}) {
   let result = await runHcloud(args, {
     timeoutMs: options.timeoutMs,
     maxRetries: 0,
+    signal: options.signal,
   });
   if (!result.ok && !isObs) {
     result = await runHcloud([svc, 'help'], {
       timeoutMs: options.timeoutMs,
       maxRetries: 0,
+      signal: options.signal,
     });
   }
   return {
@@ -2440,7 +2462,7 @@ function planManifest(args = {}) {
   };
 }
 
-async function runApprovedManifest(args = {}) {
+async function runApprovedManifest(args = {}, signal) {
   if (args.approvedByUser !== true) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact manifest.');
   }
@@ -2480,6 +2502,7 @@ async function runApprovedManifest(args = {}) {
       maxRetries: args.maxRetries,
       cwd: args.cwd,
       createToken: false,
+      signal,
     });
     const entry = {
       args: redactSecrets(command.args),
@@ -2513,7 +2536,7 @@ async function runApprovedManifest(args = {}) {
   };
 }
 
-async function runApprovedCommand(args = {}) {
+async function runApprovedCommand(args = {}, signal) {
   if (args.approvedByUser !== true) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact command.');
   }
@@ -2565,6 +2588,7 @@ async function runApprovedCommand(args = {}) {
     cwd: args.cwd,
     stdin: args.stdin,
     createToken: false,
+    signal,
   });
   result.approved = true;
   result.plan = executedPlan;
@@ -3095,8 +3119,8 @@ async function retrieveSkill(name) {
   return { ok: true, name: skillName, version, description, content, references };
 }
 
-async function listRegions() {
-  const result = await runHcloud(['IAM', 'KeystoneListRegions'], { timeoutMs: 30000, maxRetries: 0 }).catch(
+async function listRegions(signal) {
+  const result = await runHcloud(['IAM', 'KeystoneListRegions'], { timeoutMs: 30000, maxRetries: 0, signal }).catch(
     (error) => ({
       ok: false,
       error: error.message,

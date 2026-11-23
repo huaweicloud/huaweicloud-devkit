@@ -437,16 +437,31 @@ async function connectHwlinkInteractiveTerminal(options = {}) {
 }
 
 async function executeHwlinkCommand(options = {}) {
-  const { command, timeoutMs = DEFAULT_TIMEOUT_MS, ...sessionOptions } = options;
+  const { command, timeoutMs = DEFAULT_TIMEOUT_MS, signal, ...sessionOptions } = options;
   const shellCommand = normalizeCommand(command);
   const normalizedTimeoutMs = normalizeTimeout(timeoutMs);
   const session = await connectHwlinkTerminalSession({
     ...sessionOptions,
     timeoutMs: normalizedTimeoutMs,
   });
+  const closeOnAbort = () => {
+    try {
+      session.close();
+    } catch {}
+  };
+  if (signal?.aborted) {
+    closeOnAbort();
+    throw new WebSocketExecError('hwlink command cancelled before start', 1, { phase: 'running' });
+  }
+  if (signal) signal.addEventListener('abort', closeOnAbort, { once: true });
   try {
     return await session.exec(shellCommand, { timeoutMs: normalizedTimeoutMs });
   } finally {
+    if (signal) {
+      try {
+        signal.removeEventListener('abort', closeOnAbort);
+      } catch {}
+    }
     session.close();
   }
 }

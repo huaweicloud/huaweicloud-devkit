@@ -97,11 +97,12 @@ export function judgeAccountType(identity, domains) {
 }
 
 // Orchestrate the two read-only hcloud calls and judge the account type.
-export async function checkAccountType({ region } = {}) {
+export async function checkAccountType({ region, signal } = {}) {
   const regionArgs = region ? [`--cli-region=${region}`] : [];
   const identityResult = await runHcloud(['STS', 'GetCallerIdentity', ...regionArgs], {
     timeoutMs: 30000,
     maxRetries: 0,
+    signal,
   }).catch((error) => ({ ok: false, error: error.message }));
   if (!identityResult.ok) {
     return {
@@ -118,6 +119,7 @@ export async function checkAccountType({ region } = {}) {
   const domainsResult = await runHcloud(['IAM', 'KeystoneListAuthDomains'], {
     timeoutMs: 30000,
     maxRetries: 0,
+    signal,
   }).catch((error) => ({ ok: false, error: error.message }));
   if (!domainsResult.ok) {
     return {

@@ -1277,3 +1277,34 @@ test('gateway tunnel-error bodies are treated as unreachable, not content issues
   assert.match(sandbox, /bad gateway/);
   assert.match(sandbox, /404 "tunnel not found" ≠ content issue/);
 });
+
+test('MCP protocol declares cancellation capability and -32000 timeout (#698 D9-9)', () => {
+  const protocol = readFileSync(join(pluginRoot, 'src', 'mcp-protocol.mjs'), 'utf8');
+  // initialize capabilities 必须声明 cancellation
+  assert.match(protocol, /cancellation:\s*\{\s*\}/);
+  // D9-9 日测夹具读取 capabilities.notifications.cancellation === true
+  assert.match(protocol, /notifications:\s*\{\s*cancellation:\s*true/);
+  // 必须实现请求级超时错误码 -32000
+  assert.match(protocol, /REQUEST_TIMEOUT_ERROR_CODE\s*=\s*-32000/);
+  assert.match(protocol, /RequestTimeoutError/);
+  // 必须 raceWithSignal 实现超时/取消中断
+  assert.match(protocol, /raceWithSignal/);
+  assert.match(protocol, /createRequestSignal/);
+  // 必须暴露 abortRequest 供 transport 处理 notifications/cancelled
+  assert.match(protocol, /export function abortRequest/);
+
+  const stdio = readFileSync(join(pluginRoot, 'src', 'mcp-server.mjs'), 'utf8');
+  assert.match(stdio, /notifications\/cancelled/);
+  assert.match(stdio, /abortRequest/);
+  assert.match(stdio, /REQUEST_TIMEOUT_ERROR_CODE/);
+
+  const remote = readFileSync(join(pluginRoot, 'src', 'mcp-server-remote.mjs'), 'utf8');
+  assert.match(remote, /notifications\/cancelled/);
+  assert.match(remote, /abortRequest/);
+  assert.match(remote, /REQUEST_TIMEOUT_ERROR_CODE/);
+
+  // 取消必须真正终止底层 hcloud 子进程（不只返回 -32000）
+  const cli = readFileSync(join(pluginRoot, 'src', 'hcloud-cli.mjs'), 'utf8');
+  assert.match(cli, /code: 'CANCELLED'/);
+  assert.match(cli, /signal\.addEventListener\('abort'/);
+});
