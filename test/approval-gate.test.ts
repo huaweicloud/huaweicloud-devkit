@@ -31,6 +31,8 @@ import {
   ELICITATION_INVALID_CONTENT,
   ELICITATION_TIMEOUT,
   ELICITATION_TIMEOUT_MS,
+  PLAN_FACE_TOKEN_MISSING_NEXT_STEP,
+  CONFIRM_TOKEN_UNKNOWN_NEXT_STEP,
 } from '../plugins/huaweicloud-core/src/approval-gate.ts';
 import { savedAllowAction } from '../plugins/huaweicloud-core/src/lib/opencode-saved-perms.ts';
 import { seedStoreIn, withStoreDir, type SeedStore } from './opencode-saved-perms-harness.ts';
@@ -181,8 +183,13 @@ test('token mode: a no-token call returns the trunk CONFIRM_TOKEN_NOT_FOUND enve
     const result = (await runApproved(undefined, ['ECS', 'ListServersDetails'])) as {
       status: string;
       code: string;
+      nextStep: string;
     };
-    assert.deepEqual(result, { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' });
+    assert.deepEqual(result, {
+      status: 'rejected',
+      code: 'CONFIRM_TOKEN_NOT_FOUND',
+      nextStep: PLAN_FACE_TOKEN_MISSING_NEXT_STEP,
+    });
     assert.equal(
       existsSync(join(home, '.config', 'huaweicloud', 'approvals.json')),
       false,
@@ -214,8 +221,13 @@ test('token mode: an unknown token returns the trunk not-found classification', 
     const result = (await runApproved('never-created-uuid', ['ECS', 'ListServersDetails'])) as {
       status: string;
       code: string;
+      nextStep: string;
     };
-    assert.deepEqual(result, { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' });
+    assert.deepEqual(result, {
+      status: 'rejected',
+      code: 'CONFIRM_TOKEN_NOT_FOUND',
+      nextStep: CONFIRM_TOKEN_UNKNOWN_NEXT_STEP,
+    });
   });
 });
 
@@ -2091,10 +2103,11 @@ test('token mode: a seeded saved row changes nothing (the guard is ask-only)', a
       const result = (await runApproved(undefined, ['ECS', 'DeleteServer', '--server_id=i-1'])) as {
         status: string;
         code: string;
+        nextStep: string;
       };
       assert.deepEqual(
         result,
-        { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' },
+        { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND', nextStep: PLAN_FACE_TOKEN_MISSING_NEXT_STEP },
         'the trunk token contract holds',
       );
       assert.equal(inspectApprovalToken('anything').state, 'not_found', 'nothing was minted');

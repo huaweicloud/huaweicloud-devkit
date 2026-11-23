@@ -158,6 +158,12 @@ async function handleAuthSwitch(args: ToolArgs = {}, opts: CallToolOptions = {})
   return persisted;
 }
 
+// F-APV-1: the confirm-token rejection spells its way out (exported for the
+// test that pins the envelope). Confirm tokens share the approval tokens'
+// process-scoped lifetime: a restart drops every pending confirm.
+export const AUTH_CONFIRM_TOKEN_NOT_FOUND_NEXT_STEP =
+  'This confirmation token was never minted in this process — mistyped, or dropped by a server restart (confirm tokens are process-scoped and never persisted). Re-run the huaweicloud_auth_switch action that returned needs_confirmation to mint a fresh token, then call huaweicloud_auth_confirm with it.';
+
 async function handleAuthConfirm(args: ToolArgs = {}, _opts: CallToolOptions = {}) {
   // D4-24 precise JSON contract (#745): a missing or already-consumed confirm
   // token returns a structured result instead of throwing a generic Error
@@ -173,7 +179,7 @@ async function handleAuthConfirm(args: ToolArgs = {}, _opts: CallToolOptions = {
     if (token && consumedConfirms.has(token)) {
       return { status: 'ok', outcome: 'already_processed' };
     }
-    return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' };
+    return { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND', nextStep: AUTH_CONFIRM_TOKEN_NOT_FOUND_NEXT_STEP };
   }
   if (args.decision === 's1') {
     pendingConfirms.delete(token);

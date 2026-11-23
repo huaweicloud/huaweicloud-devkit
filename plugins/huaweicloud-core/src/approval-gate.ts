@@ -86,6 +86,21 @@ export const NO_SESSION_SEAM_ERROR =
 const GRANT_REQUIRED_NEXT_STEP =
   'Ask the user to run "npx huaweicloud-devkit approve <this approvalToken>" in their own terminal, then retry this exact call.';
 
+// F-APV-1: every CONFIRM_TOKEN_* rejection spells its way out — the ask
+// envelope and the mint envelope already carry nextStep, and these close the
+// gap so the model never has to reverse-engineer the approval flow from
+// tool descriptions. Splitting NOT_FOUND into MISSING vs INVALID is a
+// contract change held for its own pass; this keeps the pinned codes and
+// only adds the guidance. Exported for the tests that pin the envelopes.
+export const PLAN_FACE_TOKEN_MISSING_NEXT_STEP =
+  'This run call requires an approvalToken minted by the plan face. Call huaweicloud_plan_cli_command with the same args first — its USER_CONFIRMATION_REQUIRED envelope carries the fresh approvalToken; retry this call with it.';
+
+export const CONFIRM_TOKEN_UNKNOWN_NEXT_STEP =
+  'This approvalToken was never minted in this process — malformed, or dropped by a server restart (tokens are process-scoped and never persisted). Re-run the plan call to mint a fresh approvalToken, then retry this call with it.';
+
+export const CONFIRM_TOKEN_EXPIRED_NEXT_STEP =
+  'This approvalToken passed its 5-minute TTL. Re-run the plan call to mint a fresh approvalToken and have the user approve it promptly, then retry this call with it.';
+
 // The command-forward anchor (the operator-approved display field): a call
 // that carries the tool's `command` string must spell the exact line its args
 // execute, so the harness popup's first line is the command the user is
@@ -951,7 +966,9 @@ export async function runApprovalGate(
     // classified nothing on a tokenless call, and the plan face's own hook
     // deny already covers the credential class at plan time.
     if (spec.tokenSource === 'plan-face') {
-      return { envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' } };
+      return {
+        envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND', nextStep: PLAN_FACE_TOKEN_MISSING_NEXT_STEP },
+      };
     }
     // Gate-source mint face (PR-3 registrations; ApprovalCoreMint's
     // classify-before-mint). BOTH floors sit before the mint for the same
@@ -991,13 +1008,17 @@ export async function runApprovalGate(
     return { envelope: { status: 'ok', outcome: 'already_processed' } };
   }
   if (inspection.state === 'expired') {
-    return { envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' } };
+    return {
+      envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED', nextStep: CONFIRM_TOKEN_EXPIRED_NEXT_STEP },
+    };
   }
   if (inspection.state === 'not_found') {
     // A token that was never created (typo / unknown / pruned beyond the
     // tombstone window) is still a rejection, but carries no expired or
     // already semantics — a distinct code so clients can tell them apart.
-    return { envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' } };
+    return {
+      envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND', nextStep: CONFIRM_TOKEN_UNKNOWN_NEXT_STEP },
+    };
   }
 
   // Credential floor before the consume, so the refusal burns nothing and
@@ -1019,7 +1040,11 @@ export async function runApprovalGate(
     // two reads. Classify via re-inspect, never a misleading success and
     // never a false not_found.
     const recheck = inspectApprovalToken(token);
-    if (recheck.state === 'expired') return { envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED' } };
+    if (recheck.state === 'expired') {
+      return {
+        envelope: { status: 'rejected', code: 'CONFIRM_TOKEN_EXPIRED', nextStep: CONFIRM_TOKEN_EXPIRED_NEXT_STEP },
+      };
+    }
     return { envelope: { status: 'ok', outcome: 'already_processed' } };
   }
 

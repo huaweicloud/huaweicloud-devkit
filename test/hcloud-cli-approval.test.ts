@@ -14,7 +14,11 @@ import {
   type HcloudRunResult,
 } from '../plugins/huaweicloud-core/src/hcloud-cli.ts';
 import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approval-tokens.ts';
-import { ASK_CONFIRMATION_REQUIRED } from '../plugins/huaweicloud-core/src/approval-gate.ts';
+import {
+  ASK_CONFIRMATION_REQUIRED,
+  CONFIRM_TOKEN_EXPIRED_NEXT_STEP,
+  CONFIRM_TOKEN_UNKNOWN_NEXT_STEP,
+} from '../plugins/huaweicloud-core/src/approval-gate.ts';
 import { fakeHcloudExecutable, withTempAuthHome, type ApprovedRunResult } from './hcloud-cli-harness.ts';
 import { withApprovalMode, withVaultAuthHome } from './approval-mode-harness.ts';
 import { callTool, type ToolArgs } from '../plugins/huaweicloud-core/src/tools.ts';
@@ -140,9 +144,10 @@ test('runApprovedCommand: expired token returns {status:rejected, code:CONFIRM_T
       const token = await planApproval();
       backdateToken(home, token);
 
-      const result = (await runApproved(token)) as { status: string; code: string };
+      const result = (await runApproved(token)) as { status: string; code: string; nextStep: string };
       assert.equal(result.status, 'rejected');
       assert.equal(result.code, 'CONFIRM_TOKEN_EXPIRED');
+      assert.equal(result.nextStep, CONFIRM_TOKEN_EXPIRED_NEXT_STEP);
     });
   });
 });
@@ -170,9 +175,10 @@ test('runApprovedCommand: unknown token returns {status:rejected, code:CONFIRM_T
       approvedByUser: true,
       maxRetries: 0,
       vendorConfirmed: 'test: vendor established by the harness',
-    })) as { status: string; code: string };
+    })) as { status: string; code: string; nextStep: string };
     assert.equal(result.status, 'rejected');
     assert.equal(result.code, 'CONFIRM_TOKEN_NOT_FOUND');
+    assert.equal(result.nextStep, CONFIRM_TOKEN_UNKNOWN_NEXT_STEP);
   });
 });
 

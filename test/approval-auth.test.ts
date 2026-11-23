@@ -16,6 +16,7 @@ import {
 import { fingerprint } from '../plugins/huaweicloud-core/src/auth/reconcile.ts';
 import { readConsentEvents } from '../plugins/huaweicloud-core/src/approval-ledger.ts';
 import { AUTH_APPROVAL_SPECS } from '../plugins/huaweicloud-core/src/packs/auth/approval.ts';
+import { AUTH_CONFIRM_TOKEN_NOT_FOUND_NEXT_STEP } from '../plugins/huaweicloud-core/src/packs/auth/tools.ts';
 import { vaultSet } from '../plugins/huaweicloud-core/src/lib/secret-vault/store.ts';
 import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 import type {
@@ -756,8 +757,13 @@ test('auth_confirm stays ungated: its pendingConfirms flow is the only confirmat
     const result = (await callTool('huaweicloud_auth_confirm', { token: 'never-minted', decision: 's1' })) as {
       status: string;
       code: string;
+      nextStep: string;
     };
-    assert.deepEqual(result, { status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' });
+    assert.deepEqual(result, {
+      status: 'rejected',
+      code: 'CONFIRM_TOKEN_NOT_FOUND',
+      nextStep: AUTH_CONFIRM_TOKEN_NOT_FOUND_NEXT_STEP,
+    });
     // In ask mode with a capable seam the gate would have raised a form;
     // the seam records nothing because no approval gate covers this tool.
     const { seam, requests } = elicitingSeam({ decision: 'accept', content: { decision: 'approve-once' } });
