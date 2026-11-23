@@ -55,16 +55,17 @@ and an unknown token returns `{ status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOU
 `decision` stays binary (`allow` / `deny`) for the whole 1.1.x–1.2.x compatibility
 window. Reading `decision: 'deny'` as "the command was rejected" is wrong for
 writes: an unapproved write is a _pending approval_, not a refusal. To let callers
-tell the two apart mechanically instead of parsing `reason`, every `deny` carries
-two additive fields:
+tell the two apart mechanically instead of parsing `reason`, every `classify` /
+`plan` deny (the `huaweicloud_plan_cli_command` path and the shared classifier)
+carries two additive fields:
 
-| Field              | Approval gate                 | Hard block                                           |
-| ------------------ | ----------------------------- | ---------------------------------------------------- |
-| `decision`         | `deny`                        | `deny`                                               |
-| `requiresApproval` | `true`                        | `false`                                              |
-| `blockedBy`        | `'approval'`                  | `'policy'`                                           |
-| `approvalToken`    | issued by `planHcloudCommand` | cannot be honoured — approval does not lift the deny |
-| `safeToRun`        | `false`                       | `false` (unchanged: `decision === 'allow'`)          |
+| Field              | Approval gate                 | Hard block                                   |
+| ------------------ | ----------------------------- | -------------------------------------------- |
+| `decision`         | `deny`                        | `deny`                                       |
+| `requiresApproval` | `true`                        | `false`                                      |
+| `blockedBy`        | `'approval'`                  | `'policy'`                                   |
+| `approvalToken`    | issued by `planHcloudCommand` | not issued — approval does not lift the deny |
+| `safeToRun`        | `false`                       | `false` (unchanged: `decision === 'allow'`)  |
 
 - **Approval gate** — unapproved write / execution / OBS-write operations, e.g.
   `huaweicloud_plan_cli_command({ args: ['VPC','DeleteVpc','--vpc_id=abc'] })`.

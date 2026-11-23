@@ -24,7 +24,7 @@ The toolkit assumes coding agents can accidentally expose secrets or perform exp
 
 The default write path is planning: `huaweicloud_plan_cli_command` returns a command for review. The optional execution path is `huaweicloud_run_approved_command`, which requires an exact command string already shown to the user plus explicit approval. This is an agent workflow guardrail, not a substitute for IAM least privilege or human review.
 
-`decision` stays binary, so a `deny` must not be read as "the operation is impossible". Each deny carries the additive fields `requiresApproval` and `blockedBy` (#1175 / D4-18):
+`decision` stays binary, so a `deny` must not be read as "the operation is impossible". Each `classify` / `plan` deny carries the additive fields `requiresApproval` and `blockedBy` (#1175 / D4-18):
 
 - `requiresApproval: true` + `blockedBy: 'approval'` — a write/execution operation held at the approval gate. The plan issued an `approvalToken`; the operation runs after explicit user approval via `huaweicloud_run_approved_command` / `run_approved_manifest`.
 - `requiresApproval: false` + `blockedBy: 'policy'` — a hard block (secret or credential read, invalid command, shared cloud-risk-rule hit). Approval cannot lift it, so no usable token path exists.
