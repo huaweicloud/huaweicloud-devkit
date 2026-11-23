@@ -88,19 +88,22 @@ See `references/deploy-workflow.md` for a step-by-step example with code templat
 
 ## Troubleshooting
 
-| Error                             | Root Cause -> Fix                                                        |
-| --------------------------------- | ------------------------------------------------------------------------ |
-| `不支持的服务名称:FGS`            | Use `FunctionGraph`, not `FGS`                                           |
-| `不支持的operation:CreateTrigger` | Use `CreateFunctionTrigger`                                              |
-| `FSS.0403` / Forbidden            | Missing IAM permissions — see IAM Permissions above                      |
-| `缺少必填参数:{*}` on Invoke      | Add body param: `--name=<value>`                                         |
-| APIG/EOM trigger error            | `trigger_type_code=APIG` deprecated — use `DEDICATEDGATEWAY`             |
-| `event_data` parse error          | Use dotted format: `--event_data.key=value`, NOT JSON string             |
-| FSS.1078 / code upload fails      | `--code_filename` is filename-only, no path. `cd` to zip directory first |
-| DeleteFunction with `:latest`     | Strip `:latest` version suffix from URN                                  |
-| Code too large                    | Inline limit 10KB — use `zip`/`obs` code type                            |
-| Cold start slow                   | Set reserved instances for critical functions                            |
-| Auth failure                      | Run `npx huaweicloud-devkit auth init`                                   |
+| Error                                          | Root Cause -> Fix                                                                                                                                                        |
+| ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `不支持的服务名称:FGS`                         | Use `FunctionGraph`, not `FGS`                                                                                                                                           |
+| `不支持的operation:CreateTrigger`              | Use `CreateFunctionTrigger`                                                                                                                                              |
+| `FSS.0403` / Forbidden                         | Missing IAM permissions — see IAM Permissions above                                                                                                                      |
+| `缺少必填参数:{*}` on Invoke                   | Add body param: `--name=<value>`                                                                                                                                         |
+| APIG/EOM trigger error                         | `trigger_type_code=APIG` deprecated — use `DEDICATEDGATEWAY`                                                                                                             |
+| `event_data` parse error                       | Use dotted format: `--event_data.key=value`, NOT JSON string                                                                                                             |
+| FSS.1078 / code upload fails                   | `--code_filename` is filename-only, no path. `cd` to zip directory first                                                                                                 |
+| `缺少必填参数:function_name` on create         | Body field name, not a flag — the flag is `--func_name`                                                                                                                  |
+| `缺少必填参数:code.filename` / `code.zip_file` | Body field names for the code payload — the flags are `--code_filename` (`code_type=zip`) and `--func_code.file` (`code_type=inline`). See references/create-function.md |
+| Trigger fails with a failed create             | `CreateFunctionTrigger` needs the `func_urn` a successful create returns — run the trigger as a second, serial command, never in one batch with the function             |
+| DeleteFunction with `:latest`                  | Strip `:latest` version suffix from URN                                                                                                                                  |
+| Code too large                                 | Inline limit 10KB — use `zip`/`obs` code type                                                                                                                            |
+| Cold start slow                                | Set reserved instances for critical functions                                                                                                                            |
+| Auth failure                                   | Run `npx huaweicloud-devkit auth init`                                                                                                                                   |
 
 ## Security Considerations
 

@@ -26,13 +26,48 @@ hcloud FunctionGraph CreateFunction \
   --cli-region=<region>
 ```
 
-| Param           | Required | Range/Default             |
-| --------------- | -------- | ------------------------- |
-| `--func_name`   | Yes      | 1-60 chars                |
-| `--runtime`     | Yes      | See runtime options above |
-| `--handler`     | Yes      | Per runtime               |
-| `--memory_size` | No       | 128-4096 MB, default 128  |
-| `--timeout`     | No       | 1-900s, default 3         |
+| Param           | Required  | Range/Default                                                                                                                      |
+| --------------- | --------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `--func_name`   | Yes       | 1-60 chars                                                                                                                         |
+| `--runtime`     | Yes       | See runtime options above                                                                                                          |
+| `--handler`     | Yes       | Per runtime                                                                                                                        |
+| `--package`     | Yes       | Function group; `default` is a valid value                                                                                         |
+| `--memory_size` | Yes       | 128-4096 MB                                                                                                                        |
+| `--timeout`     | Yes       | 3-259200s                                                                                                                          |
+| `--code_type`   | Pre-check | `inline`, `zip`, `jar`, `obs`, `Custom-Image-Swr` — `--help` marks it optional, but the pre-execution check requires it explicitly |
+
+`--help` marks `--code_type` and the code payload flags optional (an empty body
+creates a default-code function); the pre-execution check asks for them so the
+function carries the intended code. `--package` is required, not defaulted — pass
+`default` or your own group explicitly.
+
+## Code Payload: One Carrier Flag
+
+`--code_type` decides which code flag carries the function body — pass exactly
+one of them, in the same command:
+
+| `--code_type`      | Code flag              | Note                                                      |
+| ------------------ | ---------------------- | --------------------------------------------------------- |
+| `inline`           | `--func_code.file`     | base64 of the source; reliable for small code             |
+| `zip` / `jar`      | `--code_filename`      | File **name only** — `cd` to the file first               |
+| `obs`              | `--code_url`           | Object URL for larger payloads                            |
+| `Custom-Image-Swr` | `--custom_image.image` | SWR image address; also set `--custom_image.enabled=true` |
+
+## Error Field Names Are Not Flags
+
+When the API reports a missing parameter as `function_name`, `code.filename` or
+`code.zip_file`, those are **request-body field names**, not KooCLI flags —
+whichever one appears depends on the release's validation order, so the same
+gap surfaces under different names. The flags are:
+
+| Body field name reported | KooCLI flag        |
+| ------------------------ | ------------------ |
+| `function_name`          | `--func_name`      |
+| `code.filename`          | `--code_filename`  |
+| `code.zip_file`          | `--func_code.file` |
+
+Fix the flag, do not add a second spelling: `hcloud FunctionGraph CreateFunction --help`
+lists the exact parameter names for the installed KooCLI version.
 
 ## ZIP Upload Warning
 
