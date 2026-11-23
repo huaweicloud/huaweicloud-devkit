@@ -2571,6 +2571,17 @@ async function runApprovedCommand(args = {}) {
   return result;
 }
 
+// #751 D3-S5: intent text is tokenized as CJK runs plus ASCII runs, so an English
+// service keyword embedded in a Chinese sentence (部署一个带有Redis缓存的Web应用) is
+// matchable through the token Set. `_` stays inside an ASCII run so identifier-like
+// input (ecs_cluster) keeps its pre-fix tokenization instead of splitting into ecs+cluster.
+const INTENT_TOKEN_RE = /[\u4e00-\u9fff]+|[a-z0-9_]+/g;
+const INTENT_CJK_RE = /[\u4e00-\u9fff]/;
+// An intent that asks to deploy/host/publish something is allowed to lean on
+// ambiguous web keywords (see `deployKeywords` in the sandbox route below).
+const INTENT_DEPLOY_RE =
+  /deploy|host|hosting|publish|website|web app|webapp|preview|部署|搭建|托管|发布|上线|网站|网页/;
+
 function serviceCatalog(intent = '') {
   const it = String(intent).toLowerCase();
   const routeMap = [
@@ -2724,7 +2735,19 @@ function serviceCatalog(intent = '') {
       services: ['BSS'],
     },
     {
-      keywords: ['waf', 'aad', 'ddos', 'firewall', 'web protection'],
+      keywords: [
+        'waf',
+        'aad',
+        'ddos',
+        'firewall',
+        'web protection',
+        'web应用防火墙',
+        '应用防火墙',
+        'web防火墙',
+        '防火墙',
+        'cc攻击',
+        'cc防护',
+      ],
       skills: ['huawei-cloud-waf-aad-rule-management'],
       services: ['WAF', 'AAD'],
     },
@@ -2769,6 +2792,11 @@ function serviceCatalog(intent = '') {
         '网页',
         '静态',
       ],
+      // #751 D1: bare `web` is too ambiguous to route on its own — `web应用防火墙` is
+      // WAF and `web服务器` is ECS. It only counts as sandbox evidence when the same
+      // intent also asks to deploy/host/publish. `web app`/`webapp`/`website` stay
+      // unconditional because the two words disambiguate each other.
+      deployKeywords: ['web'],
       skills: ['huawei-sandbox'],
       services: ['Sandbox', 'DevStation'],
     },
@@ -2800,11 +2828,22 @@ function serviceCatalog(intent = '') {
     },
   ];
   const matched = [];
-  const tokens = new Set(it.split(/[\s,./-]+/).filter((t) => t.length > 0));
-  const cjk = /[\u4e00-\u9fff]/;
+  const tokens = new Set(Array.from(it.match(INTENT_TOKEN_RE) ?? []));
+  const keywordHit = (kw) => {
+    // Spaced/CJK keywords are matched as substrings; plain ASCII keywords must line
+    // up with a whole token.
+    const substring = kw.includes(' ') || INTENT_CJK_RE.test(kw);
+    return substring ? it.includes(kw.toLowerCase()) : tokens.has(kw);
+  };
+  // Deployment intent (deploy/host/publish a web app or static website) must never
+  // default to a storage/other service — recommend the sandbox first.
+  const deploymentIntent = INTENT_DEPLOY_RE.test(it);
   for (const route of routeMap) {
+    // #751 D1: `deployKeywords` only count when the intent is deployment-shaped,
+    // so an ambiguous token (`web`) cannot drag non-deploy intents to sandbox.
     if (
-      route.keywords.some((kw) => (kw.includes(' ') || cjk.test(kw) ? it.includes(kw.toLowerCase()) : tokens.has(kw)))
+      route.keywords.some((kw) => keywordHit(kw)) ||
+      (deploymentIntent && (route.deployKeywords ?? []).some((kw) => keywordHit(kw)))
     ) {
       matched.push(route);
     }
@@ -2812,9 +2851,6 @@ function serviceCatalog(intent = '') {
   const recommendedSkills = [...new Set(matched.flatMap((r) => r.skills))];
   const recommendedServices = [...new Set(matched.flatMap((r) => r.services))].slice(0, 5);
 
-  // Deployment intent (deploy/host/publish a web app or static website) must never
-  // default to a storage/other service — recommend the sandbox first.
-  const deploymentIntent = /deploy|host|hosting|publish|website|web app|preview|部署|托管|发布|网站|网页/.test(it);
   if (deploymentIntent && recommendedSkills.includes('huawei-sandbox')) {
     const idx = recommendedSkills.indexOf('huawei-sandbox');
     recommendedSkills.splice(idx, 1);
