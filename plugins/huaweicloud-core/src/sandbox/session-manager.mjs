@@ -165,7 +165,7 @@ async function createTunnelSession(workspaceId, username, timeoutMs = 30000) {
   return { mux, close: () => mux.close() };
 }
 
-export async function execOneShot(workspaceId, command, username, timeoutMs) {
+export async function execOneShot(workspaceId, command, username, timeoutMs, signal) {
   const { ak, sk, securitytoken } = getCredentials();
   const { wsUrl, source } = await createConnection(workspaceId, ak, sk, securitytoken);
 
@@ -178,13 +178,34 @@ export async function execOneShot(workspaceId, command, username, timeoutMs) {
     username,
     command,
     timeoutMs,
+    signal,
     WebSocketImpl,
   });
 }
 
-export async function execWithSession(workspaceId, command, username, timeoutMs) {
+export async function execWithSession(workspaceId, command, username, timeoutMs, signal) {
   const session = await getSession(workspaceId, username, timeoutMs);
-  return await session.exec(command, { timeoutMs });
+  if (!signal) return await session.exec(command, { timeoutMs });
+
+  const key = `${workspaceId}:${username}`;
+  const closeOnAbort = () => {
+    if (sessions.get(key) === session) sessions.delete(key);
+    try {
+      session.close();
+    } catch {}
+  };
+  if (signal.aborted) {
+    closeOnAbort();
+    throw new Error('Sandbox exec cancelled before start.');
+  }
+  signal.addEventListener('abort', closeOnAbort, { once: true });
+  try {
+    return await session.exec(command, { timeoutMs });
+  } finally {
+    try {
+      signal.removeEventListener('abort', closeOnAbort);
+    } catch {}
+  }
 }
 
 export const UPLOAD_CHUNK_SIZE = 30000;

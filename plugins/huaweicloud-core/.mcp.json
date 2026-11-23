@@ -5,7 +5,8 @@
       "args": ["./src/mcp-server.mjs"],
       "cwd": ".",
       "env": {
-        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local"
+        "HUAWEICLOUD_AGENT_TOOLKIT_MODE": "local",
+        "HCLOUD_MCP_REQUEST_TIMEOUT_MS": "60000"
       }
     }
   }

@@ -43,11 +43,18 @@ export function _isHintConsumed(sessionId) {
 /**
  * 请求级默认超时（毫秒）。可被环境变量 HCLOUD_MCP_REQUEST_TIMEOUT_MS 覆盖，
  * 也可被单个请求的 opts.timeoutMs / params._meta.timeoutMs 覆盖。
- * 0 表示不启用协议层超时（仍受各工具自身 timeoutMs 约束）。
+ *
+ * 默认为 60s（D9-9 要求「有合理默认值」）：即使用户不设置任何环境变量，
+ * 长耗时 tools/call 也会在 60s 后返回 { code: -32000 }，而不是一直挂起。
+ * HCLOUD_MCP_REQUEST_TIMEOUT_MS=0 表示显式关闭协议层超时（仍受各工具自身
+ * timeoutMs 约束），用于需要无限期等待的特殊场景。
  */
-export const DEFAULT_REQUEST_TIMEOUT_MS = (() => {
-  const env = Number(process.env.HCLOUD_MCP_REQUEST_TIMEOUT_MS);
-  return Number.isFinite(env) && env > 0 ? env : 0;
+export const DEFAULT_REQUEST_TIMEOUT_MS = 60_000;
+const CONFIGURED_REQUEST_TIMEOUT_MS = (() => {
+  const raw = process.env.HCLOUD_MCP_REQUEST_TIMEOUT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_REQUEST_TIMEOUT_MS;
+  const env = Number(raw);
+  return Number.isFinite(env) && env >= 0 ? env : DEFAULT_REQUEST_TIMEOUT_MS;
 })();
 
 /**
@@ -116,7 +123,7 @@ function resolveTimeoutMs(opts, params) {
   if (Number.isFinite(fromOpts) && fromOpts > 0) return fromOpts;
   const fromMeta = Number(params?._meta?.timeoutMs);
   if (Number.isFinite(fromMeta) && fromMeta > 0) return fromMeta;
-  return DEFAULT_REQUEST_TIMEOUT_MS;
+  return CONFIGURED_REQUEST_TIMEOUT_MS;
 }
 
 /**
@@ -236,6 +243,12 @@ export async function dispatch(method, params, opts = {}) {
         // 中断进行中的 tools/call 等请求；tools/call 支持请求级超时，
         // 超时返回 JSON-RPC error { code: -32000, message 含 timeout }。
         cancellation: {},
+        // D9-9 日测夹具按 capabilities.notifications.cancellation（布尔）
+        // 探测能力，这里同步声明以保持契约一致（顶层 cancellation 保留给
+        // 其它标准客户端读取）。
+        notifications: {
+          cancellation: true,
+        },
       },
       serverInfo: {
         name: 'huaweicloud-devkit',

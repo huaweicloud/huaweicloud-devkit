@@ -537,9 +537,34 @@ function runHcloudOnce(plan, options) {
   const executableArgs = argsPrefix;
   const cwd = options.cwd || undefined;
   const stdin = options.stdin ?? 'y\n';
+  const signal = options.signal;
   const childOptions = { ...options };
   delete childOptions.metaDir;
+  // Control-plane options must not leak into the child's environment.
+  delete childOptions.signal;
+  delete childOptions.timeoutMs;
+  delete childOptions.maxRetries;
+  delete childOptions.cwd;
+  delete childOptions.stdin;
+  delete childOptions.executable;
+  delete childOptions.executableArgs;
+  delete childOptions.forceKillAfterMs;
   const childEnv = { ...process.env, ...childOptions.env };
+
+  // D9-9: a cancelled request must stop the underlying command, not just the
+  // protocol response. If the signal is already aborted, do not spawn at all.
+  if (signal?.aborted) {
+    return Promise.resolve({
+      ok: false,
+      code: 'CANCELLED',
+      error: 'hcloud command cancelled before start.',
+      exitCode: null,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      plan,
+    });
+  }
 
   return new Promise((resolve) => {
     const proxySettings = getProxySettings();
@@ -570,9 +595,11 @@ function runHcloudOnce(plan, options) {
     let stdout = '';
     let stderr = '';
     let timedOut = false;
+    let cancelled = false;
     let settled = false;
     let forceTimer;
     let settleTimer;
+    let abortListener;
 
     function finish(result) {
       if (settled) return;
@@ -580,6 +607,11 @@ function runHcloudOnce(plan, options) {
       clearTimeout(timer);
       clearTimeout(forceTimer);
       clearTimeout(settleTimer);
+      if (signal && abortListener) {
+        try {
+          signal.removeEventListener('abort', abortListener);
+        } catch {}
+      }
       if (result.stdout && String(result.stdout).length > LARGE_OUTPUT_THRESHOLD) {
         const outputFile = saveLargeOutput(stdout);
         if (outputFile) {
@@ -615,6 +647,33 @@ function runHcloudOnce(plan, options) {
       }, forceKillAfterMs + 500);
     }, timeoutMs);
 
+    if (signal) {
+      abortListener = () => {
+        if (settled || timedOut || cancelled) return;
+        cancelled = true;
+        // Stop the underlying command (and any child processes that terminate
+        // with it) within the 2s cancellation window required by D9-9.
+        child.kill('SIGTERM');
+        forceTimer = setTimeout(() => child.kill('SIGKILL'), forceKillAfterMs);
+        settleTimer = setTimeout(() => {
+          finish({
+            ok: false,
+            code: 'CANCELLED',
+            error: 'hcloud command cancelled by the client.',
+            exitCode: null,
+            signal: null,
+            stdout: redactOutput(stdout),
+            stderr: redactOutput(stderr),
+            plan,
+          });
+        }, forceKillAfterMs + 500);
+      };
+      signal.addEventListener('abort', abortListener, { once: true });
+      // Close the race between the pre-spawn check and listener registration:
+      // an abort that lands in this window must still kill the child.
+      if (signal.aborted) abortListener();
+    }
+
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString('utf8');
     });
@@ -632,6 +691,19 @@ function runHcloudOnce(plan, options) {
       });
     });
     child.on('close', (code, signal) => {
+      if (cancelled) {
+        finish({
+          ok: false,
+          code: 'CANCELLED',
+          error: 'hcloud command cancelled by the client.',
+          exitCode: code,
+          signal,
+          stdout: redactOutput(stdout),
+          stderr: redactOutput(stderr),
+          plan,
+        });
+        return;
+      }
       if (timedOut) {
         finish({
           ok: false,

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
@@ -13,6 +13,61 @@ process.env.HUAWEICLOUD_DEVKIT_SKIP_UPDATE = '1';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const serverPath = join(root, 'plugins', 'huaweicloud-core', 'src', 'mcp-server.mjs');
+
+// D9-9: replace the real hcloud binary with a deterministic "hangs forever"
+// fixture so timeout/cancel tests do not depend on whether KooCLI is installed
+// or how fast it runs on a given machine.
+function createHangingHcloudFixture(dir) {
+  const fixture = join(dir, 'fake-hcloud.mjs');
+  const pidFile = join(dir, 'fake-hcloud.pid');
+  writeFileSync(
+    fixture,
+    [
+      "import { writeFileSync } from 'node:fs';",
+      "import { setTimeout as sleep } from 'node:timers/promises';",
+      'writeFileSync(process.env.FAKE_HCLOUD_PID_FILE, String(process.pid));',
+      'await sleep(Number(process.env.FAKE_HCLOUD_SLEEP_MS || 30000));',
+      "process.stdout.write('fake hcloud done\\n');",
+      '',
+    ].join('\n'),
+  );
+  return {
+    fixture,
+    pidFile,
+    env: {
+      HCLOUD_BIN: process.execPath,
+      HCLOUD_BIN_ARGS_JSON: JSON.stringify([fixture]),
+      FAKE_HCLOUD_PID_FILE: pidFile,
+    },
+  };
+}
+
+async function waitForFile(path, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(path)) return readFileSync(path, 'utf8').trim();
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return null;
+}
+
+async function waitForProcessExit(pid, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch {
+    return true;
+  }
+}
 
 function frame(message) {
   const json = JSON.stringify(message);
@@ -373,11 +428,12 @@ test('initialize capabilities declares cancellation (#698 D9-9)', async () => {
   }
 });
 
-test('tools/call request-level timeout returns JSON-RPC -32000 (#698 D9-9)', async () => {
-  // HCLOUD_MCP_REQUEST_TIMEOUT_MS=20 使协议层超时 20ms；
-  // huaweicloud_list_operations(ECS) 调用 runHcloud(['ECS','--help'])，实测 ~55-60ms，
-  // 20ms 超时必然先于工作完成触发 → 客户端收到 { code: -32000, message 含 timeout }。
-  const client = createClient(serverPath, { HCLOUD_MCP_REQUEST_TIMEOUT_MS: '20' });
+test('tools/call request-level timeout returns JSON-RPC -32000 and stops the command (#698 D9-9)', async () => {
+  // 用挂起的 fake hcloud（30s）对 1s 协议超时，结果与机器是否安装 KooCLI、
+  // 二进制快慢完全无关：工作必然先超时，且底层命令必须被终止。
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-mcp-timeout-'));
+  const { env, pidFile } = createHangingHcloudFixture(dir);
+  const client = createClient(serverPath, { ...env, HCLOUD_MCP_REQUEST_TIMEOUT_MS: '1000' });
   try {
     await client.request('initialize', {
       protocolVersion: '2024-11-05',
@@ -391,8 +447,17 @@ test('tools/call request-level timeout returns JSON-RPC -32000 (#698 D9-9)', asy
     assert.ok(res.error, 'expected an error response for timed-out request');
     assert.equal(res.error.code, -32000, 'error code must be -32000');
     assert.match(res.error.message, /timeout|timed out/i, 'message must mention timeout');
+
+    const pid = await waitForFile(pidFile, 2000);
+    assert.ok(pid, 'fake hcloud should have started');
+    assert.equal(
+      await waitForProcessExit(Number(pid), 2000),
+      true,
+      'timed-out request must stop the underlying command',
+    );
   } finally {
     client.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 
@@ -415,33 +480,41 @@ test('notifications/cancelled does not crash server and is accepted (#698 D9-9)'
   }
 });
 
-test('notifications/cancelled interrupts an in-flight tools/call (#698 D9-9)', async () => {
-  // huaweicloud_check_cli ~25ms；我们发起请求后立即发送 cancel 通知。
-  // 即便工具很快返回，cancel 通知到达时若请求已完成则为 no-op（合法）；
-  // 若请求仍在 flight 则被中断。两种情况服务器都不应崩溃，且客户端必然收到
-  // 一个响应（要么正常 result，要么 -32000 取消错误）。本用例验证「不丢失响应、不崩溃」。
-  const client = createClient();
+test('notifications/cancelled interrupts an in-flight tools/call and stops the command (#698 D9-9)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'hwc-mcp-cancel-'));
+  const { env, pidFile } = createHangingHcloudFixture(dir);
+  const client = createClient(serverPath, env);
   try {
     await client.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
       clientInfo: { name: 'cancel-inflight', version: '0.0.0' },
     });
-    const id = Math.floor(Math.random() * 1_000_000);
+    const id = 424242;
     const responsePromise = client.rawRequest(id, 'tools/call', {
-      name: 'huaweicloud_check_cli',
-      arguments: {},
+      name: 'huaweicloud_list_operations',
+      arguments: { service: 'ECS' },
     });
-    // 立即发送取消通知（同 id）。
+    // 等 fake hcloud 真正启动后再取消，确保测的是「进行中的底层命令被终止」。
+    const pid = await waitForFile(pidFile, 2000);
+    assert.ok(pid, 'fake hcloud should have started');
     client.notify('notifications/cancelled', { requestId: id, reason: 'client cancelled inflight' });
 
     const payload = await responsePromise;
-    assert.ok(payload, 'client must receive exactly one response (result or -32000)');
-    // 合法结果：有 result 或 error.code=-32000。
-    const okResult = payload.result !== undefined;
-    const okCancel = payload.error?.code === -32000;
-    assert.ok(okResult || okCancel, 'response is either a normal result or a -32000 cancellation');
+    assert.ok(payload.error, 'cancelled request must return an error');
+    assert.equal(payload.error.code, -32000, 'cancelled request must return -32000');
+    assert.match(payload.error.message, /cancel/i, 'message must mention cancellation');
+    assert.equal(
+      await waitForProcessExit(Number(pid), 2000),
+      true,
+      'cancelled request must stop the underlying command within 2s',
+    );
+
+    // 服务端仍可正常处理后续请求（cancel 不破坏会话）。
+    const listed = await client.request('tools/list');
+    assert.ok(Array.isArray(listed.result.tools), 'server still responsive after cancelling an in-flight call');
   } finally {
     client.close();
+    rmSync(dir, { recursive: true, force: true });
   }
 });

@@ -36,6 +36,8 @@ test('initialize capabilities declares cancellation (#698 D9-9)', async () => {
   assert.ok(Object.hasOwn(result.capabilities, 'cancellation'), 'capabilities must declare cancellation');
   assert.deepEqual(result.capabilities.cancellation, {});
   assert.ok(Object.hasOwn(result.capabilities, 'tools'), 'tools capability retained');
+  // D9-9 日测夹具读取 capabilities.notifications.cancellation === true
+  assert.equal(result.capabilities.notifications?.cancellation, true, 'notifications.cancellation must be true');
 });
 
 test('REQUEST_TIMEOUT_ERROR_CODE is -32000', () => {
@@ -112,9 +114,15 @@ test('abortRequest on unknown id returns false', () => {
   assert.equal(abortRequest(88888, 'nope'), false);
 });
 
-test('DEFAULT_REQUEST_TIMEOUT_MS defaults to 0 (no protocol-level timeout) unless env set', () => {
-  // 环境变量未设置时为 0；测试环境不应设置该变量。
-  assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 0);
+test('DEFAULT_REQUEST_TIMEOUT_MS defaults to a reasonable 60s unless env set', () => {
+  // D9-9 要求默认安装下也具备超时语义：未设置环境变量时默认 60s。
+  const raw = process.env.HCLOUD_MCP_REQUEST_TIMEOUT_MS;
+  if (raw === undefined || raw === '') {
+    assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 60_000);
+  } else {
+    const env = Number(raw);
+    assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, Number.isFinite(env) && env >= 0 ? env : 60_000);
+  }
 });
 
 test('unknown method still returns -32601 (regression guard #650 D9-2)', async () => {

@@ -344,6 +344,18 @@ The plugin upgrades itself in the background; there is no confirmation prompt:
 - Before an upgrade the running dir's `src/`, `package.json`, and the plugin version manifests are backed up; if verification against the backup fails, everything is restored.
 - Internal guards: `HUAWEICLOUD_DEVKIT_SKIP_UPDATE=1`, CI environments, and git checkouts skip automatic upgrades.
 
+### MCP request timeout and cancellation
+
+Every MCP `tools/call` has a request-level timeout and can be cancelled by the client:
+
+- Default timeout: **60 s**. Override with `HCLOUD_MCP_REQUEST_TIMEOUT_MS` (milliseconds) in the MCP server `env`.
+  `0` explicitly disables the protocol-level timeout (long commands then rely on each tool's own `timeoutMs`).
+- A timed-out or cancelled call returns JSON-RPC error `{ "code": -32000, "message": "..." }`; the underlying
+  `hcloud` child process is terminated within 2 s.
+- `initialize` advertises the capability via `capabilities.cancellation` and
+  `capabilities.notifications.cancellation: true`. Clients can send `notifications/cancelled`
+  with the in-flight request id to stop it.
+
 ### Configure Proxy
 
 ```bash
