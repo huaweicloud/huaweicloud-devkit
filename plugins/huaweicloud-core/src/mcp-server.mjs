@@ -5,7 +5,7 @@ import { resolve, dirname } from 'node:path';
 import { platform } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-import { dispatch } from './mcp-protocol.mjs';
+import { dispatch, _markRequestCancelled, _consumeRequestCancellation } from './mcp-protocol.mjs';
 import { DEFAULT_PORT, DEFAULT_HOST } from './mcp-server-remote.mjs';
 import { getCachedUpdateInfo, getRuntimeVersion, semverCompare } from './update-check.mjs';
 import { getUpgradePolicy } from './update-policy.mjs';
@@ -192,13 +192,25 @@ function runStdioServer() {
       return;
     }
     if (!Object.hasOwn(message, 'id')) {
-      if (message.method === 'notifications/initialized') return;
+      // D9-4: notifications never unlock a session. `notifications/initialized`
+      // is accepted for protocol completeness, but only a successful
+      // `initialize` request marks the session initialized.
+      // D9-9: `notifications/cancelled` records the requestId of an in-flight
+      // request so its response is dropped instead of written.
+      if (message.method === 'notifications/cancelled') {
+        _markRequestCancelled('stdin', message.params?.requestId);
+      }
       return;
     }
+    // D9-9: a request cancelled before it was dispatched is never answered.
+    if (_consumeRequestCancellation('stdin', message.id)) return;
     try {
       const result = await dispatch(message.method, message.params || {}, { sessionId: 'stdin' });
+      // D9-9: a request cancelled while running must not receive a response.
+      if (_consumeRequestCancellation('stdin', message.id)) return;
       writeMessage({ jsonrpc: '2.0', id: message.id, result });
     } catch (error) {
+      if (_consumeRequestCancellation('stdin', message.id)) return;
       writeMessage({
         jsonrpc: '2.0',
         id: message.id,

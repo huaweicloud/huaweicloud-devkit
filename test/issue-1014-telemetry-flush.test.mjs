@@ -166,6 +166,14 @@ test('voucher claim tool call flushes telemetry synchronously with userHash (P0 
       // 此刻 HUAWEICLOUD_DEVKIT_HOME 已指向 tmp，故该实例同样被隔离。
       const { dispatch } = await import('../plugins/huaweicloud-core/src/mcp-protocol.mjs');
 
+      // #774 D9-4: tools/call 现在要求先完成 initialize 握手（否则 -32002），
+      // 这里模拟一个真实的 MCP 客户端先握手再调用工具。
+      await dispatch('initialize', {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'test-client', version: '0.0.0' },
+      });
+
       const result = await dispatch('tools/call', {
         name: 'huaweicloud_voucher_claim',
         arguments: {},

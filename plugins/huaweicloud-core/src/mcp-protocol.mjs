@@ -40,6 +40,69 @@ export function _isHintConsumed(sessionId) {
   return Boolean(consumedBySession.get(sessionId));
 }
 
+// D9-4: MCP initialize lifecycle gating.
+// A session must complete the handshake with an `initialize` request before
+// sending any other request. Only a successful `initialize` request marks the
+// session initialized: `notifications/initialized` is accepted for protocol
+// completeness but never unlocks a session by itself, so a client that skips
+// `initialize` cannot bypass the gate by sending the notification alone.
+// Requests from an uninitialized session fail with JSON-RPC -32002
+// (Server not initialized).
+const MAX_TRACKED_SESSIONS = 512;
+const initializedSessions = new Map();
+
+// Bounded LRU: re-insert to refresh recency, then evict the oldest entries so a
+// long-lived server with many short sessions cannot grow without limit.
+function rememberSession(sessionId) {
+  initializedSessions.delete(sessionId);
+  initializedSessions.set(sessionId, true);
+  while (initializedSessions.size > MAX_TRACKED_SESSIONS) {
+    initializedSessions.delete(initializedSessions.keys().next().value);
+  }
+}
+
+export function _markInitialized(sessionId) {
+  rememberSession(sessionId);
+}
+export function _isSessionInitialized(sessionId) {
+  return Boolean(initializedSessions.get(sessionId));
+}
+export function _resetInitializedSessions() {
+  initializedSessions.clear();
+}
+
+// D9-9: `notifications/cancelled` handling (MCP 2024-11-05 lifecycle utility).
+// The spec defines cancellation at the protocol level, not as a server
+// capability: the client sends `notifications/cancelled` with the requestId of
+// an in-flight request and the receiver MUST NOT answer that request. Each
+// transport registers the cancellation here and drops the response instead of
+// writing it. Tracking is bounded like the session set.
+const MAX_TRACKED_CANCELLATIONS = 512;
+const cancelledRequests = new Map();
+
+function cancellationKey(sessionId, requestId) {
+  return `${sessionId}\u0000${requestId}`;
+}
+
+export function _markRequestCancelled(sessionId, requestId) {
+  if (requestId === undefined || requestId === null) return;
+  const key = cancellationKey(sessionId, requestId);
+  cancelledRequests.delete(key);
+  cancelledRequests.set(key, true);
+  while (cancelledRequests.size > MAX_TRACKED_CANCELLATIONS) {
+    cancelledRequests.delete(cancelledRequests.keys().next().value);
+  }
+}
+
+// Returns true (and forgets the record) when the request was cancelled.
+export function _consumeRequestCancellation(sessionId, requestId) {
+  return cancelledRequests.delete(cancellationKey(sessionId, requestId));
+}
+
+export function _resetCancelledRequests() {
+  cancelledRequests.clear();
+}
+
 export async function dispatch(method, params, opts = {}) {
   const sessionId = opts?.sessionId || 'default';
   if (method === 'initialize') {
@@ -55,16 +118,34 @@ export async function dispatch(method, params, opts = {}) {
 
     const agent = detectAgent(ci);
     initTelemetry({ harness: agent.harness, version: agent.version });
+    // D9-4: only a successful `initialize` request marks the session
+    // initialized. The transports accept `notifications/initialized` but do
+    // not let it unlock a session on its own.
+    _markInitialized(sessionId);
     return {
       protocolVersion: params.protocolVersion || '2024-11-05',
       capabilities: {
         tools: {},
+        // D9-9: devkit extension field. MCP 2024-11-05 defines no standard
+        // `cancellation` capability (cancellation is protocol-level), so this
+        // field is declared explicitly for clients that probe for it; the
+        // transports honor `notifications/cancelled` by not answering the
+        // cancelled request (see _markRequestCancelled above).
+        cancellation: {},
       },
       serverInfo: {
         name: 'huaweicloud-devkit',
         version: pkgVersion,
       },
     };
+  }
+
+  // D9-4: every non-initialize method requires an initialized session.
+  // Returns JSON-RPC -32002 (Server not initialized) per MCP spec.
+  if (!_isSessionInitialized(sessionId)) {
+    const notInitializedError = new Error('Server not initialized: call initialize first');
+    notInitializedError.code = -32002;
+    throw notInitializedError;
   }
 
   if (method === 'tools/list') {
