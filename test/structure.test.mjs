@@ -118,13 +118,24 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   // F: billing skill documents the full account_type enum (5/7 are legacy, not coupons)
   // and the coupon-balance workflow (explicit window + pagination, per-coupon grouping,
   // partner/reseller CBC.99000084 fallback).
-  assert.match(billingSkill, /1:余额[\s\S]*7:保证金/);
+  // Each official enum value is asserted on its own: a span regex (`1:余额` .. `7:保证金`)
+  // still passes when `2:信用` or `5:奖励金` is deleted, so it cannot catch the actual
+  // #777 regression (5 read as a coupon). Assert the values, their order, and forbid
+  // re-documenting `5` as a coupon/voucher.
+  assert.match(billingSkill, /`1:余额`/);
+  assert.match(billingSkill, /`2:信用`/);
+  assert.match(billingSkill, /`5:奖励金`/);
+  assert.match(billingSkill, /`7:保证金`/);
+  assert.match(billingSkill, /`1:余额`[\s\S]*`2:信用`[\s\S]*`5:奖励金`[\s\S]*`7:保证金`/);
   assert.match(billingSkill, /trade_time_begin/);
   assert.match(billingSkill, /group by `coupon_id`/);
   assert.match(billingSkill, /CBC\.99000084/);
   // Guard against regression to the old "meaning unconfirmed / cash only" wording.
   assert.doesNotMatch(billingSkill, /含义待确认/);
   assert.doesNotMatch(billingSkill, /Other numeric values may appear/);
+  // `5` is 奖励金 (legacy bonus), never a coupon/voucher account type.
+  assert.doesNotMatch(billingSkill, /5\s*[:：]\s*(代金券|优惠券|券)/);
+  assert.doesNotMatch(billingSkill, /account_type\s*=?\s*5[^\n|]{0,12}(代金券|优惠券)/i);
 
   // I: cli-and-auth documents the 4-step <Operation> --help discovery chain.
   assert.match(cliSkill, /hcloud <Service> <Operation> --help/);
