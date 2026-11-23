@@ -21,6 +21,8 @@ Use evidence before fixes. Do not guess service behavior when request IDs, regio
 ## Workflow
 
 1. Capture the redacted error message, service, operation, region, project_id, and request_id.
+   For a known `error_code`, `message`, or `request_id`, call the `huaweicloud_explain_error` MCP tool first —
+   it maps common Huawei Cloud codes to a cause and a next step before you inspect anything else.
 2. Classify likely cause:
    - auth or permission
    - wrong region or endpoint
