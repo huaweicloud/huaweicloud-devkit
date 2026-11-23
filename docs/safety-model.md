@@ -24,6 +24,14 @@ The toolkit assumes coding agents can accidentally expose secrets or perform exp
 
 The default write path is planning: `huaweicloud_plan_cli_command` returns a command for review. The optional execution path is `huaweicloud_run_approved_command`, which requires an exact command string already shown to the user plus explicit approval. This is an agent workflow guardrail, not a substitute for IAM least privilege or human review.
 
+`decision` stays binary, so a `deny` must not be read as "the operation is impossible". Each `classify` / `plan` deny carries the additive fields `requiresApproval` and `blockedBy` (#1175 / D4-18):
+
+- `requiresApproval: true` + `blockedBy: 'approval'` — a write/execution operation held at the approval gate. The plan issued an `approvalToken`; the operation runs after explicit user approval via `huaweicloud_run_approved_command` / `run_approved_manifest`.
+- `requiresApproval: false` + `blockedBy: 'policy'` — a hard block (secret or credential read, invalid command, shared cloud-risk-rule hit). Approval cannot lift it, so no usable token path exists.
+- `allow` results omit both fields. `safeToRun` remains `decision === 'allow'`.
+
+Full field table and compatibility window: `docs/plan-run-approval-contract.md` §4.
+
 ## Design Decision: session-level approval pass-through (rejected, #921 B)
 
 **Request**: after a user approves a multi-resource deployment manifest, skip the per-command approval gate for every command inside the approved list (session-level pass-through), or auto-renew approval tokens; only stop for commands that deviate from the list. Motivation: a 4-resource ECS deployment needs 10+ `plan → approve → run` round trips, and an expired token forces a full re-plan.

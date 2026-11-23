@@ -221,7 +221,8 @@ export const TOOL_DEFINITIONS = [
   },
   {
     name: 'huaweicloud_plan_cli_command',
-    description: 'Classify and plan a Huawei Cloud hcloud command without executing it.',
+    description:
+      'Classify and plan a Huawei Cloud hcloud command without executing it. A write/execution deny is not a rejection: read classification.requiresApproval (true + blockedBy "approval" = present the plan and collect explicit approval, then run it with the approvalToken; false + blockedBy "policy" = hard policy block that approval cannot lift).',
     inputSchema: {
       type: 'object',
       required: ['args'],

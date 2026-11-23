@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 
 import {
+  applyPreflightFindings,
   consumeApprovalToken,
   createApprovalToken,
   hashArgs,
@@ -88,6 +89,54 @@ test('planHcloudCommand marks write command as unsafe without approval', () => {
   const plan = planHcloudCommand(['ECS', 'CreateServers']);
   assert.equal(plan.safeToRun, false);
   assert.equal(plan.classification.decision, 'deny');
+});
+
+test('planHcloudCommand surfaces the approval gate for unapproved writes (#1175 D4-18)', () => {
+  // D4-18 regression: the report read `decision:deny` as "rejected". The
+  // classification keeps the binary deny but must expose the approval gate,
+  // and the plan must still carry the token that makes run_approved_command work.
+  const plan = planHcloudCommand(['VPC', 'DeleteVpc', '--vpc_id=abc']);
+  assert.equal(plan.classification.decision, 'deny');
+  assert.equal(plan.classification.requiresApproval, true);
+  assert.equal(plan.classification.blockedBy, 'approval');
+  assert.equal(plan.safeToRun, false);
+  assert.ok(plan.approvalToken);
+});
+
+test('planHcloudCommand issues no approvalToken for hard policy blocks (#1175 D4-18)', () => {
+  // A hard block cannot be honoured by user approval, so a token would falsely
+  // imply it can be run. Secret/credential reads and risk-rule hits are hard.
+  const secret = planHcloudCommand(['CSMS', 'ShowSecretVersion', '--secret_name=prod/db']);
+  assert.equal(secret.classification.decision, 'deny');
+  assert.equal(secret.classification.blockedBy, 'policy');
+  assert.equal(secret.approvalToken, undefined);
+  assert.equal(secret.safeToRun, false);
+
+  const riskRule = planHcloudCommand([
+    'VPC',
+    'CreateSecurityGroupRule',
+    '--direction=ingress',
+    '--remote_ip_prefix=0.0.0.0/0',
+    '--port_range_min=22',
+  ]);
+  assert.equal(riskRule.classification.blockedBy, 'policy');
+  assert.equal(riskRule.approvalToken, undefined);
+  assert.equal(riskRule.safeToRun, false);
+});
+
+test('applyPreflightFindings turns a public-exposure deny into a hard block (#1175)', () => {
+  const approvalGate = { decision: 'deny', risk: 'write', requiresApproval: true, blockedBy: 'approval' };
+  const overridden = applyPreflightFindings(approvalGate, [
+    { severity: 'deny', message: 'Security group sg1: port 22 open to public' },
+  ]);
+  assert.equal(overridden.decision, 'deny');
+  assert.equal(overridden.risk, 'public_exposure');
+  assert.equal(overridden.requiresApproval, false);
+  assert.equal(overridden.blockedBy, 'policy');
+
+  // A non-deny finding must not change the classification.
+  const unchanged = applyPreflightFindings(approvalGate, [{ severity: 'warn', message: 'icmp open' }]);
+  assert.equal(unchanged, approvalGate);
 });
 
 test('planHcloudCommand adds resource-manifest hint for OBS write operations', () => {
