@@ -348,10 +348,33 @@ The plugin upgrades itself in the background; there is no confirmation prompt:
 
 Every MCP `tools/call` has a request-level timeout and can be cancelled by the client:
 
-- Default timeout: **60 s**. Override with `HCLOUD_MCP_REQUEST_TIMEOUT_MS` (milliseconds) in the MCP server `env`.
-  `0` explicitly disables the protocol-level timeout (long commands then rely on each tool's own `timeoutMs`).
-- A timed-out or cancelled call returns JSON-RPC error `{ "code": -32000, "message": "..." }`; the underlying
-  `hcloud` child process is terminated within 2 s.
+- Base timeout: **60 s**. Override with `HCLOUD_MCP_REQUEST_TIMEOUT_MS` (milliseconds) in the
+  MCP server `env`. `0` explicitly disables the protocol-level timeout (long commands then rely
+  on each tool's own `timeoutMs`).
+- Sandbox tools declare longer execution contracts and are **not** capped at 60 s. Their
+  protocol budget is `max(base, tool floor, args.timeout_ms + 30 s)`:
+
+  | Tool                                                                       | Default execution timeout | Protocol budget |
+  | -------------------------------------------------------------------------- | ------------------------- | --------------- |
+  | `huaweicloud_sandbox_exec_with_session` / `exec_one_shot`                  | 120 s                     | 150 s           |
+  | `huaweicloud_sandbox_upload_project`                                       | 300 s                     | 330 s           |
+  | `huaweicloud_sandbox_expose_tunnel`                                        | 90 s                      | 120 s           |
+  | `huaweicloud_sandbox_upload_file`                                          | 120 s                     | 150 s           |
+  | `huaweicloud_sandbox_deploy_nginx`                                         | 60 s                      | 90 s            |
+  | `huaweicloud_sandbox_deploy_check` / `renew_tunnel` / `keepalive_watchdog` | 30–60 s                   | 60–90 s         |
+
+  Passing a larger `timeout_ms` to a tool raises its protocol budget accordingly. To set an
+  explicit per-call request timeout, send `_meta.timeoutMs` (e.g. `{"_meta":{"timeoutMs":600000}}`).
+
+- A timed-out or cancelled call returns JSON-RPC error `{ "code": -32000, "message": "..." }` and
+  the signal is forwarded to the execution layer: the `hcloud` child process is terminated within
+  2 s (POSIX kills the whole process group, including grandchildren such as obsutil), and sandbox
+  sessions, upload tunnels and deploy/expose commands are closed. On Windows only the direct child
+  is signalled, so a grandchild spawned by a wrapper script may outlive the cancellation.
+- Write commands: cancellation/timeout stops the local process, but the cloud-side request may
+  already have been accepted. Before retrying an approved write (`huaweicloud_run_approved_command`,
+  `huaweicloud_run_approved_manifest`), verify the current state with a read-only command and retry
+  only if the change did not apply — otherwise you may create duplicate resources.
 - `initialize` advertises the capability via `capabilities.cancellation` and
   `capabilities.notifications.cancellation: true`. Clients can send `notifications/cancelled`
   with the in-flight request id to stop it.

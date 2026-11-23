@@ -166,4 +166,5 @@ If you changed a SKILL.md, add or update a guard in `test/structure.test.mjs` an
 - The auto-upgrade snapshot covers `src/`, `package.json`, and all `VERSION_MANIFEST_RELS` files; restore also removes manifests the failed update created. `verifyInstalled` compares a tracked-file fingerprint against the backup, not just the version number.
 - Codex plugin marketplace name is read from `.agents/plugins/marketplace.json`. `getMarketplaceName()` must match, never hardcode.
 - OpenCode integration lives in `integrations/opencode/` (separate from the plugin).
+- MCP `tools/call` has a 60 s base request timeout, but sandbox tools with longer contracts get per-tool protocol budgets (`TOOL_REQUEST_TIMEOUTS_MS` in `mcp-protocol.mjs`): `max(base, tool floor, args.timeout_ms + 30 s)`. Use `_meta.timeoutMs` for an explicit per-call timeout. Cancellation is forwarded to `runHcloud` (POSIX process-group kill) and to sandbox sessions/uploads/deploy/expose; write commands may already have applied cloud-side, so verify with a read-only command before retrying.
 - Node >= 22.19 required (Node 23 requires 23.4+), ESM only.
