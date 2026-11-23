@@ -99,13 +99,21 @@ async function showProfileRedacted(profile?: string) {
   };
 }
 
-const SERVICE_EXAMPLES: Record<string, { list: string; create: string; show: string }> = {
+export const SERVICE_EXAMPLES: Record<string, { list: string; create: string; show: string }> = {
   ECS: { list: 'ECS ListServersDetails', create: 'ECS CreateServers', show: 'IMS GlanceShowImage' },
   VPC: { list: 'VPC ListVpcs', create: 'VPC CreateVpc', show: 'VPC ShowVpc' },
   FUNCTIONGRAPH: {
     list: 'FunctionGraph ListFunctions',
-    create: 'FunctionGraph CreateFunction',
-    show: 'FunctionGraph ShowFunctionConfig',
+    // The example carries the whole minimal parameter set the CreateFunction
+    // contract requires (#815 / D3-S6); the canonical list lives in
+    // hcloud-plan.ts, where the pre-execution check reads it. An example naming
+    // only the operation makes the agent build the request body itself, and the
+    // API then rejects the call on whichever mandatory field its own validation
+    // reaches first — `function_name` in one release, `code.filename` or
+    // `code.zip_file` in another.
+    create:
+      'FunctionGraph CreateFunction --func_name=<name> --package=default --runtime=Python3.10 --handler=index.handler --memory_size=128 --timeout=3 --code_type=inline --func_code.file=<base64-code> --cli-region=<region>',
+    show: 'FunctionGraph ShowFunctionConfig --func_name=<name>',
   },
   APIG: { list: 'APIG ListInstancesV2', create: 'APIG CreateInstanceV2', show: 'APIG ShowDetailsOfInstanceV2' },
   OBS: { list: 'OBS ls', create: 'OBS mb obs://<bucket>', show: 'OBS stat obs://<bucket>/<key>' },
