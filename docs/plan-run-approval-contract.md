@@ -50,6 +50,42 @@ normal prune sweep.
 already-consumed `confirmToken` returns `{ status: 'ok', outcome: 'already_processed' }`,
 and an unknown token returns `{ status: 'rejected', code: 'CONFIRM_TOKEN_NOT_FOUND' }`.
 
+### 4. Deny semantics: approval gate vs hard block (#1175 / D4-18)
+
+`decision` stays binary (`allow` / `deny`) for the whole 1.1.x–1.2.x compatibility
+window. Reading `decision: 'deny'` as "the command was rejected" is wrong for
+writes: an unapproved write is a _pending approval_, not a refusal. To let callers
+tell the two apart mechanically instead of parsing `reason`, every `deny` carries
+two additive fields:
+
+| Field              | Approval gate                 | Hard block                                           |
+| ------------------ | ----------------------------- | ---------------------------------------------------- |
+| `decision`         | `deny`                        | `deny`                                               |
+| `requiresApproval` | `true`                        | `false`                                              |
+| `blockedBy`        | `'approval'`                  | `'policy'`                                           |
+| `approvalToken`    | issued by `planHcloudCommand` | cannot be honoured — approval does not lift the deny |
+| `safeToRun`        | `false`                       | `false` (unchanged: `decision === 'allow'`)          |
+
+- **Approval gate** — unapproved write / execution / OBS-write operations, e.g.
+  `huaweicloud_plan_cli_command({ args: ['VPC','DeleteVpc','--vpc_id=abc'] })`.
+  Present the plan, collect explicit user approval, then execute through
+  `huaweicloud_run_approved_command` (or `run_approved_manifest`) with the token.
+- **Hard block** — empty/invalid commands, credential or secret reads, and shared
+  cloud-risk-rule hits (public admin-port exposure, encoded shell payloads).
+  Re-planning with `allowWrites: true` does not clear these.
+- **Concatenated commands** — any hard-blocked segment makes the aggregate
+  `blockedBy: 'policy'` / `requiresApproval: false`; if every hcloud segment is
+  approval-gated the aggregate reports `blockedBy: 'approval'` /
+  `requiresApproval: true`.
+- `allow` results omit both fields; absence means "not blocked".
+
+Compatibility: purely additive. Callers branching on `decision` are unaffected, and
+the existing `decision === 'deny'` assertions stay valid. A third value
+(`decision: 'confirm'`) is **not** introduced in 1.1.x/1.2.x; once callers have
+migrated to `requiresApproval`/`blockedBy`, a future major (2.x) may switch
+approval-gated results to `decision: 'confirm'` — tests and this document must
+change together at that point.
+
 ## Implementation
 
 ### Token Storage
