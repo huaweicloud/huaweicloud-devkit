@@ -26,13 +26,44 @@ hcloud FunctionGraph CreateFunction \
   --cli-region=<region>
 ```
 
-| Param           | Required | Range/Default             |
-| --------------- | -------- | ------------------------- |
-| `--func_name`   | Yes      | 1-60 chars                |
-| `--runtime`     | Yes      | See runtime options above |
-| `--handler`     | Yes      | Per runtime               |
-| `--memory_size` | No       | 128-4096 MB, default 128  |
-| `--timeout`     | No       | 1-900s, default 3         |
+| Param           | Required | Range/Default                 |
+| --------------- | -------- | ----------------------------- |
+| `--func_name`   | Yes      | 1-60 chars                    |
+| `--runtime`     | Yes      | See runtime options above     |
+| `--handler`     | Yes      | Per runtime                   |
+| `--code_type`   | Yes      | `inline`, `zip`, `jar`, `obs` |
+| `--memory_size` | No       | 128-4096 MB, default 128      |
+| `--timeout`     | No       | 1-900s, default 3             |
+
+`--package` defaults to `default`; pass it explicitly so the function lands in a
+predictable group.
+
+## Code Payload: One of Three Flags
+
+`--code_type` decides which code flag carries the function body — pass exactly
+one of them, in the same command:
+
+| `--code_type` | Code flag          | Note                                          |
+| ------------- | ------------------ | --------------------------------------------- |
+| `inline`      | `--func_code.file` | base64 of the source; reliable for small code |
+| `zip` / `jar` | `--code_filename`  | File **name only** — `cd` to the file first   |
+| `obs`         | `--code_url`       | Object URL for larger payloads                |
+
+## Error Field Names Are Not Flags
+
+When the API reports a missing parameter as `function_name`, `code.filename` or
+`code.zip_file`, those are **request-body field names**, not KooCLI flags —
+whichever one appears depends on the release's validation order, so the same
+gap surfaces under different names. The flags are:
+
+| Body field name reported | KooCLI flag        |
+| ------------------------ | ------------------ |
+| `function_name`          | `--func_name`      |
+| `code.filename`          | `--code_filename`  |
+| `code.zip_file`          | `--func_code.file` |
+
+Fix the flag, do not add a second spelling: `hcloud FunctionGraph CreateFunction --help`
+lists the exact parameter names for the installed KooCLI version.
 
 ## ZIP Upload Warning
 

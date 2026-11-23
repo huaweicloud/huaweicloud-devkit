@@ -131,6 +131,35 @@ function planningWarnings(args: string[]): string[] {
   return warnings;
 }
 
+// The FunctionGraph CreateFunction contract (#815 / D3-S6), as KooCLI flags.
+// The request body names some of these fields differently — `function_name` for
+// the function name, `code.filename` / `code.zip_file` for the code payload —
+// and each release reported the missing field under whichever body name its
+// validation reached first, so one defect surfaced as function_name,
+// code.filename and code.zip_file in turn. Both spellings are recognized here,
+// always reported under the canonical flag, and a body-name spelling is called
+// out as a correction instead of quietly satisfying the check.
+export const FUNCTIONGRAPH_CREATE_REQUIRED = [
+  'func_name',
+  'package',
+  'runtime',
+  'handler',
+  'memory_size',
+  'timeout',
+  'code_type',
+];
+
+// One of these must also be present; which one is valid follows from --code_type.
+export const FUNCTIONGRAPH_CODE_SOURCE = ['func_code.file', 'code_filename', 'code_url'];
+
+export const FUNCTIONGRAPH_CREATE_ALIASES: Readonly<Record<string, string>> = {
+  function_name: 'func_name',
+  funcname: 'func_name',
+  'code.filename': 'code_filename',
+  'code.zip_file': 'func_code.file',
+  code_file: 'func_code.file',
+};
+
 const REQUIRED_PARAMS: Record<string, string[]> = {
   'ECS CreateServers': ['server.flavorRef', 'server.imageRef', 'server.nics.1.subnet_id'],
   'VPC CreateVpc': ['vpc.cidr'],
@@ -141,11 +170,23 @@ const REQUIRED_PARAMS: Record<string, string[]> = {
     'security_group_rule.protocol',
   ],
   'EIP CreatePublicip': ['bandwidth.share_type', 'publicip.type'],
-  'FunctionGraph CreateFunction': ['func_name', 'runtime', 'handler', 'memory_size', 'package', 'timeout'],
+  'FunctionGraph CreateFunction': FUNCTIONGRAPH_CREATE_REQUIRED,
   'FunctionGraph CreateFunctionTrigger': ['function_urn', 'trigger_type_code'],
   'APIG CreateInstanceV2': ['spec_id'],
   'OBS mb': ['obs://'],
   'OBS rm': ['obs://'],
+};
+
+// Operations whose required set has interchangeable members: any one of the
+// listed keys satisfies the group, so a caller is never asked for two shapes of
+// the same value at once (inline code vs zip file name vs OBS URL).
+const REQUIRED_PARAM_GROUPS: Record<string, Array<{ anyOf: string[]; report: string }>> = {
+  'FunctionGraph CreateFunction': [
+    {
+      anyOf: FUNCTIONGRAPH_CODE_SOURCE,
+      report: 'func_code.file (code_type=inline) | code_filename (code_type=zip) | code_url (code_type=obs)',
+    },
+  ],
 };
 
 const PARAM_VALUE_HINTS: Record<string, string> = {
@@ -155,6 +196,8 @@ const PARAM_VALUE_HINTS: Record<string, string> = {
   'subnet.vpc_id': 'Run `hcloud VPC ListVpcs --cli-region=<r>` to find VPC IDs',
   func_name: 'Function name must be unique within project',
   runtime: 'Run `hcloud FunctionGraph ListRuntimes` to see available runtimes',
+  code_type: 'inline (func_code.file) | zip/jar (code_filename) | obs (code_url) — prefer inline for small code',
+  'func_code.file': 'Base64-encoded code for code_type=inline',
   spec_id: 'APIG spec: BASIC (no public IP) or PROFESSIONAL (requires --loadbalancer_provider)',
   'obs://': 'Bucket name must be globally unique and DNS-compliant (lowercase, numbers, hyphens only)',
 };
@@ -297,15 +340,79 @@ export function pinViewArgs(args: string[]): string[] {
   return foldSecretTokens(args) as string[];
 }
 
-function validateRequiredParams(args: string[]): { valid: boolean; missing: string[]; hints: string[] } {
-  if (!args || args.length < 2) return { valid: true, missing: [], hints: [] };
+// KooCLI flags carry the parameter name before the first `=`; reading flag keys
+// instead of substring-matching the joined args stops a VALUE from satisfying a
+// check, and lets a body-name spelling be recognized and reported as a
+// correction rather than silently accepted.
+function flagKeys(args: string[]): Set<string> {
+  const keys = new Set<string>();
+  for (const arg of args.slice(2)) {
+    const text = String(arg);
+    if (!text.startsWith('--')) continue;
+    const equals = text.indexOf('=');
+    keys.add(equals === -1 ? text.slice(2) : text.slice(2, equals));
+  }
+  return keys;
+}
+
+function requiredParamPresent(args: string[], keys: Set<string>, param: string): boolean {
+  // Pseudo-entries such as OBS's `obs://` are literal argument text, not flags.
+  if (param.includes('://')) return args.join(' ').includes(param);
+  return keys.has(param);
+}
+
+interface ParamValidation {
+  valid: boolean;
+  missing: string[];
+  hints: string[];
+  corrections: Array<{ received: string; canonical: string }>;
+}
+
+function validateRequiredParams(args: string[]): ParamValidation {
+  const empty: ParamValidation = { valid: true, missing: [], hints: [], corrections: [] };
+  if (!args || args.length < 2) return empty;
   const key = `${args[0]} ${args[1]}`;
   const required = REQUIRED_PARAMS[key];
-  if (!required) return { valid: true, missing: [], hints: [] };
-  const argsStr = args.join(' ');
-  const missing = required.filter((param) => !argsStr.includes(param));
+  if (!required) return empty;
+  const keys = flagKeys(args);
+  // --cli-jsonInput carries the parameters in a file this layer cannot inspect;
+  // reporting every flag as missing there would be noise, not a finding.
+  if (keys.has('cli-jsonInput') || keys.has('cli-json_input')) return empty;
+  const corrections = [...keys]
+    .filter((received) => FUNCTIONGRAPH_CREATE_ALIASES[received] && !keys.has(FUNCTIONGRAPH_CREATE_ALIASES[received]))
+    .map((received) => ({ received, canonical: FUNCTIONGRAPH_CREATE_ALIASES[received] ?? received }));
+  const missing = required.filter((param) => !requiredParamPresent(args, keys, param));
+  for (const group of REQUIRED_PARAM_GROUPS[key] ?? []) {
+    if (group.anyOf.some((param) => requiredParamPresent(args, keys, param))) continue;
+    // A body-name spelling of a member still counts as that member's absence,
+    // reported under the canonical flag so the list does not depend on it.
+    const aliasTarget = corrections
+      .map((correction) => correction.canonical)
+      .find((canonical) => group.anyOf.includes(canonical));
+    missing.push(aliasTarget ?? group.report);
+  }
   const hints = missing.map((param) => PARAM_VALUE_HINTS[param]).filter((hint): hint is string => Boolean(hint));
-  return { valid: missing.length === 0, missing, hints };
+  return { valid: missing.length === 0, missing, hints, corrections };
+}
+
+// The timer trigger consumes the func_urn a successful create returns. A
+// placeholder (or absent) value cannot succeed — the trigger either fails on the
+// missing URN or fires at whatever the placeholder happened to parse as, so the
+// plan must say to create the function first and pass the URN it returns.
+// #815 / D3-S6: the trigger previously failed together with the function it was
+// planned alongside, with no instruction saying which step owed the URN.
+function functionTriggerUrnWarning(args: string[]): string | null {
+  if (`${args[0]} ${args[1]}` !== 'FunctionGraph CreateFunctionTrigger') return null;
+  const keys = flagKeys(args);
+  const flag = args.find((arg) => String(arg).startsWith('--function_urn='));
+  const urn = flag ? String(flag).slice('--function_urn='.length).trim() : '';
+  // A URN carrying a template marker anywhere (`urn:fss:<region>:…`) is as
+  // unusable as an absent one — the marker survives into the API call.
+  const placeholder = !urn || /[<>]|\$\{|\{\{/.test(urn);
+  if (!placeholder) return null;
+  return `CreateFunctionTrigger needs the real --function_urn${
+    keys.has('function_urn') ? '' : ' (it is missing)'
+  }: run CreateFunction first, read func_urn from its response, then plan the trigger with that value — a placeholder cannot be approved into a working trigger.`;
 }
 
 export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}): HcloudPlan {
@@ -335,12 +442,19 @@ export function planHcloudCommand(args: unknown, options: HcloudPlanOptions = {}
     for (const f of sgFindings) warnings.push(f);
   }
   const paramValidation = validateRequiredParams(normalizedArgs);
+  for (const correction of paramValidation.corrections) {
+    warnings.push(
+      `--${correction.received} is a request-body field name, not a KooCLI parameter; use --${correction.canonical} (confirm with \`hcloud ${normalizedArgs[0]} ${normalizedArgs[1]} --help\`).`,
+    );
+  }
   if (paramValidation.missing.length > 0) {
     warnings.push('Missing required parameters: ' + paramValidation.missing.join(', '));
     if (paramValidation.hints && paramValidation.hints.length > 0) {
       warnings.push('Find valid values: ' + paramValidation.hints.join('; '));
     }
   }
+  const triggerUrnWarning = functionTriggerUrnWarning(normalizedArgs);
+  if (triggerUrnWarning) warnings.push(triggerUrnWarning);
   // Unknown-service triage (2026-11-06, UX report #8/D6): ONE seam refines
   // the unknown_read fallthrough with catalog evidence. A service present
   // in NEITHER local catalog denies right here — the run face inherits the

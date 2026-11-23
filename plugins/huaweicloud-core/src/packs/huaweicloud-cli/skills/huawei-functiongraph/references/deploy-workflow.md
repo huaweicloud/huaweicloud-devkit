@@ -8,6 +8,12 @@
 5. Create trigger  → hcloud FunctionGraph CreateFunctionTrigger (TIMER for testing, DEDICATEDGATEWAY for HTTP)
 ```
 
+**Steps 3 and 5 are serial, never one batch.** `CreateFunctionTrigger` needs the
+`func_urn` step 3 returns; planning both together means the trigger runs against
+a guessed URN and fails alongside the function. Run step 3, read `func_urn` from
+its response, then run step 5 with that value. If step 3 fails, stop — do not
+create the trigger, and do not put the two under one approval.
+
 ## Quick Demo (Inline — No File Packaging)
 
 Use inline for small demo functions (<10KB):
