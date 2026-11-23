@@ -78,7 +78,7 @@ export function redactSecrets(value, policy = DEFAULT_POLICY) {
   return value;
 }
 
-function stripExecutable(args) {
+function stripExecutable(args, { stripHcloud = true } = {}) {
   if (!args.length) return [];
   let current = args;
   // Unwrap shell wrappers (bash -c / sh -c 'hcloud ...', sudo hcloud ...,
@@ -124,6 +124,7 @@ function stripExecutable(args) {
     }
     break;
   }
+  if (!stripHcloud) return current;
   const first = String(current[0]).toLowerCase();
   if (first === 'hcloud' || first.endsWith('/hcloud') || first.endsWith('\\hcloud') || first === 'hcloud.exe') {
     return current.slice(1);
@@ -177,17 +178,19 @@ function mergeRiskDecisionWithDenyFields(base, risk) {
 }
 
 function applyCommandRiskRules(base, normalizedArgs, options = {}) {
-  if (base.decision === 'deny' || options.skipRiskRules === true) {
-    return base;
-  }
+  // Hard policy blocks cannot be lifted by approval, so there is nothing a risk
+  // rule could change; approval-gated denies, however, must still be checked —
+  // a risk rule hit inside a write/execution command turns it into a hard block
+  // (#1175: approval gate must not mask a policy-denied command).
+  if (options.skipRiskRules === true) return base;
+  if (base.decision === 'deny' && base.requiresApproval !== true) return base;
   const risk = evaluateCommandRisk(commandRiskText(normalizedArgs, options));
   return mergeRiskDecisionWithDenyFields(base, risk);
 }
 
 function applyRawCommandRiskRules(base, command, options = {}) {
-  if (base.decision === 'deny' || options.skipRiskRules === true) {
-    return base;
-  }
+  if (options.skipRiskRules === true) return base;
+  if (base.decision === 'deny' && base.requiresApproval !== true) return base;
   const risk = evaluateCommandRisk(command);
   return mergeRiskDecisionWithDenyFields(base, risk);
 }
@@ -209,19 +212,24 @@ function findHcloudCommandSegments(text) {
 
 export function classifyHcloudArgs(args, options = {}) {
   const policy = options.policy || DEFAULT_POLICY;
-  // Second pass for shell-wrapped input (#650 D4-16 review edge 1): when the
-  // leading command is not hcloud but a concatenated segment contains one,
-  // classify every hcloud segment and merge to the most severe decision.
-  const unwrappedTokens = stripExecutable(Array.isArray(args) ? args.map(String) : []);
+  // Second pass for concatenated input (#650 D4-16 review edge 1, #1175):
+  // unwrap shell wrappers but KEEP the leading executable so the FIRST hcloud
+  // segment is not silently dropped. Previously stripping `hcloud` before
+  // segmenting made `hcloud CSMS … && hcloud VPC …` lose the first (hard-block)
+  // segment and report the whole command as approval-gated; only when >1 hcloud
+  // segment exists (or a non-hcloud prefix contains one) do we aggregate.
+  const unwrappedTokens = stripExecutable(Array.isArray(args) ? args.map(String) : [], {
+    stripHcloud: false,
+  });
   const unwrappedFirst = String(unwrappedTokens[0] || '').toLowerCase();
   const unwrappedIsHcloud =
     unwrappedFirst === 'hcloud' ||
     unwrappedFirst.endsWith('/hcloud') ||
     unwrappedFirst.endsWith('\\hcloud') ||
     unwrappedFirst === 'hcloud.exe';
-  if (!unwrappedIsHcloud && !options._segmentDepth) {
+  if (!options._segmentDepth) {
     const hcloudSegments = findHcloudCommandSegments(unwrappedTokens.join(' '));
-    if (hcloudSegments.length > 0) {
+    if (hcloudSegments.length > 1 || (!unwrappedIsHcloud && hcloudSegments.length > 0)) {
       const results = hcloudSegments.map((segment) => classifyHcloudArgs(segment, { ...options, _segmentDepth: 1 }));
       // Aggregation (#1175): a hard policy block in ANY segment outranks an
       // approval-gated one — the whole command cannot run even after user
@@ -303,22 +311,30 @@ export function classifyHcloudArgs(args, options = {}) {
   const isWrite = !readOnly && hasWritePrefix(operation, policy);
 
   if (isExecution && !options.allowWrites) {
-    return {
-      decision: 'deny',
-      risk: 'execution',
-      reason: 'Huawei Cloud execution/trigger operation blocked until approved.',
-      ...APPROVAL_BLOCK_FIELDS,
-    };
+    return applyCommandRiskRules(
+      {
+        decision: 'deny',
+        risk: 'execution',
+        reason: 'Huawei Cloud execution/trigger operation blocked until approved.',
+        ...APPROVAL_BLOCK_FIELDS,
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   if (isWrite && !options.allowWrites) {
-    return {
-      decision: 'deny',
-      risk: 'write',
-      reason:
-        'Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval.',
-      ...APPROVAL_BLOCK_FIELDS,
-    };
+    return applyCommandRiskRules(
+      {
+        decision: 'deny',
+        risk: 'write',
+        reason:
+          'Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval.',
+        ...APPROVAL_BLOCK_FIELDS,
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   const obsutilWrites = [
@@ -349,12 +365,16 @@ export function classifyHcloudArgs(args, options = {}) {
   const isObsWrite = isObs && obsutilWrites.includes(operation);
   const isObsRead = isObs && obsutilReads.includes(operation);
   if (isObsWrite && !options.allowWrites) {
-    return {
-      decision: 'deny',
-      risk: 'write',
-      reason: 'OBS write operation blocked until the agent presents a plan and receives explicit user approval.',
-      ...APPROVAL_BLOCK_FIELDS,
-    };
+    return applyCommandRiskRules(
+      {
+        decision: 'deny',
+        risk: 'write',
+        reason: 'OBS write operation blocked until the agent presents a plan and receives explicit user approval.',
+        ...APPROVAL_BLOCK_FIELDS,
+      },
+      normalizedArgs,
+      options,
+    );
   }
   if (isObsRead) {
     return applyCommandRiskRules(

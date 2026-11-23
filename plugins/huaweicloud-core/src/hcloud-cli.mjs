@@ -205,17 +205,14 @@ function preflightSecurityGroupCheck(normalizedArgs) {
   return findings;
 }
 
-function applyPreflightFindings(classification, sgFindings) {
+export function applyPreflightFindings(classification, sgFindings) {
   if (!sgFindings || sgFindings.length === 0) return classification;
   const hasDeny = sgFindings.some((f) => f.severity === 'deny');
   if (hasDeny) {
     // A preflight deny (public exposure) holds regardless of approval, so it
     // reports the hard-block fields and never the approval-gated ones (#1175).
-    const base = { ...classification };
-    delete base.requiresApproval;
-    delete base.blockedBy;
     return {
-      ...base,
+      ...classification,
       decision: 'deny',
       risk: 'public_exposure',
       reason: sgFindings[0].message,
@@ -392,16 +389,22 @@ export function planHcloudCommand(args, options = {}) {
       warnings.push('Find valid values: ' + paramValidation.hints.join('; '));
     }
   }
+  const finalClassification = applyPreflightFindings(classification, sgFindings);
+  // A hard policy block (blockedBy:'policy') cannot be honoured by user
+  // approval, so issuing an approvalToken for it would falsely imply it can be
+  // run — aligned with the Issue #1175 contract and the field comment in
+  // safety-policy.mjs. Approval-gated denies and allow results keep a token.
+  const hardBlocked = finalClassification.blockedBy === 'policy';
   return {
     executable: 'hcloud',
     args: redactSecrets(normalizedArgs),
     command: redactOutput(command),
     executableBlock: redactOutput(command),
     warnings,
-    classification: applyPreflightFindings(classification, sgFindings),
+    classification: finalClassification,
     sgFindings,
-    approvalToken: options.createToken === false ? undefined : createApprovalToken(normalizedArgs),
-    safeToRun: classification.decision === 'allow',
+    approvalToken: options.createToken === false || hardBlocked ? undefined : createApprovalToken(normalizedArgs),
+    safeToRun: finalClassification.decision === 'allow',
   };
 }
 

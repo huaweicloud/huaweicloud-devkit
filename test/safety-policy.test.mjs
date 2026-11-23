@@ -189,6 +189,58 @@ test('classifyHcloudArgs aggregation prefers a hard block over an approval gate 
   assert.equal(approvalOnly.requiresApproval, true);
 });
 
+test('classifyHcloudArgs aggregation does not drop a first-segment hard block (#1175)', () => {
+  // Regression: stripping the leading `hcloud` before splitting made the FIRST
+  // segment invisible to findHcloudCommandSegments, so a hard block in the
+  // first position was lost and the command was misreported as approval-gated.
+  const segments = {
+    hard: ['CSMS', 'ShowSecretVersion', '--secret_name=x'],
+    write: ['VPC', 'DeleteVpc', '--vpc_id=y'],
+  };
+  const asArgs = (...parts) => ['hcloud', ...parts.flat()];
+  const hardFirst = asArgs(segments.hard, ['&&'], segments.write);
+  const hardSecond = asArgs(segments.write, ['&&'], segments.hard);
+  for (const args of [hardFirst, hardSecond]) {
+    const result = classifyHcloudArgs(args);
+    assert.equal(result.decision, 'deny', args.join(' '));
+    assert.equal(result.blockedBy, 'policy', args.join(' '));
+    assert.equal(result.requiresApproval, false, args.join(' '));
+  }
+
+  // Same guarantee through the text-classification path.
+  const textHardFirst = classifyTextCommand(
+    'hcloud CSMS ShowSecretVersion --secret_name=x && hcloud VPC DeleteVpc --vpc_id=y',
+  );
+  assert.equal(textHardFirst.blockedBy, 'policy');
+  assert.equal(textHardFirst.requiresApproval, false);
+});
+
+test('classifyHcloudArgs escalates approval-gated writes that hit a hard risk rule (#1175)', () => {
+  // A write operation that also matches a shared risk rule must be a hard block
+  // even before approval — plan must not imply that approving it would run it.
+  const sgRule = classifyHcloudArgs([
+    'VPC',
+    'CreateSecurityGroupRule',
+    '--direction=ingress',
+    '--remote_ip_prefix=0.0.0.0/0',
+    '--port_range_min=22',
+  ]);
+  assert.equal(sgRule.decision, 'deny');
+  assert.equal(sgRule.blockedByRiskRule, true);
+  assert.equal(sgRule.requiresApproval, false);
+  assert.equal(sgRule.blockedBy, 'policy');
+
+  const adminPolicy = classifyHcloudArgs([
+    'IAM',
+    'CreatePolicy',
+    '--body={"Statement":[{"Effect":"Allow","Action":"*"}]}',
+  ]);
+  assert.equal(adminPolicy.decision, 'deny');
+  assert.equal(adminPolicy.blockedByRiskRule, true);
+  assert.equal(adminPolicy.requiresApproval, false);
+  assert.equal(adminPolicy.blockedBy, 'policy');
+});
+
 test('classifyHcloudArgs blocks Apply* operations as writes (#644)', () => {
   // EIP ApplyEip was classified as unknown_read and allowed through (issue #644 EXP-E04).
   const applyWrites = [
@@ -505,7 +557,11 @@ test('classifyHcloudArgs allows read-only list and show operations', () => {
 test('classifyHcloudArgs blocks obsutil write commands', () => {
   const writes = ['mb', 'cp', 'mv', 'rm', 'delete', 'mkdir', 'sync', 'chattri', 'bucketpolicy'];
   for (const op of writes) {
-    assert.equal(classifyHcloudArgs(['obs', op, 'obs://bucket']).decision, 'deny', `obs ${op} should be blocked`);
+    const result = classifyHcloudArgs(['obs', op, 'obs://bucket']);
+    assert.equal(result.decision, 'deny', `obs ${op} should be blocked`);
+    // #1175: OBS writes are approval-gated, not hard blocks.
+    assert.equal(result.requiresApproval, true, `obs ${op} requiresApproval`);
+    assert.equal(result.blockedBy, 'approval', `obs ${op} blockedBy`);
   }
 });
 
