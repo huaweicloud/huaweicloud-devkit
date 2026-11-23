@@ -45,8 +45,10 @@ Two gaps produced that outcome:
     the missing list always names the canonical field — the reported field no
     longer floats with the release.
   - `--code_type` plus one of `func_code.file` (inline) / `code_filename`
-    (zip/jar) / `code_url` (obs) is required as a group, so a code-less create
-    is stopped before the API call rather than creating an empty function.
+    (zip/jar) / `code_url` (obs) / `custom_image.image` (Custom-Image-Swr) is
+    required as a group. A code-less create is reported as a pre-execution
+    warning before the call; the warning does not by itself block
+    `huaweicloud_run_approved_command`, so fix the warning before running.
 - `plugins/huaweicloud-core/skills/huawei-functiongraph/` — `SKILL.md`,
   `references/create-function.md`, `references/deploy-workflow.md` teach the same
   two facts (body field names are not flags; create then trigger, serially).

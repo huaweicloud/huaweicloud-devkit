@@ -2283,7 +2283,7 @@ export const SERVICE_EXAMPLES = {
       'FunctionGraph CreateFunction --func_name=<name> --package=default --runtime=Python3.10 --handler=index.handler --memory_size=128 --timeout=3 --code_type=inline --func_code.file=<base64-code> --cli-region=<region>',
     createRequired: [
       ...FUNCTIONGRAPH_CREATE_REQUIRED,
-      'func_code.file (inline) | code_filename (zip) | code_url (obs)',
+      'func_code.file (inline) | code_filename (zip) | code_url (obs) | custom_image.image (Custom-Image-Swr)',
     ],
     // The trigger consumes the func_urn of a function that already exists, so it
     // is a second, serial step: create the function, read func_urn from its
@@ -2291,7 +2291,7 @@ export const SERVICE_EXAMPLES = {
     // the function it depends on (#815 D3-S6).
     createTrigger:
       'FunctionGraph CreateFunctionTrigger --function_urn=<func-urn-from-create-output> --trigger_type_code=TIMER --event_type_code=MessageCreated --trigger_status=ACTIVE --event_data.name=<timer-name> --event_data.schedule_type=Rate --event_data.schedule=1m',
-    show: 'FunctionGraph ShowFunctionConfig --func_name=<name>',
+    show: 'FunctionGraph ShowFunctionConfig --function_urn=<func-urn>',
   },
   APIG: { list: 'APIG ListInstancesV2', create: 'APIG CreateInstanceV2', show: 'APIG ShowDetailsOfInstanceV2' },
   OBS: { list: 'OBS ls', create: 'OBS mb obs://<bucket>', show: 'OBS stat obs://<bucket>/<key>' },
@@ -2453,6 +2453,10 @@ export function manifestDependencyIssues(commands) {
   commands.forEach((command, index) => {
     const operation = manifestOperation(command.args);
     if (operation !== 'FunctionGraph CreateFunctionTrigger') return;
+    // --cli-jsonInput carries the trigger fields in a file this layer cannot
+    // inspect, so the URN is not visible here. Treating it as missing would
+    // reject a legitimate batch; the same policy applies in validateRequiredParams.
+    if (command.args.some((arg) => /^--cli-json_?[Ii]nput(=|$)/.test(String(arg)))) return;
     const urn = manifestArgValue(command.args, 'function_urn');
     const createsFunctionEarlier = commands
       .slice(0, index)

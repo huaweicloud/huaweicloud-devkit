@@ -756,7 +756,9 @@ export const FUNCTIONGRAPH_CREATE_REQUIRED = [
 ];
 
 // One of these must also be present; which one is valid follows from --code_type.
-export const FUNCTIONGRAPH_CODE_SOURCE = ['func_code.file', 'code_filename', 'code_url'];
+// Custom-Image-Swr carries its body in --custom_image.image rather than a code
+// payload flag (hcloud FunctionGraph CreateFunction --help).
+export const FUNCTIONGRAPH_CODE_SOURCE = ['func_code.file', 'code_filename', 'code_url', 'custom_image.image'];
 
 export const FUNCTIONGRAPH_CREATE_ALIASES = {
   function_name: 'func_name',
@@ -790,7 +792,8 @@ const REQUIRED_PARAM_GROUPS = {
   'FunctionGraph CreateFunction': [
     {
       anyOf: FUNCTIONGRAPH_CODE_SOURCE,
-      report: 'func_code.file (code_type=inline) | code_filename (code_type=zip) | code_url (code_type=obs)',
+      report:
+        'func_code.file (code_type=inline) | code_filename (code_type=zip/jar) | code_url (code_type=obs) | custom_image.image (code_type=Custom-Image-Swr)',
     },
   ],
 };
@@ -804,6 +807,7 @@ const PARAM_VALUE_HINTS = {
   runtime: 'Run `hcloud FunctionGraph ListRuntimes` to see available runtimes',
   code_type: 'inline (func_code.file) | zip/jar (code_filename) | obs (code_url) — prefer inline for small code',
   'func_code.file': 'Base64-encoded code for code_type=inline',
+  'custom_image.image': 'SWR image address for code_type=Custom-Image-Swr',
   spec_id: 'APIG spec: BASIC (no public IP) or PROFESSIONAL (requires --loadbalancer_provider)',
   'obs://': 'Bucket name must be globally unique and DNS-compliant (lowercase, numbers, hyphens only)',
 };
@@ -839,9 +843,17 @@ function validateRequiredParams(args) {
   // --cli-jsonInput carries the parameters in a file this layer cannot inspect;
   // reporting every flag as missing there would be noise, not a finding.
   if (keys.has('cli-jsonInput') || keys.has('cli-json_input')) return empty;
-  const corrections = [...keys]
-    .filter((received) => FUNCTIONGRAPH_CREATE_ALIASES[received] && !keys.has(FUNCTIONGRAPH_CREATE_ALIASES[received]))
-    .map((received) => ({ received, canonical: FUNCTIONGRAPH_CREATE_ALIASES[received] }));
+  // Request-body spellings only exist for the FunctionGraph CreateFunction
+  // contract; applying the alias map to every operation would rewrite an
+  // unrelated command that happens to reuse a field name.
+  const corrections =
+    key === 'FunctionGraph CreateFunction'
+      ? [...keys]
+          .filter(
+            (received) => FUNCTIONGRAPH_CREATE_ALIASES[received] && !keys.has(FUNCTIONGRAPH_CREATE_ALIASES[received]),
+          )
+          .map((received) => ({ received, canonical: FUNCTIONGRAPH_CREATE_ALIASES[received] }))
+      : [];
   const missing = required.filter((param) => !requiredParamPresent(args, keys, param));
   for (const group of REQUIRED_PARAM_GROUPS[key] || []) {
     if (group.anyOf.some((param) => requiredParamPresent(args, keys, param))) continue;

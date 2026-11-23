@@ -203,6 +203,40 @@ test('the serial flow â€” create first, then the trigger with the returned URN â
     );
   }));
 
+test('the FunctionGraph show example uses only ShowFunctionConfig parameters', () => {
+  const example = SERVICE_EXAMPLES.FUNCTIONGRAPH.show;
+  const flags = flagsOf(argsFromExample(example));
+  const allowed = new Set(['cli-region', 'function_urn', 'project_id']);
+  for (const flag of flags) {
+    assert.ok(allowed.has(flag), `ShowFunctionConfig --help has no --${flag}: ${example}`);
+  }
+  assert.ok(flags.includes('function_urn'), `show must pass the function URN: ${example}`);
+  assert.ok(!flags.includes('func_name'), `ShowFunctionConfig does not accept --func_name: ${example}`);
+});
+
+test('Custom-Image-Swr create satisfies the code payload group', () => {
+  const args = createFunctionArgs()
+    .filter((arg) => !arg.startsWith('--func_code.file') && !arg.startsWith('--code_type='))
+    .concat('--code_type=Custom-Image-Swr', '--custom_image.image=swr.<region>.myhuaweicloud.com/<ns>/<image>:<tag>');
+  const plan = planHcloudCommand(args);
+  assert.deepEqual(missingWarnings(plan), []);
+  assert.ok(FUNCTIONGRAPH_CODE_SOURCE.includes('custom_image.image'));
+});
+
+test('a trigger whose fields arrive through --cli-jsonInput is not falsely rejected', () =>
+  withSandboxHome(async () => {
+    const planned = await callTool('huaweicloud_plan_manifest', {
+      commands: [{ args: ['FunctionGraph', 'CreateFunctionTrigger', '--cli-jsonInput=trigger.json'] }],
+    });
+    assert.deepEqual(planned.dependencyIssues, []);
+    assert.equal(planned.safeToRun, true, 'the guard cannot inspect the file, so it must not reject the batch');
+  }));
+
+test('body-field alias corrections stay scoped to FunctionGraph CreateFunction', () => {
+  const plan = planHcloudCommand(['ECS', 'CreateServers', '--code_file=x']);
+  assert.deepEqual(correctionWarnings(plan), []);
+});
+
 test('running such a batch is rejected before any command executes', () =>
   withSandboxHome(async () => {
     const commands = [{ args: createFunctionArgs() }, { args: timerTriggerArgs('') }];
