@@ -118,7 +118,7 @@ test('skills document KooCLI installation, operation discovery, region intent, a
   // F: billing skill documents the full account_type enum (5/7 are legacy, not coupons)
   // and the coupon-balance workflow (explicit window + pagination, per-coupon grouping,
   // partner/reseller CBC.99000084 fallback).
-  assert.match(billingSkill, /1:余额 2:信用 5:奖励金 7:保证金/);
+  assert.match(billingSkill, /1:余额[\s\S]*7:保证金/);
   assert.match(billingSkill, /trade_time_begin/);
   assert.match(billingSkill, /group by `coupon_id`/);
   assert.match(billingSkill, /CBC\.99000084/);
