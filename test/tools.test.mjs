@@ -557,6 +557,73 @@ test('service_catalog matches CJK+ASCII keywords case-insensitively (#770 D10-3)
   assert.ok(nat.recommendedServices.includes('VPC'));
 });
 
+test('service_catalog routes composite CJK+ASCII intent to both sandbox and DCS/DDS (#751 D3-S5)', async () => {
+  const result = await callTool('huaweicloud_service_catalog', {
+    intent: '部署一个带有Redis缓存的Web应用到华为云',
+  });
+  assert.ok(
+    result.recommendedSkills.includes('huawei-sandbox'),
+    `composite web-app deploy intent should hit sandbox, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.ok(
+    result.recommendedSkills.includes('huawei-cloud-dds-dcs-instance-management'),
+    `composite intent with redis cache should hit DCS/DDS, got ${JSON.stringify(result.recommendedSkills)}`,
+  );
+  assert.ok(
+    result.recommendedServices.includes('DCS'),
+    `composite intent should recommend DCS, got ${JSON.stringify(result.recommendedServices)}`,
+  );
+  // Ordering depends on the deployment-intent reorder in serviceCatalog(): a deploy
+  // intent that also matches sandbox must surface sandbox first.
+  assert.equal(result.recommendedSkills[0], 'huawei-sandbox', 'deployment intent should recommend sandbox first');
+});
+
+test('service_catalog matches English keywords embedded in a CJK sentence (#751 D3-S5)', async () => {
+  const cases = [
+    { intent: '使用redis缓存服务存储数据', expect: 'huawei-cloud-dds-dcs-instance-management' },
+    { intent: '创建ecs服务器实例', expect: 'huawei-ecs' },
+    { intent: '查看ces监控数据', expect: 'huawei-cloud-eye' },
+  ];
+  for (const { intent, expect } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(result.recommendedSkills.includes(expect), `intent="${intent}" should include skill=${expect}`);
+  }
+});
+
+test('service_catalog does not route WAF or ECS web intents to sandbox (#751 D1)', async () => {
+  // Negative regression: bare `web` used to be an unconditional sandbox keyword, so
+  // these intents were answered with a sandbox suggestion instead of WAF/ECS.
+  const cases = [
+    { intent: '配置web应用防火墙', expect: 'huawei-cloud-waf-aad-rule-management' },
+    { intent: '配置WAF防护规则', expect: 'huawei-cloud-waf-aad-rule-management' },
+    { intent: 'web protection', expect: 'huawei-cloud-waf-aad-rule-management' },
+    { intent: '买一台web服务器', expect: 'huawei-ecs' },
+  ];
+  for (const { intent, expect } of cases) {
+    const result = await callTool('huaweicloud_service_catalog', { intent });
+    assert.ok(result.recommendedSkills.includes(expect), `intent="${intent}" should include skill=${expect}`);
+    assert.ok(
+      !result.recommendedSkills.includes('huawei-sandbox'),
+      `intent="${intent}" must not be routed to sandbox, got ${JSON.stringify(result.recommendedSkills)}`,
+    );
+  }
+});
+
+test('service_catalog treats bare web as sandbox evidence only for deploy intents (#751 D1)', async () => {
+  const deploy = await callTool('huaweicloud_service_catalog', { intent: '把web应用部署到华为云' });
+  assert.ok(deploy.recommendedSkills.includes('huawei-sandbox'));
+  // Same deployment-intent reorder dependency as the composite-intent test above.
+  assert.equal(deploy.recommendedSkills[0], 'huawei-sandbox');
+});
+
+test('service_catalog does not split identifier-like snake_case tokens (#751 D1 blast radius)', async () => {
+  // `_` stays inside an ASCII token, so ecs_cluster keeps the pre-fix routing
+  // instead of widening into ecs + cluster (ECS + CCE).
+  const result = await callTool('huaweicloud_service_catalog', { intent: 'ecs_cluster 怎么建' });
+  assert.ok(!result.recommendedSkills.includes('huawei-ecs'));
+  assert.ok(!result.recommendedSkills.includes('huawei-cce'));
+});
+
 test('findSkillsRoot skips stale dirs without SKILL.md and picks the first real skills root', () => {
   const base = mkdtempSync(join(tmpdir(), 'huaweicloud-skills-root-'));
   try {
