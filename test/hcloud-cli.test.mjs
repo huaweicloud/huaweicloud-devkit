@@ -90,6 +90,18 @@ test('planHcloudCommand marks write command as unsafe without approval', () => {
   assert.equal(plan.classification.decision, 'deny');
 });
 
+test('planHcloudCommand surfaces the approval gate for unapproved writes (#1175 D4-18)', () => {
+  // D4-18 regression: the report read `decision:deny` as "rejected". The
+  // classification keeps the binary deny but must expose the approval gate,
+  // and the plan must still carry the token that makes run_approved_command work.
+  const plan = planHcloudCommand(['VPC', 'DeleteVpc', '--vpc_id=abc']);
+  assert.equal(plan.classification.decision, 'deny');
+  assert.equal(plan.classification.requiresApproval, true);
+  assert.equal(plan.classification.blockedBy, 'approval');
+  assert.equal(plan.safeToRun, false);
+  assert.ok(plan.approvalToken);
+});
+
 test('planHcloudCommand adds resource-manifest hint for OBS write operations', () => {
   const plan = planHcloudCommand(['OBS', 'mb', 'obs://test-bucket', '-location=cn-north-4']);
   assert.ok(plan.warnings.some((warning) => /resource manifest/i.test(warning)));

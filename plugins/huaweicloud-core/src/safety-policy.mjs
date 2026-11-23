@@ -13,6 +13,20 @@ export function loadPolicy() {
 
 const DEFAULT_POLICY = loadPolicy();
 
+// #1175 (D4-18): `decision` stays binary — allow/deny — so the plan→run
+// contract and the existing `decision === 'deny'` assertions keep working.
+// These additive fields let a caller machine-distinguish the two deny
+// semantics instead of parsing the human-readable `reason`:
+//   { requiresApproval: true,  blockedBy: 'approval' } → a write/execution
+//     operation held at the approval gate; a plan (and an approvalToken) was
+//     issued, and the operation runs after explicit user approval.
+//   { requiresApproval: false, blockedBy: 'policy' }   → hard block (secret or
+//     credential read, invalid command, risk-rule hit); user approval cannot
+//     lift it, so no approvalToken is issued.
+// Absent on allow results — absence means "not blocked".
+export const APPROVAL_BLOCK_FIELDS = Object.freeze({ requiresApproval: true, blockedBy: 'approval' });
+export const POLICY_BLOCK_FIELDS = Object.freeze({ requiresApproval: false, blockedBy: 'policy' });
+
 function regexFrom(pattern) {
   return new RegExp(pattern, 'i');
 }
@@ -151,12 +165,23 @@ function commandRiskText(normalizedArgs, options = {}) {
   return options.rawCommand || ['hcloud', ...normalizedArgs].join(' ');
 }
 
+// A deny produced by a shared risk rule is a hard block — approving the plan
+// does not lift it — so it carries the same deny-detail fields as the other
+// policy rejections (#1175).
+function mergeRiskDecisionWithDenyFields(base, risk) {
+  const merged = mergeRiskDecision(base, risk);
+  if (merged.decision === 'deny' && merged.blockedByRiskRule === true) {
+    return { ...merged, ...POLICY_BLOCK_FIELDS };
+  }
+  return merged;
+}
+
 function applyCommandRiskRules(base, normalizedArgs, options = {}) {
   if (base.decision === 'deny' || options.skipRiskRules === true) {
     return base;
   }
   const risk = evaluateCommandRisk(commandRiskText(normalizedArgs, options));
-  return mergeRiskDecision(base, risk);
+  return mergeRiskDecisionWithDenyFields(base, risk);
 }
 
 function applyRawCommandRiskRules(base, command, options = {}) {
@@ -164,7 +189,7 @@ function applyRawCommandRiskRules(base, command, options = {}) {
     return base;
   }
   const risk = evaluateCommandRisk(command);
-  return mergeRiskDecision(base, risk);
+  return mergeRiskDecisionWithDenyFields(base, risk);
 }
 
 // Find hcloud command segments split by shell operators (; && || |) so a write
@@ -198,7 +223,12 @@ export function classifyHcloudArgs(args, options = {}) {
     const hcloudSegments = findHcloudCommandSegments(unwrappedTokens.join(' '));
     if (hcloudSegments.length > 0) {
       const results = hcloudSegments.map((segment) => classifyHcloudArgs(segment, { ...options, _segmentDepth: 1 }));
+      // Aggregation (#1175): a hard policy block in ANY segment outranks an
+      // approval-gated one — the whole command cannot run even after user
+      // approval — so report requiresApproval:false / blockedBy:'policy'
+      // whenever any segment was hard-blocked.
       return (
+        results.find((result) => result.decision === 'deny' && result.blockedBy === 'policy') ||
         results.find((result) => result.decision === 'deny') ||
         results.find((result) => ['write', 'execution', 'secret', 'credential'].includes(result.risk)) ||
         results[0]
@@ -213,6 +243,7 @@ export function classifyHcloudArgs(args, options = {}) {
       decision: 'deny',
       risk: 'invalid',
       reason: 'Empty hcloud command arguments are not executable.',
+      ...POLICY_BLOCK_FIELDS,
     };
   }
 
@@ -242,6 +273,7 @@ export function classifyHcloudArgs(args, options = {}) {
         risk: 'credential',
         reason:
           'Direct hcloud configure inspection may expose profile credentials. Use the redacted toolkit tools instead.',
+        ...POLICY_BLOCK_FIELDS,
       };
     }
   }
@@ -251,6 +283,7 @@ export function classifyHcloudArgs(args, options = {}) {
       decision: 'deny',
       risk: 'secret',
       reason: 'Direct secret value reads are blocked so plaintext secrets do not enter the agent context.',
+      ...POLICY_BLOCK_FIELDS,
     };
   }
 
@@ -259,6 +292,7 @@ export function classifyHcloudArgs(args, options = {}) {
       decision: 'deny',
       risk: 'secret',
       reason: 'The command appears to retrieve a secret value. Use a runtime secret reference pattern instead.',
+      ...POLICY_BLOCK_FIELDS,
     };
   }
 
@@ -273,6 +307,7 @@ export function classifyHcloudArgs(args, options = {}) {
       decision: 'deny',
       risk: 'execution',
       reason: 'Huawei Cloud execution/trigger operation blocked until approved.',
+      ...APPROVAL_BLOCK_FIELDS,
     };
   }
 
@@ -282,6 +317,7 @@ export function classifyHcloudArgs(args, options = {}) {
       risk: 'write',
       reason:
         'Huawei Cloud write operation blocked until the agent presents a plan and receives explicit user approval.',
+      ...APPROVAL_BLOCK_FIELDS,
     };
   }
 
@@ -317,6 +353,7 @@ export function classifyHcloudArgs(args, options = {}) {
       decision: 'deny',
       risk: 'write',
       reason: 'OBS write operation blocked until the agent presents a plan and receives explicit user approval.',
+      ...APPROVAL_BLOCK_FIELDS,
     };
   }
   if (isObsRead) {
@@ -539,6 +576,7 @@ export function classifyTextCommand(command, options = {}) {
         risk: 'credential',
         reason:
           'Reading Huawei Cloud credential or profile files is blocked. Use redacted profile inspection tools instead.',
+        ...POLICY_BLOCK_FIELDS,
       };
     }
   }
@@ -553,6 +591,7 @@ export function classifyTextCommand(command, options = {}) {
         decision: 'deny',
         risk: 'credential',
         reason: 'Dumping cloud credential environment variables is blocked.',
+        ...POLICY_BLOCK_FIELDS,
       };
     }
   }
@@ -581,6 +620,7 @@ export function classifyTextCommand(command, options = {}) {
         decision: 'deny',
         risk: 'credential',
         reason: 'Printing cloud credential environment variables is blocked.',
+        ...POLICY_BLOCK_FIELDS,
       };
     }
   }
@@ -601,6 +641,7 @@ export function classifyTextCommand(command, options = {}) {
       decision: 'deny',
       risk: 'secret',
       reason: 'Direct secret value retrieval patterns are blocked.',
+      ...POLICY_BLOCK_FIELDS,
     };
   }
 

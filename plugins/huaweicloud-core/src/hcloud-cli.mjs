@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
+import { POLICY_BLOCK_FIELDS, classifyHcloudArgs, redactSecrets, assertAllowed } from './safety-policy.mjs';
 import { getProxySettings } from './proxy/proxy-config.mjs';
 import { resolveHcloudCommand } from './hcloud-probe.mjs';
 import { parseStsExpiry, resolveCredentialsWithRuntime } from './auth/credentials.mjs';
@@ -209,11 +209,17 @@ function applyPreflightFindings(classification, sgFindings) {
   if (!sgFindings || sgFindings.length === 0) return classification;
   const hasDeny = sgFindings.some((f) => f.severity === 'deny');
   if (hasDeny) {
+    // A preflight deny (public exposure) holds regardless of approval, so it
+    // reports the hard-block fields and never the approval-gated ones (#1175).
+    const base = { ...classification };
+    delete base.requiresApproval;
+    delete base.blockedBy;
     return {
-      ...classification,
+      ...base,
       decision: 'deny',
       risk: 'public_exposure',
       reason: sgFindings[0].message,
+      ...POLICY_BLOCK_FIELDS,
     };
   }
   return classification;
