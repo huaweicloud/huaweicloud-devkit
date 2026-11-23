@@ -15,6 +15,7 @@ import {
   inspectApprovalToken,
   hashArgs,
   createApprovalToken,
+  FUNCTIONGRAPH_CREATE_REQUIRED,
 } from './hcloud-cli.mjs';
 import { checkAccountType } from './account-type.mjs';
 import { searchMarketplace } from './search-market.mjs';
@@ -322,7 +323,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_plan_manifest',
     description:
-      'Plan a list of write-capable hcloud commands as ONE manifest for batch approval. Use for multi-command cleanup or resource groups so the agent does not repeat plan/run calls. Returns per-command plans and ONE approvalToken; after explicit user approval, call huaweicloud_run_approved_manifest with the same commands.',
+      "Plan a list of write-capable hcloud commands as ONE manifest for batch approval. Use for multi-command cleanup or resource groups so the agent does not repeat plan/run calls. Returns per-command plans and ONE approvalToken; after explicit user approval, call huaweicloud_run_approved_manifest with the same commands. A command that consumes another command's output (a FunctionGraph trigger needs the func_urn its function create returns) must be planned as a separate, later manifest.",
     inputSchema: {
       type: 'object',
       required: ['commands'],
@@ -348,7 +349,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'huaweicloud_run_approved_manifest',
     description:
-      'Execute an approved manifest of hcloud commands sequentially. Requires the manifest approvalToken and approvedByUser=true. Returns every command result; use continueOnError for idempotent cleanup lists.',
+      'Execute an approved manifest of hcloud commands sequentially. Requires the manifest approvalToken and approvedByUser=true. Returns every command result; use continueOnError for idempotent cleanup lists. Returns status=rejected code=MANIFEST_DEPENDENCY_ORDER when a later command depends on an output the earlier ones cannot have produced yet.',
     inputSchema: {
       type: 'object',
       required: ['commands', 'approvalToken', 'approvedByUser'],
@@ -2265,13 +2266,32 @@ async function setupObsConfigFromHcloud(profile) {
   };
 }
 
-const SERVICE_EXAMPLES = {
+// The minimal parameter set the FunctionGraph CreateFunction contract requires
+// (#815 / D3-S6) is defined once in hcloud-cli.mjs, where the pre-execution
+// check reads it; the example below assembles that same set into one complete
+// command. An example naming only the operation makes the agent build the
+// request body from scratch, and the API then rejects the call on whichever
+// mandatory field its own validation reaches first — reported as
+// `function_name` in one release, `code.filename` or `code.zip_file` in another
+// (#815 cross-version evidence).
+export const SERVICE_EXAMPLES = {
   ECS: { list: 'ECS ListServersDetails', create: 'ECS CreateServers', show: 'IMS GlanceShowImage' },
   VPC: { list: 'VPC ListVpcs', create: 'VPC CreateVpc', show: 'VPC ShowVpc' },
   FUNCTIONGRAPH: {
     list: 'FunctionGraph ListFunctions',
-    create: 'FunctionGraph CreateFunction',
-    show: 'FunctionGraph ShowFunctionConfig',
+    create:
+      'FunctionGraph CreateFunction --func_name=<name> --package=default --runtime=Python3.10 --handler=index.handler --memory_size=128 --timeout=3 --code_type=inline --func_code.file=<base64-code> --cli-region=<region>',
+    createRequired: [
+      ...FUNCTIONGRAPH_CREATE_REQUIRED,
+      'func_code.file (inline) | code_filename (zip) | code_url (obs)',
+    ],
+    // The trigger consumes the func_urn of a function that already exists, so it
+    // is a second, serial step: create the function, read func_urn from its
+    // output, then run this. A trigger planned against an assumed URN fails with
+    // the function it depends on (#815 D3-S6).
+    createTrigger:
+      'FunctionGraph CreateFunctionTrigger --function_urn=<func-urn-from-create-output> --trigger_type_code=TIMER --event_type_code=MessageCreated --trigger_status=ACTIVE --event_data.name=<timer-name> --event_data.schedule_type=Rate --event_data.schedule=1m',
+    show: 'FunctionGraph ShowFunctionConfig --func_name=<name>',
   },
   APIG: { list: 'APIG ListInstancesV2', create: 'APIG CreateInstanceV2', show: 'APIG ShowDetailsOfInstanceV2' },
   OBS: { list: 'OBS ls', create: 'OBS mb obs://<bucket>', show: 'OBS stat obs://<bucket>/<key>' },
@@ -2402,6 +2422,62 @@ function manifestDigest(commands) {
   return hashArgs(commands.map((command) => command.args));
 }
 
+function manifestOperation(args) {
+  const words = args.filter((arg) => !String(arg).startsWith('-'));
+  return words.length >= 2 ? `${words[0]} ${words[1]}` : '';
+}
+
+function manifestArgValue(args, name) {
+  const flag = `--${name}`;
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = String(args[i]);
+    if (arg.startsWith(`${flag}=`)) return arg.slice(flag.length + 1);
+    // KooCLI 7.x is `--key=value`; accept the legacy space-separated shape too.
+    if (arg === flag && i + 1 < args.length) return String(args[i + 1]);
+  }
+  return '';
+}
+
+function isPlaceholderValue(value) {
+  return /^$|^<.*>$|^\$\{.*\}$|^\{\{.*\}\}$|^urn:fss:<.*$|^urn:fss:\$\{.*$/i.test(String(value).trim());
+}
+
+// Serial dependency guard for FunctionGraph (#815 / D3-S6): CreateFunctionTrigger
+// consumes the func_urn that CreateFunction returns. A manifest that batches the
+// two cannot know that URN, so the trigger runs against an assumed value, fails,
+// and takes the scenario down with it. The plan must not offer such a batch as
+// runnable: the function goes first, its output supplies the URN, and the
+// trigger is its own approved command.
+export function manifestDependencyIssues(commands) {
+  const issues = [];
+  commands.forEach((command, index) => {
+    const operation = manifestOperation(command.args);
+    if (operation !== 'FunctionGraph CreateFunctionTrigger') return;
+    const urn = manifestArgValue(command.args, 'function_urn');
+    const createsFunctionEarlier = commands
+      .slice(0, index)
+      .some((earlier) => manifestOperation(earlier.args) === 'FunctionGraph CreateFunction');
+    if (urn && !isPlaceholderValue(urn)) return;
+    issues.push({
+      index,
+      code: createsFunctionEarlier ? 'CREATE_FUNCTION_TRIGGER_BEFORE_URN' : 'PLACEHOLDER_FUNCTION_URN',
+      parameter: 'function_urn',
+      message: createsFunctionEarlier
+        ? 'CreateFunctionTrigger cannot share a manifest with CreateFunction: --function_urn only exists after the function is created. Run CreateFunction first, read func_urn from its output, then plan the trigger as its own approved command.'
+        : 'CreateFunctionTrigger needs the real --function_urn of an existing function; a placeholder or missing value fails the trigger as well as the function it depends on.',
+    });
+  });
+  return issues;
+}
+
+function manifestDependencyNote(issues) {
+  if (issues.length === 0) return null;
+  return issues
+    .map((issue) => `commands[${issue.index}] ${issue.code}: ${issue.message}`)
+    .concat('Split the manifest into serial steps and re-plan the remainder after the earlier step returns the URN.')
+    .join(' ');
+}
+
 function executedPlanFor(args) {
   const plan = planHcloudCommand(args, { allowWrites: true, createToken: false });
   return {
@@ -2430,13 +2506,17 @@ function planManifest(args = {}) {
     };
   });
   const digest = manifestDigest(commands);
+  const dependencyIssues = manifestDependencyIssues(commands);
   return {
     commands: plans,
     count: plans.length,
     manifestDigest: digest,
     approvalToken: createApprovalToken([`--manifest-digest=${digest}`]),
-    safeToRun: plans.every((plan) => plan.safeToRun),
-    note: 'Review the full command list with the user. After explicit approval, call huaweicloud_run_approved_manifest with the same commands and approvalToken.',
+    dependencyIssues,
+    safeToRun: plans.every((plan) => plan.safeToRun) && dependencyIssues.length === 0,
+    note:
+      manifestDependencyNote(dependencyIssues) ||
+      'Review the full command list with the user. After explicit approval, call huaweicloud_run_approved_manifest with the same commands and approvalToken.',
   };
 }
 
@@ -2445,6 +2525,18 @@ async function runApprovedManifest(args = {}) {
     throw new Error('approvedByUser must be true after explicit user approval for this exact manifest.');
   }
   const commands = normalizeManifestCommands(args.commands);
+  const dependencyIssues = manifestDependencyIssues(commands);
+  if (dependencyIssues.length > 0) {
+    // Reject before the token is inspected or consumed: the batch as approved
+    // cannot succeed (the trigger has no URN yet), so approving it must not be
+    // recorded as a run.
+    return {
+      status: 'rejected',
+      code: 'MANIFEST_DEPENDENCY_ORDER',
+      dependencyIssues,
+      note: manifestDependencyNote(dependencyIssues),
+    };
+  }
   const digest = manifestDigest(commands);
   const synthetic = [`--manifest-digest=${digest}`];
   const token = String(args.approvalToken || '');
