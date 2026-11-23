@@ -152,6 +152,7 @@ Agent 在**执行前**应主动调用以下 MCP 工具进行风险检查：
 | `hwc-obs-anonymous-write`          | public_exposure | deny   | 全部                  | 禁止 OBS 匿名写入           |
 | `hwc-functiongraph-public-no-auth` | public_exposure | warn   | 全部                  | 警告无认证的公网函数        |
 | `hwc-iam-admin-policy`             | iam             | deny   | 全部                  | 禁止创建管理员权限策略      |
+| `hwc-iam-admin-managed-policy`     | iam             | deny   | 全部                  | 禁止引用管理员级托管策略    |
 | `hwc-destructive-delete-force`     | destructive     | deny   | command               | 禁止强制递归删除            |
 | `hwc-sandbox-missing-ttl`          | sandbox         | warn   | artifact, deploy_plan | 警告沙箱无清理计划          |
 | `hwc-cost-unbounded-scale`         | cost            | warn   | 全部                  | 警告高成本/无边界扩容       |
