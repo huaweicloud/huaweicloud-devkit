@@ -175,6 +175,64 @@ test('runHcloud returns a timeout result instead of hanging', async () => {
   assert.match(result.error, /timed out/i);
 });
 
+test(
+  'cancel terminates the hcloud process group, including grandchildren (POSIX)',
+  { skip: process.platform === 'win32' },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-pgroup-'));
+    const pidFile = join(dir, 'grandchild.pid');
+    const script = fakeHcloudScript(`
+import { spawn } from 'node:child_process';
+import { writeFileSync } from 'node:fs';
+const grandchild = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000);'], { stdio: 'ignore' });
+writeFileSync(${JSON.stringify(pidFile)}, String(grandchild.pid));
+setInterval(() => {}, 1000);
+`);
+    const controller = new AbortController();
+    const run = runHcloud(['ECS', 'ListServersDetails'], {
+      executable: process.execPath,
+      executableArgs: [script],
+      signal: controller.signal,
+      maxRetries: 0,
+      forceKillAfterMs: 200,
+    });
+    let grandchildPid = 0;
+    try {
+      const deadline = Date.now() + 5000;
+      while (!existsSync(pidFile) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      grandchildPid = Number(readFileSync(pidFile, 'utf8'));
+      assert.ok(grandchildPid > 0, 'grandchild pid must be recorded');
+
+      controller.abort(new Error('test cancel'));
+      const result = await run;
+      assert.equal(result.code, 'CANCELLED');
+
+      // grandchild 必须随进程组一起回收（否则 OBS 的 obsutil 等孙进程会残留）。
+      const killDeadline = Date.now() + 3000;
+      let alive = true;
+      while (alive && Date.now() < killDeadline) {
+        try {
+          process.kill(grandchildPid, 0);
+          alive = true;
+          await new Promise((r) => setTimeout(r, 50));
+        } catch {
+          alive = false;
+        }
+      }
+      assert.equal(alive, false, 'grandchild must be terminated with the process group');
+    } finally {
+      if (grandchildPid > 0) {
+        try {
+          process.kill(grandchildPid, 'SIGKILL');
+        } catch {}
+      }
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test('runHcloud respects cwd parameter', async () => {
   const cwdDir = mkdtempSync(join(tmpdir(), 'huaweicloud-toolkit-cwd-'));
   writeFileSync(join(cwdDir, 'test.txt'), 'works', 'utf8');

@@ -23,6 +23,10 @@ import {
   RequestTimeoutError,
   REQUEST_TIMEOUT_ERROR_CODE,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  CONFIGURED_REQUEST_TIMEOUT_MS,
+  REQUEST_TIMEOUT_MARGIN_MS,
+  TOOL_REQUEST_TIMEOUTS_MS,
+  resolveTimeoutMs,
   createRequestSignal,
   raceWithSignal,
 } from '../plugins/huaweicloud-core/src/mcp-protocol.mjs';
@@ -114,15 +118,42 @@ test('abortRequest on unknown id returns false', () => {
   assert.equal(abortRequest(88888, 'nope'), false);
 });
 
-test('DEFAULT_REQUEST_TIMEOUT_MS defaults to a reasonable 60s unless env set', () => {
-  // D9-9 要求默认安装下也具备超时语义：未设置环境变量时默认 60s。
+test('DEFAULT_REQUEST_TIMEOUT_MS is the 60s fallback; CONFIGURED reflects env', () => {
+  // D9-9 要求默认安装下也具备超时语义：常量默认 60s。
+  assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 60_000);
+  // 环境变量由 CONFIGURED_REQUEST_TIMEOUT_MS 承载（DEFAULT 不随 env 变化）。
   const raw = process.env.HCLOUD_MCP_REQUEST_TIMEOUT_MS;
-  if (raw === undefined || raw === '') {
-    assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, 60_000);
-  } else {
-    const env = Number(raw);
-    assert.equal(DEFAULT_REQUEST_TIMEOUT_MS, Number.isFinite(env) && env >= 0 ? env : 60_000);
-  }
+  const env = Number(raw);
+  const expected =
+    raw === undefined || raw === '' || !Number.isFinite(env) || env < 0 ? DEFAULT_REQUEST_TIMEOUT_MS : env;
+  assert.equal(CONFIGURED_REQUEST_TIMEOUT_MS, expected);
+});
+
+test('resolveTimeoutMs honors opts/_meta overrides', () => {
+  const tool = 'huaweicloud_sandbox_upload_project';
+  assert.equal(resolveTimeoutMs({ timeoutMs: 5000 }, { name: tool, arguments: {} }), 5000);
+  assert.equal(resolveTimeoutMs({}, { name: tool, arguments: {}, _meta: { timeoutMs: 7000 } }), 7000);
+});
+
+test('resolveTimeoutMs does not cap long-running sandbox tools at 60s', () => {
+  if (CONFIGURED_REQUEST_TIMEOUT_MS === 0) return; // explicit protocol-timeout disable
+  assert.ok(
+    resolveTimeoutMs({}, { name: 'huaweicloud_sandbox_upload_project', arguments: {} }) >=
+      TOOL_REQUEST_TIMEOUTS_MS.huaweicloud_sandbox_upload_project,
+  );
+  assert.ok(resolveTimeoutMs({}, { name: 'huaweicloud_sandbox_exec_with_session', arguments: {} }) >= 150_000);
+  assert.ok(resolveTimeoutMs({}, { name: 'huaweicloud_sandbox_expose_tunnel', arguments: {} }) >= 120_000);
+  // 普通工具仍使用基础超时
+  assert.equal(resolveTimeoutMs({}, { name: 'huaweicloud_check_cli', arguments: {} }), CONFIGURED_REQUEST_TIMEOUT_MS);
+});
+
+test('resolveTimeoutMs adds a margin over a tool-provided timeout_ms', () => {
+  if (CONFIGURED_REQUEST_TIMEOUT_MS === 0) return;
+  const resolved = resolveTimeoutMs(
+    {},
+    { name: 'huaweicloud_sandbox_exec_with_session', arguments: { timeout_ms: 240_000 } },
+  );
+  assert.equal(resolved, 240_000 + REQUEST_TIMEOUT_MARGIN_MS);
 });
 
 test('unknown method still returns -32601 (regression guard #650 D9-2)', async () => {
