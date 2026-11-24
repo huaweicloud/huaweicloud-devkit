@@ -1,0 +1,10 @@
+chore(release): 2.0.0
+
+package.json, the root plugin.json, the five agent plugin manifests, and
+openclaw.plugin.json move to 2.0.0 - the stable the 2.0.0-next.0..6 line
+promised. docs/CHANGELOG.md converts Unreleased to the dated 2.0.0
+section (the AX defect waves, the sandbox pending-connect and async
+expose delivery, the hookgate safety release with the OpenCode 2.x
+shell-face gate and the classifier integrity layers, and the CI baseline
+wave). The README beta badge stays beta-v2.0.0 per the .version-override
+pin; the icons manifest snapshot is unchanged.

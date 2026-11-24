@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 2.0.0 (2026-11-24)
 
 - fix(explain-error): the response `service` field names the service the pattern table actually resolved to, not the raw input (AX D-05). `code`-only calls stop reporting `service:"unknown"`, and a pasted service whose own table is empty (`errorCode:VPC.9904, service:"iam"`) stops masking the code's service; a valid explicit service keeps its exact spelling (the #935 echo pin). Pinned: three tests in test/tools-explain-error.test.ts.
 - fix(safety): rule matching folds shell-transcribed JSON escapes — `\"Action\":` spellings (what a shell/argv transcript and nested JSON actually produce) used to defeat the deny-severity IAM administrator-grant, OBS anonymous-write, privileged-container, and plaintext-password rules while the unescaped spelling matched. `normalizeRuleText` in risk-rule-engine.ts and its py-hook twin `normalize_rule_text` match the raw text AND the quote-unescaped shadow; evidence/display stay raw. Pinned across the quote-bearing rule family (single and double escaping) plus a Windows-path non-regression row.
