@@ -252,24 +252,24 @@ Trae (including Trae CN) integrates via manual MCP configuration:
 
 2. **Merge** the following into `mcpServers` (keep existing entries; do not overwrite the whole file):
 
-```json
-{
-  "mcpServers": {
-    "huaweicloud-devkit": {
-      "command": "npx",
-      "args": ["-y", "-p", "huaweicloud-devkit", "huaweicloud-devkit-mcp"]
-    }
-  }
-}
-```
+   ```json
+   {
+     "mcpServers": {
+       "huaweicloud-devkit": {
+         "command": "npx",
+         "args": ["-y", "-p", "huaweicloud-devkit", "huaweicloud-devkit-mcp"]
+       }
+     }
+   }
+   ```
 
 3. **Restart Trae** and confirm `huaweicloud-devkit` is loaded in the MCP panel (`huaweicloud_*` tools listed).
 
 4. Configure credentials in a terminal (never write AK/SK into mcp.json):
 
-```bash
-npx --yes huaweicloud-devkit auth init
-```
+   ```bash
+   npx --yes huaweicloud-devkit auth init
+   ```
 
 > For manual registration, keep credentials out of the config — use `auth init` exclusively; if KooCLI is missing, run `npx --yes huaweicloud-devkit install-hcloud` first.
 
