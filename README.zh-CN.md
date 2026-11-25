@@ -10,7 +10,7 @@
 
 帮助 AI 编码助手安全、准确地使用华为云——一站式集成云知识、CLI 工具和安全护栏。
 
-支持 OpenCode、Codex、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes、OpenClaw、AtomCode。
+支持 OpenCode、Codex、码道（CodeArts Agent）、WorkBuddy、DeepSeek Harness（DSH）、OfficeAce、Hermes、OpenClaw、AtomCode、Trae。
 
 ## 前置条件
 
@@ -236,6 +236,38 @@ npx --yes huaweicloud-devkit status --target atomcode
 npx --yes huaweicloud-devkit update --target atomcode
 npx --yes huaweicloud-devkit uninstall --target atomcode
 ```
+
+### Trae
+
+Trae（含国内版 Trae CN）通过手动 MCP 配置接入：
+
+1. 打开 MCP 配置文件（没有则新建）：
+   - **Windows（Trae CN）**：`%APPDATA%\Trae CN\User\mcp.json`
+   - **Windows（Trae 国际版）**：`%APPDATA%\Trae\User\mcp.json`
+   - **macOS（Trae CN）**：`~/Library/Application Support/Trae CN/User/mcp.json`
+
+2. 将以下配置**合并**进 `mcpServers`（保留已有条目，勿整文件覆盖）：
+
+   ```json
+   {
+     "mcpServers": {
+       "huaweicloud-devkit": {
+         "command": "npx",
+         "args": ["-y", "-p", "huaweicloud-devkit", "huaweicloud-devkit-mcp"]
+       }
+     }
+   }
+   ```
+
+3. **重启 Trae**，在 MCP 面板确认 `huaweicloud-devkit` 已加载（可看到 `huaweicloud_*` 工具列表）。
+
+4. 配置凭据（终端执行，不要把 AK/SK 写进 mcp.json）：
+
+   ```bash
+   npx --yes huaweicloud-devkit auth init
+   ```
+
+> 手动注册方式请勿在配置里写凭据，凭据统一走 `auth init`；KooCLI 缺失时先执行 `npx --yes huaweicloud-devkit install-hcloud`。
 
 ### 其他 Agent
 
