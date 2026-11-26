@@ -13,6 +13,11 @@ import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approv
 import { withTempAuthHome } from './hcloud-cli-harness.ts';
 import type { PackId } from '../plugins/huaweicloud-core/src/lib/pack-types.ts';
 
+// The packs_configure legs drive the gate through the token mint/confirm
+// flow; the approval-mode flip (unset now means ask) requires the token
+// posture pinned explicitly at module scope.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 // node --test runs each file in its own process, so env mutation cannot leak
 // into the other suites; the try/finally still keeps this file's later tests
 // honest when one fails mid-flight, and drops the session override both

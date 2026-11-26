@@ -289,7 +289,7 @@ async function assertRetryExecutes(
 
 test('token mode: each of the nine tools mints on the first no-token call and executes after the terminal confirm', async () => {
   await withSandboxHome(async () => {
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       const restore = withStubbedFetch();
       try {
         for (const tool of GATED_TOOLS) {
@@ -590,7 +590,7 @@ test('classified benign content never mints and executes with no confirmation su
       assert.equal(rowsFor(sessionId).length, 0, 'no consent row for a pass-through');
     });
 
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       // The adopted first-mint exemption (F7): a gate-source tool's first
       // no-token call reaches the gate without the attestation, and a
@@ -627,7 +627,7 @@ test('strict classification denies destructive content before any mint, and the 
     const destructive = { ...EXEC_ONE_SHOT.args, command: DESTRUCTIVE_COMMAND };
 
     // Token mode, no token: the deny fires at the gate face, nothing mints.
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       const sessionId = freshSessionId('deny-mint');
       await assert.rejects(
@@ -643,7 +643,7 @@ test('strict classification denies destructive content before any mint, and the 
 
     // Token mode WITH a confirmed token minted for a different command:
     // the deny precedes the consume, nothing burns, nothing executes.
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       const mintSession = freshSessionId('deny-confirm');
       const mint = (await callTool(
@@ -714,7 +714,7 @@ test('credential-shaped exec content denies too: no surface, no unlock', async (
 
 test('the first-mint exemption (F7): a gate-source first call mints without the attestation, and a token spend still demands it', async () => {
   await withSandboxHome(async () => {
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       // The teaching's exact first call: no token, no attestation — the
       // mint envelope is the answer, not the attestation throw.
@@ -793,7 +793,7 @@ test('every confirmation surface shows the redacted command, never the raw args.
     // two-token spelling — the store write goes through the same shared
     // fold (the PTY dry run covers the terminal Confirming line).
     await withSandboxHome(async (home) => {
-      await withApprovalMode(undefined, async () => {
+      await withApprovalMode('token', async () => {
         resetKnobs();
         const mint = (await callTool(
           EXEC_ONE_SHOT.name,
@@ -821,7 +821,7 @@ test('every confirmation surface shows the redacted command, never the raw args.
     // The redaction must not blunt the classifier: a secret-shaped word
     // riding a destructive command still denies, because classification
     // sees the RAW binding, only the display folds.
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       await assert.rejects(
         () =>
@@ -839,7 +839,7 @@ test('every confirmation surface shows the redacted command, never the raw args.
 
 test('the exec self-anchor passes and a lifecycle tool refuses a stuffed command (anchor decision)', async () => {
   await withSandboxHome(async () => {
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       // The exec faces declare a self-anchor: their command is content and
       // display at once, so the no-anchor refusal shape never kills them.
@@ -869,7 +869,7 @@ test('the exec self-anchor passes and a lifecycle tool refuses a stuffed command
 test('the store entry redacts the supplemental key classes in both views (F2)', async () => {
   const SECRET_KEY = 'devbridge_hunter2secret';
   await withSandboxHome(async (home) => {
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       const mint = (await callTool(
         'huaweicloud_sandbox_credentials',
@@ -894,7 +894,7 @@ test('the credentials view names the api_key channel, never the value, and a dif
   const REF_A = 'secret://team-shared/devbridge-prod';
   const REF_B = 'secret://team-shared/devbridge-staging';
   await withSandboxHome(async (home) => {
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       resetKnobs();
       const mint = (await callTool(
         'huaweicloud_sandbox_credentials',
@@ -1077,7 +1077,7 @@ test('the newly enumerated destructive shapes refuse in both modes with the rule
     ['ls | xargs rm -rf', 'hwc-sandbox-destructive-unanchored-rm'],
   ] as const;
   await withSandboxHome(async () => {
-    await withApprovalMode(undefined, async () => {
+    await withApprovalMode('token', async () => {
       for (const [command, rule] of BLIND_SPOTS) {
         await assert.rejects(
           () =>

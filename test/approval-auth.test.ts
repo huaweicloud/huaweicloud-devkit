@@ -33,6 +33,12 @@ import { withTempAuthHome } from './hcloud-cli-harness.ts';
 // can redirect every downstream approved write.
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 
+// The token legs of this battery ran under the pre-flip unset default; the
+// approval-mode flip (unset now means ask) requires them to pin token
+// explicitly. The ask legs already pin 'ask' through the local
+// withApprovalMode helper and are unaffected.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 const VENDOR = 'test: vendor established by the harness';
 const AK = 'AKTESTACCOUNTSWITCH';
 const SK = 'sk-test-secret-value-32chars-minimum!!';

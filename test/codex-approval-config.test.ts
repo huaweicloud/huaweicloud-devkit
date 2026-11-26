@@ -255,18 +255,17 @@ test('doctor row passes on the healthy payload and names the block count and the
 });
 
 test('doctor row warns on a payload copy that lost the ask env (a stale pre-ask deploy)', () => {
-  // The env half is posture-bearing: without it the devkit runs its default
-  // token mode under codex (the live probe measured the passthrough — a
-  // roster call returned ELICITATION_DECLINED, the headless auto-decline of
-  // the server-raised form). A copy missing it is drift, healable by the
-  // same re-run.
+  // The env half is posture-bearing: the devkit-wide default flipped to
+  // ask, so an env-less copy degrades to the env-unset ask default — but
+  // the drift itself still means the copy no longer matches what this
+  // install writes, and the WARN stays healable by the same re-run.
   const lines = rowOver((home) => {
     seedCachePayload(home, codexApprovalToolsBlock(), null);
   });
   assert.equal(lines.length, 1);
   assert.match(lines[0]!, /WARN/);
   assert.match(lines[0]!, /does not set DEVKIT_APPROVAL_MODE="ask"/);
-  assert.match(lines[0]!, /token mode under codex/);
+  assert.match(lines[0]!, /stale pre-ask payload/);
   assert.match(lines[0]!, /re-run: npx huaweicloud-devkit install --target codex/);
 });
 

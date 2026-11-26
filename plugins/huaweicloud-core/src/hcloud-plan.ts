@@ -6,12 +6,12 @@
 // src/lib/approval-tokens.ts.
 //
 // The plan's approval posture is mode-dependent (HcloudPlanOptions.
-// approvalMode): 'ask' (DEVKIT_APPROVAL_MODE=ask) plans for the SERVER-run
+// approvalMode): 'ask' (the default) plans for the SERVER-run
 // confirmation — the approval gate raises an elicitation form, or the T3
 // chat round-trip on a client that cannot render one — so no token is
 // minted and userConfirmation carries the ask note instead of a terminal
-// approve line; 'token' (the default) keeps the mint + approve line
-// contract above.
+// approve line; 'token' (opt-in, and forced on the remote transport)
+// keeps the mint + approve line contract above.
 
 import { classifyHcloudArgs, redactSecrets, stripExecutable, type ClassifyOptions } from './safety-policy.ts';
 import { isHcloudToken } from './safety/tokens.ts';

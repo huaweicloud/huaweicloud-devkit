@@ -62,8 +62,12 @@ if (transport === 'remote') {
   // gate's elicitation form (or the T3 chat round-trip), and this stateless
   // remote face carries no session to ask in — no client capability record
   // and no in-band round-trip — so the env is forced back to the token gate,
-  // loudly, before any request handler resolves it. This is the only
-  // production entry to the remote surface.
+  // loudly, before any request handler resolves it. The token terminal gate
+  // is the remote transport's ONLY channel: ask's session state (the
+  // capability record, the shown-envelope memory) dies with the
+  // per-request server instance, while token state lives on disk and the
+  // terminal approve runs in another process against the same file. This
+  // is the only production entry to the remote surface.
   if (approvalModeFromEnv(process.env) === 'ask') {
     process.env.DEVKIT_APPROVAL_MODE = 'token';
     process.stderr.write(

@@ -302,14 +302,16 @@ function payloadDriftWarns(payloadPaths: readonly string[]): string[] {
       continue;
     }
     // The env half: a copy that carries our server entry but not the ask env
-    // runs the devkit in token mode (a stale pre-ask payload) — drift,
-    // healable by the same re-run.
+    // is a stale pre-ask payload — drift, healable by the same re-run. The
+    // default mode is ask, so a stale copy degrades to the env-unset default
+    // (still the server-run gate), but the drift itself stays WARN-worthy:
+    // the payload no longer matches what this install would write.
     if (
       asRecord(asRecord(asRecord(config.mcpServers)[APPROVAL_MCP_SERVER]).env).DEVKIT_APPROVAL_MODE !==
       CODEX_APPROVAL_MODE_ENV
     ) {
       warns.push(
-        `${path} does not set DEVKIT_APPROVAL_MODE="${CODEX_APPROVAL_MODE_ENV}" in the server env, so the devkit runs its default token mode under codex (${RERUN})`,
+        `${path} does not set DEVKIT_APPROVAL_MODE="${CODEX_APPROVAL_MODE_ENV}" in the server env (a stale pre-ask payload; the env-unset default is ask, but the drift means this copy no longer matches the current install) (${RERUN})`,
       );
     }
     if (states.every((state) => state === 'approve')) continue;

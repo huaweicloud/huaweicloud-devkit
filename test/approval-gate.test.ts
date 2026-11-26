@@ -65,6 +65,13 @@ import { spawnLedgerWorker, waitForLedgerClaim } from './approval-ledger-harness
 // unmodified, which is this migration's acceptance.
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 
+// This battery was authored under the token default; the approval-mode flip
+// (unset now means ask) made the ambient-unset legs ask-mode, so the token
+// legs pin their posture at module scope — the same doctrine as
+// sandbox-pool-calltool's 'ask' pin. Mode-parameterized tests below
+// set/delete the env themselves and are unaffected.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 const VENDOR = 'test: vendor established by the harness';
 
 // PR-2.5 win32 accommodations, one per failure class (CI 43807877421). The

@@ -8,6 +8,11 @@ import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approv
 import { withTempAuthHome } from './hcloud-cli-harness.ts';
 import { pinObsMockEnv, withMockedFetch } from './obs-fetch-harness.ts';
 
+// The battery drives the obs cors gate through the token mint/confirm flow;
+// the approval-mode flip (unset now means ask) requires the token posture
+// pinned explicitly at module scope.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 // ---- #1003: huaweicloud_obs_set_cors tool (same-structure obsSignedRequest
 // reuse; the subresource parameterization is the port's own seam) ----
 

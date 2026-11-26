@@ -19,6 +19,9 @@ import { seedStoreIn } from './opencode-saved-perms-harness.ts';
 const ACTION = allowRuleActions()[0]!;
 const ASK_LABEL = 'ASK approval posture (client allow rules + server gate)';
 const TOKEN_LABEL = 'ASK approval posture (token mode)';
+// Post-flip, an env-less config runs the ask default with no client yield
+// rules — the legitimate baseline posture doctor must PASS.
+const ENV_UNSET_LABEL = 'ASK approval posture (env-unset ask default; no client yield rules)';
 
 // The opencode config the installer wrote, as a mutable record the
 // hand-edit tests reshape in place.
@@ -312,14 +315,14 @@ test('doctor: an unreadable config file with the gate on WARNS instead of going 
   assert.ok(stdout.includes('config is unreadable'), 'the unreadable file is named');
 });
 
-test('doctor: rule absent and env absent is the legitimate token-mode PASS', () => {
+test('doctor: rule absent and env absent is the legitimate env-unset ask-default PASS', () => {
   const home = fixtureDir('hwc-ask-token-');
   const config = installAskOn(home);
   delete config.permissions;
   delete envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE;
   saveOpencodeConfig(home, config);
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
-  assert.ok(stdout.includes(`[PASS] ${TOKEN_LABEL}`), `token mode must pass, got:\n${stdout}`);
+  assert.ok(stdout.includes(`[PASS] ${ENV_UNSET_LABEL}`), `env-unset ask default must pass, got:\n${stdout}`);
 });
 
 test('doctor: a below-floor (gate-off) probe skips the section instead of failing', () => {
@@ -436,14 +439,14 @@ test('doctor: a v1 pattern-map value WARNS as unverifiable, not a misread postur
   assert.ok(stdout.includes('is not a readable effect'), 'the unverifiable value is named');
 });
 
-test('doctor: v1 key and env both absent is the legitimate token-mode PASS', () => {
+test('doctor: v1 key and env both absent is the legitimate env-unset ask-default PASS', () => {
   const home = fixtureDir('hwc-ask-v1-token-');
   const config = installAskV1(home);
   delete config.permission;
   delete envOf(mcpEntry(config)).DEVKIT_APPROVAL_MODE;
   saveOpencodeConfig(home, config);
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v1' });
-  assert.ok(stdout.includes(`[PASS] ${TOKEN_LABEL}`), `token mode must pass, got:\n${stdout}`);
+  assert.ok(stdout.includes(`[PASS] ${ENV_UNSET_LABEL}`), `env-unset ask default must pass, got:\n${stdout}`);
 });
 
 test('install honors a user-owned v1 deny key: add-only-if-absent keeps it, doctor FAILs it', () => {
@@ -531,7 +534,7 @@ test('doctor: an unreadable store WARNs (warn-only, never a hard fail)', () => {
   assert.equal(stdout.includes('[FAIL] ASK approval hygiene'), false, 'an unreadable store is never a FAIL');
 });
 
-test('doctor: in token mode the stale row WARNs the same way (the row is inert in every posture)', () => {
+test('doctor: with the env unset the stale row WARNs the same way (the row is inert in every posture)', () => {
   const home = fixtureDir('hwc-saved-token-');
   const config = installAskOn(home);
   delete config.permissions;
@@ -542,7 +545,7 @@ test('doctor: in token mode the stale row WARNs the same way (the row is inert i
     permissions: [{ id: 'psv_token_mode', projectId: 'p-demo', action: ACTION }],
   });
   const stdout = runDoctor(home, { HUAWEICLOUD_OPENCODE_ASK_RULE: 'v2' });
-  assert.ok(stdout.includes(`[PASS] ${TOKEN_LABEL}`), `token mode still passes, got:\n${stdout}`);
+  assert.ok(stdout.includes(`[PASS] ${ENV_UNSET_LABEL}`), `the env-unset posture still passes, got:\n${stdout}`);
   assert.ok(stdout.includes(SAVED_WARN), `the stale row is still named, got:\n${stdout}`);
 });
 

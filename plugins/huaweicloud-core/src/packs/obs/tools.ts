@@ -452,7 +452,7 @@ export const OBS_TOOLS = [
   {
     name: 'huaweicloud_obs_set_website_config',
     description:
-      '配置 OBS 桶的静态网站托管（推荐路径：无需手写 XML，此工具内部实现 AWS4 签名调用 OBS REST API，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。审批门把关（PR-3c）：set 与 delete 是对线上桶的签名 PUT/DELETE，无 token 调用返回 USER_CONFIRMATION_REQUIRED 供用户在终端确认，DEVKIT_APPROVAL_MODE=ask 时由服务器弹出确认；get 是签名只读，从不确认、直接执行。KooCLI 7.3.12+ 另有 `hcloud OBS website -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。操作前需确保桶已创建且已设置 public-read ACL。',
+      '配置 OBS 桶的静态网站托管（推荐路径：无需手写 XML，此工具内部实现 AWS4 签名调用 OBS REST API，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。审批门把关（PR-3c）：set 与 delete 是对线上桶的签名 PUT/DELETE，默认由服务器弹出确认（表单或聊天往返）；DEVKIT_APPROVAL_MODE=token（opt-in）时无 token 调用返回 USER_CONFIRMATION_REQUIRED 供用户在终端确认；get 是签名只读，从不确认、直接执行。KooCLI 7.3.12+ 另有 `hcloud OBS website -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。操作前需确保桶已创建且已设置 public-read ACL。',
     schema: obsWebsiteConfigSchema,
     handler: handleObsWebsiteConfig,
   },
@@ -465,7 +465,7 @@ export const OBS_TOOLS = [
     // the recommended path (no XML file, no --noproxy traps); the CLI is the
     // scripted alternative for 7.3.12+ environments.
     description:
-      '配置 OBS 桶的 CORS 规则（浏览器直传前置条件；推荐路径：此工具内部实现 AWS4 签名调用 OBS REST API（PUT/GET/DELETE /?cors），无需手写 XML，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。审批门把关（PR-3c）：set 与 delete 是对线上桶的签名 PUT/DELETE，无 token 调用返回 USER_CONFIRMATION_REQUIRED 供用户在终端确认，DEVKIT_APPROVAL_MODE=ask 时由服务器弹出确认；get 是签名只读，从不确认、直接执行。allowedMethod 必须含 HEAD（BrowserJS SDK 每次操作前发 HEAD ?apiversion 探测，缺 HEAD 时浏览器吞掉探测请求报 Network Error）。KooCLI 7.3.12+ 另有 `hcloud OBS cors obs://<bucket> -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。配置成功后用返回体中的 verify 命令做 OPTIONS 预检验证（200 + Access-Control-Allow-Origin 才算成功）。',
+      '配置 OBS 桶的 CORS 规则（浏览器直传前置条件；推荐路径：此工具内部实现 AWS4 签名调用 OBS REST API（PUT/GET/DELETE /?cors），无需手写 XML，屏蔽签名细节）。支持 set（配置）、get（查询）、delete（删除）三种操作。审批门把关（PR-3c）：set 与 delete 是对线上桶的签名 PUT/DELETE，默认由服务器弹出确认（表单或聊天往返）；DEVKIT_APPROVAL_MODE=token（opt-in）时无 token 调用返回 USER_CONFIRMATION_REQUIRED 供用户在终端确认；get 是签名只读，从不确认、直接执行。allowedMethod 必须含 HEAD（BrowserJS SDK 每次操作前发 HEAD ?apiversion 探测，缺 HEAD 时浏览器吞掉探测请求报 Network Error）。KooCLI 7.3.12+ 另有 `hcloud OBS cors obs://<bucket> -method=put -localfile=<xml>`（XML 文件方式；7.2.x 无此 CLI 命令）。配置成功后用返回体中的 verify 命令做 OPTIONS 预检验证（200 + Access-Control-Allow-Origin 才算成功）。',
     schema: obsCorsConfigSchema,
     handler: handleObsCorsConfig,
   },

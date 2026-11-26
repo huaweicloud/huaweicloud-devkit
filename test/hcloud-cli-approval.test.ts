@@ -29,6 +29,12 @@ import { callTool, type ToolArgs } from '../plugins/huaweicloud-core/src/tools.t
 // load, so the harness import's seam is order-dependent — this line is not.
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 
+// The token legs of this battery (the full runApprovedCommand lifecycle)
+// ran under the pre-flip unset default; the approval-mode flip (unset now
+// means ask) requires them to pin token explicitly at module scope. The
+// ask legs already pin 'ask' through withApprovalMode.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 test('inspectApprovalToken classifies a fresh token as valid', async () => {
   await withTempAuthHome(() => {
     const token = createApprovalToken(['ECS', 'ListServersDetails']);

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import test from 'node:test';
 
-import { createClient, root } from './mcp-server-client.ts';
+import { createClient, root, serverPath } from './mcp-server-client.ts';
 
 test('MCP server initializes, lists tools, and plans CLI commands', async () => {
   const client = createClient();
@@ -252,7 +252,11 @@ test('tools/call accepts string numerics and passes unknown keys through (#530 l
 });
 
 test('tools/call accepts the model-wire double-encoded args and string booleans (CLI execution family)', async () => {
-  const client = createClient();
+  // The approval arm inspects a never-minted token (CONFIRM_TOKEN_NOT_FOUND
+  // is the expected landing) — a token-gate leg, so the spawned server is
+  // pinned to token mode explicitly: the approval-mode flip made unset mean
+  // ask, and the ask ladder would answer before the token inspection.
+  const client = createClient(serverPath, { DEVKIT_APPROVAL_MODE: 'token' });
   try {
     await client.request('initialize', {
       protocolVersion: '2024-11-05',

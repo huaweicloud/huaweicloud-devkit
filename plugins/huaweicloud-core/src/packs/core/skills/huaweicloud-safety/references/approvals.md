@@ -1,6 +1,6 @@
 # The Approval Gate For Registered Tools
 
-A registered tool's mutating call runs only after the user confirms it. The confirmation channel is the server-run ladder: an elicitation form on a capable client, a chat round-trip envelope on the rest, or the terminal token in token mode. The agent never confirms anything itself; `approvedByUser: true` is only ever a statement or a retry marker, never the confirmation.
+A registered tool's mutating call runs only after the user confirms it. The confirmation channel is the server-run ladder (the default): an elicitation form on a capable client, a chat round-trip envelope on the rest, or the terminal token in opt-in token mode. The agent never confirms anything itself; `approvedByUser: true` is only ever a statement or a retry marker, never the confirmation.
 
 ## The registered tools today
 
@@ -26,7 +26,7 @@ One per line, append-shaped: a sibling registration adds its tools here without 
 
 The same destructive rows also deny on the agent's own Bash face through the safety hook (the operator-approved widening): unanchored recursive rm — any combined-flag spelling, including `rm -rf node_modules` and the quoted/glob/`$VAR` forms — and `find … -delete` now refuse there too. The operator chose the safe direction: a false deny on the agent face costs one rephrased command, a miss costs the workspace. A human's own terminal is unaffected — the hook gates the agent face only.
 
-## Token mode (the default)
+## Token mode (opt-in: DEVKIT_APPROVAL_MODE=token; the forced posture on the remote transport)
 
 1. Call the tool. A first no-token call returns `status: "rejected"`, `code: "USER_CONFIRMATION_REQUIRED"`, a minted `approvalToken`, and `userConfirmation.command` — the exact line the user must run in their own terminal: `npx huaweicloud-devkit approve <approvalToken>`. Nothing executed.
 2. The user confirms in their own interactive terminal (PIN-checked; first use enrolls the PIN via `npx huaweicloud-devkit pin`). The terminal prints the redacted request and states that this authorizes one execution.
@@ -40,11 +40,11 @@ For the hcloud run face, `command` is the display anchor: the full hcloud comman
 
 ## Registered tools beyond the hcloud pair
 
-The same gate covers every tool on the approval roster, not only the hcloud plan/run pair. A roster tool with no plan face mints its own token at the gate: the first call in the default token mode returns `USER_CONFIRMATION_REQUIRED` with a fresh `approvalToken` and a `userConfirmation` summary naming what the call does — the user confirms that token the same way (`npx huaweicloud-devkit approve <token>`), and the retry carries the token. In ask mode the same ladder as above applies: the form, or the `ASK_CONFIRMATION_REQUIRED` chat round-trip.
+The same gate covers every tool on the approval roster, not only the hcloud plan/run pair. A roster tool with no plan face mints its own token at the gate: the first call in token mode (opt-in) returns `USER_CONFIRMATION_REQUIRED` with a fresh `approvalToken` and a `userConfirmation` summary naming what the call does — the user confirms that token the same way (`npx huaweicloud-devkit approve <token>`), and the retry carries the token. In ask mode (the default) the same ladder as above applies: the form, or the `ASK_CONFIRMATION_REQUIRED` chat round-trip.
 
 The account-switch pair is registered (PR-3b): `huaweicloud_auth_init` and `huaweicloud_auth_switch` confirm on every call, and their confirmation views name the target account fingerprint and the credential source, because the account switch is the step that can redirect every later approved write to a different account. The confirmation binds the resolved snapshot — the account, region, and session token of the switch — so the account the user confirmed is the account that switches; a changed file or a changed region re-asks instead of executing. The devkit CLI verbs (`npx huaweicloud-devkit auth init`, `auth sync`) are the operator's own terminal surface: the hook denies them on the agent Bash face, so an agent cannot use the CLI to bypass the gate the MCP tools carry. `auth_confirm` (the persist-conflict reconciliation) and the read faces (`auth_status`, `check_account_type`, `auth_sync` on the MCP surface) stay ungated by this chain.
 
-## Ask mode (DEVKIT_APPROVAL_MODE=ask): the server-run confirmation
+## Ask mode (the default): the server-run confirmation
 
 The confirmation happens on the server, in one of two tiers.
 
@@ -59,7 +59,7 @@ When an approved call's delivery was uncertain — the call threw and whether it
 
 The consent ledger records which tier answered: `evidence: "elicitation"` for a form answer, `evidence: "posture"` for a chat-round-trip retry. A ledger row that says posture means a model reported the user's approval, not that a human was mechanically verified. A memo reuse inherits the original event's tier and never upgrades it.
 
-On OpenCode the installer writes one exact `allow` rule per roster tool ahead of the server's own confirmation. That rule is yield-only: it suppresses the redundant client popup and never confirms anything — the form does on a form-capable client (opencode 2.x), and on 1.19–1.x the chat round-trip does, recorded as posture trust. A saved "always allow" row from a pre-yield install is likewise inert, because the server's confirmation is raised inside the tool call and never routes through the client's permission evaluation, and the yield rules mean the popup no longer appears to recreate one. `npx huaweicloud-devkit doctor` lists such rows as a stale-grant WARNING, with the `opencode api GET /api/permission/saved` and `opencode api DELETE /api/permission/saved/<id>` commands that remove them. Doctor also lists recorded session standing consents. A `deny` rule on a roster tool still blocks the call in the client, and doctor fails it. The remote transport refuses ask mode outright and forces token mode. Token mode remains the default and the fallback for harnesses without a per-call confirmation surface.
+On OpenCode the installer writes one exact `allow` rule per roster tool ahead of the server's own confirmation. That rule is yield-only: it suppresses the redundant client popup and never confirms anything — the form does on a form-capable client (opencode 2.x), and on 1.19–1.x the chat round-trip does, recorded as posture trust. A saved "always allow" row from a pre-yield install is likewise inert, because the server's confirmation is raised inside the tool call and never routes through the client's permission evaluation, and the yield rules mean the popup no longer appears to recreate one. `npx huaweicloud-devkit doctor` lists such rows as a stale-grant WARNING, with the `opencode api GET /api/permission/saved` and `opencode api DELETE /api/permission/saved/<id>` commands that remove them. Doctor also lists recorded session standing consents. A `deny` rule on a roster tool still blocks the call in the client, and doctor fails it. Ask mode is the default everywhere a session lives; token mode is the operator's opt-in (`DEVKIT_APPROVAL_MODE=token`) and the remote transport's forced posture — the stateless remote face carries no session for either ask tier (no capability record, no shown-envelope memory), while the token state lives on disk where the terminal approve finds it, so the remote gate has exactly one channel and it is token.
 
 ## The PIN and the TTY check
 
