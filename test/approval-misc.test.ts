@@ -24,6 +24,13 @@ import type {
 } from '../plugins/huaweicloud-core/src/approval-types.ts';
 import type { ToolName } from '../plugins/huaweicloud-core/src/tool-definitions.ts';
 
+// The token legs of this battery (the mint/consume shapes for the obs pair,
+// upgrade, secret_delete, packs_configure) ran under the pre-flip unset
+// default; the approval-mode flip (unset now means ask) requires them to pin
+// token explicitly at module scope. The ask legs pin 'ask' through
+// withApprovalMode and are unaffected.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 // PR-3c's registration battery: the five tools (the obs pair, upgrade,
 // secret_delete, packs_configure) gate in both modes with the right
 // flavors, the packs_configure seam precheck refuses a no-seam call before

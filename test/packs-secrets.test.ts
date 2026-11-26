@@ -8,6 +8,11 @@ import { confirmApprovalToken } from '../plugins/huaweicloud-core/src/lib/approv
 import { fixtureDir } from './fixture-dir.ts';
 import { clearCustodyCache } from '../plugins/huaweicloud-core/src/lib/secret-vault/custody.ts';
 
+// The secret_delete legs drive the gate through the token mint/confirm
+// flow; the approval-mode flip (unset now means ask) requires the token
+// posture pinned explicitly at module scope.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 // The secrets pack through the real callTool dispatch and the real MCP
 // disclosure path. The invariant under test is the design's headline: no tool
 // result ever contains a plaintext secret value, and the unauthenticated

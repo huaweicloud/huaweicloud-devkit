@@ -74,8 +74,10 @@ export function opencodeDoctorMcpConfigured(): string | null {
 //     WARN is honest, not a FAIL);
 //   - a user-owned rule on a roster action is surfaced by name with the skip
 //     recorded, never silently dropped.
-// A gate-off opencode is a SKIP — token mode is that install's legitimate
-// posture, and the migration still removes the legacy ask rules.
+// A gate-off opencode is a SKIP — an env-less install below the floor runs
+// the default ask posture with no client yield rules, which is that
+// install's legitimate state, and the migration still removes the legacy
+// ask rules.
 export function opencodeDoctorAskRule(ctx: DoctorReporter): void {
   const gate = openCodeAskGate();
   if (gate === 'off') {
@@ -121,9 +123,18 @@ function askPostureCheck(ctx: DoctorReporter, gate: 'v2-array' | 'v1-object'): v
   const userOther = actionsIn('user-other');
   const residue = reading.rules.filter((rule) => rule.askResidue).map((rule) => rule.action);
 
-  // Token mode with no client rules at all is the legitimate default posture.
+  // No client rules and a non-ask env is the legitimate env-owned posture:
+  // unset means the ask default (server-run gate, no yield rules), an
+  // explicit 'token' means the operator's opt-in terminal gate. The label
+  // names which one it is.
   if (!gateOn && absent.length === reading.rules.length) {
-    ctx.check('ASK approval posture (token mode)', true, '');
+    ctx.check(
+      env.DEVKIT_APPROVAL_MODE === 'token'
+        ? 'ASK approval posture (token mode)'
+        : 'ASK approval posture (env-unset ask default; no client yield rules)',
+      true,
+      '',
+    );
     return;
   }
 

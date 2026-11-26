@@ -31,6 +31,11 @@ import { callTool } from '../plugins/huaweicloud-core/src/tools.ts';
 // load, so the harness import's seam is order-dependent — this line is not.
 process.env.HUAWEICLOUD_VENDOR_CHALLENGE = 'off';
 
+// The G4 plan/run legs drive the token mint/confirm flow; the approval-mode
+// flip (unset now means ask) requires the token posture pinned explicitly at
+// module scope.
+process.env.DEVKIT_APPROVAL_MODE = 'token';
+
 test('runHcloud retries transient network errors and reports retry count', async () => {
   const stateFile = join(fixtureDir('huaweicloud-toolkit-state-'), 'count.txt');
   const script = fakeHcloudScript(`

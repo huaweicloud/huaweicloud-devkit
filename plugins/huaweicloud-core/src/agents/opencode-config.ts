@@ -115,7 +115,8 @@ export function openCodeSeamGate(): 'on' | 'off' {
 // HUAWEICLOUD_OPENCODE_ASK_RULE is the deterministic override for the
 // installer test suite (e2e strips it — the runner's install relies on
 // the natural probe); unset runs the probe. Polarity:
-//   'off'      — neither half of the posture is written (token mode stays);
+//   'off'      — neither half of the posture is written (the env-unset
+//                ask default governs the server; no client yield rules);
 //                the legacy ask rules are still migrated away.
 //   'v1'/'v2'  — force the rule SHAPE (the deterministic test matrix; the
 //                env halves are identical across shapes).
@@ -293,7 +294,9 @@ export function updateOpenCodeConfig(pluginDir: string): void {
     // install wrote are removed value-exact, both shapes independently (a
     // config can carry both). Without this, the doctor's mixed-state WARN
     // could never heal — re-running install would reproduce it forever.
-    // After the removal the user's posture (token mode) is fully mechanical.
+    // After the removal the user's posture is fully mechanical — their own
+    // env value (token, or an explicit ask) owns the gate with no client
+    // rules layered on top.
     const removedV2 = removeAllowPermissionRules(config);
     const removedV1 = removeAllowPermissionRulesV1(config);
     clientRemoved = removedV2 || removedV1;
@@ -316,7 +319,7 @@ export function updateOpenCodeConfig(pluginDir: string): void {
     }
   } else if (!askOn) {
     console.log(
-      '  \x1b[33m[INFO]\x1b[0m opencode not verifiably at or above 1.19.0 — keeping the terminal token approval gate; no client allow rules or DEVKIT_APPROVAL_MODE is written.',
+      '  \x1b[33m[INFO]\x1b[0m opencode not verifiably at or above 1.19.0 — writing neither half of the ASK pair; the server still runs the env-unset ask default (the chat round-trip), and no client allow rules are written.',
     );
   }
   if (rebuilt || entryChanged) {

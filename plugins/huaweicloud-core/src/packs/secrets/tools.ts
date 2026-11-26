@@ -128,7 +128,7 @@ export const SECRETS_TOOLS = [
   {
     name: 'huaweicloud_secret_delete',
     description:
-      'Delete one secret from the local vault by ref. Destructive with no version history, so the approval gate mediates every call: in the default token mode a no-token call returns USER_CONFIRMATION_REQUIRED with the approve command line for the user\u2019s own terminal, and under DEVKIT_APPROVAL_MODE=ask the server raises the confirmation itself (form, or an ASK_CONFIRMATION_REQUIRED chat round-trip). Deleting a ref that S1 credentials.json points at breaks those credential reads until the operator re-stores it (the strict vault seam fails closed on the unresolvable ref). Idempotent: removed=1 when a secret was deleted, removed=0 when the ref was not stored (usually a typo in the ref — check with huaweicloud_secret_list).',
+      'Delete one secret from the local vault by ref. Destructive with no version history, so the approval gate mediates every call: the server raises the confirmation itself (form, or an ASK_CONFIRMATION_REQUIRED chat round-trip); under DEVKIT_APPROVAL_MODE=token (opt-in) a no-token call instead returns USER_CONFIRMATION_REQUIRED with the approve command line for the user\u2019s own terminal. Deleting a ref that S1 credentials.json points at breaks those credential reads until the operator re-stores it (the strict vault seam fails closed on the unresolvable ref). Idempotent: removed=1 when a secret was deleted, removed=0 when the ref was not stored (usually a typo in the ref — check with huaweicloud_secret_list).',
     schema: secretDeleteSchema,
     handler: handleSecretDelete,
   },

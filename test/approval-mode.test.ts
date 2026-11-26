@@ -16,13 +16,13 @@ test('APPROVAL_MODE_ENV pins the operator-facing variable name', () => {
   assert.equal(APPROVAL_MODE_ENV, 'DEVKIT_APPROVAL_MODE');
 });
 
-test('approvalModeFromEnv: unset env keeps the token default', () => {
-  assert.equal<ApprovalMode>(approvalModeFromEnv({}), 'token');
-  assert.equal<ApprovalMode>(approvalModeFromEnv({ UNRELATED: 'ask' }), 'token');
+test('approvalModeFromEnv: unset env keeps the ask default', () => {
+  assert.equal<ApprovalMode>(approvalModeFromEnv({}), 'ask');
+  assert.equal<ApprovalMode>(approvalModeFromEnv({ UNRELATED: 'ask' }), 'ask');
 });
 
-test('approvalModeFromEnv: empty string keeps the token default', () => {
-  assert.equal<ApprovalMode>(approvalModeFromEnv({ [APPROVAL_MODE_ENV]: '' }), 'token');
+test('approvalModeFromEnv: empty string keeps the ask default', () => {
+  assert.equal<ApprovalMode>(approvalModeFromEnv({ [APPROVAL_MODE_ENV]: '' }), 'ask');
 });
 
 test('approvalModeFromEnv: ask and token resolve to themselves', () => {
