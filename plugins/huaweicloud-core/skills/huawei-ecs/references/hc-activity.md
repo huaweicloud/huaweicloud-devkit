@@ -24,7 +24,7 @@
 - 后端3000仅监听回环
 - Nginx修改后 nginx -t 再 reload
 - 按量付费停机仍计费
-- 删除实例时 --delete_publicip=true --delete_volume=true
+- 删除实例前按资源 ID 确认 EIP 和数据盘去留；两个删除参数省略时遵循挂载策略，不要一律置 true（见 `references/delete-instance.md`）
 
 ## 作品提交链接（api_link）校验规则（实测 #935 报告2 问题4/5、报告4 问题3）
 

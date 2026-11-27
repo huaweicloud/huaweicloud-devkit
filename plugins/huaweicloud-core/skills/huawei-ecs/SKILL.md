@@ -28,14 +28,14 @@ Before creating an ECS instance from scratch, you MUST have:
 
 ## Critical Warnings
 
-| Trap                            | Why                                                                                                                                                |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Flavor not in region            | Not all flavors available everywhere. Check with ECS ListFlavors first                                                                             |
-| Security group denies all       | New SGs deny ALL inbound. Must explicitly add rules                                                                                                |
-| Reusing existing security group | Existing SGs may have 0.0.0.0/0 rules. Before referencing, run hcloud VPC ListSecurityGroupRules --security_group_id.1=<id> to audit inbound rules |
-| EIP bills when idle             | Unattached EIP still incurs charges                                                                                                                |
-| Stopped instance still bills    | Pay-per-use instances bill when stopped (unless shutdown-no-billing flavor)                                                                        |
-| Disk survives instance delete   | Deleting instance does NOT delete system disk by default                                                                                           |
+| Trap                                  | Why                                                                                                                                                                                  |
+| ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Flavor not in region                  | Not all flavors available everywhere. Check with ECS ListFlavors first                                                                                                               |
+| Security group denies all             | New SGs deny ALL inbound. Must explicitly add rules                                                                                                                                  |
+| Reusing existing security group       | Existing SGs may have 0.0.0.0/0 rules. Before referencing, run hcloud VPC ListSecurityGroupRules --security_group_id.1=<id> to audit inbound rules                                   |
+| EIP bills when idle                   | Unattached EIP still incurs charges                                                                                                                                                  |
+| Stopped instance still bills          | Pay-per-use instances bill when stopped (unless shutdown-no-billing flavor)                                                                                                          |
+| ECS delete retention is policy-driven | System disk is released with the instance; EIP/data-disk fate depends on omission vs explicit flag and each resource's `delete_on_termination` (see `references/delete-instance.md`) |
 
 ## Flavor Selection Guide
 
@@ -60,7 +60,7 @@ Flavor families are **region-dependent**. Always run `hcloud ECS ListFlavors --c
 | Bind EIP            | hcloud EIP AssociatePublicips --publicip_id=<id> --publicip.associate_instance_id=<port-id> --publicip.associate_instance_type=PORT                      | Get port ID from `hcloud ECS ListServersDetails --server_id=<id>` → `OS-EXT-IPS:port_id` |
 | Security group rule | hcloud VPC CreateSecurityGroupRule --security_group_id=<id> --direction=<direction> --protocol=<protocol>                                                | see huawei-vpc                                                                           |
 | Attach disk         | hcloud ECS AttachServerVolume --server_id=<id> --volumeAttachment.volumeId=<id>                                                                          | references/evs.md                                                                        |
-| Delete instance     | hcloud ECS DeleteServers --servers.1.id=<id> --delete_publicip=true --delete_volume=true                                                                 | references/create-instance.md                                                            |
+| Delete instance     | hcloud ECS DeleteServers --servers.1.id=<id> [--delete_publicip=<bool>] [--delete_volume=<bool>]                                                         | references/delete-instance.md — plan per resource ID first                               |
 | Reboot instance     | hcloud ECS BatchRebootServers --reboot.servers.1.id=<id> --reboot.type=SOFT                                                                              | NOT `RebootServer` — that operation does not exist                                       |
 | HC活动部署          | 按量付费购买ECS+Nginx部署后端服务                                                                                                                        | references/hc-activity.md                                                                |
 
@@ -130,10 +130,19 @@ Windows has NO working `sshpass` — password automation must go through paramik
 
 ## Deleting Instances
 
-- Show the user the exact command and get explicit approval before running
-- By default, `--delete_publicip` and `--delete_volume` are **false** — public IP and system disk survive deletion
-- Set both to `true` to avoid orphaned resources and unexpected billing
-- Data disks ARE deleted by default (unlike system disk)
+Read `references/delete-instance.md` before deleting. The flags do **not** mean "false by default, so everything is kept":
+
+- `--delete_publicip` **omitted** follows the EIP's binding-time `delete_on_termination`; explicit `false` always unbinds and keeps; explicit `true` always deletes.
+- `--delete_volume` applies to **data disks only**. Explicit `false` does **not** override a data disk whose `delete_on_termination=true` (it is still deleted). The system disk is released with the instance by default (recycle-bin rules may differ).
+- Never append `--delete_publicip=true --delete_volume=true` by reflex.
+
+Mandatory flow:
+
+1. **Before approval**, list the expected fate of the EIP, system disk, and every data disk **by resource ID**. If a `delete_on_termination` policy is unknown or conflicts with user intent, resolve it and confirm with the user before submitting.
+2. **After the job succeeds**, verify the EIP and each volume **by ID** separately. A failed or unavailable query is `unverified`, never "deleted".
+3. For residual charges, compare billing **usage time**, not the invoice issue date.
+
+Commands and the full decision table: `references/delete-instance.md`.
 
 ## Troubleshooting
 

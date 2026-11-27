@@ -30,4 +30,4 @@ hcloud EVS ListVolumes
 hcloud EVS DeleteVolume --volume_id=<id>
 ```
 
-> Deleting an ECS instance does NOT automatically delete attached EVS volumes unless `--delete_volume=true` is set during instance deletion.
+> Data-disk deletion on ECS delete follows both `--delete_volume` and the disk's own `delete_on_termination` (logical OR). `--delete_volume=false` does NOT preserve a disk whose `delete_on_termination=true` — detach it first to keep it. System disks are released with the instance. See `references/delete-instance.md`.

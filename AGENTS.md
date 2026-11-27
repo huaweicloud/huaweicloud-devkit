@@ -87,7 +87,7 @@ The skill provides the correct **service name and operation names** (which agent
 HELPFUL examples (keep):
   --publicip.associate_instance_type=PORT   # ECS→PORT mapping is non-obvious
   --x_cff_request_version=v0                # v0=raw, v1=APIG-wrapped semantics
-  --delete_publicip=true                    # default=false leaks EIP; teach override
+  --delete_publicip=false                   # omission follows EIP delete_on_termination; explicit false keeps it
   --code_type=inline                        # zip unreliable on KooCLI
   --loadbalancer_provider=elb               # elb=public, lvs=internal-only
 
