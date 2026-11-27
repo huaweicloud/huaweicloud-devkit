@@ -230,6 +230,23 @@ test('huawei-ecs troubleshooting covers volume-type sellout and RHEL-family fire
   assert.match(body, /无需登录实例|cloud-init/);
 });
 
+test('huawei-ecs / huawei-iac delete guidance follows DeleteServers mount policy (#1182)', () => {
+  const ecs = readFileSync(join(pluginRoot, 'skills', 'huawei-ecs', 'SKILL.md'), 'utf8');
+  assert.match(ecs, /references\/delete-instance\.md/);
+  assert.doesNotMatch(ecs, /public IP and system disk survive deletion/);
+  assert.doesNotMatch(ecs, /Data disks ARE deleted by default/);
+  assert.doesNotMatch(ecs, /Delete instance[^\n]*--delete_publicip=true/);
+
+  const deleteRef = readFileSync(join(pluginRoot, 'skills', 'huawei-ecs', 'references', 'delete-instance.md'), 'utf8');
+  assert.match(deleteRef, /delete_on_termination/);
+  assert.match(deleteRef, /by resource ID/i);
+  assert.match(deleteRef, /unverified/i);
+
+  const iac = readFileSync(join(pluginRoot, 'skills', 'huawei-iac', 'SKILL.md'), 'utf8');
+  assert.doesNotMatch(iac, /ECS delete defaults leak resources/);
+  assert.match(iac, /mount policy/i);
+});
+
 test('skills with references have non-empty reference files', () => {
   const skillsDir = join(pluginRoot, 'skills');
   const skillNames = readdirSync(skillsDir).filter((name) => existsSync(join(skillsDir, name, 'SKILL.md')));

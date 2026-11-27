@@ -81,17 +81,21 @@ SSH 超时时按序排查，先比对**本机真实直连出口 IP** 与安全�
 
 ## 删除注意事项
 
-- `--delete_publicip` 默认 false — EIP 不随实例删除，继续计费
-- `--delete_volume` 默认 false — 系统盘不随实例删除
-- 数据盘默认随实例删除（与系统盘行为相反）
+- **省略参数 ≠ 显式 false**：两个参数都省略时，EIP/数据盘是否随实例删除取决于各自挂载时的 `delete_on_termination`，不是「默认 false 就全部保留」
+- `--delete_publicip=false` 会解绑并保留 EIP（保留期间可能继续计费）；显式 `true` 才删除
+- `--delete_volume` 只作用于**数据盘**；显式 `false` **不能**保住 `delete_on_termination=true` 的数据盘（仍会删除），要保留需先卸载或改策略
+- 系统盘默认随实例释放（`delete_volume` 不作用于系统盘；回收站规则另行确认）
+- 提交审批前按**资源 ID** 列出 EIP、系统盘、各数据盘的预期去留；策略未知或与用户意图冲突时，先核实再提交（详见 `references/delete-instance.md`）
+- 删除成功后按 ID 分别核对 EIP 和各块云硬盘；查询失败/实例不可查询记为「未核实」，不得当作已删除
+- 排查残余费用按**计费使用时间**核对，不只看账单出账日期
 
 ## 删除完成验证：轮询操作纠正（实测 #935 坑8）
 
 `NovaShowJob` 操作**不存在**（KooCLI 与 ECS API 均无此操作，删除轮询用它必然报错）。删除 ECS 后的正确验证方式：
 
 ```bash
-# 删除 ECS（异步任务）
-hcloud ECS DeleteServers --servers.1.id=<instance-id> --delete_publicip=true --delete_volume=true
+# 删除 ECS（异步任务；参数按审批计划选择，勿一律置 true）
+hcloud ECS DeleteServers --servers.1.id=<instance-id>
 
 # 轮询直至目标实例状态为 DELETED（或列表查询 404）
 for i in 1 2 3 4 5 6; do
@@ -101,4 +105,4 @@ for i in 1 2 3 4 5 6; do
 done
 ```
 
-列表查询返回 404 或实例不在列表中，同样视为删除完成。
+列表查询返回 404 或实例不在列表中，同样视为删除完成。但这只证明实例本身已删除：EIP 与各数据盘必须按 ID 分别核对，查询失败不能当作已删除。

@@ -318,7 +318,7 @@
         ]
       },
       "message": "This delete command will also remove associated resources (EIP, volume). Check that these should be deleted together.",
-      "remediation": "Confirm with the user whether to delete the associated resources, or set delete_publicip/delete_volume to false to keep them."
+      "remediation": "Confirm the expected fate of each EIP and volume by resource ID. delete_publicip=false keeps the EIP; delete_volume=false only keeps data disks whose delete_on_termination=false — detach disks marked true first. Omitting the flags follows the mount policy."
     },
     {
       "id": "hwc-sandbox-missing-ttl",

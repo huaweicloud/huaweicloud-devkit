@@ -238,14 +238,32 @@ hcloud ECS ListServersDetails --cli-region=<region> --server_id=<instance-id>
 
 curl http://<eip-address>
 # Expected: HTTP 200 (if port 80 open and web server installed)
+```
 
-## 9. Delete instance (with cleanup)
+## 9. Delete instance (plan resources by ID)
+
+Do not use a blanket `--delete_publicip=true --delete_volume=true`. Confirm the fate of the EIP, system disk, and each data disk **by resource ID** first, then choose flags:
+
+```bash
+# Keep EIP and data disks (unbind / unmount)
+hcloud ECS DeleteServers --servers.1.id=<instance-id> --delete_publicip=false --delete_volume=false
+
+# Delete EIP and data disks
 hcloud ECS DeleteServers --servers.1.id=<instance-id> --delete_publicip=true --delete_volume=true
-Warning: --delete_publicip and --delete_volume default to false. Set to true to avoid orphaned charges.
+
+# Follow each resource's delete_on_termination (only when that matches user intent)
+hcloud ECS DeleteServers --servers.1.id=<instance-id>
+```
+
+- Omitting `--delete_publicip` follows the EIP's `delete_on_termination`; explicit `false` always keeps it.
+- `--delete_volume=false` does not preserve a data disk with `delete_on_termination=true`; detach it first.
+- After deletion, verify the EIP and each volume by ID (query failure ≠ deleted).
+
+Full decision table and verification: `references/delete-instance.md`.
 
 ## Constraints
+
 - Name: 1-64 chars, letters/digits/hyphens
 - Flavor: must be available in target region — always ListFlavors first
 - Root volume: SSD 40GB min
 - Keypair is safer than adminPass (passwords leak into shell history)
-```
