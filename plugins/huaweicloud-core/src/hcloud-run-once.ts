@@ -214,8 +214,12 @@ export function runHcloudOnce(plan: HcloudPlanWithArgs, options: HcloudRunOption
       // marker, the worse direction. Comment promised fixed; anchor kept.
       const useErrorSource = stripKooCliUpdateBanner(stdout).trim() || stderr.trim();
       const useErrorFormatError = useErrorSource.match(/^\[?USE_ERROR\]?\s*参数\S*的格式错误[^\n]*$/i);
+      // #921 (live 2026-11-26, KooCLI 7.3.12): the VALUE-validation family —
+      // `[USE_ERROR]The value of os-start must match [].` from NovaStartServer
+      // (empty-body params have no inline spelling) — also exits 0 with the
+      // command never executed, so it joins the marked families here.
       const useErrorMarked = useErrorSource.match(
-        /^\[?(?:ERROR|USE_ERROR)\]?[: ]*(?:unknown parameter|unknown option|incorrect (?:option|switch|parameter)|invalid (?:parameter|argument)|参数不存在|参数错误|无效的参数|缺少必填参数|不正确的参数|不支持的服务名称|Unsupported service|The following parameters are required|[^\n]{0,40}?parameter format must be|format must be)[^\n]*/i,
+        /^\[?(?:ERROR|USE_ERROR)\]?[: ]*(?:unknown parameter|unknown option|incorrect (?:option|switch|parameter)|invalid (?:parameter|argument)|参数不存在|参数错误|无效的参数|缺少必填参数|不正确的参数|不支持的服务名称|Unsupported service|The following parameters are required|The value of \S{1,60} must match|[^\n]{0,40}?parameter format must be|format must be)[^\n]*/i,
       );
       const paramError = useErrorMarked ?? useErrorFormatError;
       if (paramError) {

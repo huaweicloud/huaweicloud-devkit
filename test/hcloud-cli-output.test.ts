@@ -28,15 +28,34 @@ process.exit(0);
 
 test('#921: exit 0 with a Chinese parameter error is caught too', async () => {
   const script = fakeHcloudScript(`
-console.error("[USE_ERROR]: 参数错误: 不正确的参数 delete_ip");
-process.exit(0);
-`);
+    console.error("[USE_ERROR]: 参数错误: 不正确的参数 delete_ip");
+    process.exit(0);
+  `);
   const result = await runHcloud(['ECS', 'ListServersDetails'], {
     executable: process.execPath,
     executableArgs: [script],
   });
   assert.equal(result.ok, false);
   assert.equal(result.errorCode, 'PARAM_ERROR');
+});
+
+test('#921: value-validation errors (must match) never read as success', async () => {
+  // Live sample, KooCLI 7.3.12, 2026-11-26: NovaStartServer's empty-body
+  // `os-start` param has no inline spelling — `--os-start={}` / `--os-start=[]`
+  // both exit 0 with this marker on stdout and the command never executes.
+  const script = fakeHcloudScript(`
+    console.log("[USE_ERROR]The value of os-start must match [].");
+    process.exit(0);
+  `);
+  const result = await runHcloud(['ECS', 'NovaStartServer', '--server_id=i-123', '--os-start={}'], {
+    executable: process.execPath,
+    executableArgs: [script],
+    allowWrites: true,
+  });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.ok, false, 'a value-validation error must never read as success');
+  assert.equal(result.errorCode, 'PARAM_ERROR');
+  assert.match(result.errorMessage ?? '', /The value of os-start must match/);
 });
 
 test('#921: "successfully" heuristic applies ONLY to OBS commands without error indicators', async () => {
