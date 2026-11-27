@@ -163,7 +163,13 @@ test('the backoff waits actually happen between attempts (#997)', async () => {
     const started = Date.now();
     await createConnection('env1', 'ak', 'sk', '', { backoffMs: [40, 60] });
     const elapsed = Date.now() - started;
-    assert.ok(elapsed >= 40, `the first backoff must actually be awaited (elapsed ${elapsed}ms)`);
+    // Wall-clock measurement of a libuv-timer wait: the two clocks carry
+    // independent ±1ms rounding, so a genuinely-elapsed 40ms timer reads
+    // 39 on the boundary (live: CI run 45928310550, ubuntu-24.04/node24,
+    // elapsed 39ms). The 2ms tolerance absorbs the ruler's reading error
+    // only — an implementation that does not await the backoff still
+    // measures ~0ms and stays red.
+    assert.ok(elapsed >= 38, `the first backoff must actually be awaited (elapsed ${elapsed}ms)`);
   });
 });
 
