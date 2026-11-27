@@ -9,6 +9,18 @@ import { stripExecutable } from './unwrap.ts';
 import { SECRET_ARGS_RE } from './vocabulary.ts';
 import type { RiskDecision } from '../risk-rule-engine.ts';
 
+// The dry-run preflight vocabulary (see the carve-out comment in
+// classifyHcloudArgs). The global `--dryrun` flag is KooCLI's own
+// "print the request, do not execute" (hcloud --help, service-agnostic);
+// the body param `--dry_run=true` is the service-side preflight, pinned to
+// the `${service} ${operation}` pairs (lowercased) whose operation-level
+// --help documents it. Verified against `hcloud <op> --help` on
+// 2026-11-27 for both entries; a future operation joins the set only with
+// the same --help evidence.
+const DRYRUN_GLOBAL_TOKEN = '--dryrun';
+const DRY_RUN_PREFLIGHT_OPERATIONS = new Set(['ecs createservers', 'ecs createpostpaidservers']);
+const DRY_RUN_EXACT_TOKEN = '--dry_run=true';
+
 export function classifyHcloudArgs(args: unknown, options: ClassifyOptions = {}): RiskDecision {
   const policy = options.policy || DEFAULT_POLICY;
   const unwrappedTokens = stripExecutable(Array.isArray(args) ? args.map((arg) => String(arg)) : []);
@@ -120,6 +132,58 @@ export function classifyHcloudArgs(args: unknown, options: ClassifyOptions = {})
       risk: 'secret',
       reason: 'The command appears to retrieve a secret value. Use a runtime secret reference pattern instead.',
     };
+  }
+
+  // The dry-run preflight carve-out (the argv tool faces only — never the
+  // text/hook faces, see the rawCommand guard): a command whose child
+  // provably creates nothing is not a write, so plans/runs need no
+  // confirmation. Two documented zero-side-effect channels:
+  //   (a) the KooCLI GLOBAL flag `--dryrun` — "Print the request message
+  //       after verification, without execution" (hcloud --help): no
+  //       request ever leaves the CLI, for ANY service/operation.
+  //   (b) the ECS body param `--dry_run=true` — the service-side preflight
+  //       ("true: indicates that only the request is sent, but the ECS
+  //       will not be created. Check items include mandatory parameters
+  //       and request format", per `hcloud ECS CreateServers --help`),
+  //       allowlisted to the operations whose --help documents it
+  //       (ECS CreateServers / CreatePostPaidServers, verified 2026-11-27).
+  // Fences keep the carve-out narrower than the facts it rests on:
+  //   - EXACT TOKENS — only `--dryrun` and `--dry_run=true`. Case
+  //     variants, `=True`, `=1`, `--dry-run`, or a bare `--dry_run` keep
+  //     the write verdict, so a misspelled preflight still asks the user
+  //     (fail-closed).
+  //   - The body-param arm refuses `--cli-jsonInput`: a JSON body could
+  //     carry a conflicting dry_run value under a precedence the CLI owns
+  //     and the classifier cannot see.
+  //   - The rawCommand === undefined guard is the face boundary: every
+  //     hook entry point (the .mjs PreToolUse twin, the opencode
+  //     in-process gate, and every nested walk inside classifyTextCommand)
+  //     classifies TEXT with rawCommand set, so raw Bash keeps its deny
+  //     and the py twin's verdicts stay parity-true. The argv faces —
+  //     plan/run tool calls — carry no rawCommand and take the carve-out.
+  //     A compound argv (a value containing `;`/`&&`/…) fragments in the
+  //     segment pass and lands here WITHOUT its preflight token in the
+  //     fragment, so the severity merge denies fail-closed.
+  if (
+    options.rawCommand === undefined &&
+    (normalizedArgs.includes(DRYRUN_GLOBAL_TOKEN) ||
+      (DRY_RUN_PREFLIGHT_OPERATIONS.has(`${service.toLowerCase()} ${operation.toLowerCase()}`) &&
+        normalizedArgs.includes(DRY_RUN_EXACT_TOKEN) &&
+        !normalizedArgs.some((arg) => arg.startsWith('--cli-jsonInput'))))
+  ) {
+    return applyCommandRiskRules(
+      {
+        decision: 'allow',
+        risk: 'preflight',
+        reason:
+          'Documented dry-run preflight: the CLI prints the request without executing, or the service validates it and creates nothing, so no confirmation is required.',
+        service,
+        operation,
+        args: normalizedArgs,
+      },
+      normalizedArgs,
+      options,
+    );
   }
 
   const readOnly = hasReadPrefix(operation, policy);

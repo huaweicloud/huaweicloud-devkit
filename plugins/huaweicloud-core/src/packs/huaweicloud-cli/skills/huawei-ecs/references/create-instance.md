@@ -157,6 +157,8 @@ hcloud ECS CreateServers --cli-region=<region> --cli-jsonInput=./<file>.json --d
 
 `--cli-jsonInput` / `--skeleton` / `--dryrun` are **global flags — they are NOT listed in operation-level `--help` output** (only in `hcloud --help`), so agents routinely miss them.
 
+**Through the MCP tools, pre-flight is confirmation-free**: plan with `--dryrun` appended (or `--dry_run=true` — the service-side check, documented on both create operations) and the plan returns `classification.risk: "preflight"` with `userConfirmation.needed: false`; run it with `huaweicloud_run_readonly_command` and fix parameter errors without any user confirmation round-trip. Iterate freely, then plan the real create WITHOUT the dry-run flag and follow the plan → confirm → run contract. Note: a `--cli-jsonInput` body keeps the confirmation requirement even with `--dry_run=true` — for the JSON-file path, prepend `--dryrun` instead.
+
 > **Anti-pattern (observed in the wild, #964)**: when the base64 blob exceeded the tool parameter limit, the agent dropped the MCP tools entirely and ran `hcloud` directly in a shell — which also silently bypassed the plan → approve → run approval layer. The JSON-file path above keeps oversized parameters on the approved channel. Never abandon the MCP wrapper just because one parameter is too long.
 >
 > **Skeleton side effect**: `--skeleton` writes its JSON file to the current working directory and prints the path to stdout (the skeleton content itself goes to the file). Clean it up or keep it as the record of what was created.
