@@ -133,6 +133,10 @@ function planningWarnings(args: string[]): string[] {
 
 const REQUIRED_PARAMS: Record<string, string[]> = {
   'ECS CreateServers': ['server.flavorRef', 'server.imageRef', 'server.nics.1.subnet_id'],
+  // KooCLI rejects a CreatePostPaidServers call that omits server.vpcid
+  // with "The following parameters are required: server.vpcid" (live
+  // evidence 2026-11-27), so the plan warns before the child ever runs.
+  'ECS CreatePostPaidServers': ['server.flavorRef', 'server.imageRef', 'server.nics.1.subnet_id', 'server.vpcid'],
   'VPC CreateVpc': ['vpc.cidr'],
   'VPC CreateSubnet': ['subnet.vpc_id', 'subnet.cidr'],
   'VPC CreateSecurityGroupRule': [
@@ -152,6 +156,8 @@ const PARAM_VALUE_HINTS: Record<string, string> = {
   'server.flavorRef': 'Run `hcloud ECS ListFlavors --cli-region=<r>` to find valid flavors',
   'server.imageRef': 'Run `hcloud IMS ListImages --cli-region=<r> --__imagetype=gold` to find image IDs',
   'server.nics.1.subnet_id': 'Run `hcloud VPC ListSubnets --cli-region=<r>` to find subnet IDs',
+  'server.vpcid':
+    'Run `hcloud VPC ListVpcs --cli-region=<r>` to find VPC IDs (KooCLI rejects CreatePostPaidServers without it)',
   'subnet.vpc_id': 'Run `hcloud VPC ListVpcs --cli-region=<r>` to find VPC IDs',
   func_name: 'Function name must be unique within project',
   runtime: 'Run `hcloud FunctionGraph ListRuntimes` to see available runtimes',
