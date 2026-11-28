@@ -16,6 +16,7 @@ export const SUPPORTED_AGENT_TARGETS = [
   'hermes',
   'openclaw',
   'atomcode',
+  'codebuddy',
 ];
 
 function baseHome() {
@@ -88,6 +89,11 @@ function codeartsWorkRegistered() {
 
 function workbuddyRegistered() {
   const cfg = readJsonSafe(join(baseHome(), '.workbuddy', 'mcp.json'));
+  return Boolean(cfg?.mcpServers?.['huaweicloud-devkit']);
+}
+
+function codebuddyRegistered() {
+  const cfg = readJsonSafe(join(homedir(), '.codebuddy', 'mcp.json'));
   return Boolean(cfg?.mcpServers?.['huaweicloud-devkit']);
 }
 
@@ -237,6 +243,7 @@ export function getAgentRegistrationStatuses(target = 'all') {
     if (agent === 'hermes') configured = hermesRegistered();
     if (agent === 'openclaw') configured = openclawRegistered();
     if (agent === 'atomcode') configured = atomcodeRegistered();
+    if (agent === 'codebuddy') configured = codebuddyRegistered();
     result.agents[agent] = { configured };
   }
   return result;
